@@ -20,22 +20,19 @@ AttentionTarget feature.
 
 Body-axis convention
 --------------------
-With the default ``body_axis_from="head_to_abdomen"`` the body_angle is the
-vector from the focal's head keypoint to its abdomen keypoint. This matches
-Valerie's original code byte-for-byte. Note that under this convention
-``is_facing`` triggers when the abdomen (not the head) is pointing toward
-the target. Set ``body_axis_from="abdomen_to_head"`` to flip the sign so
-that ``is_facing`` triggers on head-toward-target (the conventional reading).
+See ``PairFacing.Params.body_axis_from`` for the convention and its known
+values.
 """
 
 from __future__ import annotations
 
 from itertools import permutations
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
@@ -47,7 +44,7 @@ from mosaic.core.pipeline.types import (
     TrackInputs,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import ensure_columns
 from .registry import register_feature
@@ -56,6 +53,43 @@ from .registry import register_feature
 def _wrap180_deg(angle: np.ndarray) -> np.ndarray:
     """Wrap angles in degrees to [-180, 180]. Mirrors Valerie's wrap180."""
     return (angle + 180.0) % 360.0 - 180.0
+
+
+_ANGLE_THRESH_DEG_DESCRIPTION = "The maximum angle_diff_deg for is_facing to be true."
+
+_DIST_THRESH_DESCRIPTION = (
+    "The maximum distance for is_facing to be true, in the unit distance "
+    "is reported in: centimeters when cm_per_pixel is set, pixels "
+    "otherwise."
+)
+
+_CM_PER_PIXEL_DESCRIPTION = (
+    "The scale factor applied to the head-to-head distance. Unset, "
+    "distance and dist_thresh are read directly from the tracks with no "
+    "scaling applied."
+)
+
+_POSE_HEAD_INDEX_DESCRIPTION = (
+    "The pose keypoint index for the head. The default of 3 assumes the "
+    "TRex bee layout described in the class docstring."
+)
+
+_POSE_ABDOMEN_INDEX_DESCRIPTION = (
+    "The pose keypoint index for the abdomen tip. The default of 5 "
+    "assumes the TRex bee layout described in the class docstring."
+)
+
+_BODY_AXIS_FROM_DESCRIPTION = (
+    "The direction convention for the body axis. Known values are "
+    "head_to_abdomen and abdomen_to_head. head_to_abdomen reproduces the "
+    "original BeesInADish computation, under which is_facing triggers "
+    "when the abdomen points toward the target. abdomen_to_head flips the "
+    "sign so is_facing triggers when the head points toward the target."
+)
+
+_X_PREFIX_DESCRIPTION = "The column name prefix for pose X coordinates."
+
+_Y_PREFIX_DESCRIPTION = "The column name prefix for pose Y coordinates."
 
 
 @final
@@ -74,29 +108,12 @@ class PairFacing:
       - distance        (cm if cm_per_pixel set, else px)
       - is_facing       (bool)
 
-    Params
-    ------
-    angle_thresh_deg : float
-        Max angle_diff_deg for is_facing. Default 45.0 (Valerie's value).
-    dist_thresh : float
-        Max distance for is_facing. Default 3.0 (cm if cm_per_pixel set,
-        else px).
-    cm_per_pixel : float | None
-        Scale factor. When set, distance is reported in cm and dist_thresh
-        is interpreted as cm. Default None (distance stays in px).
-    pose_head_index : int
-        Pose keypoint index for the head. Default 3 (TRex bee layout:
-        0=L-antenna, 1=R-antenna, 2=proboscis, 3=head, 4=thorax,
-        5=abdomen tip).
-    pose_abdomen_index : int
-        Pose keypoint index for the abdomen tip. Default 5.
-    body_axis_from : Literal["head_to_abdomen", "abdomen_to_head"]
-        Direction convention for the body axis. Default "head_to_abdomen"
-        reproduces Valerie's compute_social_facing exactly. Use
-        "abdomen_to_head" to flip so is_facing means "head pointed at
-        target".
-    x_prefix, y_prefix : str
-        Pose column prefixes (default "poseX", "poseY", matching PoseConfig).
+    Assumes the TRex bee keypoint layout: 0=L-antenna, 1=R-antenna,
+    2=proboscis, 3=head, 4=thorax, 5=abdomen tip. pose_head_index and
+    pose_abdomen_index default to 3 and 5 under that layout.
+
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.pair_facing.PairFacing.Params`.
     """
 
     category = "per-frame"
@@ -112,14 +129,24 @@ class PairFacing:
         pass
 
     class Params(Params):
-        angle_thresh_deg: float = 45.0
-        dist_thresh: float = 3.0
-        cm_per_pixel: float | None = None
-        pose_head_index: int = 3
-        pose_abdomen_index: int = 5
-        body_axis_from: str = "head_to_abdomen"
-        x_prefix: str = "poseX"
-        y_prefix: str = "poseY"
+        angle_thresh_deg: Annotated[
+            float, Declared(_ANGLE_THRESH_DEG_DESCRIPTION, unit="deg")
+        ] = 45.0
+        dist_thresh: Annotated[float, Declared(_DIST_THRESH_DESCRIPTION)] = 3.0
+        cm_per_pixel: Annotated[
+            float | None, Declared(_CM_PER_PIXEL_DESCRIPTION, unit="cm/px")
+        ] = None
+        pose_head_index: Annotated[int, Declared(_POSE_HEAD_INDEX_DESCRIPTION)] = 3
+        pose_abdomen_index: Annotated[
+            int, Declared(_POSE_ABDOMEN_INDEX_DESCRIPTION)
+        ] = 5
+        body_axis_from: Annotated[
+            str,
+            Field(examples=["head_to_abdomen", "abdomen_to_head"]),
+            Declared(_BODY_AXIS_FROM_DESCRIPTION),
+        ] = "head_to_abdomen"
+        x_prefix: Annotated[str, Declared(_X_PREFIX_DESCRIPTION)] = "poseX"
+        y_prefix: Annotated[str, Declared(_Y_PREFIX_DESCRIPTION)] = "poseY"
 
     def __init__(
         self,

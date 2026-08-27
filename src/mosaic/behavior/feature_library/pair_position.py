@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -29,11 +29,15 @@ from mosaic.core.pipeline.types import (
     TrackInputs,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import clean_tracks_grouped, ensure_columns, smooth_1d, unwrap_diff
 from .registry import register_feature
 from .types import InterpolationConfig, SamplingConfig
+
+_INTERPOLATION_DESCRIPTION = "Interpolation settings for missing position data."
+
+_SAMPLING_DESCRIPTION = "Frame rate and smoothing settings."
 
 
 @final
@@ -60,11 +64,8 @@ class PairPositionFeatures:
       - B_speed, B_v_para, B_v_perp, B_ang_speed: partner kinematics
       - (optionally) group, sequence for convenience
 
-    Params:
-        interpolation: Interpolation settings for missing position data.
-            Default: InterpolationConfig().
-        sampling: Frame rate and smoothing settings.
-            Default: SamplingConfig().
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.pair_position.PairPositionFeatures.Params`.
     """
 
     category = "per-frame"
@@ -80,8 +81,12 @@ class PairPositionFeatures:
         pass
 
     class Params(Params):
-        interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
-        sampling: SamplingConfig = Field(default_factory=SamplingConfig)
+        interpolation: Annotated[
+            InterpolationConfig, Declared(_INTERPOLATION_DESCRIPTION)
+        ] = Field(default_factory=InterpolationConfig)
+        sampling: Annotated[SamplingConfig, Declared(_SAMPLING_DESCRIPTION)] = Field(
+            default_factory=SamplingConfig
+        )
 
     def __init__(
         self,

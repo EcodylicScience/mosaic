@@ -8,7 +8,7 @@ builds centroids, and assigns per-sequence rows via 1-NN.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar, TypedDict, final
+from typing import Annotated, ClassVar, TypedDict, final
 
 import joblib
 import numpy as np
@@ -32,10 +32,38 @@ from mosaic.core.pipeline.types import (
     JoblibLoadSpec,
     NNResult,
     Result,
+    TemplatesRef,
 )
+from mosaic.core.params import Declared
 
 from .helpers import ensure_columns
 from .registry import register_feature
+
+_TEMPLATES_DESCRIPTION = (
+    "The templates artifact to cluster. Mutually exclusive with model."
+)
+
+_MODEL_DESCRIPTION = (
+    "A pre-fitted Ward clustering model artifact to load, skipping the fit. "
+    "Mutually exclusive with templates."
+)
+
+_N_CLUSTERS_DESCRIPTION = (
+    "The largest number of clusters cut from the Ward linkage tree."
+)
+
+_METHOD_DESCRIPTION = (
+    "The linkage method passed to scipy.cluster.hierarchy.linkage. ward is "
+    "the only value the fit accepts, case-insensitively. Any other value "
+    "raises."
+)
+
+_PAIR_FILTER_DESCRIPTION = (
+    "Unset, every row is read. A nearest-neighbor result narrows the "
+    "input, while it loads, to rows where one individual in the pair "
+    "is the other's nearest neighbor. On an input without id1/id2 "
+    "columns, the filter has no effect."
+)
 
 
 class WardModelBundle(TypedDict):
@@ -60,17 +88,8 @@ class GlobalWardClustering:
     """
     Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
 
-    Params:
-        templates: Templates artifact to cluster (inherited from
-            GlobalModelParams).
-        model: Pre-fitted WardModelArtifact to load (skip fit).
-            Default: WardModelArtifact().
-        n_clusters: Number of clusters to cut from the linkage tree.
-            Default: 20.
-        method: Linkage method passed to scipy.cluster.hierarchy.linkage.
-            Default: "ward".
-        pair_filter: Optional NNResult for nearest-neighbor pair
-            filtering during dependency resolution. Default: None.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.global_ward.GlobalWardClustering.Params`.
     """
 
     category = "global"
@@ -87,20 +106,21 @@ class GlobalWardClustering:
         _require: ClassVar[InputRequire] = "any"
 
     class Params(GlobalModelParams[WardModelArtifact]):
-        """Global Ward clustering parameters.
-
-        Attributes:
-            templates: Templates artifact to cluster (inherited).
-            model: Pre-fitted Ward model artifact (skip fit).
-            n_clusters: Number of clusters to cut. Default 20.
-            method: Linkage method. Default "ward".
-            pair_filter: Nearest-neighbor pair filter. Default None.
-        """
-
-        model: WardModelArtifact | None = Field(default_factory=WardModelArtifact)
-        n_clusters: int = Field(default=20, ge=1)
-        method: str = "ward"
-        pair_filter: NNResult | None = None
+        templates: Annotated[TemplatesRef | None, Declared(_TEMPLATES_DESCRIPTION)] = (
+            None
+        )
+        model: Annotated[WardModelArtifact | None, Declared(_MODEL_DESCRIPTION)] = (
+            Field(default_factory=WardModelArtifact)
+        )
+        n_clusters: Annotated[int, Declared(_N_CLUSTERS_DESCRIPTION)] = Field(
+            default=20, ge=1
+        )
+        method: Annotated[
+            str, Field(examples=["ward"]), Declared(_METHOD_DESCRIPTION)
+        ] = "ward"
+        pair_filter: Annotated[NNResult | None, Declared(_PAIR_FILTER_DESCRIPTION)] = (
+            None
+        )
 
     def __init__(
         self,

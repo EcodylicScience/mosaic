@@ -14,7 +14,7 @@ same order parameters to a neighborhood around each focal individual.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Self, final
+from typing import Annotated, Self, final
 
 import numpy as np
 import pandas as pd
@@ -32,7 +32,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .collective_math import (
     AreaMethod,
@@ -52,6 +52,77 @@ from .collective_math import (
 )
 from .helpers import apply_exclude_cols, ensure_columns
 from .registry import register_feature
+
+_HEADING_SOURCE_DESCRIPTION = (
+    "Where each unit heading comes from. auto uses the ANGLE column when "
+    "it has at least one finite value, falling back to the direction of "
+    "travel otherwise -- what simulation output with no body orientation "
+    "needs. orientation raises when no usable ANGLE column is present. "
+    "velocity always uses the direction of travel."
+)
+
+_SUBGROUP_COL_DESCRIPTION = (
+    "The column partitioning each frame into subgroups, typically event "
+    "from ffgroups. Prefer it over group_membership, whose per-frame "
+    "connected-component label assigns no identity across frames. Using "
+    "group_membership instead differences two possibly disjoint sets of "
+    "animals in centroid_speed and group_angvel. Unset, metrics are "
+    "computed over the whole group."
+)
+
+_AREA_METHOD_DESCRIPTION = "How area and density are computed. none skips both."
+
+_ALPHA_DESCRIPTION = (
+    "The circumradius cutoff for the alpha shape, in the input's position "
+    "units. Required when area_method is alpha_shape."
+)
+
+_MIN_INDIVIDUALS_DESCRIPTION = (
+    "Below this count of individuals, the relational metrics are NaN and "
+    "state is Undefined. The default of 3 rather than 2 accounts for N=2, "
+    "where the two radial vectors are antiparallel by construction. "
+    "Rotation contains no information there, yet still feeds the "
+    "classifier."
+)
+
+_FPS_DESCRIPTION = (
+    "The frame rate. With a frame order column, this derives dt as "
+    "frame_diff / fps, immune to the jittery wall-clock timestamps some "
+    "trackers embed. Unset, dt falls back to the time column, then to one "
+    "order step."
+)
+
+_MAX_FRAME_GAP_DESCRIPTION = (
+    "Frame steps wider than this yield NaN velocity instead of averaging "
+    "across a gap the shoal reorganized over. Unset, every step is "
+    "accepted."
+)
+
+_MIN_GROUP_SPEED_DESCRIPTION = (
+    "centroid_heading is NaN at or below this speed. A mill's centroid "
+    "is stationary by definition, and arctan2(0, 0) returns 0 (due east) "
+    "with no error, which the threshold guards against."
+)
+
+_SPEED_COL_DESCRIPTION = (
+    "The per-individual speed column averaged into mean_speed. Worth "
+    "setting under subgroup_col, where frame-aggregate cannot express a "
+    "per-subgroup mean. Unset, mean_speed is not emitted."
+)
+
+_FILTER_EXPR_DESCRIPTION = (
+    "A DataFrame.query expression applied first, before every other "
+    "computation. The way to drop event == -1, the pooled non-event "
+    "pseudo-group from ffgroups: that sentinel is an integer, which "
+    "exclude_cols cannot express."
+)
+
+_EXCLUDE_COLS_DESCRIPTION = (
+    "Boolean columns whose truthy rows are dropped after filter_expr and "
+    "before every other computation. One bad position moves the "
+    "centroid, and with it every radial vector, the covariance and the "
+    "hull. A name absent from the input is skipped rather than raising."
+)
 
 # Every column this feature emits, for the subgroup_col collision check. A
 # subgroup column sharing a name with an output would give the assembled frame
@@ -139,42 +210,8 @@ class CollectiveMotionMetrics:
         resolution of the ``heading_source`` param
       - ``sequence``, ``group``
 
-    Params:
-        heading_source: Where each unit heading comes from. ``"auto"`` (default)
-            uses the ``ANGLE`` column when it is present and holds at least one
-            finite value, otherwise the direction of travel -- which is what
-            simulation output without a body orientation needs.
-            ``"orientation"`` raises rather than falling back.
-        subgroup_col: Column partitioning each frame into subgroups, from
-            ``ffgroups``. Prefer ``"event"``: ``"group_membership"`` is a
-            per-frame connected-component label with no identity across frames,
-            so ``centroid_speed`` and ``group_angvel`` would difference two
-            possibly disjoint sets of animals. Default None (whole group).
-        area_method: ``"convex_hull"`` (default), ``"alpha_shape"``, or
-            ``"none"`` to skip ``area`` and ``density``.
-        alpha: Circumradius cutoff in position units; required under
-            ``area_method="alpha_shape"``.
-        min_individuals: Below this count the relational metrics are NaN and
-            ``state`` is ``"Undefined"``. Default 3 rather than 2 because at
-            N=2 the two radial vectors are antiparallel by construction, so
-            rotation carries no information yet still feeds the classifier.
-        fps: Frames per second. With a ``frame`` order column this makes
-            ``dt = frame_diff / fps``, which is immune to the jittery wall-clock
-            timestamps some trackers embed. Default None.
-        max_frame_gap: Frame steps wider than this yield NaN velocity rather
-            than an average across a gap the shoal reorganized over.
-        min_group_speed: ``centroid_heading`` is NaN at or below this speed. A
-            mill's centroid is stationary by definition and ``arctan2(0, 0)``
-            silently returns 0 -- due east. Default 0.0.
-        speed_col: Per-individual speed column to average as ``mean_speed``.
-            Worth setting under ``subgroup_col``, where ``frame-aggregate``
-            cannot express a per-subgroup mean. Default None.
-        filter_expr: ``DataFrame.query`` filter applied first. The way to drop
-            ``event == -1``, the pooled non-event pseudo-group: that sentinel is
-            an integer, so ``exclude_cols`` cannot express it.
-        exclude_cols: Boolean columns whose truthy rows are dropped first. One
-            bad position moves the centroid, and with it every radial vector,
-            the covariance and the hull.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.collective_motion_metrics.CollectiveMotionMetrics.Params`.
 
     Notes:
         **Smoothing is deliberately not a parameter.** The paper smooths the
@@ -246,19 +283,35 @@ class CollectiveMotionMetrics:
         pass
 
     class Params(Params):
-        """Collective-motion-metrics parameters. See the class docstring."""
+        """Collective-motion-metrics parameters."""
 
-        heading_source: HeadingSource = "auto"
-        subgroup_col: str | None = None
-        area_method: AreaMethod = "convex_hull"
-        alpha: float | None = Field(default=None, gt=0)
-        min_individuals: int = Field(default=3, ge=1)
-        fps: float | None = Field(default=None, gt=0)
-        max_frame_gap: int | None = Field(default=None, ge=1)
-        min_group_speed: float = Field(default=0.0, ge=0)
-        speed_col: str | None = None
-        filter_expr: str | None = None
-        exclude_cols: list[str] = Field(default_factory=list)
+        heading_source: Annotated[
+            HeadingSource, Declared(_HEADING_SOURCE_DESCRIPTION)
+        ] = "auto"
+        subgroup_col: Annotated[str | None, Declared(_SUBGROUP_COL_DESCRIPTION)] = None
+        area_method: Annotated[AreaMethod, Declared(_AREA_METHOD_DESCRIPTION)] = (
+            "convex_hull"
+        )
+        alpha: Annotated[float | None, Declared(_ALPHA_DESCRIPTION)] = Field(
+            default=None, gt=0
+        )
+        min_individuals: Annotated[int, Declared(_MIN_INDIVIDUALS_DESCRIPTION)] = Field(
+            default=3, ge=1
+        )
+        fps: Annotated[float | None, Declared(_FPS_DESCRIPTION, unit="fps")] = Field(
+            default=None, gt=0
+        )
+        max_frame_gap: Annotated[
+            int | None, Declared(_MAX_FRAME_GAP_DESCRIPTION, unit="frames")
+        ] = Field(default=None, ge=1)
+        min_group_speed: Annotated[float, Declared(_MIN_GROUP_SPEED_DESCRIPTION)] = (
+            Field(default=0.0, ge=0)
+        )
+        speed_col: Annotated[str | None, Declared(_SPEED_COL_DESCRIPTION)] = None
+        filter_expr: Annotated[str | None, Declared(_FILTER_EXPR_DESCRIPTION)] = None
+        exclude_cols: Annotated[list[str], Declared(_EXCLUDE_COLS_DESCRIPTION)] = Field(
+            default_factory=list
+        )
 
         @model_validator(mode="after")
         def _check(self) -> Self:

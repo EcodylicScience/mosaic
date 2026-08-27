@@ -77,17 +77,26 @@ class Declared:
         description: What the parameter means, stated without its unit.
         unit: The quantity's unit, published as ``x-mosaic-unit``. Empty
             publishes no unit key.
+        unwired: Why the field reaches nothing, published as
+            ``x-mosaic-unwired``. Empty publishes no key. For a field that is
+            declared and validated but that no code path reads, so a client
+            can refuse to offer a control that changes nothing. The reason
+            rather than a flag, because what is missing differs per field.
+            Removing such a field is the maintainer's call, so the record sits
+            beside it; a ``strict`` xfail test names the wiring it lacks and
+            fails the day someone supplies it.
     """
 
     description: str
     unit: str = ""
+    unwired: str = ""
 
     def __get_pydantic_json_schema__(
         self, source: CoreSchema, handler: GetJsonSchemaHandler
     ) -> JsonSchemaValue:
-        """Add ``description``, and ``x-mosaic-unit`` where a unit is declared.
+        """Add ``description``, plus ``x-mosaic-unit`` and ``x-mosaic-unwired``.
 
-        Both keys sit at the field level, outside the ``anyOf`` an optional
+        Every key sits at the field level, outside the ``anyOf`` an optional
         field renders. A client that unwraps only the non-null branch reads them
         from the property itself.
         """
@@ -95,6 +104,8 @@ class Declared:
         schema["description"] = self.description
         if self.unit:
             schema["x-mosaic-unit"] = self.unit
+        if self.unwired:
+            schema["x-mosaic-unwired"] = self.unwired
         return schema
 
 
@@ -162,6 +173,13 @@ class Params(StrictModel):
         ``tests/test_params_declaration.py`` is what tracks them.
         """
         super().__pydantic_init_subclass__(**kwargs)
+        own = cls.__dict__.get("__doc__")
+        prose = cleandoc(own) if isinstance(own, str) and own.strip() else ""
+        # Kept before ``__doc__`` is rewritten below, because that is the only
+        # moment the model's own prose exists apart from the generated section.
+        # ``__get_pydantic_json_schema__`` publishes this rather than
+        # ``__doc__``, which pydantic would otherwise copy whole.
+        cls.__mosaic_prose__ = prose
         described = [
             (name, declared)
             for name, info in cls.model_fields.items()
@@ -177,9 +195,33 @@ class Params(StrictModel):
             lines += textwrap.wrap(
                 body, width=79, initial_indent="    ", subsequent_indent="        "
             )
-        own = cls.__dict__.get("__doc__")
-        head = f"{cleandoc(own)}\n\n" if isinstance(own, str) and own.strip() else ""
+        head = f"{prose}\n\n" if prose else ""
         cls.__doc__ = head + "\n".join(lines)
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, source: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Publish the model's own prose as the schema description, alone.
+
+        pydantic copies ``__doc__`` into the schema verbatim, and
+        ``__pydantic_init_subclass__`` appends a rendered ``Attributes:`` section
+        to it. Left alone, every field's description is published twice: once
+        under ``properties`` where a client reads it, and once inside a
+        multi-kilobyte newline-laden string at the top. The generated section is
+        for ``help()`` in a REPL and a schema client has the structured form
+        already.
+
+        A model with no prose of its own publishes no description rather than
+        its parent's: the same rule ``__doc__`` follows above.
+        """
+        schema = handler(source)
+        prose = cls.__dict__.get("__mosaic_prose__")
+        if prose:
+            schema["description"] = prose
+        else:
+            _ = schema.pop("description", None)
+        return schema
 
     def identity_dump(self) -> dict[str, object]:
         """model_dump() minus HASH_EXCLUDE-marked fields -- the run_id hash

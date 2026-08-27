@@ -8,6 +8,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import ast
+
+from mosaic.behavior import label_library
+from mosaic.core import dataset as dataset_module
 from mosaic.core.pipeline.composition import SourceMember, labels_raw_composition
 from mosaic.core.pipeline.labels_index import (
     LABELS_INDEX_COLUMNS,
@@ -315,3 +319,45 @@ def test_the_label_registry_fills_without_an_explicit_import() -> None:
 
     assert proc.returncode == 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
     assert "OK" in proc.stdout
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="LabelConvertParams.strict_schema is declared but never read",
+)
+def test_the_label_conversion_reads_strict_schema() -> None:
+    """The record for a parameter the label path declares and never consults.
+
+    ``TrackConvertParams.strict_schema`` is read three times, each time as
+    ``ensure_track_schema(strict=...)``. ``LabelConvertParams`` declares a field
+    of the same name, and no label path validates a schema at all, so nothing
+    reads it -- a client drawing a form from the schema offers a strictness
+    toggle that changes nothing. Whether labels should have a schema to be
+    strict about is the maintainer's call, so the field stays and carries an
+    ``unwired`` record.
+
+    Scanned across both places a reader could plausibly sit -- the conversion
+    method and every registered converter -- rather than asserted at one call
+    site, so that wiring it anywhere retires the marker. ``strict`` is what
+    retires it: the day something reads the field this xpasses and the suite
+    fails until the marker is deleted.
+    """
+    trees: list[ast.AST] = []
+    dataset_source = Path(dataset_module.__file__ or "").read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(dataset_source)):
+        if isinstance(node, ast.FunctionDef) and node.name == "convert_all_labels":
+            trees.append(node)
+    assert trees, "convert_all_labels was renamed; this scan no longer reads it"
+
+    library = Path(label_library.__file__ or "").parent
+    for module in sorted(library.glob("*.py")):
+        trees.append(ast.parse(module.read_text(encoding="utf-8")))
+
+    reads = {
+        node.attr
+        for tree in trees
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+    }
+
+    assert "strict_schema" in reads

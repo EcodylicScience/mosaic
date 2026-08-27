@@ -35,7 +35,7 @@ input away.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Self, final
+from typing import Annotated, Literal, Self, final
 
 import pandas as pd
 from pydantic import model_validator
@@ -49,9 +49,34 @@ from mosaic.core.pipeline.types import (
     Result,
     TrackInput,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .registry import register_feature
+
+_CM_PER_PIXEL_DESCRIPTION = (
+    "Override the dataset's recorded scale. A value that is not "
+    "positive raises when the feature runs. Unset, the scale is read "
+    "from the media index for the sequence being processed."
+)
+
+_MODE_DESCRIPTION = (
+    "derive emits only the scaled columns, each under its own name plus "
+    "suffix, alongside the metadata. convert returns the whole table with "
+    "every length column converted in place, under its own name."
+)
+
+_SUFFIX_DESCRIPTION = (
+    "Appended to each scaled column's name in derive mode. Names nothing "
+    "in convert mode, which refuses a non-default value."
+)
+
+_COLUMNS_DESCRIPTION = (
+    "Replace the length-bearing classifier with exactly these columns, "
+    "scaling every one whether or not it is length-bearing. A name "
+    "absent from the table raises. In convert mode, naming a subset "
+    "leaves the unnamed length columns in pixels inside a table whose "
+    "other lengths are centimeters."
+)
 
 # Column families that carry a length, and so scale. Read after stripping a
 # ``#`` suffix, so ``X``, ``X#wcentroid`` and ``X#head`` are all covered.
@@ -132,21 +157,8 @@ class ScaleToCm:
     nothing recording which column is which, which is the failure this whole
     module exists to remove.
 
-    Params:
-        cm_per_pixel: Override the dataset's recorded scale. Hashed, so an
-            override is part of the run identity. ``None`` (the default) reads
-            the value from the media index for the sequence being processed.
-        mode: ``"derive"`` for suffixed copies of the length columns only,
-            ``"convert"`` for the whole table converted in place. Default
-            ``"derive"``.
-        suffix: Appended to each scaled column's name in ``"derive"`` mode.
-            Default ``"_cm"``. Names nothing in ``"convert"`` mode, which
-            refuses a non-default value rather than hashing one.
-        columns: Restrict to these columns instead of every length-bearing one.
-            In ``"convert"`` mode naming a subset leaves the unnamed length
-            columns in pixels *inside a table whose other lengths are
-            centimetres* -- a mixed table this feature will not otherwise
-            produce.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.scale_to_cm.ScaleToCm.Params`.
     """
 
     category = "per-frame"
@@ -169,10 +181,14 @@ class ScaleToCm:
         pass
 
     class Params(Params):
-        cm_per_pixel: float | None = None
-        mode: Literal["derive", "convert"] = "derive"
-        suffix: str = "_cm"
-        columns: list[str] | None = None
+        cm_per_pixel: Annotated[
+            float | None, Declared(_CM_PER_PIXEL_DESCRIPTION, unit="cm/px")
+        ] = None
+        mode: Annotated[Literal["derive", "convert"], Declared(_MODE_DESCRIPTION)] = (
+            "derive"
+        )
+        suffix: Annotated[str, Declared(_SUFFIX_DESCRIPTION)] = "_cm"
+        columns: Annotated[list[str] | None, Declared(_COLUMNS_DESCRIPTION)] = None
 
         @model_validator(mode="after")
         def _a_suffix_names_nothing_in_convert_mode(self) -> Self:

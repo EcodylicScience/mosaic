@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import ClassVar, TypedDict, final
+from typing import Annotated, ClassVar, TypedDict, final
 
 import joblib
 import numpy as np
@@ -40,7 +40,7 @@ from mosaic.core.pipeline.types import (
     JoblibLoadSpec,
     Result,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .registry import register_feature
 
@@ -78,6 +78,54 @@ class EmbeddingIdentityArtifact(JoblibArtifact[EmbeddingIdentityBundle]):
 
 
 # --- Feature class ---
+
+_MODEL_DESCRIPTION = (
+    "A pre-fitted EmbeddingIdentityArtifact to load, skipping the fit. "
+    "Unset, the model fits from the crops named by identities or "
+    "group_as_identity."
+)
+
+_IDENTITIES_DESCRIPTION = (
+    "An explicit mapping of identity name to the sequences containing "
+    "that individual alone. Takes precedence over group_as_identity."
+)
+
+_GROUP_AS_IDENTITY_DESCRIPTION = (
+    "Treat each sequence's group name as its identity, instead of "
+    "listing sequences explicitly under identities. Ignored when "
+    "identities is set."
+)
+
+_MODEL_NAME_DESCRIPTION = (
+    "A bare timm architecture tag or a Hugging Face hub id naming the "
+    "frozen embedding backbone. Mosaic ships no weights, and whatever "
+    "this names downloads at run time under its own license."
+)
+
+_IMAGE_SIZE_DESCRIPTION = (
+    "The crop resize target as (height, width). Unset, this follows "
+    "the backbone's declared input size."
+)
+
+_CHANNELS_DESCRIPTION = (
+    "How many channels the crop image is read from disk with. 1 reads "
+    "grayscale and is replicated to 3 channels before the backbone "
+    "reads it. Any other value reads 3-channel RGB."
+)
+
+_BATCH_SIZE_DESCRIPTION = "The embedding batch size."
+
+_MAX_IMAGES_PER_IDENTITY_DESCRIPTION = "The cap on training crops kept per identity."
+
+_WEIGHTS_NAME_DESCRIPTION = (
+    "The filename stem for the exported checkpoint, written as <weights_name>.pth."
+)
+
+_CROP_ROOT_DESCRIPTION = (
+    "Override for the directory EgocentricCrop output is read from. "
+    "When it names no readable directory, the directory the loaded "
+    "input came from is used instead."
+)
 
 
 @final
@@ -119,34 +167,8 @@ class GlobalIdentityEmbedding:
             },
         )
 
-    Params:
-        model: Pre-fitted EmbeddingIdentityArtifact to load, skipping the
-            fit. Default None (fit from scratch). Pinning one makes an
-            inference run's identity carry its training run by reference, so
-            the run needs no scope of its own.
-        identities: Explicit identity -> sequences mapping.
-        group_as_identity: Treat each group name as one identity. Default
-            False.
-        model_name: A bare timm architecture tag or a Hugging Face hub id for
-            the frozen backbone. Default
-            ``"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"`` (MIT).
-            Mosaic ships no weights; whatever is named here is downloaded at
-            run time under its own license. ``"BVRA/MegaDescriptor-L-384"`` is
-            markedly stronger for animal re-identification and is
-            CC-BY-NC-4.0, so it is not available for commercial use.
-        image_size: Crop resize target ``(height, width)``. Default None,
-            meaning follow the backbone's declared input size -- which is
-            almost always what you want, and is the only value correct for
-            every backbone.
-        channels: Number of channels read from disk (1 = grayscale,
-            3 = RGB). Grayscale inputs are replicated to 3 channels for
-            the backbone. Default 3.
-        batch_size: Embedding batch size. Default 32.
-        max_images_per_identity: Cap on training crops per identity.
-            Default 2000.
-        crop_root: Optional EgocentricCrop output root override.
-        weights_name: Stem of the exported ``.pth`` checkpoint. Default
-            ``"identity_embedding"``.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.identity_embedding_model.GlobalIdentityEmbedding.Params`.
     """
 
     category = "global"
@@ -174,31 +196,49 @@ class GlobalIdentityEmbedding:
         """Embedding-identity model parameters."""
 
         # Pre-fitted model reference: when set (and resolvable), fit is skipped.
-        model: EmbeddingIdentityArtifact | None = None
+        model: Annotated[
+            EmbeddingIdentityArtifact | None, Declared(_MODEL_DESCRIPTION)
+        ] = None
 
         # Primary: explicit identity -> sequences mapping
-        identities: dict[str, list[str]] | None = None
+        identities: Annotated[
+            dict[str, list[str]] | None, Declared(_IDENTITIES_DESCRIPTION)
+        ] = None
         # Convenience shortcut: treat each group as one identity
-        group_as_identity: bool = False
+        group_as_identity: Annotated[bool, Declared(_GROUP_AS_IDENTITY_DESCRIPTION)] = (
+            False
+        )
 
         # Backbone selection. Changing ``model_name`` is a licensing decision as
         # well as an accuracy one -- see the class docstring.
-        model_name: str = DEFAULT_MODEL_NAME
+        model_name: Annotated[str, Declared(_MODEL_NAME_DESCRIPTION)] = (
+            DEFAULT_MODEL_NAME
+        )
         # None means follow the backbone's declared input size.
-        image_size: tuple[int, int] | None = None
-        channels: int = 3
+        image_size: Annotated[
+            tuple[int, int] | None, Declared(_IMAGE_SIZE_DESCRIPTION, unit="px")
+        ] = None
+        channels: Annotated[
+            int, Field(examples=[1, 3]), Declared(_CHANNELS_DESCRIPTION)
+        ] = 3
 
         # Inference
-        batch_size: int = Field(default=32, ge=1)
+        batch_size: Annotated[int, Declared(_BATCH_SIZE_DESCRIPTION)] = Field(
+            default=32, ge=1
+        )
 
         # Sampling
-        max_images_per_identity: int = Field(default=2000, ge=1)
+        max_images_per_identity: Annotated[
+            int, Declared(_MAX_IMAGES_PER_IDENTITY_DESCRIPTION)
+        ] = Field(default=2000, ge=1)
 
         # Export
-        weights_name: str = "identity_embedding"
+        weights_name: Annotated[str, Declared(_WEIGHTS_NAME_DESCRIPTION)] = (
+            "identity_embedding"
+        )
 
         # Path to EgocentricCrop output root.
-        crop_root: str | None = None
+        crop_root: Annotated[str | None, Declared(_CROP_ROOT_DESCRIPTION)] = None
 
     def __init__(
         self,

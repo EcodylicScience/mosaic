@@ -35,6 +35,7 @@ two that do not import here, ``feature_library.external.kpms_server`` (jax) and
 from __future__ import annotations
 
 import importlib
+import re
 from typing import Annotated
 
 import pytest
@@ -47,6 +48,8 @@ from mosaic.core.params import (
     HashExclude,
     Params,
 )
+from mosaic.core.pipeline.types import Result
+from mosaic.core.strict_model import StrictModel
 from mosaic.tracking import register_ops
 
 UNREGISTERED_PARAMS_MODULES: tuple[str, ...] = (
@@ -114,13 +117,17 @@ def params_models() -> dict[str, type[Params]]:
 PARAMS_MODELS = params_models()
 MODEL_NAMES = sorted(PARAMS_MODELS)
 
-ALLOWLIST_CEILING = 430
-"""Only ever lowered. Raising it admits a field that reaches a client unlabelled."""
+ALLOWLIST_CEILING = 0
+"""Zero, and only ever lowered. Every parameter field mosaic ships declares a
+description, so an entry here would be a field reaching a client unlabelled."""
 
-# Raised once, from 488: the label strict_schema and the two template verbose
-# fields carried descriptions no source supported, and an honest placeholder
-# counts here where a false description did not.
-UNDOCUMENTED_CEILING = 440
+# Both ceilings reached zero together. This one was raised exactly once, from
+# 488, when the label strict_schema and two template verbose fields were found
+# carrying descriptions no source supported: an honest placeholder counts here
+# where a false description did not. All three are settled -- strict_schema
+# describes what it would mean and declares that nothing reads it, and the
+# templates describe theirs -- so nothing is owed.
+UNDOCUMENTED_CEILING = 0
 """Only ever lowered. Counts every field a client cannot draw a label for.
 
 The sum of both states rather than the placeholder count alone, which is what
@@ -141,440 +148,7 @@ ALLOWED_FIELD_DESCRIPTION: frozenset[tuple[str, str]] = frozenset(
     )
 )
 
-ALLOWED_MISSING_DESCRIPTION: frozenset[tuple[str, str]] = frozenset(
-    (
-        ("ApproachAvoidance.Params", "angle_units"),
-        ("ApproachAvoidance.Params", "approacher_velocity_threshold"),
-        ("ApproachAvoidance.Params", "avoider_velocity_threshold"),
-        ("ApproachAvoidance.Params", "consecutive_frame_delta"),
-        ("ApproachAvoidance.Params", "cos_approacher_threshold"),
-        ("ApproachAvoidance.Params", "cos_avoider_threshold"),
-        ("ApproachAvoidance.Params", "distance_threshold"),
-        ("ApproachAvoidance.Params", "interpolation"),
-        ("ApproachAvoidance.Params", "min_event_count"),
-        ("ApproachAvoidance.Params", "min_event_length"),
-        ("ApproachAvoidance.Params", "orientation_gate_cos"),
-        ("ApproachAvoidance.Params", "sampling"),
-        ("ApproachAvoidance.Params", "smooth_window_sec"),
-        ("ApproachAvoidance.Params", "velocity_units"),
-        ("ArHmmFeature.Params", "backend"),
-        ("ArHmmFeature.Params", "downsample_rate"),
-        ("ArHmmFeature.Params", "model"),
-        ("ArHmmFeature.Params", "n_iter"),
-        ("ArHmmFeature.Params", "n_lags"),
-        ("ArHmmFeature.Params", "n_restarts"),
-        ("ArHmmFeature.Params", "n_states"),
-        ("ArHmmFeature.Params", "pca_dim"),
-        ("ArHmmFeature.Params", "prune_threshold"),
-        ("ArHmmFeature.Params", "random_state"),
-        ("ArHmmFeature.Params", "standardize"),
-        ("ArHmmFeature.Params", "sticky_weight"),
-        ("ArHmmFeature.Params", "tol"),
-        ("AttentionTarget.Params", "id_group_map"),
-        ("BboxPolicy", "head_index"),
-        ("BboxPolicy", "length_pad_frac"),
-        ("BboxPolicy", "margin"),
-        ("BboxPolicy", "method"),
-        ("BboxPolicy", "min_pad_px"),
-        ("BboxPolicy", "pad_frac_of_body"),
-        ("BboxPolicy", "side_pad_frac"),
-        ("BboxPolicy", "tail_index"),
-        ("CollectiveMotionMetrics.Params", "alpha"),
-        ("CollectiveMotionMetrics.Params", "area_method"),
-        ("CollectiveMotionMetrics.Params", "exclude_cols"),
-        ("CollectiveMotionMetrics.Params", "filter_expr"),
-        ("CollectiveMotionMetrics.Params", "fps"),
-        ("CollectiveMotionMetrics.Params", "heading_source"),
-        ("CollectiveMotionMetrics.Params", "max_frame_gap"),
-        ("CollectiveMotionMetrics.Params", "min_group_speed"),
-        ("CollectiveMotionMetrics.Params", "min_individuals"),
-        ("CollectiveMotionMetrics.Params", "speed_col"),
-        ("CollectiveMotionMetrics.Params", "subgroup_col"),
-        ("ConvertPointsParams", "class_attribute"),
-        ("ConvertPointsParams", "class_names"),
-        ("ConvertPointsParams", "cvat_xml"),
-        ("ConvertPointsParams", "images_dir"),
-        ("ConvertPointsParams", "overwrite"),
-        ("ConvertPointsParams", "radii"),
-        ("ConvertPointsParams", "seed"),
-        ("ConvertPointsParams", "source_format"),
-        ("ConvertPointsParams", "split"),
-        ("ConvertPointsParams", "split_by"),
-        ("ConvertPointsParams", "symlink_images"),
-        ("ExtractLabeledTemplates.Params", "labels"),
-        ("ExtractLabeledTemplates.Params", "n_per_class"),
-        ("ExtractLabeledTemplates.Params", "n_total"),
-        ("ExtractLabeledTemplates.Params", "pool"),
-        ("ExtractLabeledTemplates.Params", "random_state"),
-        ("ExtractLabeledTemplates.Params", "strategy"),
-        ("ExtractLabeledTemplates.Params", "test_fraction"),
-        ("ExtractTemplates.Params", "n_templates"),
-        ("ExtractTemplates.Params", "pair_filter"),
-        ("ExtractTemplates.Params", "pool"),
-        ("ExtractTemplates.Params", "random_state"),
-        ("ExtractTemplates.Params", "strategy"),
-        ("FFGroups.Params", "distance_cutoff"),
-        ("FFGroups.Params", "min_event_duration"),
-        ("FFGroups.Params", "window_size"),
-        ("FFGroupsMetrics.Params", "centroid_heading_col"),
-        ("FFGroupsMetrics.Params", "exclude_cols"),
-        ("FFGroupsMetrics.Params", "frame_chunk"),
-        ("FFGroupsMetrics.Params", "group_col"),
-        ("FFGroupsMetrics.Params", "speed_col"),
-        ("FFGroupsMetrics.Params", "time_chunk_sec"),
-        ("FeralFeature.Params", "chunk_length"),
-        ("FeralFeature.Params", "chunk_shift"),
-        ("FeralFeature.Params", "chunk_step"),
-        ("FeralFeature.Params", "class_names"),
-        ("FeralFeature.Params", "decision_threshold"),
-        ("FeralFeature.Params", "default_class"),
-        ("FeralFeature.Params", "device"),
-        ("FeralFeature.Params", "feral_code_dir"),
-        ("FeralFeature.Params", "infer_batch_size"),
-        ("FeralFeature.Params", "inference_autocast"),
-        ("FeralFeature.Params", "label_json"),
-        ("FeralFeature.Params", "model_dir"),
-        ("FeralFeature.Params", "model_name"),
-        ("FeralFeature.Params", "predict_per_item"),
-        ("FeralFeature.Params", "resize_to"),
-        ("FeralFeature.Params", "training"),
-        ("FeralFeature.Params", "video_dir"),
-        ("FrameAggregate.Params", "agg"),
-        ("FrameAggregate.Params", "column"),
-        ("FrameAggregate.Params", "filter_expr"),
-        ("FrameAggregate.Params", "output_column"),
-        ("FrameAggregate.Params", "threshold"),
-        ("FrameAggregate.Params", "transform"),
-        ("GlobalIdentityDinoV2Temporal.Params", "backbone"),
-        ("GlobalIdentityDinoV2Temporal.Params", "batch_size"),
-        ("GlobalIdentityDinoV2Temporal.Params", "channels"),
-        ("GlobalIdentityDinoV2Temporal.Params", "clip_len"),
-        ("GlobalIdentityDinoV2Temporal.Params", "clip_stride"),
-        ("GlobalIdentityDinoV2Temporal.Params", "crop_root"),
-        ("GlobalIdentityDinoV2Temporal.Params", "embedding_dim"),
-        ("GlobalIdentityDinoV2Temporal.Params", "epochs"),
-        ("GlobalIdentityDinoV2Temporal.Params", "group_as_identity"),
-        ("GlobalIdentityDinoV2Temporal.Params", "identities"),
-        ("GlobalIdentityDinoV2Temporal.Params", "image_size"),
-        ("GlobalIdentityDinoV2Temporal.Params", "learning_rate"),
-        ("GlobalIdentityDinoV2Temporal.Params", "max_clips_per_identity"),
-        ("GlobalIdentityDinoV2Temporal.Params", "model"),
-        ("GlobalIdentityDinoV2Temporal.Params", "temporal_head"),
-        ("GlobalIdentityDinoV2Temporal.Params", "val_split"),
-        ("GlobalIdentityDinoV2Temporal.Params", "weights_name"),
-        ("GlobalIdentityEmbedding.Params", "batch_size"),
-        ("GlobalIdentityEmbedding.Params", "channels"),
-        ("GlobalIdentityEmbedding.Params", "crop_root"),
-        ("GlobalIdentityEmbedding.Params", "group_as_identity"),
-        ("GlobalIdentityEmbedding.Params", "identities"),
-        ("GlobalIdentityEmbedding.Params", "image_size"),
-        ("GlobalIdentityEmbedding.Params", "max_images_per_identity"),
-        ("GlobalIdentityEmbedding.Params", "model"),
-        ("GlobalIdentityEmbedding.Params", "model_name"),
-        ("GlobalIdentityEmbedding.Params", "weights_name"),
-        ("GlobalIdentityModel.Params", "batch_size"),
-        ("GlobalIdentityModel.Params", "channels"),
-        ("GlobalIdentityModel.Params", "crop_root"),
-        ("GlobalIdentityModel.Params", "epochs"),
-        ("GlobalIdentityModel.Params", "freeze_backbone"),
-        ("GlobalIdentityModel.Params", "group_as_identity"),
-        ("GlobalIdentityModel.Params", "identities"),
-        ("GlobalIdentityModel.Params", "image_size"),
-        ("GlobalIdentityModel.Params", "learning_rate"),
-        ("GlobalIdentityModel.Params", "max_images_per_identity"),
-        ("GlobalIdentityModel.Params", "model"),
-        ("GlobalIdentityModel.Params", "model_name"),
-        ("GlobalIdentityModel.Params", "val_split"),
-        ("GlobalIdentityModel.Params", "weights_name"),
-        ("GlobalKMeansClustering.Params", "device"),
-        ("GlobalKMeansClustering.Params", "k"),
-        ("GlobalKMeansClustering.Params", "label_artifact_points"),
-        ("GlobalKMeansClustering.Params", "max_iter"),
-        ("GlobalKMeansClustering.Params", "model"),
-        ("GlobalKMeansClustering.Params", "n_init"),
-        ("GlobalKMeansClustering.Params", "pair_filter"),
-        ("GlobalKMeansClustering.Params", "random_state"),
-        ("GlobalKMeansClustering.Params", "templates"),
-        ("GlobalModelParams", "model"),
-        ("GlobalModelParams", "templates"),
-        ("GlobalScaler.Params", "model"),
-        ("GlobalScaler.Params", "templates"),
-        ("GlobalTSNE.Params", "fit"),
-        ("GlobalTSNE.Params", "knn_method"),
-        ("GlobalTSNE.Params", "mapping"),
-        ("GlobalTSNE.Params", "model"),
-        ("GlobalTSNE.Params", "n_jobs"),
-        ("GlobalTSNE.Params", "perplexity"),
-        ("GlobalTSNE.Params", "random_state"),
-        ("GlobalTSNE.Params", "templates"),
-        ("GlobalWardClustering.Params", "method"),
-        ("GlobalWardClustering.Params", "model"),
-        ("GlobalWardClustering.Params", "n_clusters"),
-        ("GlobalWardClustering.Params", "pair_filter"),
-        ("GlobalWardClustering.Params", "templates"),
-        ("HeadingFeature.Params", "front_idx"),
-        ("HeadingFeature.Params", "method"),
-        ("HeadingFeature.Params", "output_col"),
-        ("HeadingFeature.Params", "rear_idx"),
-        ("IdTagColumns.Params", "field_renames"),
-        ("IdTagColumns.Params", "fields"),
-        ("IdTagColumns.Params", "label_kind"),
-        ("IdTagColumns.Params", "labels"),
-        ("KpmsFeature.Params", "anterior_bodyparts"),
-        ("KpmsFeature.Params", "downsample_rate"),
-        ("KpmsFeature.Params", "fps"),
-        ("KpmsFeature.Params", "kappa_ar"),
-        ("KpmsFeature.Params", "kappa_full"),
-        ("KpmsFeature.Params", "kpms_python"),
-        ("KpmsFeature.Params", "latent_dim"),
-        ("KpmsFeature.Params", "location_aware"),
-        ("KpmsFeature.Params", "mixed_map_iters"),
-        ("KpmsFeature.Params", "model"),
-        ("KpmsFeature.Params", "num_iters_apply"),
-        ("KpmsFeature.Params", "num_iters_ar"),
-        ("KpmsFeature.Params", "num_iters_full"),
-        ("KpmsFeature.Params", "outlier_scale_factor"),
-        ("KpmsFeature.Params", "parallel_message_passing"),
-        ("KpmsFeature.Params", "pose"),
-        ("KpmsFeature.Params", "posterior_bodyparts"),
-        ("KpmsFeature.Params", "remove_outliers"),
-        ("KpmsFeature.Params", "resume"),
-        ("KpmsFeature.Params", "save_every_n_iters"),
-        ("LightningActionFeature.Params", "activation"),
-        ("LightningActionFeature.Params", "batch_size"),
-        ("LightningActionFeature.Params", "decision_threshold"),
-        ("LightningActionFeature.Params", "default_class"),
-        ("LightningActionFeature.Params", "device"),
-        ("LightningActionFeature.Params", "dropout_rate"),
-        ("LightningActionFeature.Params", "head"),
-        ("LightningActionFeature.Params", "learning_rate"),
-        ("LightningActionFeature.Params", "model"),
-        ("LightningActionFeature.Params", "num_epochs"),
-        ("LightningActionFeature.Params", "num_hid_units"),
-        ("LightningActionFeature.Params", "num_lags"),
-        ("LightningActionFeature.Params", "num_layers"),
-        ("LightningActionFeature.Params", "optimizer"),
-        ("LightningActionFeature.Params", "random_state"),
-        ("LightningActionFeature.Params", "sequence_length"),
-        ("LightningActionFeature.Params", "templates"),
-        ("LightningActionFeature.Params", "weight_classes"),
-        ("LightningActionFeature.Params", "weight_decay"),
-        ("LocalOrderMetrics.Params", "body_scale"),
-        ("LocalOrderMetrics.Params", "exclude_cols"),
-        ("LocalOrderMetrics.Params", "filter_expr"),
-        ("LocalOrderMetrics.Params", "heading_source"),
-        ("LocalOrderMetrics.Params", "min_neighbors"),
-        ("LocalOrderMetrics.Params", "n_peripheral"),
-        ("LocalOrderMetrics.Params", "n_shells"),
-        ("LocalOrderMetrics.Params", "radius"),
-        ("LocalOrderMetrics.Params", "radius_units"),
-        ("LocalOrderMetrics.Params", "subgroup_col"),
-        ("LocalizerInferParams", "initial_channels"),
-        ("LocalizerInferParams", "num_classes"),
-        ("LocalizerInferParams", "thresholds"),
-        ("LocalizerTrainParams", "augment"),
-        ("LocalizerTrainParams", "base_model"),
-        ("LocalizerTrainParams", "batch_size"),
-        ("LocalizerTrainParams", "dataset_dir"),
-        ("LocalizerTrainParams", "device"),
-        ("LocalizerTrainParams", "early_stopping_patience"),
-        ("LocalizerTrainParams", "epochs"),
-        ("LocalizerTrainParams", "freeze_encoder"),
-        ("LocalizerTrainParams", "initial_channels"),
-        ("LocalizerTrainParams", "lr"),
-        ("LocalizerTrainParams", "num_classes"),
-        ("LocalizerTrainParams", "overwrite"),
-        ("LocalizerTrainParams", "seed"),
-        ("MovementFilterInterpolate.Params", "confidence_threshold"),
-        ("MovementFilterInterpolate.Params", "fps"),
-        ("MovementFilterInterpolate.Params", "include_centroid"),
-        ("MovementFilterInterpolate.Params", "interpolation_method"),
-        ("MovementFilterInterpolate.Params", "keypoint_names"),
-        ("MovementFilterInterpolate.Params", "max_gap"),
-        ("MovementSmooth.Params", "fps"),
-        ("MovementSmooth.Params", "include_centroid"),
-        ("MovementSmooth.Params", "keypoint_names"),
-        ("MovementSmooth.Params", "method"),
-        ("MovementSmooth.Params", "min_periods"),
-        ("MovementSmooth.Params", "polyorder"),
-        ("MovementSmooth.Params", "savgol_mode"),
-        ("MovementSmooth.Params", "statistic"),
-        ("MovementSmooth.Params", "window"),
-        ("NearestNeighborDelta.Params", "diff_numframes"),
-        ("NearestNeighborDelta.Params", "diff_numframes_col"),
-        ("NearestNeighborDelta.Params", "divide_dangle_by_frames"),
-        ("NearestNeighborDelta.Params", "emit_backward"),
-        ("NearestNeighborDelta.Params", "focal_col"),
-        ("NearestNeighborDelta.Params", "nn_dx_ego_col"),
-        ("NearestNeighborDelta.Params", "nn_dx_world_col"),
-        ("NearestNeighborDelta.Params", "nn_dy_ego_col"),
-        ("NearestNeighborDelta.Params", "nn_dy_world_col"),
-        ("NearestNeighborDelta.Params", "nn_id_col"),
-        ("NearestNeighborDelta.Params", "sampling"),
-        ("NearestNeighborDelta.Params", "scale_dangle_by_fps"),
-        ("NearestNeighborDelta.Params", "speed_col"),
-        ("NearestNeighborDelta.Params", "tag_cols"),
-        ("NearestNeighborDelta.Params", "wrap_angle"),
-        ("NearestNeighborDeltaBins.Params", "antisymm"),
-        ("NearestNeighborDeltaBins.Params", "binmax"),
-        ("NearestNeighborDeltaBins.Params", "category_specs"),
-        ("NearestNeighborDeltaBins.Params", "exclude_cols"),
-        ("NearestNeighborDeltaBins.Params", "exp_col"),
-        ("NearestNeighborDeltaBins.Params", "focal_category_col"),
-        ("NearestNeighborDeltaBins.Params", "group_size_col"),
-        ("NearestNeighborDeltaBins.Params", "max_for_avg"),
-        ("NearestNeighborDeltaBins.Params", "nbins"),
-        ("NearestNeighborDeltaBins.Params", "neighbor_category_col"),
-        ("NearestNeighborDeltaBins.Params", "nonfocal_flag_col"),
-        ("NearestNeighborDeltaBins.Params", "nonfocal_flag_value"),
-        ("NearestNeighborDeltaBins.Params", "trial_col"),
-        ("OrientationRelativeFeature.Params", "nearest_k"),
-        ("OrientationRelativeFeature.Params", "quantiles"),
-        ("OrientationRelativeFeature.Params", "scale"),
-        ("PairEgocentricFeatures.Params", "center_mode"),
-        ("PairEgocentricFeatures.Params", "interpolation"),
-        ("PairEgocentricFeatures.Params", "neck_idx"),
-        ("PairEgocentricFeatures.Params", "pose"),
-        ("PairEgocentricFeatures.Params", "sampling"),
-        ("PairEgocentricFeatures.Params", "tail_base_idx"),
-        ("PairFacing.Params", "angle_thresh_deg"),
-        ("PairFacing.Params", "body_axis_from"),
-        ("PairFacing.Params", "cm_per_pixel"),
-        ("PairFacing.Params", "dist_thresh"),
-        ("PairFacing.Params", "pose_abdomen_index"),
-        ("PairFacing.Params", "pose_head_index"),
-        ("PairFacing.Params", "x_prefix"),
-        ("PairFacing.Params", "y_prefix"),
-        ("PairInteractionFilter.Params", "frame_padding"),
-        ("PairInteractionFilter.Params", "max_dist"),
-        ("PairInteractionFilter.Params", "max_inv_orientation_diff_deg"),
-        ("PairInteractionFilter.Params", "min_run_frames"),
-        ("PairInteractionFilter.Params", "morphological_structure_size"),
-        ("PairInteractionFilter.Params", "pose_head_index"),
-        ("PairInteractionFilter.Params", "px_scale"),
-        ("PairInteractionFilter.Params", "require_facing"),
-        ("PairInteractionFilter.Params", "shift_dist"),
-        ("PairInteractionFilter.Params", "use_pixel_coords"),
-        ("PairPoseDistancePCA.Params", "batch_size"),
-        ("PairPoseDistancePCA.Params", "duplicate_perspective"),
-        ("PairPoseDistancePCA.Params", "include_inter"),
-        ("PairPoseDistancePCA.Params", "include_intra_A"),
-        ("PairPoseDistancePCA.Params", "include_intra_B"),
-        ("PairPoseDistancePCA.Params", "interpolation"),
-        ("PairPoseDistancePCA.Params", "n_components"),
-        ("PairPoseDistancePCA.Params", "pose"),
-        ("PairPositionFeatures.Params", "interpolation"),
-        ("PairPositionFeatures.Params", "sampling"),
-        ("PairWavelet.Params", "cols"),
-        ("PairWavelet.Params", "f_max"),
-        ("PairWavelet.Params", "f_min"),
-        ("PairWavelet.Params", "log_floor"),
-        ("PairWavelet.Params", "n_freq"),
-        ("PairWavelet.Params", "pc_prefix"),
-        ("PairWavelet.Params", "sampling"),
-        ("PairWavelet.Params", "wavelet"),
-        ("PointInferParams", "dor"),
-        ("PointTrainParams", "augmentation"),
-        ("PointTrainParams", "backend"),
-        ("PointTrainParams", "base_model"),
-        ("PointTrainParams", "batch"),
-        ("PointTrainParams", "data"),
-        ("PointTrainParams", "device"),
-        ("PointTrainParams", "dor"),
-        ("PointTrainParams", "epochs"),
-        ("PointTrainParams", "imgsz"),
-        ("PointTrainParams", "loc"),
-        ("PointTrainParams", "loc_loss"),
-        ("PointTrainParams", "model"),
-        ("PointTrainParams", "overwrite"),
-        ("PointTrainParams", "patience"),
-        ("PointTrainParams", "resume"),
-        ("PointTrainParams", "train_overrides"),
-        ("PoseTrainParams", "augmentation"),
-        ("PoseTrainParams", "base_model"),
-        ("PoseTrainParams", "batch"),
-        ("PoseTrainParams", "data"),
-        ("PoseTrainParams", "device"),
-        ("PoseTrainParams", "epochs"),
-        ("PoseTrainParams", "imgsz"),
-        ("PoseTrainParams", "model"),
-        ("PoseTrainParams", "overwrite"),
-        ("PoseTrainParams", "patience"),
-        ("PoseTrainParams", "resume"),
-        ("PoseTrainParams", "train_overrides"),
-        ("ScaleToCm.Params", "cm_per_pixel"),
-        ("ScaleToCm.Params", "columns"),
-        ("ScaleToCm.Params", "mode"),
-        ("ScaleToCm.Params", "suffix"),
-        ("SocialMotionSummary.Params", "compute_burst_coast"),
-        ("SocialMotionSummary.Params", "fps"),
-        ("SocialMotionSummary.Params", "social_min_group_size"),
-        ("SocialMotionSummary.Params", "speed_col"),
-        ("SocialMotionSummary.Params", "subgroup_col"),
-        ("SpeedAngvel.Params", "smooth_window"),
-        ("SpeedAngvel.Params", "step_size"),
-        ("TemporalStackingFeature.Params", "add_pool"),
-        ("TemporalStackingFeature.Params", "fps"),
-        ("TemporalStackingFeature.Params", "half"),
-        ("TemporalStackingFeature.Params", "pair_filter"),
-        ("TemporalStackingFeature.Params", "pool_stats"),
-        ("TemporalStackingFeature.Params", "sigma_pool"),
-        ("TemporalStackingFeature.Params", "sigma_stack"),
-        ("TemporalStackingFeature.Params", "skip"),
-        ("TemporalStackingFeature.Params", "use_temporal_stack"),
-        ("TemporalStackingFeature.Params", "win_sec"),
-        ("TrackSubsample.Params", "clip_len"),
-        ("TrackSubsample.Params", "drop_nan"),
-        ("TrackSubsample.Params", "method"),
-        ("TrackSubsample.Params", "pose"),
-        ("TrackSubsample.Params", "seed"),
-        ("TrackSubsample.Params", "target_frames"),
-        ("TrainLitposeParams", "backbone"),
-        ("TrainLitposeParams", "base_config"),
-        ("TrainLitposeParams", "base_model"),
-        ("TrainLitposeParams", "device"),
-        ("TrainLitposeParams", "idle_timeout"),
-        ("TrainLitposeParams", "litpose_overrides"),
-        ("TrainLitposeParams", "max_epochs"),
-        ("TrainLitposeParams", "max_runtime"),
-        ("TrainLitposeParams", "model_type"),
-        ("TrainLitposeParams", "overwrite"),
-        ("TrainLitposeParams", "project"),
-        ("TrainSleapParams", "backbone"),
-        ("TrainSleapParams", "base_model"),
-        ("TrainSleapParams", "device"),
-        ("TrainSleapParams", "head"),
-        ("TrainSleapParams", "idle_timeout"),
-        ("TrainSleapParams", "labels"),
-        ("TrainSleapParams", "max_epochs"),
-        ("TrainSleapParams", "max_runtime"),
-        ("TrainSleapParams", "overwrite"),
-        ("TrainSleapParams", "seed"),
-        ("TrainSleapParams", "sleap_overrides"),
-        ("TrainSleapParams", "validation_fraction"),
-        ("TrajectorySmooth.Params", "expand_frames"),
-        ("TrajectorySmooth.Params", "fps"),
-        ("TrajectorySmooth.Params", "interpolate_centroid"),
-        ("TrajectorySmooth.Params", "interpolate_pose"),
-        ("TrajectorySmooth.Params", "savgol_polyorder"),
-        ("TrajectorySmooth.Params", "savgol_window"),
-        ("TrajectorySmooth.Params", "speed_threshold"),
-        ("XgboostFeature.Params", "class_weight"),
-        ("XgboostFeature.Params", "colsample_bytree"),
-        ("XgboostFeature.Params", "decision_threshold"),
-        ("XgboostFeature.Params", "default_class"),
-        ("XgboostFeature.Params", "learning_rate"),
-        ("XgboostFeature.Params", "max_depth"),
-        ("XgboostFeature.Params", "model"),
-        ("XgboostFeature.Params", "n_estimators"),
-        ("XgboostFeature.Params", "random_state"),
-        ("XgboostFeature.Params", "strategy"),
-        ("XgboostFeature.Params", "subsample"),
-        ("XgboostFeature.Params", "templates"),
-        ("XgboostFeature.Params", "undersample_ratio"),
-        ("XgboostFeature.Params", "use_smote"),
-    )
-)
+ALLOWED_MISSING_DESCRIPTION: frozenset[tuple[str, str]] = frozenset()
 
 
 def field_schemas(model: type[Params]) -> dict[str, dict[str, object]]:
@@ -840,10 +414,13 @@ class DeclarationSample(Params):
         Declared("the maximum plausible speed", unit="cm/s"),
     ] = None
     workers: Annotated[int, HASH_EXCLUDE, Declared("how many workers run")] = 1
+    inert: Annotated[
+        str, Declared("which accelerator runs it", unwired="nothing reads it")
+    ] = "auto"
 
 
 def test_every_declared_fact_appears_in_the_schema() -> None:
-    """Read the three keys a client reads, straight out of the schema.
+    """Read the four keys a client reads, straight out of the schema.
 
     This is what fails when pydantic stops calling a marker's
     ``__get_pydantic_json_schema__``.
@@ -853,10 +430,214 @@ def test_every_declared_fact_appears_in_the_schema() -> None:
     assert properties["speed"]["description"] == "the maximum plausible speed"
     assert properties["speed"]["x-mosaic-unit"] == "cm/s"
     assert "x-mosaic-hash-exclude" not in properties["speed"]
+    assert "x-mosaic-unwired" not in properties["speed"]
 
     assert properties["workers"]["description"] == "how many workers run"
     assert properties["workers"]["x-mosaic-hash-exclude"] is True
     assert "x-mosaic-unit" not in properties["workers"]
+
+    assert properties["inert"]["description"] == "which accelerator runs it"
+    assert properties["inert"]["x-mosaic-unwired"] == "nothing reads it"
+
+
+def nested_config_models() -> dict[str, type[StrictModel]]:
+    """Every plain ``StrictModel`` a ``Params`` field points at, transitively.
+
+    A ``Params`` field whose type is another model publishes that model's own
+    fields as a nested object, and a client drawing a form renders a control per
+    leaf. Those leaves are outside ``PARAMS_MODELS``, so the ceilings above said
+    nothing about them and 62 of them shipped unlabelled.
+
+    ``Result`` subclasses are excluded, and the discriminator is the class rather
+    than its name: an ``ArtifactSpec`` is a pointer to output some earlier run
+    produced, which a client picks whole rather than filling in. Everything else
+    reachable is configuration a caller composes.
+    """
+    found: dict[str, type[StrictModel]] = {}
+    seen: set[type[StrictModel]] = set()
+
+    def walk(model: type[StrictModel]) -> None:
+        if model in seen:
+            return
+        seen.add(model)
+        for info in model.model_fields.values():
+            annotation = info.annotation
+            candidates = (annotation, *(getattr(annotation, "__args__", ()) or ()))
+            for candidate in candidates:
+                if not isinstance(candidate, type):
+                    continue
+                if not issubclass(candidate, StrictModel):
+                    continue
+                if issubclass(candidate, Params):
+                    continue
+                if not issubclass(candidate, Result):
+                    found[candidate.__name__] = candidate
+                walk(candidate)
+
+    for model in PARAMS_MODELS.values():
+        walk(model)
+    return found
+
+
+NESTED_CONFIG_MODELS = nested_config_models()
+NESTED_CONFIG_NAMES = sorted(NESTED_CONFIG_MODELS)
+
+
+def test_the_nested_walk_reaches_the_configs_a_form_renders() -> None:
+    """A guard on the walk itself, not on what it finds.
+
+    A refactor that renames a field or stops a model being reachable would empty
+    this walk, and every assertion below would then pass over nothing.
+    """
+    assert len(NESTED_CONFIG_MODELS) >= 10
+    assert "PoseConfig" in NESTED_CONFIG_MODELS
+    assert "SamplingConfig" in NESTED_CONFIG_MODELS
+
+
+@pytest.mark.parametrize("model_name", NESTED_CONFIG_NAMES)
+def test_every_nested_config_field_declares_a_description(model_name: str) -> None:
+    """The same bar the top-level fields meet, with no allowlist behind it.
+
+    These were declared after the top-level sweep reached zero, so this starts
+    with nothing owed and there is no ceiling to lower. A new undescribed field
+    fails here the day it is added.
+    """
+    model = NESTED_CONFIG_MODELS[model_name]
+    properties = model.model_json_schema().get("properties", {})
+    undescribed = sorted(
+        field for field, spec in properties.items() if not spec.get("description")
+    )
+    assert not undescribed, (
+        f"{model_name} declares no description for {undescribed}. "
+        "A client drawing this nested form renders those controls unlabelled."
+    )
+
+
+@pytest.mark.parametrize("model_name", NESTED_CONFIG_NAMES)
+def test_no_nested_description_states_the_unit_it_already_declares(
+    model_name: str,
+) -> None:
+    """The units rule reaches the nested configs too."""
+    model = NESTED_CONFIG_MODELS[model_name]
+    offenders: list[str] = []
+    for field, spec in model.model_json_schema().get("properties", {}).items():
+        unit = str(spec.get("x-mosaic-unit", "") or "").strip()
+        description = str(spec.get("description", "") or "")
+        if not unit or not description:
+            continue
+        for token in re.split(r"[^a-z]+", unit.lower()):
+            if len(token) < 2:
+                continue
+            for match in re.finditer(rf"\b{re.escape(token)}\b", description.lower()):
+                before = description.lower()[: match.start()].rstrip()
+                after = description.lower()[match.end() :]
+                # A token naming a column is not the unit restated.
+                if before.endswith("/") or before.endswith("per"):
+                    continue
+                if after.startswith(" column"):
+                    continue
+                offenders.append(f"{field} says {token!r} and declares unit={unit!r}")
+                break
+    assert not offenders, (
+        f"{model_name}: "
+        + "; ".join(offenders)
+        + ". State the quantity and let unit= supply the unit."
+    )
+
+
+@pytest.mark.parametrize("model_name", MODEL_NAMES)
+def test_no_description_states_the_unit_it_already_declares(model_name: str) -> None:
+    """``Declared``'s two halves must not say the same thing twice.
+
+    ``core/params.py`` contracts the description as stating the quantity
+    *without* its unit, and both readers append the unit themselves --
+    ``scripts/gen_docs_reference.py`` renders ``description [unit]`` and the
+    generated ``Attributes:`` section does the same. A description naming its
+    own unit therefore ships it twice: "The number of epochs to train for.
+    [epochs]".
+
+    Written as a test rather than left to review because eight of these reached
+    a commit while the rule was a brief clause with a worked example beside it.
+    A unit is a short token, so the match is on a word boundary: "framerate"
+    and "seconds" do not trip "frames" or "s".
+    """
+    model = PARAMS_MODELS[model_name]
+    offenders: list[str] = []
+    for field, spec in field_schemas(model).items():
+        unit = str(spec.get("x-mosaic-unit", "") or "").strip()
+        description = str(spec.get("description", "") or "")
+        if not unit or not description:
+            continue
+        for token in re.split(r"[^a-z]+", unit.lower()):
+            if len(token) < 2:
+                continue
+            # A unit named inside a formula is informative, not a restatement:
+            # "derives dt as frame_diff / fps" earns the word.
+            for match in re.finditer(rf"\b{re.escape(token)}\b", description.lower()):
+                before = description.lower()[: match.start()].rstrip()
+                after = description.lower()[match.end() :]
+                # A token naming a column is not the unit restated.
+                if before.endswith("/") or before.endswith("per"):
+                    continue
+                if after.startswith(" column"):
+                    continue
+                offenders.append(f"{field} says {token!r} and declares unit={unit!r}")
+                break
+    assert not offenders, (
+        f"{model_name}: "
+        + "; ".join(offenders)
+        + ". State the quantity and let unit= supply the unit."
+    )
+
+
+def test_the_schema_description_is_the_prose_without_the_field_list() -> None:
+    """The generated section reaches ``help()`` and stops there.
+
+    pydantic copies ``__doc__`` into the schema whole, and the ``Attributes:``
+    section is appended to ``__doc__``. Published as-is, every description
+    appears twice -- once under ``properties``, where a client reads it, and
+    once inside one long newline-laden string a client has to parse back apart.
+    ``mosaic tracking describe`` printed both.
+    """
+    schema = DeclarationSample.model_json_schema()
+
+    assert (
+        schema["description"]
+        == "A field of each declared kind, for reading the emitted schema back."
+    )
+    assert "Attributes:" not in schema["description"]
+    assert "the maximum plausible speed" not in schema["description"]
+
+    rendered = DeclarationSample.__doc__ or ""
+    assert "Attributes:" in rendered
+    assert "the maximum plausible speed" in rendered
+
+
+def test_a_model_with_no_prose_publishes_no_description() -> None:
+    """A model that declares no docstring does not inherit its parent's.
+
+    The same rule ``__doc__`` follows: prose is never invented for a class that
+    wrote none, and publishing the base's would describe the wrong model.
+    """
+
+    class Undocumented(Params):
+        count: Annotated[int, Declared("how many")] = 1
+
+    schema = Undocumented.model_json_schema()
+
+    assert "description" not in schema
+    assert schema["properties"]["count"]["description"] == "how many"
+
+
+def test_an_unwired_field_still_reaches_the_run_identity() -> None:
+    """``unwired`` records what a field fails to reach, and changes nothing else.
+
+    A field nothing reads is still a field a caller can set, so it keeps its
+    place in ``model_dump`` and in the identity hash unless it also carries
+    ``HASH_EXCLUDE``. Publishing the record must not quietly move an identifier
+    and invalidate every cached run that named one.
+    """
+    assert "inert" in DeclarationSample().identity_dump()
 
 
 def test_the_sample_model_stays_out_of_the_walk() -> None:

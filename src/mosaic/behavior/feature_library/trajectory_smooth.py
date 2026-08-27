@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -15,7 +15,7 @@ from mosaic.core.pipeline.types import (
     TrackInputs,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.loading import pose_column_pairs
 
 from .registry import register_feature
@@ -29,6 +29,46 @@ def _savgol_with_nan(arr: np.ndarray, window: int, polyorder: int) -> np.ndarray
     smoothed = savgol_filter(filled, window_length=window, polyorder=polyorder)
     smoothed[bad] = np.nan
     return smoothed
+
+
+_SPEED_THRESHOLD_DESCRIPTION = (
+    "Unset, no frame is flagged bad. Set, a frame is flagged when its "
+    "displacement from the previous frame exceeds this value, per frame "
+    "or, when fps is set, per second. Uses the same unit as the X and Y "
+    "position columns."
+)
+
+_FPS_DESCRIPTION = (
+    "Unset, speed_threshold is read as a per-frame value. Set, converts "
+    "speed_threshold from a per-second rate to per-frame."
+)
+
+_INTERPOLATE_CENTROID_DESCRIPTION = (
+    "Replace a bad frame's centroid position with linear interpolation "
+    "between the nearest good frames, extending from the nearest good "
+    "value at a sequence edge. Every remaining gap in each column is "
+    "filled the same way."
+)
+
+_INTERPOLATE_POSE_DESCRIPTION = (
+    "Replace a bad frame's pose keypoint positions with linear "
+    "interpolation between the nearest good frames, extending from the "
+    "nearest good value at a sequence edge. Every remaining gap in each "
+    "column is filled the same way."
+)
+
+_EXPAND_FRAMES_DESCRIPTION = (
+    "How far on each side of a speed-flagged row the bad flag extends."
+)
+
+_SAVGOL_WINDOW_DESCRIPTION = (
+    "Unset, no Savitzky-Golay smoothing is applied. Set, smooths centroid "
+    "and pose positions regardless of the interpolation settings, for an "
+    "id with at least this many rows. Must exceed savgol_polyorder. An "
+    "odd value keeps the filter window centered."
+)
+
+_SAVGOL_POLYORDER_DESCRIPTION = "The polynomial order of the Savitzky-Golay filter."
 
 
 @final
@@ -50,24 +90,8 @@ class TrajectorySmooth:
     originals, plus a ``bad_frame`` boolean column. Downstream features
     can consume this via ``Inputs((Result(feature="trajectory-smooth"),))``.
 
-    Params:
-        speed_threshold: Speed above which a frame is flagged as bad.
-            When ``fps`` is set, interpreted as units/sec (e.g. 40 cm/s);
-            otherwise units/frame. Default: None (no bad-frame detection).
-        fps: Frames per second. When provided, ``speed_threshold`` is
-            converted from units/sec to units/frame internally.
-            Default: None.
-        interpolate_centroid: If True, replace bad-frame centroid positions
-            with linear interpolation. Default: True.
-        interpolate_pose: If True, replace bad-frame pose keypoint positions
-            with linear interpolation. Default: False.
-        expand_frames: Number of frames to expand the bad-frame region in
-            each direction. Default: 2.
-        savgol_window: Window length for Savitzky-Golay smoothing. Must be
-            odd and >= savgol_polyorder + 1. None disables smoothing.
-            Default: None.
-        savgol_polyorder: Polynomial order for Savitzky-Golay filter.
-            Default: 2.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.trajectory_smooth.TrajectorySmooth.Params`.
     """
 
     category = "per-frame"
@@ -83,13 +107,23 @@ class TrajectorySmooth:
         pass
 
     class Params(Params):
-        speed_threshold: float | None = None
-        fps: float | None = None
-        interpolate_centroid: bool = True
-        interpolate_pose: bool = False
-        expand_frames: int = 2
-        savgol_window: int | None = None
-        savgol_polyorder: int = 2
+        speed_threshold: Annotated[
+            float | None, Declared(_SPEED_THRESHOLD_DESCRIPTION)
+        ] = None
+        fps: Annotated[float | None, Declared(_FPS_DESCRIPTION, unit="fps")] = None
+        interpolate_centroid: Annotated[
+            bool, Declared(_INTERPOLATE_CENTROID_DESCRIPTION)
+        ] = True
+        interpolate_pose: Annotated[bool, Declared(_INTERPOLATE_POSE_DESCRIPTION)] = (
+            False
+        )
+        expand_frames: Annotated[
+            int, Declared(_EXPAND_FRAMES_DESCRIPTION, unit="frames")
+        ] = 2
+        savgol_window: Annotated[
+            int | None, Declared(_SAVGOL_WINDOW_DESCRIPTION, unit="frames")
+        ] = None
+        savgol_polyorder: Annotated[int, Declared(_SAVGOL_POLYORDER_DESCRIPTION)] = 2
 
     def __init__(
         self,

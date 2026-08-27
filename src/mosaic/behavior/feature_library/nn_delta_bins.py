@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -17,10 +17,71 @@ from mosaic.core.pipeline.types import (
     Result,
     TrackInput,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import apply_exclude_cols
 from .registry import register_feature
+
+_NBINS_DESCRIPTION = (
+    "The count of bin edges spanning -binmax to binmax. The "
+    "two-dimensional y axis takes one more edge than this."
+)
+
+_BINMAX_DESCRIPTION = (
+    "Maximum absolute neighbor offset spanned by a bin edge, in position units."
+)
+
+_MAX_FOR_AVG_DESCRIPTION = (
+    "Maximum neighbor offset, in position units, used to select rows for "
+    "the turn response, keeping neighbor_x between 0 and max_for_avg. The "
+    "speed response uses half this value, keeping neighbor_y within plus "
+    "or minus max_for_avg / 2."
+)
+
+_ANTISYMM_DESCRIPTION = (
+    "Duplicate each row of the turn (dangle) response with its y offset "
+    "and its dangle negated, which folds that response left-right. The "
+    "speed (dspeed) response never reads this flag. Its one-dimensional "
+    "bins select a symmetric band of y offsets, and its two-dimensional "
+    "bins mirror-duplicate every row with the dspeed value unchanged."
+)
+
+_FOCAL_CATEGORY_COL_DESCRIPTION = (
+    "The column recording the focal animal's category flag."
+)
+
+_NEIGHBOR_CATEGORY_COL_DESCRIPTION = (
+    "The column recording the neighbor's category flag."
+)
+
+_GROUP_SIZE_COL_DESCRIPTION = "The column recording the group size."
+
+_EXP_COL_DESCRIPTION = "The column recording the experimental condition identifier."
+
+_TRIAL_COL_DESCRIPTION = "The column recording the trial identifier."
+
+_CATEGORY_SPECS_DESCRIPTION = (
+    "Specs for derived category columns, each a dict with source_col, "
+    "new_col, quantile (default 0.75) and op, adding a boolean column "
+    "comparing source_col against its quantile. Any op value other than "
+    "<= is treated as >, without raising. A spec whose source_col is "
+    "absent from the table is skipped and adds nothing."
+)
+
+_EXCLUDE_COLS_DESCRIPTION = (
+    "Column names whose truthy rows are dropped before computation. A "
+    "name absent from the table is skipped rather than raising."
+)
+
+_NONFOCAL_FLAG_COL_DESCRIPTION = (
+    "Name of the column flagging nonfocal animals, read only when "
+    "focal_category_col is unset or absent from the table."
+)
+
+_NONFOCAL_FLAG_VALUE_DESCRIPTION = (
+    "The value in nonfocal_flag_col marking an animal as nonfocal, read "
+    "under the same condition as nonfocal_flag_col."
+)
 
 
 def _binned_mean_fast(
@@ -112,28 +173,8 @@ class NearestNeighborDeltaBins:
     Outputs: tidy DataFrame with mean turn/speed per bin for focal role and neighbor role:
       columns: [group, sequence, exp, trial, role, category, group_size, metric, bin_idx, value]
 
-    Params:
-        nbins: Number of spatial bins along the binning axis. Default: 45.
-        binmax: Maximum absolute value for bin edges. Default: 14.0.
-        max_for_avg: Maximum neighbor distance used when computing
-            binned-mean responses. Default: 5.0.
-        antisymm: If True, use front/back antisymmetric folding for
-            turn-force computation. Default: True.
-        focal_category_col: Column name for the focal animal's category
-            flag. Default: "Focal_fish".
-        neighbor_category_col: Column name for the neighbor's category
-            flag. Default: "neighbor_focal".
-        group_size_col: Column name for group size. Default: "group_size".
-        exp_col: Column name for experimental condition. Default: "Exp".
-        trial_col: Column name for trial identifier. Default: "Trial".
-        category_specs: List of dicts defining derived category columns
-            (keys: source_col, new_col, quantile, op). Default: [].
-        exclude_cols: List of boolean column names whose truthy rows are
-            dropped before computation. Default: [].
-        nonfocal_flag_col: Column used to flag nonfocal animals.
-            Default: "Focal_fish".
-        nonfocal_flag_value: Value in nonfocal_flag_col that marks an
-            animal as nonfocal. Default: False.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.nn_delta_bins.NearestNeighborDeltaBins.Params`.
     """
 
     category = "summary"
@@ -149,19 +190,37 @@ class NearestNeighborDeltaBins:
         pass
 
     class Params(Params):
-        nbins: int = Field(default=45, gt=0)
-        binmax: float = Field(default=14.0, gt=0)
-        max_for_avg: float = Field(default=5.0, gt=0)
-        antisymm: bool = True
-        focal_category_col: str = "Focal_fish"
-        neighbor_category_col: str = "neighbor_focal"
-        group_size_col: str = "group_size"
-        exp_col: str = "Exp"
-        trial_col: str = "Trial"
-        category_specs: list = Field(default_factory=list)
-        exclude_cols: list[str] = Field(default_factory=list)
-        nonfocal_flag_col: str = "Focal_fish"
-        nonfocal_flag_value: bool = False
+        nbins: Annotated[int, Declared(_NBINS_DESCRIPTION)] = Field(default=45, gt=0)
+        binmax: Annotated[float, Declared(_BINMAX_DESCRIPTION)] = Field(
+            default=14.0, gt=0
+        )
+        max_for_avg: Annotated[float, Declared(_MAX_FOR_AVG_DESCRIPTION)] = Field(
+            default=5.0, gt=0
+        )
+        antisymm: Annotated[bool, Declared(_ANTISYMM_DESCRIPTION)] = True
+        focal_category_col: Annotated[
+            str, Declared(_FOCAL_CATEGORY_COL_DESCRIPTION)
+        ] = "Focal_fish"
+        neighbor_category_col: Annotated[
+            str, Declared(_NEIGHBOR_CATEGORY_COL_DESCRIPTION)
+        ] = "neighbor_focal"
+        group_size_col: Annotated[str, Declared(_GROUP_SIZE_COL_DESCRIPTION)] = (
+            "group_size"
+        )
+        exp_col: Annotated[str, Declared(_EXP_COL_DESCRIPTION)] = "Exp"
+        trial_col: Annotated[str, Declared(_TRIAL_COL_DESCRIPTION)] = "Trial"
+        category_specs: Annotated[list, Declared(_CATEGORY_SPECS_DESCRIPTION)] = Field(
+            default_factory=list
+        )
+        exclude_cols: Annotated[list[str], Declared(_EXCLUDE_COLS_DESCRIPTION)] = Field(
+            default_factory=list
+        )
+        nonfocal_flag_col: Annotated[str, Declared(_NONFOCAL_FLAG_COL_DESCRIPTION)] = (
+            "Focal_fish"
+        )
+        nonfocal_flag_value: Annotated[
+            bool, Declared(_NONFOCAL_FLAG_VALUE_DESCRIPTION)
+        ] = False
 
     def __init__(
         self,

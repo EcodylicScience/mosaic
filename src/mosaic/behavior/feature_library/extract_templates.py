@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import ClassVar, Literal, final
+from typing import Annotated, ClassVar, Literal, final
 
 import numpy as np
 import pandas as pd
@@ -24,12 +24,38 @@ from mosaic.core.pipeline.types import (
     Result,
     TemplatesRef,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import ensure_columns, feature_columns
 from .registry import register_feature
 from .types import PoolConfig
 from mosaic.core.pipeline.writers import write_parquet_atomic
+
+_STRATEGY_DESCRIPTION = (
+    "The template selection method. random keeps the candidate pool as "
+    "the templates. farthest_first reduces the pool to n_templates by "
+    "greedy farthest-point sampling."
+)
+
+_N_TEMPLATES_DESCRIPTION = (
+    "The number of templates to select. Under farthest_first the "
+    "candidate pool is reduced to this many. Under random it sets the "
+    "pool size only when pool.size is unset, and pool.size then "
+    "decides how many templates are written."
+)
+
+_POOL_DESCRIPTION = (
+    "The candidate pool's size, allocation strategy, and per-entry caps."
+)
+
+_RANDOM_STATE_DESCRIPTION = "The random seed for the feature's random sampling steps."
+
+_PAIR_FILTER_DESCRIPTION = (
+    "Unset, every row is read. A nearest-neighbor result narrows the "
+    "input, while it loads, to rows where one individual in the pair "
+    "is the other's nearest neighbor. On an input without id1/id2 "
+    "columns, the filter has no effect."
+)
 
 
 class TemplatesArtifact(TemplatesRef):
@@ -59,16 +85,8 @@ class ExtractTemplates:
     inputs, builds a candidate pool with proportional per-entry
     contribution, and selects templates using the configured strategy.
 
-    Params:
-        strategy: Template selection method — "random" for uniform
-            random sampling, "farthest_first" for greedy diversity
-            maximization. Default: "random".
-        n_templates: Number of templates to select (required).
-        pool: PoolConfig controlling candidate pool size, allocation
-            strategy, and per-entry caps. Default: PoolConfig().
-        random_state: Random seed for reproducibility. Default: 42.
-        pair_filter: Optional NNResult for nearest-neighbor pair
-            filtering during dependency resolution. Default: None.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.extract_templates.ExtractTemplates.Params`.
     """
 
     category = "global"
@@ -86,20 +104,19 @@ class ExtractTemplates:
         _require: ClassVar[InputRequire] = "nonempty"
 
     class Params(Params):
-        """ExtractTemplates parameters.
+        """ExtractTemplates parameters."""
 
-        Attributes:
-            strategy: Selection strategy. Default "random".
-            n_templates: Number of templates to select. Required.
-            pool: Pool configuration. Default PoolConfig().
-            random_state: Random seed. Default 42.
-        """
-
-        strategy: Literal["random", "farthest_first"] = "random"
-        n_templates: int = Field(ge=1)
-        pool: PoolConfig = Field(default_factory=PoolConfig)
-        random_state: int = 42
-        pair_filter: NNResult | None = None
+        strategy: Annotated[
+            Literal["random", "farthest_first"], Declared(_STRATEGY_DESCRIPTION)
+        ] = "random"
+        n_templates: Annotated[int, Declared(_N_TEMPLATES_DESCRIPTION)] = Field(ge=1)
+        pool: Annotated[PoolConfig, Declared(_POOL_DESCRIPTION)] = Field(
+            default_factory=PoolConfig
+        )
+        random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
+        pair_filter: Annotated[NNResult | None, Declared(_PAIR_FILTER_DESCRIPTION)] = (
+            None
+        )
 
     def __init__(
         self,

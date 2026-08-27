@@ -52,9 +52,10 @@ from mosaic.core.label_converter import (
 )
 from mosaic.core.params import (
     HASH_EXCLUDE,
-    NEEDS_DESCRIPTION,
     Declared,
 )
+
+_VERBOSE_DESCRIPTION = "Whether the converter reports its progress as it runs."
 
 _DEFAULT_FPS_DESCRIPTION = "Frame rate recorded in each sequence's payload."
 
@@ -78,7 +79,7 @@ class MyLabelParams(LabelConvertParams):
     default_fps: Annotated[float, Declared(_DEFAULT_FPS_DESCRIPTION)] = 30.0
 
     # A knob that does not change the labels -- excluded from the identity.
-    verbose: Annotated[bool, HASH_EXCLUDE, Declared(NEEDS_DESCRIPTION)] = False
+    verbose: Annotated[bool, HASH_EXCLUDE, Declared(_VERBOSE_DESCRIPTION)] = False
 
 
 class MyLabelConverter(LabelConverter[MyLabelParams]):

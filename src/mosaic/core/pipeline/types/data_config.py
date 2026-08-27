@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from pydantic import model_validator
 
+from mosaic.core.params import Declared
 from mosaic.core.strict_model import StrictModel
 
 if TYPE_CHECKING:
@@ -78,25 +79,68 @@ def resolve_order_col(df: pd.DataFrame) -> str:
     )
 
 
+_POSE_N_DESCRIPTION = (
+    "Total number of pose keypoints per individual, before any subset "
+    "selection by pose_indices."
+)
+
+_POSE_INDICES_DESCRIPTION = (
+    "Zero-based keypoint indices to use, as positions into the full "
+    "keypoint set. Unset uses every keypoint counted by pose_n."
+)
+
+_X_PREFIX_DESCRIPTION = (
+    "Column name prefix for a keypoint's X coordinate, followed by its index."
+)
+
+_Y_PREFIX_DESCRIPTION = (
+    "Column name prefix for a keypoint's Y coordinate, followed by its index."
+)
+
+_CONFIDENCE_PREFIX_DESCRIPTION = (
+    "Column name prefix for a keypoint's confidence score, followed by its index."
+)
+
+_KEYPOINT_NAMES_DESCRIPTION = (
+    "Human-readable name for each keypoint, ordered to match the keypoint "
+    "columns. Its length must equal pose_n when set. Unset, a feature that "
+    "needs names generates its own (kp0, kp1, ...)."
+)
+
+
 class PoseConfig(StrictModel):
     """Pose keypoint column naming and selection.
 
     Attributes:
-        pose_n: Total number of pose keypoints in the data. Default 7.
-        pose_indices: Subset of keypoint indices to use. None uses all.
-        x_prefix: Column name prefix for X coordinates. Default "poseX".
-        y_prefix: Column name prefix for Y coordinates. Default "poseY".
-        confidence_prefix: Column prefix for confidence scores. Default "poseP".
-        keypoint_names: Human-readable names for each keypoint. Default None
-            (auto-generated as ["kp0", "kp1", ...] by features that need names).
+        pose_n: Total number of pose keypoints per individual, before any
+            subset selection by pose_indices.
+        pose_indices: Zero-based keypoint indices to use, as positions into
+            the full keypoint set. Unset uses every keypoint counted by
+            pose_n.
+        x_prefix: Column name prefix for a keypoint's X coordinate, followed
+            by its index.
+        y_prefix: Column name prefix for a keypoint's Y coordinate, followed
+            by its index.
+        confidence_prefix: Column name prefix for a keypoint's confidence
+            score, followed by its index.
+        keypoint_names: Human-readable name for each keypoint, ordered to
+            match the keypoint columns. Its length must equal pose_n when
+            set. Unset, a feature that needs names generates its own (kp0,
+            kp1, ...).
     """
 
-    pose_n: int = 7
-    pose_indices: list[int] | None = None
-    x_prefix: str = "poseX"
-    y_prefix: str = "poseY"
-    confidence_prefix: str = "poseP"
-    keypoint_names: list[str] | None = None
+    pose_n: Annotated[int, Declared(_POSE_N_DESCRIPTION)] = 7
+    pose_indices: Annotated[list[int] | None, Declared(_POSE_INDICES_DESCRIPTION)] = (
+        None
+    )
+    x_prefix: Annotated[str, Declared(_X_PREFIX_DESCRIPTION)] = "poseX"
+    y_prefix: Annotated[str, Declared(_Y_PREFIX_DESCRIPTION)] = "poseY"
+    confidence_prefix: Annotated[str, Declared(_CONFIDENCE_PREFIX_DESCRIPTION)] = (
+        "poseP"
+    )
+    keypoint_names: Annotated[
+        list[str] | None, Declared(_KEYPOINT_NAMES_DESCRIPTION)
+    ] = None
 
     @model_validator(mode="after")
     def _check_keypoint_names_length(self) -> Self:

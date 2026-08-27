@@ -30,8 +30,9 @@ _CONVERT_TO_TRACKS_DESCRIPTION = (
 )
 
 _IDLE_TIMEOUT_DESCRIPTION = (
-    "How long a phase may go without a line of output from the tool before it "
-    "is killed. Silence is what tells a hung run from a slow one."
+    "How long a phase may go without a line of output from the tool before "
+    "it is killed. A generous default, because an epoch on a large set is "
+    "slow and a watchdog must not mistake slow for dead."
 )
 
 _MAX_RUNTIME_DESCRIPTION = (

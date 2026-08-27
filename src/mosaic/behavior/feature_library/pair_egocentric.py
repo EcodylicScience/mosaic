@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -25,11 +25,45 @@ from mosaic.core.pipeline.types import (
     TrackInputs,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import clean_tracks_grouped, ensure_columns, smooth_1d, unwrap_diff
 from .registry import register_feature
 from .types import InterpolationConfig, SamplingConfig
+
+_INTERPOLATION_DESCRIPTION = "Interpolation settings for missing pose data."
+
+_SAMPLING_DESCRIPTION = "Frame rate and smoothing settings."
+
+_POSE_DESCRIPTION = "Pose keypoint column naming and selection."
+
+_NECK_IDX_DESCRIPTION = (
+    "Index of the neck keypoint in the pose array. Paired with "
+    "tail_base_idx to compute heading. The direction runs from the "
+    "tail-base to the neck, the direction the animal faces. When "
+    "pose.pose_indices is set, this index must be one of the selected "
+    "indices."
+)
+
+_TAIL_BASE_IDX_DESCRIPTION = (
+    "Index of the tail-base keypoint in the pose array. Paired with "
+    "neck_idx to compute heading. The direction runs from the "
+    "tail-base to the neck, the direction the animal faces. When "
+    "pose.pose_indices is set, this index must be one of the selected "
+    "indices."
+)
+
+_CENTER_MODE_DESCRIPTION = (
+    "How the animal's center point is computed from its pose "
+    "keypoints. Every accepted value averages all keypoints. "
+    "Selecting a single keypoint by index needs an integer, which "
+    "this field does not accept."
+)
+
+_CENTER_MODE_UNWIRED = (
+    "every accepted value averages all keypoints -- the per-keypoint "
+    "branch needs an int this field refuses"
+)
 
 
 @final
@@ -48,20 +82,8 @@ class PairEgocentricFeatures:
     pairs per sequence, cleans/interpolates pose per animal, inner-joins by the
     chosen order column, and computes A->B and B->A features for each pair.
 
-    Params:
-        interpolation: Interpolation settings for missing pose data.
-            Default: InterpolationConfig().
-        sampling: Frame rate and smoothing settings.
-            Default: SamplingConfig().
-        pose: Pose keypoint configuration (indices, column prefixes).
-            Default: PoseConfig().
-        neck_idx: Index of the neck keypoint in the pose array, used to
-            compute heading direction. Default: 3.
-        tail_base_idx: Index of the tail-base keypoint, paired with
-            neck_idx for heading vector. Default: 6.
-        center_mode: How to compute the animal's center — "mean"
-            averages all keypoints, other values use a specific keypoint.
-            Default: "mean".
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.pair_egocentric.PairEgocentricFeatures.Params`.
     """
 
     category = "per-frame"
@@ -77,12 +99,20 @@ class PairEgocentricFeatures:
         pass
 
     class Params(Params):
-        interpolation: InterpolationConfig = Field(default_factory=InterpolationConfig)
-        sampling: SamplingConfig = Field(default_factory=SamplingConfig)
-        pose: PoseConfig = Field(default_factory=PoseConfig)
-        neck_idx: int = 3
-        tail_base_idx: int = 6
-        center_mode: str = "mean"
+        interpolation: Annotated[
+            InterpolationConfig, Declared(_INTERPOLATION_DESCRIPTION)
+        ] = Field(default_factory=InterpolationConfig)
+        sampling: Annotated[SamplingConfig, Declared(_SAMPLING_DESCRIPTION)] = Field(
+            default_factory=SamplingConfig
+        )
+        pose: Annotated[PoseConfig, Declared(_POSE_DESCRIPTION)] = Field(
+            default_factory=PoseConfig
+        )
+        neck_idx: Annotated[int, Declared(_NECK_IDX_DESCRIPTION)] = 3
+        tail_base_idx: Annotated[int, Declared(_TAIL_BASE_IDX_DESCRIPTION)] = 6
+        center_mode: Annotated[
+            str, Declared(_CENTER_MODE_DESCRIPTION, unwired=_CENTER_MODE_UNWIRED)
+        ] = "mean"
 
     def __init__(
         self,

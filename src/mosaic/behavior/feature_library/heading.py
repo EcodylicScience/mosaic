@@ -22,7 +22,7 @@ results rather than one column that quietly changed meaning.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, final
+from typing import Annotated, Literal, final
 
 import numpy as np
 import pandas as pd
@@ -37,12 +37,35 @@ from mosaic.core.pipeline.types import (
     TrackInputs,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import ensure_columns
 from .registry import register_feature
 
 HeadingMethod = Literal["two_point", "pca"]
+
+_METHOD_DESCRIPTION = (
+    "Which method derives the heading. two_point points from rear_idx "
+    "toward front_idx, a determined direction. pca takes the first "
+    "principal component of every keypoint, an axis whose sign is "
+    "arbitrary."
+)
+
+_FRONT_IDX_DESCRIPTION = (
+    "The keypoint index of the forward landmark, such as the head, snout "
+    "or rostrum. Used when method is two_point."
+)
+
+_REAR_IDX_DESCRIPTION = (
+    "The keypoint index of the rearward landmark, such as the tail base "
+    "or abdomen. Used when method is two_point."
+)
+
+_OUTPUT_COL_DESCRIPTION = (
+    "The column the heading is written to. Defaults to the library's own "
+    "orientation column, the name a downstream feature reading ANGLE "
+    "already expects."
+)
 
 
 @final
@@ -55,14 +78,8 @@ class HeadingFeature:
     in image coordinates where ``y`` increases downward -- so a positive angle
     turns clockwise on screen, matching the frame the keypoints themselves are in.
 
-    Params:
-        method: ``"two_point"`` uses ``front_idx`` and ``rear_idx``; ``"pca"``
-            uses every keypoint and returns an axis whose sign is arbitrary.
-        front_idx: Keypoint index of the forward landmark (head, snout, rostrum).
-        rear_idx: Keypoint index of the rearward landmark (tail base, abdomen).
-        output_col: Name to write the heading under. Defaults to the library's
-            orientation column, so a downstream feature reading ``ANGLE`` finds
-            it without being reconfigured.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.heading.HeadingFeature.Params`.
     """
 
     category = "per-frame"
@@ -78,10 +95,12 @@ class HeadingFeature:
         pass
 
     class Params(Params):
-        method: HeadingMethod = "two_point"
-        front_idx: int = 0
-        rear_idx: int = 1
-        output_col: str = C.orientation_col
+        method: Annotated[HeadingMethod, Declared(_METHOD_DESCRIPTION)] = "two_point"
+        front_idx: Annotated[int, Declared(_FRONT_IDX_DESCRIPTION)] = 0
+        rear_idx: Annotated[int, Declared(_REAR_IDX_DESCRIPTION)] = 1
+        output_col: Annotated[str, Declared(_OUTPUT_COL_DESCRIPTION)] = (
+            C.orientation_col
+        )
 
     def __init__(
         self,

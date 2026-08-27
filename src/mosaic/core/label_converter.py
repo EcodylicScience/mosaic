@@ -38,7 +38,6 @@ from typing_extensions import TypeVar
 
 from mosaic.core.params import (
     HASH_EXCLUDE,
-    NEEDS_DESCRIPTION,
     Declared,
     Params,
 )
@@ -54,6 +53,16 @@ __all__ = [
     "registered_label_formats",
     "validate_label_format",
 ]
+
+_STRICT_SCHEMA_DESCRIPTION = (
+    "Whether a converted label set is rejected for failing its schema rather "
+    "than reported on."
+)
+
+_STRICT_SCHEMA_UNWIRED = (
+    "no label path validates a schema, so nothing consults it -- the "
+    "same-named field on TrackConvertParams is the one that is read"
+)
 
 _GROUP_FROM_DESCRIPTION = (
     "Which group name a converter assigns to the output. infile assigns the "
@@ -94,7 +103,11 @@ class LabelConvertParams(Params):
     flipping either must not mint a second variant of the same labels.
     """
 
-    strict_schema: Annotated[bool, HASH_EXCLUDE, Declared(NEEDS_DESCRIPTION)] = False
+    strict_schema: Annotated[
+        bool,
+        HASH_EXCLUDE,
+        Declared(_STRICT_SCHEMA_DESCRIPTION, unwired=_STRICT_SCHEMA_UNWIRED),
+    ] = False
     group_from: Annotated[
         str,
         Field(examples=["infile", "filename", "both"]),

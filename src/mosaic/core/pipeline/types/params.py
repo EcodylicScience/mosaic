@@ -68,6 +68,16 @@ class OpParams(Params):
 M = TypeVar("M", bound=JoblibArtifact[object], default=JoblibArtifact[object])
 T = TypeVar("T", bound=TemplatesRef, default=TemplatesRef)
 
+_TEMPLATES_DESCRIPTION = (
+    "The templates artifact to fit from. Exactly one of templates and "
+    "model must be given."
+)
+
+_MODEL_DESCRIPTION = (
+    "A pre-fitted model artifact to load. Exactly one of templates and "
+    "model must be given."
+)
+
 
 class GlobalModelParams(Params, Generic[M, T]):
     """Base params for global features that fit on a templates artifact
@@ -89,14 +99,10 @@ class GlobalModelParams(Params, Generic[M, T]):
     dict onto such a default, which would splice the *base* type's load spec into a
     payload destined for a narrowed one; with a plain ``None`` the payload validates
     straight against T and the pinned class defaults supply pattern and load.
-
-    Attributes:
-        templates: Templates artifact to fit from. Mutually exclusive with model.
-        model: Pre-fitted model artifact. Mutually exclusive with templates.
     """
 
-    templates: T | None = None
-    model: M | None = None
+    templates: Annotated[T | None, Declared(_TEMPLATES_DESCRIPTION)] = None
+    model: Annotated[M | None, Declared(_MODEL_DESCRIPTION)] = None
 
     @model_validator(mode="after")
     def _exclusive_source(self) -> Self:

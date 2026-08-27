@@ -138,6 +138,45 @@ def test_the_head_and_backbone_reach_the_trainer_as_overrides(
     assert "training.max_epochs=5" in argv
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="TrainLitposeParams.device is declared but never forwarded",
+)
+def test_the_device_reaches_the_trainer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record for a field that is declared, validated, and read by nothing.
+
+    ``device`` is published into the op's JSON Schema, so a client drawing a
+    form renders an accelerator control for it, and the assignments built in
+    ``litpose.training`` name only the model, the backbone and the epoch count.
+    Whether the field should exist is the maintainer's call, so it stays and
+    carries an ``unwired`` record instead.
+
+    Asserted against argv rather than against ``train_litpose``'s signature, so
+    that any wiring passes -- a Hydra assignment, another key name, an override
+    -- and the marker comes off whichever way it is supplied. ``strict`` is what
+    makes that happen: the day the value reaches the command this xpasses, and
+    the suite fails until someone deletes the marker.
+    """
+    ds = make_dataset(tmp_path, save=False)
+    _point_at_litpose(tmp_path, monkeypatch)
+    seen = _fake_trainer(monkeypatch)
+
+    _ = run_op(
+        ds,
+        "train-litpose",
+        {
+            "project": str(_project(tmp_path)),
+            "base_config": str(_base_config(tmp_path)),
+            "device": "cpu",
+            "max_epochs": 5,
+        },
+    )
+
+    assert any(arg.endswith("=cpu") for arg in seen[0])
+
+
 def test_the_trained_model_resolves_back_as_a_litpose_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

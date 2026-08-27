@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import numpy as np
 import pandas as pd
@@ -18,10 +18,22 @@ from mosaic.core.pipeline.types import (
     TrackInputs,
     resolve_order_col,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import ensure_columns
 from .registry import register_feature
+
+_STEP_SIZE_DESCRIPTION = (
+    "The additional frame step for speed_step and angvel_step, computed "
+    "beside the one-frame difference. Unset, neither column is emitted."
+)
+
+_SMOOTH_WINDOW_DESCRIPTION = (
+    "The window Savitzky-Golay smoothing (polyorder 1) averages speed "
+    "over to produce speed_smooth. Unset, speed_smooth is not emitted. "
+    "Smoothing raises when the window is 0 or 1, or when it exceeds the "
+    "individual's row count."
+)
 
 
 def _diff_with_step(arr: np.ndarray, step: int) -> np.ndarray:
@@ -126,14 +138,8 @@ class SpeedAngvel:
       For most video-based tracking data, setting ``fps`` is strongly
       recommended to avoid speed artifacts from timestamp jitter.
 
-    Params:
-        step_size: If set, also compute speed_step / angvel_step using
-            this frame step (in addition to step=1). Default: None.
-        smooth_window: If set, apply Savitzky-Golay smoothing (polyorder=1)
-            over this many frames to produce speed_smooth. Default: None.
-        fps: Frames per second. When set, dt is derived from frame_diff/fps
-            instead of the time column — more robust for constant-fps data
-            with jittery timestamps. Default: None.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.speed_angvel.SpeedAngvel.Params`.
     """
 
     category = "per-frame"
@@ -149,8 +155,12 @@ class SpeedAngvel:
         pass
 
     class Params(Params):
-        step_size: int | None = Field(default=None, ge=1)
-        smooth_window: int | None = None
+        step_size: Annotated[
+            int | None, Declared(_STEP_SIZE_DESCRIPTION, unit="frames")
+        ] = Field(default=None, ge=1)
+        smooth_window: Annotated[
+            int | None, Declared(_SMOOTH_WINDOW_DESCRIPTION, unit="frames")
+        ] = None
         fps: float | None = Field(
             default=None,
             description="Frames per second. When set, dt is derived from the "

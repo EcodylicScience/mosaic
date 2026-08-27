@@ -14,12 +14,12 @@ that argument the functions keep the return type their callers expect.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 import numpy as np
 from pydantic import Field
 
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 __all__ = [
     "BBoxMethod",
@@ -42,6 +42,55 @@ BBoxMethod = Literal["tight", "isotropic", "oriented"]
     Padded along the head-tail axis and across it separately, which is the
     only one that stays snug on a diagonal animal.
 """
+
+
+_METHOD_DESCRIPTION = (
+    "Which strategy derives the box from the keypoints when the source "
+    "supplied none. Known values are tight, isotropic and oriented."
+)
+
+_MARGIN_DESCRIPTION = (
+    "The padding added around the tight hull of valid keypoints, as a "
+    "fraction of the hull's own size. Used only when method is tight."
+)
+
+_PAD_FRAC_OF_BODY_DESCRIPTION = (
+    "The padding added around the tight hull of valid keypoints, as a "
+    "fraction of body length. Used when method is isotropic, and as the "
+    "isotropic fallback for oriented when the head or tail keypoint is "
+    "invalid, or when the head-tail distance is zero."
+)
+
+_MIN_PAD_PX_DESCRIPTION = (
+    "The floor for the padding around the tight hull, for degenerate or "
+    "overlapping keypoints. Used when method is isotropic, and as the "
+    "isotropic fallback for oriented when the head or tail keypoint is "
+    "invalid, or when the head-tail distance is zero."
+)
+
+_LENGTH_PAD_FRAC_DESCRIPTION = (
+    "The padding extending the oriented rectangle beyond the head and "
+    "tail, as a fraction of the head-tail distance. Used only when "
+    "method is oriented."
+)
+
+_SIDE_PAD_FRAC_DESCRIPTION = (
+    "The padding extending the oriented rectangle across the head-tail "
+    "axis, as a fraction of the head-tail distance. Used only when "
+    "method is oriented."
+)
+
+_HEAD_INDEX_DESCRIPTION = (
+    "The keypoint index of the head. Required when method is oriented. "
+    "When given together with tail_index for isotropic, body length is "
+    "the distance between them instead of the tight hull's diagonal."
+)
+
+_TAIL_INDEX_DESCRIPTION = (
+    "The keypoint index of the tail. Required when method is oriented. "
+    "When given together with head_index for isotropic, body length is "
+    "the distance between them instead of the tight hull's diagonal."
+)
 
 
 class BboxPolicy(Params):
@@ -68,14 +117,18 @@ class BboxPolicy(Params):
     policy changes nothing until someone changes the policy.
     """
 
-    method: BBoxMethod = "tight"
-    margin: float = 0.1
-    pad_frac_of_body: float = 0.30
-    min_pad_px: float = 20.0
-    length_pad_frac: float = 0.25
-    side_pad_frac: float = 0.35
-    head_index: int | None = Field(default=None)
-    tail_index: int | None = Field(default=None)
+    method: Annotated[BBoxMethod, Declared(_METHOD_DESCRIPTION)] = "tight"
+    margin: Annotated[float, Declared(_MARGIN_DESCRIPTION)] = 0.1
+    pad_frac_of_body: Annotated[float, Declared(_PAD_FRAC_OF_BODY_DESCRIPTION)] = 0.30
+    min_pad_px: Annotated[float, Declared(_MIN_PAD_PX_DESCRIPTION, unit="px")] = 20.0
+    length_pad_frac: Annotated[float, Declared(_LENGTH_PAD_FRAC_DESCRIPTION)] = 0.25
+    side_pad_frac: Annotated[float, Declared(_SIDE_PAD_FRAC_DESCRIPTION)] = 0.35
+    head_index: Annotated[int | None, Declared(_HEAD_INDEX_DESCRIPTION)] = Field(
+        default=None
+    )
+    tail_index: Annotated[int | None, Declared(_TAIL_INDEX_DESCRIPTION)] = Field(
+        default=None
+    )
 
 
 def _aabb_to_norm_cxcywh(

@@ -22,7 +22,7 @@ works.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import Annotated, final
 
 import pandas as pd
 
@@ -36,10 +36,17 @@ from mosaic.core.pipeline.types import (
     InputStream,
     Result,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .helpers import ensure_columns
 from .registry import register_feature
+
+_ID_GROUP_MAP_DESCRIPTION = (
+    "Maps each individual id, as a string, to a group label. Unset, "
+    "focal_group and target_group are always NA and attention_type is "
+    "none (no facing target) or unknown (a target was picked but its "
+    "group label is missing)."
+)
 
 
 def _id_key(value) -> str | None:
@@ -74,12 +81,8 @@ class AttentionTarget:
                          missing from id_group_map
             otherwise compares focal_group vs target_group
 
-    Params
-    ------
-    id_group_map : dict[str, str] | None
-        Mapping from individual id (as string) to group label. Default None,
-        in which case focal_group / target_group are NA and attention_type is
-        "none" (no facing target) or "unknown" (target picked).
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.attention_target.AttentionTarget.Params`.
     """
 
     category = "per-frame"
@@ -95,7 +98,9 @@ class AttentionTarget:
         pass
 
     class Params(Params):
-        id_group_map: dict[str, str] | None = None
+        id_group_map: Annotated[
+            dict[str, str] | None, Declared(_ID_GROUP_MAP_DESCRIPTION)
+        ] = None
 
     def __init__(
         self,

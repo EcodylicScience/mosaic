@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import ClassVar, Literal, TypedDict, final
+from typing import Annotated, ClassVar, Literal, TypedDict, final
 
 import cv2
 import joblib
@@ -42,7 +42,7 @@ from mosaic.core.pipeline.types import (
     JoblibLoadSpec,
     Result,
 )
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, Params
 
 from .registry import register_feature
 
@@ -84,6 +84,74 @@ class DinoV2TemporalIdentityArtifact(JoblibArtifact[DinoV2TemporalIdentityBundle
 
 # --- Feature class ---
 
+_MODEL_DESCRIPTION = (
+    "A pre-fitted DinoV2TemporalIdentityArtifact to load, skipping the "
+    "fit. Unset, the model fits from the crops named by identities or "
+    "group_as_identity."
+)
+
+_IDENTITIES_DESCRIPTION = (
+    "An explicit mapping of identity name to the sequences containing "
+    "that individual alone. Takes precedence over group_as_identity."
+)
+
+_GROUP_AS_IDENTITY_DESCRIPTION = (
+    "Treat each sequence's group name as its identity, instead of "
+    "listing sequences explicitly under identities. Ignored when "
+    "identities is set."
+)
+
+_BACKBONE_DESCRIPTION = (
+    "The DINOv2 model name loaded from the facebookresearch/dinov2 "
+    "torch hub repository."
+)
+
+_TEMPORAL_HEAD_DESCRIPTION = (
+    "Which head aggregates a clip's per-frame embeddings into one clip embedding."
+)
+
+_EMBEDDING_DIM_DESCRIPTION = "The output dimension of the temporal head."
+
+_CLIP_LEN_DESCRIPTION = "The length of one clip."
+
+_CLIP_STRIDE_DESCRIPTION = (
+    "Unset, the step between clip starts equals clip_len and clips do "
+    "not overlap. Set, it names that step directly."
+)
+
+_IMAGE_SIZE_DESCRIPTION = (
+    "The crop resize target as (height, width). Must be a multiple of "
+    "14 for the DINOv2 patch size."
+)
+
+_CHANNELS_DESCRIPTION = (
+    "How many channels the crop image is read from disk with. 1 reads "
+    "grayscale and is replicated to 3 channels before the backbone "
+    "reads it. Any other value reads 3-channel RGB."
+)
+
+_EPOCHS_DESCRIPTION = "The number of optimization passes over the training clips."
+
+_LEARNING_RATE_DESCRIPTION = "The Adam learning rate."
+
+_BATCH_SIZE_DESCRIPTION = "The training batch size."
+
+_VAL_SPLIT_DESCRIPTION = (
+    "The fraction of clips set aside for validation. 0 disables the split."
+)
+
+_MAX_CLIPS_PER_IDENTITY_DESCRIPTION = "The cap on training clips kept per identity."
+
+_WEIGHTS_NAME_DESCRIPTION = (
+    "The filename stem for the exported checkpoint, written as <weights_name>.pth."
+)
+
+_CROP_ROOT_DESCRIPTION = (
+    "Override for the directory EgocentricCrop output is read from. "
+    "When it names no readable directory, the directory the loaded "
+    "input came from is used instead."
+)
+
 
 @final
 @register_feature
@@ -123,31 +191,8 @@ class GlobalIdentityDinoV2Temporal:
     fresh ``run_id`` automatically -- ablations come for free from
     Mosaic's caching.
 
-    Params:
-        model: Pre-fitted DinoV2TemporalIdentityArtifact to load, skipping the
-            fit. Default None (fit from scratch). Pinning one makes an
-            inference run's identity carry its training run by reference, so
-            the run needs no scope of its own.
-        identities: Explicit identity -> sequences mapping.
-        group_as_identity: Treat each group as one identity. Default False.
-        backbone: DINOv2 hub model. Default ``"dinov2_vits14"``.
-        temporal_head: ``"gru"``, ``"perceiver"``, or ``"pool"``.
-        clip_len: Frames per clip. Default 8.
-        clip_stride: Step between clip starts. Default ``clip_len`` (no
-            overlap).
-        embedding_dim: Output dim of the temporal head. Default 128.
-        image_size: ``(height, width)`` resize target. Must be a multiple
-            of 14. Default ``(224, 224)``.
-        channels: 1 or 3. Default 3.
-        epochs: Training epochs. Default 50.
-        learning_rate: Adam learning rate. Default 1e-3.
-        batch_size: Batch size. Default 32.
-        val_split: Validation fraction. Default 0.2.
-        max_clips_per_identity: Cap on training clips per identity.
-            Default 500.
-        crop_root: Optional EgocentricCrop output root override.
-        weights_name: Stem of the exported ``.pth`` checkpoint. Default
-            ``"dinov2_temporal_identity"``.
+    Field documentation is on
+    :class:`~mosaic.behavior.feature_library.dinov2_temporal_identity_model.GlobalIdentityDinoV2Temporal.Params`.
     """
 
     category = "global"
@@ -173,37 +218,70 @@ class GlobalIdentityDinoV2Temporal:
         """DINOv2 + temporal identity model parameters."""
 
         # Pre-fitted model reference: when set (and resolvable), fit is skipped.
-        model: DinoV2TemporalIdentityArtifact | None = None
+        model: Annotated[
+            DinoV2TemporalIdentityArtifact | None, Declared(_MODEL_DESCRIPTION)
+        ] = None
 
         # Primary: explicit identity -> sequences mapping
-        identities: dict[str, list[str]] | None = None
-        group_as_identity: bool = False
+        identities: Annotated[
+            dict[str, list[str]] | None, Declared(_IDENTITIES_DESCRIPTION)
+        ] = None
+        group_as_identity: Annotated[bool, Declared(_GROUP_AS_IDENTITY_DESCRIPTION)] = (
+            False
+        )
 
         # Backbone + temporal head
-        backbone: str = "dinov2_vits14"
-        temporal_head: TemporalHead = "gru"
-        embedding_dim: int = Field(default=128, ge=16)
-        clip_len: int = Field(default=8, ge=2)
-        clip_stride: int | None = None  # defaults to clip_len at runtime
+        backbone: Annotated[
+            str,
+            Field(examples=["dinov2_vits14", "dinov2_vitb14"]),
+            Declared(_BACKBONE_DESCRIPTION),
+        ] = "dinov2_vits14"
+        temporal_head: Annotated[TemporalHead, Declared(_TEMPORAL_HEAD_DESCRIPTION)] = (
+            "gru"
+        )
+        embedding_dim: Annotated[int, Declared(_EMBEDDING_DIM_DESCRIPTION)] = Field(
+            default=128, ge=16
+        )
+        clip_len: Annotated[int, Declared(_CLIP_LEN_DESCRIPTION, unit="frames")] = (
+            Field(default=8, ge=2)
+        )
+        # defaults to clip_len at runtime
+        clip_stride: Annotated[
+            int | None, Declared(_CLIP_STRIDE_DESCRIPTION, unit="frames")
+        ] = None
 
         # Image preprocessing
-        image_size: tuple[int, int] = (224, 224)
-        channels: int = 3
+        image_size: Annotated[
+            tuple[int, int], Declared(_IMAGE_SIZE_DESCRIPTION, unit="px")
+        ] = (224, 224)
+        channels: Annotated[
+            int, Field(examples=[1, 3]), Declared(_CHANNELS_DESCRIPTION)
+        ] = 3
 
         # Training
-        epochs: int = Field(default=50, ge=1)
-        learning_rate: float = 1e-3
-        batch_size: int = Field(default=32, ge=1)
-        val_split: float = Field(default=0.2, ge=0.0, lt=1.0)
+        epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION, unit="epochs")] = Field(
+            default=50, ge=1
+        )
+        learning_rate: Annotated[float, Declared(_LEARNING_RATE_DESCRIPTION)] = 1e-3
+        batch_size: Annotated[int, Declared(_BATCH_SIZE_DESCRIPTION)] = Field(
+            default=32, ge=1
+        )
+        val_split: Annotated[float, Declared(_VAL_SPLIT_DESCRIPTION)] = Field(
+            default=0.2, ge=0.0, lt=1.0
+        )
 
         # Sampling
-        max_clips_per_identity: int = Field(default=500, ge=1)
+        max_clips_per_identity: Annotated[
+            int, Declared(_MAX_CLIPS_PER_IDENTITY_DESCRIPTION)
+        ] = Field(default=500, ge=1)
 
         # Export
-        weights_name: str = "dinov2_temporal_identity"
+        weights_name: Annotated[str, Declared(_WEIGHTS_NAME_DESCRIPTION)] = (
+            "dinov2_temporal_identity"
+        )
 
         # Path to EgocentricCrop output root.
-        crop_root: str | None = None
+        crop_root: Annotated[str | None, Declared(_CROP_ROOT_DESCRIPTION)] = None
 
     def __init__(
         self,
