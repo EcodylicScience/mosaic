@@ -28,19 +28,19 @@ Version `0.1` &middot; `mosaic.tracking.ops.convert.ConvertPointsOp`
 
 Convert CVAT point annotations into a POLO point-detection dataset + ``data.yaml``.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `source_format` | `"cvat_points"` | `"cvat_points"` |  |
-| `cvat_xml` | `string` | _required_ |  |
-| `images_dir` | `string` | _required_ |  |
-| `class_names` | list of `string` | _required_ |  |
-| `radii` | `object` | _required_ |  |
-| `class_attribute` | `string` | `"class"` |  |
-| `split` | tuple of (`number`, `number`, `number`) | `[0.8, 0.15, 0.05]` | min items `3`, max items `3` |
-| `split_by` | `string` | `"group"` |  |
-| `seed` | `integer` | `42` |  |
-| `symlink_images` | `boolean` | `true` |  |
-| `overwrite` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `source_format` | `"cvat_points"` | `"cvat_points"` |  |  |
+| `cvat_xml` | `string` | _required_ |  |  |
+| `images_dir` | `string` | _required_ |  |  |
+| `class_names` | list of `string` | _required_ |  |  |
+| `radii` | `object` | _required_ |  |  |
+| `class_attribute` | `string` | `"class"` |  |  |
+| `split` | tuple of (`number`, `number`, `number`) | `[0.8, 0.15, 0.05]` | min items `3`, max items `3` |  |
+| `split_by` | `string` | `"group"` |  |  |
+| `seed` | `integer` | `42` |  |  |
+| `symlink_images` | `boolean` | `true` |  |  |
+| `overwrite` | `boolean` | `false` |  |  |
 
 #### `litpose`
 
@@ -48,16 +48,16 @@ Version `2.3` &middot; `mosaic.tracking.ops.litpose.LitposeOp` &middot; resource
 
 Run Lightning Pose inference over scoped videos, bridging results into ``tracks/``.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `convert_to_tracks` | `boolean` | `true` |  |
-| `idle_timeout` | `number` | `900` |  |
-| `max_runtime` | `number` \| `None` | `null` |  |
-| `model_path` | `string` | _required_ |  |
-| `litpose_overrides` | `object` \| `None` | `null` |  |
-| `precision` | `string` | `"fp32"` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
+| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
+| `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
+| `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. Silence is what tells a hung run from a slow one. [s] |
+| `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
+| `model_path` | `string` | _required_ |  |  |
+| `litpose_overrides` | `object` \| `None` | `null` |  |  |
+| `precision` | `string` | `"fp32"` |  |  |
 
 ??? note "`Entry`"
 
@@ -73,13 +73,13 @@ Version `0.1` &middot; `mosaic.tracking.ops.resample.ResampleTracksOp`
 
 Place a dataset's tracks tables on one uniform frame rate.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `target_fps` | `number` | _required_ |  |
-| `source_tracks_run_id` | `string` \| `None` | `null` |  |
-| `prefilter` | `number` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries to re-grid. Unset covers every entry the tracks index holds under the source variant; this op reads tables and never opens media. |
+| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
+| `target_fps` | `number` | _required_ |  | The uniform frame rate every table is re-gridded onto, which is what makes one constant expressed in frames mean one duration dataset-wide. [fps] |
+| `source_tracks_run_id` | `string` \| `None` | `null` |  | Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Unset resolves whichever variant the scope's entries hold, and refuses when they hold two. |
+| `prefilter` | `number` \| `None` | `null` |  | Displacement from the predecessor above which a native sample is rejected before interpolating. A rejected mis-detection is dropped instead of blended into its neighbors. Unset interpolates the samples as they are. [units/s] |
 
 ??? note "`Entry`"
 
@@ -91,26 +91,26 @@ Version `1.6` &middot; `mosaic.tracking.ops.sleap.SleapOp` &middot; resource cla
 
 Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `convert_to_tracks` | `boolean` | `true` |  |
-| `idle_timeout` | `number` | `900` |  |
-| `max_runtime` | `number` \| `None` | `null` |  |
-| `model_paths` | list of `string` | _required_ |  |
-| `tracking` | `boolean` | `true` |  |
-| `tracker` | `string` | `"flow"` |  |
-| `similarity` | `string` | `"instance"` |  |
-| `match` | `string` | `"hungarian"` |  |
-| `track_window` | `integer` | `5` |  |
-| `max_instances` | `integer` \| `None` | `null` |  |
-| `max_tracking` | `integer` \| `None` | `null` |  |
-| `peak_threshold` | `number` | `0.2` |  |
-| `analysis_range` | tuple of (`integer`, `integer`) \| `None` | `null` |  |
-| `sleap_extra_settings` | `object` \| `None` | `null` |  |
-| `batch_size` | `integer` | `4` |  |
-| `device` | `string` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
+| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
+| `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
+| `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. Silence is what tells a hung run from a slow one. [s] |
+| `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
+| `model_paths` | list of `string` | _required_ |  |  |
+| `tracking` | `boolean` | `true` |  |  |
+| `tracker` | `string` | `"flow"` |  |  |
+| `similarity` | `string` | `"instance"` |  |  |
+| `match` | `string` | `"hungarian"` |  |  |
+| `track_window` | `integer` | `5` |  |  |
+| `max_instances` | `integer` \| `None` | `null` |  |  |
+| `max_tracking` | `integer` \| `None` | `null` |  |  |
+| `peak_threshold` | `number` | `0.2` |  |  |
+| `analysis_range` | tuple of (`integer`, `integer`) \| `None` | `null` |  |  |
+| `sleap_extra_settings` | `object` \| `None` | `null` |  |  |
+| `batch_size` | `integer` | `4` |  |  |
+| `device` | `string` \| `None` | `null` |  |  |
 
 ??? note "`Entry`"
 
@@ -126,29 +126,29 @@ Version `0.1` &middot; `mosaic.tracking.ops.trex.TrexOp` &middot; resource class
 
 Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `convert_to_tracks` | `boolean` | `true` |  |
-| `idle_timeout` | `number` | `900` |  |
-| `max_runtime` | `number` \| `None` | `null` |  |
-| `detect_model` | `string` \| `None` | `null` |  |
-| `detect_type` | `string` \| `None` | `null` |  |
-| `detect_conf_threshold` | `number` \| `None` | `null` |  |
-| `detect_iou_threshold` | `number` \| `None` | `null` |  |
-| `cm_per_pixel` | `number` \| `None` | `null` |  |
-| `meta_encoding` | `string` \| `None` | `null` |  |
-| `convert_extra_settings` | `object` \| `None` | `null` |  |
-| `track_max_individuals` | `integer` \| `None` | `null` |  |
-| `track_max_speed` | `number` \| `None` | `null` |  |
-| `track_max_reassign_time` | `number` \| `None` | `null` |  |
-| `track_trusted_probability` | `number` \| `None` | `null` |  |
-| `analysis_range` | tuple of (`integer`, `integer`) \| `None` | `null` |  |
-| `visual_identification_model_path` | `string` \| `None` | `null` |  |
-| `auto_train` | `boolean` | `false` |  |
-| `detect_keypoint_count` | `integer` \| `None` | `null` |  |
-| `track_extra_settings` | `object` \| `None` | `null` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
+| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
+| `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
+| `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. Silence is what tells a hung run from a slow one. [s] |
+| `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
+| `detect_model` | `string` \| `None` | `null` |  | A YOLO .pt path, or the run id of the training op that produced the weights. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. |
+| `detect_type` | `string` \| `None` | `null` |  | The detection algorithm. Known values are yolo, background_subtraction and points. |
+| `detect_conf_threshold` | `number` \| `None` | `null` |  | The minimum YOLO detection confidence. Unset, TREx applies 0.1. |
+| `detect_iou_threshold` | `number` \| `None` | `null` |  | The NMS IoU threshold for suppressing overlapping detections. TREx leaves it unset by default: unset preserves the upstream model's default postprocessing, and setting it may disable end-to-end NMS-free inference. A number here is a choice about the detector as well as a threshold. |
+| `cm_per_pixel` | `number` \| `None` | `null` |  | The spatial calibration factor. Unset, TREx derives it from meta_real_width / video_width. [cm/px] |
+| `meta_encoding` | `string` \| `None` | `null` |  | The pixel encoding. Known values are gray and rgb8. |
+| `convert_extra_settings` | `object` \| `None` | `null` |  | Additional TREx parameters sent as -key value pairs for the conversion phase. A None value removes a parameter mosaic would otherwise send. |
+| `track_max_individuals` | `integer` \| `None` | `null` |  | The maximum number of simultaneous individuals to track. Unset, TREx applies 1024. |
+| `track_max_speed` | `number` \| `None` | `null` |  | The maximum plausible speed. Its meaning depends on the cm_per_pixel the conversion applied. [cm/s] |
+| `track_max_reassign_time` | `number` \| `None` | `null` |  | How long to wait before giving up on a lost individual. Unset, TREx applies 0.5. [s] |
+| `track_trusted_probability` | `number` \| `None` | `null` |  | The probability below which the current tracklet ends and a new one starts. Unset, TREx applies 0.25. Lowering it produces longer tracklets held together by weaker evidence. |
+| `analysis_range` | tuple of (`integer`, `integer`) \| `None` | `null` |  | The frame range to analyze. -1 means the beginning or the end of the video. [frames] |
+| `visual_identification_model_path` | `string` \| `None` | `null` |  | Pre-trained identity weights (.pth, without the extension), or the run id of the identity-training op that produced them. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. |
+| `auto_train` | `boolean` | `false` |  | Train visual identification automatically after tracking. |
+| `detect_keypoint_count` | `integer` \| `None` | `null` |  | How many keypoints detect_model reports. Set it whenever that model is a pose model, or the tracks come back without their keypoint columns. TREx derives the poseX<i> / poseY<i> names from a keypoint format it learns by loading the model, and mosaic converts and tracks as two invocations, so the exporting process has never loaded one. |
+| `track_extra_settings` | `object` \| `None` | `null` |  | Additional TREx parameters sent as -key value pairs for the tracking phase. A None value removes a parameter mosaic would otherwise send. |
 
 ??? note "`Entry`"
 
@@ -164,80 +164,80 @@ Version `8.4` &middot; `mosaic.tracking.ops.ultralytics.UltralyticsOp` &middot; 
 
 Track scoped videos with a YOLO model, bridging results into ``tracks/``.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `convert_to_tracks` | `boolean` | `true` |  |
-| `idle_timeout` | `number` | `900` |  |
-| `max_runtime` | `number` \| `None` | `null` |  |
-| `model_path` | `string` | _required_ |  |
-| `task` | `"pose"` \| `"detect"` | `"pose"` |  |
-| `tracker` | `"botsort"` \| `"bytetrack"` \| `"deepocsort"` \| `"fasttrack"` \| `"ocsort"` \| `"tracktrack"` | `"bytetrack"` |  |
-| `tracker_overrides` | `BotsortConfig` \| `BytetrackConfig` \| `DeepocsortConfig` \| `FasttrackConfig` \| `OcsortConfig` \| `TracktrackConfig` \| `None` | `null` |  |
-| `conf` | `number` | `0.1` | > `0.0`, <= `1.0` |
-| `iou` | `number` | `0.7` | >= `0.0`, <= `1.0` |
-| `imgsz` | `integer` | `640` | > `0` |
-| `max_det` | `integer` | `300` | > `0` |
-| `classes` | list of `integer` \| `None` | `null` |  |
-| `agnostic_nms` | `boolean` | `false` |  |
-| `start_frame` | `integer` | `0` | >= `0` |
-| `end_frame` | `integer` \| `None` | `null` |  |
-| `frame_step` | `integer` | `1` | >= `1` |
-| `device` | `string` | `"0"` |  |
-| `precision` | `"fp32"` \| `"fp16"` | `"fp32"` |  |
-| `batch_size` | `integer` | `8` | >= `1` |
-| `prefetch` | `boolean` | `true` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
+| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
+| `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
+| `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. Silence is what tells a hung run from a slow one. [s] |
+| `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
+| `model_path` | `string` | _required_ |  | The YOLO weights to track with: a .pt path, or the run id of the training op that produced them. Identity records the weights' content digest when the reference is a bare path, and the training run id when it is one. |
+| `task` | `"pose"` \| `"detect"` | `"pose"` |  | Which head the weights carry. Declared rather than read off the file, because it is part of the identifier and a run must not re-mean itself when the weights behind a path change. The loaded model is checked against it and a mismatch is refused by name. |
+| `tracker` | `"botsort"` \| `"bytetrack"` \| `"deepocsort"` \| `"fasttrack"` \| `"ocsort"` \| `"tracktrack"` | `"bytetrack"` |  | Which backend associates detections across frames. bytetrack is the default rather than Ultralytics' own, because botsort, deepocsort and tracktrack default to optical-flow camera motion compensation whose RANSAC is unseeded, and a run under one of those is not reproducible bit for bit. bytetrack constructs no motion estimator. The others stay one parameter away and are the right choice for a moving camera. |
+| `tracker_overrides` | `BotsortConfig` \| `BytetrackConfig` \| `DeepocsortConfig` \| `FasttrackConfig` \| `OcsortConfig` \| `TracktrackConfig` \| `None` | `null` |  | The chosen backend's settings. Every setting that backend has appears here with its declared default, so a caller states the ones it cares about and leaves the rest. Identity records the fully resolved table: restating a default mints the same identifier as passing nothing, and changing one setting mints a different one. |
+| `conf` | `number` | `0.1` | > `0.0`, <= `1.0` | The minimum detection confidence. Ultralytics' track mode replaces a falsy confidence with 0.1, so its documented predict default of 0.25 never applies here and 0.0 would be recorded as 0.0 and run as 0.1. The lower bound refuses that one value. |
+| `iou` | `number` | `0.7` | >= `0.0`, <= `1.0` | The NMS IoU threshold for suppressing overlapping detections before they reach the tracker. |
+| `imgsz` | `integer` | `640` | > `0` | The side each frame is letterboxed to for inference. Predictions are mapped back to source pixels, so this changes what the detector sees rather than what the coordinates mean. [px] |
+| `max_det` | `integer` | `300` | > `0` | The most detections kept from one frame. |
+| `classes` | list of `integer` \| `None` | `null` |  | Which detector class indexes to keep. Unset keeps every class. Identity records the set sorted and de-duplicated, so the order a filter was typed in does not move the identifier. |
+| `agnostic_nms` | `boolean` | `false` |  | Suppress overlapping detections across classes instead of within each one. |
+| `start_frame` | `integer` | `0` | >= `0` | The first frame index tracked. It is part of identity for a stronger reason than in the inference ops: a tracker is stateful, so a different starting frame gives different identities rather than a subset of the same ones. |
+| `end_frame` | `integer` \| `None` | `null` |  | The frame index tracking stops before. Unset tracks to the end of the video. |
+| `frame_step` | `integer` | `1` | >= `1` | Track every nth frame. A step above 1 changes what the tracker sees between observations, so it changes the identities as well as the count. |
+| `device` | `string` | `"0"` |  | Which CUDA device index, or cpu, runs inference. A property of the machine rather than of the result, so it stays out of identity. |
+| `precision` | `"fp32"` \| `"fp16"` | `"fp32"` |  | The numeric precision inference runs at. fp16 halves the memory a batch needs and can move a detection across a threshold. |
+| `batch_size` | `integer` | `8` | >= `1` | How many frames are decoded and handed to the model per forward pass. Tracking still advances one frame at a time within a batch. |
+| `prefetch` | `boolean` | `true` |  | Decode the next batch on a background thread while the current one runs. |
 
 ??? note "`BotsortConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `tracker_type` | `"botsort"` | `"botsort"` |  |
-    | `track_high_thresh` | `number` | `0.25` |  |
-    | `track_low_thresh` | `number` | `0.1` |  |
-    | `new_track_thresh` | `number` | `0.25` |  |
-    | `track_buffer` | `integer` | `30` |  |
-    | `match_thresh` | `number` | `0.8` |  |
-    | `fuse_score` | `boolean` | `true` |  |
-    | `gmc_method` | `"sparseOptFlow"` \| `"orb"` \| `"sift"` \| `"ecc"` \| `"none"` | `"sparseOptFlow"` |  |
-    | `proximity_thresh` | `number` | `0.5` |  |
-    | `appearance_thresh` | `number` | `0.8` |  |
-    | `with_reid` | `boolean` | `false` |  |
-    | `model` | `"auto"` | `"auto"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `tracker_type` | `"botsort"` | `"botsort"` |  | Which backend this configuration is for. It is the tag the schema discriminates on, and a configuration naming a different backend than the run's tracker is refused. |
+    | `track_high_thresh` | `number` | `0.25` |  | The confidence a detection must reach to enter the first association pass. Raising it produces cleaner tracks and keeps fewer detections. |
+    | `track_low_thresh` | `number` | `0.1` |  | The confidence below which a detection is discarded. Between this and track_high_thresh a detection is kept for the second association pass, which trades recovery against drift. |
+    | `new_track_thresh` | `number` | `0.25` |  | The confidence an unmatched detection must reach to start a new track. Raising it produces fewer spurious tracks. |
+    | `track_buffer` | `integer` | `30` |  | How long a lost track stays alive before it is removed. A longer buffer survives more occlusion and risks more identity switches. [frames] |
+    | `match_thresh` | `number` | `0.8` |  | The similarity a detection and a track must reach to be associated in the first pass. Tune it with the detector's quality. |
+    | `fuse_score` | `boolean` | `true` |  | Multiply the association similarity by the detection confidence before matching, which stabilizes weak detections. |
+    | `gmc_method` | `"sparseOptFlow"` \| `"orb"` \| `"sift"` \| `"ecc"` \| `"none"` | `"sparseOptFlow"` |  | Which estimator cancels camera motion between frames. sparseOptFlow, orb and sift run an unseeded RANSAC, so a run under one of those is not reproducible bit for bit. none constructs no estimator. |
+    | `proximity_thresh` | `number` | `0.5` |  | The overlap a detection and a track must share before their appearance embeddings are compared. Raising it makes re-identification stricter. |
+    | `appearance_thresh` | `number` | `0.8` |  | The appearance similarity a re-identification match must reach. Raising it avoids identity swaps. |
+    | `with_reid` | `boolean` | `false` |  | Match on appearance embeddings beside motion and overlap, which costs a further model and further compute. |
+    | `model` | `"auto"` | `"auto"` |  | Which checkpoint supplies the appearance embeddings. Fixed at auto, the detector's own features: mosaic refuses every other value, because a checkpoint reaching a run identifier must be named by content digest. |
 
 ??? note "`BytetrackConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `tracker_type` | `"bytetrack"` | `"bytetrack"` |  |
-    | `track_high_thresh` | `number` | `0.25` |  |
-    | `track_low_thresh` | `number` | `0.1` |  |
-    | `new_track_thresh` | `number` | `0.25` |  |
-    | `track_buffer` | `integer` | `30` |  |
-    | `match_thresh` | `number` | `0.8` |  |
-    | `fuse_score` | `boolean` | `true` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `tracker_type` | `"bytetrack"` | `"bytetrack"` |  | Which backend this configuration is for. It is the tag the schema discriminates on, and a configuration naming a different backend than the run's tracker is refused. |
+    | `track_high_thresh` | `number` | `0.25` |  | The confidence a detection must reach to enter the first association pass. Raising it produces cleaner tracks and keeps fewer detections. |
+    | `track_low_thresh` | `number` | `0.1` |  | The confidence below which a detection is discarded. Between this and track_high_thresh a detection is kept for the second association pass, which trades recovery against drift. |
+    | `new_track_thresh` | `number` | `0.25` |  | The confidence an unmatched detection must reach to start a new track. Raising it produces fewer spurious tracks. |
+    | `track_buffer` | `integer` | `30` |  | How long a lost track stays alive before it is removed. A longer buffer survives more occlusion and risks more identity switches. [frames] |
+    | `match_thresh` | `number` | `0.8` |  | The similarity a detection and a track must reach to be associated in the first pass. Tune it with the detector's quality. |
+    | `fuse_score` | `boolean` | `true` |  | Multiply the association similarity by the detection confidence before matching, which stabilizes weak detections. |
 
 ??? note "`DeepocsortConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `tracker_type` | `"deepocsort"` | `"deepocsort"` |  |
-    | `track_high_thresh` | `number` | `0.3` |  |
-    | `track_low_thresh` | `number` | `0.1` |  |
-    | `new_track_thresh` | `number` | `0.3` |  |
-    | `track_buffer` | `integer` | `30` |  |
-    | `match_thresh` | `number` | `0.8` |  |
-    | `fuse_score` | `boolean` | `true` |  |
-    | `delta_t` | `integer` | `3` |  |
-    | `inertia` | `number` | `0.2` |  |
-    | `use_byte` | `boolean` | `false` |  |
-    | `gmc_method` | `"sparseOptFlow"` \| `"orb"` \| `"sift"` \| `"ecc"` \| `"none"` | `"none"` |  |
-    | `with_reid` | `boolean` | `false` |  |
-    | `model` | `"auto"` | `"auto"` |  |
-    | `proximity_thresh` | `number` | `0.5` |  |
-    | `appearance_thresh` | `number` | `0.9` |  |
-    | `alpha_fixed_emb` | `number` | `0.95` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `tracker_type` | `"deepocsort"` | `"deepocsort"` |  | Which backend this configuration is for. It is the tag the schema discriminates on, and a configuration naming a different backend than the run's tracker is refused. |
+    | `track_high_thresh` | `number` | `0.3` |  | The confidence a detection must reach to enter the first association pass. Raising it produces cleaner tracks and keeps fewer detections. |
+    | `track_low_thresh` | `number` | `0.1` |  | The confidence below which a detection is discarded. Between this and track_high_thresh a detection is kept for the second association pass, which runs only under use_byte. |
+    | `new_track_thresh` | `number` | `0.3` |  | The confidence an unmatched detection must reach to start a new track. Raising it produces fewer spurious tracks. |
+    | `track_buffer` | `integer` | `30` |  | How long a lost track stays alive before it is removed. A longer buffer survives more occlusion and risks more identity switches. [frames] |
+    | `match_thresh` | `number` | `0.8` |  | The similarity a detection and a track must reach to be associated in the first pass. Tune it with the detector's quality. |
+    | `fuse_score` | `boolean` | `true` |  | Multiply the association similarity by the detection confidence before matching, which stabilizes weak detections. |
+    | `delta_t` | `integer` | `3` |  | How far back the observation-centric velocity direction is measured. A longer window smooths more. [frames] |
+    | `inertia` | `number` | `0.2` |  | The weight the velocity-consistency term gets in the association cost. Raising it penalizes a direction change more. |
+    | `use_byte` | `boolean` | `false` |  | Run ByteTrack's low-confidence second association pass as well. |
+    | `gmc_method` | `"sparseOptFlow"` \| `"orb"` \| `"sift"` \| `"ecc"` \| `"none"` | `"none"` |  | Which estimator cancels camera motion between frames. sparseOptFlow, orb and sift run an unseeded RANSAC, so a run under one of those is not reproducible bit for bit. none constructs no estimator. |
+    | `with_reid` | `boolean` | `false` |  | Match on appearance embeddings beside motion and overlap, which costs a further model and further compute. |
+    | `model` | `"auto"` | `"auto"` |  | Which checkpoint supplies the appearance embeddings. Fixed at auto, the detector's own features: mosaic refuses every other value, because a checkpoint reaching a run identifier must be named by content digest. |
+    | `proximity_thresh` | `number` | `0.5` |  | The overlap a detection and a track must share before their appearance embeddings are compared. Raising it makes re-identification stricter. |
+    | `appearance_thresh` | `number` | `0.9` |  | The appearance similarity a re-identification match must reach. Raising it avoids identity swaps. |
+    | `alpha_fixed_emb` | `number` | `0.95` |  | The base exponential-moving-average factor for a track's appearance embedding. Raising it updates the embedding more slowly. |
 
 ??? note "`Entry`"
 
@@ -245,62 +245,62 @@ Track scoped videos with a YOLO model, bridging results into ``tracks/``.
 
 ??? note "`FasttrackConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `tracker_type` | `"fasttrack"` | `"fasttrack"` |  |
-    | `track_high_thresh` | `number` | `0.25` |  |
-    | `track_low_thresh` | `number` | `0.1` |  |
-    | `new_track_thresh` | `number` | `0.25` |  |
-    | `track_buffer` | `integer` | `30` |  |
-    | `match_thresh` | `number` | `0.8` |  |
-    | `fuse_score` | `boolean` | `true` |  |
-    | `reset_velocity_offset_occ` | `integer` | `5` |  |
-    | `reset_pos_offset_occ` | `integer` | `3` |  |
-    | `enlarge_bbox_occ` | `number` | `1.1` |  |
-    | `dampen_motion_occ` | `number` | `0.5` |  |
-    | `active_occ_to_lost_thresh` | `integer` | `10` |  |
-    | `occ_cover_thresh` | `number` | `0.7` |  |
-    | `occ_reappear_window` | `integer` | `40` |  |
-    | `init_iou_suppress` | `number` | `0.7` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `tracker_type` | `"fasttrack"` | `"fasttrack"` |  | Which backend this configuration is for. It is the tag the schema discriminates on, and a configuration naming a different backend than the run's tracker is refused. |
+    | `track_high_thresh` | `number` | `0.25` |  | The confidence a detection must reach to enter the first association pass. Raising it produces cleaner tracks and keeps fewer detections. |
+    | `track_low_thresh` | `number` | `0.1` |  | The confidence below which a detection is discarded. Between this and track_high_thresh a detection is kept for the second association pass, which trades recovery against drift. |
+    | `new_track_thresh` | `number` | `0.25` |  | The confidence an unmatched detection must reach to start a new track. Raising it produces fewer spurious tracks. |
+    | `track_buffer` | `integer` | `30` |  | How long a lost track stays alive before it is removed. A longer buffer survives more occlusion and risks more identity switches. [frames] |
+    | `match_thresh` | `number` | `0.8` |  | The similarity a detection and a track must reach to be associated in the first pass. Tune it with the detector's quality. |
+    | `fuse_score` | `boolean` | `true` |  | Multiply the association similarity by the detection confidence before matching, which stabilizes weak detections. |
+    | `reset_velocity_offset_occ` | `integer` | `5` |  | How far back the Kalman filter's velocity is restored from when an occlusion starts. [frames] |
+    | `reset_pos_offset_occ` | `integer` | `3` |  | How far back the Kalman filter's position is restored from when an occlusion starts. [frames] |
+    | `enlarge_bbox_occ` | `number` | `1.1` |  | The one-shot height scale applied to an occluded track's box, which widens the region searched for it. |
+    | `dampen_motion_occ` | `number` | `0.5` |  | How much of an occluded track's velocity is kept while it stays occluded, between 0 and 1. |
+    | `active_occ_to_lost_thresh` | `integer` | `10` |  | How long an active track survives continuous occlusion before it is marked lost. [frames] |
+    | `occ_cover_thresh` | `number` | `0.7` |  | The fraction of a track's area another must cover for the track to count as occluded. |
+    | `occ_reappear_window` | `integer` | `40` |  | How long a recently occluded lost track stays re-findable. [frames] |
+    | `init_iou_suppress` | `number` | `0.7` |  | The overlap with an active track at or above which a new track is not started. 1.0 starts every new track. |
 
 ??? note "`OcsortConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `tracker_type` | `"ocsort"` | `"ocsort"` |  |
-    | `track_high_thresh` | `number` | `0.25` |  |
-    | `track_low_thresh` | `number` | `0.1` |  |
-    | `new_track_thresh` | `number` | `0.25` |  |
-    | `track_buffer` | `integer` | `30` |  |
-    | `match_thresh` | `number` | `0.8` |  |
-    | `fuse_score` | `boolean` | `true` |  |
-    | `delta_t` | `integer` | `3` |  |
-    | `inertia` | `number` | `0.2` |  |
-    | `use_byte` | `boolean` | `false` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `tracker_type` | `"ocsort"` | `"ocsort"` |  | Which backend this configuration is for. It is the tag the schema discriminates on, and a configuration naming a different backend than the run's tracker is refused. |
+    | `track_high_thresh` | `number` | `0.25` |  | The confidence a detection must reach to enter the first association pass. Raising it produces cleaner tracks and keeps fewer detections. |
+    | `track_low_thresh` | `number` | `0.1` |  | The confidence below which a detection is discarded. Between this and track_high_thresh a detection is kept for the second association pass, which runs only under use_byte. |
+    | `new_track_thresh` | `number` | `0.25` |  | The confidence an unmatched detection must reach to start a new track. Raising it produces fewer spurious tracks. |
+    | `track_buffer` | `integer` | `30` |  | How long a lost track stays alive before it is removed. A longer buffer survives more occlusion and risks more identity switches. [frames] |
+    | `match_thresh` | `number` | `0.8` |  | The similarity a detection and a track must reach to be associated in the first pass. Tune it with the detector's quality. |
+    | `fuse_score` | `boolean` | `true` |  | Multiply the association similarity by the detection confidence before matching, which stabilizes weak detections. |
+    | `delta_t` | `integer` | `3` |  | How far back the observation-centric velocity direction is measured. A longer window smooths more. [frames] |
+    | `inertia` | `number` | `0.2` |  | The weight the velocity-consistency term gets in the association cost. Raising it penalizes a direction change more. |
+    | `use_byte` | `boolean` | `false` |  | Run ByteTrack's low-confidence second association pass as well. |
 
 ??? note "`TracktrackConfig`"
 
-    | Parameter | Type | Default | Constraints |
-    | --- | --- | --- | --- |
-    | `tracker_type` | `"tracktrack"` | `"tracktrack"` |  |
-    | `track_high_thresh` | `number` | `0.6` |  |
-    | `track_low_thresh` | `number` | `0.25` |  |
-    | `new_track_thresh` | `number` | `0.7` |  |
-    | `track_buffer` | `integer` | `30` |  |
-    | `match_thresh` | `number` | `0.7` |  |
-    | `lost_match_thr` | `number` | `0.0` |  |
-    | `iou_weight` | `number` | `0.5` |  |
-    | `reid_weight` | `number` | `0.5` |  |
-    | `conf_weight` | `number` | `0.1` |  |
-    | `angle_weight` | `number` | `0.05` |  |
-    | `penalty_p` | `number` | `0.2` |  |
-    | `penalty_q` | `number` | `0.4` |  |
-    | `reduce_step` | `number` | `0.05` |  |
-    | `tai_thr` | `number` | `0.55` |  |
-    | `min_track_len` | `integer` | `3` |  |
-    | `gmc_method` | `"sparseOptFlow"` \| `"orb"` \| `"sift"` \| `"ecc"` \| `"none"` | `"sparseOptFlow"` |  |
-    | `with_reid` | `boolean` | `false` |  |
-    | `model` | `"auto"` | `"auto"` |  |
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `tracker_type` | `"tracktrack"` | `"tracktrack"` |  | Which backend this configuration is for. It is the tag the schema discriminates on, and a configuration naming a different backend than the run's tracker is refused. |
+    | `track_high_thresh` | `number` | `0.6` |  | The confidence a detection must reach to enter the first association pass. Raising it produces cleaner tracks and keeps fewer detections. |
+    | `track_low_thresh` | `number` | `0.25` |  | The confidence below which a detection is discarded. Between this and track_high_thresh a detection is kept for the second association pass, which trades recovery against drift. |
+    | `new_track_thresh` | `number` | `0.7` |  | The score an unmatched detection must reach for track-aware initialization to start a new track from it. |
+    | `track_buffer` | `integer` | `30` |  | How long a lost track stays alive before it is removed. A longer buffer survives more occlusion and risks more identity switches. [frames] |
+    | `match_thresh` | `number` | `0.7` |  | The similarity the first iteration of the assignment accepts. Each later iteration lowers it by reduce_step. |
+    | `lost_match_thr` | `number` | `0.0` |  | The looser cost gate for rebinding a track that is still lost. 0.0 skips the relaxed second pass; a value above match_thresh suits long occlusions. |
+    | `iou_weight` | `number` | `0.5` |  | The weight the overlap distance gets in the cost matrix. |
+    | `reid_weight` | `number` | `0.5` |  | The weight the appearance cosine distance gets in the cost matrix. It falls back to the overlap distance where re-identification is off. |
+    | `conf_weight` | `number` | `0.1` |  | The weight the confidence distance gets in the cost matrix. |
+    | `angle_weight` | `number` | `0.05` |  | The weight the corner-angle distance gets in the cost matrix. |
+    | `penalty_p` | `number` | `0.2` |  | The cost penalty a low-confidence detection is charged during iterative assignment. |
+    | `penalty_q` | `number` | `0.4` |  | The cost penalty a deleted or recovered detection is charged during iterative assignment. |
+    | `reduce_step` | `number` | `0.05` |  | How much the matching threshold drops on each iteration of the assignment. |
+    | `tai_thr` | `number` | `0.55` |  | The overlap at which track-aware initialization suppresses a new track. |
+    | `min_track_len` | `integer` | `3` |  | How much history a track needs before it is confirmed. [frames] |
+    | `gmc_method` | `"sparseOptFlow"` \| `"orb"` \| `"sift"` \| `"ecc"` \| `"none"` | `"sparseOptFlow"` |  | Which estimator cancels camera motion between frames. sparseOptFlow, orb and sift run an unseeded RANSAC, so a run under one of those is not reproducible bit for bit. none constructs no estimator. |
+    | `with_reid` | `boolean` | `false` |  | Match on appearance embeddings beside motion and overlap, which costs a further model and further compute. |
+    | `model` | `"auto"` | `"auto"` |  | Which checkpoint supplies the appearance embeddings. Fixed at auto, the detector's own features: mosaic refuses every other value, because a checkpoint reaching a run identifier must be named by content digest. |
 
 ### extract
 
@@ -310,26 +310,26 @@ Version `0.1` &middot; `mosaic.tracking.frame_extraction.dataset_runs.ExtractFra
 
 Sample representative video frames as PNGs for annotation.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `n_frames` | `integer` | _required_ |  |
-| `method` | `"uniform"` \| `"kmeans"` | `"uniform"` |  |
-| `start_frame` | `integer` \| `None` | `null` |  |
-| `end_frame` | `integer` \| `None` | `null` |  |
-| `candidate_step` | `integer` | `1` |  |
-| `crop` | tuple of (`integer`, `integer`, `integer`, `integer`) \| `None` | `null` |  |
-| `random_state` | `integer` | `42` |  |
-| `kmeans_resize` | tuple of (`integer`, `integer`) | `[64, 64]` | min items `2`, max items `2` |
-| `kmeans_grayscale` | `boolean` | `true` |  |
-| `kmeans_max_candidates` | `integer` \| `None` | `5000` |  |
-| `kmeans_batch_size` | `integer` | `1024` |  |
-| `kmeans_max_iter` | `integer` | `100` |  |
-| `kmeans_n_init` | `string` \| `integer` | `"auto"` |  |
-| `revision` | `integer` | `0` |  |
-| `parallel_workers` | `integer` \| `string` \| `None` | `"auto"` |  |
-| `parallel_mode` | `"thread"` \| `"process"` | `"thread"` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
+| `overwrite` | `boolean` | `false` |  | Re-extract into a directory that already holds frames. The run refuses rather than removing them, because annotations reference those images by path and mosaic cannot tell whether any exist. A second selection is a new run, through `revision`. |
+| `n_frames` | `integer` | _required_ |  | How many frames to write per camera. |
+| `method` | `"uniform"` \| `"kmeans"` | `"uniform"` |  | How the frames are chosen: 'uniform' spaces them evenly over the candidate range, 'kmeans' clusters the candidates by pixel content and keeps one frame per cluster. |
+| `start_frame` | `integer` \| `None` | `null` |  | First frame of the range frames are chosen from, inclusive. Unset starts at the beginning of the video. |
+| `end_frame` | `integer` \| `None` | `null` |  | Last frame of the range frames are chosen from, inclusive. Unset runs to the end of the video. |
+| `candidate_step` | `integer` | `1` |  | Stride between candidate frames within the range. A wider stride samples a long recording without decoding every frame of it. |
+| `crop` | tuple of (`integer`, `integer`, `integer`, `integer`) \| `None` | `null` |  | Crop rectangle (x, y, width, height) applied to every written frame. Unset writes the full frame. |
+| `random_state` | `integer` | `42` |  | Seed for k-means and for breaking ties between candidates. |
+| `kmeans_resize` | tuple of (`integer`, `integer`) | `[64, 64]` | min items `2`, max items `2` | Width and height a candidate frame is resized to before its pixels become the clustering feature vector. [px] |
+| `kmeans_grayscale` | `boolean` | `true` |  | Convert a candidate frame to grayscale before flattening it into a feature vector, which clusters on layout instead of color. |
+| `kmeans_max_candidates` | `integer` \| `None` | `5000` |  | Cap on how many candidate frames are decoded for clustering; the stride widens to stay under it. Unset decodes every candidate in the range. |
+| `kmeans_batch_size` | `integer` | `1024` |  | How many feature vectors one mini-batch k-means update reads. |
+| `kmeans_max_iter` | `integer` | `100` |  | Ceiling on mini-batch k-means iterations. |
+| `kmeans_n_init` | `string` \| `integer` | `"auto"` |  | How many centroid seedings k-means tries before keeping the best. 'auto' leaves the count to scikit-learn. |
+| `revision` | `integer` | `0` |  | Bump to extract a second selection under the same settings. It is the one term allowed to move the extraction identifier, and only a non-zero value enters it. Revision 0 reproduces every identifier already on disk. |
+| `parallel_workers` | `integer` \| `string` \| `None` | `"auto"` |  | How many cameras are extracted at once. 'auto' reads the machine, and an integer pins the count. |
+| `parallel_mode` | `"thread"` \| `"process"` | `"thread"` |  | Which executor runs the cameras: 'thread' shares one process, 'process' forks, which a decoder holding the interpreter lock needs. |
 
 ??? note "`Entry`"
 
@@ -343,24 +343,24 @@ Version `0.1` &middot; `mosaic.tracking.ops.infer.InferLocalizerOp`
 
 Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `model` | `string` | _required_ |  |
-| `conf_threshold` | `number` | `0.25` |  |
-| `imgsz` | `integer` | `640` |  |
-| `frame_step` | `integer` | `1` |  |
-| `start_frame` | `integer` | `0` |  |
-| `end_frame` | `integer` \| `None` | `null` |  |
-| `max_frames` | `integer` \| `None` | `null` |  |
-| `convert_to_tracks` | `boolean` | `true` |  |
-| `device` | `string` | `"0"` |  |
-| `batch_size` | `integer` | `8` |  |
-| `save_images` | `boolean` | `false` |  |
-| `num_classes` | `integer` | `4` |  |
-| `initial_channels` | `integer` | `32` |  |
-| `thresholds` | `number` | `0.5` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
+| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
+| `model` | `string` | _required_ |  | The weights to predict with, as a path or as the run identifier of the training run that produced them. |
+| `conf_threshold` | `number` | `0.25` |  | Minimum detection confidence a prediction must reach to be written. |
+| `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
+| `frame_step` | `integer` | `1` |  | Stride between the frames predicted on. A wider stride covers a long recording without predicting on every frame of it. |
+| `start_frame` | `integer` | `0` |  | First frame to predict on, inclusive. |
+| `end_frame` | `integer` \| `None` | `null` |  | Last frame to predict on, inclusive. Unset runs to the end of the video. |
+| `max_frames` | `integer` \| `None` | `null` |  | Ceiling on how many frames are predicted on per entry. Unset predicts on the whole range. |
+| `convert_to_tracks` | `boolean` | `true` |  | Bridge the predictions into a standardized tracks table once inference finishes, instead of leaving them in the run directory alone. |
+| `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. |
+| `batch_size` | `integer` | `8` |  | How many frames the model reads in one forward pass. |
+| `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
+| `num_classes` | `integer` | `4` |  |  |
+| `initial_channels` | `integer` | `32` |  |  |
+| `thresholds` | `number` | `0.5` |  |  |
 
 ??? note "`Entry`"
 
@@ -372,22 +372,22 @@ Version `0.2` &middot; `mosaic.tracking.ops.infer.InferPointsOp`
 
 Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `model` | `string` | _required_ |  |
-| `conf_threshold` | `number` | `0.25` |  |
-| `imgsz` | `integer` | `640` |  |
-| `frame_step` | `integer` | `1` |  |
-| `start_frame` | `integer` | `0` |  |
-| `end_frame` | `integer` \| `None` | `null` |  |
-| `max_frames` | `integer` \| `None` | `null` |  |
-| `convert_to_tracks` | `boolean` | `true` |  |
-| `device` | `string` | `"0"` |  |
-| `batch_size` | `integer` | `8` |  |
-| `save_images` | `boolean` | `false` |  |
-| `dor` | `number` | `0.8` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
+| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
+| `model` | `string` | _required_ |  | The weights to predict with, as a path or as the run identifier of the training run that produced them. |
+| `conf_threshold` | `number` | `0.25` |  | Minimum detection confidence a prediction must reach to be written. |
+| `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
+| `frame_step` | `integer` | `1` |  | Stride between the frames predicted on. A wider stride covers a long recording without predicting on every frame of it. |
+| `start_frame` | `integer` | `0` |  | First frame to predict on, inclusive. |
+| `end_frame` | `integer` \| `None` | `null` |  | Last frame to predict on, inclusive. Unset runs to the end of the video. |
+| `max_frames` | `integer` \| `None` | `null` |  | Ceiling on how many frames are predicted on per entry. Unset predicts on the whole range. |
+| `convert_to_tracks` | `boolean` | `true` |  | Bridge the predictions into a standardized tracks table once inference finishes, instead of leaving them in the run directory alone. |
+| `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. |
+| `batch_size` | `integer` | `8` |  | How many frames the model reads in one forward pass. |
+| `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
+| `dor` | `number` | `0.8` |  |  |
 
 ??? note "`Entry`"
 
@@ -399,21 +399,21 @@ Version `0.2` &middot; `mosaic.tracking.ops.infer.InferPoseOp`
 
 Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `model` | `string` | _required_ |  |
-| `conf_threshold` | `number` | `0.25` |  |
-| `imgsz` | `integer` | `640` |  |
-| `frame_step` | `integer` | `1` |  |
-| `start_frame` | `integer` | `0` |  |
-| `end_frame` | `integer` \| `None` | `null` |  |
-| `max_frames` | `integer` \| `None` | `null` |  |
-| `convert_to_tracks` | `boolean` | `true` |  |
-| `device` | `string` | `"0"` |  |
-| `batch_size` | `integer` | `8` |  |
-| `save_images` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
+| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
+| `model` | `string` | _required_ |  | The weights to predict with, as a path or as the run identifier of the training run that produced them. |
+| `conf_threshold` | `number` | `0.25` |  | Minimum detection confidence a prediction must reach to be written. |
+| `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
+| `frame_step` | `integer` | `1` |  | Stride between the frames predicted on. A wider stride covers a long recording without predicting on every frame of it. |
+| `start_frame` | `integer` | `0` |  | First frame to predict on, inclusive. |
+| `end_frame` | `integer` \| `None` | `null` |  | Last frame to predict on, inclusive. Unset runs to the end of the video. |
+| `max_frames` | `integer` \| `None` | `null` |  | Ceiling on how many frames are predicted on per entry. Unset predicts on the whole range. |
+| `convert_to_tracks` | `boolean` | `true` |  | Bridge the predictions into a standardized tracks table once inference finishes, instead of leaving them in the run directory alone. |
+| `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. |
+| `batch_size` | `integer` | `8` |  | How many frames the model reads in one forward pass. |
+| `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
 
 ??? note "`Entry`"
 
@@ -427,19 +427,19 @@ Version `0.1` &middot; `mosaic.tracking.ops.train_litpose.TrainLitposeOp` &middo
 
 Train a Lightning Pose model, registering the directory it produces.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `project` | `string` | _required_ |  |
-| `base_config` | `string` | `""` |  |
-| `base_model` | `string` | `""` |  |
-| `model_type` | `"heatmap"` \| `"heatmap_mhcrnn"` \| `"regression"` \| `"heatmap_multiview_transformer"` | `"heatmap"` |  |
-| `backbone` | `string` | `"resnet50_animal_ap10k"` |  |
-| `max_epochs` | `integer` | `300` |  |
-| `litpose_overrides` | `object` \| `None` | `null` |  |
-| `device` | `string` | `"auto"` |  |
-| `idle_timeout` | `number` | `1800` |  |
-| `max_runtime` | `number` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `project` | `string` | _required_ |  |  |
+| `base_config` | `string` | `""` |  |  |
+| `base_model` | `string` | `""` |  |  |
+| `model_type` | `"heatmap"` \| `"heatmap_mhcrnn"` \| `"regression"` \| `"heatmap_multiview_transformer"` | `"heatmap"` |  |  |
+| `backbone` | `string` | `"resnet50_animal_ap10k"` |  |  |
+| `max_epochs` | `integer` | `300` |  |  |
+| `litpose_overrides` | `object` \| `None` | `null` |  |  |
+| `device` | `string` | `"auto"` |  |  |
+| `idle_timeout` | `number` | `1800` |  |  |
+| `max_runtime` | `number` \| `None` | `null` |  |  |
+| `overwrite` | `boolean` | `false` |  |  |
 
 ??? note "`JsonValue`"
 
@@ -451,21 +451,21 @@ Version `0.1` &middot; `mosaic.tracking.ops.train.TrainLocalizerOp`
 
 Train the heatmap localizer, registering the directory it produces.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `dataset_dir` | `string` | _required_ |  |
-| `base_model` | `string` | `""` |  |
-| `num_classes` | `integer` | `4` |  |
-| `initial_channels` | `integer` | `32` |  |
-| `freeze_encoder` | `boolean` | `false` |  |
-| `epochs` | `integer` | `200` |  |
-| `lr` | `number` | `0.001` |  |
-| `early_stopping_patience` | `integer` | `20` |  |
-| `augment` | `boolean` | `true` |  |
-| `seed` | `integer` | `42` |  |
-| `device` | `string` | `"0"` |  |
-| `batch_size` | `integer` | `128` |  |
-| `overwrite` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `dataset_dir` | `string` | _required_ |  |  |
+| `base_model` | `string` | `""` |  |  |
+| `num_classes` | `integer` | `4` |  |  |
+| `initial_channels` | `integer` | `32` |  |  |
+| `freeze_encoder` | `boolean` | `false` |  |  |
+| `epochs` | `integer` | `200` |  |  |
+| `lr` | `number` | `0.001` |  |  |
+| `early_stopping_patience` | `integer` | `20` |  |  |
+| `augment` | `boolean` | `true` |  |  |
+| `seed` | `integer` | `42` |  |  |
+| `device` | `string` | `"0"` |  |  |
+| `batch_size` | `integer` | `128` |  |  |
+| `overwrite` | `boolean` | `false` |  |  |
 
 #### `train-points`
 
@@ -473,24 +473,24 @@ Version `0.2` &middot; `mosaic.tracking.ops.train.TrainPointsOp`
 
 Train a POLO point-detection model, registering the directory it produces.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `data` | `string` | _required_ |  |
-| `model` | `string` | `"polo26n.yaml"` |  |
-| `base_model` | `string` | `""` |  |
-| `epochs` | `integer` | `300` |  |
-| `imgsz` | `integer` | `640` |  |
-| `patience` | `integer` | `50` |  |
-| `resume` | `boolean` | `false` |  |
-| `augmentation` | `string` \| `object` \| `None` | `null` |  |
-| `train_overrides` | `object` \| `None` | `null` |  |
-| `device` | `string` | `"0"` |  |
-| `batch` | `integer` | `16` |  |
-| `overwrite` | `boolean` | `false` |  |
-| `loc` | `number` | `5.0` |  |
-| `loc_loss` | `string` | `"mse"` |  |
-| `dor` | `number` | `0.8` |  |
-| `backend` | `string` | `"polo"` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `data` | `string` | _required_ |  |  |
+| `model` | `string` | `"polo26n.yaml"` |  |  |
+| `base_model` | `string` | `""` |  |  |
+| `epochs` | `integer` | `300` |  |  |
+| `imgsz` | `integer` | `640` |  |  |
+| `patience` | `integer` | `50` |  |  |
+| `resume` | `boolean` | `false` |  |  |
+| `augmentation` | `string` \| `object` \| `None` | `null` |  |  |
+| `train_overrides` | `object` \| `None` | `null` |  |  |
+| `device` | `string` | `"0"` |  |  |
+| `batch` | `integer` | `16` |  |  |
+| `overwrite` | `boolean` | `false` |  |  |
+| `loc` | `number` | `5.0` |  |  |
+| `loc_loss` | `string` | `"mse"` |  |  |
+| `dor` | `number` | `0.8` |  |  |
+| `backend` | `string` | `"polo"` |  |  |
 
 ??? note "`JsonValue`"
 
@@ -502,20 +502,20 @@ Version `0.2` &middot; `mosaic.tracking.ops.train.TrainPoseOp`
 
 Train a YOLO pose model, registering the directory it produces.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `data` | `string` | _required_ |  |
-| `model` | `string` | `"yolo11n-pose.pt"` |  |
-| `base_model` | `string` | `""` |  |
-| `epochs` | `integer` | `300` |  |
-| `imgsz` | `integer` | `640` |  |
-| `patience` | `integer` | `50` |  |
-| `resume` | `boolean` | `false` |  |
-| `augmentation` | `string` \| `object` \| `None` | `null` |  |
-| `train_overrides` | `object` \| `None` | `null` |  |
-| `device` | `string` | `"0"` |  |
-| `batch` | `integer` | `16` |  |
-| `overwrite` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `data` | `string` | _required_ |  |  |
+| `model` | `string` | `"yolo11n-pose.pt"` |  |  |
+| `base_model` | `string` | `""` |  |  |
+| `epochs` | `integer` | `300` |  |  |
+| `imgsz` | `integer` | `640` |  |  |
+| `patience` | `integer` | `50` |  |  |
+| `resume` | `boolean` | `false` |  |  |
+| `augmentation` | `string` \| `object` \| `None` | `null` |  |  |
+| `train_overrides` | `object` \| `None` | `null` |  |  |
+| `device` | `string` | `"0"` |  |  |
+| `batch` | `integer` | `16` |  |  |
+| `overwrite` | `boolean` | `false` |  |  |
 
 ??? note "`JsonValue`"
 
@@ -527,20 +527,20 @@ Version `0.1` &middot; `mosaic.tracking.ops.train_sleap.TrainSleapOp` &middot; r
 
 Train a SLEAP model, registering the directory it produces.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `labels` | `string` | _required_ |  |
-| `base_model` | `string` | `""` |  |
-| `head` | `"single_instance"` \| `"centroid"` \| `"centered_instance"` \| `"bottomup"` \| `"multi_class_bottomup"` \| `"multi_class_topdown"` | `"centered_instance"` |  |
-| `backbone` | `"unet"` \| `"convnext"` \| `"swint"` | `"unet"` |  |
-| `max_epochs` | `integer` | `200` |  |
-| `seed` | `integer` | `42` |  |
-| `validation_fraction` | `number` | `0.1` |  |
-| `sleap_overrides` | `object` \| `None` | `null` |  |
-| `device` | `string` | `"auto"` |  |
-| `idle_timeout` | `number` | `1800` |  |
-| `max_runtime` | `number` \| `None` | `null` |  |
-| `overwrite` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `labels` | `string` | _required_ |  |  |
+| `base_model` | `string` | `""` |  |  |
+| `head` | `"single_instance"` \| `"centroid"` \| `"centered_instance"` \| `"bottomup"` \| `"multi_class_bottomup"` \| `"multi_class_topdown"` | `"centered_instance"` |  |  |
+| `backbone` | `"unet"` \| `"convnext"` \| `"swint"` | `"unet"` |  |  |
+| `max_epochs` | `integer` | `200` |  |  |
+| `seed` | `integer` | `42` |  |  |
+| `validation_fraction` | `number` | `0.1` |  |  |
+| `sleap_overrides` | `object` \| `None` | `null` |  |  |
+| `device` | `string` | `"auto"` |  |  |
+| `idle_timeout` | `number` | `1800` |  |  |
+| `max_runtime` | `number` \| `None` | `null` |  |  |
+| `overwrite` | `boolean` | `false` |  |  |
 
 ??? note "`JsonValue`"
 
@@ -556,11 +556,11 @@ Version `0.1` &middot; `mosaic.core.pipeline.store_export.StoreExportOp` &middot
 
 Export one entry's imgstore recordings as plain video and link them.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `entry` | `Entry` | _required_ |  |
-| `camera` | `string` \| `None` | `null` |  |
-| `av1_crf` | `integer` | `14` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `entry` | `Entry` | _required_ |  | The one (group, sequence) whose stores are exported. Singular: this op exports one entry per run. |
+| `camera` | `string` \| `None` | `null` |  | Which camera of the entry to export. Unset exports every camera, each to its own file. |
+| `av1_crf` | `integer` | `14` |  | AV1 constant-rate factor, 0 (lossless) to 63, defaulting to what an analysis transcode encodes at. Named for its scale because this writer encodes AV1, whose `crf` argument is a deprecated shim in x264's scale. |
 
 ??? note "`Entry`"
 
@@ -572,11 +572,11 @@ Version `0.2` &middot; `mosaic.core.pipeline.transcode.TranscodeOp`
 
 Transcode the scoped entries' originals for a target, linking both ways.
 
-| Parameter | Type | Default | Constraints |
-| --- | --- | --- | --- |
-| `entries` | list of `Entry` | _required_ | min items `1` |
-| `target` | `"analysis"` \| `"playback"` | `"analysis"` |  |
-| `allow_hardware` | `boolean` | `false` |  |
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `entries` | list of `Entry` | _required_ | min items `1` | Which (group, sequence) entries to transcode. Required and non-empty: an unscoped transcode would re-encode a whole corpus. A repeated entry is collapsed. |
+| `target` | `"analysis"` \| `"playback"` | `"analysis"` |  | Which derivative to write: 'analysis' is the one a tool decodes frame by frame, 'playback' the one a browser streams. |
+| `allow_hardware` | `boolean` | `false` |  | Permit a hardware encoder where the machine offers a usable one. The encode falls back to the CPU encoder where it does not. |
 
 ??? note "`Entry`"
 

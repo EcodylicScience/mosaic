@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import textwrap
 from dataclasses import dataclass
-from typing import Annotated, Generic, Self, TypeAlias
+from inspect import cleandoc
+from typing import Annotated, Final, Generic, Self, TypeAlias
 
 from pydantic import BaseModel, Field, GetJsonSchemaHandler, model_validator
 from pydantic.json_schema import JsonSchemaValue
@@ -29,6 +31,20 @@ each field declares its prose beside the field.
 """
 
 
+NEEDS_DESCRIPTION: Final = ""
+"""Declares a field whose prose is not written yet.
+
+``Declared(NEEDS_DESCRIPTION)`` publishes the description key, so the field is
+declared and a client draws a control for it, and publishes it empty, so
+``tests/test_params_declaration.py`` counts the field against a ceiling that only
+comes down. The two states are separable at the schema: no key at all means no
+``Declared``, an empty one means the prose is owed.
+
+Written as a name rather than a bare ``""`` so that deferring is a deliberate act
+a reader can grep for.
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class Declared:
     """Declares one field's prose and publishes it into that field's schema.
@@ -48,8 +64,9 @@ class Declared:
     None`` on every field to catch that spelling.
 
     ``description`` is the first positional parameter and has no default. A
-    field that declares a ``Declared`` without prose fails to type-check where
-    it is written.
+    field that declares a ``Declared`` without an argument fails to type-check
+    where it is written; a field whose prose is not written yet passes
+    :data:`NEEDS_DESCRIPTION`, which declares it and records the debt.
 
     Prose given as a value is stored in the class. Python discards an attribute
     docstring at run time, and ``use_attribute_docstrings=True`` recovers one by
@@ -125,6 +142,50 @@ class Params(StrictModel):
     Provides from_overrides() constructor for user-config dicts.
     Subclasses declare feature-specific fields.
     """
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
+        """Render the fields' declared prose into an ``Attributes:`` section.
+
+        ``help(SomeParams)`` already reports every description, inside the
+        ``__init__`` signature pydantic synthesizes -- one line per field
+        carrying ``<HashExclude object at 0x...>``, a repr of every ``Declared``
+        and pydantic's own ``FieldInfo`` for any aliased constraint. The prose is
+        in there and nobody can read it. This is the same prose as a list.
+
+        ``__pydantic_init_subclass__`` rather than a decorator: pydantic
+        guarantees ``model_fields`` is complete here, and no model can forget to
+        opt in. A decorator would also read as registry membership, which is what
+        one means everywhere else in this codebase.
+
+        Written onto the subclass, and read from ``cls.__dict__`` rather than
+        ``cls.__doc__``, so a class that declares no docstring of its own neither
+        inherits its parent's prose nor has this section appended to it. Prose is
+        never invented for such a class: it gets the section alone.
+
+        Fields declared :data:`NEEDS_DESCRIPTION` are left out. An entry with no
+        description states nothing, and the ceiling in
+        ``tests/test_params_declaration.py`` is what tracks them.
+        """
+        super().__pydantic_init_subclass__(**kwargs)
+        described = [
+            (name, declared)
+            for name, info in cls.model_fields.items()
+            for declared in info.metadata
+            if isinstance(declared, Declared) and declared.description
+        ]
+        if not described:
+            return
+        lines = ["Attributes:"]
+        for name, declared in described:
+            unit = f" [{declared.unit}]" if declared.unit else ""
+            body = f"{name}: {declared.description}{unit}"
+            lines += textwrap.wrap(
+                body, width=79, initial_indent="    ", subsequent_indent="        "
+            )
+        own = cls.__dict__.get("__doc__")
+        head = f"{cleandoc(own)}\n\n" if isinstance(own, str) and own.strip() else ""
+        cls.__doc__ = head + "\n".join(lines)
 
     def identity_dump(self) -> dict[str, object]:
         """model_dump() minus HASH_EXCLUDE-marked fields -- the run_id hash

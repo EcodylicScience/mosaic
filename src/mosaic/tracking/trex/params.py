@@ -106,28 +106,27 @@ _TRACK_EXTRA_SETTINGS_DESCRIPTION = (
 class TrexParams(PhasedTrackerOpParams):
     """Parameters for the ``trex`` tracking op and for ``run_trex``.
 
-    Every tool-facing parameter defaults to ``None``, meaning the flag is absent
-    from the argv and TREx's own default governs. mosaic states no default of
-    its own for any of them: a mosaic default that differs from TREx's imposes
-    an opinion a caller cannot decline, and each field's description names the
-    value TREx applies when the field is unset. ``auto_train`` is the one
-    exception, a ``bool`` the argv builder sends only when true.
+    Every tool-facing parameter but ``auto_train`` defaults to ``None``, which
+    sends no flag and leaves TREx's own default in force; each field's
+    description names the value that is.
 
-    ``None`` reaches the argv builder, which omits the flag, so unset is
-    expressed the whole way down rather than translated into a stand-in value.
-    :func:`~mosaic.tracking.trex.dataset_runs.trex_settings` records it as a
-    distinct setting, so a run that leaves a parameter to TREx hashes to a
-    different ``run_id`` than a run that sets one.
-
-    ``detect_type`` and ``meta_encoding`` stay ``str`` with ``examples`` rather
-    than narrowing to ``Literal``: TREx owns both vocabularies and runs in a
-    separate conda environment, so mosaic has no configuration to diff its own
-    list against. A client offers the known values and accepts a typed one.
+    Leaving a parameter unset and setting it to the value TREx would have
+    applied are two different runs. Unset is recorded as a setting of its own,
+    so the two hash to different ``run_id`` values and neither reuses the
+    other's output.
     """
 
+    # No field states a default of mosaic's own. One that differed from TREx's
+    # would impose an opinion a caller cannot decline, and None reaches the argv
+    # builder, which omits the flag -- so unset is expressed the whole way down
+    # rather than being translated into a stand-in value.
     detect_model: Annotated[
         str | None, Declared(_DETECT_MODEL_DESCRIPTION), Phase("convert")
     ] = None
+    # detect_type and meta_encoding stay str with examples rather than narrowing
+    # to Literal: TREx owns both vocabularies and runs in a conda environment of
+    # its own, so mosaic has no configuration to diff its own list against. A
+    # client offers the known values and accepts a typed one.
     detect_type: Annotated[
         str | None,
         Field(examples=["yolo", "background_subtraction", "points"]),
