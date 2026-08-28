@@ -295,3 +295,27 @@ def test_an_unset_base_config_uses_the_vendored_template(
 
     handed = Path(seen[0][seen[0].index("-c") + 2])
     assert handed == default_config_path()
+
+
+def test_a_finished_run_is_reused_unless_overwrite_says_otherwise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reuse gate reads the ``overwrite`` argument, where it read a field.
+
+    Both directions. An op ignoring the argument reuses forever and an op whose
+    gate lost its completion half retrains forever, and one direction alone
+    cannot tell those apart.
+    """
+    ds = make_dataset(tmp_path, save=False)
+    _point_at_litpose(tmp_path, monkeypatch)
+    seen = _fake_trainer(monkeypatch)
+    params = {"project": str(_project(tmp_path))}
+
+    first = run_op(ds, "train-litpose", dict(params))
+    assert len(seen) == 1
+
+    assert run_op(ds, "train-litpose", dict(params)) == first
+    assert len(seen) == 1, "a finished run must not train again"
+
+    assert run_op(ds, "train-litpose", dict(params), overwrite=True) == first
+    assert len(seen) == 2, "overwrite must reach the gate"

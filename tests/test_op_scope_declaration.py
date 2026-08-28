@@ -190,7 +190,7 @@ def _op_these_gates_cover(kind: str) -> type[Op[Params]]:
 
     An op declaring ``scope_dependent`` claims the dependence these gates
     refuse to find. It is skipped by name rather than passed, which keeps the
-    count of ops actually exercised visible in the report.
+    count of ops the gates exercise visible in the report.
 
     The population is pinned by
     :meth:`TestTheDeclarationsAreWhatWeIntend.test_the_ops_the_scope_gates_cover`,
@@ -222,8 +222,8 @@ class TestNoScopeReachesTheHashedPayload:
 
     The direct leak, over **every** registered op rather than the fourteen the
     dataset gate below covers. Every op now takes both as arguments and declares no
-    such field, which makes this pass for all seventeen by construction. It
-    stays as the gate an op reintroducing one meets: the field would be
+    such field, and that is why this passes for all seventeen. It
+    stays as the gate an op reintroducing one meets. The field would be
     ``HASH_EXCLUDE`` or the payload would name it, and a payload naming either
     gives one computation two names as soon as a caller narrows it.
 
@@ -356,7 +356,7 @@ class TestPublished:
 
         Which entries a run covers is an argument to the run. No op params
         model declares a coverage under any spelling the seventeen have used,
-        and the published schema is generated from exactly these fields.
+        and the published schema is generated from these fields.
         """
         declaring = {
             kind for kind in OPS if COVERAGE_NAMES & set(OPS[kind].Params.model_fields)
@@ -369,12 +369,15 @@ class TestPublished:
         Two attempts differing only in whether they redo the work are one
         recipe. Every op takes the decision as the ``overwrite`` argument
         :meth:`~mosaic.core.pipeline.ops.Op.run` receives, whose name and
-        position :class:`TestOpInterface` pins for all seventeen. That a body
-        reads it is measured for ``train-pose``
-        (``tests/test_training_reuse.py``) and for ``convert-points``
-        (``tests/test_tracking_ops.py``), the two reuse-gate shapes. The four
-        remaining training ops repeat ``train-pose``'s gate line and are
-        covered by neither.
+        position :class:`TestOpInterface` pins for all seventeen.
+
+        That a body reads it is measured per op, in both directions, wherever
+        an op has a reuse gate: the five training ops and ``convert-points`` in
+        ``tests/test_training_reuse.py``, ``tests/test_train_sleap.py`` and
+        ``tests/test_train_litpose.py``, ``transcode`` and ``export-store`` in
+        their own suites, and ``extract-frames`` in
+        ``tests/test_frame_extraction.py``, where the argument answers a
+        refusal instead of a recompute.
         """
         declaring = {
             kind for kind in OPS if "overwrite" in OPS[kind].Params.model_fields

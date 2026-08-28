@@ -488,6 +488,40 @@ class TestOverwriteRefuses:
         occupied.mkdir(parents=True)
         _refuse_to_overwrite([_spec(seq_dir=occupied, overwrite=False)])
 
+    def test_the_op_reaches_the_refusal_with_the_argument_it_is_given(
+        self, scenario_dataset_with_media: Dataset
+    ) -> None:
+        """Through ``ExtractFramesOp.run``, not through a hand-built spec.
+
+        The value used to be a field on ``ExtractFramesParams`` and is now the
+        argument ``Op.run`` receives. Every other case in this class calls
+        ``_refuse_to_overwrite`` directly, which passes whatever an op does
+        with the argument it was handed.
+
+        Both directions. A re-run without the flag skips the existing
+        directory, leaving the frames an annotation may reference; with it, the
+        run is refused before any worker starts.
+        """
+        from mosaic.tracking import extract_frames
+        from mosaic.tracking.frame_extraction.dataset_runs import (
+            AnnotatedFramesWouldBeDestroyed,
+        )
+
+        ds = scenario_dataset_with_media
+        scope = Scope(entries=[("", "seq_a")])
+        _ = extract_frames(ds, n_frames=2, method="uniform", scope=scope)
+        extracted = sorted((ds.get_root("frames")).rglob("*.png"))
+        assert extracted, "the fixture must extract something to protect"
+
+        _ = extract_frames(ds, n_frames=2, method="uniform", scope=scope)
+        assert sorted((ds.get_root("frames")).rglob("*.png")) == extracted
+
+        with pytest.raises(AnnotatedFramesWouldBeDestroyed, match="revision"):
+            _ = extract_frames(
+                ds, n_frames=2, method="uniform", scope=scope, overwrite=True
+            )
+        assert sorted((ds.get_root("frames")).rglob("*.png")) == extracted
+
 
 class TestTheRevisionTerm:
     """The only term allowed to move the frozen extraction identifier."""

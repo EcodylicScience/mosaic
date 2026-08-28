@@ -140,8 +140,8 @@ def test_overwrite_retrains(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     first = run_op(ds, "train-pose", dict(params))
     second = run_op(ds, "train-pose", dict(params), overwrite=True)
 
-    # `overwrite` must not move the identifier. It is a throughput knob rather
-    # than a property of the model, and it is passed to the op beside its params.
+    # `overwrite` must not move the identifier. It describes an attempt rather
+    # than the model, and it is passed to the op beside its params.
     assert first == second
     assert trainer.calls == 2
 
@@ -315,3 +315,82 @@ def test_overrides_reach_the_trainer_and_move_the_identity(
     assert trainer.calls == 2
     assert trainer.last_request.train_overrides["lr0"] == 0.0044
     assert trainer.last_request.train_overrides["lrf"] == 0.0072
+
+
+# --- the reuse gate reads the argument, on every op that has one ------------
+#
+# One gate shape, repeated per op: `if not overwrite and training_is_complete(...)`.
+# The value used to be a params field on all six. Each case below asserts both
+# directions, because an op that ignored the argument entirely would reuse
+# forever and an op whose gate lost its `training_is_complete` half would
+# retrain forever, and one direction cannot tell those apart.
+
+
+def test_train_points_reuses_a_finished_run_unless_overwrite_says_otherwise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _make_dataset(tmp_path)
+    trainer = _Counter()
+    trainer.install(monkeypatch)
+    params = {"data": str(_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
+
+    first = run_op(ds, "train-points", dict(params))
+    assert trainer.calls == 1
+
+    assert run_op(ds, "train-points", dict(params)) == first
+    assert trainer.calls == 1, "a finished run must not train again"
+
+    assert run_op(ds, "train-points", dict(params), overwrite=True) == first
+    assert trainer.calls == 2, "overwrite must reach the gate"
+
+
+def _fake_localizer(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Stand in for the PyTorch localizer, recording each run root it wrote."""
+    import mosaic.tracking.pose_training.localizer_train as localizer_train
+
+    trained: list[Path] = []
+
+    def train(
+        dataset_dir: str | Path,
+        *,
+        project: str | Path,
+        name: str,
+        epochs: int = 1,
+        **_kwargs: object,
+    ) -> localizer_train.TrainingResult:
+        run_dir = Path(project) / name
+        (run_dir / "weights").mkdir(parents=True, exist_ok=True)
+        weights = run_dir / "weights" / "best.pt"
+        _ = weights.write_bytes(b"localizer weights")
+        _ = (run_dir / "results.csv").write_text("epoch,loss\n0,0.1\n")
+        trained.append(run_dir)
+        return localizer_train.TrainingResult(
+            best_model_path=weights,
+            last_model_path=weights,
+            run_dir=run_dir,
+            best_epoch=0,
+            best_val_loss=0.1,
+        )
+
+    monkeypatch.setattr(localizer_train, "train_localizer", train)
+    return trained
+
+
+def test_train_localizer_reuses_a_finished_run_unless_overwrite_says_otherwise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _make_dataset(tmp_path)
+    trained = _fake_localizer(monkeypatch)
+    dataset_dir = tmp_path / "patches"
+    (dataset_dir / "train").mkdir(parents=True)
+    _ = (dataset_dir / "train" / "patches.npy").write_bytes(b"patches")
+    params = {"dataset_dir": str(dataset_dir), "epochs": 1, "device": "cpu"}
+
+    first = run_op(ds, "train-localizer", dict(params))
+    assert len(trained) == 1
+
+    assert run_op(ds, "train-localizer", dict(params)) == first
+    assert len(trained) == 1, "a finished run must not train again"
+
+    assert run_op(ds, "train-localizer", dict(params), overwrite=True) == first
+    assert len(trained) == 2, "overwrite must reach the gate"

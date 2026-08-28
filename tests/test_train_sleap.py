@@ -234,3 +234,33 @@ def test_absent_labels_abort_before_anything_is_written(
 
     with pytest.raises(FileNotFoundError, match="labels file does not exist"):
         _ = run_op(ds, "train-sleap", {"labels": str(tmp_path / "nope.slp")})
+
+
+def test_a_finished_run_is_reused_unless_overwrite_says_otherwise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reuse gate reads the ``overwrite`` argument, where it read a field.
+
+    Both directions. An op ignoring the argument reuses forever and an op whose
+    gate lost its completion half retrains forever, and one direction alone
+    cannot tell those apart.
+    """
+    ds = make_dataset(tmp_path / "ds", save=False)
+    _point_at_sleap(tmp_path, monkeypatch)
+    seen = _fake_trainer(monkeypatch)
+    # In a directory of its own. The labels fingerprint walks the file's
+    # parent, and a run writing beside it would move the identity between the
+    # two calls.
+    labels = tmp_path / "labels" / "session.slp"
+    labels.parent.mkdir()
+    _ = labels.write_bytes(b"slp")
+    params = {"labels": str(labels), "max_epochs": 1}
+
+    first = run_op(ds, "train-sleap", dict(params))
+    assert len(seen) == 1
+
+    assert run_op(ds, "train-sleap", dict(params)) == first
+    assert len(seen) == 1, "a finished run must not train again"
+
+    assert run_op(ds, "train-sleap", dict(params), overwrite=True) == first
+    assert len(seen) == 2, "overwrite must reach the gate"
