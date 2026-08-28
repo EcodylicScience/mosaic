@@ -51,6 +51,7 @@ from mosaic.tracking.sleap.version import TRAIN_SLEAP_KIND
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.job import JobContext
 
 TRAIN_SLEAP_VERSION: str = "0.1"
@@ -138,11 +139,16 @@ class TrainSleapOp(Op[TrainSleapParams]):
     Params = TrainSleapParams
     resource_class: ClassVar[str] = "gpu"
 
-    def target(self, params: TrainSleapParams) -> str:
+    def target(self, params: TrainSleapParams, scope: ResolvedScope) -> str:
         return f"sleap-train-{params.head}"
 
     def plan_identity(
-        self, ds: Dataset, params: TrainSleapParams, *, require_data: bool = True
+        self,
+        ds: Dataset,
+        params: TrainSleapParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
     ) -> OpIdentity:
         """What this run, and the model it produces, will be called.
 
@@ -162,7 +168,14 @@ class TrainSleapOp(Op[TrainSleapParams]):
             require_data=require_data,
         )
 
-    def run(self, ds: Dataset, params: TrainSleapParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: TrainSleapParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         from mosaic.tracking.sleap.training import train_sleap
 
         ensure_models_root(ds)
@@ -178,7 +191,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
             weights = base.artifacts[0].file_for("weights")
             resume_from = str(weights) if weights is not None else ""
 
-        run_id = self.plan_identity(ds, params, require_data=False).run_id
+        run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")

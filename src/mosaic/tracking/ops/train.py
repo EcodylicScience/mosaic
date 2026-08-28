@@ -62,6 +62,7 @@ from mosaic.tracking.ops._train_descriptions import (
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.markers import InflightMarker
     from mosaic.tracking.external.runner.ultralytics_protocol import (
         ProbeResponse,
@@ -787,7 +788,12 @@ class TrainPoseOp(Op[PoseTrainParams]):
     Params = PoseTrainParams
 
     def plan_identity(
-        self, ds: Dataset, params: PoseTrainParams, *, require_data: bool = True
+        self,
+        ds: Dataset,
+        params: PoseTrainParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
     ) -> OpIdentity:
         """What this run, and the model it produces, will be called.
 
@@ -809,7 +815,14 @@ class TrainPoseOp(Op[PoseTrainParams]):
             require_data=require_data,
         )
 
-    def run(self, ds: Dataset, params: PoseTrainParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: PoseTrainParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         from mosaic.tracking.common.ultralytics_env import (
             ULTRALYTICS_ENV,
             UltralyticsError,
@@ -831,7 +844,7 @@ class TrainPoseOp(Op[PoseTrainParams]):
         # Through plan_identity, so this run is named in exactly one place. A
         # second copy here would be the one that drifts when the payload changes,
         # and it is the one a planner does not read.
-        run_id = self.plan_identity(ds, params, require_data=False).run_id
+        run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
@@ -894,7 +907,12 @@ class TrainPointsOp(Op[PointTrainParams]):
     Params = PointTrainParams
 
     def plan_identity(
-        self, ds: Dataset, params: PointTrainParams, *, require_data: bool = True
+        self,
+        ds: Dataset,
+        params: PointTrainParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
     ) -> OpIdentity:
         """What this run, and the model it produces, will be called.
 
@@ -916,7 +934,14 @@ class TrainPointsOp(Op[PointTrainParams]):
             require_data=require_data,
         )
 
-    def run(self, ds: Dataset, params: PointTrainParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: PointTrainParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         from mosaic.tracking.common.ultralytics_env import POLO_ENV, PoloError
         from mosaic.tracking.external.runner.ultralytics_protocol import (
             TrainPointsRequest,
@@ -941,7 +966,7 @@ class TrainPointsOp(Op[PointTrainParams]):
         # Through plan_identity, so this run is named in exactly one place. A
         # second copy here would be the one that drifts when the payload changes,
         # and it is the one a planner does not read.
-        run_id = self.plan_identity(ds, params, require_data=False).run_id
+        run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
@@ -1007,7 +1032,12 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
     Params = LocalizerTrainParams
 
     def plan_identity(
-        self, ds: Dataset, params: LocalizerTrainParams, *, require_data: bool = True
+        self,
+        ds: Dataset,
+        params: LocalizerTrainParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
     ) -> OpIdentity:
         """What this run, and the model it produces, will be called.
 
@@ -1029,7 +1059,14 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             require_data=require_data,
         )
 
-    def run(self, ds: Dataset, params: LocalizerTrainParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: LocalizerTrainParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         from mosaic.tracking.pose_training.localizer_train import train_localizer
 
         ensure_models_root(ds)
@@ -1043,7 +1080,7 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             base_digest = base.digest
             weights = str(base.path)
 
-        run_id = self.plan_identity(ds, params, require_data=False).run_id
+        run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")

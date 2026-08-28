@@ -24,6 +24,7 @@ from mosaic_media.transcode import ANALYSIS_ENCODING, TranscodeError
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS, row_to_facts
+from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.media_index import (
     MediaIndexScope,
     frame_from_rows,
@@ -707,7 +708,7 @@ def test_a_repeated_entry_names_the_entry_not_the_count() -> None:
     from mosaic.core.pipeline.transcode import TranscodeOp
 
     params = TranscodeParams(entries=[("g", "s"), ("g", "s")], target="analysis")
-    assert TranscodeOp().target(params) == "g/s"
+    assert TranscodeOp().target(params, ResolvedScope()) == "g/s"
 
 
 # Two processes, each linking a different source. Both read the index before

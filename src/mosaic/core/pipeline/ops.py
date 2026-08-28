@@ -284,8 +284,16 @@ class Op(Generic[P]):
 
     Params: ClassVar[type[Params]]
 
-    def target(self, params: P) -> str:
-        """A short human label for the ``runs.target`` column."""
+    def target(self, params: P, scope: "ResolvedScope") -> str:
+        """A short human label for the ``runs.target`` column.
+
+        Args:
+            params: The validated params this run uses.
+            scope: What this run covers, for a label that names its entries.
+
+        Returns:
+            The label recorded under ``runs.target``.
+        """
         return self.kind
 
     @classmethod
@@ -320,7 +328,14 @@ class Op(Generic[P]):
         """
         return dict(params)
 
-    def plan_identity(self, ds: "Dataset", params: P) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: "Dataset",
+        params: P,
+        scope: "ResolvedScope",
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What this run will be called, without doing any of it.
 
         **The one place this op's identity is minted**, and ``run`` calls it
@@ -337,6 +352,15 @@ class Op(Generic[P]):
         Args:
             ds: The dataset, for the recorded facts the identity covers.
             params: The validated params this run would use.
+            scope: What this run would cover. An op whose identity moves with
+                its coverage reads it, and ``scope_dependent`` declares which
+                ops those are.
+            require_data: Whether a training input that is not on disk defers
+                the identity. A planner asks whether the run is nameable at all
+                and must be told when it is not. An execution has its data
+                already, and the refusal for a missing file belongs to the tool
+                that reads it. An op whose identity reads a dataset fact it
+                cannot obtain refuses regardless of this flag.
 
         Returns:
             The identifiers this run would produce.
@@ -352,8 +376,28 @@ class Op(Generic[P]):
             f"rather than minting a second identifier of its own."
         )
 
-    def run(self, ds: "Dataset", params: P, ctx: JobContext) -> str:
-        """Do the work using *ctx* (progress/cancel/run_id) and return the run_id."""
+    def run(
+        self,
+        ds: "Dataset",
+        params: P,
+        scope: "ResolvedScope",
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
+        """Do the work using *ctx* (progress/cancel/run_id) and return the run_id.
+
+        Args:
+            ds: The dataset the work is done against.
+            params: The validated settings this run uses.
+            scope: What this run covers.
+            overwrite: Whether to recompute what is already there. Two attempts
+                differing only in it produce the same run identifier.
+            ctx: The Job-Contract context that reports progress, answers a
+                cancellation and records the run identifier.
+
+        Returns:
+            The content ``run_id`` this run produced.
+        """
         raise NotImplementedError
 
 
@@ -403,6 +447,7 @@ def run_op(
     progress_callback: "ProgressCallback | None" = None,
     cancel_token: CancelToken | None = None,
     scope: "Scope | None" = None,
+    overwrite: bool = False,
 ) -> str:
     """Run a registered op as a tracked Job-Contract attempt.
 
@@ -419,10 +464,12 @@ def run_op(
         progress_callback: Where per-entry progress is reported.
         cancel_token: How a caller asks the run to stop.
         scope: What to cover. Resolved through
-            :meth:`~mosaic.core.dataset.Dataset.resolve_scope` and made
-            available to the op. Op params still declare their own entry
-            fields, and those are what an op body reads today. A caller passing
-            both is passing the same thing twice.
+            :meth:`~mosaic.core.dataset.Dataset.resolve_scope` and handed to the
+            op. Op params still declare their own entry fields, and those are
+            what an op body reads today. A caller passing both is passing the
+            same thing twice, here and for *overwrite* below.
+        overwrite: Whether the op recomputes what is already there. An op body
+            still reads ``params.overwrite`` today.
 
     Returns:
         The content ``run_id`` the op produced.
@@ -437,22 +484,23 @@ def run_op(
         raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(OPS)}")
     op = op_cls()
     p = op.Params.model_validate(params) if isinstance(params, dict) else params
-    # The seam an op body reads its scope from. Resolved here so one enumeration
-    # answers for every op, and read by nothing yet: an op body still takes its
-    # entries from its own params field, and every caller leaves this unset.
-    # :func:`check_scope_takes` is applied where those two meet.
-    _resolved_scope = ds.resolve_scope(scope)
+    # The seam an op reads its scope from. Resolved here so one enumeration
+    # answers for every op. An op body still takes its entries from its own
+    # params field, and every caller leaves this unset. The op therefore
+    # receives what an unset selector resolves to. :func:`check_scope_takes` is
+    # applied where the argument becomes what an op body reads.
+    resolved = ds.resolve_scope(scope)
     with job_context(
         ds,
         kind=kind,
-        target=op.target(p),
+        target=op.target(p, resolved),
         execution_id=execution_id,
         owner=owner,
         track=track,
         progress_callback=progress_callback,
         cancel_token=cancel_token,
     ) as ctx:
-        return op.run(ds, p, ctx)
+        return op.run(ds, p, resolved, overwrite, ctx)
 
 
 # ---------------------------------------------------------------------------

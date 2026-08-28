@@ -13,7 +13,7 @@ import pandas as pd
 from mosaic_media import MediaFacts
 
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline._utils import hash_params, json_ready
+from mosaic.core.pipeline._utils import ResolvedScope, hash_params, json_ready
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
 from mosaic.core.pipeline.inventory._read import IndexReader
 from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
@@ -561,11 +561,16 @@ def frames_run_id(method: ExtractionMethod, params: ExtractFramesParams) -> str:
     return f"{method}-{hash_params(payload)}"
 
 
-def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) -> str:
+def _run_extract_frames(
+    ds: Dataset,
+    p: ExtractFramesParams,
+    scope: ResolvedScope,
+    ctx: JobContext,
+) -> str:
     """Extraction body executed inside a job_context (the op's payload)."""
     params_hash = hash_params(p.identity_dump())
     # Through the op's plan_identity, so this run is named in one place.
-    run_id = ExtractFramesOp().plan_identity(ds, p).run_id
+    run_id = ExtractFramesOp().plan_identity(ds, p, scope).run_id
     ctx.set_run_id(run_id)
 
     run_root = frames_run_root(ds, p.method, run_id)
@@ -580,8 +585,8 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
             file=sys.stderr,
         )
 
-    scope = ds.resolve_media_scope(p.entries)
-    if not scope:
+    media_scope = ds.resolve_media_scope(p.entries)
+    if not media_scope:
         print(
             "[extract_frames] No media entries match the given scope.", file=sys.stderr
         )
@@ -598,10 +603,10 @@ def _run_extract_frames(ds: Dataset, p: ExtractFramesParams, ctx: JobContext) ->
     # read and one pass per source root, where a per-entry lookup would re-read
     # both files for every camera.
     source_uids, source_compositions = _source_identity_maps(
-        ds, [(entry.group, entry.sequence) for entry in scope]
+        ds, [(entry.group, entry.sequence) for entry in media_scope]
     )
     specs: list[_ExtractSpec] = []
-    for entry in scope:
+    for entry in media_scope:
         group, sequence, camera, resolved = (
             entry.group,
             entry.sequence,
@@ -727,10 +732,17 @@ class ExtractFramesOp(Op[ExtractFramesParams]):
     scope_dependent = False
     Params = ExtractFramesParams
 
-    def target(self, params: ExtractFramesParams) -> str:
+    def target(self, params: ExtractFramesParams, scope: ResolvedScope) -> str:
         return f"extract-{params.method}"
 
-    def plan_identity(self, ds: Dataset, params: ExtractFramesParams) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: Dataset,
+        params: ExtractFramesParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What this extraction run will be called.
 
         Pure in the params -- no dataset read, and nothing to defer. The
@@ -740,8 +752,15 @@ class ExtractFramesOp(Op[ExtractFramesParams]):
         """
         return OpIdentity(run_id=frames_run_id(params.method, params))
 
-    def run(self, ds: Dataset, params: ExtractFramesParams, ctx: JobContext) -> str:
-        return _run_extract_frames(ds, params, ctx)
+    def run(
+        self,
+        ds: Dataset,
+        params: ExtractFramesParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
+        return _run_extract_frames(ds, params, scope, ctx)
 
 
 def extract_frames(

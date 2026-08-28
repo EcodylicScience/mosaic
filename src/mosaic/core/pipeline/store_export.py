@@ -53,7 +53,7 @@ from mosaic.core.media.facts_columns import (
 )
 from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.video_io import FFmpegVideoWriter, open_frame_reader
-from mosaic.core.pipeline._utils import hash_params
+from mosaic.core.pipeline._utils import ResolvedScope, hash_params
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.transcode import (
     TRANSCODE_KIND_DIRECTORY,
@@ -237,11 +237,18 @@ class StoreExportOp(Op[StoreExportParams]):
     scope_dependent = True
     Params = StoreExportParams
 
-    def target(self, params: StoreExportParams) -> str:
+    def target(self, params: StoreExportParams, scope: ResolvedScope) -> str:
         group, sequence = params.entry
         return f"{group}/{sequence}"
 
-    def plan_identity(self, ds: "Dataset", params: StoreExportParams) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: "Dataset",
+        params: StoreExportParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What this export will be called, without encoding anything.
 
         The recipe plus the identities of the stores it will read, both of which
@@ -253,7 +260,14 @@ class StoreExportOp(Op[StoreExportParams]):
             run_id=export_run_id(export_recipe_hash(params), _store_uuids(ds, params))
         )
 
-    def run(self, ds: "Dataset", params: StoreExportParams, ctx: "JobContext") -> str:
+    def run(
+        self,
+        ds: "Dataset",
+        params: StoreExportParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: "JobContext",
+    ) -> str:
         group, sequence = params.entry
         # The same refusal TranscodeOp makes, for the same reason: on a dataset
         # with no media_raw root, the originals index and media/index.csv are one
@@ -278,7 +292,7 @@ class StoreExportOp(Op[StoreExportParams]):
 
         recipe_hash = export_recipe_hash(params)
         # Named in one place, so a planner and this run cannot disagree.
-        run_id = self.plan_identity(ds, params).run_id
+        run_id = self.plan_identity(ds, params, scope).run_id
         ctx.set_run_id(run_id)
 
         media_root = ds.get_root("media")

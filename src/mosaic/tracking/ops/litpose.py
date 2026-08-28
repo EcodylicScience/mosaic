@@ -37,6 +37,7 @@ from mosaic.tracking.litpose.version import (
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.job import JobContext
 
 
@@ -55,10 +56,17 @@ class LitposeOp(Op[LitposeParams]):
     scope_dependent = False
     Params = LitposeParams
 
-    def target(self, params: LitposeParams) -> str:
+    def target(self, params: LitposeParams, scope: ResolvedScope) -> str:
         return "litpose-predict"
 
-    def plan_identity(self, ds: Dataset, params: LitposeParams) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: Dataset,
+        params: LitposeParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What a Lightning Pose run with these settings will be called."""
         from mosaic.tracking.common.mint import planned_model_id, tracker_identity
 
@@ -70,7 +78,14 @@ class LitposeOp(Op[LitposeParams]):
         )
         return tracker_identity(self.kind, self.version, settings)
 
-    def run(self, ds: Dataset, params: LitposeParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: LitposeParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         # conda-env / bin are environment (image) concerns, left unset so the
         # runner resolves them from MOSAIC_LITPOSE_CONDA_ENV / _BIN -- the run_id
         # stays independent of *where* it ran.

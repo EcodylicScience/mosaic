@@ -664,7 +664,7 @@ def _resolve_op_step(
         raise KeyError(f"no registered op is named {step.kind!r}")
     params = build_step_op_params(spec)
     try:
-        identity = op_cls().plan_identity(ds, params)
+        identity = op_cls().plan_identity(ds, params, ds.resolve_scope(spec.entries))
     except IdentityDeferred as exc:
         return _Resolution(
             step=PlannedStep(

@@ -23,6 +23,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.ops import IdentityDeferred, run_op
 from mosaic.core.pipeline.resample_tracks import (
     AmbiguousFrameRateError,
@@ -380,8 +381,8 @@ def test_the_variant_chains_from_the_source_it_read(tmp_path: Path) -> None:
     params = ResampleTracksParams(target_fps=30.0)
     op = ResampleTracksOp()
     assert (
-        op.plan_identity(first, params).tracks_variant
-        != op.plan_identity(second, params).tracks_variant
+        op.plan_identity(first, params, ResolvedScope()).tracks_variant
+        != op.plan_identity(second, params, ResolvedScope()).tracks_variant
     )
 
 
@@ -406,7 +407,9 @@ def test_two_source_variants_in_scope_are_refused(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="reads one tracks variant"):
-        _ = ResampleTracksOp().plan_identity(ds, ResampleTracksParams(target_fps=30.0))
+        _ = ResampleTracksOp().plan_identity(
+            ds, ResampleTracksParams(target_fps=30.0), ResolvedScope()
+        )
 
 
 def test_an_empty_scope_defers_its_identity_rather_than_guessing(
@@ -415,7 +418,9 @@ def test_an_empty_scope_defers_its_identity_rather_than_guessing(
     """A graph step whose source is an earlier step has nothing to name yet."""
     ds = make_dataset(tmp_path / "ds")
     with pytest.raises(IdentityDeferred):
-        _ = ResampleTracksOp().plan_identity(ds, ResampleTracksParams(target_fps=30.0))
+        _ = ResampleTracksOp().plan_identity(
+            ds, ResampleTracksParams(target_fps=30.0), ResolvedScope()
+        )
 
 
 def test_rerunning_is_a_no_op_and_keeps_the_identifier(tmp_path: Path) -> None:

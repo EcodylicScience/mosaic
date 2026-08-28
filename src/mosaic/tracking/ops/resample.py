@@ -52,6 +52,7 @@ from mosaic.core.params import (
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
 
 __all__ = ["ResampleTracksOp", "ResampleTracksParams", "resample_tracks_run_id"]
 
@@ -203,10 +204,17 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
     scope_dependent = True
     Params = ResampleTracksParams
 
-    def target(self, params: ResampleTracksParams) -> str:
+    def target(self, params: ResampleTracksParams, scope: ResolvedScope) -> str:
         return f"{params.target_fps:g}fps"
 
-    def plan_identity(self, ds: Dataset, params: ResampleTracksParams) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: Dataset,
+        params: ResampleTracksParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What this run and the variant it writes will be called.
 
         Deferred rather than guessed when the source is not on disk: this op's
@@ -231,7 +239,14 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
             ),
         )
 
-    def run(self, ds: Dataset, params: ResampleTracksParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: ResampleTracksParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         from mosaic.core.pipeline.resample_tracks import resample_entry_table
         from mosaic.core.pipeline.writers import (
             read_parquet_table,
@@ -240,7 +255,7 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
         from mosaic.core.schema import ensure_track_schema
 
         rows = _source_rows(ds, params, producer=self.kind)
-        identity = self.plan_identity(ds, params)
+        identity = self.plan_identity(ds, params, scope)
         ctx.set_run_id(identity.run_id)
         ctx.set_total(int(len(rows)))
 
