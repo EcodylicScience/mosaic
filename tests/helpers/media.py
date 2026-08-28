@@ -8,6 +8,8 @@ produces -- so a test built on one measures a shape that cannot occur.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -118,21 +120,31 @@ def add_media_sequence(
     )
 
 
-def clean_facts_cells(video_uuid: str = "") -> dict[str, object]:
+def clean_facts_cells(
+    video_uuid: str = "",
+    *,
+    width: int = 640,
+    height: int = 480,
+    fps: float = 30.0,
+    frame_count: int = 100,
+    rotation: int = 0,
+) -> dict[str, object]:
     """A complete, verdict-clean set of media-facts cells for one index row.
 
     The tracker marker suites all need a media row a tracker will actually run
     against: probed dimensions, a container and pixel format that derive to a
     clean verdict, and -- when *video_uuid* is given -- the content identity that
-    lets a marker tell a video replaced in place from one merely renamed.
+    lets a marker tell a video replaced in place from one merely renamed. The
+    keyword arguments default to the dimensions every caller used before they
+    existed. An existing call is unaffected.
     """
     facts: MediaFacts = store_facts(
-        width=640,
-        height=480,
-        fps=30.0,
-        frame_count=100,
+        width=width,
+        height=height,
+        fps=fps,
+        frame_count=frame_count,
         codec="h264",
-        duration=100 / 30.0,
+        duration=frame_count / fps if fps else 0.0,
         video_uuid=video_uuid,
         identity_scheme="video/1" if video_uuid else "",
     )
@@ -141,52 +153,94 @@ def clean_facts_cells(video_uuid: str = "") -> dict[str, object]:
         container="mov,mp4,m4a,3gp,3g2,mj2",
         pixel_format="yuv420p",
         moov_at_start=True,
+        rotation_degrees=rotation,
     )
     return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
 
 
+@dataclass
+class MediaClip:
+    """One media-index row to write.
+
+    *sequence* and *filename* are the two values a row cannot do without.
+    Every other field defaults to the uncalibrated single-clip shape
+    ``write_media_index`` wrote before this class existed. A caller building
+    several clips of one sequence, a multi-camera sequence, or facts that vary
+    from row to row supplies the differing fields. A plain filename-keyed
+    lookup cannot express two rows sharing one sequence name.
+    """
+
+    sequence: str = "sess"
+    filename: str = ""
+    group: str = ""
+    camera: str = ""
+    video_order: int = 0
+    video_uuid: str = ""
+    fps: float = 30.0
+    width: int = 640
+    height: int = 480
+    rotation: int = 0
+    frame_count: int = 100
+
+
 def write_media_index(
     dataset: Dataset,
-    sequences: list[str],
+    rows: Sequence[str | MediaClip],
     *,
     filenames: dict[str, str] | None = None,
     uids: dict[str, str] | None = None,
 ) -> None:
-    """Index one stub video per sequence, with full facts cells.
+    """Index one stub video per row, with full facts cells.
+
+    A plain string in *rows* is shorthand for one stub video named after the
+    sequence. *filenames* and *uids* override its name and content identity by
+    sequence -- the same file under a new name keeps its uid, a replacement
+    changes it. A :class:`MediaClip` names its filename and identity directly
+    and consults neither dict.
 
     The bytes are a placeholder: every tracker marker suite fakes the tool, so
-    nothing decodes them. *filenames* and *uids* are what the rename-versus-replace
-    scenarios vary -- the same file under a new name keeps its uid, a replacement
-    changes it.
+    nothing decodes them.
     """
     media_root = dataset.get_root(dataset.resolve_media_root())
     media_root.mkdir(parents=True, exist_ok=True)
-    rows: list[dict[str, object]] = []
-    for seq in sequences:
-        filename = (filenames or {}).get(seq, f"{seq}.mp4")
+    written: list[dict[str, object]] = []
+    for entry in rows:
+        clip = entry if isinstance(entry, MediaClip) else MediaClip(sequence=entry)
+        filename = clip.filename or (filenames or {}).get(
+            clip.sequence, f"{clip.sequence}.mp4"
+        )
+        video_uuid = clip.video_uuid or (uids or {}).get(clip.sequence, "")
         video = media_root / filename
         if not video.exists():
             _ = video.write_bytes(b"fake")
-        rows.append(
+        written.append(
             {
                 "name": filename,
-                "group": "",
-                "sequence": seq,
-                "group_safe": "",
-                "sequence_safe": seq,
+                "group": clip.group,
+                "sequence": clip.sequence,
+                "group_safe": clip.group,
+                "sequence_safe": clip.sequence,
+                "camera": clip.camera,
                 "abs_path": dataset.relative_to_root(video),
                 "size_bytes": 4,
                 "mtime_iso": "",
-                "width": 640,
-                "height": 480,
-                "fps": 30.0,
+                "width": clip.width,
+                "height": clip.height,
+                "fps": clip.fps,
                 "codec": "h264",
                 "media_type": "video",
-                "video_order": 0,
-                **clean_facts_cells((uids or {}).get(seq, "")),
+                "video_order": clip.video_order,
+                **clean_facts_cells(
+                    video_uuid,
+                    width=clip.width,
+                    height=clip.height,
+                    fps=clip.fps,
+                    frame_count=clip.frame_count,
+                    rotation=clip.rotation,
+                ),
             }
         )
-    pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
+    pd.DataFrame(written).to_csv(media_root / "index.csv", index=False)
 
 
 def add_transcode_derivative(

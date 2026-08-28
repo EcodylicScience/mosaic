@@ -13,6 +13,7 @@ What lives where:
   fit-then-apply features are tested on.
 - ``tracks`` -- track tables, tracks variants, raw TREx exports.
 - ``media`` -- media files, media-index rows, transcode derivatives.
+- ``ops`` -- the smallest params dict that validates for each registered op.
 - ``environment`` -- what the surrounding machine provides: the ffmpeg
   toolchain, and which files under the package root a structural walk should
   skip -- installed third-party code, and mosaic's own code that runs in an
@@ -45,6 +46,7 @@ from tests.helpers.features import (
     write_templates,
 )
 from tests.helpers.media import (
+    MediaClip,
     add_media_sequence,
     add_transcode_derivative,
     clean_facts_cells,
@@ -52,6 +54,7 @@ from tests.helpers.media import (
     write_mpeg4_mp4,
 )
 from tests.helpers.mock_dataset import MockDataset
+from tests.helpers.ops import minimal_op_params
 from tests.helpers.source_scan import (
     functions_named,
     module_tree,
@@ -69,6 +72,7 @@ from tests.helpers.tracks import (
 __all__ = [
     "FFMPEG_TOOLCHAIN",
     "FakeTrainer",
+    "MediaClip",
     "MockDataset",
     "add_media_sequence",
     "add_track_sequences",
@@ -83,6 +87,7 @@ __all__ = [
     "make_pair_df",
     "make_sequence_df",
     "make_templates",
+    "minimal_op_params",
     "missing_ffmpeg_tools",
     "module_tree",
     "names_read",
