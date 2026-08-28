@@ -25,10 +25,19 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic import ValidationError
 
 from mosaic.cli._context import attempt_facts, load_dataset
-from mosaic.cli._io import emit_json, fail, log, parse_entries, stdout_to_stderr
+from mosaic.cli._io import (
+    emit_json,
+    fail,
+    log,
+    parse_entries,
+    stdout_to_stderr,
+    terse,
+)
 from mosaic.cli._render import render_kv
+from mosaic.core.scope import Scope
 
 __all__ = ["track_command", "tracker_kinds"]
 
@@ -140,19 +149,29 @@ def track_command(
     fields = OPS[kind].Params.model_json_schema().get("properties", {})
 
     # --groups and --sequences are a cross product, and params take one entry
-    # list, so the pair is enumerated against the dataset here. A group named
-    # with no sequence means every sequence in it, which only the media index
-    # can answer -- and a dataset with no index reports that as a message rather
-    # than as a traceback, the way every other failure of this command does.
+    # list. A group named with no sequence means every sequence in it, which
+    # only the media index can answer. A missing index and an --entries named
+    # beside either of the other two both become a message rather than a
+    # traceback, the way every other failure of this command does.
     try:
-        scope = ds.expand_media_scope(
-            groups or None, sequences or None, parse_entries(entries) or None
+        scope = Scope(
+            entries=parse_entries(entries) or None,
+            groups=groups or None,
+            sequences=sequences or None,
         )
+    except ValidationError as exc:
+        fail(f"{kind} run failed: {terse(exc)}")
+    try:
+        resolved = ds.resolve_scope(scope)
     except FileNotFoundError as exc:
         fail(f"{kind} run failed: {exc}")
 
+    # ``is_unset`` decides between the two empty resolutions, never their size.
+    # An unset selector reaches the op as ``None`` and covers every indexed
+    # entry. A selector naming a group that holds nothing reaches it as ``[]``
+    # and covers none.
     params: dict[str, object] = {
-        "entries": scope,
+        "entries": None if scope.is_unset else sorted(resolved.entries),
         "overwrite": overwrite,
         "convert_to_tracks": convert_to_tracks,
         "idle_timeout": idle_timeout,

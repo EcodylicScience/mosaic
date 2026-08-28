@@ -45,9 +45,9 @@ class OpParams(Params):
     one expresses a cross product, so it cannot name group A sequence 1 together
     with group B sequence 2 without also naming A/2 and B/1. ``mosaic track``
     takes the pair as flags and ``mosaic run --kind`` takes it inside
-    ``--params``; both enumerate it through
-    :meth:`~mosaic.core.dataset.Dataset.expand_media_scope` before an op's model
-    validates.
+    ``--params``. Both resolve it through
+    :meth:`~mosaic.core.dataset.Dataset.resolve_scope`, which enumerates the
+    cross product against the media index, before an op's model validates.
 
     An op that refuses an unscoped run has a choice, and it is a trade rather
     than a constraint. Inheriting this field keeps the base and refuses ``None``

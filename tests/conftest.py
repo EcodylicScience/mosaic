@@ -507,14 +507,14 @@ def dataset_without_index(tmp_path: Path) -> Dataset:
 
 
 @pytest.fixture
-def two_entry_dataset(tmp_path: Path) -> Dataset:
+def three_entry_dataset(tmp_path: Path) -> Dataset:
     """Media rows for (A, one), (A, two) and (B, one), each one video.
 
-    Group B repeats the sequence name 'one' on purpose: it is what makes a
+    Group B repeats the sequence name 'one' on purpose. That is what makes a
     sequences-only selector resolve to two entries, and what a cross product
     cannot express.
     """
-    manifest = new_dataset_manifest("two-entry", base_dir=tmp_path)
+    manifest = new_dataset_manifest("three-entry", base_dir=tmp_path)
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
     write_media_index(
         dataset,

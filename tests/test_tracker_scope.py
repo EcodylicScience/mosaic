@@ -16,9 +16,11 @@ import dataclasses
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from mosaic.cli.run import entries_from_scope
 from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.scope import Scope
 from mosaic.core.media.facts_columns import store_facts
 from mosaic.tracking.common.scope import (
     JoinedSourceMismatchError,
@@ -238,10 +240,10 @@ class TestTheItemInvariant:
             )
 
 
-class TestExpandMediaScope:
+class TestResolveScope:
     """A group or sequence scope becomes the entry list an op's params take.
 
-    The expansion is what keeps ``--groups`` expressible after the params
+    The enumeration is what keeps ``--groups`` expressible after the params
     dropped the field: a group named with no sequence means every sequence in
     it, and only the media index knows which those are.
     """
@@ -249,9 +251,8 @@ class TestExpandMediaScope:
     def _dataset(self, tmp_path: Path) -> Dataset:
         """Two groups, a repeated sequence name, and one sequence in two clips.
 
-        Written B first so a result that never sorted would be visible, and with
-        ``one`` split across two rows so a result that never collapsed them
-        would be too.
+        ``one`` is written under both groups, and split across two rows under
+        ``A``, which is what an enumeration must keep apart and collapse.
         """
         return _dataset(
             tmp_path,
@@ -264,58 +265,49 @@ class TestExpandMediaScope:
         )
 
     def test_a_group_enumerates_its_sequences(self, tmp_path: Path) -> None:
+        """Three media rows under A, and the two entries they belong to.
+
+        ``one`` is split across two clips and is named once. A pair repeated
+        per media row is not a wider scope, and an op that acts per entry would
+        act on that entry twice.
+        """
         ds = self._dataset(tmp_path)
-        assert ds.expand_media_scope(groups=["A"]) == [("A", "one"), ("A", "two")]
+        resolved = ds.resolve_scope(Scope(groups=["A"]))
+        assert resolved.entries == {("A", "one"), ("A", "two")}
 
     def test_a_sequence_name_repeated_across_groups_yields_both(
         self, tmp_path: Path
     ) -> None:
         """What the cross product cannot express, and why entries are enumerated."""
         ds = self._dataset(tmp_path)
-        assert ds.expand_media_scope(sequences=["one"]) == [("A", "one"), ("B", "one")]
+        resolved = ds.resolve_scope(Scope(sequences=["one"]))
+        assert resolved.entries == {("A", "one"), ("B", "one")}
 
-    def test_the_three_selectors_intersect(self, tmp_path: Path) -> None:
-        ds = self._dataset(tmp_path)
-        expanded = ds.expand_media_scope(
-            groups=["A"], entries=[("A", "one"), ("B", "one")]
-        )
-        assert expanded == [("A", "one")]
+    def test_entries_beside_groups_is_refused(self) -> None:
+        """One way to name a set, not two combined."""
+        with pytest.raises(ValidationError, match="cannot be combined"):
+            _ = Scope(entries=[("A", "one"), ("B", "one")], groups=["A"])
 
     def test_an_unnamed_scope_stays_unscoped(self, tmp_path: Path) -> None:
-        """``None`` reaches the op as ``None``, which every op reads as all entries."""
+        """An unset selector is what the commands turn into ``entries=None``."""
         ds = self._dataset(tmp_path)
-        assert ds.expand_media_scope() is None
+        resolved = ds.resolve_scope()
+        assert resolved.entries == set()
+        assert resolved.selector.is_unset
 
     def test_an_entry_list_alone_needs_no_media_index(self, tmp_path: Path) -> None:
         """A dataset with no index still accepts an explicit scope."""
         manifest = new_dataset_manifest("no-index", base_dir=tmp_path)
         ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
-        assert ds.expand_media_scope(entries=[("A", "one")]) == [("A", "one")]
-
-    def test_an_entry_with_two_clips_is_named_once(self, tmp_path: Path) -> None:
-        """One pair per entry, however many media rows it holds.
-
-        A duplicate pair is not a wider scope: it is one entry named twice, and
-        an op that acts per entry would act on it twice.
-        """
-        ds = self._dataset(tmp_path)
-        expanded = ds.expand_media_scope(groups=["A"])
-        assert expanded is not None
-        assert expanded.count(("A", "one")) == 1
-
-    def test_the_pairs_come_back_sorted(self, tmp_path: Path) -> None:
-        """Index order does not reach an op's params, so a re-index moves nothing."""
-        ds = self._dataset(tmp_path)
-        assert ds.expand_media_scope(groups=["A", "B"]) == [
-            ("A", "one"),
-            ("A", "two"),
-            ("B", "one"),
-        ]
+        resolved = ds.resolve_scope(Scope(entries=[("A", "one")]))
+        assert resolved.entries == {("A", "one")}
 
     def test_a_group_with_no_rows_is_an_empty_scope(self, tmp_path: Path) -> None:
         """Empty is not unscoped: naming a group that holds nothing runs nothing."""
         ds = self._dataset(tmp_path)
-        assert ds.expand_media_scope(groups=["absent"]) == []
+        resolved = ds.resolve_scope(Scope(groups=["absent"]))
+        assert resolved.entries == set()
+        assert not resolved.selector.is_unset
 
     def test_a_missing_index_is_reported_where_the_scope_is_read(
         self, tmp_path: Path
@@ -324,24 +316,30 @@ class TestExpandMediaScope:
         manifest = new_dataset_manifest("no-index", base_dir=tmp_path)
         ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
         with pytest.raises(FileNotFoundError):
-            _ = ds.expand_media_scope(groups=["A"])
+            _ = ds.resolve_scope(Scope(groups=["A"]))
 
 
 class TestScopeInsideParams:
     """``mosaic run --kind`` takes its scope inside ``--params``.
 
-    The command declares no scope flags and refuses ``--entries``, so the two
-    keys a person reaches for are read out of the params object and enumerated
-    before the op's own model validates.
+    The command declares no scope flags and refuses ``--entries``. The scope
+    keys are read out of the params object and resolved before the op's own
+    model validates.
     """
 
     def _dataset(self, tmp_path: Path) -> Dataset:
+        """Three entries, indexed in the reverse of their sorted order.
+
+        Every assertion below reads an ordered list out of an op's params. The
+        two orders disagree here, and an ordered assertion therefore names one
+        of them.
+        """
         return _dataset(
             tmp_path,
             [
-                MediaClip(filename="a1.mp4", group="A", sequence="one"),
-                MediaClip(filename="a2.mp4", group="A", sequence="two"),
                 MediaClip(filename="b1.mp4", group="B", sequence="one"),
+                MediaClip(filename="a2.mp4", group="A", sequence="two"),
+                MediaClip(filename="a1.mp4", group="A", sequence="one"),
             ],
         )
 
@@ -356,17 +354,44 @@ class TestScopeInsideParams:
         expanded = entries_from_scope(ds, {"n_frames": 2, "groups": ["A"]})
         assert expanded == {"n_frames": 2, "entries": [("A", "one"), ("A", "two")]}
 
-    def test_an_entry_list_intersects_with_the_group(self, tmp_path: Path) -> None:
+    def test_an_entry_list_alone_is_sorted_and_collapsed(self, tmp_path: Path) -> None:
+        """The params key resolves the way ``--entries`` does, through one selector."""
         ds = self._dataset(tmp_path)
         expanded = entries_from_scope(
-            ds, {"groups": ["A"], "entries": [["A", "one"], ["B", "one"]]}
+            ds, {"entries": [["B", "one"], ["A", "one"], ["B", "one"]]}
         )
-        assert expanded == {"entries": [("A", "one")]}
+        assert expanded["entries"] == [("A", "one"), ("B", "one")]
+
+    def test_index_order_does_not_reach_the_entry_list(self, tmp_path: Path) -> None:
+        """An op's ``entries`` is sorted, whatever order the index rows are in.
+
+        The resolved scope is a set. This command is where the ordering is
+        decided, and a re-index therefore moves nothing.
+        """
+        ds = self._dataset(tmp_path)
+        expanded = entries_from_scope(ds, {"groups": ["A", "B"]})
+        assert expanded["entries"] == [("A", "one"), ("A", "two"), ("B", "one")]
+
+    def test_a_camera_addressed_entry_list_is_refused(self, tmp_path: Path) -> None:
+        """An op's entry list is pairs, and a triple is refused by name.
+
+        The refusal names the form to give instead. A resolved triple covers
+        every camera of the entry under a selector that named one of them.
+        """
+        ds = self._dataset(tmp_path)
+        with pytest.raises(ValueError, match=r"Give \(group, sequence\) pairs"):
+            _ = entries_from_scope(ds, {"entries": [["A", "one", "cam0"]]})
+
+    def test_an_entry_list_beside_a_group_is_refused(self, tmp_path: Path) -> None:
+        """The params keys name one selector, the same as the flags do."""
+        ds = self._dataset(tmp_path)
+        with pytest.raises(ValidationError, match="cannot be combined"):
+            _ = entries_from_scope(
+                ds, {"groups": ["A"], "entries": [["A", "one"], ["B", "one"]]}
+            )
 
     def test_an_op_with_no_scope_refuses_the_expansion(self, tmp_path: Path) -> None:
-        """Scoping an op that takes none is refused by name, not silently dropped."""
-        from pydantic import ValidationError
-
+        """Scoping an op that takes none is refused by name rather than dropped."""
         from mosaic.core.pipeline.ops import OPS
         from mosaic.tracking import register_ops
 

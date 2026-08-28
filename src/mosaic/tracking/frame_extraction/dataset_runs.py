@@ -781,8 +781,8 @@ def extract_frames(
     ``entries`` scope, the k-means knobs and ``parallel_workers`` /
     ``parallel_mode`` -- plus the standard contract knobs
     (``execution_id``/``owner``/``track``/``progress_callback``/``cancel_token``).
-    :meth:`~mosaic.core.dataset.Dataset.expand_media_scope` turns a group or
-    sequence scope into the entry list this takes.
+    :meth:`~mosaic.core.dataset.Dataset.resolve_scope` enumerates a group or
+    sequence selector into the entry list this takes.
     """
     params = ExtractFramesParams(
         n_frames=n_frames,
