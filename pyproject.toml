@@ -187,7 +187,7 @@ polo = ["mosaic-behavior[deep-learning]"]
 mosaic = "mosaic.cli:app"
 
 [tool.basedpyright]
-pythonVersion = "3.13"
+pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
