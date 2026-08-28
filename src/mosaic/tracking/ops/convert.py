@@ -133,18 +133,14 @@ _SYMLINK_IMAGES_DESCRIPTION = (
     "Symlink source images into the dataset instead of copying them."
 )
 
-_OVERWRITE_DESCRIPTION = (
-    "Convert again even if this exact combination of params, XML and "
-    "images already produced a data.yaml."
-)
-
 
 class ConvertPointsParams(Params):
     """Parameters for the ``convert-points`` op (CVAT points -> POLO training dataset).
 
     This op names an XML export and an images directory, never a media entry,
-    so it declares no scope and its ``scope_takes`` is ``"none"``. Its own
-    ``overwrite`` field decides whether an existing ``data.yaml`` is rebuilt.
+    so it declares no scope and its ``scope_takes`` is ``"none"``. Whether an
+    existing ``data.yaml`` is rebuilt is decided by the ``overwrite`` argument
+    :meth:`ConvertPointsOp.run` receives, not by a field here.
     """
 
     source_format: Annotated[
@@ -173,7 +169,6 @@ class ConvertPointsParams(Params):
     symlink_images: Annotated[
         bool, HASH_EXCLUDE, Declared(_SYMLINK_IMAGES_DESCRIPTION)
     ] = True
-    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
 
 
 # --- Op ------------------------------------------------------------------
@@ -259,7 +254,7 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
 
         # Content-addressed cache hit: an identical (params, xml, images) run already
         # produced this data.yaml. Re-running is a no-op unless overwrite is set.
-        if data_yaml.exists() and not params.overwrite:
+        if data_yaml.exists() and not overwrite:
             ctx.cache_hit()
             return run_id
 

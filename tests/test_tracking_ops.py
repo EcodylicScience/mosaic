@@ -1157,6 +1157,37 @@ def test_convert_points_lifecycle(tmp_path):
     assert run_id2 == run_id
 
 
+def test_convert_points_overwrite_rebuilds_the_dataset(tmp_path: Path) -> None:
+    """The overwrite argument is read by a reuse gate that is not a training one.
+
+    convert-points decides reuse from an existing data.yaml rather than from a
+    completion row, and it clears the run root before rewriting. A marker
+    dropped into that root measures whether the clear happened, which a
+    timestamp on a deterministic converter would not.
+    """
+    ds = _make_dataset(tmp_path)
+    xml, images_dir = _write_cvat_points_fixture(ds.base_dir)
+    from mosaic.core.pipeline.models import model_run_root
+
+    params = {
+        "cvat_xml": ds.relative_to_root(xml),
+        "images_dir": ds.relative_to_root(images_dir),
+        "class_names": ["UnmarkedBee"],
+        "radii": {"UnmarkedBee": 100.0},
+        "symlink_images": False,
+    }
+    run_id = run_op(ds, "convert-points", dict(params))
+    marker = model_run_root(ds, "convert-points", run_id) / "marker.txt"
+    marker.write_text("kept across a reuse")
+
+    assert run_op(ds, "convert-points", dict(params)) == run_id
+    assert marker.exists(), "a reuse must not clear the run root"
+
+    assert run_op(ds, "convert-points", dict(params), overwrite=True) == run_id
+    assert not marker.exists(), "overwrite must clear the run root and rebuild"
+    assert (model_run_root(ds, "convert-points", run_id) / "data.yaml").exists()
+
+
 def test_convert_points_no_matching_images_raises(tmp_path):
     ds = _make_dataset(tmp_path)
     xml, images_dir = _write_cvat_points_fixture(ds.base_dir)

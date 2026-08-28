@@ -1,5 +1,5 @@
 {
-  "recipe/digest": "9764a17833842ea5",
+  "recipe/digest": "b0d7d33fa6d10815",
   "speed/entries": ":seq_a;:seq_b",
   "speed/lane": "feature-compute",
   "speed/run_id": "0.2-4ceb3bbf85",
@@ -10,6 +10,11 @@
   "templates/run_id": "0.1-48e367db6c",
   "templates/storage_name": "extract-templates__from__speed-angvel__from__tracks",
   "templates/tracks_variant": "",
+  "train/entries": "",
+  "train/lane": "gpu-train",
+  "train/run_id": "train-pose.0.2-54d811aa6c",
+  "train/storage_name": "",
+  "train/tracks_variant": "",
   "transcode/entries": ":seq_a;:seq_b",
   "transcode/lane": "feature-compute",
   "transcode/run_id": "transcode-816195ccbd",

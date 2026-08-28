@@ -438,9 +438,9 @@ def run_op(
         scope: What to cover. Resolved through
             :meth:`~mosaic.core.dataset.Dataset.resolve_scope`, checked against
             the op's ``scope_takes`` declaration, and handed to the op.
-        overwrite: Whether the op recomputes what is already there. The six ops
-            that take no scope still declare their own ``overwrite`` field and
-            read that instead.
+        overwrite: Whether the op recomputes what is already there. Every op
+            reads it from here. Two attempts differing only in it produce the
+            same run identifier.
 
     Returns:
         The content ``run_id`` the op produced.

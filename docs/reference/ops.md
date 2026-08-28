@@ -40,7 +40,6 @@ Convert CVAT point annotations into a POLO point-detection dataset + ``data.yaml
 | `split_by` | `string` | `"group"` |  | How images are grouped before the split is drawn. group keeps frames from the same video together in one split. |
 | `seed` | `integer` | `42` |  | Random seed for the train, validation and test split assignment. |
 | `symlink_images` | `boolean` | `true` |  | Symlink source images into the dataset instead of copying them. |
-| `overwrite` | `boolean` | `false` |  | Convert again even if this exact combination of params, XML and images already produced a data.yaml. |
 
 #### `litpose`
 
@@ -385,7 +384,6 @@ Train a Lightning Pose model, registering the directory it produces.
 | `device` | `string` | `"auto"` |  | The accelerator to train the model on. **Unwired:** the training subprocess never receives it. |
 | `idle_timeout` | `number` | `1800` |  | How long the training subprocess may go without output before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |
-| `overwrite` | `boolean` | `false` |  | Train again even if this exact run already finished. |
 
 ??? note "`JsonValue`"
 
@@ -411,7 +409,6 @@ Train the heatmap localizer, registering the directory it produces.
 | `seed` | `integer` | `42` |  | The random seed for the training run. |
 | `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. |
 | `batch_size` | `integer` | `128` |  | How many training patches the model reads in one forward pass. |
-| `overwrite` | `boolean` | `false` |  | Train again even if this exact run already finished. |
 
 #### `train-points`
 
@@ -432,7 +429,6 @@ Train a POLO point-detection model, registering the directory it produces.
 | `train_overrides` | `object` \| `None` | `null` |  | Extra keyword arguments forwarded verbatim to yolo.train. Keys that would collide with a typed field or with an argument the op supplies are refused. |
 | `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. |
 | `batch` | `integer` | `16` |  | How many training images the model reads in one forward pass. |
-| `overwrite` | `boolean` | `false` |  | Train again even if this exact run already finished. |
 | `loc` | `number` | `5.0` |  | The localization loss weight, a POLO train keyword. |
 | `loc_loss` | `string` | `"mse"` |  | Which localization loss POLO minimizes. |
 | `dor` | `number` | `0.8` |  | The Distance of Reference threshold POLO evaluates against. |
@@ -461,7 +457,6 @@ Train a YOLO pose model, registering the directory it produces.
 | `train_overrides` | `object` \| `None` | `null` |  | Extra keyword arguments forwarded verbatim to yolo.train. Keys that would collide with a typed field or with an argument the op supplies are refused. |
 | `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. |
 | `batch` | `integer` | `16` |  | How many training images the model reads in one forward pass. |
-| `overwrite` | `boolean` | `false` |  | Train again even if this exact run already finished. |
 
 ??? note "`JsonValue`"
 
@@ -486,7 +481,6 @@ Train a SLEAP model, registering the directory it produces.
 | `device` | `string` | `"auto"` |  | Which accelerator trains the model, forwarded to sleap-nn as trainer_accelerator. auto leaves the choice to sleap-nn. |
 | `idle_timeout` | `number` | `1800` |  | How long the training subprocess may go without output before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |
-| `overwrite` | `boolean` | `false` |  | Train again even if this exact run already finished. |
 
 ??? note "`JsonValue`"
 
