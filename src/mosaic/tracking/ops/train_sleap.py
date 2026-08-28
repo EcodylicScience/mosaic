@@ -133,6 +133,8 @@ class TrainSleapOp(Op[TrainSleapParams]):
     category = "train"
     domain = "tracking"
     version = TRAIN_SLEAP_VERSION
+    scope_takes = "none"
+    scope_dependent = False
     Params = TrainSleapParams
     resource_class: ClassVar[str] = "gpu"
 

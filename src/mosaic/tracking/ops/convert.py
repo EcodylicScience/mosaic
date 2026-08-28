@@ -195,6 +195,8 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
     category = "convert"
     domain = "tracking"
     version = "0.1"
+    scope_takes = "none"
+    scope_dependent = False
     Params = ConvertPointsParams
 
     def target(self, params: ConvertPointsParams) -> str:

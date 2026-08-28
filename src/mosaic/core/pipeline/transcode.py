@@ -491,6 +491,8 @@ class TranscodeOp(Op[TranscodeParams]):
     # change alters, and a bump would rename every derivative on every machine,
     # CPU-only ones included, to separate files from byte-identical output.
     version = "0.2"
+    scope_takes = "at-least-one"
+    scope_dependent = True
     Params = TranscodeParams
 
     def target(self, params: TranscodeParams) -> str:
