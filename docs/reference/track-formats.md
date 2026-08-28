@@ -116,7 +116,7 @@ The tracker-neutral standard: per-frame, per-id tracks in video pixels. `X`/`Y` 
 
 ### `trex_v1`
 
-Minimal T-Rex-like per-frame, per-id tracks with centroid/pose columns. `group` is required but may be empty (an optional namespace, not the canonical grouping — use tags / run_feature(scope=Scope(entries=...)) for that).
+Minimal T-Rex-like per-frame, per-id tracks with centroid/pose columns. `group` is required but may be empty (an optional namespace, not the canonical grouping -- use tags / run_feature(scope=Scope(entries=...)) for that).
 
 | | |
 | --- | --- |
