@@ -22,7 +22,8 @@ from mosaic_media.transcode import TranscodeError  # noqa: E402
 
 from mosaic.core.dataset import Dataset  # noqa: E402
 from mosaic.core.media.video_io import open_frame_reader  # noqa: E402
-from mosaic.core.pipeline.ops import run_op  # noqa: E402
+from mosaic.core.pipeline.ops import ScopeRefused, run_op  # noqa: E402
+from mosaic.core.scope import Scope  # noqa: E402
 from mosaic.core.pipeline.store_export import (  # noqa: E402
     EXPORT_TARGET,
     StoreExportParams,
@@ -90,11 +91,30 @@ def _store_dataset(
     return ds, str(row["group"]), str(row["sequence"])
 
 
-def _export(ds: Dataset, group: str, sequence: str, camera: str | None = None) -> None:
-    run_op(
+def _export(
+    ds: Dataset,
+    group: str,
+    sequence: str,
+    camera: str | None = None,
+    *,
+    overwrite: bool = False,
+) -> None:
+    """Export one entry, or one camera of it when *camera* names one.
+
+    The camera rides in the entry key rather than beside it: a triple names
+    one camera and a pair names every camera of the entry.
+    """
+    selector = (
+        Scope(entries=[(group, sequence, camera)])
+        if camera is not None
+        else Scope(entries=[(group, sequence)])
+    )
+    _ = run_op(
         ds,
         "export-store",
-        StoreExportParams(entry=(group, sequence), camera=camera, av1_crf=_LOSSLESS),
+        StoreExportParams(av1_crf=_LOSSLESS),
+        scope=selector,
+        overwrite=overwrite,
     )
 
 
@@ -223,6 +243,88 @@ def test_a_second_export_reuses_the_first(
     assert export.stat().st_mtime_ns == stamp, "the export was re-encoded"
 
 
+def test_overwrite_forces_a_re_export(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An export already on disk is rebuilt rather than reused.
+
+    Counted at ``write_export``, the call that decodes and re-encodes every
+    frame. A reused store never reaches it, so the count is zero for a reuse
+    and cannot be satisfied by the file merely still being there.
+    """
+    import mosaic.core.pipeline.store_export as store_export_module
+
+    ds, group, sequence = _store_dataset(tmp_path, make_media_dataset, make_imgstore)
+    _export(ds, group, sequence)
+
+    written: list[Path] = []
+    real = store_export_module.write_export
+
+    def counted(store: Path, dest: Path, *args: object, **kwargs: object) -> object:
+        written.append(dest)
+        return real(store, dest, *args, **kwargs)
+
+    monkeypatch.setattr(store_export_module, "write_export", counted)
+
+    _export(ds, group, sequence)
+    assert written == [], "the reuse gate must skip a store already linked"
+
+    _export(ds, group, sequence, overwrite=True)
+    assert len(written) == 1, "overwrite must re-export the store it would reuse"
+
+
+def test_two_entries_are_refused_naming_both(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """One export covers one entry, and the refusal says which two were given.
+
+    The arity used to be carried by a singular ``entry`` field, which a caller
+    could only satisfy one way. It is the ``scope_takes`` declaration now, and
+    one shared checker raises for every op that states an arity.
+    """
+    from mosaic.core.pipeline.ops import OPS, check_scope_takes
+
+    ds, group, sequence = _store_dataset(tmp_path, make_media_dataset, make_imgstore)
+    selector = Scope(entries=[(group, sequence), ("other", "entry")])
+
+    with pytest.raises(ScopeRefused, match="covers one entry") as caught:
+        check_scope_takes(
+            "export-store",
+            OPS["export-store"].scope_takes,
+            ds.resolve_scope(selector),
+        )
+
+    message = str(caught.value)
+    assert sequence in message and "entry" in message
+
+
+def test_a_camera_triple_exports_that_camera_and_a_pair_exports_every_one(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """The camera rides in the entry key, and a pair means every camera.
+
+    Both halves in one test, because the pair's meaning is only visible beside
+    the triple's: a triple that exported everything would pass a test that
+    asserted the pair alone.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, make_imgstore, cameras=["CAMA", "CAMB"]
+    )
+
+    _export(ds, group, sequence, camera="CAMA")
+    assert len(_exports(ds)) == 1, "a triple exports the one camera it names"
+
+    _export(ds, group, sequence)
+    assert len(_exports(ds)) == 2, "a pair exports every camera of the entry"
+
+
 def test_each_camera_of_a_recording_exports_separately(
     tmp_path: Path,
     make_media_dataset: Callable[[Path], Dataset],
@@ -272,13 +374,18 @@ def test_exporting_one_camera_leaves_the_other_unexported(
 
 
 def test_the_recipe_ignores_scope_and_tracks_the_encode() -> None:
-    """Scope fields stay out of the recipe hash; an encode knob stays in."""
-    base = StoreExportParams(entry=("g", "s"))
-    assert export_recipe_hash(base) == export_recipe_hash(
-        StoreExportParams(entry=("other", "entry"), camera="CAMA")
-    )
+    """No coverage field to reach the recipe hash, and an encode knob in it.
+
+    The coverage used to be two params fields marked ``HASH_EXCLUDE``. It is
+    an argument to the run now, which is why the recipe cannot read it at
+    all. What the coverage does reach is ``export_run_id``, through the
+    identities of the stores exported.
+    """
+    declared = set(StoreExportParams.model_fields)
+    assert not declared & {"entry", "entries", "camera", "cameras"}
+    base = StoreExportParams()
     assert export_recipe_hash(base) != export_recipe_hash(
-        StoreExportParams(entry=("g", "s"), av1_crf=_LOSSLESS)
+        StoreExportParams(av1_crf=_LOSSLESS)
     )
 
 

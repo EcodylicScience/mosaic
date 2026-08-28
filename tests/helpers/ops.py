@@ -16,7 +16,7 @@ _MINIMAL: dict[str, dict[str, object]] = {
         "class_names": ["individual"],
         "radii": {"individual": 4.0},
     },
-    "export-store": {"entry": ["A", "one"]},
+    "export-store": {},
     "extract-frames": {"n_frames": 1},
     "infer-localizer": {"model": "models/infer-localizer/run/best.pt"},
     "infer-points": {"model": "models/infer-points/run/best.pt"},
@@ -29,7 +29,7 @@ _MINIMAL: dict[str, dict[str, object]] = {
     "train-points": {"data": "datasets/points/data.yaml"},
     "train-pose": {"data": "datasets/pose/data.yaml"},
     "train-sleap": {"labels": "labels_raw/sleap/labels.slp"},
-    "transcode": {"entries": [["A", "one"]]},
+    "transcode": {},
     "trex": {},
     "ultralytics": {"model_path": "models/ultralytics/run/model.pt"},
 }
@@ -45,8 +45,7 @@ def minimal_op_params(kind: str) -> dict[str, object]:
     not check that the path exists.
 
     Returns a copy. The values in ``_MINIMAL`` are shared across every call in
-    the process, and an op's params commonly hold a mutable ``entries``
-    or ``scope`` field a caller sets after construction.
+    the process, and a caller commonly mutates what it gets back.
     """
     if kind not in OPS:
         message = f"{kind!r} is not a registered op"

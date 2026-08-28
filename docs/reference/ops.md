@@ -504,13 +504,7 @@ Export one entry's imgstore recordings as plain video and link them.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `entry` | `Entry` | _required_ |  | The one (group, sequence) whose stores are exported. Singular: this op exports one entry per run. |
-| `camera` | `string` \| `None` | `null` |  | Which camera of the entry to export. Unset exports every camera, each to its own file. |
 | `av1_crf` | `integer` | `14` |  | AV1 constant-rate factor, 0 (lossless) to 63, defaulting to what an analysis transcode encodes at. Named for its scale because this writer encodes AV1, whose `crf` argument is a deprecated shim in x264's scale. |
-
-??? note "`Entry`"
-
-    No parameters.
 
 #### `transcode`
 
@@ -520,10 +514,5 @@ Transcode the scoped entries' originals for a target, linking both ways.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `entries` | list of `Entry` | _required_ | min items `1` | Which (group, sequence) entries to transcode. Required and non-empty: an unscoped transcode would re-encode a whole corpus. A repeated entry is collapsed. |
 | `target` | `"analysis"` \| `"playback"` | `"analysis"` |  | Which derivative to write: 'analysis' is the one a tool decodes frame by frame, 'playback' the one a browser streams. |
 | `allow_hardware` | `boolean` | `false` |  | Permit a hardware encoder where the machine offers a usable one. The encode falls back to the CPU encoder where it does not. |
-
-??? note "`Entry`"
-
-    No parameters.

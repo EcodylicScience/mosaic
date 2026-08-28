@@ -25,6 +25,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS, row_to_facts
 from mosaic.core.pipeline._utils import ResolvedScope
+from mosaic.core.scope import Scope
 from mosaic.core.pipeline.media_index import (
     MediaIndexScope,
     frame_from_rows,
@@ -51,6 +52,9 @@ from mosaic.media_probe_config import media_thresholds
 # that an unclosed file anywhere else still fails. Remove once mosaic-media closes
 # the pipe.
 pytestmark = pytest.mark.filterwarnings("ignore:unclosed file:ResourceWarning")
+
+GS = Scope(entries=[("g", "s")])
+"""The one entry the fixtures below index, as the selector a caller writes."""
 
 
 def _write_analysis_required_mp4(path: Path, duration: str = "2") -> None:
@@ -185,7 +189,10 @@ def test_transcode_op_writes_derivative_and_links(
         _ = ds.resolve_media(group, sequence)
 
     run_id = run_op(
-        ds, "transcode", TranscodeParams(entries=[(group, sequence)], target="analysis")
+        ds,
+        "transcode",
+        TranscodeParams(target="analysis"),
+        scope=Scope(entries=[(group, sequence)]),
     )
     assert run_id.startswith("transcode-")
     transcode_dir = ds.get_root("media") / "transcode"
@@ -237,10 +244,16 @@ def test_analysis_facts_not_crossed_when_playback_transcoded_first(
     # the media index, so a source_path-first lookup would return playback facts
     # for the analysis route.
     _ = run_op(
-        ds, "transcode", TranscodeParams(entries=[(group, sequence)], target="playback")
+        ds,
+        "transcode",
+        TranscodeParams(target="playback"),
+        scope=Scope(entries=[(group, sequence)]),
     )
     _ = run_op(
-        ds, "transcode", TranscodeParams(entries=[(group, sequence)], target="analysis")
+        ds,
+        "transcode",
+        TranscodeParams(target="analysis"),
+        scope=Scope(entries=[(group, sequence)]),
     )
 
     transcode_dir = ds.get_root("media") / "transcode"
@@ -291,10 +304,16 @@ def test_transcode_op_is_idempotent(
     group, sequence = _indexed_entry(ds, source_dir)
 
     first = run_op(
-        ds, "transcode", TranscodeParams(entries=[(group, sequence)], target="analysis")
+        ds,
+        "transcode",
+        TranscodeParams(target="analysis"),
+        scope=Scope(entries=[(group, sequence)]),
     )
     second = run_op(
-        ds, "transcode", TranscodeParams(entries=[(group, sequence)], target="analysis")
+        ds,
+        "transcode",
+        TranscodeParams(target="analysis"),
+        scope=Scope(entries=[(group, sequence)]),
     )
     assert first == second  # deterministic run_id
     # The real invariant: one derivative, one media row, one raw row -- no duplication.
@@ -309,25 +328,65 @@ def test_an_existing_linked_derivative_is_reused(
     tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:
     ds, video_uuid = _analysis_required_dataset(tmp_path, make_media_dataset)
-    params = TranscodeParams(entries=[("g", "s")], target="analysis")
-    _ = run_op(ds, "transcode", params)
+    params = TranscodeParams(target="analysis")
+    _ = run_op(ds, "transcode", params, scope=GS)
     recipe = transcode_recipe_hash(
         params, ANALYSIS_ENCODING, CHROME_149, media_thresholds()
     )
     dest = ds.get_root("media") / "transcode" / f"{video_uuid}.{recipe}.analysis.mp4"
     first = dest.stat().st_mtime_ns
-    _ = run_op(ds, "transcode", params)
+    _ = run_op(ds, "transcode", params, scope=GS)
     assert dest.stat().st_mtime_ns == first
+
+
+def test_overwrite_forces_a_re_encode(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A derivative already on disk is rebuilt rather than reused.
+
+    Counted at ``run_transcode``, the call that does the encoding. A skipped
+    entry never reaches it, so the count is zero for a reuse and cannot be
+    satisfied by the file merely still being there. mtime would not do: the
+    reuse path leaves the file untouched and a re-encode on a coarse clock can
+    land in the same tick.
+
+    The second run's own reuse gate is the thing under test, so the first run
+    has to have written the file and its forward link. Both assertions are
+    needed -- one run and one skip together are what say the gate closed and
+    then opened.
+    """
+    import mosaic.core.pipeline.transcode as transcode_module
+
+    ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
+    params = TranscodeParams(target="analysis")
+    _ = run_op(ds, "transcode", params, scope=GS)
+
+    encodes: list[Path] = []
+    real = transcode_module.run_transcode
+
+    def counted(source: Path, dest: Path, *args: object, **kwargs: object) -> object:
+        encodes.append(dest)
+        return real(source, dest, *args, **kwargs)
+
+    monkeypatch.setattr(transcode_module, "run_transcode", counted)
+
+    _ = run_op(ds, "transcode", params, scope=GS)
+    assert encodes == [], "the reuse gate must skip an entry already linked"
+
+    _ = run_op(ds, "transcode", params, scope=GS, overwrite=True)
+    assert len(encodes) == 1, "overwrite must re-encode the entry it would reuse"
 
 
 def test_an_existing_but_unlinked_derivative_is_relinked(
     tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:
     ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
-    params = TranscodeParams(entries=[("g", "s")], target="analysis")
-    _ = run_op(ds, "transcode", params)
+    params = TranscodeParams(target="analysis")
+    _ = run_op(ds, "transcode", params, scope=GS)
     _clear_forward_links(ds)
-    _ = run_op(ds, "transcode", params)
+    _ = run_op(ds, "transcode", params, scope=GS)
     row = read_media_index(ds.get_root("media_raw") / "index.csv")[0]
     assert row["analysis_derivative_path"]
 
@@ -336,8 +395,8 @@ def test_the_derivative_is_named_after_its_source_and_recipe(
     tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:
     ds, video_uuid = _analysis_required_dataset(tmp_path, make_media_dataset)
-    params = TranscodeParams(entries=[("g", "s")], target="analysis")
-    _ = run_op(ds, "transcode", params)
+    params = TranscodeParams(target="analysis")
+    _ = run_op(ds, "transcode", params, scope=GS)
     recipe = transcode_recipe_hash(
         params, ANALYSIS_ENCODING, CHROME_149, media_thresholds()
     )
@@ -352,8 +411,8 @@ def test_the_derivative_row_records_the_recipe(
     tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:
     ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
-    params = TranscodeParams(entries=[("g", "s")], target="analysis")
-    _ = run_op(ds, "transcode", params)
+    params = TranscodeParams(target="analysis")
+    _ = run_op(ds, "transcode", params, scope=GS)
     rows = read_media_index(ds.get_root("media") / "index.csv")
     recipe = transcode_recipe_hash(
         params, ANALYSIS_ENCODING, CHROME_149, media_thresholds()
@@ -369,8 +428,8 @@ def test_the_derivative_row_records_the_encoder(
     rather than the machine. Permitting hardware does not settle it either, since
     a machine whose device cannot open av1_nvenc encodes on the CPU."""
     ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
-    params = TranscodeParams(entries=[("g", "s")], target="analysis")
-    _ = run_op(ds, "transcode", params)
+    params = TranscodeParams(target="analysis")
+    _ = run_op(ds, "transcode", params, scope=GS)
     rows = read_media_index(ds.get_root("media") / "index.csv")
     assert rows[0]["encoder"] == "libsvtav1"
 
@@ -380,9 +439,7 @@ def test_a_source_with_no_uuid_refuses_to_transcode(
 ) -> None:
     ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset, minted=False)
     with pytest.raises(TranscodeError, match="no video_uuid"):
-        _ = run_op(
-            ds, "transcode", TranscodeParams(entries=[("g", "s")], target="analysis")
-        )
+        _ = run_op(ds, "transcode", TranscodeParams(target="analysis"), scope=GS)
 
 
 def test_an_imgstore_refuses_to_transcode(
@@ -403,9 +460,7 @@ def test_an_imgstore_refuses_to_transcode(
     write_media_index_rows(index_path, frame_from_rows(list(rows)))
 
     with pytest.raises(TranscodeError, match="imgstore"):
-        _ = run_op(
-            ds, "transcode", TranscodeParams(entries=[("g", "s")], target="analysis")
-        )
+        _ = run_op(ds, "transcode", TranscodeParams(target="analysis"), scope=GS)
 
 
 def test_a_reorder_produces_zero_re_encodes(
@@ -444,8 +499,8 @@ def test_a_reorder_produces_zero_re_encodes(
         )
 
     arrange("a.mp4", "b.mp4")
-    params = TranscodeParams(entries=[("g", "s")], target="analysis")
-    _ = run_op(ds, "transcode", params)
+    params = TranscodeParams(target="analysis")
+    _ = run_op(ds, "transcode", params, scope=GS)
 
     transcode_root = ds.get_root("media") / "transcode"
     before_files = {p.name: p.stat().st_mtime_ns for p in transcode_root.iterdir()}
@@ -460,7 +515,7 @@ def test_a_reorder_produces_zero_re_encodes(
     }
 
     arrange("b.mp4", "a.mp4")
-    _ = run_op(ds, "transcode", params)
+    _ = run_op(ds, "transcode", params, scope=GS)
 
     after_order = {
         row["name"]: row["video_order"]
@@ -569,9 +624,7 @@ def test_a_dataset_with_no_media_raw_refuses_to_transcode(tmp_path: Path) -> Non
     before = index_path.read_bytes()
 
     with pytest.raises(TranscodeError, match="no media_raw root"):
-        _ = run_op(
-            ds, "transcode", TranscodeParams(entries=[("g", "s")], target="analysis")
-        )
+        _ = run_op(ds, "transcode", TranscodeParams(target="analysis"), scope=GS)
 
     assert index_path.read_bytes() == before, "the originals index was written to"
     assert not (ds.get_root("media") / "transcode").exists()
@@ -583,21 +636,21 @@ def test_the_run_identity_ignores_the_source_order() -> None:
     )
 
 
-def test_the_recipe_hash_ignores_the_entry() -> None:
-    thresholds = media_thresholds()
-    here = TranscodeParams(entries=[("g", "s")], target="analysis")
-    elsewhere = TranscodeParams(entries=[("other", "sequence")], target="analysis")
-    assert transcode_recipe_hash(here, ANALYSIS_ENCODING, CHROME_149, thresholds) == (
-        transcode_recipe_hash(elsewhere, ANALYSIS_ENCODING, CHROME_149, thresholds)
-    )
+def test_the_params_declare_no_coverage() -> None:
+    """The recipe hash cannot read an entry, because there is no field to read.
+
+    What a run covers reaches the identifier through ``transcode_run_id``'s
+    sources, never through the recipe. Two scopes therefore write derivatives
+    under one recipe hash, which is what lets a second scope reuse the first's
+    files.
+    """
+    assert "entries" not in TranscodeParams.model_fields
 
 
 def test_the_recipe_hash_ignores_the_hardware_permission() -> None:
     thresholds = media_thresholds()
-    plain = TranscodeParams(entries=[("g", "s")], target="analysis")
-    hardware = TranscodeParams(
-        entries=[("g", "s")], target="analysis", allow_hardware=True
-    )
+    plain = TranscodeParams(target="analysis")
+    hardware = TranscodeParams(target="analysis", allow_hardware=True)
     assert transcode_recipe_hash(plain, ANALYSIS_ENCODING, CHROME_149, thresholds) == (
         transcode_recipe_hash(hardware, ANALYSIS_ENCODING, CHROME_149, thresholds)
     )
@@ -605,15 +658,15 @@ def test_the_recipe_hash_ignores_the_hardware_permission() -> None:
 
 def test_the_recipe_hash_separates_the_targets_under_one_encoding() -> None:
     thresholds = media_thresholds()
-    analysis = TranscodeParams(entries=[("g", "s")], target="analysis")
-    playback = TranscodeParams(entries=[("g", "s")], target="playback")
+    analysis = TranscodeParams(target="analysis")
+    playback = TranscodeParams(target="playback")
     assert transcode_recipe_hash(
         analysis, ANALYSIS_ENCODING, CHROME_149, thresholds
     ) != transcode_recipe_hash(playback, ANALYSIS_ENCODING, CHROME_149, thresholds)
 
 
 def test_the_recipe_hash_moves_with_the_encoding_parameters() -> None:
-    params = TranscodeParams(entries=[("g", "s")], target="analysis")
+    params = TranscodeParams(target="analysis")
     thresholds = media_thresholds()
     tuned = dataclasses.replace(
         ANALYSIS_ENCODING, quality=ANALYSIS_ENCODING.quality + 1
@@ -634,7 +687,7 @@ def test_the_recipe_hash_is_stable_across_processes() -> None:
         "from mosaic_media import CHROME_149\n"
         "from mosaic_media.transcode import ANALYSIS_ENCODING\n"
         "print(transcode_recipe_hash("
-        "TranscodeParams(entries=[('g','s')], target='analysis'), "
+        "TranscodeParams(target='analysis'), "
         "ANALYSIS_ENCODING, CHROME_149, media_thresholds()))\n"
     )
     digests = {
@@ -659,7 +712,8 @@ def test_transcode_registered_as_media_op():
     assert info["category"] == "transcode"
     assert "params_schema" in info
     schema = TranscodeParams.model_json_schema()
-    assert {"entries", "target", "allow_hardware"} <= set(schema["properties"])
+    assert {"target", "allow_hardware"} <= set(schema["properties"])
+    assert "entries" not in schema["properties"]
 
 
 def test_transcode_excluded_from_tracking_listing():
@@ -683,32 +737,39 @@ def test_transcode_params_reject_unknown_key():
 
 
 def test_transcode_refuses_a_run_with_no_scope():
-    """A transcode with no entries would re-encode a whole corpus."""
-    from pydantic import ValidationError
+    """A transcode with no entries would re-encode a whole corpus.
 
-    with pytest.raises(ValidationError):
-        TranscodeParams.model_validate({"target": "analysis"})
-    with pytest.raises(ValidationError):
-        TranscodeParams.model_validate({"entries": [], "target": "analysis"})
-
-
-def test_a_repeated_entry_is_collapsed():
-    """One entry named twice is one entry, in the order it was first given.
-
-    Left standing it would transcode that entry twice and contribute its source
-    uuids twice to an identifier that sorts its sources without collapsing them,
-    naming one job two different things.
+    The refusal used to come from the params model, which declared a required
+    non-empty ``entries``. It now comes from the ``scope_takes`` declaration,
+    read by one shared checker that every op passes through.
     """
-    params = TranscodeParams(entries=[("g", "s"), ("g", "s"), ("a", "b")])
-    assert params.entries == [("g", "s"), ("a", "b")]
+    from mosaic.core.pipeline._utils import ResolvedScope
+    from mosaic.core.pipeline.ops import OPS, ScopeRefused, check_scope_takes
+
+    takes = OPS["transcode"].scope_takes
+    with pytest.raises(ScopeRefused, match="re-encode every video"):
+        check_scope_takes("transcode", takes, ResolvedScope())
+    with pytest.raises(ScopeRefused, match="empty entry list"):
+        check_scope_takes(
+            "transcode",
+            takes,
+            ResolvedScope(selector=Scope(entries=[])),
+        )
 
 
 def test_a_repeated_entry_names_the_entry_not_the_count() -> None:
-    """``target`` reads as one entry rather than as a two-entry batch."""
+    """``target`` reads as one entry rather than as a two-entry batch.
+
+    A duplicate names one entry twice rather than covering more, and
+    :class:`~mosaic.core.scope.Scope` collapses it. Left standing it would
+    transcode that entry twice and contribute its source uuids twice to an
+    identifier that sorts its sources without collapsing them.
+    """
     from mosaic.core.pipeline.transcode import TranscodeOp
 
-    params = TranscodeParams(entries=[("g", "s"), ("g", "s")], target="analysis")
-    assert TranscodeOp().target(params, ResolvedScope()) == "g/s"
+    selector = Scope(entries=[("g", "s"), ("g", "s")])
+    scope = ResolvedScope(entries=set(selector.entries or []), selector=selector)
+    assert TranscodeOp().target(TranscodeParams(target="analysis"), scope) == "g/s"
 
 
 # Two processes, each linking a different source. Both read the index before

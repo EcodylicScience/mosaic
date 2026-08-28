@@ -3917,7 +3917,7 @@ class Dataset:
                 # `entries` and `allow_hardware` are both HASH_EXCLUDE, so any
                 # entry yields the recipe every current run of this target would
                 # name its output after.
-                TranscodeParams(entries=[("", "")], target=target),
+                TranscodeParams(target=target),
                 ANALYSIS_ENCODING if target == "analysis" else PLAYBACK_ENCODING,
                 CHROME_149,
                 media_thresholds(),

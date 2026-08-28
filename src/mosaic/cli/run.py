@@ -54,12 +54,9 @@ def split_op_scope(
     with the field names of :class:`~mosaic.core.scope.Scope`. It leaves here as
     a selector. ``run_op`` takes one, and an op body reads it.
 
-    The selector is also enumerated into an ``entries`` key for any op whose
-    model still declares one, which today is ``transcode`` alone.
-    ``groups`` / ``sequences`` name a cross product only the dataset can list.
-    An ``entries`` given alone is resolved too, which sorts it and collapses a
-    pair named twice. A camera-addressed list is refused, because that field
-    declares pairs.
+    ``groups`` / ``sequences`` name a cross product only the dataset can list,
+    and ``run_op`` enumerates it. A camera-addressed list is refused, because an
+    op covers a whole entry.
 
     Params naming no scope key at all come back unchanged beside an unset
     selector. Every other key belongs to the op, and the op's own model
@@ -67,8 +64,8 @@ def split_op_scope(
 
     Args:
         ds: The dataset the selector is enumerated against.
-        kind: The registered op kind, which decides whether the selector is
-            also written into an ``entries`` params key.
+        kind: The registered op kind, whose declaration decides how much scope
+            it accepts.
         params: The ``--params`` mapping as the caller wrote it.
 
     Returns:
@@ -103,10 +100,7 @@ def split_op_scope(
     }
     op_cls = OPS.get(kind)
     if op_cls is not None:
-        resolved = ds.resolve_scope(scope)
-        check_scope_takes(kind, op_cls.scope_takes, resolved)
-        if "entries" in op_cls.Params.model_fields:
-            settings["entries"] = resolved.op_entries
+        check_scope_takes(kind, op_cls.scope_takes, ds.resolve_scope(scope))
     return settings, scope
 
 

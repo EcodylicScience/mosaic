@@ -383,34 +383,32 @@ class TestScopeInsideParams:
             ("A", "two"),
         ]
 
-    def test_an_op_declaring_entries_still_gets_the_list(self, tmp_path: Path) -> None:
-        """``transcode`` reads its own field, and the selector is written there too.
+    def test_an_entry_list_alone_is_sorted_and_collapsed(self, tmp_path: Path) -> None:
+        """The params key resolves the way ``--entries`` does, through one selector.
 
-        The one op left that takes its coverage from the params rather than
-        from the argument. Both are handed over, and they name one thing.
+        Read off ``op_entries``, which is what an op body receives. An entry
+        named twice is one entry, and the list is ordered, so a run covering
+        one set of entries records one list however a caller wrote them.
         """
         ds = self._dataset(tmp_path)
-        settings, scope = split_op_scope(ds, "transcode", {"groups": ["A"]})
-        assert settings == {"entries": [("A", "one"), ("A", "two")]}
-        assert scope == Scope(groups=["A"])
-
-    def test_an_entry_list_alone_is_sorted_and_collapsed(self, tmp_path: Path) -> None:
-        """The params key resolves the way ``--entries`` does, through one selector."""
-        ds = self._dataset(tmp_path)
-        settings, _ = split_op_scope(
+        _, scope = split_op_scope(
             ds, "transcode", {"entries": [["B", "one"], ["A", "one"], ["B", "one"]]}
         )
-        assert settings["entries"] == [("A", "one"), ("B", "one")]
+        assert ds.resolve_scope(scope).op_entries == [("A", "one"), ("B", "one")]
 
     def test_index_order_does_not_reach_the_entry_list(self, tmp_path: Path) -> None:
-        """An op's ``entries`` is sorted, whatever order the index rows are in.
+        """The entry list is sorted, whatever order the index rows are in.
 
-        The resolved scope is a set. This command is where the ordering is
-        decided, and a re-index therefore moves nothing.
+        The resolved scope is a set, and ``op_entries`` sorts it. A re-index
+        therefore moves nothing an op records.
         """
         ds = self._dataset(tmp_path)
-        settings, _ = split_op_scope(ds, "transcode", {"groups": ["A", "B"]})
-        assert settings["entries"] == [("A", "one"), ("A", "two"), ("B", "one")]
+        _, scope = split_op_scope(ds, "transcode", {"groups": ["A", "B"]})
+        assert ds.resolve_scope(scope).op_entries == [
+            ("A", "one"),
+            ("A", "two"),
+            ("B", "one"),
+        ]
 
     def test_a_camera_addressed_entry_list_is_refused(self, tmp_path: Path) -> None:
         """An op's entry list is pairs, and a triple is refused by name.

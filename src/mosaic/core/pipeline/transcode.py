@@ -28,9 +28,9 @@ from __future__ import annotations
 
 import dataclasses
 import os
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Self, override
+from typing import TYPE_CHECKING, Annotated
 
 import pandas as pd
 from mosaic_media import (
@@ -53,7 +53,6 @@ from mosaic_media.transcode import (
     run_transcode,
 )
 
-from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key, to_safe_name
 from mosaic.core.media.facts_columns import (
     MEDIA_INDEX_COLUMNS,
@@ -79,7 +78,6 @@ from mosaic.core.params import (
     Params,
 )
 from mosaic.media_probe_config import media_thresholds
-from pydantic import Field, model_validator
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -96,12 +94,6 @@ _TICKS_PER_SOURCE = 1000
 # with a kind.
 TRANSCODE_KIND_DIRECTORY = "transcode"
 
-
-_TRANSCODE_ENTRIES_DESCRIPTION = (
-    "Which (group, sequence) entries to transcode. Required and non-empty: an "
-    "unscoped transcode would re-encode a whole corpus. A repeated entry is "
-    "collapsed."
-)
 
 _TARGET_DESCRIPTION = (
     "Which derivative to write: 'analysis' is the one a tool decodes frame by "
@@ -128,17 +120,12 @@ class TranscodeParams(Params):
     queue slot for as long as it takes, where five hundred jobs would spread
     across machines. Narrow the entry list to shard it.
 
-    ``entries`` is required and typed ``list[Entry]``, because a transcode
-    refuses an unscoped run. One omitted field would re-encode a corpus. Every
-    reader downstream therefore has a list without asking. This model declares
-    no ``overwrite`` -- reuse is decided by the recipe-addressed filename and
-    the forward link.
+    The settings alone. Which entries a run covers is an argument to the run,
+    and an unscoped one is refused by the op's declaration rather than by this
+    model. The identities of the videos in scope are hashed in the coverage's
+    place. A sequence rename therefore does not move the run.
     """
 
-    # entries selects WHICH videos are transcoded, and the identities of those
-    # videos are hashed in their place, so a sequence rename does not move the
-    # run.
-    #
     # allow_hardware is excluded, and the reasoning cuts both ways. A hardware
     # encode and a CPU encode of the same source are not byte-identical, so this
     # is more than a throughput knob. But it is a permission rather than a
@@ -156,29 +143,10 @@ class TranscodeParams(Params):
     # bytes to one path and each reuses the other's file. Closing that would make
     # the cheapest path in the job -- the reuse check -- pay a device probe; the
     # index cell says which encoder is there instead.
-    entries: Annotated[
-        list[Entry],
-        Field(min_length=1),
-        HASH_EXCLUDE,
-        Declared(_TRANSCODE_ENTRIES_DESCRIPTION),
-    ]
     target: Annotated[Target, Declared(_TARGET_DESCRIPTION)] = "analysis"
     allow_hardware: Annotated[
         bool, HASH_EXCLUDE, Declared(_ALLOW_HARDWARE_DESCRIPTION)
     ] = False
-
-    @model_validator(mode="after")
-    def _entries_are_distinct(self) -> Self:
-        """Collapse a repeated entry, keeping the order the caller gave.
-
-        A duplicate is not a scope: it names one entry twice. Left standing it
-        transcodes that entry twice, and ``plan_identity`` contributes its source
-        uuids twice to a run identifier that sorts its sources but does not
-        collapse them, so one job would be named two different things depending
-        on how many times a caller repeated itself.
-        """
-        self.entries = list(dict.fromkeys(self.entries))
-        return self
 
 
 def relative_to_anchor(path: Path, anchor: Path) -> str:
@@ -465,7 +433,13 @@ def _source_uuids_for(ds: "Dataset", entry: tuple[str, str]) -> list[str]:
 
 @register_op
 class TranscodeOp(Op[TranscodeParams]):
-    """Transcode the scoped entries' originals for a target, linking both ways."""
+    """Transcode the scoped entries' originals for a target, linking both ways.
+
+    Reuse is decided per source by the recipe-addressed filename plus the forward
+    link, and ``overwrite`` opens that gate. An attempt that passes it re-encodes
+    and relinks a derivative already on disk, which is how a file written by a
+    build whose output is no longer trusted is replaced.
+    """
 
     kind = "transcode"
     domain = "media"
@@ -489,32 +463,11 @@ class TranscodeOp(Op[TranscodeParams]):
     Params = TranscodeParams
 
     def target(self, params: TranscodeParams, scope: ResolvedScope) -> str:
-        entries = params.entries
+        entries = sorted(scope.entries)
         if len(entries) == 1:
             group, sequence = entries[0]
             return f"{group}/{sequence}"
         return f"{len(entries)} entries: {params.target}"
-
-    @classmethod
-    @override
-    def scoped_params(
-        cls, params: Mapping[str, Any], entries: Sequence[tuple[str, str]]
-    ) -> dict[str, Any]:
-        """The entries a plan is transcoding, written where this op reads them.
-
-        The one op that overrides this, for two reasons that both come from the
-        same place: its params refuse an unscoped run, so a recipe step carrying
-        only ``{"target": "analysis"}`` is not valid until a plan says what to
-        transcode; and its identity covers the source videos' recorded uuids, so
-        the entries decide what the run is called rather than merely what it does.
-
-        An empty *entries* leaves the params as written, so a step that named its
-        own scope keeps it and one that named none is refused by the model with
-        its own message rather than by a silent empty list here.
-        """
-        if not entries:
-            return dict(params)
-        return {**params, "entries": [[group, sequence] for group, sequence in entries]}
 
     def plan_identity(
         self,
@@ -537,9 +490,10 @@ class TranscodeOp(Op[TranscodeParams]):
         this value names the attempt for the run log and the queue, and widening
         what one run covers moves no file.
         """
-        _refuse_without_media_raw(ds, params.entries)
+        entries = sorted(scope.entries)
+        _refuse_without_media_raw(ds, entries)
         source_uuids = [
-            uuid for entry in params.entries for uuid in _source_uuids_for(ds, entry)
+            uuid for entry in entries for uuid in _source_uuids_for(ds, entry)
         ]
         thresholds = media_thresholds()
         encoding = (
@@ -556,7 +510,7 @@ class TranscodeOp(Op[TranscodeParams]):
         overwrite: bool,
         ctx: "JobContext",
     ) -> str:
-        entries = params.entries
+        entries = sorted(scope.entries)
         _refuse_without_media_raw(ds, entries)
 
         # Named in one place, and before any encoding: a corpus that has not been
@@ -593,6 +547,7 @@ class TranscodeOp(Op[TranscodeParams]):
                     media_root=media_root,
                     transcode_root=transcode_root,
                     done_ticks=done_ticks,
+                    overwrite=overwrite,
                 )
             except Cancelled:
                 raise
@@ -621,6 +576,7 @@ class TranscodeOp(Op[TranscodeParams]):
         media_root: Path,
         transcode_root: Path,
         done_ticks: int,
+        overwrite: bool,
     ) -> int:
         """Transcode one entry's sources, returning the progress ticks so far."""
         source_uuids = _source_uuids_for(ds, (group, sequence))
@@ -642,7 +598,7 @@ class TranscodeOp(Op[TranscodeParams]):
             already_linked = derivative_cell(
                 row_mapping(row), params.target
             ) == relative_to_anchor(dest, media_root)
-            if dest.exists() and already_linked:
+            if dest.exists() and already_linked and not overwrite:
                 # The name carries the whole recipe, so an existing file at this
                 # path is this recipe's output. The link is checked too, and it
                 # is a completion marker only because registration writes the
