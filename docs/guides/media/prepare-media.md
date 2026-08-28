@@ -36,7 +36,7 @@ while the index still points at what you recorded.
 
 ```bash
 mosaic run -m dataset.yaml --kind transcode \
-    --params '{"entries": [["day1", "trial01"]], "target": "analysis"}'
+    --entries day1:trial01 --params '{"target": "analysis"}'
 ```
 
 `target` is `analysis` (seekable, for repeated frame access) or `playback` (browser

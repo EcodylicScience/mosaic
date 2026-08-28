@@ -6,7 +6,7 @@ appended to a run log.
 
 ```bash
 mosaic run -m dataset.yaml --feature speed-angvel
-mosaic run -m dataset.yaml --kind transcode --params '{"entries": [["", "trial01"]]}'
+mosaic run -m dataset.yaml --kind transcode --entries trial01 --params '{"target": "analysis"}'
 mosaic run -m dataset.yaml --feature global-tsne --json    # machine-readable outcome
 ```
 
@@ -17,12 +17,15 @@ both.
 
 Parameters come inline as JSON, from `@file.json`, or from `@-` on stdin.
 
-A feature run narrows with `--entries`, which takes explicit `group:sequence` pairs.
-An op narrows inside `--params`, where `entries` takes the same pairs and a `groups`
-/ `sequences` pair given beside it is enumerated against the dataset into them.
+Both a feature run and an op run narrow with the same three flags. `--entries` takes
+explicit `group:sequence` pairs, and a bare token is a sequence in the empty group.
+`--groups` and `--sequences` name a cross product the dataset enumerates, and either
+may be given without the other. `--entries` cannot be combined with them.
 **Only an explicit pair list can express an arbitrary set** — groups and sequences
-combine as a cross-product, so they cannot name three specific recordings out of a
-grid.
+combine as a cross-product, and three specific recordings out of a grid are not one.
+
+A scope key inside `--params` is refused. `--params` names the settings a feature's
+or an op's model validates, and a selector is not one of them.
 
 The same holds in Python:
 

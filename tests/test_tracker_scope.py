@@ -13,15 +13,11 @@ directory is keyed without a camera.
 from __future__ import annotations
 
 import dataclasses
-import json
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
-from typer.testing import CliRunner, Result
 
-from mosaic.cli import app
-from mosaic.cli.run import split_op_scope
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.scope import Scope
 from mosaic.core.media.facts_columns import store_facts
@@ -45,22 +41,6 @@ def _dataset(tmp_path: Path, clips: list[MediaClip]) -> Dataset:
     ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
     write_media_index(ds, clips)
     return ds
-
-
-def _cli(ds: Dataset, kind: str, params: dict[str, object]) -> Result:
-    """``mosaic run --kind`` over *ds*, as a caller types it."""
-    return CliRunner().invoke(
-        app,
-        [
-            "run",
-            "--manifest",
-            str(ds.manifest_path),
-            "--kind",
-            kind,
-            "--params",
-            json.dumps(params),
-        ],
-    )
 
 
 def _items(ds: Dataset, *, kind: str) -> list[TrackerWorkItem]:
@@ -336,134 +316,3 @@ class TestResolveScope:
         ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
         with pytest.raises(FileNotFoundError):
             _ = ds.resolve_scope(Scope(groups=["A"]))
-
-
-class TestScopeInsideParams:
-    """``mosaic run --kind`` takes its scope inside ``--params``.
-
-    The command declares no scope flags and refuses ``--entries``. The scope
-    keys are read out of the params object and resolved before the op's own
-    model validates.
-    """
-
-    def _dataset(self, tmp_path: Path) -> Dataset:
-        """Three entries, indexed in the reverse of their sorted order.
-
-        Every assertion below reads an ordered list out of an op's params. The
-        two orders disagree here, and an ordered assertion therefore names one
-        of them.
-        """
-        return _dataset(
-            tmp_path,
-            [
-                MediaClip(filename="b1.mp4", group="B", sequence="one"),
-                MediaClip(filename="a2.mp4", group="A", sequence="two"),
-                MediaClip(filename="a1.mp4", group="A", sequence="one"),
-            ],
-        )
-
-    def test_params_naming_neither_key_are_untouched(self) -> None:
-        """An op with no scope keeps params its model accepts."""
-        params: dict[str, object] = {"data": "datasets/pose/data.yaml", "epochs": 3}
-        settings, scope = split_op_scope(params)
-        assert settings == params
-        assert scope.is_unset
-
-    def test_a_group_becomes_the_selector_an_op_covers(self, tmp_path: Path) -> None:
-        """The scope leaves the params and arrives as what ``run_op`` takes."""
-        ds = self._dataset(tmp_path)
-        settings, scope = split_op_scope({"track_max_speed": 2, "groups": ["A"]})
-        assert settings == {"track_max_speed": 2}
-        assert scope == Scope(groups=["A"])
-        assert sorted(ds.resolve_scope(scope).entries) == [
-            ("A", "one"),
-            ("A", "two"),
-        ]
-
-    def test_an_entry_list_alone_is_sorted_and_collapsed(self, tmp_path: Path) -> None:
-        """The params key resolves the way ``--entries`` does, through one selector.
-
-        Read off ``op_entries``, the value an op body receives. An entry named
-        twice is one entry, and the list is ordered. A run covering one set of
-        entries therefore records one list however a caller wrote them.
-        """
-        ds = self._dataset(tmp_path)
-        _, scope = split_op_scope(
-            {"entries": [["B", "one"], ["A", "one"], ["B", "one"]]}
-        )
-        assert ds.resolve_scope(scope).op_entries == [("A", "one"), ("B", "one")]
-
-    def test_index_order_does_not_reach_the_entry_list(self, tmp_path: Path) -> None:
-        """The entry list is sorted, whatever order the index rows are in.
-
-        The resolved scope is a set, and ``op_entries`` sorts it. A re-index
-        therefore moves nothing an op records.
-        """
-        ds = self._dataset(tmp_path)
-        _, scope = split_op_scope({"groups": ["A", "B"]})
-        assert ds.resolve_scope(scope).op_entries == [
-            ("A", "one"),
-            ("A", "two"),
-            ("B", "one"),
-        ]
-
-    def test_a_camera_addressed_entry_list_is_refused(self) -> None:
-        """An op's entry list is pairs, and a triple is refused by name.
-
-        The refusal names the form to give instead. A resolved triple covers
-        every camera of the entry under a selector that named one of them.
-        """
-        with pytest.raises(ValueError, match=r"Give \(group, sequence\) pairs"):
-            _ = split_op_scope({"entries": [["A", "one", "cam0"]]})
-
-    def test_an_entry_list_beside_a_group_is_refused(self) -> None:
-        """The params keys name one selector, the same as the flags do."""
-        with pytest.raises(ValidationError, match="cannot be combined"):
-            _ = split_op_scope(
-                {"groups": ["A"], "entries": [["A", "one"], ["B", "one"]]}
-            )
-
-    def test_a_scope_free_op_is_refused_at_the_command_line(
-        self, tmp_path: Path
-    ) -> None:
-        """The refusal a caller meets, driven through the command it types.
-
-        A scope named for an op that takes none used to be refused by the params
-        model, which received an ``entries`` key it forbids. The scope no longer
-        reaches the model, and this asserts that the command still declines
-        rather than training over everything with the narrowing dropped.
-
-        Driven end to end because a unit call to the checker proves only that
-        the checker works. What has to hold is that the command reaches it.
-        """
-        ds = self._dataset(tmp_path)
-        result = _cli(
-            ds, "train-pose", {"data": "datasets/pose/data.yaml", "groups": ["A"]}
-        )
-
-        assert result.exit_code != 0
-        assert "train-pose takes no entry scope" in result.output
-
-    def test_a_scope_free_op_runs_when_no_scope_is_named(self, tmp_path: Path) -> None:
-        """The other side of the refusal, which cannot then pass by refusing always.
-
-        The op gets past the scope check and fails on its own missing tool
-        environment, which is as far as this dataset can take it.
-        """
-        ds = self._dataset(tmp_path)
-        result = _cli(ds, "train-pose", {"data": "datasets/pose/data.yaml"})
-
-        assert "takes no entry scope" not in result.output
-
-    def test_a_scope_free_op_keeps_the_selector_out_of_its_settings(self) -> None:
-        """The selector is split off rather than dropped or left in the settings.
-
-        A scope named for an op that takes none has to survive this far, because
-        ``run_op`` is what refuses it and it can only refuse what it is handed.
-        The end-to-end refusal is asserted above.
-        """
-        settings, scope = split_op_scope(
-            {"data": "datasets/pose/data.yaml", "groups": ["A"]}
-        )
-        assert settings == {"data": "datasets/pose/data.yaml"}
-        assert scope == Scope(groups=["A"])

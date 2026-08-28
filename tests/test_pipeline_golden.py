@@ -76,8 +76,8 @@ WORKED_RECIPE: dict[str, object] = {
             },
         },
         # The one step kind that computes no entry. Every other step here takes
-        # a scope, so without this the recorded ``entries`` cells agree with the
-        # plan scope whatever the planner decides for an op declaring
+        # a scope. Without this one the recorded ``entries`` cells agree with
+        # the plan scope whatever the planner decides for an op declaring
         # ``scope_takes = "none"``.
         {
             "id": "train",

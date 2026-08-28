@@ -489,16 +489,6 @@ def _run(
     identity covers is on disk and it names itself.
     """
     if planned.kind == "op":
-        if overwrite:
-            # An argument fault rather than a refusal. The scoped ops honor an
-            # overwrite argument and the six scope-free ones still read a params
-            # field of their own. Accepting the flag would recompute for some
-            # kinds and do nothing for the rest.
-            raise ValueError(
-                f"step {planned.step_id!r} runs the op {planned.runs!r}, which "
-                f"takes no --overwrite: an op decides reuse from its own "
-                f"markers. Clear its run root to recompute it."
-            )
         run_id = run_op(
             ds,
             planned.spec.op_kind,
@@ -508,6 +498,7 @@ def _run(
             # selector for plan_identity, and a step cannot cover more than the
             # identifier it was minted for.
             scope=planned.spec.entries,
+            overwrite=overwrite,
             execution_id=attempt,
             owner=owner,
             cancel_token=cancel_token,
