@@ -112,9 +112,9 @@ class TranscodeParams(Params):
     **One job covers as many entries as it is given.** It used to cover exactly
     one, which made a transcode step in a graph an exception to the rule every
     other step follows -- one job per step with an entry list -- and would have
-    meant a request file mapping one step to many attempts. Naming the entries
-    here keeps the step singular, and costs nothing on disk: the run identifier
-    addresses nothing, so widening what it covers moves no file.
+    meant a request file mapping one step to many attempts. The entries come
+    from the run's scope rather than from this model, and widening what one job
+    covers costs nothing on disk. The run identifier addresses no file.
 
     The trade is real and worth stating: a job over five hundred videos holds one
     queue slot for as long as it takes, where five hundred jobs would spread

@@ -235,15 +235,16 @@ def run_command(
         if graph_request is not None:
             if entries or groups or sequences:
                 # Refused rather than dropped. A step covers the entries its
-                # plan resolved, which is the submission's narrowing minus
-                # what is already computed and minus what is quarantined. A
-                # flag here would name a fourth thing and reach nothing.
-                fail(
+                # plan resolved -- the submission's narrowing minus what is
+                # already computed and minus what is quarantined. A
+                # flag here would name a fourth thing that nothing reads.
+                message = (
                     "--entries / --groups / --sequences are not supported with "
                     "--graph-request; a step covers the entries its plan "
                     "resolved. Narrow the submission instead, with "
                     "'mosaic pipeline submit --entry group:sequence'."
                 )
+                fail(message)
             from mosaic.core.pipeline.graph import (
                 execute_step,
                 load_request,
@@ -385,12 +386,11 @@ def run_command(
         # checker owns the sentence; this command owns the flags that answer it.
         fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
     except ValueError as exc:
-        # An invalid input chain (a Result that is not track-shaped), and every
-        # ScopeRefused, which subclasses ValueError. That is the whole mechanism
-        # behind the scope refusals this command reports. run_op raises one and
-        # it is rendered here as a message rather than a traceback.
-        # ValidationError is also a ValueError subclass and is handled above.
-        # This arm takes everything else.
+        # An invalid input chain (a Result that is not track-shaped), and
+        # anything else raised as a plain ValueError. The two ValueError
+        # subclasses this command answers in its own words -- ValidationError
+        # and ScopeRefused -- are caught above. This arm takes the rest, and
+        # renders it as a message rather than a traceback.
         fail(str(exc))
 
     if as_json:

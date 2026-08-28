@@ -135,8 +135,8 @@ def litpose_settings(params: LitposeParams, *, model_id: str) -> dict[str, objec
     Args:
         params: The run's parameters.
             :class:`~mosaic.tracking.litpose.params.LitposeParams` describes
-            every field. The scope and execution knobs are excluded from
-            identity and stay out of the payload.
+            every field. The execution knobs are excluded from identity and
+            stay out of the payload.
         model_id: The model's identity -- a training ``run_id`` or a content
             digest, never a path. The caller resolves it, because a bare model
             path is a mutable key: swapping the checkpoint in place would let two
@@ -238,7 +238,8 @@ def run_litpose(
 ) -> str:
     """Run Lightning Pose inference over scoped videos as a tracked job.
 
-    *params* states what to run and which entries to run it over;
+    *params* states what to run, *scope* which entries to run it over, and
+    *overwrite* whether a finished entry is redone;
     :class:`~mosaic.tracking.litpose.params.LitposeParams` describes every field.
     The Job-Contract knobs beside it (``execution_id`` / ``owner`` / ``track`` /
     ``progress_callback`` / ``cancel_token``) open the run's context, and *ctx*

@@ -165,8 +165,8 @@ def ultralytics_settings(
     Args:
         params: The run's parameters.
             :class:`~mosaic.tracking.ultralytics_track.params.UltralyticsParams`
-            describes every field. The scope and execution knobs are excluded
-            from identity and stay out of the payload.
+            describes every field. The execution knobs are excluded from
+            identity and stay out of the payload.
         model_id: The weights' identity -- a training ``run_id`` or a content
             digest, never a path. The caller resolves it, because a bare
             weights path is a mutable key: swapping ``best.pt`` in place would
@@ -305,7 +305,8 @@ def run_ultralytics(
 ) -> str:
     """Track every scoped sequence with *params*, and return the run id.
 
-    *params* states what to run and which entries to run it over;
+    *params* states what to run, *scope* which entries to run it over, and
+    *overwrite* whether a finished entry is redone;
     :class:`~mosaic.tracking.ultralytics_track.params.UltralyticsParams`
     describes every field. The Job-Contract knobs beside it (``execution_id`` /
     ``owner`` / ``track`` / ``progress_callback`` / ``cancel_token``) open the

@@ -553,8 +553,10 @@ Deliberately separate from the live-object `Pipeline`, which holds feature
   `--manifest`'s parent and there is deliberately no second path flag**: a path
   mosaic-queue does not know about is one `translate_manifest_path` cannot
   rewrite for a substrate that mounts the dataset elsewhere. `--overwrite` stays
-  an argv flag, being a property of an attempt rather than of the recipe, and is
-  now *refused* with `--kind` rather than accepted and dropped.
+  an argv flag, being a property of an attempt rather than of the recipe. Every
+  op reads it from the argument `Op.run` receives, and `--kind` and a graph op
+  step both accept it. Two attempts differing only in whether they redo the
+  work are one recipe and one identifier.
 - **One step body, two drivers.** `execute_step` is what a queued job runs and
   what `run_pipeline` loops over, so the preflight, the parent pinning and the
   failure record cannot drift by being edited on one path only.
@@ -626,8 +628,12 @@ Deliberately separate from the live-object `Pipeline`, which holds feature
   and `extract-frames` is excluded by *ownership* -- mosaic-api embeds its frozen
   identifier in annotation image paths.
 - **An op step's scope comes from the plan, not the recipe**, through
-  `Op.scoped_params`. `TranscodeOp` overrides it, being the one op whose params
-  refuse an unscoped run and whose identity moves with what it covers.
+  `_op_scope`, which every site that builds a step spec asks. An op declaring
+  `scope_takes = "none"` is given none whatever the graph is narrowed to. A
+  training step reads a prepared directory, and the plan's entries name a
+  coverage it cannot act on. `check_scope_takes` refuses the rest at plan time
+  in the words the runner uses. A plan that cannot run says so before anything
+  is enqueued.
 - **A `scope_dependent` step is asked for all of its scope, never the
   remainder** -- its identity *is* its scope, so a fit over what is left under
   the name of a fit over everything is exactly what the scheme prevents. A
@@ -695,7 +701,7 @@ src/mosaic/
     │   ├── entry.py            # claim, marker reuse, cascade clearing, adoption
     │   ├── bridge.py           # converted frame -> tracks/<variant>/*.parquet
     │   ├── index.py            # TrackerRunRowBase + the typed run index
-    │   ├── params.py           # TrackerOpParams (HASH_EXCLUDE execution knobs, scope from OpParams)
+    │   ├── params.py           # TrackerOpParams (HASH_EXCLUDE execution knobs; no scope)
     │   └── driver.py           # run_tracker(): the per-entry loop
     ├── trex/                   # TREx: two gated phases (convert -> track), own conda env
     ├── sleap/                  # SLEAP: one gated phase + an ungated atomic analysis export

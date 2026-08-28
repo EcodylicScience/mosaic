@@ -383,9 +383,9 @@ def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
         consumes=ConsumerDecl(
             name=kind,
             kind="op",
-            # An op declares its scope in its params rather than taking pipeline
-            # inputs, so nothing may be wired into it. What it depends on is
-            # expressed as a params reference or as an ordering-only edge.
+            # An op reads a dataset root or a named artifact rather than a
+            # pipeline input, and nothing may be wired into it. What it depends
+            # on is expressed as a params reference or as an ordering-only edge.
             takes_no_inputs=True,
             # Every producer that bridges into tracks opens video to do it, which
             # is what makes an ordering-only edge from a media writer meaningful.

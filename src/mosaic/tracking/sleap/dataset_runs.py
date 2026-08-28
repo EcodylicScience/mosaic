@@ -140,8 +140,8 @@ def sleap_settings(params: SleapParams, *, model_id: str) -> dict[str, object]:
     Args:
         params: The run's parameters.
             :class:`~mosaic.tracking.sleap.params.SleapParams` describes every
-            field. The scope and execution knobs are excluded from identity and
-            stay out of the payload.
+            field. The execution knobs are excluded from identity and stay out
+            of the payload.
         model_id: The weights' identity -- a training ``run_id`` or a content
             digest, never a path. The caller resolves it, because a bare weights
             path is a mutable key: swapping the checkpoint in place would let two
@@ -250,7 +250,8 @@ def run_sleap(
 ) -> str:
     """Run SLEAP (infer + track) over scoped videos as a tracked job.
 
-    *params* states what to run and which entries to run it over;
+    *params* states what to run, *scope* which entries to run it over, and
+    *overwrite* whether a finished entry is redone;
     :class:`~mosaic.tracking.sleap.params.SleapParams` describes every field.
     The Job-Contract knobs beside it (``execution_id`` / ``owner`` / ``track`` /
     ``progress_callback`` / ``cancel_token``) open the run's context, and *ctx*

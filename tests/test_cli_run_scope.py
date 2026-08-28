@@ -2,7 +2,7 @@
 
 One vocabulary serves both arms. ``--entries``, ``--groups`` and
 ``--sequences`` name a scope for a feature run and for an op run alike, and a
-selector written inside ``--params`` is refused: those keys are fields on no
+selector written inside ``--params`` is refused. Those keys are fields on no
 feature and on no op, and a run that accepted one would take a narrowing its
 own model never validated.
 
@@ -46,7 +46,7 @@ ENTRIES = (("A", "one"), ("A", "two"), ("B", "one"))
 INDEXED = tuple(reversed(ENTRIES))
 """The order the media index rows are written in.
 
-The reverse of their sorted order, so a resolution that returned rows in the
+The reverse of their sorted order. A resolution that returned rows in the
 order it read them would name a different list from one that sorted.
 """
 
@@ -199,11 +199,11 @@ def test_a_repeated_entry_is_one_entry(scoped: Dataset) -> None:
 
 
 def test_index_order_does_not_reach_what_an_op_covers(scoped: Dataset) -> None:
-    """The entries an op covers do not depend on the order the index holds them.
+    """The entries an op covers do not depend on the order the index lists them.
 
     The fixture writes its media index in the reverse of its sorted order, and
-    the flags below name their groups in the reverse of theirs. Neither reaches
-    what the run covers.
+    the flags below name their groups in the reverse of theirs. Neither one
+    changes what the run covers.
     """
     result = _regrid(scoped, "--groups", "B", "--groups", "A")
 
@@ -375,7 +375,7 @@ def test_a_pipeline_refusal_names_the_flag_that_command_offers(
 ) -> None:
     """``mosaic pipeline`` offers ``--entry``, and used to answer with a traceback.
 
-    ``plan_pipeline`` raises the refusal and no verb caught it, so the message
+    ``plan_pipeline`` raises the refusal and no verb caught it. The message
     reached a terminal under a stack trace or not at all.
     """
     recipe = tmp_path / "recipe.json"

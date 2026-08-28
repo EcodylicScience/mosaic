@@ -294,7 +294,7 @@ def test_two_entries_are_refused_naming_both(
 ) -> None:
     """One export covers one entry, and the refusal says which two were given.
 
-    The arity used to be carried by a singular ``entry`` field, which a caller
+    The arity used to be a singular ``entry`` field, which a caller
     could only satisfy one way. It is the ``scope_takes`` declaration now, and
     one shared checker raises for every op that states an arity.
     """
@@ -320,7 +320,7 @@ def test_a_camera_triple_exports_that_camera_and_a_pair_exports_every_one(
     """The camera is part of the entry key, and a pair means every camera.
 
     Both halves in one test, because the pair's meaning is only visible beside
-    the triple's: a triple that exported everything would pass a test that
+    the triple's. A triple that exported everything would pass a test that
     asserted the pair alone.
     """
     ds, group, sequence = _store_dataset(

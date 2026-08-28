@@ -107,8 +107,8 @@ def with_command_line_scope(refusal: str, remedy: str) -> str:
     types flags instead, and each command offers its own spelling of them.
 
     Appended rather than substituted. The sentence the checker wrote states
-    what an unscoped run would cover, which is what decides whether to narrow
-    or to proceed, and no flag list replaces it.
+    what an unscoped run would cover. That is what decides whether to narrow or
+    to proceed, and no flag list replaces it.
 
     Args:
         refusal: what :func:`~mosaic.core.pipeline.ops.check_scope_takes` said.

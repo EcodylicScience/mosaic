@@ -3914,9 +3914,10 @@ class Dataset:
 
         live_recipes = {
             target: transcode_recipe_hash(
-                # `entries` and `allow_hardware` are both HASH_EXCLUDE, so any
-                # entry yields the recipe every current run of this target would
-                # name its output after.
+                # These params state the recipe and nothing about coverage.
+                # A run's entries are its scope, and `allow_hardware` is
+                # HASH_EXCLUDE. What this builds is therefore the recipe every
+                # current run of this target names its output after.
                 TranscodeParams(target=target),
                 ANALYSIS_ENCODING if target == "analysis" else PLAYBACK_ENCODING,
                 CHROME_149,

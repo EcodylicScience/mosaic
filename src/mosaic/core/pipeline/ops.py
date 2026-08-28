@@ -4,9 +4,11 @@ Every long-running operation that rides the Job Contract -- frame extraction,
 pose/point/localizer training, pose/point/localizer inference, annotation
 conversion, TREx, media transcode, and future domains -- is an ``Op``: a class
 carrying a ``kind`` (its ``runs.kind``), a ``domain`` (which package owns it),
-a Pydantic ``Params`` model, and a ``run(ds, params, ctx)`` body that computes
-a content ``run_id``, does the work, writes an index row, and returns the
-``run_id``. Ops self-register via ``@register_op`` -- so a new op plugs in by
+a Pydantic ``Params`` model, and a ``run(ds, params, scope, overwrite, ctx)``
+body that computes a content ``run_id``, does the work, writes an index row,
+and returns the ``run_id``. What a run covers and whether it redoes the work
+are arguments rather than params fields, because they describe an attempt and
+not a recipe. Ops self-register via ``@register_op`` -- so a new op plugs in by
 adding a module, with no edit to the runner, the CLI, or the API.
 
 One generic entry point, :func:`run_op`, wraps *every* op in the Job Contract
@@ -131,7 +133,10 @@ class ScopeRefused(ValueError):
     """A scope an op's declaration does not accept.
 
     A ``ValueError`` because that is what the command line already renders as a
-    message. ``mosaic run`` and ``mosaic track`` print it and exit non-zero.
+    message. ``mosaic run`` and the three ``mosaic pipeline`` verbs catch it by
+    name and print it beside the flags they offer. ``mosaic track`` does not,
+    and needs no handler. Every tracker declares ``scope_takes = "any"``, for
+    which this function returns before refusing anything.
 
     A graph step does **not** record it on the attempt. The failure record wraps
     the feature arm of ``execute_step`` only. A refusal from an op step
@@ -160,11 +165,7 @@ def check_scope_takes(
     """Raise unless *resolved* is a scope an op declaring *scope_takes* accepts.
 
     **The only place a scope refusal is raised.** An op implements no scope
-    validation and writes no scope message. Three private answers to that one
-    question are still in place: ``TranscodeParams.entries`` with its
-    ``min_length=1``, that model's distinctness validator, and the singular
-    ``StoreExportParams.entry``. This declaration is added beside them, and
-    retiring them is a separate change.
+    validation and writes no scope message.
 
     Reads the selector as well as the resolved entries. Three scopes resolve to
     zero entries and mean three things. An unset selector covers every indexed
