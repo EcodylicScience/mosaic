@@ -121,6 +121,27 @@ class TestResolvedScope:
         assert unscoped.selector.is_unset
 
 
+class TestOpEntries:
+    """The entry list both commands hand an op."""
+
+    def test_an_unset_selector_gives_none(self) -> None:
+        """An op reads ``None`` as every indexed entry."""
+        assert ResolvedScope(entries=set(), selector=Scope()).op_entries is None
+
+    def test_an_empty_resolution_gives_an_empty_list(self) -> None:
+        """A group that holds nothing runs nothing, and says so as ``[]``."""
+        resolved = ResolvedScope(entries=set(), selector=Scope(groups=["absent"]))
+        assert resolved.op_entries == []
+
+    def test_the_entries_come_back_sorted(self) -> None:
+        """A set has no order, and an op's entry list is compared and recorded."""
+        resolved = ResolvedScope(
+            entries={("B", "one"), ("A", "two"), ("A", "one")},
+            selector=Scope(groups=["A", "B"]),
+        )
+        assert resolved.op_entries == [("A", "one"), ("A", "two"), ("B", "one")]
+
+
 class TestResolveScope:
     """A selector resolves against the media index into the entries it names."""
 

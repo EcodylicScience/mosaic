@@ -45,6 +45,8 @@ class TrexOp(Op[TrexParams]):
     # Read from the integration rather than restated, so the op and the
     # standalone run_trex cannot drift into naming the same run two ways.
     version = TREX_VERSION
+    scope_takes = "any"
+    scope_dependent = False
     Params = TrexParams
 
     def target(self, params: TrexParams) -> str:

@@ -51,6 +51,8 @@ class LitposeOp(Op[LitposeParams]):
     # Read from the integration rather than restated, so the op and the standalone
     # run_litpose cannot drift into naming the same run two ways.
     version = LITPOSE_VERSION
+    scope_takes = "any"
+    scope_dependent = False
     Params = LitposeParams
 
     def target(self, params: LitposeParams) -> str:

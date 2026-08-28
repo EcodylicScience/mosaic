@@ -233,6 +233,8 @@ class StoreExportOp(Op[StoreExportParams]):
     # Encoding thousands of full-resolution frames is long and CPU-bound, and
     # nothing here touches a GPU: the writer runs a CPU AV1 encode.
     resource_class = "heavy"
+    scope_takes = "exactly-one"
+    scope_dependent = True
     Params = StoreExportParams
 
     def target(self, params: StoreExportParams) -> str:

@@ -782,6 +782,8 @@ class TrainPoseOp(Op[PoseTrainParams]):
     # moves with them: ``train-pose.0.1-*`` runs stay readable and keep their index
     # rows rather than sitting under a name that now means something else.
     version = "0.2"
+    scope_takes = "none"
+    scope_dependent = False
     Params = PoseTrainParams
 
     def plan_identity(
@@ -887,6 +889,8 @@ class TrainPointsOp(Op[PointTrainParams]):
     category = "train"
     domain = "tracking"
     version = "0.2"  # see TrainPoseOp.version
+    scope_takes = "none"
+    scope_dependent = False
     Params = PointTrainParams
 
     def plan_identity(
@@ -998,6 +1002,8 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
     category = "train"
     domain = "tracking"
     version = "0.1"
+    scope_takes = "none"
+    scope_dependent = False
     Params = LocalizerTrainParams
 
     def plan_identity(

@@ -587,6 +587,8 @@ class InferPoseOp(Op[PoseInferParams]):
     # -- but tables written under 0.1 hold the smaller coordinates and should be
     # re-run.
     version = "0.2"
+    scope_takes = "any"
+    scope_dependent = False
     Params = PoseInferParams
 
     def plan_identity(self, ds: Dataset, params: PoseInferParams) -> OpIdentity:
@@ -673,6 +675,8 @@ class InferPointsOp(Op[PointInferParams]):
     domain = "tracking"
     # 0.2 for the reason `infer-pose` gives above: the coordinates moved.
     version = "0.2"
+    scope_takes = "any"
+    scope_dependent = False
     Params = PointInferParams
 
     def plan_identity(self, ds: Dataset, params: PointInferParams) -> OpIdentity:
@@ -762,6 +766,8 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
     # PyTorch, it never resized at decode time, and its coordinates were already
     # in source pixels.
     version = "0.1"
+    scope_takes = "any"
+    scope_dependent = False
     Params = LocalizerInferParams
 
     def plan_identity(self, ds: Dataset, params: LocalizerInferParams) -> OpIdentity:

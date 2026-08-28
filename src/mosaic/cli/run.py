@@ -89,11 +89,7 @@ def entries_from_scope(ds: "Dataset", params: dict[str, object]) -> dict[str, ob
         for key, value in params.items()
         if key not in {"groups", "sequences"}
     }
-    # ``is_unset`` decides between the two empty resolutions, never their size.
-    # An unset selector reaches the op as ``None`` and covers every indexed
-    # entry. A selector naming a group that holds nothing reaches it as ``[]``
-    # and covers none.
-    expanded["entries"] = None if scope.is_unset else sorted(resolved.entries)
+    expanded["entries"] = resolved.op_entries
     return expanded
 
 

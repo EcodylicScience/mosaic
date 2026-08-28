@@ -199,6 +199,8 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
     domain = "tracking"
     version = "0.1"
     writes_tracks = True
+    scope_takes = "any"
+    scope_dependent = True
     Params = ResampleTracksParams
 
     def target(self, params: ResampleTracksParams) -> str:

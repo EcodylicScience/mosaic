@@ -723,6 +723,8 @@ class ExtractFramesOp(Op[ExtractFramesParams]):
     category = "extract"
     domain = "tracking"
     version = "0.1"
+    scope_takes = "any"
+    scope_dependent = False
     Params = ExtractFramesParams
 
     def target(self, params: ExtractFramesParams) -> str:

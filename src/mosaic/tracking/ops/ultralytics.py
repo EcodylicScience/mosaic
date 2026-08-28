@@ -39,6 +39,8 @@ class UltralyticsOp(Op[UltralyticsParams]):
     domain = "tracking"
     resource_class: ClassVar[str] = "gpu"
     version = ULTRALYTICS_VERSION
+    scope_takes = "any"
+    scope_dependent = False
     Params = UltralyticsParams
 
     def target(self, params: UltralyticsParams) -> str:

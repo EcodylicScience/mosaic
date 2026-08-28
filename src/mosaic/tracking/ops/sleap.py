@@ -51,6 +51,8 @@ class SleapOp(Op[SleapParams]):
     # Read from the integration rather than restated, so the op and the standalone
     # run_sleap cannot drift into naming the same run two ways.
     version = SLEAP_VERSION
+    scope_takes = "any"
+    scope_dependent = False
     Params = SleapParams
 
     def target(self, params: SleapParams) -> str:

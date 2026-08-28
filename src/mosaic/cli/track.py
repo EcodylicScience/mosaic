@@ -166,12 +166,8 @@ def track_command(
     except FileNotFoundError as exc:
         fail(f"{kind} run failed: {exc}")
 
-    # ``is_unset`` decides between the two empty resolutions, never their size.
-    # An unset selector reaches the op as ``None`` and covers every indexed
-    # entry. A selector naming a group that holds nothing reaches it as ``[]``
-    # and covers none.
     params: dict[str, object] = {
-        "entries": None if scope.is_unset else sorted(resolved.entries),
+        "entries": resolved.op_entries,
         "overwrite": overwrite,
         "convert_to_tracks": convert_to_tracks,
         "idle_timeout": idle_timeout,

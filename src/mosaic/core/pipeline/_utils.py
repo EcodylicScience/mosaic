@@ -13,6 +13,7 @@ import numpy as np
 from pydantic import BaseModel
 
 from mosaic.core import scope as scope_module
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 
 # ``now_iso`` / ``new_execution_id`` now live in the dependency-light leaf
@@ -92,6 +93,23 @@ class ResolvedScope:
         to be alike.
         """
         return self.compositions.get(entry, {}).get(root, "")
+
+    @property
+    def op_entries(self) -> list[Entry] | None:
+        """The entry list an op's params take, or ``None`` for every entry.
+
+        An unset selector covers every indexed entry, and an op reads ``None``
+        as that. A selector that named something and resolved to nothing covers
+        none, and reaches the op as ``[]``. The selector's ``is_unset`` decides
+        between the two, never the size of the resolution. Collapsing an empty
+        resolution into ``None`` runs a misspelled group name over the whole
+        dataset.
+
+        Sorted, because an op's entry list is compared and recorded.
+        """
+        if self.selector.is_unset:
+            return None
+        return sorted(self.entries)
 
     @property
     def groups(self) -> set[str]:

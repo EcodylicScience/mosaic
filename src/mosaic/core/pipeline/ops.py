@@ -25,7 +25,16 @@ when an optional extra is absent.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Final,
+    Generic,
+    Literal,
+    TypeVar,
+    get_args,
+)
 
 from mosaic.core.pipeline.job import CancelToken, JobContext, job_context
 from mosaic.core.params import Params
@@ -100,6 +109,24 @@ class IdentityDeferred(Exception):
 P = TypeVar("P", bound=Params)
 
 
+type ScopeTakes = Literal["none", "any", "at-least-one", "exactly-one"]
+"""How much scope one op accepts.
+
+- ``"none"`` -- reads a prepared directory or a training set, never a scope.
+- ``"any"`` -- any scope, and an unset one covers every indexed entry.
+- ``"at-least-one"`` -- refuses an unset selector and a resolution of zero.
+- ``"exactly-one"`` -- the above, and refuses a resolution of more than one.
+"""
+
+SCOPE_TAKES_VALUES: Final[frozenset[str]] = frozenset(get_args(ScopeTakes.__value__))
+"""The legal values, read off :data:`ScopeTakes` rather than restated.
+
+A runtime check needs the same vocabulary the annotation declares. A second
+literal set is free to drift from the first, and the direction it drifts in is
+the harmful one: a value the checker rejects and the registry accepts.
+"""
+
+
 class Op(Generic[P]):
     """Base class for a registered op.
 
@@ -126,6 +153,27 @@ class Op(Generic[P]):
     # table and writes another. ``None`` keeps the old inference, so no existing
     # op declares anything and none of their declarations move.
     writes_tracks: ClassVar[bool | None] = None
+    scope_takes: ClassVar[ScopeTakes]
+    """How much scope this op accepts. See :data:`ScopeTakes`.
+
+    Declared rather than inferred from the params model. Inference let four ops
+    spell one question four ways: a required list, a singular field, a nullable
+    default and an absence. One shared validator reads this and raises every
+    refusal, and an op implements no scope checking of its own. A wrong value
+    here either refuses a run the op can do or admits one it cannot.
+    """
+
+    scope_dependent: ClassVar[bool]
+    """Whether the set of entries in scope decides what this run is named.
+
+    The op-side twin of the feature declaration ``compute_run_id`` demands.
+    ``True`` where :meth:`plan_identity` reads the scope: ``transcode`` and
+    ``export-store`` hash the resolved source identities, and ``resample-tracks``
+    resolves the tracks variant it chains from by filtering the index with the
+    scope. A ``False`` written on an op whose identity does move mints one
+    identifier for two different computations.
+    """
+
     Params: ClassVar[type[Params]]
 
     def target(self, params: P) -> str:
@@ -205,9 +253,28 @@ OPS: dict[str, type[Op[Any]]] = {}
 
 
 def register_op(cls: type[Op[Any]]) -> type[Op[Any]]:
-    """Class decorator: register *cls* under its ``kind``."""
+    """Class decorator: register *cls* under its ``kind``.
+
+    Raises:
+        ValueError: *cls* defines no non-empty ``kind``.
+        TypeError: *cls* omits ``scope_takes`` or ``scope_dependent``, or
+            declares a ``scope_takes`` outside :data:`SCOPE_TAKES_VALUES`.
+    """
     if not getattr(cls, "kind", None):
         raise ValueError(f"{cls.__name__} must define a non-empty 'kind'")
+    for name in ("scope_takes", "scope_dependent"):
+        if not hasattr(cls, name):
+            raise TypeError(
+                f"{cls.__name__} declares no {name!r}. Every op states how much "
+                f"scope it takes and whether coverage decides its output, and a "
+                f"missing declaration cannot be guessed from the params model. "
+                f"See mosaic.core.pipeline.ops.ScopeTakes."
+            )
+    if cls.scope_takes not in SCOPE_TAKES_VALUES:
+        raise TypeError(
+            f"{cls.__name__}.scope_takes is {cls.scope_takes!r}, which is not "
+            f"one of {sorted(SCOPE_TAKES_VALUES)}."
+        )
     OPS[cls.kind] = cls
     return cls
 

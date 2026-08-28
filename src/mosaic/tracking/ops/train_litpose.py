@@ -140,6 +140,8 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
     category = "train"
     domain = "tracking"
     version = TRAIN_LITPOSE_VERSION
+    scope_takes = "none"
+    scope_dependent = False
     Params = TrainLitposeParams
     resource_class: ClassVar[str] = "gpu"
 
