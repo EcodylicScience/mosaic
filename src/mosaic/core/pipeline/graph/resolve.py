@@ -398,6 +398,8 @@ def _op_declaration(kind: str, op_cls: type) -> Declaration:
         emits="individual",
         category=str(getattr(op_cls, "category", "")),
         resource_class=op_resource_class(kind),
+        scope_takes=str(getattr(op_cls, "scope_takes", "")),
+        scope_dependent=bool(getattr(op_cls, "scope_dependent", False)),
     )
 
 
