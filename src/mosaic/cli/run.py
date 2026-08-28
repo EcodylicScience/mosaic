@@ -36,9 +36,21 @@ from mosaic.cli._io import (
     parse_entries,
     stdout_to_stderr,
     terse,
+    with_command_line_scope,
 )
 from mosaic.cli._render import render_kv
 from mosaic.core.scope import Scope
+
+
+SCOPE_FLAGS_REMEDY = (
+    "--entries group:sequence (repeatable), or --groups / --sequences, which "
+    "combine as a cross product. Omit all three to cover everything."
+)
+"""How to name a scope on this command, appended to a refusal the library wrote.
+
+``check_scope_takes`` answers in ``Scope(...)`` for the library, the planner and
+mosaic-api alike. This is the one caller whose reader types flags.
+"""
 
 
 SCOPE_PARAM_KEYS = frozenset(Scope.model_fields)
@@ -183,6 +195,7 @@ def run_command(
 
     from mosaic.core.pipeline._utils import new_execution_id
     from mosaic.core.pipeline.graph import REFUSED_EXIT_CODE, StepRefused
+    from mosaic.core.pipeline.ops import ScopeRefused
     from mosaic.core.pipeline.job import CancelToken, Cancelled, install_signal_handler
 
     ds = load_dataset(manifest)
@@ -367,6 +380,10 @@ def run_command(
         fail(str(exc))
     except ValidationError as exc:
         fail(f"Invalid params: {terse(exc)}")
+    except ScopeRefused as refusal:
+        # Before the ValueError arm below, which ScopeRefused subclasses. The
+        # checker owns the sentence; this command owns the flags that answer it.
+        fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
     except ValueError as exc:
         # An invalid input chain (a Result that is not track-shaped), and every
         # ScopeRefused, which subclasses ValueError. That is the whole mechanism

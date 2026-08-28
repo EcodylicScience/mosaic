@@ -98,6 +98,28 @@ def load_json_arg(value: str | None) -> object | None:
         fail(f"Invalid JSON ({source}): {exc}")
 
 
+def with_command_line_scope(refusal: str, remedy: str) -> str:
+    """*refusal* with the flag spelling of its remedy appended.
+
+    ``check_scope_takes`` is the only place a scope refusal is written, and it
+    answers in ``Scope(...)`` because its callers are the library, the graph
+    planner and mosaic-api, which all construct one. A person at a terminal
+    types flags instead, and each command offers its own spelling of them.
+
+    Appended rather than substituted. The sentence the checker wrote states
+    what an unscoped run would cover, which is what decides whether to narrow
+    or to proceed, and no flag list replaces it.
+
+    Args:
+        refusal: what :func:`~mosaic.core.pipeline.ops.check_scope_takes` said.
+        remedy: the flags this command offers, as a phrase.
+
+    Returns:
+        The message to print.
+    """
+    return f"{refusal} At the command line: {remedy}"
+
+
 def parse_entries(entries: list[str] | None) -> list[tuple[str, str]]:
     """Parse repeated ``group:sequence`` tokens into pairs.
 
