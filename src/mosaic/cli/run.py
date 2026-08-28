@@ -41,54 +41,38 @@ from mosaic.cli._render import render_kv
 from mosaic.core.scope import Scope
 
 
-def split_op_scope(params: dict[str, object]) -> tuple[dict[str, object], Scope]:
-    """Split the scope *params* names off the settings the op takes.
+SCOPE_PARAM_KEYS = frozenset(Scope.model_fields)
+"""The selector field names, refused inside ``--params`` on both arms.
 
-    ``mosaic run --kind`` declares no scope flags of its own and refuses
-    ``--entries``. An op's scope therefore arrives inside ``--params``, spelled
-    with the field names of :class:`~mosaic.core.scope.Scope`. It leaves here as
-    a selector. ``run_op`` takes one, and an op body reads it.
+No feature and no op declares a field under any of these names. A run
+accepting one would take a narrowing its own model never validated. A scope is
+named with ``--entries``, ``--groups`` or ``--sequences``.
+"""
 
-    ``groups`` / ``sequences`` name a cross product only the dataset can list.
-    ``run_op`` enumerates it and refuses a scope the op's declaration does not
-    accept. Nothing here reads the dataset or the op.
 
-    Params naming no scope key at all come back unchanged beside an unset
-    selector. Every other key belongs to the op, and the op's own model
-    validates it.
+def refuse_scope_in_params(params: dict[str, object]) -> None:
+    """Raise unless *params* names settings alone.
+
+    A feature's or an op's model validates ``--params``. A scope belongs to the
+    attempt and arrives through the flags both arms declare.
 
     Args:
         params: The ``--params`` mapping as the caller wrote it.
 
-    Returns:
-        The params the op's model validates, and the selector to cover.
-
     Raises:
-        ValidationError: If the scope keys do not describe one selector, which
-            an ``entries`` given beside ``groups`` or ``sequences`` does not.
-        ValueError: If ``entries`` names ``(group, sequence, camera)`` triples.
+        ValueError: A key names a selector field instead of a setting.
     """
-    named = {key: value for key, value in params.items() if key in Scope.model_fields}
+    named = sorted(SCOPE_PARAM_KEYS & set(params))
     if not named:
-        return params, Scope()
-    scope = Scope.model_validate(named)
-    if scope.addresses_cameras:
-        # Refused rather than resolved down to its pairs. Sixteen of the
-        # seventeen ops read the pairs and discard the camera, which runs the op
-        # over every camera of the entry under a selector that named one of
-        # them. ``export-store`` does read the camera, and reaching it with one
-        # through this command needs a per-op declaration of which ops do.
-        message = (
-            "entries names (group, sequence, camera) triples, which this "
-            "command does not pass on. An op covers a whole (group, sequence) "
-            "entry and resolves every camera of it. Give (group, sequence) "
-            "pairs instead."
-        )
-        raise ValueError(message)
-    settings = {
-        key: value for key, value in params.items() if key not in Scope.model_fields
-    }
-    return settings, scope
+        return
+    listed = ", ".join(named)
+    flags = ", ".join(f"--{key}" for key in named)
+    message = (
+        f"--params names the scope key(s) {listed}, which no feature and no op "
+        f"declares. Name the scope with {flags} instead, and leave --params to "
+        f"the settings the model validates."
+    )
+    raise ValueError(message)
 
 
 def run_command(
@@ -135,11 +119,18 @@ def run_command(
             help='Feature inputs as JSON (default ["tracks"]). Feature runs only.',
         ),
     ] = None,
+    groups: Annotated[
+        list[str] | None, typer.Option("--groups", help="Scope to these groups.")
+    ] = None,
+    sequences: Annotated[
+        list[str] | None, typer.Option("--sequences", help="Scope to these sequences.")
+    ] = None,
     entries: Annotated[
         list[str] | None,
         typer.Option(
             "--entries",
-            help="Restrict to group:sequence (repeatable). Feature runs only.",
+            help="Scope to group:sequence pairs (repeatable). A bare token is a "
+            "sequence in the empty group.",
         ),
     ] = None,
     tracks_run_id: Annotated[
@@ -202,6 +193,25 @@ def run_command(
         if not isinstance(params_value, dict):
             fail("--params must be a JSON object.")
         params_dict = cast("dict[str, object]", params_value)
+        try:
+            refuse_scope_in_params(params_dict)
+        except ValueError as exc:
+            fail(str(exc))
+
+    # --groups and --sequences are a cross product, and a group named with no
+    # sequence means every sequence in it, which only an index can answer. The
+    # selector is built here for both arms; a feature resolves it against its
+    # inputs and run_op enumerates it against the media index. Checked here so
+    # an --entries named beside either of the other two becomes a message
+    # rather than a traceback.
+    try:
+        scope = Scope(
+            entries=parse_entries(entries) or None,
+            groups=groups or None,
+            sequences=sequences or None,
+        )
+    except ValidationError as exc:
+        fail(f"Invalid scope: {terse(exc)}")
 
     exec_id = execution_id or new_execution_id()
     token = CancelToken()
@@ -210,6 +220,17 @@ def run_command(
     payload: dict[str, object]
     try:
         if graph_request is not None:
+            if entries or groups or sequences:
+                # Refused rather than dropped. A step covers the entries its
+                # plan resolved, which is the submission's narrowing minus
+                # what is already computed and minus what is quarantined. A
+                # flag here would name a fourth thing and reach nothing.
+                fail(
+                    "--entries / --groups / --sequences are not supported with "
+                    "--graph-request; a step covers the entries its plan "
+                    "resolved. Narrow the submission instead, with "
+                    "'mosaic pipeline submit --entry group:sequence'."
+                )
             from mosaic.core.pipeline.graph import (
                 execute_step,
                 load_request,
@@ -244,7 +265,6 @@ def run_command(
                 "failed_entries": list(outcome.failed_entries),
             }
         elif feature is not None:
-            entry_pairs = parse_entries(entries)
             feat = build_feature(feature, load_json_arg(inputs), params_dict)
             from mosaic.core.pipeline.run import run_feature
 
@@ -253,7 +273,7 @@ def run_command(
                 result = run_feature(
                     ds,
                     feat,
-                    scope=Scope(entries=entry_pairs) if entry_pairs else None,
+                    scope=None if scope.is_unset else scope,
                     overwrite=overwrite,
                     tracks_run_id=tracks_run_id,
                     labels_run_id=labels_run_id,
@@ -279,8 +299,6 @@ def run_command(
                 "entries_written": result.entries_written,
             }
         else:
-            if entries:
-                fail("--entries is not supported with --kind; put scope in --params.")
             if inputs is not None:
                 fail(
                     "--inputs is not supported with --kind (ops declare inputs in Params)."
@@ -290,15 +308,6 @@ def run_command(
                     "--tracks-run-id / --labels-run-id are not supported with --kind; "
                     "an op produces these rather than reading them."
                 )
-            if overwrite:
-                # Refused rather than ignored. The scoped ops honor an overwrite
-                # argument and the six scope-free ones still read a params field of
-                # their own. Accepting the flag would recompute for some kinds and
-                # do nothing for the rest.
-                fail(
-                    "--overwrite is not supported with --kind; an op decides reuse "
-                    "from its own markers. Clear its run root to recompute it."
-                )
             op_kind = cast("str", kind)
             from mosaic.core.pipeline.ops import run_op
             from mosaic.tracking import register_ops
@@ -306,12 +315,12 @@ def run_command(
             register_ops()
             log(f"[mosaic] execution_id={exec_id} running {op_kind}")
             with stdout_to_stderr():
-                settings, op_scope = split_op_scope(params_dict or {})
                 run_id = run_op(
                     ds,
                     op_kind,
-                    settings,
-                    scope=op_scope,
+                    params_dict or {},
+                    scope=scope,
+                    overwrite=overwrite,
                     execution_id=exec_id,
                     owner=owner,
                     cancel_token=token,

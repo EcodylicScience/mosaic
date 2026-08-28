@@ -386,13 +386,18 @@ def test_feature_and_kind_are_mutually_exclusive(dataset: tuple[Path, Dataset]) 
     assert result.exit_code == 1
 
 
-def test_entries_rejected_with_kind(dataset: tuple[Path, Dataset]) -> None:
+def test_inputs_rejected_with_kind(dataset: tuple[Path, Dataset]) -> None:
+    """An op declares its inputs in Params, where a feature takes them as a flag.
+
+    ``--entries`` is no longer beside this one. Both arms now take the same
+    three scope flags, covered in ``tests/test_cli_run_scope.py``.
+    """
     manifest, _ = dataset
     result = runner.invoke(
-        app, ["run", "-m", str(manifest), "--kind", "infer-pose", "--entries", "g:s1"]
+        app, ["run", "-m", str(manifest), "--kind", "infer-pose", "--inputs", '["x"]']
     )
     assert result.exit_code == 1
-    assert "entries" in result.stderr.lower()
+    assert "inputs" in result.stderr.lower()
 
 
 def test_bad_params_json(dataset: tuple[Path, Dataset]) -> None:

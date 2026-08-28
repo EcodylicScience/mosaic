@@ -435,24 +435,69 @@ def test_the_cli_refuses_a_request_without_a_step(tracked: Dataset) -> None:
     assert "--graph-request and --step" in result.output
 
 
-def test_the_cli_refuses_overwrite_on_an_op_rather_than_dropping_it(
-    tracked: Dataset,
-) -> None:
-    """It used to be accepted and ignored, which promised a recompute."""
+@pytest.mark.parametrize("flag", ["--entries", "--groups", "--sequences"])
+def test_the_cli_refuses_a_scope_flag_on_a_step(tracked: Dataset, flag: str) -> None:
+    """A step covers the entries its plan resolved, and a flag reaches nothing.
+
+    Accepted and dropped before these flags existed, for ``--entries`` alone.
+    Asserted per flag, because one refusal reading only ``entries`` would let
+    the other two through and still exit zero.
+    """
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
     result = runner.invoke(
         app,
         [
             "run",
             "--manifest",
             str(tracked.manifest_path),
-            "--kind",
-            "transcode",
-            "--overwrite",
+            "--graph-request",
+            request.request_id,
+            "--step",
+            "speed",
+            flag,
+            "seq_a",
         ],
     )
 
     assert result.exit_code == 1
-    assert "--overwrite is not supported with --kind" in result.output
+    assert flag in result.output
+    assert "a step covers the entries its plan resolved" in result.output
+
+
+def test_a_graph_op_step_passes_overwrite_to_the_op(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A step run with ``--overwrite`` recomputes rather than refusing.
+
+    The refusal this replaces stood while six ops read a params field instead
+    of the argument. Asserted on what ``run_op`` received: a step that finishes
+    proves nothing, because an op that discarded the flag finishes too.
+    """
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "id": "regrid",
+                    "type": "op",
+                    "kind": "resample-tracks",
+                    "params": {"target_fps": 30.0},
+                }
+            ],
+        }
+    )
+    submitted = submit_request(tracked, recipe)
+    planned_run_id = submitted.plan.step("regrid").run_id or ""
+    seen: list[bool] = []
+
+    def _capture(*args: object, overwrite: bool = False, **kwargs: object) -> str:
+        seen.append(overwrite)
+        return planned_run_id
+
+    monkeypatch.setattr(step_module, "run_op", _capture)
+    _ = execute_step(tracked, submitted.request, "regrid", overwrite=True)
+
+    assert seen == [True]
 
 
 def test_an_op_step_is_given_the_entries_its_plan_resolved(

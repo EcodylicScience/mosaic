@@ -61,7 +61,9 @@ $ mosaic run [OPTIONS]
 * `--step TEXT`: Which step of --graph-request to run.
 * `--params TEXT`: Params as inline JSON, @file.json, or @- (stdin).
 * `--inputs TEXT`: Feature inputs as JSON (default ["tracks"]). Feature runs only.
-* `--entries TEXT`: Restrict to group:sequence (repeatable). Feature runs only.
+* `--groups TEXT`: Scope to these groups.
+* `--sequences TEXT`: Scope to these sequences.
+* `--entries TEXT`: Scope to group:sequence pairs (repeatable). A bare token is a sequence in the empty group.
 * `--tracks-run-id TEXT`: Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Feature runs only; needed when one sequence has two recipes.
 * `--labels-run-id TEXT`: Which labels variant to read, e.g. 'trex.0.1-abc123def0'. Feature runs only; needed when one sequence has two recipes.
 * `--overwrite`: Recompute even if a cached run exists.
