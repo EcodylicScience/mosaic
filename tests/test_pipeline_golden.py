@@ -75,8 +75,33 @@ WORKED_RECIPE: dict[str, object] = {
                 "perplexity": 5,
             },
         },
+        # The one step kind that computes no entry. Every other step here takes
+        # a scope, so without this the recorded ``entries`` cells agree with the
+        # plan scope whatever the planner decides for an op declaring
+        # ``scope_takes = "none"``.
+        {
+            "id": "train",
+            "type": "op",
+            "kind": "train-pose",
+            "params": {"data": "training/data.yaml", "epochs": 10},
+        },
     ],
 }
+
+TRAINING_DATA_YAML = """\
+train: images/train
+val: images/val
+names:
+  0: bee
+kpt_shape: [4, 3]
+"""
+"""What the ``train`` step fingerprints.
+
+Written into the fixture so the step resolves an identity rather than deferring
+one. The split roots need not exist -- the fingerprint lists whatever is under
+them -- and the absolute ``path`` key is left out because a location is not
+part of what a model was trained on.
+"""
 
 
 @pytest.fixture
@@ -87,6 +112,9 @@ def worked_dataset(tmp_path: Path) -> Dataset:
     write_media_index(
         dataset, ["seq_a", "seq_b"], uids={"seq_a": "uuid-a", "seq_b": "uuid-b"}
     )
+    training = dataset.base_dir / "training"
+    training.mkdir(parents=True, exist_ok=True)
+    _ = (training / "data.yaml").write_text(TRAINING_DATA_YAML)
     return dataset
 
 

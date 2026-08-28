@@ -44,7 +44,6 @@ from mosaic.tracking.ops._train_descriptions import (
     EPOCHS_DESCRIPTION,
     IDLE_TIMEOUT_DESCRIPTION,
     MAX_RUNTIME_DESCRIPTION,
-    OVERWRITE_DESCRIPTION,
 )
 from mosaic.tracking.sleap.training import SleapBackbone, SleapHead
 from mosaic.tracking.sleap.version import TRAIN_SLEAP_KIND
@@ -121,9 +120,6 @@ class TrainSleapParams(Params):
     max_runtime: Annotated[
         float | None, HASH_EXCLUDE, Declared(MAX_RUNTIME_DESCRIPTION, unit="s")
     ] = None
-    # A throughput knob, not a property of the model: flipping it must not
-    # mint a second identity for the same weights.
-    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(OVERWRITE_DESCRIPTION)] = False
 
 
 @register_op
@@ -193,7 +189,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
 
         run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
-        if not params.overwrite and training_is_complete(ds, self.kind, run_id):
+        if not overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id

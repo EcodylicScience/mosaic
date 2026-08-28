@@ -57,7 +57,6 @@ from mosaic.tracking.ops._common import (
 from mosaic.tracking.ops._train_descriptions import (
     BASE_MODEL_DESCRIPTION,
     EPOCHS_DESCRIPTION,
-    OVERWRITE_DESCRIPTION,
 )
 
 if TYPE_CHECKING:
@@ -690,9 +689,6 @@ class PoseTrainParams(Params):
         Declared(_DEVICE_DESCRIPTION),
     ] = "0"
     batch: Annotated[int, HASH_EXCLUDE, Declared(_BATCH_DESCRIPTION)] = 16
-    # A throughput knob, not a property of the model: flipping it must not
-    # mint a second identity for the same weights.
-    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(OVERWRITE_DESCRIPTION)] = False
 
     @model_validator(mode="after")
     def _train_overrides_do_not_shadow(self) -> Self:
@@ -763,9 +759,6 @@ class LocalizerTrainParams(Params):
     batch_size: Annotated[
         int, HASH_EXCLUDE, Declared(_LOCALIZER_BATCH_SIZE_DESCRIPTION)
     ] = 128
-    # A throughput knob, not a property of the model: flipping it must not
-    # mint a second identity for the same weights.
-    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(OVERWRITE_DESCRIPTION)] = False
 
 
 # --- Ops -----------------------------------------------------------------
@@ -846,7 +839,7 @@ class TrainPoseOp(Op[PoseTrainParams]):
         # and it is the one a planner does not read.
         run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
-        if not params.overwrite and training_is_complete(ds, self.kind, run_id):
+        if not overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id
@@ -968,7 +961,7 @@ class TrainPointsOp(Op[PointTrainParams]):
         # and it is the one a planner does not read.
         run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
-        if not params.overwrite and training_is_complete(ds, self.kind, run_id):
+        if not overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id
@@ -1082,7 +1075,7 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
 
         run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
-        if not params.overwrite and training_is_complete(ds, self.kind, run_id):
+        if not overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id

@@ -138,10 +138,10 @@ def test_overwrite_retrains(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     params = {"data": str(_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
 
     first = run_op(ds, "train-pose", dict(params))
-    second = run_op(ds, "train-pose", {**params, "overwrite": True})
+    second = run_op(ds, "train-pose", dict(params), overwrite=True)
 
-    # `overwrite` must not move the identifier: it is a throughput knob, not a
-    # property of the model, so it is excluded from the identity payload.
+    # `overwrite` must not move the identifier. It is a throughput knob rather
+    # than a property of the model, and it is passed to the op beside its params.
     assert first == second
     assert trainer.calls == 2
 
@@ -209,7 +209,7 @@ def test_a_second_execution_cannot_train_into_a_held_run_root(
 
     # overwrite, so the reuse gate does not answer first and the claim is reached.
     with pytest.raises(RunRootHeld, match="SOMEONE-ELSE"):
-        _ = run_op(ds, "train-pose", {**params, "overwrite": True})
+        _ = run_op(ds, "train-pose", dict(params), overwrite=True)
 
     assert trainer.calls == 1
 

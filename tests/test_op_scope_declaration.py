@@ -203,35 +203,21 @@ COVERAGE_NAMES = frozenset(
 SCOPE_SHAPED_NAMES = COVERAGE_NAMES | {"overwrite"}
 """The coverage spellings plus the recompute decision.
 
-One vocabulary for the payload gate, which refuses both. They are separate
-above because coverage has left every op params model and ``overwrite`` has
-left nine of seventeen. The two are pinned at different counts.
+Everything an attempt decides and a recipe does not. No op params model
+declares any of them, and the two tests below pin the halves separately so a
+regression names which one came back.
 """
-
-
-_OVERWRITE_STILL_DECLARED = frozenset(
-    [
-        "convert-points",
-        "train-litpose",
-        "train-localizer",
-        "train-points",
-        "train-pose",
-        "train-sleap",
-    ]
-)
-"""The scope-free ops whose ``overwrite`` is still a field rather than an argument."""
 
 
 class TestNoScopeReachesTheHashedPayload:
     """What a run covers and whether it recomputes never name the run.
 
     The direct leak, over **every** registered op rather than the eight the
-    gates below cover. Most ops now take their coverage as an argument and
-    hold no such field at all, which makes the check pass for them by
-    construction. ``transcode`` and ``export-store`` still declare theirs, and
-    those are the cases this measures: both are ``HASH_EXCLUDE``, and an
-    identity payload naming either would give one computation two names as
-    soon as a caller narrowed it.
+    gates below cover. Every op now takes both as arguments and declares no
+    such field, which makes this pass for all seventeen by construction. It
+    stays as the gate an op reintroducing one meets: the field would be
+    ``HASH_EXCLUDE`` or the payload would name it, and a payload naming either
+    gives one computation two names as soon as a caller narrows it.
 
     Read over the whole forbidden vocabulary rather than ``entries`` alone,
     because the spelling has differed per op and a new op is free to invent
@@ -368,16 +354,23 @@ class TestPublished:
         }
         assert declaring == set()
 
-    def test_only_the_scope_free_ops_still_declare_overwrite(self) -> None:
-        """Whether a run recomputes is an argument for the ops that take a scope.
+    def test_no_op_params_model_declares_overwrite(self) -> None:
+        """Op params are settings. Whether to recompute arrives beside them.
 
-        The six that take none still read a field. Pinned so shrinking the set
-        shows in a diff.
+        Two attempts differing only in whether they redo the work are one
+        recipe. Every op takes the decision as the ``overwrite`` argument
+        :meth:`~mosaic.core.pipeline.ops.Op.run` receives, whose name and
+        position :class:`TestOpInterface` pins for all seventeen. That a body
+        reads it is measured for ``train-pose``
+        (``tests/test_training_reuse.py``) and for ``convert-points``
+        (``tests/test_tracking_ops.py``), the two reuse-gate shapes. The four
+        remaining training ops repeat ``train-pose``'s gate line and are
+        covered by neither.
         """
         declaring = {
             kind for kind in OPS if "overwrite" in OPS[kind].Params.model_fields
         }
-        assert declaring == _OVERWRITE_STILL_DECLARED
+        assert declaring == set()
 
     def test_the_declaration_catalog_carries_them(self) -> None:
         """A canvas refuses a wire with no dataset and reads them here."""

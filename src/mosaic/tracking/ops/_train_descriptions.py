@@ -6,9 +6,8 @@
 model from a labeled dataset. ``PointTrainParams`` inherits
 ``PoseTrainParams``'s fields as a fourth consumer.
 
-BASE_MODEL_DESCRIPTION, EPOCHS_DESCRIPTION and OVERWRITE_DESCRIPTION cover
-what a run fine-tunes from, how long it trains, and whether a finished run is
-retrained. All four classes declare them.
+BASE_MODEL_DESCRIPTION and EPOCHS_DESCRIPTION cover what a run fine-tunes from
+and how long it trains. All four classes declare them.
 
 IDLE_TIMEOUT_DESCRIPTION and MAX_RUNTIME_DESCRIPTION belong only to
 ``TrainLitposeParams`` and ``TrainSleapParams``, the two ops that watch the
@@ -26,8 +25,6 @@ BASE_MODEL_DESCRIPTION = (
 )
 
 EPOCHS_DESCRIPTION = "How long the model trains at most."
-
-OVERWRITE_DESCRIPTION = "Train again even if this exact run already finished."
 
 IDLE_TIMEOUT_DESCRIPTION = (
     "How long the training subprocess may go without output before it is "
