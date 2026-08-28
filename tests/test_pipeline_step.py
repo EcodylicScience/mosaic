@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+import mosaic.core.pipeline.graph.step as step_module
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
@@ -452,6 +453,47 @@ def test_the_cli_refuses_overwrite_on_an_op_rather_than_dropping_it(
 
     assert result.exit_code == 1
     assert "--overwrite is not supported with --kind" in result.output
+
+
+def test_an_op_step_is_given_the_entries_its_plan_resolved(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dispatch names the entries the plan named, rather than leaving it unset.
+
+    The planner resolves a step's target scope to mint its identity, and an
+    unset selector covers every indexed entry. A dispatch that left it unset
+    would extract, track or transcode the whole dataset under an identifier
+    minted for the entries the plan asked for.
+
+    Asserted on what ``run_op`` received. A step that completes proves nothing
+    here, because an op reaching more entries than it was asked for still
+    finishes.
+    """
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "id": "regrid",
+                    "type": "op",
+                    "kind": "resample-tracks",
+                    "params": {"target_fps": 30.0},
+                }
+            ],
+        }
+    )
+    submitted = submit_request(tracked, recipe, scope=Scope(entries=[("", "seq_a")]))
+    planned_run_id = submitted.plan.step("regrid").run_id or ""
+    seen: list[Scope | None] = []
+
+    def _capture(*args: object, scope: Scope | None = None, **kwargs: object) -> str:
+        seen.append(scope)
+        return planned_run_id
+
+    monkeypatch.setattr(step_module, "run_op", _capture)
+    _ = execute_step(tracked, submitted.request, "regrid")
+
+    assert seen == [Scope(entries=[("", "seq_a")])]
 
 
 # --- the request as a whole ---------------------------------------------------

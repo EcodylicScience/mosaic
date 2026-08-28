@@ -29,10 +29,10 @@ from mosaic.core.pipeline.sequence_index import (
 )
 from mosaic.core.pipeline.job import CancelToken, Cancelled, JobContext
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op, run_op
-from mosaic.core.pipeline.types import OpParams
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
+    Params,
 )
 from mosaic.core.scope import Scope
 
@@ -204,13 +204,6 @@ _PARALLEL_MODE_DESCRIPTION = (
 )
 
 
-_OVERWRITE_DESCRIPTION = (
-    "Re-extract into a directory that already holds frames. The run refuses "
-    "rather than removing them, because annotations reference those images by "
-    "path and mosaic cannot tell whether any exist. A second selection is a "
-    "new run, through `revision`."
-)
-
 _REVISION_DESCRIPTION = (
     "Bump to extract a second selection under the same settings. It is the one "
     "term allowed to move the extraction identifier, and only a non-zero value "
@@ -223,18 +216,19 @@ _PARALLEL_WORKERS_DESCRIPTION = (
 )
 
 
-class ExtractFramesParams(OpParams):
+class ExtractFramesParams(Params):
     """Typed parameters for the ``extract-frames`` tracking op.
 
-    The scope selector, ``overwrite`` and the parallelism knobs are
-    ``HASH_EXCLUDE``: they select *which* work runs or *how fast*, but the
-    run_id addresses only the extraction *settings* (so the same settings share
-    a run_id and add per-sequence subdirs, like frames/trex).
+    The extraction settings, plus the parallelism knobs and ``revision``. The
+    parallelism knobs are ``HASH_EXCLUDE``, selecting how fast the work runs
+    rather than what comes out. One set of settings therefore shares a run_id
+    and adds per-sequence subdirectories under it.
 
-    ``overwrite`` is redeclared rather than inherited because this op answers it
-    differently: :func:`_refuse_to_overwrite` raises on a directory that already
-    holds frames instead of replacing them, and a client drawing a control from
-    the schema needs the description that says so.
+    ``revision`` is ``HASH_EXCLUDE`` and still names the run. Only a non-zero
+    value enters the payload. A second selection under identical settings
+    therefore gets its own identifier while every identifier already on disk
+    is reproduced. What a run covers and whether it recomputes are arguments
+    to the run, not fields here.
     """
 
     n_frames: Annotated[int, Declared(_N_FRAMES_DESCRIPTION)]
@@ -256,7 +250,6 @@ class ExtractFramesParams(OpParams):
     kmeans_batch_size: Annotated[int, Declared(_KMEANS_BATCH_SIZE_DESCRIPTION)] = 1024
     kmeans_max_iter: Annotated[int, Declared(_KMEANS_MAX_ITER_DESCRIPTION)] = 100
     kmeans_n_init: Annotated[str | int, Declared(_KMEANS_N_INIT_DESCRIPTION)] = "auto"
-    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
     revision: Annotated[int, HASH_EXCLUDE, Declared(_REVISION_DESCRIPTION)] = 0
     parallel_workers: Annotated[
         int | str | None, HASH_EXCLUDE, Declared(_PARALLEL_WORKERS_DESCRIPTION)
@@ -565,6 +558,7 @@ def _run_extract_frames(
     ds: Dataset,
     p: ExtractFramesParams,
     scope: ResolvedScope,
+    overwrite: bool,
     ctx: JobContext,
 ) -> str:
     """Extraction body executed inside a job_context (the op's payload)."""
@@ -585,7 +579,7 @@ def _run_extract_frames(
             file=sys.stderr,
         )
 
-    media_scope = ds.resolve_media_scope(p.entries)
+    media_scope = ds.resolve_media_scope(scope.op_entries)
     if not media_scope:
         print(
             "[extract_frames] No media entries match the given scope.", file=sys.stderr
@@ -643,7 +637,7 @@ def _run_extract_frames(
                 kmeans_batch_size=int(p.kmeans_batch_size),
                 kmeans_max_iter=int(p.kmeans_max_iter),
                 kmeans_n_init=p.kmeans_n_init,
-                overwrite=p.overwrite,
+                overwrite=overwrite,
             )
         )
 
@@ -760,7 +754,7 @@ class ExtractFramesOp(Op[ExtractFramesParams]):
         overwrite: bool,
         ctx: JobContext,
     ) -> str:
-        return _run_extract_frames(ds, params, scope, ctx)
+        return _run_extract_frames(ds, params, scope, overwrite, ctx)
 
 
 def extract_frames(
@@ -803,12 +797,11 @@ def extract_frames(
     contract knobs
     (``execution_id``/``owner``/``track``/``progress_callback``/``cancel_token``).
 
-    *scope* is the selector every other entry point takes. It reaches ``run_op``
-    and, resolved to entries, the op's own ``entries`` field. Resolving it here
-    is what the second route needs: a selector naming groups or sequences is an
-    entry list only an index can write out, and ``entries`` takes the list.
+    *scope* is the selector every other entry point takes, and *overwrite* says
+    whether an existing frame set is recomputed. Both reach the op through
+    ``run_op`` and neither enters the params: what a run covers and whether it
+    recomputes describe the attempt, where the params describe the recipe.
     """
-    resolved = ds.resolve_scope(scope)
     params = ExtractFramesParams(
         n_frames=n_frames,
         method=method,
@@ -823,8 +816,6 @@ def extract_frames(
         kmeans_batch_size=kmeans_batch_size,
         kmeans_max_iter=kmeans_max_iter,
         kmeans_n_init=kmeans_n_init,
-        entries=resolved.op_entries,
-        overwrite=overwrite,
         parallel_workers=parallel_workers,
         parallel_mode=parallel_mode,
     )
@@ -833,6 +824,7 @@ def extract_frames(
         "extract-frames",
         params,
         scope=scope,
+        overwrite=overwrite,
         execution_id=execution_id,
         owner=owner,
         track=track,

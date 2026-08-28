@@ -546,14 +546,20 @@ def test_extract_frames_resolves_its_selector_before_the_op_reads_it(
     selector: Scope,
     expected: list[tuple[str, str]] | None,
 ) -> None:
-    """What reaches ``ExtractFramesParams.entries``, not what the call returns.
+    """What entries reach the op body, not what the call returns.
 
-    That field takes an entry list, or ``None`` for every indexed entry, and the
-    list a groups or sequences selector names is one only an index can write out.
-    ``Scope.entry_pairs`` answers ``None`` for such a selector and an empty set
-    for ``Scope(entries=[])``. Both are falsy, and a falsy test on it hands the
-    op ``None`` for all three of these cases.
+    The op reads an entry list, or ``None`` for every indexed entry, and the
+    list a groups or sequences selector names is one only an index can write
+    out. ``Scope.entry_pairs`` answers ``None`` for such a selector and an empty
+    set for ``Scope(entries=[])``. Both are falsy, and a falsy test on it would
+    hand the op ``None`` for three of these four cases.
+
+    Recorded at the op body rather than at ``run_op``, which exercises the
+    whole chain. The front door hands the selector on, ``run_op`` resolves it,
+    and the op body reads the resolution.
     """
+    from mosaic.core.pipeline._utils import ResolvedScope
+    from mosaic.core.pipeline.job import JobContext
     from mosaic.tracking import extract_frames
     from mosaic.tracking.frame_extraction.dataset_runs import ExtractFramesParams
 
@@ -561,14 +567,17 @@ def test_extract_frames_resolves_its_selector_before_the_op_reads_it(
 
     def record(
         dataset: Dataset,
-        kind: str,
         params: ExtractFramesParams,
-        **_options: object,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
     ) -> str:
-        reached.append(params.entries)
+        reached.append(scope.op_entries)
         return "extract-frames.0.1-0000000000"
 
-    monkeypatch.setattr("mosaic.tracking.frame_extraction.dataset_runs.run_op", record)
+    monkeypatch.setattr(
+        "mosaic.tracking.frame_extraction.dataset_runs._run_extract_frames", record
+    )
 
     _ = extract_frames(three_entry_dataset, n_frames=2, scope=selector)
 

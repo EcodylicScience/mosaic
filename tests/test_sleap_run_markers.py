@@ -195,7 +195,7 @@ def test_overwrite_forces_a_recompute(
     dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
     assert len(sleap.tracked) == 1
 
-    dr.run_sleap(ds, SleapParams(model_paths=[str(model)], overwrite=True))
+    dr.run_sleap(ds, SleapParams(model_paths=[str(model)]), overwrite=True)
     assert len(sleap.tracked) == 2  # inference ran again
 
 

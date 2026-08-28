@@ -95,4 +95,4 @@ class SleapOp(Op[SleapParams]):
         # conda-env / bin are environment (image) concerns, left unset so the
         # runner resolves them from MOSAIC_SLEAP_CONDA_ENV / _BIN -- the run_id
         # stays independent of *where* it ran.
-        return run_sleap(ds, params, ctx=ctx)
+        return run_sleap(ds, params, scope, overwrite=overwrite, ctx=ctx)

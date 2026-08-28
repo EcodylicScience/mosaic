@@ -47,7 +47,6 @@ from mosaic.core.pipeline.tracks_identity import (
     write_tracks_variant,
 )
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
-from mosaic.core.pipeline.types import OpParams
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
@@ -201,8 +200,11 @@ _SAVE_IMAGES_DESCRIPTION = (
 )
 
 
-class _InferParamsBase(OpParams):
-    """What every inference op predicts with, over the scope ``OpParams`` names.
+class _InferParamsBase(Params):
+    """What every inference op predicts with.
+
+    The settings alone. Which entries a run covers and whether it recomputes
+    are arguments to the run.
 
     ``convert_to_tracks`` reaches ``identity_dump()`` where the same knob on
     :class:`~mosaic.tracking.common.params.TrackerOpParams` is ``HASH_EXCLUDE``.
@@ -376,6 +378,8 @@ def _run_inference_op(
     params: _InferParamsBase,
     ctx: JobContext,
     *,
+    scope: ResolvedScope | None = None,
+    overwrite: bool = False,
     kind: str,
     version: str,
     train_kind: str,
@@ -403,13 +407,14 @@ def _run_inference_op(
     run_id = identity.run_id
     ctx.set_run_id(run_id)
 
-    scope = ds.resolve_media_scope(params.entries)
-    if not scope:
+    scope_entries = scope.op_entries if scope is not None else None
+    media_scope = ds.resolve_media_scope(scope_entries)
+    if not media_scope:
         print(f"[{kind}] No media entries match the given scope.")
         return run_id
 
     work: list[tuple[str, str, Path, MediaFacts]] = []
-    for entry in one_camera_per_entry(kind, scope):
+    for entry in one_camera_per_entry(kind, media_scope):
         # The op reads the first path. A required-but-unlinked entry already
         # raised in resolve_media_scope, before any defective original was opened.
         group, sequence, resolved = entry.group, entry.sequence, entry.resolved
@@ -533,7 +538,7 @@ def _run_inference_op(
                     seq_dir=seq_dir,
                     video_path=video_path,
                     model_pt=model.path,
-                    overwrite=params.overwrite,
+                    overwrite=overwrite,
                 )
 
             # Written after the bridge, not after the parquet. A directory whose
@@ -672,6 +677,8 @@ class InferPoseOp(Op[PoseInferParams]):
             ds,
             params,
             ctx,
+            scope=scope,
+            overwrite=overwrite,
             kind=self.kind,
             version=self.version,
             train_kind="train-pose",
@@ -775,6 +782,8 @@ class InferPointsOp(Op[PointInferParams]):
             ds,
             params,
             ctx,
+            scope=scope,
+            overwrite=overwrite,
             kind=self.kind,
             version=self.version,
             train_kind="train-points",
@@ -848,6 +857,8 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
             ds,
             params,
             ctx,
+            scope=scope,
+            overwrite=overwrite,
             kind=self.kind,
             version=self.version,
             train_kind="train-localizer",

@@ -124,6 +124,7 @@ from .run import run_trex_convert, run_trex_track
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.progress import ProgressCallback
 
 
@@ -620,7 +621,9 @@ def _record_conversion_row(
 def run_trex(
     ds: Dataset,
     params: TrexParams,
+    scope: "ResolvedScope | None" = None,
     *,
+    overwrite: bool = False,
     # Job Contract
     execution_id: str | None = None,
     owner: str = "",
@@ -710,8 +713,9 @@ def run_trex(
     # The routed facts are still read, for a different job: they are what the
     # concatenated timeline is built from, and TREx cannot supply that -- it
     # takes one frame rate from the first clip and never checks the others.
-    scope = ds.resolve_media_scope(params.entries)
-    if not scope:
+    scope_entries = scope.op_entries if scope is not None else None
+    media_scope = ds.resolve_media_scope(scope_entries)
+    if not media_scope:
         print("[run_trex] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
 
@@ -1028,10 +1032,10 @@ def run_trex(
         kind=TREX_KIND,
         target="trex-track",
         minted=minted,
-        work_items=build_work_items(ds, scope, kind=TREX_KIND),
+        work_items=build_work_items(ds, media_scope, kind=TREX_KIND),
         index=trex_index(trex_index_path(ds)),
         run_entry=convert_and_track,
-        overwrite=params.overwrite,
+        overwrite=overwrite,
         execution_id=execution_id,
         owner=owner,
         track=track,

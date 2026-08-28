@@ -560,7 +560,7 @@ def test_a_marker_without_provenance_is_reused_but_not_adopted(
 def test_overwrite_reuses_the_conversion(ds: Dataset, trex: FakeTrex) -> None:
     """``overwrite`` means re-track, not re-convert 28 GB."""
     _ = dr.run_trex(ds, TrexParams())
-    _ = dr.run_trex(ds, TrexParams(overwrite=True))
+    _ = dr.run_trex(ds, TrexParams(), overwrite=True)
 
     assert len(trex.converted) == 1
     assert len(trex.tracked) == 2
@@ -571,7 +571,7 @@ def test_overwrite_never_touches_a_slot(ds: Dataset, trex: FakeTrex) -> None:
     slot = slot_of(ds)
     stamp = (slot / f"{CONVERSION_STEM}.pv").stat().st_mtime_ns
 
-    _ = dr.run_trex(ds, TrexParams(overwrite=True))
+    _ = dr.run_trex(ds, TrexParams(), overwrite=True)
     assert (slot / f"{CONVERSION_STEM}.pv").stat().st_mtime_ns == stamp
 
 

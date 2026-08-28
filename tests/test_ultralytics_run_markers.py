@@ -47,7 +47,7 @@ from mosaic.tracking.ultralytics_track.run import (
 from mosaic.tracking.ultralytics_track.tracker_defaults import TRACKER_NAMES
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 
-from tests.helpers import write_media_index
+from tests.helpers import scope_over, write_media_index
 
 # Selected by CI's `tracking` job with `-m tracker` rather than by a filename
 # list in the workflow, so a new file here is covered the day it lands.
@@ -231,7 +231,7 @@ def test_overwrite_forces_a_recompute(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
     _ = dr.run_ultralytics(ds, _params(model))
-    _ = dr.run_ultralytics(ds, _params(model, overwrite=True))
+    _ = dr.run_ultralytics(ds, _params(model), overwrite=True)
     assert len(ultralytics.tracked) == 2
 
 
@@ -388,7 +388,7 @@ def test_an_empty_scope_still_returns_the_run_it_minted(
     that has to happen before the run is named, whatever the scope turns out to
     hold.
     """
-    run_id = dr.run_ultralytics(ds, _params(model, entries=[("", "absent")]))
+    run_id = dr.run_ultralytics(ds, _params(model), scope_over(("", "absent")))
     assert run_id.startswith("ultralytics.8.4-")
     assert ultralytics.tracked == []
     assert [kind for _name, kind in ultralytics.events] == ["probe"]

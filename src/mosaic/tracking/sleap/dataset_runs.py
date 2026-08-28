@@ -85,6 +85,7 @@ from .run import run_sleap_convert, run_sleap_track
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.progress import ProgressCallback
 
 
@@ -231,7 +232,9 @@ def _bridge_analysis_h5_to_tracks(
 def run_sleap(
     ds: Dataset,
     params: SleapParams,
+    scope: "ResolvedScope | None" = None,
     *,
+    overwrite: bool = False,
     sleap_conda_env: str | None = None,
     sleap_bin: Path | str | None = None,
     # Job Contract
@@ -293,8 +296,9 @@ def run_sleap(
             "model_type": resolved_models.model_type,
         },
     )
-    scope = ds.resolve_media_scope(params.entries)
-    if not scope:
+    scope_entries = scope.op_entries if scope is not None else None
+    media_scope = ds.resolve_media_scope(scope_entries)
+    if not media_scope:
         print("[run_sleap] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
 
@@ -459,10 +463,10 @@ def run_sleap(
         kind=SLEAP_KIND,
         target="sleap-track",
         minted=minted,
-        work_items=build_work_items(ds, scope, kind=SLEAP_KIND),
+        work_items=build_work_items(ds, media_scope, kind=SLEAP_KIND),
         index=sleap_index(sleap_index_path(ds)),
         run_entry=track_one,
-        overwrite=params.overwrite,
+        overwrite=overwrite,
         execution_id=execution_id,
         owner=owner,
         track=track,

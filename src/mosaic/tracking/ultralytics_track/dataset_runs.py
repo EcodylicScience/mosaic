@@ -90,6 +90,7 @@ from .run import (
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.progress import ProgressCallback
 
 __all__ = [
@@ -284,7 +285,9 @@ def _context_token(ctx: JobContext | None) -> CancelToken | None:
 def run_ultralytics(
     ds: Dataset,
     params: UltralyticsParams,
+    scope: "ResolvedScope | None" = None,
     *,
+    overwrite: bool = False,
     ultralytics_conda_env: str | None = None,
     ultralytics_bin: Path | str | None = None,
     # Job Contract
@@ -383,8 +386,9 @@ def run_ultralytics(
             "ultralytics_version": probe.ultralytics_version,
         },
     )
-    scope = ds.resolve_media_scope(params.entries)
-    if not scope:
+    scope_entries = scope.op_entries if scope is not None else None
+    media_scope = ds.resolve_media_scope(scope_entries)
+    if not media_scope:
         print(
             "[run_ultralytics] No media entries match the given scope.",
             file=sys.stderr,
@@ -552,10 +556,10 @@ def run_ultralytics(
         kind=ULTRALYTICS_KIND,
         target="ultralytics-track",
         minted=minted,
-        work_items=build_work_items(ds, scope, kind=ULTRALYTICS_KIND),
+        work_items=build_work_items(ds, media_scope, kind=ULTRALYTICS_KIND),
         index=ultralytics_index(ultralytics_index_path(ds)),
         run_entry=track_one,
-        overwrite=params.overwrite,
+        overwrite=overwrite,
         execution_id=execution_id,
         owner=owner,
         track=track,

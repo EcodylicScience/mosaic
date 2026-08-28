@@ -194,7 +194,7 @@ def test_overwrite_forces_a_recompute(
     dr.run_litpose(ds, LitposeParams(model_path=str(model)))
     assert len(litpose.predicted) == 1
 
-    dr.run_litpose(ds, LitposeParams(model_path=str(model), overwrite=True))
+    dr.run_litpose(ds, LitposeParams(model_path=str(model)), overwrite=True)
     assert len(litpose.predicted) == 2  # inference ran again
 
 

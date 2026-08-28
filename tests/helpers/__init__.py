@@ -14,6 +14,8 @@ What lives where:
 - ``tracks`` -- track tables, tracks variants, raw TREx exports.
 - ``media`` -- media files, media-index rows, transcode derivatives.
 - ``ops`` -- the smallest params dict that validates for each registered op.
+- ``scope`` -- a resolved scope over named entries, for the ops and drivers
+  that take their coverage as an argument.
 - ``environment`` -- what the surrounding machine provides: the ffmpeg
   toolchain, and which files under the package root a structural walk should
   skip -- installed third-party code, and mosaic's own code that runs in an
@@ -55,6 +57,7 @@ from tests.helpers.media import (
 )
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.ops import minimal_op_params
+from tests.helpers.scope import resolved_scope, scope_over
 from tests.helpers.source_scan import (
     functions_named,
     module_tree,
@@ -94,8 +97,10 @@ __all__ = [
     "names_called_by",
     "names_read",
     "require_ffmpeg",
+    "resolved_scope",
     "runs_in_an_external_environment",
     "sandbox_home",
+    "scope_over",
     "source_tree",
     "track_sequences",
     "write_media_index",

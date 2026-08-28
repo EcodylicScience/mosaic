@@ -128,18 +128,11 @@ class TranscodeParams(Params):
     queue slot for as long as it takes, where five hundred jobs would spread
     across machines. Narrow the entry list to shard it.
 
-    **``Params`` rather than ``OpParams``, and what that trades.** A transcode
-    refuses an unscoped run, where ``OpParams`` declares an ``entries`` that
-    defaults to ``None`` and means every indexed entry. A subclass cannot
-    inherit that field and make it required -- dropping an inherited default is
-    ``reportGeneralTypeIssues`` and narrowing ``list[Entry] | None`` to
-    ``list[Entry]`` is ``reportIncompatibleVariableOverride`` -- so keeping the
-    base means keeping the optional type and refusing ``None`` and ``[]`` in a
-    validator instead. This op takes the static type: ``entries`` is
-    ``list[Entry]``, so every reader downstream has a list without asking.
-    Declaring it here also leaves out ``overwrite``, which this op has no use
-    for -- reuse is decided by the recipe-addressed filename and the forward
-    link.
+    ``entries`` is required and typed ``list[Entry]``, because a transcode
+    refuses an unscoped run. One omitted field would re-encode a corpus. Every
+    reader downstream therefore has a list without asking. This model declares
+    no ``overwrite`` -- reuse is decided by the recipe-addressed filename and
+    the forward link.
     """
 
     # entries selects WHICH videos are transcoded, and the identities of those

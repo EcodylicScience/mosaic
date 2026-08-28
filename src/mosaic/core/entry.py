@@ -3,8 +3,8 @@
 A leaf module on purpose, for the reason :mod:`mosaic.core.json_value` is one.
 Both aliases began in :mod:`mosaic.core.pipeline.inventory.model`, which a
 parameter model cannot import without pointing ``types`` at a package ``graph``
-and ``tracking`` already import. Declaring the pair here lets ``OpParams`` name
-the entries it runs over while every edge keeps pointing one way.
+and ``tracking`` already import. Declaring the pair here lets a scope name the
+entries a run covers while every edge keeps pointing one way.
 
 Every consumer imports them from here, :mod:`mosaic.core.pipeline.inventory.model`
 included. That module re-exports neither, so this is the one import path.

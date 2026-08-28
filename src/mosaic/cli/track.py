@@ -148,11 +148,13 @@ def track_command(
     ds = load_dataset(manifest)
     fields = OPS[kind].Params.model_json_schema().get("properties", {})
 
-    # --groups and --sequences are a cross product, and params take one entry
-    # list. A group named with no sequence means every sequence in it, which
-    # only the media index can answer. A missing index and an --entries named
-    # beside either of the other two both become a message rather than a
-    # traceback, the way every other failure of this command does.
+    # --groups and --sequences are a cross product, and a group named with no
+    # sequence means every sequence in it, which only the media index can
+    # answer. run_op enumerates that against the index; the selector is checked
+    # here so an --entries named beside either of the other two becomes a
+    # message rather than a traceback, the way every other failure of this
+    # command does. A missing index is caught by the FileNotFoundError handler
+    # on the run_op call below and reads the same way.
     try:
         scope = Scope(
             entries=parse_entries(entries) or None,
@@ -161,14 +163,7 @@ def track_command(
         )
     except ValidationError as exc:
         fail(f"{kind} run failed: {terse(exc)}")
-    try:
-        resolved = ds.resolve_scope(scope)
-    except FileNotFoundError as exc:
-        fail(f"{kind} run failed: {exc}")
-
     params: dict[str, object] = {
-        "entries": resolved.op_entries,
-        "overwrite": overwrite,
         "convert_to_tracks": convert_to_tracks,
         "idle_timeout": idle_timeout,
         "max_runtime": max_runtime,
@@ -190,7 +185,14 @@ def track_command(
     try:
         with stdout_to_stderr():
             run_id = run_op(
-                ds, kind, params, execution_id=exec_id, owner=owner, cancel_token=token_
+                ds,
+                kind,
+                params,
+                scope=scope,
+                overwrite=overwrite,
+                execution_id=exec_id,
+                owner=owner,
+                cancel_token=token_,
             )
     except Cancelled:
         if as_json:
