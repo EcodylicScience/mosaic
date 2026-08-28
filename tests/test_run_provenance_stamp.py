@@ -15,7 +15,7 @@ from pathlib import Path
 
 from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.run import build_run_params_payload
 from mosaic.version import DISTRIBUTION_NAME, installed_version
@@ -81,7 +81,7 @@ def test_a_reconcile_carries_the_stamp_rather_than_restamping_it() -> None:
         feature,
         None,
         None,
-        Scope(),
+        ResolvedScope(),
         [],
         execution_id="01OLDATTEMPT",
         mosaic_version="0.1.0-ancient",
@@ -95,7 +95,7 @@ def test_an_unstamped_payload_reads_unknown_rather_than_guessing() -> None:
     """Empty means unknown, as it does for every other unestablishable cell."""
     feature = build_feature("speed-angvel", None, None)
 
-    payload = build_run_params_payload(feature, None, None, Scope(), [])
+    payload = build_run_params_payload(feature, None, None, ResolvedScope(), [])
 
     assert payload["_execution_id"] == ""
     assert payload["_mosaic_version"] == ""

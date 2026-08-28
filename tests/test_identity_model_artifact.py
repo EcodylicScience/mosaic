@@ -38,7 +38,7 @@ from mosaic.behavior.feature_library.identity_model import (
     ClassifierIdentityArtifact,
 )
 from mosaic.cli._features import build_feature
-from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.run import compute_run_id
 
 # Selected by CI's `identity` job with `-m identity` rather than by a filename
@@ -201,9 +201,11 @@ def test_scope_moves_the_identifier(slug: str) -> None:
     actually matters and what would survive a deliberate regeneration.
     """
     feature = build_feature(slug, CROP_INPUTS, None)
-    narrow, _ = compute_run_id(feature, None, None, Scope(entries={("", "seq_a")}))
+    narrow, _ = compute_run_id(
+        feature, None, None, ResolvedScope(entries={("", "seq_a")})
+    )
     wide, _ = compute_run_id(
-        feature, None, None, Scope(entries={("", "seq_a"), ("", "seq_b")})
+        feature, None, None, ResolvedScope(entries={("", "seq_a"), ("", "seq_b")})
     )
     assert narrow != wide
 
@@ -211,7 +213,7 @@ def test_scope_moves_the_identifier(slug: str) -> None:
 @pytest.mark.parametrize("case", ARTIFACT_CASES, ids=lambda c: c.slug)
 def test_pinning_a_model_moves_the_identifier(case: ArtifactCase) -> None:
     """An inference run's training set is its ``model`` reference, so it is hashed."""
-    scope = Scope(entries={("", "seq_a")})
+    scope = ResolvedScope(entries={("", "seq_a")})
     plain, _ = compute_run_id(
         build_feature(case.slug, CROP_INPUTS, None), None, None, scope
     )

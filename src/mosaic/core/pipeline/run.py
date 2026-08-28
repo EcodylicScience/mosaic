@@ -31,7 +31,7 @@ from mosaic.core.params import Params
 
 from ._utils import (
     FeatureMeta,
-    Scope,
+    ResolvedScope,
     atomic_write,
     derive_storage_name,
     hash_params,
@@ -325,7 +325,7 @@ def _process_apply_worker(
 
 def _make_filter_factory(
     ds: Dataset,
-    scope: Scope,
+    scope: ResolvedScope,
     pair_filter_spec: NNResult | None,
     frame_start: int | None,
     frame_end: int | None,
@@ -455,7 +455,9 @@ def encode_consumed_roots(roots: Iterable[str]) -> str:
     return ",".join(sorted({root for root in roots if root}))
 
 
-def entry_composition(feature: Feature, scope: Scope, entry: tuple[str, str]) -> str:
+def entry_composition(
+    feature: Feature, scope: ResolvedScope, entry: tuple[str, str]
+) -> str:
     """What this entry was made of, under the roots *feature* declares.
 
     Recorded on the index row, never hashed for a per-frame feature -- see
@@ -622,7 +624,7 @@ def _blind_tracks_warning(
     return "".join(parts)
 
 
-def _scope_term(feature: Feature, scope: Scope) -> list[list[object]]:
+def _scope_term(feature: Feature, scope: ResolvedScope) -> list[list[object]]:
     """The ``_scope_entries`` term: a sorted list of ``(group, sequence[, comp])``.
 
     **The third element is omitted, never empty**, and that is the whole
@@ -664,7 +666,7 @@ def compute_run_id(
     feature: Feature,
     frame_start: int | None,
     frame_end: int | None,
-    scope: Scope,
+    scope: ResolvedScope,
     *,
     overlap_frames: int = 0,
 ) -> tuple[str, str]:
@@ -692,8 +694,8 @@ def compute_run_id(
     fails validation. ``_labels`` is the same story: a ``GroundTruthLabelsSource``
     resolves to a dataset-wide root under a selector, exactly as ``"tracks"`` does,
     so pinning its resolved value into ``_inputs`` would move a scope-free
-    consumer's identifier whenever a sequence was added -- it is a Scope term
-    instead.
+    consumer's identifier whenever a sequence was added -- it is a
+    ``ResolvedScope`` term instead.
 
     ``_overlap_frames`` is the width of the neighbour context an overlapped run
     read, and it belongs in the digest because it changes the *output*: with
@@ -742,7 +744,7 @@ def compute_run_id(
         # Sorted here as well as in the resolver. Which recipes a run read is a
         # *set*, and `_ready` preserves list order on purpose, so hashing the
         # tuple as given would make two spellings of one answer two identifiers
-        # for any caller that built a Scope by hand.
+        # for any caller that built a ResolvedScope by hand.
         hashable["_tracks"] = sorted(scope.tracks_variants)
     if scope.labels_variants:
         # The label analog of `_tracks` (item 9.3): which label recipes produced
@@ -766,7 +768,7 @@ def resolve_feature_identity(
     frame_start: int | None = None,
     frame_end: int | None = None,
     overlap_frames: int = 0,
-) -> tuple[str, Scope]:
+) -> tuple[str, ResolvedScope]:
     """What a run of *feature* over *entries* will be called, without running it.
 
     **The one place a predicted identity is built**, and both predictors call it:
@@ -798,18 +800,19 @@ def resolve_feature_identity(
             near a sequence boundary and so enters the identity.
 
     Returns:
-        The ``run_id`` and the ``Scope`` it was computed from, so a caller that
-        needs to explain the answer has the terms rather than only the digest.
+        The ``run_id`` and the ``ResolvedScope`` it was computed from, so a
+        caller that needs to explain the answer has the terms rather than
+        only the digest.
     """
     wanted = {(str(group), str(sequence)) for group, sequence in entries}
     if feature.inputs.is_empty:
         # A feature reading nothing resolves no scope at all, which is what
         # execution gives it -- and handing it the graph's entries would move a
         # scope-dependent identifier for a run that never looks at them.
-        scope = Scope()
+        scope = ResolvedScope()
     else:
         reads_tracks = any(item == "tracks" for item in feature.inputs.root)
-        scope = Scope(
+        scope = ResolvedScope(
             entries=wanted,
             # Set only by a ``tracks`` input, which is the rule the manifest
             # applies: a feature reading another feature's output inherits no
@@ -862,7 +865,7 @@ def build_run_params_payload(
     feature: Feature,
     frame_start: int | None,
     frame_end: int | None,
-    scope: Scope,
+    scope: ResolvedScope,
     feature_resolutions: list[dict[str, str | None]],
     *,
     overlap_frames: int = 0,
@@ -1176,7 +1179,7 @@ def _run_feature_impl(
     # Build manifest
     if feature.inputs.is_empty:
         manifest: Manifest = {}
-        scope = Scope()
+        scope = ResolvedScope()
     else:
         manifest, scope = build_manifest(
             ds,
@@ -1213,7 +1216,7 @@ def _run_feature_impl(
     # Beside the identity rather than at the end: which tables this run read is
     # exactly what is wanted from an attempt that was killed halfway, and a fact
     # written at the end is one such an attempt never records. A global feature's
-    # Scope is empty and honestly records none.
+    # ResolvedScope is empty and honestly records none.
     ctx.tracks_variant(scope.tracks_variants)
 
     # Run root + params.json

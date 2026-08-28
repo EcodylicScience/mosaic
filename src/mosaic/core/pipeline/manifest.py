@@ -17,7 +17,7 @@ import pyarrow as pa
 from ...core.helpers import make_entry_key, text_cell
 from ...core.schema import LEGACY_SCHEMA, schema_family
 from .sequence_index import read_entry_compositions
-from ._utils import Scope
+from ._utils import ResolvedScope
 from .index import (
     feature_index,
     feature_index_path,
@@ -185,13 +185,13 @@ def build_manifest(
     *,
     tracks_run_id: str | None = None,
     on_missing_run: MissingRunPolicy = "raise",
-) -> tuple[Manifest, Scope]:
+) -> tuple[Manifest, ResolvedScope]:
     """Build unified manifest for all input types.
 
-    Returns the manifest (entry_key -> ManifestEntry) and the
-    resolved Scope (entries present in ALL inputs after intersection).
+    Returns the manifest (entry_key -> ManifestEntry) and the resolved
+    ``ResolvedScope`` (entries present in ALL inputs after intersection).
 
-    Scope can be narrowed three ways (all applied, intersecting):
+    The scope can be narrowed three ways (all applied, intersecting):
 
     - ``groups`` / ``sequences`` -- keep entries whose group / sequence is in
       the given set. These combine as a *cross-product* filter.
@@ -250,7 +250,7 @@ def build_manifest(
     # declares keeps the resolver ignorant of features: what is *hashed* is
     # decided at the one payload site, and what is merely *recorded* on the index
     # row wants the others.
-    scope = Scope(
+    scope = ResolvedScope(
         entries=shared_entries,
         tracks_variants=variants,
         compositions=read_entry_compositions(ds, shared_entries),

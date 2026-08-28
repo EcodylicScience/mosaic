@@ -149,11 +149,11 @@ class RunParams(BaseModel):
     def entry_compositions(
         self, entries: set[tuple[str, str]]
     ) -> dict[tuple[str, str], dict[str, str]]:
-        """Rebuild ``Scope.compositions`` from the recorded ``_scope`` block.
+        """Rebuild ``ResolvedScope.compositions`` from the recorded ``_scope`` block.
 
         The block is keyed by ``make_entry_key(group, sequence)``; *entries*
-        gives the inverse map back to the tuple ``Scope`` wants, so no key
-        parsing is needed.
+        gives the inverse map back to the tuple ``ResolvedScope`` wants, so no
+        key parsing is needed.
         """
         by_key = {make_entry_key(group, seq): (group, seq) for (group, seq) in entries}
         out: dict[tuple[str, str], dict[str, str]] = {}
@@ -166,10 +166,10 @@ class RunParams(BaseModel):
     def variant_ids(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """The recorded ``(tracks, labels)`` variant ids, in document order.
 
-        ``compute_run_id`` reads these off ``Scope``; the document records them
-        as synthetic ``inputs[tracks]`` / ``inputs[labels]`` entries in
-        ``_resolved``, because they are Scope terms rather than ``_inputs``
-        fields.
+        ``compute_run_id`` reads these off ``ResolvedScope``; the document
+        records them as synthetic ``inputs[tracks]`` / ``inputs[labels]``
+        entries in ``_resolved``, because they are ``ResolvedScope`` terms
+        rather than ``_inputs`` fields.
         """
         tracks = [
             r.run_id for r in self.resolved if r.where == TRACKS_EDGE and r.run_id

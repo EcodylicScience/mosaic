@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 from pydantic import BaseModel
 
+from mosaic.core import scope as scope_module
 from mosaic.core.helpers import make_entry_key
 
 # ``now_iso`` / ``new_execution_id`` now live in the dependency-light leaf
@@ -26,7 +27,7 @@ from mosaic.runlog import (
 
 
 @dataclass
-class Scope:
+class ResolvedScope:
     """What a feature run resolved to, before it computes anything.
 
     ``entries`` is the source of truth for *which sequences* -- a set of
@@ -36,8 +37,8 @@ class Scope:
     ``tracks_variants`` is the other half of "what this run reads": which tracks
     recipes produced the tables behind those entries, sorted and deduplicated,
     empty when nothing said. It rides here because ``build_manifest`` is what
-    learns it and ``compute_run_id`` already takes a ``Scope``, so no third
-    channel is needed between them and no state has to be stashed on the
+    learns it and ``compute_run_id`` already takes a ``ResolvedScope``, so no
+    third channel is needed between them and no state has to be stashed on the
     feature's ``Inputs`` -- which is a module-level shared default in two dozen
     feature modules and would leak a pin across datasets and across tests.
 
@@ -54,14 +55,23 @@ class Scope:
     own ``compute_run_id`` term for the same reason.
 
     ``compositions`` rides here for the same reason -- ``build_manifest`` is what
-    reads them and ``compute_run_id`` already takes a ``Scope`` -- but under the
-    **opposite** rule, and a reader who generalises from ``tracks_variants`` gets
-    it wrong. A tracks variant is a property of the dataset under the selector,
-    so it is collected before the narrowing. A composition is inherently
-    per-entry: it is keyed on ``(group, sequence)`` and there is no
-    dataset-wide answer to collect. It is therefore populated for the entries
-    actually in scope, and it reaches a digest only for a ``scope_dependent``
-    feature -- where per-entry facts are already what identity is made of.
+    reads them and ``compute_run_id`` already takes a ``ResolvedScope`` -- but
+    under the **opposite** rule, and a reader who generalizes from
+    ``tracks_variants`` gets it wrong. A tracks variant is a property of the
+    dataset under the selector, so it is collected before the narrowing. A
+    composition is inherently per-entry: it is keyed on ``(group, sequence)``
+    and there is no dataset-wide answer to collect. It is therefore populated
+    for the entries actually in scope, and it reaches a digest only for a
+    ``scope_dependent`` feature -- where per-entry facts are already what
+    identity is made of.
+
+    ``selector`` is the :class:`~mosaic.core.scope.Scope` this was resolved
+    from, and it answers two questions the entry set cannot. When a
+    resolution is empty, the entry set alone cannot say whether an unset
+    selector met an empty index or a selector named a group that is not
+    there, and an op that refuses an unscoped run reads the selector to make
+    that distinction. An ``entries``-only selector needs no index at all, a
+    fact visible only from the selector that was given.
     """
 
     entries: set[tuple[str, str]] = field(default_factory=set)
@@ -72,6 +82,7 @@ class Scope:
     compositions: Mapping[tuple[str, str], Mapping[str, str]] = field(
         default_factory=dict
     )
+    selector: scope_module.Scope = field(default_factory=scope_module.Scope)
 
     def composition_of(self, entry: tuple[str, str], root: str) -> str:
         """*root*'s recorded composition for *entry*, or ``""`` when none is.

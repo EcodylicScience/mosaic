@@ -3,6 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
+from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.scope import Scope
 
 
@@ -96,3 +97,20 @@ class TestFrozen:
         scope = Scope(sequences=["one"])
         with pytest.raises(ValidationError):
             scope.sequences = ["two"]
+
+
+class TestResolvedScope:
+    def test_it_records_the_selector_it_came_from(self) -> None:
+        selector = Scope(groups=["A"])
+        resolved = ResolvedScope(entries={("A", "one")}, selector=selector)
+        assert resolved.selector == selector
+
+    def test_an_unset_selector_is_the_default(self) -> None:
+        assert ResolvedScope().selector.is_unset
+
+    def test_empty_and_unscoped_are_distinguishable(self) -> None:
+        """Naming a group that holds nothing is not naming no group."""
+        empty = ResolvedScope(entries=set(), selector=Scope(groups=["absent"]))
+        unscoped = ResolvedScope(entries=set(), selector=Scope())
+        assert not empty.selector.is_unset
+        assert unscoped.selector.is_unset

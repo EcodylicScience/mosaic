@@ -3,8 +3,9 @@
 A selector, never a resolution. It names entries, or it names groups and
 sequences whose cross product an index enumerates, or it names nothing and
 means every indexed entry. What a run resolved to, and what it read while
-resolving, is :class:`~mosaic.core.dataset.ResolvedScopeEntry`, returned by
-:meth:`~mosaic.core.dataset.Dataset.resolve_media_scope`.
+resolving, is :class:`~mosaic.core.pipeline._utils.ResolvedScope`. This is a
+different thing from :class:`~mosaic.core.dataset.ResolvedScopeEntry`, which
+is the per-camera result of resolving a media scope.
 
 A leaf beside :mod:`mosaic.core.entry`, importing that module and
 :mod:`mosaic.core.strict_model` and nothing else. The manifest, the command

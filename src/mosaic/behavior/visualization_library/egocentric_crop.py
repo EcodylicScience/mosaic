@@ -19,7 +19,7 @@ import pandas as pd
 from mosaic_media import MediaFacts
 from pydantic import Field
 
-from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import (
     EmitsLevel,
@@ -207,7 +207,7 @@ class EgocentricCrop:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self._ds = None
-        self._scope: Scope = Scope()
+        self._scope: ResolvedScope = ResolvedScope()
         self._run_root: Path | None = None
         self._clahe = None  # lazily constructed; reused across frames
 
@@ -236,7 +236,7 @@ class EgocentricCrop:
         """Called by Dataset.run_feature before any fit/transform."""
         self._ds = ds
 
-    def set_scope(self, scope: Scope) -> None:
+    def set_scope(self, scope: ResolvedScope) -> None:
         """Receive scope constraints from run_feature."""
         self._scope = scope
 

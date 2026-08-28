@@ -32,7 +32,7 @@ from mosaic.behavior.feature_library import FEATURES
 from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline._utils import (
-    Scope,
+    ResolvedScope,
     hash_params,
     identity_ready,
     json_ready,
@@ -189,7 +189,7 @@ def test_missing_consumed_roots_declaration_names_the_feature(
     monkeypatch.delattr(type(feature), "consumed_roots")
 
     with pytest.raises(MissingConsumedRootsDeclaration, match="speed-angvel"):
-        _ = compute_run_id(feature, None, None, Scope())
+        _ = compute_run_id(feature, None, None, ResolvedScope())
 
 
 def test_missing_scope_declaration_names_the_feature(
@@ -206,7 +206,7 @@ def test_missing_scope_declaration_names_the_feature(
     monkeypatch.delattr(type(feature), "scope_dependent")
 
     with pytest.raises(MissingScopeDeclaration, match="speed-angvel"):
-        _ = compute_run_id(feature, None, None, Scope())
+        _ = compute_run_id(feature, None, None, ResolvedScope())
 
 
 # --- P2d: scope enters identity only for global features ----------------------
@@ -215,16 +215,20 @@ def test_missing_scope_declaration_names_the_feature(
 def test_scope_free_feature_identity_ignores_scope() -> None:
     """A per-frame feature computes S from S, so a subset and the full set match."""
     feature = build_feature("speed-angvel", None, None)
-    narrow, _ = compute_run_id(feature, None, None, Scope(entries={("", "a")}))
-    wide, _ = compute_run_id(feature, None, None, Scope(entries={("", "a"), ("", "b")}))
+    narrow, _ = compute_run_id(feature, None, None, ResolvedScope(entries={("", "a")}))
+    wide, _ = compute_run_id(
+        feature, None, None, ResolvedScope(entries={("", "a"), ("", "b")})
+    )
     assert narrow == wide
 
 
 def test_scope_dependent_feature_identity_tracks_scope() -> None:
     """A scope-dependent feature fitted on more sequences is a different artifact."""
     feature = build_feature("arhmm", [{"feature": "pair-wavelet"}], None)
-    narrow, _ = compute_run_id(feature, None, None, Scope(entries={("", "a")}))
-    wide, _ = compute_run_id(feature, None, None, Scope(entries={("", "a"), ("", "b")}))
+    narrow, _ = compute_run_id(feature, None, None, ResolvedScope(entries={("", "a")}))
+    wide, _ = compute_run_id(
+        feature, None, None, ResolvedScope(entries={("", "a"), ("", "b")})
+    )
     assert narrow != wide
 
 
@@ -278,7 +282,8 @@ def test_unrecognized_type_in_identity_raises() -> None:
     The object must be a plain class. A dataclass is *recognized* -- converted
     through ``dataclasses.asdict`` before the fallback is reached -- and that
     conversion is lossless and deterministic, so it is correct behaviour rather
-    than the defect. ``Scope`` and ``FeatureMeta`` are themselves dataclasses.
+    than the defect. ``ResolvedScope`` and ``FeatureMeta`` are themselves
+    dataclasses.
     """
 
     class Opaque:
@@ -443,13 +448,13 @@ def test_cold_chain_predicts_what_it_executes(scenario_dataset: Dataset) -> None
 
     # What the same step computes once its upstream is a concrete reference.
     upstream_feature = build_feature("speed-angvel", None, None)
-    upstream_id, _ = compute_run_id(upstream_feature, None, None, Scope())
+    upstream_id, _ = compute_run_id(upstream_feature, None, None, ResolvedScope())
     executed_feature = build_feature(
         "temporal-stack",
         [{"feature": "speed-angvel__from__tracks", "run_id": upstream_id}],
         None,
     )
-    executed, _ = compute_run_id(executed_feature, None, None, Scope())
+    executed, _ = compute_run_id(executed_feature, None, None, ResolvedScope())
 
     assert predicted == executed
 
@@ -545,7 +550,7 @@ def test_a_cold_scope_dependent_step_predicts_its_scope(
     )
     assert downstream.scope_dependent, "fixture must exercise the scope term"
     executed, _ = compute_run_id(
-        downstream, None, None, Scope(entries={("", "seq_a"), ("", "seq_b")})
+        downstream, None, None, ResolvedScope(entries={("", "seq_a"), ("", "seq_b")})
     )
 
     assert resolved[1]["expected_run_id"] == executed

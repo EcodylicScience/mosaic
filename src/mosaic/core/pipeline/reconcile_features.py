@@ -7,11 +7,11 @@ directory to the new ``run_id``, refreshing the marker, and restamping every row
 ``run_id`` and ``abs_path`` -- a metadata move, no recompute.
 
 The run_id is recomputed by the one identity site, :func:`compute_run_id`, fed a
-``Feature`` rebuilt from the recorded ``params.json`` and a ``Scope`` rebuilt from
-the same file's ``_scope`` and ``_resolved`` blocks. Feature-to-feature upstreams
-are substituted through the shared remap first, so a chain re-addresses in one
-bottom-up pass; the runs here are ordered so an upstream lands before the
-downstream that reads it.
+``Feature`` rebuilt from the recorded ``params.json`` and a ``ResolvedScope``
+rebuilt from the same file's ``_scope`` and ``_resolved`` blocks.
+Feature-to-feature upstreams are substituted through the shared remap first,
+so a chain re-addresses in one bottom-up pass; the runs here are ordered so
+an upstream lands before the downstream that reads it.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, TypeGuard
 
 from pydantic import ValidationError
 
-from mosaic.core.pipeline._utils import Scope, atomic_write
+from mosaic.core.pipeline._utils import ResolvedScope, atomic_write
 from mosaic.core.pipeline.dataset_indexes import feature_storages
 from mosaic.core.pipeline.inventory.params import (
     RunParams,
@@ -165,7 +165,7 @@ class _RunRead:
     # The scope rebuilt with upstreams substituted, filled by ``_classify`` and
     # read by ``_relocate`` to rewrite the run's recorded provenance so the next
     # pass reproduces its new identifier.
-    scope: "Scope | None" = None
+    scope: "ResolvedScope | None" = None
 
 
 class FeatureReconciler:
@@ -346,7 +346,7 @@ class FeatureReconciler:
         labels_new = tuple(
             sorted({state.resolved("labels", v) for v in read.labels_old})
         )
-        scope = Scope(
+        scope = ResolvedScope(
             entries=set(read.entries),
             frame_start=read.frame_start,
             frame_end=read.frame_end,
