@@ -101,8 +101,8 @@ def _export(
 ) -> None:
     """Export one entry, or one camera of it when *camera* names one.
 
-    The camera rides in the entry key rather than beside it: a triple names
-    one camera and a pair names every camera of the entry.
+    The camera is part of the entry key rather than a field beside it. A
+    triple names one camera, and a pair names every camera of the entry.
     """
     selector = (
         Scope(entries=[(group, sequence, camera)])
@@ -252,8 +252,8 @@ def test_overwrite_forces_a_re_export(
     """An export already on disk is rebuilt rather than reused.
 
     Counted at ``write_export``, the call that decodes and re-encodes every
-    frame. A reused store never reaches it, so the count is zero for a reuse
-    and cannot be satisfied by the file merely still being there.
+    frame. A reused store never calls it. The count is therefore zero for a
+    reuse, and the file still being on disk cannot satisfy it.
     """
     import mosaic.core.pipeline.store_export as store_export_module
 
@@ -261,9 +261,20 @@ def test_overwrite_forces_a_re_export(
     _export(ds, group, sequence)
 
     written: list[Path] = []
-    real = store_export_module.write_export
 
-    def counted(store: Path, dest: Path, *args: object, **kwargs: object) -> object:
+    def counted(
+        store: Path,
+        dest: Path,
+        *args: object,
+        real: Callable[..., object] = store_export_module.write_export,
+        **kwargs: object,
+    ) -> object:
+        """Record the destination, then export it for real.
+
+        *real* is bound as a default so it keeps the open callable type this
+        wrapper forwards to. Read as a module attribute it narrows back to the
+        concrete signature, which a ``*args`` forward cannot satisfy.
+        """
         written.append(dest)
         return real(store, dest, *args, **kwargs)
 
@@ -306,7 +317,7 @@ def test_a_camera_triple_exports_that_camera_and_a_pair_exports_every_one(
     make_media_dataset: Callable[[Path], Dataset],
     make_imgstore: MakeStore,
 ) -> None:
-    """The camera rides in the entry key, and a pair means every camera.
+    """The camera is part of the entry key, and a pair means every camera.
 
     Both halves in one test, because the pair's meaning is only visible beside
     the triple's: a triple that exported everything would pass a test that
@@ -321,6 +332,49 @@ def test_a_camera_triple_exports_that_camera_and_a_pair_exports_every_one(
 
     _export(ds, group, sequence)
     assert len(_exports(ds)) == 2, "a pair exports every camera of the entry"
+
+
+def test_two_triples_of_one_entry_export_both_named_cameras(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """Two cameras of one entry are one entry to the arity check and two stores.
+
+    The case the ``Scope.cameras`` set exists for, and the one an
+    implementation reading a single camera would get wrong: it passes
+    ``exactly-one`` because the check counts pairs, and it exports both.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, make_imgstore, cameras=["CAMA", "CAMB", "CAMC"]
+    )
+
+    _ = run_op(
+        ds,
+        "export-store",
+        StoreExportParams(av1_crf=_LOSSLESS),
+        scope=Scope(entries=[(group, sequence, "CAMA"), (group, sequence, "CAMB")]),
+    )
+
+    assert len(_exports(ds)) == 2, "both named cameras, and not the third"
+
+
+def test_a_camera_the_entry_does_not_have_is_named_as_such(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """A mistyped camera reads as a mistyped camera, not as a plain video.
+
+    Both failures reach one empty store list. The message has to tell them
+    apart, or a caller who typed CAMZ goes looking at the media type.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, make_imgstore, cameras=["CAMA", "CAMB"]
+    )
+
+    with pytest.raises(TranscodeError, match="no imgstore is recorded under camera"):
+        _export(ds, group, sequence, camera="CAMZ")
 
 
 def test_each_camera_of_a_recording_exports_separately(
@@ -375,9 +429,9 @@ def test_the_recipe_ignores_scope_and_tracks_the_encode() -> None:
     """No coverage field to reach the recipe hash, and an encode knob in it.
 
     The coverage used to be two params fields marked ``HASH_EXCLUDE``. It is
-    an argument to the run now, which is why the recipe cannot read it at
-    all. What the coverage does reach is ``export_run_id``, through the
-    identities of the stores exported.
+    an argument to the run now. The recipe therefore cannot read it at all.
+    The coverage enters ``export_run_id`` instead, through the identities of
+    the stores exported.
     """
     declared = set(StoreExportParams.model_fields)
     assert not declared & {"entry", "entries", "camera", "cameras"}

@@ -205,7 +205,7 @@ SCOPE_SHAPED_NAMES = COVERAGE_NAMES | {"overwrite"}
 
 One vocabulary for the payload gate, which refuses both. They are separate
 above because coverage has left every op params model and ``overwrite`` has
-left nine of seventeen, so the two are pinned at different counts.
+left nine of seventeen. The two are pinned at different counts.
 """
 
 

@@ -49,7 +49,7 @@ from ..inventory.model import (
     TrainedModelRef,
     classify,
 )
-from ..ops import IdentityDeferred, OpIdentity
+from ..ops import IdentityDeferred, OpIdentity, check_scope_takes
 from ..resolve import resolve_references
 from ..run import resolve_feature_identity
 from .digest import recipe_digest
@@ -382,7 +382,12 @@ def plan_pipeline(
         A :class:`Plan`: one :class:`PlannedStep` per step, in topological order.
 
     Raises:
-        RecipeInvalid: The recipe is malformed. Raised before *ds* is read.
+        RecipeInvalid: The recipe is malformed. Raised before *ds* is read, and
+            reporting every problem found rather than the first.
+        ScopeRefused: An op step's scope is one that op's declaration does not
+            accept. Raised on the first such step rather than collected,
+            because it takes the dataset to enumerate the selector against and
+            so cannot be answered alongside the recipe problems above.
     """
     catalog = declaration_catalog() if catalog is None else catalog
     reject_unless_valid(recipe, catalog)
@@ -526,14 +531,19 @@ def _unresolved(
     It still carries a spec, because what to run is known even when what the run
     will be called is not -- and a caller executing the graph reads the spec,
     resolving the identity itself at the moment it has what the plan lacked.
+
+    Its scope comes from :func:`_op_scope`. ``_plan_step`` overwrites this
+    spec's entries through :func:`_entries_for`, which asks the same helper.
+    One helper answers for both sites, and a scope-free op is given no scope
+    on either.
     """
     spec = resolve_step_spec(
         recipe,
         step.id,
         resolved,
         bind=bind,
-        entries=Scope(entries=sorted(target))
-        if isinstance(step, OpStepSpec) and target
+        entries=_op_scope(step.kind, target)
+        if isinstance(step, OpStepSpec)
         else Scope(),
     )
     return PlannedStep(
@@ -652,19 +662,25 @@ def _resolve_op_step(
     before its identity is -- which is what a transcode needs, its identifier
     covering the recorded identities of the videos it will read.
     """
+    op_cls = op_class_for_kind(step.kind)
+    if op_cls is None:  # pragma: no cover - validation resolves every kind first
+        raise KeyError(f"no registered op is named {step.kind!r}")
     spec = resolve_step_spec(
         recipe,
         step.id,
         resolved,
         bind=bind,
-        entries=Scope(entries=sorted(target)) if target else Scope(),
+        entries=_op_scope(step.kind, target),
     )
-    op_cls = op_class_for_kind(step.kind)
-    if op_cls is None:  # pragma: no cover - validation resolves every kind first
-        raise KeyError(f"no registered op is named {step.kind!r}")
     params = build_step_op_params(spec)
+    # Refused here as well as in ``run_op``, because a plan that cannot be run is
+    # worth saying so before anything is enqueued. The scope is the one the step
+    # will run under, and the message comes from the same checker the runner
+    # uses. A plan and a run refuse the same scope in the same words.
+    scope = ds.resolve_scope(spec.entries)
+    check_scope_takes(step.kind, op_cls.scope_takes, scope)
     try:
-        identity = op_cls().plan_identity(ds, params, ds.resolve_scope(spec.entries))
+        identity = op_cls().plan_identity(ds, params, scope)
     except IdentityDeferred as exc:
         return _Resolution(
             step=PlannedStep(
@@ -791,6 +807,25 @@ def coverage_against(
     )
 
 
+def _op_scope(kind: str, target: frozenset[Entry]) -> Scope:
+    """What an op step of *kind* is asked to cover.
+
+    An op that takes no scope is given none, whatever the graph is narrowed to.
+    A training step reads a prepared directory, and the plan's entries name a
+    coverage it cannot act on. Handing it one is refused by
+    :func:`~mosaic.core.pipeline.ops.check_scope_takes`, in the planner and
+    again in the runner.
+
+    Every other op step is all-or-nothing. An op that reads a scope reads the
+    whole of it, and the target therefore goes through unnarrowed by what is
+    already covered.
+    """
+    op_cls = op_class_for_kind(kind)
+    if op_cls is not None and op_cls.scope_takes == "none":
+        return Scope()
+    return _named(sorted(target))
+
+
 def _entries_for(
     step: Step,
     resolution: _Resolution,
@@ -806,8 +841,8 @@ def _entries_for(
     remainder would produce a different run from the one that was planned -- a
     fit over 31 sequences under the name of a fit over 120.
 
-    An op step is all-or-nothing for the same reason turned around: its scope
-    lives in its own params, and the ops that read one read the whole of it.
+    An op step is all-or-nothing for the same reason turned around, and one that
+    takes no scope is asked for nothing at all. :func:`_op_scope` decides both.
 
     The completeness branch is not the same test as an empty remainder, and the
     case that separates them is a global fit: one artifact answers for every
@@ -815,7 +850,9 @@ def _entries_for(
     *missing* set names that entry all the same. Asking it to compute the entry
     would ask it to be a different artifact.
     """
-    if isinstance(step, OpStepSpec) or resolution.scope_dependent:
+    if isinstance(step, OpStepSpec):
+        return _op_scope(step.kind, target)
+    if resolution.scope_dependent:
         return _named(sorted(target))
     if status in COMPLETE_STATUSES:
         return Scope()

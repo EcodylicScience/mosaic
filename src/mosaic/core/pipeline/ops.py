@@ -130,10 +130,16 @@ the harmful one: a value the checker rejects and the registry accepts.
 class ScopeRefused(ValueError):
     """A scope an op's declaration does not accept.
 
-    A ``ValueError`` because that is what every caller already renders as a
-    message: ``mosaic run`` prints it and exits, and the graph records it on the
-    attempt. The subclass exists so a caller that wants to tell a scope refusal
-    apart from an invalid parameter can.
+    A ``ValueError`` because that is what the command line already renders as a
+    message. ``mosaic run`` and ``mosaic track`` print it and exit non-zero.
+
+    A graph step does **not** record it on the attempt. The failure record wraps
+    the feature arm of ``execute_step`` only. A refusal from an op step
+    propagates out uncaught. It is raised before any work starts, and the
+    planner raises the same refusal earlier for the same step.
+
+    The subclass exists so a caller that wants to tell a scope refusal apart
+    from an invalid parameter can.
     """
 
 
