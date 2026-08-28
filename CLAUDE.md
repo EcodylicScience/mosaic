@@ -199,7 +199,8 @@ Ruff is configured in `pyproject.toml`. There is no separate `ruff.toml`.
 
 ### Type checking
 
-mosaic uses **basedpyright** in strict mode (target Python 3.13):
+mosaic uses **basedpyright** in strict mode (target Python 3.12, the oldest
+interpreter `requires-python` allows and the one every CI job runs):
 
 ```bash
 basedpyright            # full project

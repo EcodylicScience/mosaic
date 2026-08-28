@@ -519,9 +519,15 @@ def two_entry_dataset(tmp_path: Path) -> Dataset:
     write_media_index(
         dataset,
         [
-            MediaClip(filename="a1.mp4", group="A", sequence="one"),
-            MediaClip(filename="a2.mp4", group="A", sequence="two"),
-            MediaClip(filename="b1.mp4", group="B", sequence="one"),
+            MediaClip(
+                filename="a1.mp4", group="A", sequence="one", video_uuid="uid-a1"
+            ),
+            MediaClip(
+                filename="a2.mp4", group="A", sequence="two", video_uuid="uid-a2"
+            ),
+            MediaClip(
+                filename="b1.mp4", group="B", sequence="one", video_uuid="uid-b1"
+            ),
         ],
     )
     return dataset
@@ -535,8 +541,20 @@ def two_camera_dataset(tmp_path: Path) -> Dataset:
     write_media_index(
         dataset,
         [
-            MediaClip(filename="cam0.mp4", group="A", sequence="one", camera="cam0"),
-            MediaClip(filename="cam1.mp4", group="A", sequence="one", camera="cam1"),
+            MediaClip(
+                filename="cam0.mp4",
+                group="A",
+                sequence="one",
+                camera="cam0",
+                video_uuid="uid-cam0",
+            ),
+            MediaClip(
+                filename="cam1.mp4",
+                group="A",
+                sequence="one",
+                camera="cam1",
+                video_uuid="uid-cam1",
+            ),
         ],
     )
     return dataset

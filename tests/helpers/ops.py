@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+
 from mosaic.core.pipeline.ops import OPS
 from mosaic.tracking import register_ops
 
@@ -41,6 +43,10 @@ def minimal_op_params(kind: str) -> dict[str, object]:
     like a path under a dataset root rather than an absolute path tied to one
     machine. Validating a ``Params`` model checks the type of a path. It does
     not check that the path exists.
+
+    Returns a copy. The values in ``_MINIMAL`` are shared across every call in
+    the process, and an op's params commonly hold a mutable ``entries``
+    or ``scope`` field a caller sets after construction.
     """
     if kind not in OPS:
         message = f"{kind!r} is not a registered op"
@@ -48,4 +54,4 @@ def minimal_op_params(kind: str) -> dict[str, object]:
     if kind not in _MINIMAL:
         message = f"minimal_op_params does not cover op kind {kind!r}"
         raise KeyError(message)
-    return _MINIMAL[kind]
+    return copy.deepcopy(_MINIMAL[kind])

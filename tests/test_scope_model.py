@@ -77,3 +77,22 @@ class TestExtraKeys:
         """StrictModel forbids extras: a misspelled selector is an error."""
         with pytest.raises(ValidationError):
             _ = Scope.model_validate({"group": ["A"]})
+
+
+class TestFrozen:
+    """A constructed Scope is a value, fixed once construction completes."""
+
+    def test_entries_cannot_be_reassigned(self) -> None:
+        scope = Scope(entries=[("A", "one")])
+        with pytest.raises(ValidationError):
+            scope.entries = [("B", "two")]
+
+    def test_groups_cannot_be_reassigned(self) -> None:
+        scope = Scope(groups=["A"])
+        with pytest.raises(ValidationError):
+            scope.groups = ["B"]
+
+    def test_sequences_cannot_be_reassigned(self) -> None:
+        scope = Scope(sequences=["one"])
+        with pytest.raises(ValidationError):
+            scope.sequences = ["two"]
