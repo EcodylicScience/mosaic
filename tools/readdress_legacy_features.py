@@ -468,9 +468,7 @@ def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
         try:
             resolve_references(ds, feature)
             if not feature.inputs.is_empty:
-                _, scope = build_manifest(
-                    ds, feature.inputs, None, None, None, on_missing_run="empty"
-                )
+                _, scope = build_manifest(ds, feature.inputs, on_missing_run="empty")
             labels_variants = resolve_labels_variants(ds, feature, None)
         except (OSError, ValueError, AmbiguousTrackLeaf) as exc:
             run.verdict, run.new_run_id = "skipped", run.run_id

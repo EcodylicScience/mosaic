@@ -34,7 +34,7 @@ question, and because ``feature_storages`` sits on the ``build_manifest`` path.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol
@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol
 import pandas as pd
 
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
+from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -209,8 +210,8 @@ class ReconcilableIndex(Protocol):
 
     def drop_entries(
         self,
-        entries: Iterable[tuple[str, str]],
         *,
+        scope: Scope,
         run_id: str | None = None,
         dry_run: bool = False,
     ) -> pd.DataFrame: ...

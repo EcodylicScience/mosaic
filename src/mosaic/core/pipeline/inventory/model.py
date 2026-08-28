@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import ClassVar, Final, Literal, TypeGuard, overload
 
 from mosaic.core.entry import CameraEntry, Entry
+from mosaic.core.scope import Scope
 
 from .params import ParamsState, RunParams
 
@@ -347,17 +348,18 @@ def classify(
 
 @dataclass(frozen=True, slots=True)
 class InventoryScope:
-    """What an inventory was asked about, carried so its answers can be read.
+    """What an inventory was asked about, recorded so its answers can be read.
 
-    ``entries`` narrows what counts as wanted; ``None`` means the whole dataset.
-    ``tracks_run_id`` decides which tracks variant defines the entry universe,
-    and it is not decoration: measuring a variant-pinned run against every entry
-    in the index makes it read permanently incomplete, which is the same shape of
-    wrong answer the transcode case is.
+    ``selector`` narrows what counts as wanted. An unset one covers the whole
+    dataset, and ``Scope(entries=[])`` covers none. ``tracks_run_id`` decides
+    which tracks variant defines the entry universe, and it is not decoration:
+    measuring a variant-pinned run against every entry in the index makes it
+    read permanently incomplete, which is the same shape of wrong answer the
+    transcode case is.
     """
 
     kinds: frozenset[ArtifactKind]
-    entries: frozenset[Entry] | None = None
+    selector: Scope = field(default_factory=Scope)
     tracks_run_id: str | None = None
 
 

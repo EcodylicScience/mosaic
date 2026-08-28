@@ -24,8 +24,12 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
     REFUSED_EXIT_CODE,
     CoverageShortfall,
+    Plan,
+    PlannedStep,
     Recipe,
     StepRefused,
+    StepSpec,
+    asked_of,
     execute_step,
     load_recipe_for_request,
     recipe_path,
@@ -33,6 +37,7 @@ from mosaic.core.pipeline.graph import (
     save_recipe,
     submit_request,
 )
+from mosaic.core.scope import Scope
 from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import add_tracks_variant, make_dataset
 
@@ -281,9 +286,9 @@ def test_a_producer_version_that_moved_refuses_rather_than_re_planning(
 
 def test_a_scope_dependent_step_refuses_a_short_upstream(tracked: Dataset) -> None:
     """The refusal that makes a shortfall a decision rather than a default."""
-    uncomputable = [("", "seq_a"), ("", "seq_b"), ("", "seq_gone")]
+    uncomputable = Scope(entries=[("", "seq_a"), ("", "seq_b"), ("", "seq_gone")])
     request = submit_request(
-        tracked, Recipe.model_validate(_chain()), entries=uncomputable
+        tracked, Recipe.model_validate(_chain()), scope=uncomputable
     ).request
     _ = execute_step(tracked, request, "speed")
 
@@ -304,9 +309,9 @@ def test_a_refusal_is_recorded_as_a_failed_attempt_carrying_its_reason(
     read and mosaic-api's sweeper reaps, which is why ``partial`` was kept out of
     it too.
     """
-    uncomputable = [("", "seq_a"), ("", "seq_b"), ("", "seq_gone")]
+    uncomputable = Scope(entries=[("", "seq_a"), ("", "seq_b"), ("", "seq_gone")])
     request = submit_request(
-        tracked, Recipe.model_validate(_chain()), entries=uncomputable
+        tracked, Recipe.model_validate(_chain()), scope=uncomputable
     ).request
     _ = execute_step(tracked, request, "speed")
 
@@ -385,9 +390,9 @@ def test_the_cli_exits_with_the_reserved_code_on_a_refusal(
     tracked: Dataset,
 ) -> None:
     """A driver tells a refusal from a crash without parsing anything."""
-    uncomputable = [("", "seq_a"), ("", "seq_b"), ("", "seq_gone")]
+    uncomputable = Scope(entries=[("", "seq_a"), ("", "seq_b"), ("", "seq_gone")])
     request = submit_request(
-        tracked, Recipe.model_validate(_chain()), entries=uncomputable
+        tracked, Recipe.model_validate(_chain()), scope=uncomputable
     ).request
     _ = execute_step(tracked, request, "speed")
 
@@ -470,9 +475,9 @@ def test_a_request_is_running_until_every_step_is_terminal(
 def test_a_refused_step_closes_its_request_as_failed(tracked: Dataset) -> None:
     """The steps below a refusal are never dispatched, so waiting for them to
     start is waiting forever."""
-    uncomputable = [("", "seq_a"), ("", "seq_b"), ("", "seq_gone")]
+    uncomputable = Scope(entries=[("", "seq_a"), ("", "seq_b"), ("", "seq_gone")])
     request = submit_request(
-        tracked, Recipe.model_validate(_chain()), entries=uncomputable
+        tracked, Recipe.model_validate(_chain()), scope=uncomputable
     ).request
     _ = execute_step(tracked, request, "speed")
     with pytest.raises(CoverageShortfall):
@@ -551,3 +556,60 @@ def test_a_recipe_is_copied_in_so_the_dataset_records_what_ran(
     assert where.exists()
     assert where.parent == tracked.base_dir / ".mosaic" / "pipelines"
     _ = tmp_path
+
+
+# --- what a step is asked for ---------------------------------------------------
+
+
+def _planned(entries: Scope) -> PlannedStep:
+    """A feature step whose spec narrows to *entries* and nothing else."""
+    return PlannedStep(
+        step_id="speed",
+        kind="feature",
+        runs="speed-angvel",
+        spec=StepSpec(step_id="speed", kind="feature", entries=entries),
+    )
+
+
+def test_an_unset_selector_asks_for_the_whole_plan_scope() -> None:
+    """Decided by is_unset, because every Scope instance is truthy.
+
+    A truthiness test on the selector never reaches the fallback, and the step
+    is asked for nothing where it should be asked for everything.
+    """
+    plan = Plan(recipe_digest="d", scope=frozenset({("", "seq_a"), ("", "seq_b")}))
+
+    assert asked_of(_planned(Scope()), plan) == (("", "seq_a"), ("", "seq_b"))
+
+
+def test_a_named_selector_asks_for_what_it_names() -> None:
+    plan = Plan(recipe_digest="d", scope=frozenset({("", "seq_a"), ("", "seq_b")}))
+    narrowed = _planned(Scope(entries=[("", "seq_b")]))
+
+    assert asked_of(narrowed, plan) == (("", "seq_b"),)
+
+
+def test_a_selector_only_an_index_can_enumerate_is_refused() -> None:
+    """Neither answer fits a selector naming groups or sequences.
+
+    The unset answer asks for every entry in the plan and the named one asks for
+    none. ``plan_pipeline`` enumerates such a selector against the tracks
+    universe before a step is planned, and a step spec that skipped it is a
+    fault the caller has to hear about.
+    """
+    plan = Plan(recipe_digest="d", scope=frozenset({("", "seq_a"), ("", "seq_b")}))
+
+    with pytest.raises(ValueError, match="asked_of returns the entries") as raised:
+        _ = asked_of(_planned(Scope(groups=["A"])), plan)
+
+    message = str(raised.value)
+    assert "'speed'" in message
+    assert "names groups or sequences" in message
+    assert "Scope(entries=[...])" in message
+
+
+def test_a_sequence_selector_is_refused_the_same_way() -> None:
+    plan = Plan(recipe_digest="d", scope=frozenset({("", "seq_a")}))
+
+    with pytest.raises(ValueError, match="names groups or sequences"):
+        _ = asked_of(_planned(Scope(sequences=["seq_a"])), plan)

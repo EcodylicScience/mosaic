@@ -10,6 +10,7 @@ import pytest
 
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, SchemaRowBase
+from mosaic.core.scope import Scope
 
 
 @dataclass(frozen=True, slots=True)
@@ -600,9 +601,9 @@ class TestStringColumnsStayStrings:
         idx = feature_index(tmp_path / "index.csv")
         idx.append([_feature_row(tmp_path, group="01", sequence="001")])
 
-        assert len(idx.read(sequences=["001"])) == 1
-        assert len(idx.read(groups=["01"])) == 1
-        assert len(idx.read(entries=[("01", "001")])) == 1
+        assert len(idx.read(scope=Scope(sequences=["001"]))) == 1
+        assert len(idx.read(scope=Scope(groups=["01"]))) == 1
+        assert len(idx.read(scope=Scope(entries=[("01", "001")]))) == 1
         assert idx.ordered_entries() == [("01", "001")]
 
 

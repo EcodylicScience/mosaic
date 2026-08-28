@@ -511,9 +511,9 @@ def open_dataset(path: str | Path, *, ensure_roots: bool = True) -> Dataset:
 def _entry_mask(df: "pd.DataFrame", entries: Iterable[Entry]) -> "pd.Series":
     """Mask selecting the media-index rows whose entry is one of *entries*.
 
-    Compares on the ``(group, sequence)`` pair alone, so every camera and every
-    clip of one entry is kept. :meth:`Dataset.resolve_media_scope` narrows the
-    index with it before grouping the surviving rows onto the camera axis.
+    Compares on the ``(group, sequence)`` pair alone, which keeps every camera
+    and every clip of one entry. :meth:`Dataset.resolve_media_scope` narrows
+    the index with it before grouping the surviving rows onto the camera axis.
     """
     wanted = {(str(group), str(sequence)) for group, sequence in entries}
     pairs = pd.MultiIndex.from_arrays([df["group"], df["sequence"]])
@@ -1926,7 +1926,8 @@ class Dataset:
             f"source: {listing}{more}.\n"
             "  If a converter changed how it spells its entries, these are the "
             "old spellings and both will resolve until you remove them:\n"
-            f'    ds.drop_entries([{remedy}], delete_files=True, run_id="")\n'
+            f"    ds.drop_entries(scope=Scope(entries=[{remedy}]), "
+            'delete_files=True, run_id="")\n'
             '  The run_id="" names the unlabelled tables explicitly. Omitting it '
             "means every\n  variant of those entries, which would delete the "
             "conversions you just made.",
@@ -1935,8 +1936,8 @@ class Dataset:
 
     def drop_entries(
         self,
-        entries: Iterable[tuple[str, str]],
         *,
+        scope: Scope,
         delete_files: bool = False,
         run_id: Optional[str] = None,
     ) -> int:
@@ -1954,7 +1955,12 @@ class Dataset:
         that acts on it.
 
         Args:
-            entries: The ``(group, sequence)`` pairs to drop.
+            scope: Which entries to drop, as
+                :class:`~mosaic.core.scope.Scope`. Required, and it must name
+                entries. This call deletes index rows, and an omitted selector
+                would mean every row of the index. A camera-addressed selector
+                narrows to the ``(group, sequence)`` pairs it names, since a
+                tracks row is keyed without a camera.
             delete_files: Also unlink each row's parquet. Off by default -- an
                 orphaned table is recoverable, a deleted one is not.
             run_id: Drop only this variant's rows for those entries. ``None``,
@@ -1965,8 +1971,18 @@ class Dataset:
 
         Returns:
             How many index rows were dropped.
+
+        Raises:
+            ValueError: *scope* names groups or sequences instead of entries.
         """
-        wanted = {(str(g), str(s)) for g, s in entries}
+        if scope.groups is not None or scope.sequences is not None:
+            raise ValueError(
+                f"drop_entries deletes the rows it is given and does not "
+                f"enumerate an index to find them, and {scope!r} names groups "
+                f"or sequences. Resolve them with Dataset.resolve_scope first "
+                f"and pass Scope(entries=[...])."
+            )
+        wanted = scope.entry_pairs or set()
         if not wanted:
             return 0
         path = tracks_index_path(self)
@@ -2238,7 +2254,7 @@ class Dataset:
         names. This is *legacy convenience* for datasets that encode factors in
         names. The canonical, redefinable way to group/categorize sequences is
         tags (owned by mosaic-api); a tag-resolved subset is run via
-        ``run_feature(entries=[(group, sequence), ...])``.
+        ``run_feature(scope=Scope(entries=[(group, sequence), ...]))``.
 
         Parameters
         ----------
@@ -2331,8 +2347,8 @@ class Dataset:
         This is *legacy convenience* based on substring/prefix matching of the
         ``__``-delimited names. The canonical, redefinable grouping of sequences
         is tags (owned by mosaic-api). The returned ``(group, sequence)`` pairs
-        can be passed straight to ``run_feature(entries=...)`` to run a feature
-        over exactly that subset.
+        can be passed straight to ``run_feature(scope=Scope(entries=...))`` to
+        run a feature over exactly that subset.
 
         Parameters
         ----------
@@ -3687,7 +3703,9 @@ class Dataset:
                 # exists to avoid. It agreed only for an empty group, where the
                 # key *is* the sequence, which is every dataset the control plane
                 # creates and so every dataset the tests covered.
-                dropped = index.drop_entries([parse_entry_key(entry)], run_id=run_id)
+                dropped = index.drop_entries(
+                    scope=Scope(entries=[parse_entry_key(entry)]), run_id=run_id
+                )
                 rows_dropped += len(dropped)
 
         removed: list[Path] = []
@@ -4795,7 +4813,7 @@ class Dataset:
         """
         selector = scope if scope is not None else Scope()
         if selector.groups is None and selector.sequences is None:
-            named = {(entry[0], entry[1]) for entry in selector.entries or []}
+            named = selector.entry_pairs or set()
             return ResolvedScope(entries=named, selector=selector)
 
         df = self._load_media_index(index_filename)
@@ -6651,25 +6669,47 @@ class Dataset:
     def load_id_labels(
         self,
         kind: str = "id_tags",
-        groups: Optional[Iterable[str]] = None,
-        sequences: Optional[Iterable[str]] = None,
+        *,
+        scope: Scope | None = None,
         labels_run_id: Optional[str] = None,
     ) -> dict[tuple[str, str], dict]:
+        """Load per-id labels of *kind*, for the entries *scope* names.
+
+        Args:
+            kind: Which labels root to read.
+            scope: What to cover, as :class:`~mosaic.core.scope.Scope`.
+                ``None``, the default, covers every entry the labels index
+                names. A camera-addressed selector narrows to the
+                ``(group, sequence)`` pairs it names, since a labels row is
+                keyed without a camera.
+            labels_run_id: Which label variant to read, or ``None`` for
+                whichever variant each entry has.
+
+        Returns:
+            ``{(group, sequence): {"labels": {id: {field: value}},
+            "sequence_safe": str, "path": str, "metadata": dict}}``.
+
+        Raises:
+            FileNotFoundError: No labels of *kind* exist.
         """
-        Load per-id labels for the requested kind.
-        Returns {(group, sequence): {"labels": {id: {field: value}}, "sequence_safe": str, "path": str, "metadata": dict}}
-        """
+        selector = scope if scope is not None else Scope()
         df = select_label_variant_rows(read_labels_index(self, kind), labels_run_id)
         if df.empty:
             raise FileNotFoundError(
                 f"No labels of kind='{kind}' found; author or convert them first."
             )
-        if groups is not None:
-            wanted_g = {str(g) for g in groups}
-            df = df[df["group"].astype(str).isin(wanted_g)]
-        if sequences is not None:
-            wanted_s = {str(s) for s in sequences}
-            df = df[df["sequence"].astype(str).isin(wanted_s)]
+        if selector.groups is not None:
+            wanted_groups = {str(group) for group in selector.groups}
+            df = df[df["group"].astype(str).isin(wanted_groups)]
+        if selector.sequences is not None:
+            wanted_sequences = {str(sequence) for sequence in selector.sequences}
+            df = df[df["sequence"].astype(str).isin(wanted_sequences)]
+        wanted_entries = selector.entry_pairs
+        if wanted_entries is not None:
+            keyed = list(
+                zip(df["group"].astype(str), df["sequence"].astype(str), strict=True)
+            )
+            df = df[[pair in wanted_entries for pair in keyed]]
         result: dict[tuple[str, str], dict] = {}
         for _, row in df.iterrows():
             group = str(row.get("group", "") or "")
@@ -6966,9 +7006,6 @@ class Dataset:
     def run_feature(
         self,
         feature: Any,
-        groups: Iterable[str] | None = None,
-        sequences: Iterable[str] | None = None,
-        entries: Iterable[tuple[str, str]] | None = None,
         overwrite: bool = False,
         parallel_workers: int | None = None,
         parallel_mode: str | None = "thread",
@@ -6979,6 +7016,7 @@ class Dataset:
         filter_end_time: float | None = None,
         check_output: bool = False,
         *,
+        scope: Scope | None = None,
         tracks_run_id: str | None = None,
         labels_run_id: str | None = None,
         execution_id: str | None = None,
@@ -6995,13 +7033,12 @@ class Dataset:
 
         Args:
             feature: Feature instance implementing the Feature protocol.
-            groups: Scope filter — restrict to these group names.
-            sequences: Scope filter — restrict to these sequence names.
-            entries: Scope filter — restrict to these explicit
-                ``(group, sequence)`` pairs. Selects an arbitrary subset
-                (unambiguous when sequence names repeat across groups), e.g. a
-                tag-resolved set of sequences. Intersects with
-                ``groups``/``sequences`` when those are also given.
+            scope: What to cover, as :class:`~mosaic.core.scope.Scope`.
+                ``None``, the default, covers every entry the inputs resolve.
+                ``Scope(entries=[...])`` names an arbitrary subset, unambiguous
+                where sequence names repeat across groups.
+                ``Scope(groups=[...], sequences=[...])`` narrows by name,
+                combining as a cross product.
             tracks_run_id: Which tracks variant the ``"tracks"`` input
                 resolves to. ``None`` lets each entry resolve to whichever
                 variant it has; name one when a sequence carries two recipes and
@@ -7058,9 +7095,7 @@ class Dataset:
         return run_feature(
             self,
             feature,
-            groups=groups,
-            sequences=sequences,
-            entries=entries,
+            scope=scope,
             overwrite=overwrite,
             parallel_workers=parallel_workers,
             parallel_mode=parallel_mode,

@@ -936,13 +936,13 @@ when empty) — kept for back-compat and to disambiguate non-unique sequence nam
 It is **not** the canonical way to categorize sequences for analysis. Flexible,
 redefinable grouping lives in **tags** (owned by mosaic-api). To run a feature
 over an arbitrary, tag-resolved subset, pass explicit pairs:
-`run_feature(ds, feature, entries=[(group, sequence), ...])` — unambiguous even
-when sequence names repeat across groups (`groups=`/`sequences=` combine as a
-cross-product and can't express an arbitrary set). `group` retains a *structural*
-role only as a temporal-contiguity key for the (future) `continuous` dataset type:
-overlap/windowed features pull prev/next neighbors only within the same group
-(`core/pipeline/manifest.py`, `core/pipeline/iteration.py`) — preserve that when
-softening `group` elsewhere.
+`run_feature(ds, feature, scope=Scope(entries=[(group, sequence), ...]))` —
+unambiguous even when sequence names repeat across groups (`Scope`'s `groups`
+and `sequences` combine as a cross-product and can't express an arbitrary set).
+`group` retains a *structural* role only as a temporal-contiguity key for the
+(future) `continuous` dataset type: overlap/windowed features pull prev/next
+neighbors only within the same group (`core/pipeline/manifest.py`,
+`core/pipeline/iteration.py`) — preserve that when softening `group` elsewhere.
 
 ### imgstore support
 

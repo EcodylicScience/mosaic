@@ -24,6 +24,7 @@ from mosaic.core.params import (
     HASH_EXCLUDE,
     Params,
 )
+from mosaic.core.scope import Scope
 from tests.helpers import MockDataset
 
 # --- Helpers ---
@@ -249,17 +250,18 @@ def test_stateless_basic(tmp_path: Path) -> None:
 
 
 def test_entries_selects_arbitrary_subset(tmp_path: Path) -> None:
-    """run_feature(entries=...) runs exactly the requested (group, sequence) pairs.
+    """An entries scope runs exactly the requested (group, sequence) pairs.
 
-    Sequence name "s1" repeats across groups g1 and g2, so a bare sequences=
-    filter would be ambiguous; entries= selects (g1, s1) and (g2, s1) while
-    excluding (g1, s2) -- the arbitrary, tag-resolvable subset case.
+    Sequence name "s1" repeats across groups g1 and g2. A bare sequences
+    selector would be ambiguous there. An entries one selects (g1, s1) and
+    (g2, s1) while excluding (g1, s2). That is the arbitrary, tag-resolvable
+    subset case.
     """
     ds = MockDataset(tmp_path)
     _setup_tracks(ds, [("g1", "s1"), ("g1", "s2"), ("g2", "s1")])
 
     feature = _StatelessFeature()
-    result = run_feature(ds, feature, entries=[("g1", "s1"), ("g2", "s1")])
+    result = run_feature(ds, feature, scope=Scope(entries=[("g1", "s1"), ("g2", "s1")]))
 
     from mosaic.core.pipeline.index import feature_run_root
 
@@ -383,10 +385,10 @@ def test_scope_dependent_hashing(tmp_path: Path) -> None:
     _setup_tracks(ds, [("g", "s1"), ("g", "s2"), ("g", "s3")])
 
     feature1 = _StatefulFeature()
-    result1 = run_feature(ds, feature1, sequences=["s1", "s2"])
+    result1 = run_feature(ds, feature1, scope=Scope(sequences=["s1", "s2"]))
 
     feature2 = _StatefulFeature()
-    result2 = run_feature(ds, feature2, sequences=["s1", "s3"])
+    result2 = run_feature(ds, feature2, scope=Scope(sequences=["s1", "s3"]))
 
     assert result1.run_id != result2.run_id
 

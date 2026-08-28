@@ -27,6 +27,7 @@ import typer
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import emit_json, fail, load_json_arg, log, stdout_to_stderr
 from mosaic.cli._render import render_table
+from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.graph import Plan, PlannedStep, Recipe
@@ -75,11 +76,12 @@ def _recipe(argument: str) -> "Recipe":
         fail(f"Not a valid recipe: {exc}")
 
 
-def _entries(entries: list[str] | None) -> list[tuple[str, str]] | None:
-    """The narrowing, or ``None`` for the dataset's own scope."""
+def _scope(entries: list[str] | None) -> Scope | None:
+    """The narrowing as a selector, or ``None`` for the dataset's own scope."""
     from mosaic.cli._io import parse_entries
 
-    return parse_entries(entries) or None
+    pairs = parse_entries(entries)
+    return Scope(entries=pairs) if pairs else None
 
 
 def validate_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
@@ -123,7 +125,7 @@ def plan_command(
 
     ds = load_dataset(manifest)
     with stdout_to_stderr():
-        plan = plan_pipeline(ds, _recipe(recipe), intended_entries=_entries(entry))
+        plan = plan_pipeline(ds, _recipe(recipe), scope=_scope(entry))
     _emit_plan(plan, as_json=as_json)
 
 
@@ -201,7 +203,7 @@ def run_command(
             done = run_pipeline(
                 ds,
                 parsed,
-                intended_entries=_entries(entry),
+                scope=_scope(entry),
                 allow_partial=allow_partial,
                 owner=owner,
             )
@@ -286,7 +288,7 @@ def submit_command(
         submitted = submit_request(
             ds,
             parsed,
-            entries=_entries(entry),
+            scope=_scope(entry),
             allow_partial=allow_partial,
             max_concurrent_steps=max_concurrent_steps,
             owner=owner,
@@ -401,6 +403,8 @@ def _runs(step: object) -> str:
 
 def _emit_plan(plan: "Plan", *, as_json: bool) -> None:
     """Render a plan as a table, or as the JSON an API would serve."""
+    from mosaic.core.pipeline.graph import asked_of
+
     rows = [
         {
             "step": planned.step_id,
@@ -426,7 +430,7 @@ def _emit_plan(plan: "Plan", *, as_json: bool) -> None:
                         "storage_name": planned.storage_name,
                         "tracks_variant": planned.tracks_variant,
                         "parents": list(planned.parents),
-                        "entries": sorted(list(pair) for pair in planned.spec.entries),
+                        "entries": [list(pair) for pair in asked_of(planned, plan)],
                         "drift": len(planned.drift),
                     }
                     for row, planned in zip(rows, plan.steps, strict=True)

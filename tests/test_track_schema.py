@@ -35,6 +35,7 @@ from mosaic.core.schema import (
     register_track_schema,
     schema_family,
 )
+from mosaic.core.scope import Scope
 
 from tests.helpers import add_tracks_variant
 
@@ -327,7 +328,7 @@ def test_narrowing_the_scope_avoids_the_refusal(tmp_path: Path) -> None:
     spanning both.
     """
     ds = _dataset_mixing(tmp_path, "trex_v1", "mosaic_v1")
-    _, scope = build_manifest(ds, Inputs(("tracks",)), sequences={"seq_a"})
+    _, scope = build_manifest(ds, Inputs(("tracks",)), Scope(sequences=["seq_a"]))
     assert scope.entries == {("", "seq_a")}
 
 

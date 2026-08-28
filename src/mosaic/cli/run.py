@@ -255,7 +255,7 @@ def run_command(
                 result = run_feature(
                     ds,
                     feat,
-                    entries=entry_pairs or None,
+                    scope=Scope(entries=entry_pairs) if entry_pairs else None,
                     overwrite=overwrite,
                     tracks_run_id=tracks_run_id,
                     labels_run_id=labels_run_id,

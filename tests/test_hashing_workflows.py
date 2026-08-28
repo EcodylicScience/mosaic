@@ -35,6 +35,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.params import Params
+from mosaic.core.scope import Scope
 
 from tests.helpers import (
     add_media_sequence,
@@ -440,7 +441,9 @@ def test_h3_case1_membership_change_invalidates_tracks_but_not_derivatives(
         extensions=(".mp4",),
     )
 
-    report = delete_set(ds, [("", "seq_a")], "media_raw", apply=True)
+    report = delete_set(
+        ds, "media_raw", scope=Scope(entries=[("", "seq_a")]), apply=True
+    )
     kinds = {candidate.kind for candidate in report.candidates}
 
     assert "tracks" in kinds, "the tracked variant survived a change to its input"
@@ -586,7 +589,7 @@ def test_h4_annotated_frames_and_labels_are_never_in_a_delete_set(
         extensions=(".mp4",),
     )
 
-    report = delete_set(ds, [("", "seq_a")], "media_raw")
+    report = delete_set(ds, "media_raw", scope=Scope(entries=[("", "seq_a")]))
 
     classified = [*report.candidates, *report.declined]
     assert not any(item.kind == "frames" for item in classified), (
@@ -665,8 +668,8 @@ class _GlobalMediaFit(_GlobalFit):
 def test_h5_scope_term_carries_composition_hashes() -> None:
     """The scope term is a sorted list of ``(group, sequence, composition hash)``.
 
-    A pure function of the ``ResolvedScope``, so this needs no dataset. Four
-    claims, each a way the term could be got wrong quietly.
+    A pure function of the ``ResolvedScope``, which is why this needs no
+    dataset. Four claims, each a way the term could be got wrong quietly.
     """
     both = {("", "seq_a"), ("", "seq_b")}
     distinct = ResolvedScope(

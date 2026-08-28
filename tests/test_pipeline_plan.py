@@ -40,6 +40,7 @@ from mosaic.core.pipeline.graph import (
     plan_pipeline,
 )
 from mosaic.core.pipeline.run import run_feature
+from mosaic.core.scope import Scope
 from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
     variant_for_producer_run,
@@ -82,7 +83,7 @@ def execute(dataset: Dataset, plan: Plan) -> dict[str, str]:
         result = run_feature(
             dataset,
             feature,
-            entries=list(planned.spec.entries) or None,
+            scope=None if planned.spec.entries.is_unset else planned.spec.entries,
             tracks_run_id=planned.spec.tracks_run_id,
             track=False,
         )
@@ -164,7 +165,7 @@ def test_a_cold_scope_dependent_step_predicts_its_scope(tracked: Dataset) -> Non
     templates = plan.step("templates")
 
     assert build_step_feature(templates.spec).scope_dependent
-    assert templates.spec.entries == (("", "seq_a"), ("", "seq_b"))
+    assert templates.spec.entries == Scope(entries=[("", "seq_a"), ("", "seq_b")])
     assert execute(tracked, plan)["templates"] == templates.run_id
 
 
@@ -262,7 +263,9 @@ def test_fewer_entries_than_intended_gives_a_different_identity(
     _ = run_feature(tracked, build_step_feature(speed.spec), track=False)
 
     templates = build_step_feature(plan.step("templates").spec)
-    partial = run_feature(tracked, templates, entries=[("", "seq_a")], track=False)
+    partial = run_feature(
+        tracked, templates, scope=Scope(entries=[("", "seq_a")]), track=False
+    )
 
     assert partial.run_id != plan.step("templates").run_id
 
@@ -436,14 +439,19 @@ def test_a_partly_covered_step_reports_what_is_covered(tracked: Dataset) -> None
     )
     speed = plan_pipeline(tracked, recipe).step("speed")
     _ = run_feature(
-        tracked, build_step_feature(speed.spec), entries=[("", "seq_a")], track=False
+        tracked,
+        build_step_feature(speed.spec),
+        scope=Scope(entries=[("", "seq_a")]),
+        track=False,
     )
 
     again = plan_pipeline(tracked, recipe).step("speed")
 
     assert again.status == "partial"
     assert again.reason == CoverageShort(covered=1, target=2, missing=(("", "seq_b"),))
-    assert again.spec.entries == (("", "seq_b"),), "ask only for what is missing"
+    assert again.spec.entries == Scope(entries=[("", "seq_b")]), (
+        "ask only for what is missing"
+    )
 
 
 def test_a_scope_dependent_step_is_asked_for_all_of_its_scope(
@@ -466,13 +474,13 @@ def test_a_scope_dependent_step_is_asked_for_all_of_its_scope(
     _ = run_feature(
         tracked,
         build_step_feature(templates.spec),
-        entries=[("", "seq_a")],
+        scope=Scope(entries=[("", "seq_a")]),
         track=False,
     )
 
     again = plan_pipeline(tracked, recipe).step("templates")
 
-    assert again.spec.entries == (("", "seq_a"), ("", "seq_b"))
+    assert again.spec.entries == Scope(entries=[("", "seq_a"), ("", "seq_b")])
 
 
 # --- an identity nothing can resolve yet ----------------------------------------
@@ -539,7 +547,7 @@ def test_a_narrowing_governs_the_scope_and_moves_a_scope_dependent_identity(
     """An explicit narrowing is the submission speaking, and it is not widened."""
     recipe = Recipe.model_validate(FIVE_STEPS)
     whole = plan_pipeline(tracked, recipe)
-    narrowed = plan_pipeline(tracked, recipe, intended_entries=[("", "seq_a")])
+    narrowed = plan_pipeline(tracked, recipe, scope=Scope(entries=[("", "seq_a")]))
 
     assert narrowed.scope == frozenset({("", "seq_a")})
     assert narrowed.step("speed").run_id == whole.step("speed").run_id

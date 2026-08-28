@@ -26,6 +26,7 @@ from mosaic.core.pipeline.graph import (
     run_pipeline,
 )
 from mosaic.core.pipeline.run import run_feature
+from mosaic.core.scope import Scope
 from tests.helpers import add_tracks_variant, make_dataset
 
 runner = CliRunner()
@@ -177,7 +178,7 @@ def test_a_step_already_computed_is_not_recomputed(tracked: Dataset) -> None:
     assert [outcome.state for outcome in done.outcomes[1:]] == ["ran", "ran"]
 
 
-UNCOMPUTABLE: list[tuple[str, str]] = [("", "seq_a"), ("", "seq_b"), ("", "seq_gone")]
+UNCOMPUTABLE = Scope(entries=[("", "seq_a"), ("", "seq_b"), ("", "seq_gone")])
 """A submission naming one entry more than the dataset can process.
 
 An explicit narrowing is not widened or narrowed by what is on disk -- it is the
@@ -196,9 +197,7 @@ def test_a_scope_dependent_step_refuses_a_short_upstream(tracked: Dataset) -> No
     artifact from the one that was asked for, under a name saying it is the same.
     """
     with pytest.raises(CoverageShortfall) as raised:
-        _ = run_pipeline(
-            tracked, Recipe.model_validate(CHAIN), intended_entries=UNCOMPUTABLE
-        )
+        _ = run_pipeline(tracked, Recipe.model_validate(CHAIN), scope=UNCOMPUTABLE)
 
     assert raised.value.step_id == "templates"
     assert raised.value.covered == 2
@@ -219,7 +218,7 @@ def test_allow_partial_is_the_gesture_that_answers_the_refusal(
     done = run_pipeline(
         tracked,
         Recipe.model_validate(CHAIN),
-        intended_entries=UNCOMPUTABLE,
+        scope=UNCOMPUTABLE,
         allow_partial=True,
     )
 
@@ -243,7 +242,7 @@ def test_a_partly_computed_upstream_is_completed_rather_than_refused(
     _ = run_feature(
         tracked,
         build_step_feature(plan.step("speed").spec),
-        entries=[("", "seq_a")],
+        scope=Scope(entries=[("", "seq_a")]),
         track=False,
     )
 
@@ -256,7 +255,7 @@ def test_a_narrowed_run_covers_only_what_was_asked_for(tracked: Dataset) -> None
     """The narrowing is the submission speaking, and the run honours it."""
     recipe = Recipe.model_validate(CHAIN)
 
-    done = run_pipeline(tracked, recipe, intended_entries=[("", "seq_a")])
+    done = run_pipeline(tracked, recipe, scope=Scope(entries=[("", "seq_a")]))
 
     assert done.scope == frozenset({("", "seq_a")})
     assert all(outcome.state == "ran" for outcome in done.outcomes)

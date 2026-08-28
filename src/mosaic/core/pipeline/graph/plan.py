@@ -35,6 +35,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Final, Literal, cast
 
 from mosaic.core.helpers import resolve_frame_range
+from mosaic.core.scope import Scope
 
 from ..inventory.cache import InventoryCache
 from ..inventory.model import (
@@ -343,7 +344,7 @@ def plan_pipeline(
     ds: Dataset,
     recipe: Recipe,
     *,
-    intended_entries: Iterable[Entry] | None = None,
+    scope: Scope | None = None,
     request: Request | None = None,
     inventory: InventoryCache | None = None,
     quarantined: Iterable[Entry] = (),
@@ -355,10 +356,9 @@ def plan_pipeline(
     Args:
         ds: The dataset. Read only -- planning writes nothing, not even a cache.
         recipe: The graph. Refused before *ds* is touched if it is malformed.
-        intended_entries: The entries to plan over. ``None`` falls back to the
-            request's narrowing, and then to everything the dataset can process
-            -- which, for a graph that produces its own tracks, is what there is
-            media for.
+        scope: What to plan over. ``None`` falls back to the request's
+            narrowing, and then to everything the dataset can process -- which,
+            for a graph that produces its own tracks, is what there is media for.
         request: One submission's choices: its narrowing, and the out-of-graph
             pins in ``bind``, which resolve a step outright and are never
             overridden by anything derived here.
@@ -387,10 +387,10 @@ def plan_pipeline(
     catalog = declaration_catalog() if catalog is None else catalog
     reject_unless_valid(recipe, catalog)
 
-    narrowing = intended_entries
+    narrowing = scope
     if narrowing is None and request is not None:
-        narrowing = request.entries
-    target = intended_scope(
+        narrowing = request.scope
+    intended = intended_scope(
         ds,
         recipe,
         narrowing,
@@ -399,11 +399,12 @@ def plan_pipeline(
             for name, declared in catalog.entries.items()
             if declared.produces.writes_tracks
         ],
-    ) - frozenset(quarantined)
+    )
+    target = frozenset(intended.entries) - frozenset(quarantined)
 
     held = InventoryCache(ds) if inventory is None else inventory
     _ = held.revalidate()
-    inv = held.get(entries=target or None)
+    inv = held.get(scope=Scope(entries=sorted(target)) if target else None)
 
     bind = request.bind if request is not None else {}
     resolved: dict[str, ResolvedStep] = {}
@@ -531,7 +532,9 @@ def _unresolved(
         step.id,
         resolved,
         bind=bind,
-        entries=tuple(sorted(target)) if isinstance(step, OpStepSpec) else (),
+        entries=Scope(entries=sorted(target))
+        if isinstance(step, OpStepSpec) and target
+        else Scope(),
     )
     return PlannedStep(
         step_id=step.id,
@@ -608,7 +611,7 @@ def _resolve_feature_step(
     run_id, _ = resolve_feature_identity(
         ds,
         feature,
-        target,
+        scope=Scope(entries=sorted(target)),
         # The upstream's **minted** variant where the step names a producer,
         # rather than whatever the index holds. That is what lets an
         # op-to-feature edge resolve before the op has run: the variant payload
@@ -650,7 +653,11 @@ def _resolve_op_step(
     covering the recorded identities of the videos it will read.
     """
     spec = resolve_step_spec(
-        recipe, step.id, resolved, bind=bind, entries=tuple(sorted(target))
+        recipe,
+        step.id,
+        resolved,
+        bind=bind,
+        entries=Scope(entries=sorted(target)) if target else Scope(),
     )
     op_cls = op_class_for_kind(step.kind)
     if op_cls is None:  # pragma: no cover - validation resolves every kind first
@@ -790,7 +797,7 @@ def _entries_for(
     target: frozenset[Entry],
     coverage: Coverage[Entry],
     status: ArtifactStatus,
-) -> tuple[Entry, ...]:
+) -> Scope:
     """What this step should be asked to compute, already narrowed.
 
     A step must not re-request its whole scope, so a scope-free feature is asked
@@ -809,10 +816,20 @@ def _entries_for(
     would ask it to be a different artifact.
     """
     if isinstance(step, OpStepSpec) or resolution.scope_dependent:
-        return tuple(sorted(target))
+        return _named(sorted(target))
     if status in COMPLETE_STATUSES:
-        return ()
-    return tuple(sorted(coverage.missing))
+        return Scope()
+    return _named(sorted(coverage.missing))
+
+
+def _named(entries: list[Entry]) -> Scope:
+    """*entries* as a selector, or an unset one where the list is empty.
+
+    An empty narrowing has always meant "everything in scope" here, and the
+    caller reads it through :attr:`Scope.is_unset`. Naming no entry explicitly
+    is what a step covering nothing would say, and no step says it.
+    """
+    return Scope(entries=entries) if entries else Scope()
 
 
 def _reason_for(

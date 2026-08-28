@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.pipeline.tracks_index import TRACKS_INDEX_COLUMNS
+from mosaic.core.scope import Scope
 from mosaic.core.pipeline.iteration import (
     read_tracks_index,
     yield_sequences,
@@ -126,20 +127,20 @@ class TestYieldSequences:
         assert pairs == {("arena", "s1"), ("arena", "s2"), ("field", "s3")}
 
     def test_filter_groups(self, populated_ds):
-        results = list(yield_sequences(populated_ds, groups=["arena"]))
+        results = list(yield_sequences(populated_ds, Scope(groups=["arena"])))
         assert len(results) == 2
         assert all(g == "arena" for g, _, _ in results)
 
     def test_filter_sequences(self, populated_ds):
-        results = list(yield_sequences(populated_ds, sequences=["s1"]))
+        results = list(yield_sequences(populated_ds, Scope(sequences=["s1"])))
         assert len(results) == 1
         assert results[0][:2] == ("arena", "s1")
 
-    def test_filter_allowed_pairs(self, populated_ds):
-        pairs = {("arena", "s2"), ("field", "s3")}
-        results = list(yield_sequences(populated_ds, allowed_pairs=pairs))
+    def test_filter_entries(self, populated_ds):
+        pairs = [("arena", "s2"), ("field", "s3")]
+        results = list(yield_sequences(populated_ds, Scope(entries=pairs)))
         result_pairs = {(g, s) for g, s, _ in results}
-        assert result_pairs == pairs
+        assert result_pairs == set(pairs)
 
     def test_yields_dataframes(self, populated_ds):
         for _, _, df in yield_sequences(populated_ds):
@@ -161,7 +162,7 @@ class TestYieldSequences:
 
     def test_combined_filters(self, populated_ds):
         results = list(
-            yield_sequences(populated_ds, groups=["arena"], sequences=["s2"])
+            yield_sequences(populated_ds, Scope(groups=["arena"], sequences=["s2"]))
         )
         assert len(results) == 1
         assert results[0][:2] == ("arena", "s2")

@@ -25,6 +25,7 @@ from mosaic.tracking.frame_extraction import (
     select_uniform_frames,
 )
 from mosaic.tracking.frame_extraction.dataset_runs import _source_identity_maps
+from mosaic.core.scope import Scope
 
 
 # --- Frames Index ---
@@ -346,7 +347,9 @@ def test_an_extracted_frame_set_records_what_it_was_cut_from(
     ds = scenario_dataset_with_media
     expected_uids, expected_compositions = _source_identity_maps(ds, [("", "seq_a")])
 
-    _ = extract_frames(ds, n_frames=2, method="uniform", entries=[("", "seq_a")])
+    _ = extract_frames(
+        ds, n_frames=2, method="uniform", scope=Scope(entries=[("", "seq_a")])
+    )
 
     runs = list_frame_runs(ds, method="uniform")
     rows = runs[runs["sequence"] == "seq_a"]
@@ -371,7 +374,9 @@ def test_a_frames_row_stores_its_video_paths_root_relative(
     from mosaic.tracking.frame_extraction import list_frame_runs
 
     ds = scenario_dataset_with_media
-    _ = extract_frames(ds, n_frames=2, method="uniform", entries=[("", "seq_a")])
+    _ = extract_frames(
+        ds, n_frames=2, method="uniform", scope=Scope(entries=[("", "seq_a")])
+    )
 
     rows = list_frame_runs(ds, method="uniform")
     stored = str(rows[rows["sequence"] == "seq_a"].iloc[0]["video_abs_path"])
@@ -521,3 +526,50 @@ class TestTheRevisionTerm:
         first = frames_run_id("uniform", ExtractFramesParams(n_frames=100, revision=1))
         second = frames_run_id("uniform", ExtractFramesParams(n_frames=100, revision=2))
         assert first != second
+
+
+# --- what a selector reaches the op as ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("selector", "expected"),
+    [
+        (Scope(), None),
+        (Scope(groups=["A"]), [("A", "one"), ("A", "two")]),
+        (Scope(sequences=["one"]), [("A", "one"), ("B", "one")]),
+        (Scope(entries=[]), []),
+    ],
+)
+def test_extract_frames_resolves_its_selector_before_the_op_reads_it(
+    three_entry_dataset: Dataset,
+    monkeypatch: pytest.MonkeyPatch,
+    selector: Scope,
+    expected: list[tuple[str, str]] | None,
+) -> None:
+    """What reaches ``ExtractFramesParams.entries``, not what the call returns.
+
+    That field takes an entry list, or ``None`` for every indexed entry, and the
+    list a groups or sequences selector names is one only an index can write out.
+    ``Scope.entry_pairs`` answers ``None`` for such a selector and an empty set
+    for ``Scope(entries=[])``. Both are falsy, and a falsy test on it hands the
+    op ``None`` for all three of these cases.
+    """
+    from mosaic.tracking import extract_frames
+    from mosaic.tracking.frame_extraction.dataset_runs import ExtractFramesParams
+
+    reached: list[list[tuple[str, str]] | None] = []
+
+    def record(
+        dataset: Dataset,
+        kind: str,
+        params: ExtractFramesParams,
+        **_options: object,
+    ) -> str:
+        reached.append(params.entries)
+        return "extract-frames.0.1-0000000000"
+
+    monkeypatch.setattr("mosaic.tracking.frame_extraction.dataset_runs.run_op", record)
+
+    _ = extract_frames(three_entry_dataset, n_frames=2, scope=selector)
+
+    assert reached == [expected]

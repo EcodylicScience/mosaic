@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Callable
 import numpy as np
 import pandas as pd
 
+from ..scope import Scope
 from ._loaders import JoblibLoadSpec, LoadSpec, ParquetLoadSpec
 from .index import (
     feature_index,
@@ -292,7 +293,11 @@ def build_nn_lookup(
     if run_id is None:
         run_id = idx.latest_run_id()
 
-    idx_df = idx.read(run_id=run_id, filter_ext=".parquet", entries=[(group, sequence)])
+    idx_df = idx.read(
+        run_id=run_id,
+        filter_ext=".parquet",
+        scope=Scope(entries=[(group, sequence)]),
+    )
     if idx_df.empty:
         return {}
 

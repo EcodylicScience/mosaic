@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from mosaic.core.pipeline.tracks_index import read_tracks_index, select_variant_rows
+from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -14,27 +15,25 @@ if TYPE_CHECKING:
 # --- Helpers ---
 
 
-def _filter_index(
-    df_idx: pd.DataFrame,
-    groups: Iterable[str] | None = None,
-    sequences: Iterable[str] | None = None,
-    allowed_pairs: set[tuple[str, str]] | None = None,
-) -> pd.DataFrame:
-    """Filter index rows by group, sequence, and/or allowed (group, sequence) pairs."""
+def _filter_index(df_idx: pd.DataFrame, scope: Scope | None = None) -> pd.DataFrame:
+    """Keep the index rows *scope* names.
+
+    ``None`` and an unset selector both keep every row. A camera-addressed
+    selection narrows to its ``(group, sequence)`` pairs, since an index row is
+    keyed without a camera.
+    """
+    selector = scope if scope is not None else Scope()
     mask = pd.Series(True, index=df_idx.index)
-    if groups is not None:
-        mask &= df_idx["group"].isin(set(groups))
-    if sequences is not None:
-        mask &= df_idx["sequence"].isin(set(sequences))
-    if allowed_pairs is not None:
-        pair_mask = pd.Series(
-            [
-                (row["group"], row["sequence"]) in allowed_pairs
-                for _, row in df_idx.iterrows()
-            ],
+    if selector.groups is not None:
+        mask &= df_idx["group"].isin(set(selector.groups))
+    if selector.sequences is not None:
+        mask &= df_idx["sequence"].isin(set(selector.sequences))
+    pairs = selector.entry_pairs
+    if pairs is not None:
+        mask &= pd.Series(
+            [(row["group"], row["sequence"]) in pairs for _, row in df_idx.iterrows()],
             index=df_idx.index,
         )
-        mask &= pair_mask
     return df_idx[mask]
 
 
@@ -43,25 +42,19 @@ def _filter_index(
 
 def yield_sequences(
     ds: Dataset,
-    groups: Iterable[str] | None = None,
-    sequences: Iterable[str] | None = None,
-    allowed_pairs: set[tuple[str, str]] | None = None,
+    scope: Scope | None = None,
     run_id: str | None = None,
 ) -> Iterator[tuple[str, str, pd.DataFrame]]:
-    """
-    Yield (group, sequence, df) for standardized tracks present in tracks/index.csv,
-    filtered by groups and/or sequences if provided.
+    """Yield ``(group, sequence, df)`` for the standardized tracks *scope* names.
 
-    ``run_id`` names one tracks variant. Both iterators here walk *rows*, so
-    without the shared variant selector an entry carrying two of them would be
-    yielded twice -- silently doubling a sequence rather than failing.
+    Reads ``tracks/index.csv``. ``None`` and an unset selector both cover every
+    entry it names.
+
+    ``run_id`` names one tracks variant. This walks *rows*, and without the
+    shared variant selector an entry answering to two of them would be yielded
+    twice under one name.
     """
-    df_idx = _filter_index(
-        select_variant_rows(read_tracks_index(ds), run_id),
-        groups,
-        sequences,
-        allowed_pairs,
-    )
+    df_idx = _filter_index(select_variant_rows(read_tracks_index(ds), run_id), scope)
 
     for _, row in df_idx.iterrows():
         g, s = str(row["group"]), str(row["sequence"])

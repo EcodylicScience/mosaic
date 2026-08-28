@@ -16,6 +16,7 @@ import pandas as pd
 from mosaic.core.pipeline.index import feature_index_path, latest_feature_run_root
 from mosaic.core.pipeline.iteration import yield_sequences
 from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.scope import Scope
 
 
 def _pick_label_column(df: pd.DataFrame) -> Optional[str]:
@@ -98,7 +99,7 @@ def load_tracks_and_labels(
     """
     tracks_df = None
     for _, _, df in yield_sequences(
-        ds, groups=[group], sequences=[sequence], run_id=tracks_run_id
+        ds, Scope(entries=[(group, sequence)]), run_id=tracks_run_id
     ):
         tracks_df = df
         break

@@ -99,7 +99,8 @@ def _case_values(plan: Plan, recipe: Recipe) -> dict[str, str]:
         values[f"{planned.step_id}/tracks_variant"] = planned.tracks_variant
         values[f"{planned.step_id}/lane"] = planned.lane
         values[f"{planned.step_id}/entries"] = ";".join(
-            f"{group}:{sequence}" for group, sequence in planned.spec.entries
+            f"{group}:{sequence}"
+            for group, sequence in sorted(planned.spec.entries.entry_pairs or ())
         )
     return values
 

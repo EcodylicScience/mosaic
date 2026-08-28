@@ -105,7 +105,7 @@ def test_relative_index_resolves_under_a_different_root(tmp_path: Path) -> None:
     shutil.copytree(root_a, root_b)
 
     ds_b = _MockDataset(root_b)
-    result = _resolve_feature(ds_b, "feat", "0.1-abc", None, None, None)
+    result = _resolve_feature(ds_b, "feat", "0.1-abc")
     assert result.entries == {("g", "s1"), ("g", "s2")}
     assert result.full_order == [("g", "s1"), ("g", "s2")]
     # Every resolved path lives under root_b and exists.
@@ -123,7 +123,7 @@ def test_all_missing_run_raises_actionable_error(tmp_path: Path) -> None:
 
     ds = _MockDataset(root)
     with pytest.raises(FileNotFoundError, match="output file"):
-        _resolve_feature(ds, "feat", "0.1-abc", None, None, None)
+        _resolve_feature(ds, "feat", "0.1-abc")
 
 
 def test_partial_missing_run_skips(tmp_path: Path) -> None:
@@ -133,7 +133,7 @@ def test_partial_missing_run_skips(tmp_path: Path) -> None:
     (root / "features" / "feat" / "0.1-abc" / "g__s1.parquet").unlink()
 
     ds = _MockDataset(root)
-    result = _resolve_feature(ds, "feat", "0.1-abc", None, None, None)
+    result = _resolve_feature(ds, "feat", "0.1-abc")
     # The surviving entry is kept; the missing one is dropped (recomputed upstream).
     assert result.entries == {("g", "s2")}
     assert result.full_order == [("g", "s2")]

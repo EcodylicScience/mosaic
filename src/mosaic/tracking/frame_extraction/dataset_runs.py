@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Annotated, Final, Literal
 import pandas as pd
 from mosaic_media import MediaFacts
 
-from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params, json_ready
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
@@ -28,13 +27,14 @@ from mosaic.core.pipeline.media_index import media_members_from_rows
 from mosaic.core.pipeline.sequence_index import (
     media_compositions_for,
 )
-from mosaic.core.pipeline.job import Cancelled, JobContext
+from mosaic.core.pipeline.job import CancelToken, Cancelled, JobContext
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op, run_op
 from mosaic.core.pipeline.types import OpParams
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
 )
+from mosaic.core.scope import Scope
 
 from .extraction import extract_frames as _extract_frames
 from .extraction import extract_frames_multi as _extract_frames_multi
@@ -745,11 +745,11 @@ class ExtractFramesOp(Op[ExtractFramesParams]):
 
 
 def extract_frames(
-    ds,
+    ds: Dataset,
     n_frames: int,
     method: ExtractionMethod = "uniform",
     *,
-    entries: Iterable[Entry] | None = None,
+    scope: Scope | None = None,
     overwrite: bool = False,
     start_frame: int | None = None,
     end_frame: int | None = None,
@@ -769,7 +769,7 @@ def extract_frames(
     owner: str = "",
     track: bool = True,
     progress_callback: "ProgressCallback | None" = None,
-    cancel_token=None,
+    cancel_token: CancelToken | None = None,
 ) -> str:
     """Extract representative frames from media as a tracked Job-Contract run.
 
@@ -779,13 +779,17 @@ def extract_frames(
     per-sequence progress, and supports cooperative cancellation. Returns the
     content ``run_id``.
 
-    Parameters mirror :class:`ExtractFramesParams` -- the method, the
-    ``entries`` scope, the k-means knobs and ``parallel_workers`` /
-    ``parallel_mode`` -- plus the standard contract knobs
+    Parameters mirror :class:`ExtractFramesParams` -- the method, the k-means
+    knobs and ``parallel_workers`` / ``parallel_mode`` -- plus the standard
+    contract knobs
     (``execution_id``/``owner``/``track``/``progress_callback``/``cancel_token``).
-    :meth:`~mosaic.core.dataset.Dataset.resolve_scope` enumerates a group or
-    sequence selector into the entry list this takes.
+
+    *scope* is the selector every other entry point takes. It reaches ``run_op``
+    and, resolved to entries, the op's own ``entries`` field. Resolving it here
+    is what the second route needs: a selector naming groups or sequences is an
+    entry list only an index can write out, and ``entries`` takes the list.
     """
+    resolved = ds.resolve_scope(scope)
     params = ExtractFramesParams(
         n_frames=n_frames,
         method=method,
@@ -800,7 +804,7 @@ def extract_frames(
         kmeans_batch_size=kmeans_batch_size,
         kmeans_max_iter=kmeans_max_iter,
         kmeans_n_init=kmeans_n_init,
-        entries=list(entries) if entries is not None else None,
+        entries=resolved.op_entries,
         overwrite=overwrite,
         parallel_workers=parallel_workers,
         parallel_mode=parallel_mode,
@@ -809,6 +813,7 @@ def extract_frames(
         ds,
         "extract-frames",
         params,
+        scope=scope,
         execution_id=execution_id,
         owner=owner,
         track=track,
@@ -1005,6 +1010,7 @@ def _frame_run_records(
     from mosaic.core.pipeline.index_csv import index_records
 
     records: list[ArtifactRecord[CameraEntry]] = []
+    wanted = scope.selector.entry_pairs
     for method in root_subdirectories(ds, "frames"):
         index_path = frames_index_path(ds, method)
         reader.note(index_path)
@@ -1022,7 +1028,7 @@ def _frame_run_records(
                 record.get("sequence", ""),
                 record.get("camera", ""),
             )
-            if scope.entries is not None and (key[0], key[1]) not in scope.entries:
+            if wanted is not None and (key[0], key[1]) not in wanted:
                 continue
             rows_by_run.setdefault(run_id, set()).add(key)
             started.setdefault(run_id, record.get("started_at", ""))

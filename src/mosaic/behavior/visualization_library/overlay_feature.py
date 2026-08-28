@@ -120,7 +120,8 @@ class Overlay:
     Examples:
         Draw the tracks alone::
 
-            >>> dataset.run_feature(Overlay(), sequences=["hex_3"])
+            >>> from mosaic.core.scope import Scope
+            >>> dataset.run_feature(Overlay(), scope=Scope(sequences=["hex_3"]))
 
         Draw a classifier's predictions over them::
 

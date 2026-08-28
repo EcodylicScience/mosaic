@@ -19,6 +19,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.scope import Scope
 from mosaic.core.pipeline.tracks_index import (
     DROPPED_LEGACY_COLUMNS,
     backfill_frame_extents,
@@ -913,6 +914,42 @@ def test_build_manifest_defaults_to_every_variant(tmp_path: Path) -> None:
 
     _, scope = build_manifest(ds, _feature_inputs())
     assert scope.entries == {("", "a"), ("", "b")}
+
+
+def test_the_variant_term_is_collected_before_the_narrowing(tmp_path: Path) -> None:
+    """A scope-free feature must get one identifier for every scope.
+
+    ``tracks_variants`` names the recipes behind every entry this dataset
+    resolves, not behind the subset one call wants. Collected after the
+    narrowing instead, a mixed dataset would mint a separate identifier for
+    every scope one computation was run over, and ``Pipeline.clean`` deletes
+    every identifier it did not predict.
+    """
+    from mosaic.core.pipeline.manifest import build_manifest
+
+    ds = _dataset(tmp_path)
+    for sequence, variant in [("a", "convert-x.0.1-aaaaaaaaaa"), ("b", "trex.0.1-bb")]:
+        write_tracks_row(
+            ds,
+            run_id=variant,
+            group="",
+            sequence=sequence,
+            out_path=_track_parquet(ds, sequence),
+            producer="convert-x",
+            std_format="trex_v1",
+            n_rows=40,
+        )
+
+    both = ("convert-x.0.1-aaaaaaaaaa", "trex.0.1-bb")
+    _, unscoped = build_manifest(ds, _feature_inputs())
+    _, narrowed = build_manifest(ds, _feature_inputs(), Scope(sequences=["a"]))
+    _, enumerated = build_manifest(ds, _feature_inputs(), Scope(entries=[("", "b")]))
+
+    assert unscoped.tracks_variants == both
+    assert narrowed.entries == {("", "a")}
+    assert narrowed.tracks_variants == both
+    assert enumerated.entries == {("", "b")}
+    assert enumerated.tracks_variants == both
 
 
 def test_build_manifest_can_select_one_variant(tmp_path: Path) -> None:

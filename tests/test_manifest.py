@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
 from mosaic.core.pipeline.manifest import (
@@ -16,6 +17,7 @@ from mosaic.core.pipeline.manifest import (
     iter_manifest,
 )
 from mosaic.core.pipeline.types import Inputs, ParquetLoadSpec, Result, TrackInputs
+from mosaic.core.scope import Scope
 
 
 from tests.helpers import MockDataset as _MockDataset
@@ -182,16 +184,61 @@ def test_build_manifest_group_filter(tmp_path):
     _write_tracks_index(ds, entries)
 
     inputs = Inputs(("tracks",))
-    manifest, scope = build_manifest(ds, inputs, groups={"g1"})
+    manifest, scope = build_manifest(ds, inputs, Scope(groups=["g1"]))
     assert scope.entries == {("g1", "s1")}
 
 
-def test_build_manifest_entries_filter(tmp_path):
-    """entries= selects an arbitrary (group, sequence) subset.
+@pytest.mark.parametrize(
+    "selector",
+    [Scope(groups=[]), Scope(sequences=[]), Scope(entries=[])],
+)
+def test_build_manifest_narrows_a_selector_that_lists_nothing_to_nothing(
+    tmp_path: Path, selector: Scope
+) -> None:
+    """A named selector listing nothing names nothing, and an unset one is all.
 
-    Critically, the sequence name "s1" is reused across groups g1 and g2, so a
-    bare sequences= filter would be ambiguous; entries= picks exactly the pairs
-    requested and excludes (g1, s2).
+    The manifest tested the group and sequence lists for emptiness rather than
+    for ``None``, which read an empty one as no restriction. Every other
+    narrowing in the codebase tests ``is not None``, and one of the three arms
+    disagreeing is what makes a misspelled scope resolve to the whole dataset.
+    """
+    ds = _MockDataset(tmp_path)
+    entries: list[tuple[str, str, Path]] = []
+    for g, s in [("g1", "s1"), ("g2", "s2")]:
+        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
+        _make_parquet(p)
+        entries.append((g, s, p))
+    _write_tracks_index(ds, entries)
+
+    manifest, scope = build_manifest(ds, Inputs(("tracks",)), selector)
+
+    assert scope.entries == set()
+    assert manifest == {}
+
+
+def test_build_manifest_covers_everything_for_an_unset_selector(
+    tmp_path: Path,
+) -> None:
+    """The other half of the rule above, which an empty list must not reach."""
+    ds = _MockDataset(tmp_path)
+    entries: list[tuple[str, str, Path]] = []
+    for g, s in [("g1", "s1"), ("g2", "s2")]:
+        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
+        _make_parquet(p)
+        entries.append((g, s, p))
+    _write_tracks_index(ds, entries)
+
+    _, scope = build_manifest(ds, Inputs(("tracks",)), Scope())
+
+    assert scope.entries == {("g1", "s1"), ("g2", "s2")}
+
+
+def test_build_manifest_entries_filter(tmp_path):
+    """An entries selector picks an arbitrary (group, sequence) subset.
+
+    Sequence name "s1" repeats across groups g1 and g2. A bare sequences
+    selector would be ambiguous there. An entries one picks the pairs it lists
+    and excludes (g1, s2).
     """
     ds = _MockDataset(tmp_path)
     entries = []
@@ -202,38 +249,34 @@ def test_build_manifest_entries_filter(tmp_path):
     _write_tracks_index(ds, entries)
 
     inputs = Inputs(("tracks",))
-    manifest, scope = build_manifest(ds, inputs, entries={("g1", "s1"), ("g2", "s1")})
+    manifest, scope = build_manifest(
+        ds, inputs, Scope(entries=[("g1", "s1"), ("g2", "s1")])
+    )
     assert scope.entries == {("g1", "s1"), ("g2", "s1")}
     assert set(manifest.keys()) == {"g1__s1", "g2__s1"}
 
 
-def test_build_manifest_entries_intersects_groups(tmp_path):
-    """entries= intersects with groups= when both are given."""
-    ds = _MockDataset(tmp_path)
-    entries = []
-    for g, s in [("g1", "s1"), ("g1", "s2"), ("g2", "s1")]:
-        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
-        _make_parquet(p)
-        entries.append((g, s, p))
-    _write_tracks_index(ds, entries)
+def test_build_manifest_refuses_entries_beside_groups() -> None:
+    """The two used to intersect, narrowing an enumeration already written out.
 
-    inputs = Inputs(("tracks",))
-    # entries asks for two pairs; groups restricts to g1 -> only (g1, s1) survives
-    manifest, scope = build_manifest(
-        ds, inputs, groups={"g1"}, entries={("g1", "s1"), ("g2", "s1")}
-    )
-    assert scope.entries == {("g1", "s1")}
+    The selector refuses the combination. A manifest is built from one selector,
+    which puts that intersection out of reach from here.
+    """
+    with pytest.raises(ValidationError, match="cannot be combined"):
+        _ = Scope(groups=["g1"], entries=[("g1", "s1"), ("g2", "s1")])
 
 
 def test_build_manifest_entries_feature_input(tmp_path):
-    """entries= also scopes a feature-result input (via IndexCSV.read)."""
+    """An entries selector also narrows a feature-result input."""
     ds = _MockDataset(tmp_path)
     run_id = _setup_feature(
         ds, "speed-angvel", [("g1", "s1"), ("g1", "s2"), ("g2", "s1")]
     )
     inputs = Inputs((Result(feature="speed-angvel", run_id=run_id),))
 
-    manifest, scope = build_manifest(ds, inputs, entries={("g1", "s2"), ("g2", "s1")})
+    manifest, scope = build_manifest(
+        ds, inputs, Scope(entries=[("g1", "s2"), ("g2", "s1")])
+    )
     assert scope.entries == {("g1", "s2"), ("g2", "s1")}
     assert set(manifest.keys()) == {"g1__s2", "g2__s1"}
 

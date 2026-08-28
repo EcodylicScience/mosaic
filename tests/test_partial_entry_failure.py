@@ -35,6 +35,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.params import Params
+from mosaic.core.scope import Scope
 from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import MockDataset
 
@@ -189,6 +190,8 @@ def test_an_empty_scope_is_not_an_all_entries_failure(tmp_path: Path) -> None:
     ds = MockDataset(tmp_path)
     _setup_tracks(ds, ["s1"])
 
-    result = run_feature(ds, _FailsOnOneSequence(), sequences=["nosuchsequence"])
+    result = run_feature(
+        ds, _FailsOnOneSequence(), scope=Scope(sequences=["nosuchsequence"])
+    )
 
     assert result.failed_entries == ()

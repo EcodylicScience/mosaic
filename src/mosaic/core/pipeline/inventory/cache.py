@@ -32,11 +32,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from mosaic.core.entry import Entry
 from mosaic.core.pipeline.dataset_indexes import iter_dataset_indexes
 from mosaic.core.pipeline.identity_scheme import FEATURE_IDENTITY_SCHEME
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
 from mosaic.core.pipeline.tracks_identity import TRACKS_IDENTITY_SCHEME
+from mosaic.core.scope import Scope
 
 from ._read import IndexStamp
 from .contributors import registered_inventory_kinds
@@ -97,7 +97,7 @@ class InventoryCache:
         self,
         *,
         kinds: Iterable[ArtifactKind] | None = None,
-        entries: Iterable[Entry] | None = None,
+        scope: Scope | None = None,
         tracks_run_id: str | None = None,
     ) -> DatasetInventory:
         """The held inventory, building it if there is none.
@@ -108,7 +108,7 @@ class InventoryCache:
         a refresh.
         """
         if self._held is None:
-            self._rebuild(kinds=kinds, entries=entries, tracks_run_id=tracks_run_id)
+            self._rebuild(kinds=kinds, scope=scope, tracks_run_id=tracks_run_id)
         held = self._held
         assert held is not None
         return held
@@ -169,16 +169,16 @@ class InventoryCache:
         self,
         *,
         kinds: Iterable[ArtifactKind] | None = None,
-        entries: Iterable[Entry] | None = None,
+        scope: Scope | None = None,
         tracks_run_id: str | None = None,
     ) -> None:
         held = self._held
         built = inventory(
             self.ds,
             kinds=kinds,
-            entries=entries
-            if entries is not None
-            else (held.scope.entries if held else None),
+            scope=scope
+            if scope is not None
+            else (held.scope.selector if held else None),
             tracks_run_id=tracks_run_id
             if tracks_run_id is not None
             else (held.scope.tracks_run_id if held else None),
