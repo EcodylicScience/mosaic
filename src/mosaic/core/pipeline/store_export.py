@@ -119,12 +119,9 @@ _AV1_CRF_DESCRIPTION = (
 class StoreExportParams(Params):
     """Parameters for one entry's store export.
 
-    **``Params`` rather than ``OpParams``, and singular where every other op is
-    plural.** This op runs over one entry, so an inherited ``entries`` list
-    would be accepted and never read, and an inherited ``overwrite`` likewise:
-    reuse is decided by the recipe-addressed filename and the forward link.
-    Widening ``entry`` to ``entries`` changes the op's arity, which is a
-    separate decision from declaring the scope contract.
+    **Singular where every other scoped op is plural.** This op runs over one
+    entry, and ``entry`` names it. It declares no ``overwrite``, because reuse
+    is decided by the recipe-addressed filename and the forward link.
     """
 
     # entry and camera both select WHICH stores are exported rather than what

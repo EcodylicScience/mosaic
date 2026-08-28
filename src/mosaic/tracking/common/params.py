@@ -1,8 +1,8 @@
-"""The parameters every tracker op shares: what to run over, and how to run it.
+"""The parameters every tracker op shares, and how a phased tool declares them.
 
-:class:`TrackerOpParams` declares the execution knobs, over the scope
-:class:`~mosaic.core.pipeline.types.OpParams` declares. Each tracker's own
-parameter model inherits both and adds its tool's settings.
+:class:`TrackerOpParams` declares the execution knobs every tracker runs
+under. Each tracker's own parameter model inherits it and adds its tool's
+settings.
 
 :class:`PhasedTrackerOpParams` adds what a tool that runs in several subprocess
 phases needs on top: every parameter its subclass declares names the phases that
@@ -16,10 +16,10 @@ from typing import Annotated
 from pydantic import BaseModel
 
 from mosaic.core.pipeline.markers import Phase
-from mosaic.core.pipeline.types import OpParams
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
+    Params,
 )
 
 __all__ = ["PhasedTrackerOpParams", "TrackerOpParams", "refuse_unphased_fields"]
@@ -41,16 +41,18 @@ _MAX_RUNTIME_DESCRIPTION = (
 )
 
 
-class TrackerOpParams(OpParams):
+class TrackerOpParams(Params):
     """Execution knobs shared by every tracker op.
 
     A tracker's own parameters -- its model reference, its thresholds, its
     tracker flavor -- are declared by the subclass. Pydantic allows a required
     field after defaulted ones, so ``model_path`` and its kin stay required.
 
-    The execution knobs are all ``HASH_EXCLUDE``: they change how a run happens,
-    not what it produces, so folding them in would move an identifier without
-    moving the output, which is a cache miss costing a recompute for nothing.
+    Every knob here is ``HASH_EXCLUDE``. Each changes how a run happens rather
+    than what it produces, and folding one in would move an identifier without
+    moving the output. That is a cache miss costing a recompute for nothing.
+    Which entries a run covers and whether it recomputes are not fields at all
+    -- they describe an attempt, and a tracker takes both as arguments.
     Placement knobs (which conda environment, which binary, which display) are
     deliberately *not* here at all -- they are properties of a machine, so they
     are read from ``MOSAIC_<TOOL>_*`` rather than carried in params a queued job
@@ -112,9 +114,9 @@ class PhasedTrackerOpParams(TrackerOpParams):
     its markers projects an empty settings dictionary and the tool runs on its
     own defaults.
 
-    The scope and execution fields it inherits reach no phase of the tool and
-    declare none, so :func:`refuse_unphased_fields` checks what a subclass adds
-    and exempts what it inherits.
+    The execution knobs it inherits reach no phase of the tool and declare none,
+    so :func:`refuse_unphased_fields` checks what a subclass adds and exempts
+    what it inherits.
     """
 
     @classmethod

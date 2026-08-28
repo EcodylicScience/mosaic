@@ -134,11 +134,11 @@ ENTRY_SETS: tuple[list[Entry] | None, ...] = (
 
 
 def _selector(entries: list[Entry] | None) -> Scope:
-    """The same coverage as a selector, matching the params field beside it.
+    """*entries* as the selector a caller writes.
 
-    An op reads its entries from its params field, and these gates write
-    them there. Passing the same entries through the scope argument keeps
-    the two saying one thing.
+    ``None`` gives an unset selector, which covers every indexed entry. That
+    is the first member of :data:`ENTRY_SETS` and the one an op must name the
+    same run under as the others.
     """
     return Scope(entries=entries)
 
@@ -181,9 +181,9 @@ def _op_these_gates_cover(kind: str) -> type[Op[Params]]:
     Both are skipped by name rather than passed, which keeps the count of ops
     actually exercised visible in the report.
 
-    An op inside the population whose params hold no ``entries`` field fails
-    instead. The gates read a scope off that field, and a skip there would
-    report a widening they need as an op they cover.
+    The population is pinned by
+    :meth:`TestTheDeclarationsAreWhatWeIntend.test_the_ops_the_scope_gates_cover`,
+    so a skip cannot shrink what these gates exercise.
     """
     op = OPS[kind]
     if kind not in _gated_kinds():
@@ -191,27 +191,49 @@ def _op_these_gates_cover(kind: str) -> type[Op[Params]]:
             f"{kind} declares scope_takes={op.scope_takes!r} and "
             f"scope_dependent={op.scope_dependent}"
         )
-    if "entries" not in op.Params.model_fields:
-        pytest.fail(
-            f"{kind} takes a scope, declares independence, and holds no "
-            f"'entries' field. These gates read the scope off that field and "
-            f"need widening for an op that spells it otherwise."
-        )
     return op
 
 
-class TestADeclaredIndependenceHoldsInThePayload:
-    """``scope_dependent = False`` keeps the scope out of the hashed payload.
+SCOPE_SHAPED_NAMES = frozenset(
+    ["entries", "entry", "camera", "cameras", "overwrite", "groups", "sequences"]
+)
+"""Every spelling a coverage or a recompute decision has worn in an op model."""
 
-    The direct leak, and complete for every op it covers. A scope reaching
-    ``identity_dump`` names one computation two things once a caller narrows it.
+
+_OVERWRITE_STILL_DECLARED = frozenset(
+    [
+        "convert-points",
+        "train-litpose",
+        "train-localizer",
+        "train-points",
+        "train-pose",
+        "train-sleap",
+    ]
+)
+"""The scope-free ops whose ``overwrite`` is still a field rather than an argument."""
+
+
+class TestNoScopeReachesTheHashedPayload:
+    """What a run covers and whether it recomputes never name the run.
+
+    The direct leak, over **every** registered op rather than the eight the
+    gates below cover. Most ops now take their coverage as an argument and
+    hold no such field at all, which makes the check pass for them by
+    construction. ``transcode`` and ``export-store`` still declare theirs, and
+    those are the cases this measures: both are ``HASH_EXCLUDE``, and an
+    identity payload naming either would give one computation two names as
+    soon as a caller narrowed it.
+
+    Read over the whole forbidden vocabulary rather than ``entries`` alone,
+    because the spelling has differed per op and a new op is free to invent
+    another one.
     """
 
     @pytest.mark.parametrize("kind", sorted(OPS))
-    def test_entries_do_not_reach_the_identity_payload(self, kind: str) -> None:
-        op = _op_these_gates_cover(kind)
-        params = op.Params.model_validate(minimal_op_params(kind))
-        assert "entries" not in params.identity_dump()
+    def test_no_scope_shaped_name_reaches_the_identity_payload(self, kind: str) -> None:
+        params = OPS[kind].Params.model_validate(minimal_op_params(kind))
+        leaked = SCOPE_SHAPED_NAMES & set(params.identity_dump())
+        assert not leaked, f"{kind} hashes {sorted(leaked)}"
 
 
 class TestADeclaredIndependenceHoldsAgainstTheDataset:
@@ -239,10 +261,8 @@ class TestADeclaredIndependenceHoldsAgainstTheDataset:
         op = _op_these_gates_cover(kind)
         identities: set[OpIdentity] = set()
         deferred: dict[str, str] = {}
+        params = op.Params.model_validate(minimal_op_params(kind))
         for entries in ENTRY_SETS:
-            payload = minimal_op_params(kind)
-            payload["entries"] = entries
-            params = op.Params.model_validate(payload)
             scope = three_entry_dataset.resolve_scope(_selector(entries))
             try:
                 identities.add(op().plan_identity(three_entry_dataset, params, scope))
@@ -287,11 +307,9 @@ class TestTheIndirectPathIsMeasured:
 
         def identity_over(sequence: str) -> OpIdentity:
             entries: list[Entry] = [("", sequence)]
-            payload = minimal_op_params("resample-tracks")
-            payload["entries"] = entries
             return op().plan_identity(
                 dataset,
-                op.Params.model_validate(payload),
+                op.Params.model_validate(minimal_op_params("resample-tracks")),
                 dataset.resolve_scope(_selector(entries)),
             )
 
@@ -328,6 +346,22 @@ class TestPublished:
         assert "scope_takes" not in rendered
         assert "scope_dependent" not in rendered
         assert "entries" in rendered
+
+    def test_only_two_ops_still_declare_a_scope_field(self) -> None:
+        """A client draws its controls from these fields, and a scope is not one.
+
+        What a run covers and whether it recomputes are arguments to the run.
+        An op therefore declares its settings and nothing else, and the
+        published schema is generated from exactly these fields. ``transcode``
+        and ``export-store`` are the two that still declare a coverage, and
+        this pins the exception so shrinking it shows in a diff.
+        """
+        declaring = {
+            kind
+            for kind in OPS
+            if SCOPE_SHAPED_NAMES & set(OPS[kind].Params.model_fields)
+        }
+        assert declaring == {"transcode", "export-store"} | _OVERWRITE_STILL_DECLARED
 
     def test_the_declaration_catalog_carries_them(self) -> None:
         """A canvas refuses a wire with no dataset and reads them here."""

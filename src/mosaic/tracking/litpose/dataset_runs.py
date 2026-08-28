@@ -81,6 +81,7 @@ from .run import run_litpose_predict
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.progress import ProgressCallback
 
 
@@ -218,7 +219,9 @@ def _bridge_csv_to_tracks(
 def run_litpose(
     ds: Dataset,
     params: LitposeParams,
+    scope: "ResolvedScope | None" = None,
     *,
+    overwrite: bool = False,
     litpose_conda_env: str | None = None,
     litpose_bin: Path | str | None = None,
     # Job Contract
@@ -279,8 +282,9 @@ def run_litpose(
             "model_type": resolved_model.model_type,
         },
     )
-    scope = ds.resolve_media_scope(params.entries)
-    if not scope:
+    scope_entries = scope.op_entries if scope is not None else None
+    media_scope = ds.resolve_media_scope(scope_entries)
+    if not media_scope:
         print("[run_litpose] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
 
@@ -399,10 +403,10 @@ def run_litpose(
         kind=LITPOSE_KIND,
         target="litpose-predict",
         minted=minted,
-        work_items=build_work_items(ds, scope, kind=LITPOSE_KIND),
+        work_items=build_work_items(ds, media_scope, kind=LITPOSE_KIND),
         index=litpose_index(litpose_index_path(ds)),
         run_entry=predict_one,
-        overwrite=params.overwrite,
+        overwrite=overwrite,
         execution_id=execution_id,
         owner=owner,
         track=track,

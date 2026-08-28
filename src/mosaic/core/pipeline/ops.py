@@ -465,11 +465,12 @@ def run_op(
         cancel_token: How a caller asks the run to stop.
         scope: What to cover. Resolved through
             :meth:`~mosaic.core.dataset.Dataset.resolve_scope` and handed to the
-            op. Op params still declare their own entry fields, and those are
-            what an op body reads today. A caller passing both is passing the
-            same thing twice, here and for *overwrite* below.
-        overwrite: Whether the op recomputes what is already there. An op body
-            still reads ``params.overwrite`` today.
+            op. ``transcode`` and ``export-store`` still declare their own entry
+            fields and read those instead. A caller of either passes the same
+            thing twice.
+        overwrite: Whether the op recomputes what is already there. The six ops
+            that take no scope still declare their own ``overwrite`` field and
+            read that instead.
 
     Returns:
         The content ``run_id`` the op produced.
@@ -485,10 +486,9 @@ def run_op(
     op = op_cls()
     p = op.Params.model_validate(params) if isinstance(params, dict) else params
     # The seam an op reads its scope from. Resolved here so one enumeration
-    # answers for every op. An op body still takes its entries from its own
-    # params field, and every caller leaves this unset. The op therefore
-    # receives what an unset selector resolves to. :func:`check_scope_takes` is
-    # applied where the argument becomes what an op body reads.
+    # answers for every op. ``transcode`` and ``export-store`` still take their
+    # entries from their own params fields, and their callers leave this unset;
+    # :func:`check_scope_takes` is applied once those two read the argument.
     resolved = ds.resolve_scope(scope)
     with job_context(
         ds,

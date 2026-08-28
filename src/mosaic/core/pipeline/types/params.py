@@ -5,8 +5,7 @@ from typing import Annotated, Generic, Self
 from pydantic import model_validator
 from typing_extensions import TypeVar
 
-from mosaic.core.entry import Entry
-from mosaic.core.params import HASH_EXCLUDE, Declared, Params
+from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.types.artifacts import JoblibArtifact, TemplatesRef
 
 # ``JsonValue`` used to live here. It moved to ``mosaic.core.json_value`` -- a
@@ -14,55 +13,6 @@ from mosaic.core.pipeline.types.artifacts import JoblibArtifact, TemplatesRef
 # type and importing this one drags the loader and artifact machinery, and
 # through them pandas, into a manifest read. The package ``__init__`` re-exports
 # it from its new home, so every existing import path is unchanged.
-
-
-_ENTRIES_DESCRIPTION = (
-    "Which (group, sequence) entries the run covers. Unset covers every entry "
-    "the media index holds."
-)
-
-_OVERWRITE_DESCRIPTION = (
-    "Recompute an entry whose output is already on disk, instead of keeping "
-    "what is there and reporting it done."
-)
-
-
-class OpParams(Params):
-    """The scope an op runs over, for every op that runs over a set of entries.
-
-    An op that takes no scope at all -- one reading a labelled export, or a
-    training set -- stays on :class:`Params`, and so does one whose arity is a
-    single entry, because both fields here would then be accepted and never
-    read.
-
-    Both fields are ``HASH_EXCLUDE``. A selector names which entries a run
-    covers rather than what comes out of any one of them, and an op whose
-    coverage does change its output hashes the resolved entry identities in
-    ``plan_identity`` instead -- which is also what keeps a sequence rename from
-    moving a run identifier.
-
-    One selector, and it enumerates. A ``groups`` field beside a ``sequences``
-    one expresses a cross product, so it cannot name group A sequence 1 together
-    with group B sequence 2 without also naming A/2 and B/1. ``mosaic track``
-    takes the pair as flags and ``mosaic run --kind`` takes it inside
-    ``--params``. Both resolve it through
-    :meth:`~mosaic.core.dataset.Dataset.resolve_scope`, which enumerates the
-    cross product against the media index, before an op's model validates.
-
-    An op that refuses an unscoped run has a choice, and it is a trade rather
-    than a constraint. Inheriting this field keeps the base and refuses ``None``
-    and ``[]`` in a validator, at the cost of an ``entries`` still typed
-    ``list[Entry] | None`` for every reader and an ``overwrite`` the op may not
-    act on; declaring its own required ``entries`` on :class:`Params` buys the
-    static type and gives up the shared base, because a subclass can neither
-    drop an inherited default nor narrow an inherited type.
-    :class:`~mosaic.core.pipeline.transcode.TranscodeParams` takes the second.
-    """
-
-    entries: Annotated[
-        list[Entry] | None, HASH_EXCLUDE, Declared(_ENTRIES_DESCRIPTION)
-    ] = None
-    overwrite: Annotated[bool, HASH_EXCLUDE, Declared(_OVERWRITE_DESCRIPTION)] = False
 
 
 M = TypeVar("M", bound=JoblibArtifact[object], default=JoblibArtifact[object])

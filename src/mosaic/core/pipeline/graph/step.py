@@ -475,9 +475,10 @@ def _run(
     """
     if planned.kind == "op":
         if overwrite:
-            # An argument fault rather than a refusal: an op has no overwrite to
-            # pass, so accepting the flag and dropping it would promise a
-            # recompute that never happened.
+            # An argument fault rather than a refusal. The scoped ops honor an
+            # overwrite argument and the six scope-free ones still read a params
+            # field of their own. Accepting the flag would recompute for some
+            # kinds and do nothing for the rest.
             raise ValueError(
                 f"step {planned.step_id!r} runs the op {planned.runs!r}, which "
                 f"takes no --overwrite: an op decides reuse from its own "
@@ -487,6 +488,10 @@ def _run(
             ds,
             planned.spec.op_kind,
             build_step_op_params(planned.spec),
+            # The entries this step was planned over. The planner resolved the
+            # same set for plan_identity, and a step covering more than its plan
+            # named would write under an identifier minted for less.
+            scope=Scope(entries=sorted(asked)) if asked else None,
             execution_id=attempt,
             owner=owner,
             cancel_token=cancel_token,

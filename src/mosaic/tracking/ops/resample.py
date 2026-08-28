@@ -43,9 +43,7 @@ from mosaic.core.pipeline.tracks_index import (
     select_variant_rows,
     write_tracks_row,
 )
-from mosaic.core.pipeline.types import OpParams
 from mosaic.core.params import (
-    HASH_EXCLUDE,
     Declared,
     Params,
 )
@@ -71,12 +69,6 @@ def resample_tracks_run_id(
     )
 
 
-_ENTRIES_DESCRIPTION = (
-    "Which (group, sequence) entries to re-grid. Unset covers every entry the "
-    "tracks index holds under the source variant; this op reads tables and "
-    "never opens media."
-)
-
 _TARGET_FPS_DESCRIPTION = (
     "The uniform frame rate every table is re-gridded onto, which is what "
     "makes one constant expressed in frames mean one duration dataset-wide."
@@ -94,10 +86,10 @@ _PREFILTER_DESCRIPTION = (
 )
 
 
-class ResampleTracksParams(OpParams):
+class ResampleTracksParams(Params):
     """Parameters for ``resample-tracks``.
 
-    ``OpParams`` rather than ``TrackerOpParams``: ``convert_to_tracks``,
+    ``Params`` rather than ``TrackerOpParams``: ``convert_to_tracks``,
     ``idle_timeout`` and ``max_runtime`` describe driving an external tool and
     mean nothing to a table rewrite. Each of the three is ``HASH_EXCLUDE``, so
     inheriting them would leave this op's identity where it is -- and they would
@@ -115,9 +107,6 @@ class ResampleTracksParams(OpParams):
     threshold.
     """
 
-    entries: Annotated[
-        list[Entry] | None, HASH_EXCLUDE, Declared(_ENTRIES_DESCRIPTION)
-    ] = None
     target_fps: Annotated[float, Declared(_TARGET_FPS_DESCRIPTION, unit="fps")]
     source_tracks_run_id: Annotated[
         str | None, Declared(_SOURCE_TRACKS_RUN_ID_DESCRIPTION)
@@ -127,17 +116,26 @@ class ResampleTracksParams(OpParams):
     ] = None
 
 
-def _in_scope(row: pd.Series, params: ResampleTracksParams) -> bool:
-    """Whether one tracks-index row is one this run covers."""
-    if params.entries is None:
+def _in_scope(row: pd.Series, entries: list[Entry] | None) -> bool:
+    """Whether one tracks-index row is one this run covers.
+
+    ``None`` covers every row. An unset selector resolves to it. An empty list
+    covers no row at all, and a selector naming entries the index does not
+    hold resolves to that.
+    """
+    if entries is None:
         return True
     group = text_cell(row.get("group", ""))
     sequence = text_cell(row.get("sequence", ""))
-    return (group, sequence) in set(params.entries)
+    return (group, sequence) in set(entries)
 
 
 def _source_rows(
-    ds: Dataset, params: ResampleTracksParams, *, producer: str
+    ds: Dataset,
+    params: ResampleTracksParams,
+    entries: list[Entry] | None,
+    *,
+    producer: str,
 ) -> pd.DataFrame:
     """The source tables this run reads, one row per entry.
 
@@ -167,7 +165,7 @@ def _source_rows(
     if resolved.empty:
         return resolved
     keep = [
-        i for i, (_, row) in enumerate(resolved.iterrows()) if _in_scope(row, params)
+        i for i, (_, row) in enumerate(resolved.iterrows()) if _in_scope(row, entries)
     ]
     return resolved.iloc[keep].reset_index(drop=True)
 
@@ -221,7 +219,7 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
         identity covers the variant it chains from, and a graph step whose input
         is an earlier step's conversion has nothing to name yet.
         """
-        rows = _source_rows(ds, params, producer=self.kind)
+        rows = _source_rows(ds, params, scope.op_entries, producer=self.kind)
         if rows.empty:
             raise IdentityDeferred(
                 self.kind,
@@ -254,7 +252,7 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
         )
         from mosaic.core.schema import ensure_track_schema
 
-        rows = _source_rows(ds, params, producer=self.kind)
+        rows = _source_rows(ds, params, scope.op_entries, producer=self.kind)
         identity = self.plan_identity(ds, params, scope)
         ctx.set_run_id(identity.run_id)
         ctx.set_total(int(len(rows)))
@@ -277,7 +275,7 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
             sequence = text_cell(row.get("sequence", ""))
             key = make_entry_key(group, sequence)
             out_path = variant_root / f"{key}.parquet"
-            if out_path.exists() and not params.overwrite:
+            if out_path.exists() and not overwrite:
                 ctx.heartbeat(done)
                 continue
             try:

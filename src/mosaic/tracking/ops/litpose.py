@@ -89,4 +89,4 @@ class LitposeOp(Op[LitposeParams]):
         # conda-env / bin are environment (image) concerns, left unset so the
         # runner resolves them from MOSAIC_LITPOSE_CONDA_ENV / _BIN -- the run_id
         # stays independent of *where* it ran.
-        return run_litpose(ds, params, ctx=ctx)
+        return run_litpose(ds, params, scope, overwrite=overwrite, ctx=ctx)

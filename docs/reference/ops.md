@@ -50,18 +50,12 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
-| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
 | `model_path` | `string` | _required_ |  | A trained Lightning Pose model directory (config.yaml plus a checkpoint under tb_logs/). |
 | `litpose_overrides` | `object` \| `None` | `null` |  | Hydra config overrides applied at inference time. |
 | `precision` | `string` | `"fp32"` |  | The forward-pass precision: fp32, fp16, or bf16. |
-
-??? note "`Entry`"
-
-    No parameters.
 
 ??? note "`JsonValue`"
 
@@ -75,15 +69,9 @@ Place a dataset's tracks tables on one uniform frame rate.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries to re-grid. Unset covers every entry the tracks index holds under the source variant; this op reads tables and never opens media. |
-| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
 | `target_fps` | `number` | _required_ |  | The uniform frame rate every table is re-gridded onto, which is what makes one constant expressed in frames mean one duration dataset-wide. [fps] |
 | `source_tracks_run_id` | `string` \| `None` | `null` |  | Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Unset resolves whichever variant the scope's entries hold, and refuses when they hold two. |
 | `prefilter` | `number` \| `None` | `null` |  | Displacement from the predecessor above which a native sample is rejected before interpolating. A rejected mis-detection is dropped instead of blended into its neighbors. Unset interpolates the samples as they are. [units/s] |
-
-??? note "`Entry`"
-
-    No parameters.
 
 #### `sleap`
 
@@ -93,8 +81,6 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
-| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
@@ -112,10 +98,6 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 | `batch_size` | `integer` | `4` |  | The inference batch size. |
 | `device` | `string` \| `None` | `null` |  | The device to run inference on: cpu, or a GPU index. Unset, cuda and auto all leave the choice to SLEAP. |
 
-??? note "`Entry`"
-
-    No parameters.
-
 ??? note "`JsonValue`"
 
     No parameters.
@@ -128,8 +110,6 @@ Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
-| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
@@ -150,10 +130,6 @@ Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``
 | `detect_keypoint_count` | `integer` \| `None` | `null` |  | How many keypoints detect_model reports. Set it whenever that model is a pose model, or the tracks come back without their keypoint columns. TREx derives the poseX<i> / poseY<i> names from a keypoint format it learns by loading the model, and mosaic converts and tracks as two invocations, so the exporting process has never loaded one. |
 | `track_extra_settings` | `object` \| `None` | `null` |  | Additional TREx parameters sent as -key value pairs for the tracking phase. A None value removes a parameter mosaic would otherwise send. |
 
-??? note "`Entry`"
-
-    No parameters.
-
 ??? note "`JsonValue`"
 
     No parameters.
@@ -166,8 +142,6 @@ Track scoped videos with a YOLO model, bridging results into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
-| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
@@ -239,10 +213,6 @@ Track scoped videos with a YOLO model, bridging results into ``tracks/``.
     | `appearance_thresh` | `number` | `0.9` |  | The appearance similarity a re-identification match must reach. Raising it avoids identity swaps. |
     | `alpha_fixed_emb` | `number` | `0.95` |  | The base exponential-moving-average factor for a track's appearance embedding. Raising it updates the embedding more slowly. |
 
-??? note "`Entry`"
-
-    No parameters.
-
 ??? note "`FasttrackConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
@@ -312,8 +282,6 @@ Sample representative video frames as PNGs for annotation.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
-| `overwrite` | `boolean` | `false` |  | Re-extract into a directory that already holds frames. The run refuses rather than removing them, because annotations reference those images by path and mosaic cannot tell whether any exist. A second selection is a new run, through `revision`. |
 | `n_frames` | `integer` | _required_ |  | How many frames to write per camera. |
 | `method` | `"uniform"` \| `"kmeans"` | `"uniform"` |  | How the frames are chosen: 'uniform' spaces them evenly over the candidate range, 'kmeans' clusters the candidates by pixel content and keeps one frame per cluster. |
 | `start_frame` | `integer` \| `None` | `null` |  | First frame of the range frames are chosen from, inclusive. Unset starts at the beginning of the video. |
@@ -331,10 +299,6 @@ Sample representative video frames as PNGs for annotation.
 | `parallel_workers` | `integer` \| `string` \| `None` | `"auto"` |  | How many cameras are extracted at once. 'auto' reads the machine, and an integer pins the count. |
 | `parallel_mode` | `"thread"` \| `"process"` | `"thread"` |  | Which executor runs the cameras: 'thread' shares one process, 'process' forks, which a decoder holding the interpreter lock needs. |
 
-??? note "`Entry`"
-
-    No parameters.
-
 ### infer
 
 #### `infer-localizer`
@@ -345,8 +309,6 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
-| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
 | `model` | `string` | _required_ |  | The weights to predict with, as a path or as the run identifier of the training run that produced them. |
 | `conf_threshold` | `number` | `0.25` |  | Minimum detection confidence a prediction must reach to be written. |
 | `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
@@ -362,10 +324,6 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 | `initial_channels` | `integer` | `32` |  | Base channel width of the localizer network. Must match the architecture the referenced model was trained with. |
 | `thresholds` | `number` | `0.5` |  | Minimum confidence a detected peak must reach, applied to every class. |
 
-??? note "`Entry`"
-
-    No parameters.
-
 #### `infer-points`
 
 Version `0.2` &middot; `mosaic.tracking.ops.infer.InferPointsOp`
@@ -374,8 +332,6 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
-| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
 | `model` | `string` | _required_ |  | The weights to predict with, as a path or as the run identifier of the training run that produced them. |
 | `conf_threshold` | `number` | `0.25` |  | Minimum detection confidence a prediction must reach to be written. |
 | `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
@@ -389,10 +345,6 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 | `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
 | `dor` | `number` | `0.8` |  | The Distance of Reference threshold POLO evaluated against at training time. **Unwired:** reaches no inference argument, though it still enters the run identifier. |
 
-??? note "`Entry`"
-
-    No parameters.
-
 #### `infer-pose`
 
 Version `0.2` &middot; `mosaic.tracking.ops.infer.InferPoseOp`
@@ -401,8 +353,6 @@ Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `entries` | list of `Entry` \| `None` | `null` |  | Which (group, sequence) entries the run covers. Unset covers every entry the media index holds. |
-| `overwrite` | `boolean` | `false` |  | Recompute an entry whose output is already on disk, instead of keeping what is there and reporting it done. |
 | `model` | `string` | _required_ |  | The weights to predict with, as a path or as the run identifier of the training run that produced them. |
 | `conf_threshold` | `number` | `0.25` |  | Minimum detection confidence a prediction must reach to be written. |
 | `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
@@ -414,10 +364,6 @@ Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 | `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. |
 | `batch_size` | `integer` | `8` |  | How many frames the model reads in one forward pass. |
 | `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
-
-??? note "`Entry`"
-
-    No parameters.
 
 ### train
 

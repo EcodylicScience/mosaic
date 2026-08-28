@@ -108,7 +108,7 @@ class TrexOp(Op[TrexParams]):
         # conda environment, binary and display TREx is launched from is read
         # from MOSAIC_TREX_CONDA_ENV / _BIN / _DISPLAY, which keeps the run_id
         # independent of where it ran.
-        return run_trex(ds, params, ctx=ctx)
+        return run_trex(ds, params, scope, overwrite=overwrite, ctx=ctx)
 
 
 def _detect_model_kind(ref: str | None) -> str:

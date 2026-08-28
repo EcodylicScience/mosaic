@@ -13,12 +13,15 @@ directory is keyed without a camera.
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from typer.testing import CliRunner, Result
 
-from mosaic.cli.run import entries_from_scope
+from mosaic.cli import app
+from mosaic.cli.run import split_op_scope
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.scope import Scope
 from mosaic.core.media.facts_columns import store_facts
@@ -42,6 +45,22 @@ def _dataset(tmp_path: Path, clips: list[MediaClip]) -> Dataset:
     ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
     write_media_index(ds, clips)
     return ds
+
+
+def _cli(ds: Dataset, kind: str, params: dict[str, object]) -> Result:
+    """``mosaic run --kind`` over *ds*, as a caller types it."""
+    return CliRunner().invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(ds.manifest_path),
+            "--kind",
+            kind,
+            "--params",
+            json.dumps(params),
+        ],
+    )
 
 
 def _items(ds: Dataset, *, kind: str) -> list[TrackerWorkItem]:
@@ -347,20 +366,41 @@ class TestScopeInsideParams:
         """An op with no scope keeps params its model accepts."""
         ds = self._dataset(tmp_path)
         params: dict[str, object] = {"data": "datasets/pose/data.yaml", "epochs": 3}
-        assert entries_from_scope(ds, params) == params
+        settings, scope = split_op_scope(ds, "train-pose", params)
+        assert settings == params
+        assert scope.is_unset
 
-    def test_a_group_becomes_the_entry_list(self, tmp_path: Path) -> None:
+    def test_a_group_becomes_the_selector_an_op_covers(self, tmp_path: Path) -> None:
+        """The scope leaves the params and arrives as what ``run_op`` takes."""
         ds = self._dataset(tmp_path)
-        expanded = entries_from_scope(ds, {"n_frames": 2, "groups": ["A"]})
-        assert expanded == {"n_frames": 2, "entries": [("A", "one"), ("A", "two")]}
+        settings, scope = split_op_scope(
+            ds, "trex", {"track_max_speed": 2, "groups": ["A"]}
+        )
+        assert settings == {"track_max_speed": 2}
+        assert scope == Scope(groups=["A"])
+        assert sorted(ds.resolve_scope(scope).entries) == [
+            ("A", "one"),
+            ("A", "two"),
+        ]
+
+    def test_an_op_declaring_entries_still_gets_the_list(self, tmp_path: Path) -> None:
+        """``transcode`` reads its own field, and the selector is written there too.
+
+        The one op left that takes its coverage from the params rather than
+        from the argument. Both are handed over, and they name one thing.
+        """
+        ds = self._dataset(tmp_path)
+        settings, scope = split_op_scope(ds, "transcode", {"groups": ["A"]})
+        assert settings == {"entries": [("A", "one"), ("A", "two")]}
+        assert scope == Scope(groups=["A"])
 
     def test_an_entry_list_alone_is_sorted_and_collapsed(self, tmp_path: Path) -> None:
         """The params key resolves the way ``--entries`` does, through one selector."""
         ds = self._dataset(tmp_path)
-        expanded = entries_from_scope(
-            ds, {"entries": [["B", "one"], ["A", "one"], ["B", "one"]]}
+        settings, _ = split_op_scope(
+            ds, "transcode", {"entries": [["B", "one"], ["A", "one"], ["B", "one"]]}
         )
-        assert expanded["entries"] == [("A", "one"), ("B", "one")]
+        assert settings["entries"] == [("A", "one"), ("B", "one")]
 
     def test_index_order_does_not_reach_the_entry_list(self, tmp_path: Path) -> None:
         """An op's ``entries`` is sorted, whatever order the index rows are in.
@@ -369,8 +409,8 @@ class TestScopeInsideParams:
         decided, and a re-index therefore moves nothing.
         """
         ds = self._dataset(tmp_path)
-        expanded = entries_from_scope(ds, {"groups": ["A", "B"]})
-        assert expanded["entries"] == [("A", "one"), ("A", "two"), ("B", "one")]
+        settings, _ = split_op_scope(ds, "transcode", {"groups": ["A", "B"]})
+        assert settings["entries"] == [("A", "one"), ("A", "two"), ("B", "one")]
 
     def test_a_camera_addressed_entry_list_is_refused(self, tmp_path: Path) -> None:
         """An op's entry list is pairs, and a triple is refused by name.
@@ -380,25 +420,56 @@ class TestScopeInsideParams:
         """
         ds = self._dataset(tmp_path)
         with pytest.raises(ValueError, match=r"Give \(group, sequence\) pairs"):
-            _ = entries_from_scope(ds, {"entries": [["A", "one", "cam0"]]})
+            _ = split_op_scope(ds, "trex", {"entries": [["A", "one", "cam0"]]})
 
     def test_an_entry_list_beside_a_group_is_refused(self, tmp_path: Path) -> None:
         """The params keys name one selector, the same as the flags do."""
         ds = self._dataset(tmp_path)
         with pytest.raises(ValidationError, match="cannot be combined"):
-            _ = entries_from_scope(
-                ds, {"groups": ["A"], "entries": [["A", "one"], ["B", "one"]]}
+            _ = split_op_scope(
+                ds, "trex", {"groups": ["A"], "entries": [["A", "one"], ["B", "one"]]}
             )
 
-    def test_an_op_with_no_scope_refuses_the_expansion(self, tmp_path: Path) -> None:
-        """Scoping an op that takes none is refused by name rather than dropped."""
-        from mosaic.core.pipeline.ops import OPS
-        from mosaic.tracking import register_ops
+    def test_a_scope_free_op_is_refused_at_the_command_line(
+        self, tmp_path: Path
+    ) -> None:
+        """The refusal a caller meets, driven through the command it types.
 
-        register_ops()
+        A scope named for an op that takes none used to be refused by the params
+        model, which received an ``entries`` key it forbids. The scope no longer
+        reaches the model, and this asserts that the command still declines
+        rather than training over everything with the narrowing dropped.
+
+        Driven end to end because a unit call to the checker proves only that
+        the checker works. What has to hold is that the command reaches it.
+        """
         ds = self._dataset(tmp_path)
-        expanded = entries_from_scope(
-            ds, {"data": "datasets/pose/data.yaml", "groups": ["A"]}
+        result = _cli(
+            ds, "train-pose", {"data": "datasets/pose/data.yaml", "groups": ["A"]}
         )
-        with pytest.raises(ValidationError, match="entries"):
-            _ = OPS["train-pose"].Params.model_validate(expanded)
+
+        assert result.exit_code != 0
+        assert "train-pose takes no entry scope" in result.output
+
+    def test_a_scope_free_op_runs_when_no_scope_is_named(self, tmp_path: Path) -> None:
+        """The other side of the refusal, which cannot then pass by refusing always.
+
+        The op gets past the scope check and fails on its own missing tool
+        environment, which is as far as this dataset can take it.
+        """
+        ds = self._dataset(tmp_path)
+        result = _cli(ds, "train-pose", {"data": "datasets/pose/data.yaml"})
+
+        assert "takes no entry scope" not in result.output
+
+    def test_a_scope_free_op_keeps_the_selector_out_of_its_settings(
+        self, tmp_path: Path
+    ) -> None:
+        """The selector is split off rather than passed to a model that forbids it."""
+        from mosaic.core.pipeline.ops import ScopeRefused
+
+        ds = self._dataset(tmp_path)
+        with pytest.raises(ScopeRefused, match="train-pose"):
+            _ = split_op_scope(
+                ds, "train-pose", {"data": "datasets/pose/data.yaml", "groups": ["A"]}
+            )

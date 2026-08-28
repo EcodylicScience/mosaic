@@ -44,21 +44,35 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 
-def entries_from_scope(ds: "Dataset", params: dict[str, object]) -> dict[str, object]:
-    """Resolve the scope keys in *params* into the ``entries`` an op declares.
+def split_op_scope(
+    ds: "Dataset", kind: str, params: dict[str, object]
+) -> tuple[dict[str, object], Scope]:
+    """Split the scope *params* names off the settings the op takes.
 
     ``mosaic run --kind`` declares no scope flags of its own and refuses
     ``--entries``. An op's scope therefore arrives inside ``--params``, spelled
-    with the field names of :class:`~mosaic.core.scope.Scope`. Op params declare
-    one entry list, and ``groups`` / ``sequences`` name a cross product this
-    enumerates against the dataset -- the same resolution ``mosaic track``
-    performs with its flags. An ``entries`` given alone is resolved too, which
-    is what sorts it and collapses a pair named twice. A camera-addressed list
-    is refused, because every op's ``entries`` field declares pairs.
+    with the field names of :class:`~mosaic.core.scope.Scope`. It leaves here as
+    a selector. ``run_op`` takes one, and an op body reads it.
 
-    Params naming no scope key at all are returned unchanged, which keeps an op
-    that takes no scope holding params its model accepts. Every other key
-    belongs to the op, and the op's own model validates it.
+    The selector is also enumerated into an ``entries`` key for any op whose
+    model still declares one, which today is ``transcode`` alone.
+    ``groups`` / ``sequences`` name a cross product only the dataset can list.
+    An ``entries`` given alone is resolved too, which sorts it and collapses a
+    pair named twice. A camera-addressed list is refused, because that field
+    declares pairs.
+
+    Params naming no scope key at all come back unchanged beside an unset
+    selector. Every other key belongs to the op, and the op's own model
+    validates it.
+
+    Args:
+        ds: The dataset the selector is enumerated against.
+        kind: The registered op kind, which decides whether the selector is
+            also written into an ``entries`` params key.
+        params: The ``--params`` mapping as the caller wrote it.
+
+    Returns:
+        The params the op's model validates, and the selector to cover.
 
     Raises:
         ValidationError: If the scope keys do not describe one selector, which
@@ -68,29 +82,32 @@ def entries_from_scope(ds: "Dataset", params: dict[str, object]) -> dict[str, ob
         FileNotFoundError: If *groups* or *sequences* is given and the originals
             index does not exist.
     """
+    from mosaic.core.pipeline.ops import OPS, check_scope_takes
+
     named = {key: value for key, value in params.items() if key in Scope.model_fields}
     if not named:
-        return params
+        return params, Scope()
     scope = Scope.model_validate(named)
     if scope.addresses_cameras:
-        # Refused rather than resolved down to its pairs. An op's params
-        # declare ``list[Entry]``, and resolving a triple runs the op over the
-        # whole entry under a selector that named one camera of it.
+        # Refused rather than resolved down to its pairs. An op covers a whole
+        # entry, and resolving a triple runs it over every camera of that entry
+        # under a selector that named one of them.
         message = (
-            "entries names (group, sequence, camera) triples, which an op's "
-            "params do not take. An op covers a whole (group, sequence) entry "
-            "and resolves every camera of it. Give (group, sequence) pairs "
-            "instead."
+            "entries names (group, sequence, camera) triples, which an op does "
+            "not take. An op covers a whole (group, sequence) entry and "
+            "resolves every camera of it. Give (group, sequence) pairs instead."
         )
         raise ValueError(message)
-    resolved = ds.resolve_scope(scope)
-    expanded = {
-        key: value
-        for key, value in params.items()
-        if key not in {"groups", "sequences"}
+    settings = {
+        key: value for key, value in params.items() if key not in Scope.model_fields
     }
-    expanded["entries"] = resolved.op_entries
-    return expanded
+    op_cls = OPS.get(kind)
+    if op_cls is not None:
+        resolved = ds.resolve_scope(scope)
+        check_scope_takes(kind, op_cls.scope_takes, resolved)
+        if "entries" in op_cls.Params.model_fields:
+            settings["entries"] = resolved.op_entries
+    return settings, scope
 
 
 def run_command(
@@ -293,9 +310,10 @@ def run_command(
                     "an op produces these rather than reading them."
                 )
             if overwrite:
-                # Refused rather than ignored. An op decides reuse from its own
-                # markers and ``run_op`` takes no overwrite at all, so accepting
-                # the flag promised a recompute that never happened.
+                # Refused rather than ignored. The scoped ops honor an overwrite
+                # argument and the six scope-free ones still read a params field of
+                # their own. Accepting the flag would recompute for some kinds and
+                # do nothing for the rest.
                 fail(
                     "--overwrite is not supported with --kind; an op decides reuse "
                     "from its own markers. Clear its run root to recompute it."
@@ -307,10 +325,12 @@ def run_command(
             register_ops()
             log(f"[mosaic] execution_id={exec_id} running {op_kind}")
             with stdout_to_stderr():
+                settings, op_scope = split_op_scope(ds, op_kind, params_dict or {})
                 run_id = run_op(
                     ds,
                     op_kind,
-                    entries_from_scope(ds, params_dict or {}),
+                    settings,
+                    scope=op_scope,
                     execution_id=exec_id,
                     owner=owner,
                     cancel_token=token,

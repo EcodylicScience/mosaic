@@ -37,7 +37,8 @@ from mosaic.core.pipeline.run_log import (
 from mosaic.tracking import resolve_model
 from mosaic.tracking.frame_extraction.dataset_runs import ExtractFramesParams
 
-from tests.helpers import FakeTrainer, make_dataset
+from mosaic.core.scope import Scope
+from tests.helpers import FakeTrainer, make_dataset, scope_over
 
 
 # --- fixtures --------------------------------------------------------------
@@ -230,15 +231,13 @@ def test_hash_exclude_does_not_change_run_id():
         n_frames=10,
         method="uniform",
         parallel_workers=1,
-        overwrite=True,
-        entries=[("g", "s")],
+        parallel_mode="thread",
     )
     b = ExtractFramesParams(
         n_frames=10,
         method="uniform",
         parallel_workers=8,
-        overwrite=False,
-        entries=None,
+        parallel_mode="process",
     )
     assert hash_params(a.identity_dump()) == hash_params(b.identity_dump())
     # a real param DOES change it
@@ -778,7 +777,7 @@ def test_trex_registered_as_gpu_convert_op():
     assert "trex" in OPS
     d = describe_op("trex")
     assert d["category"] == "convert"
-    assert {"detect_model", "track_max_individuals", "entries"} <= set(
+    assert {"detect_model", "track_max_individuals"} <= set(
         d["params_schema"]["properties"]
     )
     from mosaic.core.pipeline.ops import op_resource_class
@@ -795,8 +794,9 @@ def test_trex_op_run_id_matches_standalone_run_trex(tmp_path):
     from mosaic.tracking.trex.params import TrexParams
 
     ds = _make_dataset(tmp_path)
-    direct = run_trex(ds, TrexParams(entries=[("", "nonexistent")]))
-    via_op = run_op(ds, "trex", {"entries": [("", "nonexistent")]})
+    absent = ("", "nonexistent")
+    direct = run_trex(ds, TrexParams(), scope_over(absent))
+    via_op = run_op(ds, "trex", {}, scope=Scope(entries=[absent]))
     assert direct == via_op
     assert direct.startswith("trex.")
 
@@ -809,14 +809,12 @@ def test_trex_params_exclude_throughput_from_run_id():
         detect_model="m.pt",
         idle_timeout=900,
         max_runtime=None,
-        overwrite=False,
         convert_to_tracks=True,
     )
     b = TrexParams(
         detect_model="m.pt",
         idle_timeout=30,
         max_runtime=60,
-        overwrite=True,
         convert_to_tracks=False,
     )
     assert hash_params(a.identity_dump()) == hash_params(b.identity_dump())
@@ -839,9 +837,7 @@ def test_sleap_registered_as_gpu_convert_op():
     assert "sleap" in OPS
     d = describe_op("sleap")
     assert d["category"] == "convert"
-    assert {"model_paths", "tracker", "entries"} <= set(
-        d["params_schema"]["properties"]
-    )
+    assert {"model_paths", "tracker"} <= set(d["params_schema"]["properties"])
     from mosaic.core.pipeline.ops import op_resource_class
 
     # declared "gpu" despite category "convert" (SLEAP inference wants the GPU)
@@ -857,13 +853,13 @@ def test_sleap_op_run_id_matches_standalone_run_sleap(tmp_path):
 
     ds = _make_dataset(tmp_path)
     model = _fake_sleap_model(tmp_path)
-    direct = run_sleap(
-        ds, SleapParams(model_paths=[str(model)], entries=[("", "nonexistent")])
-    )
+    absent = ("", "nonexistent")
+    direct = run_sleap(ds, SleapParams(model_paths=[str(model)]), scope_over(absent))
     via_op = run_op(
         ds,
         "sleap",
-        {"model_paths": [str(model)], "entries": [("", "nonexistent")]},
+        {"model_paths": [str(model)]},
+        scope=Scope(entries=[absent]),
     )
     assert direct == via_op
     assert direct.startswith("sleap.1.6-")
@@ -879,7 +875,6 @@ def test_sleap_params_exclude_throughput_from_run_id():
         device=None,
         idle_timeout=900,
         max_runtime=None,
-        overwrite=False,
         convert_to_tracks=True,
     )
     b = SleapParams(
@@ -888,7 +883,6 @@ def test_sleap_params_exclude_throughput_from_run_id():
         device="cpu",
         idle_timeout=30,
         max_runtime=60,
-        overwrite=True,
         convert_to_tracks=False,
     )
     assert hash_params(a.identity_dump()) == hash_params(b.identity_dump())
@@ -966,9 +960,7 @@ def test_litpose_registered_as_gpu_convert_op():
     assert "litpose" in OPS
     d = describe_op("litpose")
     assert d["category"] == "convert"
-    assert {"model_path", "litpose_overrides", "entries"} <= set(
-        d["params_schema"]["properties"]
-    )
+    assert {"model_path", "litpose_overrides"} <= set(d["params_schema"]["properties"])
     from mosaic.core.pipeline.ops import op_resource_class
 
     # declared "gpu" despite category "convert" (LP video inference needs the GPU)
@@ -984,13 +976,13 @@ def test_litpose_op_run_id_matches_standalone_run_litpose(tmp_path):
 
     ds = _make_dataset(tmp_path)
     model = _fake_litpose_model(tmp_path)
-    direct = run_litpose(
-        ds, LitposeParams(model_path=str(model), entries=[("", "nonexistent")])
-    )
+    absent = ("", "nonexistent")
+    direct = run_litpose(ds, LitposeParams(model_path=str(model)), scope_over(absent))
     via_op = run_op(
         ds,
         "litpose",
-        {"model_path": str(model), "entries": [("", "nonexistent")]},
+        {"model_path": str(model)},
+        scope=Scope(entries=[absent]),
     )
     assert direct == via_op
     assert direct.startswith("litpose.2.3-")
@@ -1005,7 +997,6 @@ def test_litpose_params_exclude_throughput_from_run_id():
         precision="fp32",
         idle_timeout=900,
         max_runtime=None,
-        overwrite=False,
         convert_to_tracks=True,
     )
     b = LitposeParams(
@@ -1013,7 +1004,6 @@ def test_litpose_params_exclude_throughput_from_run_id():
         precision="fp16",
         idle_timeout=30,
         max_runtime=60,
-        overwrite=True,
         convert_to_tracks=False,
     )
     assert hash_params(a.identity_dump()) == hash_params(b.identity_dump())
@@ -1248,7 +1238,8 @@ def test_run_trex_resolves_detect_model_run_id_to_weights(tmp_path, monkeypatch)
     try:
         run_trex(
             ds,
-            TrexParams(entries=[("", "vid1")], detect_model=rid, detect_type="yolo"),
+            TrexParams(detect_model=rid, detect_type="yolo"),
+            scope_over(("", "vid1")),
         )
     except _Stop:
         pass
@@ -1417,7 +1408,7 @@ def test_run_trex_routes_required_row_to_derivative(tmp_path, monkeypatch):
     monkeypatch.setattr(dr, "run_trex_convert", fake_convert)
     monkeypatch.setattr(dr, "run_trex_track", fake_track)
 
-    dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
+    dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
     # TREx tracked the clean analysis derivative, never the defective original.
     assert [p.resolve() for p in seen] == [derivative.resolve()]
 
@@ -1436,7 +1427,7 @@ def test_run_trex_required_unlinked_raises(tmp_path, monkeypatch):
     # The required-but-unlinked entry raises during media resolution, before any
     # TREx subprocess opens the defective original.
     with pytest.raises(MediaProbeError, match="requires an analysis transcode"):
-        dr.run_trex(ds, TrexParams(entries=[("", "vid1")]))
+        dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
 
 
 # --- generic registry moved into core/pipeline ------------------------------

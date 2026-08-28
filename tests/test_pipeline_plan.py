@@ -47,7 +47,12 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.trex.run import TRexConvertResult, TRexTrackResult
-from tests.helpers import add_tracks_variant, make_dataset, write_media_index
+from tests.helpers import (
+    add_tracks_variant,
+    make_dataset,
+    scope_over,
+    write_media_index,
+)
 
 type Document = dict[str, object]
 
@@ -367,7 +372,9 @@ def test_a_tracker_step_resolves_the_variant_its_run_writes(
     predicted = plan.step("trex")
 
     produced = trex_runs.run_trex(
-        dataset, TrexParams(entries=[("", "vid1")], track_max_individuals=2)
+        dataset,
+        TrexParams(track_max_individuals=2),
+        scope_over(("", "vid1")),
     )
 
     assert produced == predicted.run_id
@@ -387,7 +394,9 @@ def test_a_feature_below_a_tracker_resolves_to_what_it_then_records(
     predicted = plan.step("speed").run_id
 
     _ = trex_runs.run_trex(
-        dataset, TrexParams(entries=[("", "vid1")], track_max_individuals=2)
+        dataset,
+        TrexParams(track_max_individuals=2),
+        scope_over(("", "vid1")),
     )
     speed = plan.step("speed")
     result = run_feature(

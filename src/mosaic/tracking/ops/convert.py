@@ -142,10 +142,9 @@ _OVERWRITE_DESCRIPTION = (
 class ConvertPointsParams(Params):
     """Parameters for the ``convert-points`` op (CVAT points -> POLO training dataset).
 
-    ``Params`` rather than ``OpParams``: this op names an XML export and an
-    images directory, never a media entry, so an inherited ``entries`` selector
-    would be accepted and never read. Its ``overwrite`` is declared here for the
-    same reason.
+    This op names an XML export and an images directory, never a media entry,
+    so it declares no scope and its ``scope_takes`` is ``"none"``. Its own
+    ``overwrite`` field decides whether an existing ``data.yaml`` is rebuilt.
     """
 
     source_format: Annotated[

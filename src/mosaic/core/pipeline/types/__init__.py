@@ -45,7 +45,7 @@ from mosaic.core.pipeline.types.labels import (
     LabelsSource,
     LabelsSourceSpec,
 )
-from mosaic.core.pipeline.types.params import GlobalModelParams, OpParams
+from mosaic.core.pipeline.types.params import GlobalModelParams
 from mosaic.core.pipeline.types.results import (
     BodyScaleResult,
     NNResult,
@@ -82,7 +82,6 @@ __all__ = [
     "NNResult",
     "NpzArtifact",
     "NpzLoadSpec",
-    "OpParams",
     "PAIR_COLS",
     "ParquetArtifact",
     "ParquetLoadSpec",
