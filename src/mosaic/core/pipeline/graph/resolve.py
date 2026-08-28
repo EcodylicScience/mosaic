@@ -21,7 +21,7 @@ all.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import TYPE_CHECKING, Literal, cast
@@ -236,22 +236,17 @@ def build_feature(
         raise StepBuildError("params", slug, _compact(exc)) from exc
 
 
-def build_op_params(
-    kind: str,
-    params: Mapping[str, JsonValue],
-    entries: Sequence[tuple[str, str]] = (),
-) -> "Params":
+def build_op_params(kind: str, params: Mapping[str, JsonValue]) -> "Params":
     """Validate one op step's params against the op's own model.
 
-    The op half of :func:`build_feature`, and the same single-site rule: this is
-    what ``run_op`` does with the same mapping, so a recipe that validates here is
-    one that runs.
+    The op half of :func:`build_feature`, and the same single-site rule. This is
+    what ``run_op`` does with the same mapping, so a recipe that validates here
+    is one that runs.
 
-    *entries* is what the plan is running this step over, handed to the op's own
-    :meth:`~mosaic.core.pipeline.ops.Op.scoped_params` so it lands in whichever
-    field that op reads a scope from. An op step's scope comes from the plan
-    rather than from the recipe, which is what lets one recipe run over several
-    datasets.
+    The recipe's params are validated as written. An op step's scope comes from
+    the plan rather than from the recipe, which is what lets one recipe run over
+    several datasets, and it reaches the op as ``run_op``'s ``scope`` argument
+    rather than as a params field.
 
     Raises:
         StepBuildError: The kind names nothing, or the params do not validate.
@@ -262,7 +257,7 @@ def build_op_params(
     if op_cls is None:
         raise StepBuildError("slug", kind, f"no registered op is named {kind!r}")
     try:
-        return op_cls.Params.model_validate(op_cls.scoped_params(params, entries))
+        return op_cls.Params.model_validate(params)
     except ValidationError as exc:
         raise StepBuildError("params", kind, _compact(exc)) from exc
 
@@ -282,9 +277,7 @@ def build_step_op_params(spec: "StepSpec") -> "Params":
     Raises:
         StepBuildError: As :func:`build_op_params`.
     """
-    return build_op_params(
-        spec.op_kind, spec.params, sorted(spec.entries.entry_pairs or ())
-    )
+    return build_op_params(spec.op_kind, spec.params)
 
 
 def _accepts(inputs_cls: type, payload: list[object]) -> bool:

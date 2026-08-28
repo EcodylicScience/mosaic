@@ -96,7 +96,7 @@ class ResolvedScope:
 
     @property
     def op_entries(self) -> list[Entry] | None:
-        """The entry list an op's params take, or ``None`` for every entry.
+        """The entry list an op body reads, or ``None`` for every entry.
 
         An unset selector covers every indexed entry, and an op reads ``None``
         as that. A selector that named something and resolved to nothing covers

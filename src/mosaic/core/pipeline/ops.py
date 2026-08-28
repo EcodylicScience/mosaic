@@ -40,8 +40,6 @@ from mosaic.core.pipeline.job import CancelToken, JobContext, job_context
 from mosaic.core.params import Params
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
-
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.progress import ProgressCallback
@@ -296,38 +294,6 @@ class Op(Generic[P]):
         """
         return self.kind
 
-    @classmethod
-    def scoped_params(
-        cls, params: "Mapping[str, Any]", entries: "Sequence[tuple[str, str]]"
-    ) -> dict[str, Any]:
-        """*params* narrowed to the entries a plan is running this step over.
-
-        **An op step's scope comes from the plan, not from the recipe**, and that
-        is what keeps a recipe portable: a file naming ``(group, sequence)`` pairs
-        is about one dataset, while the same graph is meant to run over several.
-        So the entry list arrives here, and each op says how it spells one --
-        which differs, because the scope fields grew per op rather than from a
-        shared vocabulary.
-
-        The default keeps *params* as written, which is the all-or-nothing
-        statement for every op whose params already say what it reads: a tracker
-        with no ``entries`` covers all indexed media, and a training op reads a
-        directory rather than a scope at all. Narrowing those is the same job the
-        feature side does with its own entry list, and it is not done here.
-
-        ``TranscodeOp`` overrides it, because it is the one op whose params refuse
-        an unscoped run -- a transcode with no scope re-encodes a corpus because a
-        field was omitted -- and the one whose identity moves with what it covers.
-
-        Args:
-            params: The step's params as the recipe wrote them.
-            entries: What this step is planned to cover, possibly empty.
-
-        Returns:
-            A new mapping; *params* is never mutated.
-        """
-        return dict(params)
-
     def plan_identity(
         self,
         ds: "Dataset",
@@ -464,10 +430,8 @@ def run_op(
         progress_callback: Where per-entry progress is reported.
         cancel_token: How a caller asks the run to stop.
         scope: What to cover. Resolved through
-            :meth:`~mosaic.core.dataset.Dataset.resolve_scope` and handed to the
-            op. ``transcode`` and ``export-store`` still declare their own entry
-            fields and read those instead. A caller of either passes the same
-            thing twice.
+            :meth:`~mosaic.core.dataset.Dataset.resolve_scope`, checked against
+            the op's ``scope_takes`` declaration, and handed to the op.
         overwrite: Whether the op recomputes what is already there. The six ops
             that take no scope still declare their own ``overwrite`` field and
             read that instead.
@@ -477,6 +441,7 @@ def run_op(
 
     Raises:
         KeyError: *kind* names no registered op.
+        ScopeRefused: *scope* is one the op's declaration does not accept.
         FileNotFoundError: *scope* names groups or sequences and the originals
             index does not exist.
     """
@@ -485,11 +450,11 @@ def run_op(
         raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(OPS)}")
     op = op_cls()
     p = op.Params.model_validate(params) if isinstance(params, dict) else params
-    # The seam an op reads its scope from. Resolved here so one enumeration
-    # answers for every op. ``transcode`` and ``export-store`` still take their
-    # entries from their own params fields, and their callers leave this unset;
-    # :func:`check_scope_takes` is applied once those two read the argument.
+    # The seam every op reads its scope from, and the one place a scope is
+    # refused. Resolved here so one enumeration answers for every op, and checked
+    # here so no op implements an arity rule of its own.
     resolved = ds.resolve_scope(scope)
+    check_scope_takes(kind, op.scope_takes, resolved)
     with job_context(
         ds,
         kind=kind,

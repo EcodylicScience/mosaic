@@ -362,20 +362,17 @@ class TestScopeInsideParams:
             ],
         )
 
-    def test_params_naming_neither_key_are_untouched(self, tmp_path: Path) -> None:
+    def test_params_naming_neither_key_are_untouched(self) -> None:
         """An op with no scope keeps params its model accepts."""
-        ds = self._dataset(tmp_path)
         params: dict[str, object] = {"data": "datasets/pose/data.yaml", "epochs": 3}
-        settings, scope = split_op_scope(ds, "train-pose", params)
+        settings, scope = split_op_scope(params)
         assert settings == params
         assert scope.is_unset
 
     def test_a_group_becomes_the_selector_an_op_covers(self, tmp_path: Path) -> None:
         """The scope leaves the params and arrives as what ``run_op`` takes."""
         ds = self._dataset(tmp_path)
-        settings, scope = split_op_scope(
-            ds, "trex", {"track_max_speed": 2, "groups": ["A"]}
-        )
+        settings, scope = split_op_scope({"track_max_speed": 2, "groups": ["A"]})
         assert settings == {"track_max_speed": 2}
         assert scope == Scope(groups=["A"])
         assert sorted(ds.resolve_scope(scope).entries) == [
@@ -392,7 +389,7 @@ class TestScopeInsideParams:
         """
         ds = self._dataset(tmp_path)
         _, scope = split_op_scope(
-            ds, "transcode", {"entries": [["B", "one"], ["A", "one"], ["B", "one"]]}
+            {"entries": [["B", "one"], ["A", "one"], ["B", "one"]]}
         )
         assert ds.resolve_scope(scope).op_entries == [("A", "one"), ("B", "one")]
 
@@ -403,29 +400,27 @@ class TestScopeInsideParams:
         therefore moves nothing an op records.
         """
         ds = self._dataset(tmp_path)
-        _, scope = split_op_scope(ds, "transcode", {"groups": ["A", "B"]})
+        _, scope = split_op_scope({"groups": ["A", "B"]})
         assert ds.resolve_scope(scope).op_entries == [
             ("A", "one"),
             ("A", "two"),
             ("B", "one"),
         ]
 
-    def test_a_camera_addressed_entry_list_is_refused(self, tmp_path: Path) -> None:
+    def test_a_camera_addressed_entry_list_is_refused(self) -> None:
         """An op's entry list is pairs, and a triple is refused by name.
 
         The refusal names the form to give instead. A resolved triple covers
         every camera of the entry under a selector that named one of them.
         """
-        ds = self._dataset(tmp_path)
         with pytest.raises(ValueError, match=r"Give \(group, sequence\) pairs"):
-            _ = split_op_scope(ds, "trex", {"entries": [["A", "one", "cam0"]]})
+            _ = split_op_scope({"entries": [["A", "one", "cam0"]]})
 
-    def test_an_entry_list_beside_a_group_is_refused(self, tmp_path: Path) -> None:
+    def test_an_entry_list_beside_a_group_is_refused(self) -> None:
         """The params keys name one selector, the same as the flags do."""
-        ds = self._dataset(tmp_path)
         with pytest.raises(ValidationError, match="cannot be combined"):
             _ = split_op_scope(
-                ds, "trex", {"groups": ["A"], "entries": [["A", "one"], ["B", "one"]]}
+                {"groups": ["A"], "entries": [["A", "one"], ["B", "one"]]}
             )
 
     def test_a_scope_free_op_is_refused_at_the_command_line(
@@ -460,14 +455,15 @@ class TestScopeInsideParams:
 
         assert "takes no entry scope" not in result.output
 
-    def test_a_scope_free_op_keeps_the_selector_out_of_its_settings(
-        self, tmp_path: Path
-    ) -> None:
-        """The selector is split off rather than passed to a model that forbids it."""
-        from mosaic.core.pipeline.ops import ScopeRefused
+    def test_a_scope_free_op_keeps_the_selector_out_of_its_settings(self) -> None:
+        """The selector is split off rather than dropped or left in the settings.
 
-        ds = self._dataset(tmp_path)
-        with pytest.raises(ScopeRefused, match="train-pose"):
-            _ = split_op_scope(
-                ds, "train-pose", {"data": "datasets/pose/data.yaml", "groups": ["A"]}
-            )
+        A scope named for an op that takes none has to survive this far, because
+        ``run_op`` is what refuses it and it can only refuse what it is handed.
+        The end-to-end refusal is asserted above.
+        """
+        settings, scope = split_op_scope(
+            {"data": "datasets/pose/data.yaml", "groups": ["A"]}
+        )
+        assert settings == {"data": "datasets/pose/data.yaml"}
+        assert scope == Scope(groups=["A"])
