@@ -5,11 +5,11 @@ of the model-reference work underneath it: what it registers can be handed back
 to the SLEAP tracker as a run identifier, and resolves to the same shape an
 externally-trained model does.
 
-**Not a tracker op.** ``TrackerOpParams`` scopes over media entries and bridges
-into ``tracks/``; a training run consumes one labels file and produces one model,
-so this subclasses ``Params`` like the other training ops and mints through
-``train_run_id``. ``mint_tracker_run`` would additionally write a tracks variant
-naming a table that does not exist.
+**Not a tracker op.** ``TrackerOpParams`` declares the execution knobs a tool
+run needs and bridges its output into ``tracks/``. A training run consumes one
+labels file and produces one model. This subclasses ``Params`` like the other
+training ops and mints through ``train_run_id``. ``mint_tracker_run`` would
+additionally write a tracks variant naming a table that does not exist.
 """
 
 from __future__ import annotations

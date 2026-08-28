@@ -437,7 +437,7 @@ def test_the_cli_refuses_a_request_without_a_step(tracked: Dataset) -> None:
 
 @pytest.mark.parametrize("flag", ["--entries", "--groups", "--sequences"])
 def test_the_cli_refuses_a_scope_flag_on_a_step(tracked: Dataset, flag: str) -> None:
-    """A step covers the entries its plan resolved, and a flag reaches nothing.
+    """A step covers the entries its plan resolved, and nothing reads a flag.
 
     Accepted and dropped before these flags existed, for ``--entries`` alone.
     Asserted per flag, because one refusal reading only ``entries`` would let
@@ -470,8 +470,9 @@ def test_a_graph_op_step_passes_overwrite_to_the_op(
     """A step run with ``--overwrite`` recomputes rather than refusing.
 
     The refusal this replaces stood while six ops read a params field instead
-    of the argument. Asserted on what ``run_op`` received: a step that finishes
-    proves nothing, because an op that discarded the flag finishes too.
+    of the argument. Asserted on what ``run_op`` received. A step that
+    finishes proves nothing, because an op that discarded the flag finishes
+    too.
     """
     recipe = Recipe.model_validate(
         {

@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased — one selector model, and a request document's key is renamed
+## Unreleased — one selector model, a scope that leaves op params, and a request document's key is renamed
 
 **No identifier moves, and no run on disk is re-addressed.** The golden corpus
 has no diff. A selector says which entries a caller wants and never enters a
@@ -64,6 +64,40 @@ compute, which for an unnarrowed step is the plan's whole scope.
 only place a scope refusal is raised. An unset selector, an empty entry list and
 a selector that named a group and missed resolve to zero entries and mean three
 different things, and each gets its own message.
+
+**No op params model publishes a coverage or a recompute flag, and a client
+drawing controls from `Op.Params.model_json_schema()` sees neither.** The
+schema held `entries` on eight ops, `entry` and `camera` on `export-store`, and
+`overwrite` on six more. All are gone from all seventeen. What a run covers and
+whether it redoes the work belong to the attempt, and two attempts differing
+only in either are one recipe under one identifier.
+`tests/test_op_scope_declaration.py` pins both halves for every registered op.
+
+**No identifier moves.** Every deleted field was `HASH_EXCLUDE`, which
+`Params.identity_dump()` pops before the payload is hashed. `tests/data/` and
+`tests/test_identity_golden.py` have no diff.
+
+**`OpParams` is deleted, and its four subclasses re-base on `Params`.**
+`TrackerOpParams`, `_InferParamsBase`, `ExtractFramesParams` and
+`ResampleTracksParams` keep their names and lose the inherited `entries` and
+`overwrite`. `Op.scoped_params` is deleted with it. An op step's scope comes
+from the plan through `_op_scope`, and `build_op_params` validates a recipe's
+params as the recipe wrote them.
+
+**`Op.target`, `Op.plan_identity` and `Op.run` take a `ResolvedScope`, and
+`Op.run` also takes `overwrite`.** `run_op` gained keyword-only `scope=` and
+`overwrite=`. Anything outside mosaic that subclasses `Op` or calls those
+methods positionally must be updated.
+
+**`mosaic run --kind` takes the scope flags a feature run takes, and refuses a
+selector inside `--params`.** `--entries`, `--groups` and `--sequences` are
+declared on both arms. The first was refused with `--kind` and the other two
+did not exist. `--overwrite` is accepted on `--kind` and on a graph op step,
+where both refused it. A `--params` naming `entries`, `groups` or `sequences`
+is refused by name. Those keys are fields on no feature and on no op, and a run
+accepting one would take a narrowing its own model never validated. A caller
+that spelled an op's scope into `--params` — mosaic-api and mosaic-queue both
+did — passes the flags instead.
 
 ## Unreleased — every parameter says what it means, and ten identifiers move
 

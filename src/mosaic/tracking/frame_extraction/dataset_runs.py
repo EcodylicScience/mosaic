@@ -799,7 +799,7 @@ def extract_frames(
 
     *scope* is the selector every other entry point takes, and *overwrite* says
     whether an existing frame set is recomputed. Both reach the op through
-    ``run_op`` and neither enters the params: what a run covers and whether it
+    ``run_op`` and neither enters the params. What a run covers and whether it
     recomputes describe the attempt, where the params describe the recipe.
     """
     params = ExtractFramesParams(

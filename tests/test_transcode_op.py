@@ -354,7 +354,7 @@ def test_overwrite_forces_a_re_encode(
 
     The second run's own reuse gate is the thing under test. The first run
     therefore has to have written the file and its forward link. Both
-    assertions are needed: one skip and one run together say the gate closed
+    assertions are needed. One skip and one run together say the gate closed
     and then opened.
     """
     import mosaic.core.pipeline.transcode as transcode_module
@@ -754,8 +754,7 @@ def test_transcode_refuses_a_run_with_no_scope(
     The refusal used to come from the params model, which declared a required
     non-empty ``entries``. It comes from the ``scope_takes`` declaration now,
     read by the one checker every op passes through. This drives ``run_op``
-    rather than the checker, which is the only way to say the two are wired
-    together.
+    rather than the checker. Only that says the two are wired together.
     """
     ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
     from mosaic.core.pipeline.ops import ScopeRefused

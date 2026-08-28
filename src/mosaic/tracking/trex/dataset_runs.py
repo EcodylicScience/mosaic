@@ -248,8 +248,8 @@ def trex_settings(
 
     Args:
         params: The run's parameters. Only the phase-declaring fields reach the
-            payload; the scope and execution knobs are excluded from identity
-            and stay out of it.
+            payload. The execution knobs are excluded from identity and stay
+            out of it.
         detect_model_id: The detection model's identity, or ``None``.
         vi_model_id: The visual-identification model's identity, or ``None``.
     """
@@ -638,7 +638,8 @@ def run_trex(
 ) -> str:
     """Run TREx (convert + track) over scoped videos as a tracked job.
 
-    *params* states what to run and which entries to run it over;
+    *params* states what to run, *scope* which entries to run it over, and
+    *overwrite* whether a finished entry is redone;
     :class:`~mosaic.tracking.trex.params.TrexParams` describes every field and
     names the phase that consumes it. The Job-Contract knobs beside it
     (``execution_id`` / ``owner`` / ``track`` / ``progress_callback`` /

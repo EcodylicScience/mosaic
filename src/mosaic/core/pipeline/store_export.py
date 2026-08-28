@@ -109,7 +109,7 @@ class StoreExportParams(Params):
     """Parameters for one entry's store export.
 
     The encode settings alone. Which entry is exported is an argument to the
-    run, and the op's declaration holds it to one. Which cameras of that entry
+    run, and the op's declaration restricts it to one. Which cameras of that entry
     are exported comes from the same selector. A triple names one camera, and
     a pair names every camera of the entry.
 

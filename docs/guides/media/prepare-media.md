@@ -58,8 +58,7 @@ The four subprocess trackers (TRex, SLEAP, Lightning Pose, Ultralytics) and the
 `infer-pose` / `infer-points` ops take a video *path*, so export a store first:
 
 ```bash
-mosaic run -m dataset.yaml --kind export-store \
-    --params '{"entry": ["day1", "trial01"]}'
+mosaic run -m dataset.yaml --kind export-store --entries day1:trial01
 ```
 
 `infer-localizer` and every analysis feature read a store without exporting.
