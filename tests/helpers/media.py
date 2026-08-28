@@ -290,7 +290,7 @@ def add_transcode_derivative(
     video_uuid = original["video_uuid"]
 
     recipe = transcode_recipe_hash(
-        TranscodeParams(entries=[("", sequence)], target=target),
+        TranscodeParams(target=target),
         ANALYSIS_ENCODING if target == "analysis" else PLAYBACK_ENCODING,
         CHROME_149,
         media_thresholds(),

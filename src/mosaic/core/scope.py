@@ -153,6 +153,20 @@ class Scope(StrictModel):
         return self.entries is not None and _is_camera_grain(self.entries)
 
     @property
+    def cameras(self) -> set[str]:
+        """The cameras a camera-addressed selector narrows to.
+
+        Empty where the selector names pairs or nothing, which both mean every
+        camera of every entry named. The one op that reads a camera filters its
+        rows by this set, so naming two cameras of one entry narrows to those
+        two without changing the entry count an arity declaration is checked
+        against.
+        """
+        if self.entries is None or not _is_camera_grain(self.entries):
+            return set()
+        return {entry[2] for entry in self.entries}
+
+    @property
     def entry_pairs(self) -> set[Entry] | None:
         """The ``(group, sequence)`` pairs ``entries`` names, or ``None``.
 

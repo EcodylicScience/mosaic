@@ -62,7 +62,6 @@ from mosaic.core.pipeline.transcode import (
     set_forward_link,
 )
 from mosaic.core.params import (
-    HASH_EXCLUDE,
     Declared,
     Params,
 )
@@ -99,16 +98,6 @@ _HEARTBEAT_EVERY: Final = 25
 """Frames between progress heartbeats and cancellation checks."""
 
 
-_ENTRY_DESCRIPTION = (
-    "The one (group, sequence) whose stores are exported. Singular: this op "
-    "exports one entry per run."
-)
-
-_CAMERA_DESCRIPTION = (
-    "Which camera of the entry to export. Unset exports every camera, each to "
-    "its own file."
-)
-
 _AV1_CRF_DESCRIPTION = (
     "AV1 constant-rate factor, 0 (lossless) to 63, defaulting to what an "
     "analysis transcode encodes at. Named for its scale because this writer "
@@ -119,18 +108,17 @@ _AV1_CRF_DESCRIPTION = (
 class StoreExportParams(Params):
     """Parameters for one entry's store export.
 
-    **Singular where every other scoped op is plural.** This op runs over one
-    entry, and ``entry`` names it. It declares no ``overwrite``, because reuse
-    is decided by the recipe-addressed filename and the forward link.
+    The encode settings alone. Which entry is exported is an argument to the
+    run, and the op's declaration is what holds it to one. Which cameras of
+    that entry are exported comes from the same selector: a triple names one,
+    and a pair names every camera of the entry.
+
+    The identities of the stores actually exported are hashed in the
+    coverage's place. Exporting one camera and exporting both therefore name
+    two runs, where a coverage in the recipe would name the same camera's file
+    two different things.
     """
 
-    # entry and camera both select WHICH stores are exported rather than what
-    # comes out of one, so both stay out of the recipe -- the identities of the
-    # stores actually exported are hashed in their place. Without the exclusion,
-    # exporting one camera and exporting both would name the same camera's file
-    # two different things.
-    entry: Annotated[Entry, HASH_EXCLUDE, Declared(_ENTRY_DESCRIPTION)]
-    camera: Annotated[str | None, HASH_EXCLUDE, Declared(_CAMERA_DESCRIPTION)] = None
     av1_crf: Annotated[int, Declared(_AV1_CRF_DESCRIPTION)] = ANALYSIS_ENCODING.quality
 
 
@@ -170,28 +158,47 @@ def export_run_id(recipe_hash: str, source_uuids: list[str]) -> str:
     return f"export-store-{hash_params(fingerprint)}"
 
 
+def _one_entry(scope: ResolvedScope) -> Entry:
+    """The single entry *scope* covers.
+
+    ``scope_takes = "exactly-one"`` is what holds a run to one entry, and
+    :func:`~mosaic.core.pipeline.ops.check_scope_takes` raises before any op body
+    runs. This unwraps the result rather than re-checking it, and a scope holding
+    anything else is a caller that bypassed the runner.
+    """
+    (entry,) = sorted(scope.entries)
+    return entry
+
+
 def _stores_for(
-    ds: "Dataset", params: StoreExportParams
+    ds: "Dataset", scope: ResolvedScope
 ) -> list[tuple[int, Path, "pd.Series"]]:
     """The imgstore recordings one export would read, in index order.
 
     ``match_media_rows`` rather than ``resolve_media``: this reads the raw cells
-    (``video_uuid``, ``video_order``, ``media_type``), and it takes a camera
-    without raising on a multi-camera sequence the way ``resolve_media`` does. A
-    camera of ``None`` means every camera of the entry, which is what a caller
-    exporting a whole recording wants.
+    (``video_uuid``, ``video_order``, ``media_type``) and does not raise on a
+    multi-camera sequence the way ``resolve_media`` does. The transcode job
+    needs the originals, not their derivatives.
+
+    Every camera of the entry is matched and the selector's cameras filter
+    them, rather than one camera being passed down. A selector naming two
+    cameras of one entry is one entry to the arity declaration and two stores
+    here, and a filter states both without a count to reconcile.
     """
-    group, sequence = params.entry
-    matched = ds.match_media_rows(group, sequence, params.camera)
+    group, sequence = _one_entry(scope)
+    cameras = scope.selector.cameras
+    matched = ds.match_media_rows(group, sequence)
     stores: list[tuple[int, Path, "pd.Series"]] = []
     for _, row in matched.iterrows():
         cells = row_mapping(row)
         if str(cells.get("media_type", "")) != "imgstore":
             continue
+        if cameras and str(cells.get("camera", "")) not in cameras:
+            continue
         video_order = int(str(cells.get("video_order", "") or 0))
         stores.append((video_order, ds.resolve_path(str(cells["abs_path"])), row))
     if not stores:
-        camera_note = f" camera {params.camera}" if params.camera else ""
+        camera_note = f" camera {', '.join(sorted(cameras))}" if cameras else ""
         raise TranscodeError(
             f"{group}/{sequence}{camera_note}: no imgstore rows to export; "
             f"a plain video needs no export and is read directly"
@@ -199,16 +206,16 @@ def _stores_for(
     return stores
 
 
-def _store_uuids(ds: "Dataset", params: StoreExportParams) -> list[str]:
+def _store_uuids(ds: "Dataset", scope: ResolvedScope) -> list[str]:
     """Each store's identity, read from the index rather than probed.
 
     Resolved before any encoding, so a corpus that has not been re-probed fails
     immediately -- and so a planner can ask what this run will be called without
     opening a store.
     """
-    group, sequence = params.entry
+    group, sequence = _one_entry(scope)
     uuids: list[str] = []
-    for _, store, row in _stores_for(ds, params):
+    for _, store, row in _stores_for(ds, scope):
         source_uuid = media_row_uuid(row_mapping(row))
         if not source_uuid:
             raise TranscodeError(
@@ -235,7 +242,7 @@ class StoreExportOp(Op[StoreExportParams]):
     Params = StoreExportParams
 
     def target(self, params: StoreExportParams, scope: ResolvedScope) -> str:
-        group, sequence = params.entry
+        group, sequence = _one_entry(scope)
         return f"{group}/{sequence}"
 
     def plan_identity(
@@ -254,7 +261,7 @@ class StoreExportOp(Op[StoreExportParams]):
         recipe, so it names the attempt rather than the output.
         """
         return OpIdentity(
-            run_id=export_run_id(export_recipe_hash(params), _store_uuids(ds, params))
+            run_id=export_run_id(export_recipe_hash(params), _store_uuids(ds, scope))
         )
 
     def run(
@@ -265,7 +272,7 @@ class StoreExportOp(Op[StoreExportParams]):
         overwrite: bool,
         ctx: "JobContext",
     ) -> str:
-        group, sequence = params.entry
+        group, sequence = _one_entry(scope)
         # The same refusal TranscodeOp makes, for the same reason: on a dataset
         # with no media_raw root, the originals index and media/index.csv are one
         # file, so the back-link would append a derivative row into the originals
@@ -279,13 +286,8 @@ class StoreExportOp(Op[StoreExportParams]):
             )
             raise TranscodeError(message)
 
-        # match_media_rows rather than resolve_media: this reads the raw rows
-        # (video_uuid, video_order, media_type), and it takes a camera without
-        # raising on a multi-camera sequence the way resolve_media does. A
-        # camera of None means every camera of the entry, which is what a caller
-        # exporting a whole recording wants.
-        stores = _stores_for(ds, params)
-        source_uuids = _store_uuids(ds, params)
+        stores = _stores_for(ds, scope)
+        source_uuids = _store_uuids(ds, scope)
 
         recipe_hash = export_recipe_hash(params)
         # Named in one place, so a planner and this run cannot disagree.
@@ -314,7 +316,7 @@ class StoreExportOp(Op[StoreExportParams]):
             already_linked = (
                 derivative_cell(row_mapping(row), EXPORT_TARGET) == derivative_rel
             )
-            if dest.is_file() and already_linked:
+            if dest.is_file() and already_linked and not overwrite:
                 ctx.progress.on_phase("export-store", f"{label}: reused")
                 ctx.heartbeat(done=(index + 1) * _TICKS)
                 continue

@@ -194,10 +194,19 @@ def _op_these_gates_cover(kind: str) -> type[Op[Params]]:
     return op
 
 
-SCOPE_SHAPED_NAMES = frozenset(
-    ["entries", "entry", "camera", "cameras", "overwrite", "groups", "sequences"]
+COVERAGE_NAMES = frozenset(
+    ["entries", "entry", "camera", "cameras", "groups", "sequences"]
 )
-"""Every spelling a coverage or a recompute decision has worn in an op model."""
+"""Every spelling a coverage has worn in an op model."""
+
+
+SCOPE_SHAPED_NAMES = COVERAGE_NAMES | {"overwrite"}
+"""The coverage spellings plus the recompute decision.
+
+One vocabulary for the payload gate, which refuses both. They are separate
+above because coverage has left every op params model and ``overwrite`` has
+left nine of seventeen, so the two are pinned at different counts.
+"""
 
 
 _OVERWRITE_STILL_DECLARED = frozenset(
@@ -345,23 +354,30 @@ class TestPublished:
         rendered = json.dumps(describe_op("transcode")["params_schema"], default=str)
         assert "scope_takes" not in rendered
         assert "scope_dependent" not in rendered
-        assert "entries" in rendered
+        assert "target" in rendered, "the settings are published"
 
-    def test_only_two_ops_still_declare_a_scope_field(self) -> None:
-        """A client draws its controls from these fields, and a scope is not one.
+    def test_no_op_declares_a_coverage_field(self) -> None:
+        """A client draws its controls from these fields, and a coverage is not one.
 
-        What a run covers and whether it recomputes are arguments to the run.
-        An op therefore declares its settings and nothing else, and the
-        published schema is generated from exactly these fields. ``transcode``
-        and ``export-store`` are the two that still declare a coverage, and
-        this pins the exception so shrinking it shows in a diff.
+        Which entries a run covers is an argument to the run. No op params
+        model declares a coverage under any spelling the seventeen have used,
+        and the published schema is generated from exactly these fields.
         """
         declaring = {
-            kind
-            for kind in OPS
-            if SCOPE_SHAPED_NAMES & set(OPS[kind].Params.model_fields)
+            kind for kind in OPS if COVERAGE_NAMES & set(OPS[kind].Params.model_fields)
         }
-        assert declaring == {"transcode", "export-store"} | _OVERWRITE_STILL_DECLARED
+        assert declaring == set()
+
+    def test_only_the_scope_free_ops_still_declare_overwrite(self) -> None:
+        """Whether a run recomputes is an argument for the ops that take a scope.
+
+        The six that take none still read a field. Pinned so shrinking the set
+        shows in a diff.
+        """
+        declaring = {
+            kind for kind in OPS if "overwrite" in OPS[kind].Params.model_fields
+        }
+        assert declaring == _OVERWRITE_STILL_DECLARED
 
     def test_the_declaration_catalog_carries_them(self) -> None:
         """A canvas refuses a wire with no dataset and reads them here."""
