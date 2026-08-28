@@ -134,9 +134,9 @@ def clean_facts_cells(
     The tracker marker suites all need a media row a tracker will actually run
     against: probed dimensions, a container and pixel format that derive to a
     clean verdict, and -- when *video_uuid* is given -- the content identity that
-    lets a marker tell a video replaced in place from one merely renamed. The
-    keyword arguments default to the dimensions every caller used before they
-    existed. An existing call is unaffected.
+    lets a marker tell a video replaced in place from one merely renamed.
+    *width*, *height*, *fps*, *frame_count* and *rotation* describe the clip
+    itself, defaulting to a fixed 640x480, 30 fps, 100-frame, upright shape.
     """
     facts: MediaFacts = store_facts(
         width=width,
@@ -163,11 +163,12 @@ class MediaClip:
     """One media-index row to write.
 
     *sequence* and *filename* are the two values a row cannot do without.
-    Every other field defaults to the uncalibrated single-clip shape
-    ``write_media_index`` wrote before this class existed. A caller building
-    several clips of one sequence, a multi-camera sequence, or facts that vary
-    from row to row supplies the differing fields. A plain filename-keyed
-    lookup cannot express two rows sharing one sequence name.
+    Every other field defaults to one uncalibrated clip: no group, no camera,
+    first in its sequence's order, no recorded content identity, and the fixed
+    dimensions ``clean_facts_cells`` assumes. A caller building several clips
+    of one sequence, a multi-camera sequence, or facts that vary from row to
+    row supplies the differing fields. A plain filename-keyed lookup cannot
+    express two rows sharing one sequence name.
     """
 
     sequence: str = "sess"

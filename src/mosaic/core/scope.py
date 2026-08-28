@@ -29,9 +29,10 @@ the camera the triple names.
 
 from __future__ import annotations
 
-from typing import ClassVar, Self, TypeIs
+from typing import ClassVar, Self
 
 from pydantic import ConfigDict, field_validator, model_validator
+from typing_extensions import TypeIs
 
 from mosaic.core.entry import CameraEntry, Entry
 from mosaic.core.strict_model import StrictModel
@@ -44,8 +45,8 @@ def _is_camera_grain(
 ) -> TypeIs[list[CameraEntry]]:
     """Whether *entries* holds ``(group, sequence, camera)`` triples.
 
-    A pydantic union already refused a list mixing the two grains, so the
-    first element states the grain of every element.
+    A pydantic union already refused a list mixing the two grains. The first
+    element already states the grain of every element.
     """
     return bool(entries) and len(entries[0]) == 3
 
@@ -95,6 +96,16 @@ class Scope(StrictModel):
         """
         if entries is None:
             return None
+        # Both arms call the same function on the same value, and still cannot
+        # collapse into one call outside the branch. ``entries`` has the static
+        # type ``list[Entry] | list[CameraEntry]``, a union of two list types.
+        # ``_deduplicate`` is generic over one list type at a time. Each branch
+        # binds its type parameter to ``Entry`` or to ``CameraEntry`` instead of
+        # to their union. Widening ``_deduplicate``'s parameter to
+        # ``Sequence[T]`` to admit the union in one call binds its type
+        # parameter to ``Entry | CameraEntry`` instead. The resulting
+        # ``list[Entry | CameraEntry]`` does not satisfy the declared
+        # ``list[Entry] | list[CameraEntry]`` return type.
         if _is_camera_grain(entries):
             return _deduplicate(entries)
         return _deduplicate(entries)
