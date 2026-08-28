@@ -19,7 +19,7 @@ from typing import ClassVar
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline._utils import Scope, hash_params
+from mosaic.core.pipeline._utils import ResolvedScope, hash_params
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.media_index import read_media_index
 from mosaic.core.pipeline.run import _scope_term, compute_run_id, run_feature
@@ -291,8 +291,8 @@ def test_h2_upstream_identity_changes_the_run_id_not_the_directory() -> None:
     first = _FromUpstream("0.1-aaaaaaaaaa")
     second = _FromUpstream("0.1-bbbbbbbbbb")
 
-    first_id, _ = compute_run_id(first, None, None, Scope())
-    second_id, _ = compute_run_id(second, None, None, Scope())
+    first_id, _ = compute_run_id(first, None, None, ResolvedScope())
+    second_id, _ = compute_run_id(second, None, None, ResolvedScope())
 
     assert first_id != second_id, "the resolved upstream identity must reach the run_id"
     assert first.inputs.storage_suffix() == second.inputs.storage_suffix(), (
@@ -311,12 +311,12 @@ def test_h2_tracks_identity_changes_the_run_id_not_the_directory() -> None:
     green: nothing else asserts the suffix for a tracks input.
     """
     feature = _PerFrame()
-    one = Scope(tracks_variants=("convert-trex_npz.0.1-aaaaaaaaaa",))
-    other = Scope(tracks_variants=("trex.0.1-bbbbbbbbbb",))
+    one = ResolvedScope(tracks_variants=("convert-trex_npz.0.1-aaaaaaaaaa",))
+    other = ResolvedScope(tracks_variants=("trex.0.1-bbbbbbbbbb",))
 
     first_id, _ = compute_run_id(feature, None, None, one)
     second_id, _ = compute_run_id(feature, None, None, other)
-    unresolved_id, _ = compute_run_id(feature, None, None, Scope())
+    unresolved_id, _ = compute_run_id(feature, None, None, ResolvedScope())
 
     assert first_id != second_id, "the resolved tracks identity must reach the run_id"
     assert unresolved_id not in {first_id, second_id}, (
@@ -335,9 +335,11 @@ def test_h2_an_unlabelled_tracks_index_leaves_the_identifier_alone() -> None:
     identifiers are the ones it already has on disk.
     """
     feature = _PerFrame()
-    before, _ = compute_run_id(feature, None, None, Scope(entries={("", "seq_a")}))
+    before, _ = compute_run_id(
+        feature, None, None, ResolvedScope(entries={("", "seq_a")})
+    )
     after, _ = compute_run_id(
-        feature, None, None, Scope(entries={("", "seq_a")}, tracks_variants=())
+        feature, None, None, ResolvedScope(entries={("", "seq_a")}, tracks_variants=())
     )
     assert before == after
 
@@ -663,25 +665,25 @@ class _GlobalMediaFit(_GlobalFit):
 def test_h5_scope_term_carries_composition_hashes() -> None:
     """The scope term is a sorted list of ``(group, sequence, composition hash)``.
 
-    A pure function of the ``Scope``, so this needs no dataset. Four claims, each
-    a way the term could be got wrong quietly.
+    A pure function of the ``ResolvedScope``, so this needs no dataset. Four
+    claims, each a way the term could be got wrong quietly.
     """
     both = {("", "seq_a"), ("", "seq_b")}
-    distinct = Scope(
+    distinct = ResolvedScope(
         entries=both,
         compositions={
             ("", "seq_a"): {"media_raw": "aaaaaaaaaa"},
             ("", "seq_b"): {"media_raw": "bbbbbbbbbb"},
         },
     )
-    shared = Scope(
+    shared = ResolvedScope(
         entries=both,
         compositions={
             ("", "seq_a"): {"media_raw": "aaaaaaaaaa"},
             ("", "seq_b"): {"media_raw": "aaaaaaaaaa"},
         },
     )
-    bare = Scope(entries=both)
+    bare = ResolvedScope(entries=both)
 
     reader = _GlobalMediaFit()
 
@@ -807,12 +809,12 @@ def test_a_composition_does_not_reach_a_per_frame_identifier(
     notice the difference; the row beside the output is where the difference is
     recorded.
     """
-    bare = compute_run_id(_MediaReader(), None, None, Scope())
+    bare = compute_run_id(_MediaReader(), None, None, ResolvedScope())
     carrying = compute_run_id(
         _MediaReader(),
         None,
         None,
-        Scope(compositions={("", "seq_a"): {"media_raw": "abc"}}),
+        ResolvedScope(compositions={("", "seq_a"): {"media_raw": "abc"}}),
     )
     assert bare == carrying, "a composition reached a per-frame identifier"
     assert run_feature(scenario_dataset_with_media, _MediaReader()).run_id == bare[0]

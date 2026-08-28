@@ -84,11 +84,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeGuard, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from mosaic.behavior.feature_library import FEATURES
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline._utils import Scope, atomic_write
+from mosaic.core.pipeline._utils import ResolvedScope, atomic_write
 from mosaic.core.pipeline.identity_scheme import (
     FEATURE_IDENTITY_SCHEME,
     write_identity_scheme,
@@ -106,6 +106,7 @@ from mosaic.core.pipeline.run import (
     compute_run_id,
     resolve_labels_variants,
 )
+from mosaic.core.pipeline.track_universe import AmbiguousTrackLeaf
 from mosaic.core.pipeline.types import Result
 
 if TYPE_CHECKING:
@@ -423,12 +424,17 @@ def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
             run.reason = f"feature {run.slug!r} has no Inputs model"
             blocked.add(_node(run))
             continue
+        # A validation failure describes the document being read. The recorded
+        # `_inputs` and `_params` no longer match the models the current code
+        # declares, which is an ordinary state for a legacy run. Every other
+        # exception out of these two lines is a defect in this script and must
+        # reach the operator as one.
         try:
             inputs = inputs_cls.model_validate(doc_inputs)
             feature = cls(inputs, doc_params)  # pyright: ignore[reportCallIssue]
-        except Exception as exc:  # noqa: BLE001 - a bad run is skipped, not fatal
+        except ValidationError as exc:
             run.verdict, run.new_run_id = "skipped", run.run_id
-            run.reason = f"could not rebuild: {exc}"
+            run.reason = f"recorded inputs and params do not validate: {exc}"
             blocked.add(_node(run))
             continue
 
@@ -438,21 +444,41 @@ def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
         # upstream whose index rows have not been restamped yet; it can only
         # affect `scope.entries`, which the scope gate above has excluded from
         # this hash.
+        #
+        # Only the three reads of the dataset are guarded, and the caught set is
+        # the exceptions that describe this run's data. `OSError` is an index or
+        # an output file that cannot be read, including the `FileNotFoundError`
+        # raised when every output of a pinned upstream run resolves missing.
+        # `ValueError` is a table the recorded inputs cannot be read against --
+        # an upstream that is not track-shaped, a scope spanning two track
+        # schema families, two variants claiming one entry, an index holding no
+        # rows. `AmbiguousTrackLeaf` is an unpinned reference whose upstream
+        # chain has two leaves, which no rule picks between.
+        #
+        # Everything else propagates. `ValueError` is as narrow as the guard can
+        # go, because mosaic raises a bare one at each of those sites, and
+        # pydantic's `ValidationError` is a `ValueError`. Constructing the scope
+        # and writing its labels field therefore come after the block, where a
+        # rename that rebinds `ResolvedScope` to another model raises instead of
+        # reporting one "skipped" run per empty-inputs feature. `compute_run_id`
+        # follows them, reading no dataset and raising `MissingScopeDeclaration`
+        # or `MissingConsumedRootsDeclaration` -- both `AttributeError` -- for a
+        # registered feature that omits a declaration.
+        scope = ResolvedScope()
         try:
             resolve_references(ds, feature)
-            if feature.inputs.is_empty:
-                scope = Scope()
-            else:
+            if not feature.inputs.is_empty:
                 _, scope = build_manifest(
                     ds, feature.inputs, None, None, None, on_missing_run="empty"
                 )
-            scope.labels_variants = resolve_labels_variants(ds, feature, None)
-            new_run_id, _ = compute_run_id(feature, *run.frame_range, scope)
-        except Exception as exc:  # noqa: BLE001
+            labels_variants = resolve_labels_variants(ds, feature, None)
+        except (OSError, ValueError, AmbiguousTrackLeaf) as exc:
             run.verdict, run.new_run_id = "skipped", run.run_id
-            run.reason = f"could not derive new address: {exc}"
+            run.reason = f"inputs do not resolve in this dataset: {exc}"
             blocked.add(_node(run))
             continue
+        scope.labels_variants = labels_variants
+        new_run_id, _ = compute_run_id(feature, *run.frame_range, scope)
 
         run.new_run_id = new_run_id
         if new_run_id == run.run_id:
@@ -528,7 +554,10 @@ def process(ds: Dataset, apply: bool) -> tuple[list[Run], dict[Path, Path]]:
                 """
                 try:
                     absolute = ds.resolve_path(stored)
-                except Exception:  # noqa: BLE001 - a bad cell keeps the legacy shape
+                except (OSError, ValueError):
+                    # A cell the dataset cannot resolve keeps the shape it was
+                    # stored with. The same pair `read_runs` reads a params.json
+                    # under, because an index cell is data as that file is.
                     absolute = Path(stored)
                 try:
                     rel = absolute.relative_to(_old)
@@ -568,7 +597,7 @@ def main() -> int:
         "blocked",
         "skipped",
     ]
-    print(f"\n{'APPLIED' if args.apply else 'DRY RUN'} — {len(runs)} feature run(s)\n")
+    print(f"\n{'APPLIED' if args.apply else 'DRY RUN'}: {len(runs)} feature run(s)\n")
     for verdict in order:
         group = [run for run in runs if run.verdict == verdict]
         if not group:

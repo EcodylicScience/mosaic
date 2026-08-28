@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ._utils import Scope, atomic_write, now_iso
+from ._utils import ResolvedScope, atomic_write, now_iso
 from .identity_scheme import FEATURE_IDENTITY_SCHEME
 
 if TYPE_CHECKING:
@@ -65,7 +65,9 @@ class FitScope:
     identity_scheme: str
 
 
-def write_fit_scope(run_root: Path, scope: Scope, *, scope_dependent: bool) -> None:
+def write_fit_scope(
+    run_root: Path, scope: ResolvedScope, *, scope_dependent: bool
+) -> None:
     """Record the scope a fit just consumed, in *run_root*.
 
     Call **after** ``save_state``, inside the branch that actually fitted. Not

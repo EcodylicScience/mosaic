@@ -275,10 +275,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      # `src/` and `tests/` rather than `.`: the notebooks under `notebooks/` are
-      # worked examples that carry unused imports and re-imports on purpose, and
-      # linting them would gate the suite on prose rather than on code.
+      # `src/`, `tests/` and `tools/` rather than `.`: the notebooks under
+      # `notebooks/` are worked examples that carry unused imports and re-imports
+      # on purpose, and linting them would gate the suite on prose rather than on
+      # code. `tools/` holds maintenance scripts that run against a real dataset
+      # and are held to the same standard as what they migrate.
       - name: Lint
         run: |
-          uvx ruff check src tests
-          uvx ruff format --check src tests
+          uvx ruff check src tests tools
+          uvx ruff format --check src tests tools

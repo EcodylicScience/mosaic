@@ -463,12 +463,12 @@ def test_compute_run_id_needs_no_dataset(scenario_dataset: Dataset) -> None:
     That split is what lets the golden corpus pin literal identifiers and lets
     the control plane predict one before spawning work.
     """
-    from mosaic.core.pipeline._utils import Scope
+    from mosaic.core.pipeline._utils import ResolvedScope
 
     upstream = _upstream_run_id(scenario_dataset)
     pinned, _ = compute_run_id(
-        _WithInputReference(run_id=upstream), None, None, Scope()
+        _WithInputReference(run_id=upstream), None, None, ResolvedScope()
     )
-    unpinned, _ = compute_run_id(_WithInputReference(), None, None, Scope())
+    unpinned, _ = compute_run_id(_WithInputReference(), None, None, ResolvedScope())
 
     assert pinned != unpinned

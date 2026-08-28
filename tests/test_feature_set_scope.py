@@ -1,10 +1,11 @@
 """A feature that re-reads tracks itself is told which variant the run resolved.
 
-``run_feature`` builds a :class:`Scope` carrying the tracks variant the run was
-computed from, and hands the feature a manifest built from it. The three media
-features -- ``overlay``, ``egocentric-crop`` and ``interaction-crop-pipeline`` --
-do not only consume that manifest: they call back into ``play_video`` /
-``load_tracks``, which resolve a variant of their own.
+``run_feature`` builds a :class:`ResolvedScope` carrying the tracks variant the
+run was computed from, and hands the feature a manifest built from it. The
+three media features -- ``overlay``, ``egocentric-crop`` and
+``interaction-crop-pipeline`` -- do not only consume that manifest: they call
+back into ``play_video`` / ``load_tracks``, which resolve a variant of their
+own.
 
 ``set_scope`` is the hook that closes the gap, and each of those three defines
 one. Nothing called it. So on any dataset where a single entry carries two

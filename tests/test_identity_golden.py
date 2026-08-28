@@ -30,7 +30,7 @@ import pytest
 from pydantic import RootModel
 
 from mosaic.cli._features import build_feature
-from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.run import compute_run_id
 
 # Selected by CI's `identity` job with `-m identity` rather than by a filename
@@ -471,7 +471,7 @@ CASES: tuple[Case, ...] = (
 def _identifier(case: Case) -> str:
     """Compute the identifier for *case*, with no filesystem involved."""
     feature = build_feature(case.feature, case.inputs, case.params)
-    scope = Scope(
+    scope = ResolvedScope(
         entries=set(case.scope),
         tracks_variants=case.tracks_variants,
         labels_variants=case.labels_variants,

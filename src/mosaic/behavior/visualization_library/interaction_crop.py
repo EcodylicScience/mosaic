@@ -23,7 +23,7 @@ from mosaic_media import MediaProbeError
 from mosaic_media.io import FFmpegVideoWriter
 from pydantic import Field
 
-from mosaic.core.pipeline._utils import Scope
+from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.loading import pose_column_pairs
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
@@ -186,7 +186,7 @@ class InteractionCropPipeline:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self._ds = None
-        self._scope: Scope = Scope()
+        self._scope: ResolvedScope = ResolvedScope()
         self._run_root: Path | None = None
         self._clahe = None  # lazily constructed; reused across frames/segments
 
@@ -209,7 +209,7 @@ class InteractionCropPipeline:
     def bind_dataset(self, ds):
         self._ds = ds
 
-    def set_scope(self, scope: Scope) -> None:
+    def set_scope(self, scope: ResolvedScope) -> None:
         self._scope = scope
 
     # --- State (stateless) ---
