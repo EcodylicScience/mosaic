@@ -42,7 +42,7 @@ from mosaic_media.io.writer import FFmpegVideoWriter
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 
-# The plain helpers live in `tests.helpers`; only the two the fixtures below
+# The plain helpers live in `tests.helpers`; only the ones the fixtures below
 # call are imported here. Test modules import from the facade, never from
 # this file.
 from tests.helpers.environment import (
@@ -50,7 +50,7 @@ from tests.helpers.environment import (
     missing_ffmpeg_tools,
     require_ffmpeg as _require_ffmpeg,
 )
-from tests.helpers.media import add_media_sequence
+from tests.helpers.media import MediaClip, add_media_sequence, write_media_index
 from tests.helpers.tracks import add_track_sequences
 
 # Modules every CI job must have, installed through the `test` dependency group.
@@ -493,3 +493,50 @@ def scenario_dataset_with_media(
     """
     add_media_sequence(scenario_dataset, "seq_a")
     return scenario_dataset
+
+
+@pytest.fixture
+def dataset_without_index(tmp_path: Path) -> Dataset:
+    """An initialized dataset whose originals index does not exist.
+
+    What proves an entries-only scope needs no index: resolving one here must
+    not raise.
+    """
+    manifest = new_dataset_manifest("no-index", base_dir=tmp_path)
+    return Dataset(manifest_path=manifest).load(ensure_roots=True)
+
+
+@pytest.fixture
+def two_entry_dataset(tmp_path: Path) -> Dataset:
+    """Media rows for (A, one), (A, two) and (B, one), each one video.
+
+    Group B repeats the sequence name 'one' on purpose: it is what makes a
+    sequences-only selector resolve to two entries, and what a cross product
+    cannot express.
+    """
+    manifest = new_dataset_manifest("two-entry", base_dir=tmp_path)
+    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    write_media_index(
+        dataset,
+        [
+            MediaClip(filename="a1.mp4", group="A", sequence="one"),
+            MediaClip(filename="a2.mp4", group="A", sequence="two"),
+            MediaClip(filename="b1.mp4", group="B", sequence="one"),
+        ],
+    )
+    return dataset
+
+
+@pytest.fixture
+def two_camera_dataset(tmp_path: Path) -> Dataset:
+    """One entry, (A, one), with two media rows differing only by camera."""
+    manifest = new_dataset_manifest("two-camera", base_dir=tmp_path)
+    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    write_media_index(
+        dataset,
+        [
+            MediaClip(filename="cam0.mp4", group="A", sequence="one", camera="cam0"),
+            MediaClip(filename="cam1.mp4", group="A", sequence="one", camera="cam1"),
+        ],
+    )
+    return dataset

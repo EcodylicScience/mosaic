@@ -13,21 +13,19 @@ directory is keyed without a camera.
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
 from pathlib import Path
 
-import pandas as pd
 import pytest
-from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 
 from mosaic.cli.run import entries_from_scope
 from mosaic.core.dataset import Dataset, new_dataset_manifest
-from mosaic.core.media.facts_columns import facts_to_row, store_facts
+from mosaic.core.media.facts_columns import store_facts
 from mosaic.tracking.common.scope import (
     JoinedSourceMismatchError,
     TrackerWorkItem,
     build_work_items,
 )
+from tests.helpers import MediaClip, write_media_index
 
 TREX = "trex"
 """A tracker that declares ``joins_sources``."""
@@ -36,77 +34,11 @@ SLEAP = "sleap"
 """One that does not, and must keep behaving exactly as it did."""
 
 
-@dataclass
-class Clip:
-    """One row of the synthetic media index."""
-
-    filename: str
-    order: int = 0
-    group: str = ""
-    sequence: str = "sess"
-    camera: str = ""
-    video_uuid: str = ""
-    fps: float = 30.0
-    width: int = 640
-    height: int = 480
-    rotation: int = 0
-    frame_count: int = 100
-
-
-def _facts_cells(clip: Clip) -> dict[str, object]:
-    """Flat + JSON facts cells for one analysis-clean media row."""
-    facts: MediaFacts = store_facts(
-        width=clip.width,
-        height=clip.height,
-        fps=clip.fps,
-        frame_count=clip.frame_count,
-        codec="h264",
-        duration=clip.frame_count / clip.fps if clip.fps else 0.0,
-        video_uuid=clip.video_uuid,
-        identity_scheme="video/1" if clip.video_uuid else "",
-    )
-    facts = dataclasses.replace(
-        facts,
-        container="mov,mp4,m4a,3gp,3g2,mj2",
-        pixel_format="yuv420p",
-        moov_at_start=True,
-        rotation_degrees=clip.rotation,
-    )
-    return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
-
-
-def _dataset(tmp_path: Path, clips: list[Clip]) -> Dataset:
+def _dataset(tmp_path: Path, clips: list[MediaClip]) -> Dataset:
     """A dataset whose media index holds exactly *clips*."""
     manifest = new_dataset_manifest("scope", base_dir=tmp_path)
     ds = Dataset(manifest_path=manifest).load(ensure_roots=True)
-    media_root = ds.get_root(ds.resolve_media_root())
-    media_root.mkdir(parents=True, exist_ok=True)
-    rows: list[dict[str, object]] = []
-    for clip in clips:
-        video = media_root / clip.filename
-        if not video.exists():
-            _ = video.write_bytes(b"fake")
-        rows.append(
-            {
-                "name": clip.filename,
-                "group": clip.group,
-                "sequence": clip.sequence,
-                "group_safe": clip.group,
-                "sequence_safe": clip.sequence,
-                "camera": clip.camera,
-                "abs_path": ds.relative_to_root(video),
-                "size_bytes": 4,
-                "mtime_iso": "",
-                "width": clip.width,
-                "height": clip.height,
-                "fps": clip.fps,
-                "codec": "h264",
-                "media_type": "video",
-                "video_order": clip.order,
-                **_facts_cells(clip),
-            }
-        )
-    pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
+    write_media_index(ds, clips)
     return ds
 
 
@@ -116,15 +48,15 @@ def _items(ds: Dataset, *, kind: str) -> list[TrackerWorkItem]:
 
 # The measured shape of one real session, shortened.
 SESSION = [
-    Clip(filename="c0.mp4", order=0, video_uuid="uid-0", fps=30.0),
-    Clip(filename="c1.mp4", order=1, video_uuid="uid-1", fps=29.95),
-    Clip(filename="c2.mp4", order=2, video_uuid="uid-2", fps=31.0),
+    MediaClip(filename="c0.mp4", video_order=0, video_uuid="uid-0", fps=30.0),
+    MediaClip(filename="c1.mp4", video_order=1, video_uuid="uid-1", fps=29.95),
+    MediaClip(filename="c2.mp4", video_order=2, video_uuid="uid-2", fps=31.0),
 ]
 
 
 class TestOneClip:
     def test_the_ordinary_sequence_is_untouched(self, tmp_path: Path) -> None:
-        ds = _dataset(tmp_path, [Clip(filename="v.mp4", video_uuid="uid-v")])
+        ds = _dataset(tmp_path, [MediaClip(filename="v.mp4", video_uuid="uid-v")])
         (item,) = _items(ds, kind=TREX)
         assert item.n_sources == 1
         assert item.video_path.name == "v.mp4"
@@ -132,14 +64,14 @@ class TestOneClip:
 
     def test_its_reuse_key_is_still_the_video_uuid(self, tmp_path: Path) -> None:
         """The proof that nothing already on disk is invalidated."""
-        ds = _dataset(tmp_path, [Clip(filename="v.mp4", video_uuid="uid-v")])
+        ds = _dataset(tmp_path, [MediaClip(filename="v.mp4", video_uuid="uid-v")])
         (item,) = _items(ds, kind=TREX)
         assert item.source_uid == "uid-v"
         assert item.video_uid == "uid-v"
 
     def test_an_unmeasured_rate_still_falls_back(self, tmp_path: Path) -> None:
         """Only a *joined* entry refuses a missing rate; one clip defaults."""
-        ds = _dataset(tmp_path, [Clip(filename="v.mp4", fps=0.0)])
+        ds = _dataset(tmp_path, [MediaClip(filename="v.mp4", fps=0.0)])
         (item,) = _items(ds, kind=TREX)
         assert item.fps == 30.0
 
@@ -194,8 +126,8 @@ class TestTheReuseKey:
         swapped = _dataset(
             tmp_path / "b",
             [
-                dataclasses.replace(SESSION[1], order=0),
-                dataclasses.replace(SESSION[0], order=1),
+                dataclasses.replace(SESSION[1], video_order=0),
+                dataclasses.replace(SESSION[0], video_order=1),
                 SESSION[2],
             ],
         )
@@ -254,8 +186,8 @@ class TestCameras:
         ds = _dataset(
             tmp_path,
             [
-                Clip(filename="cam0.mp4", camera="cam0", video_uuid="uid-a"),
-                Clip(filename="cam1.mp4", camera="cam1", video_uuid="uid-b"),
+                MediaClip(filename="cam0.mp4", camera="cam0", video_uuid="uid-a"),
+                MediaClip(filename="cam1.mp4", camera="cam1", video_uuid="uid-b"),
             ],
         )
         items = _items(ds, kind=TREX)
@@ -324,10 +256,10 @@ class TestExpandMediaScope:
         return _dataset(
             tmp_path,
             [
-                Clip(filename="b1.mp4", group="B", sequence="one"),
-                Clip(filename="a2.mp4", group="A", sequence="two"),
-                Clip(filename="a1.mp4", group="A", sequence="one", order=0),
-                Clip(filename="a1b.mp4", group="A", sequence="one", order=1),
+                MediaClip(filename="b1.mp4", group="B", sequence="one"),
+                MediaClip(filename="a2.mp4", group="A", sequence="two"),
+                MediaClip(filename="a1.mp4", group="A", sequence="one", video_order=0),
+                MediaClip(filename="a1b.mp4", group="A", sequence="one", video_order=1),
             ],
         )
 
@@ -407,9 +339,9 @@ class TestScopeInsideParams:
         return _dataset(
             tmp_path,
             [
-                Clip(filename="a1.mp4", group="A", sequence="one"),
-                Clip(filename="a2.mp4", group="A", sequence="two"),
-                Clip(filename="b1.mp4", group="B", sequence="one"),
+                MediaClip(filename="a1.mp4", group="A", sequence="one"),
+                MediaClip(filename="a2.mp4", group="A", sequence="two"),
+                MediaClip(filename="b1.mp4", group="B", sequence="one"),
             ],
         )
 
