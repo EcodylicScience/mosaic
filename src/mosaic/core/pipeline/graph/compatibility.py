@@ -177,6 +177,20 @@ class Declaration:
     otherwise need the feature registry -- and deciding a lane is one of the read
     paths that must not pay for it.
     """
+    scope_takes: str = ""
+    """How much scope an op accepts, or ``""`` for a step that is not an op.
+
+    One of ``mosaic.core.pipeline.ops.ScopeTakes``. A canvas reads it to say
+    whether a step needs an entry named before it can run. A feature declaration
+    keeps the empty default: no feature refuses a scope, and a field with one
+    legal value teaches a reader nothing.
+    """
+    scope_dependent: bool = False
+    """Whether the entries in scope decide what an op run is named.
+
+    ``False`` for a step that is not an op. The feature-side twin lives on the
+    feature class and is read from there.
+    """
 
 
 @dataclass(frozen=True, slots=True)

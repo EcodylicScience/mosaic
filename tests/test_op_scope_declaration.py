@@ -5,6 +5,7 @@ four ops that spell a scope four ways -- a required list, a singular field, a
 nullable default, an absence -- gave inference four answers to one question.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -12,12 +13,16 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
 from mosaic.core.params import Params
+from mosaic.core.pipeline.graph.compatibility import TRACKS_DECLARATION
+from mosaic.core.pipeline.graph.resolve import declaration_catalog
 from mosaic.core.pipeline.ops import (
     OPS,
     SCOPE_TAKES_VALUES,
     IdentityDeferred,
     Op,
     OpIdentity,
+    describe_op,
+    list_ops,
     register_op,
 )
 from mosaic.tracking import register_ops
@@ -278,3 +283,46 @@ class TestTheIndirectPathIsMeasured:
         # The one line tying a measured behavior to a declared value. The pinned
         # sets above compare a declaration with a declaration.
         assert op.scope_dependent
+
+
+class TestPublished:
+    """Both declarations reach a client that reads an op without running it."""
+
+    def test_list_ops_carries_both_declarations(self) -> None:
+        rows = {row["kind"]: row for row in list_ops()}
+        assert rows["transcode"]["scope_takes"] == "at-least-one"
+        assert rows["transcode"]["scope_dependent"] is True
+        assert rows["train-pose"]["scope_takes"] == "none"
+        assert rows["train-pose"]["scope_dependent"] is False
+
+    def test_describe_op_carries_both_declarations(self) -> None:
+        described = describe_op("export-store")
+        assert described["scope_takes"] == "exactly-one"
+        assert described["scope_dependent"] is True
+
+    def test_neither_reaches_the_params_schema(self) -> None:
+        """A client drawing controls from the schema must not draw a declaration.
+
+        Read over the whole rendered document rather than its top-level
+        properties, which covers a nested appearance too.
+        """
+        rendered = json.dumps(describe_op("transcode")["params_schema"], default=str)
+        assert "scope_takes" not in rendered
+        assert "scope_dependent" not in rendered
+        assert "entries" in rendered
+
+    def test_the_declaration_catalog_carries_them(self) -> None:
+        """A canvas refuses a wire with no dataset and reads them here."""
+        catalog = declaration_catalog()
+        assert catalog.entries["transcode"].scope_takes == "at-least-one"
+        assert catalog.entries["transcode"].scope_dependent is True
+
+    def test_a_feature_declaration_takes_neither(self) -> None:
+        """No feature refuses a scope, and one legal value teaches nothing."""
+        catalog = declaration_catalog()
+        assert catalog.entries["speed-angvel"].scope_takes == ""
+
+    def test_the_tracks_declaration_takes_neither(self) -> None:
+        """The dataset's tracks are a producer rather than a step."""
+        assert TRACKS_DECLARATION.scope_takes == ""
+        assert TRACKS_DECLARATION.scope_dependent is False

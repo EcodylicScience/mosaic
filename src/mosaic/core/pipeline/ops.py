@@ -43,7 +43,9 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.progress import ProgressCallback
+    from mosaic.core.scope import Scope
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +127,110 @@ A runtime check needs the same vocabulary the annotation declares. A second
 literal set is free to drift from the first, and the direction it drifts in is
 the harmful one: a value the checker rejects and the registry accepts.
 """
+
+
+class ScopeRefused(ValueError):
+    """A scope an op's declaration does not accept.
+
+    A ``ValueError`` because that is what every caller already renders as a
+    message: ``mosaic run`` prints it and exits, and the graph records it on the
+    attempt. The subclass exists so a caller that wants to tell a scope refusal
+    apart from an invalid parameter can.
+    """
+
+
+_UNSCOPED_CONSEQUENCE: Final[dict[str, str]] = {
+    "transcode": "re-encode every video in the dataset",
+    "export-store": "export every imgstore in the dataset",
+}
+"""What an unscoped run of one op covers, in the words its refusal uses.
+
+Named per op because the count is what a person weighs. An op absent from this
+table falls back to a general phrasing rather than to silence.
+"""
+
+
+def check_scope_takes(
+    kind: str, scope_takes: ScopeTakes, resolved: "ResolvedScope"
+) -> None:
+    """Raise unless *resolved* is a scope an op declaring *scope_takes* accepts.
+
+    **The only place a scope refusal is raised.** An op implements no scope
+    validation and writes no scope message. That is what retires the required
+    ``entries`` list, the singular ``entry`` field and the per-op distinctness
+    validator, three private answers to one question.
+
+    Reads the selector as well as the resolved entries. Three scopes resolve to
+    zero entries and mean three things. An unset selector covers every indexed
+    entry, an empty entry list names none, and a selector naming an absent group
+    was looked up and missed. Each gets its own refusal, and only the first is
+    what ``"at-least-one"`` exists to refuse. ``"none"`` reads the selector alone
+    and opens no index.
+
+    Args:
+        kind: The op's registered kind, named in every message.
+        scope_takes: The op's declaration. See :data:`ScopeTakes`.
+        resolved: What the caller's scope resolved to.
+
+    Raises:
+        ScopeRefused: The scope is one this declaration does not accept.
+    """
+    selector = resolved.selector
+    count = len(resolved.entries)
+
+    if scope_takes == "none":
+        if not selector.is_unset:
+            message = (
+                f"{kind} takes no entry scope. It reads a prepared directory "
+                f"rather than a set of sequences. Pass Scope(), or omit the "
+                f"scope argument."
+            )
+            raise ScopeRefused(message)
+        return
+
+    if scope_takes == "any":
+        return
+
+    if selector.is_unset:
+        consequence = _UNSCOPED_CONSEQUENCE.get(kind, "cover every indexed entry")
+        # A group selector is offered only where more than one entry is
+        # acceptable. For an exactly-one op it resolves to several on any
+        # populated dataset and meets the refusal below.
+        if scope_takes == "exactly-one":
+            remedy = "Pass Scope(entries=[(group, sequence)]) naming the one entry."
+        else:
+            remedy = (
+                "Pass Scope(entries=[(group, sequence), ...]) or Scope(groups=[...])."
+            )
+        message = (
+            f"{kind} must be told which entries to cover. An unset scope names "
+            f"every indexed entry, and an unscoped run would {consequence}. "
+            f"{remedy}"
+        )
+        raise ScopeRefused(message)
+    if selector.entries is not None and not selector.entries:
+        message = (
+            f"{kind} was given an empty entry list, which names no entry to "
+            f"cover. Name at least one, as "
+            f"Scope(entries=[(group, sequence), ...])."
+        )
+        raise ScopeRefused(message)
+    if count == 0:
+        message = (
+            f"{kind} was given {selector!r}, which matches no entry in the "
+            f"media index. Check the names against 'mosaic sequences'."
+        )
+        raise ScopeRefused(message)
+    if scope_takes == "exactly-one" and count > 1:
+        listed = ", ".join(
+            f"({group!r}, {sequence!r})" for group, sequence in sorted(resolved.entries)
+        )
+        message = (
+            f"{kind} covers one entry and this scope resolves {count}: "
+            f"{listed}. Narrow the scope to one entry, or run {kind} once per "
+            f"entry."
+        )
+        raise ScopeRefused(message)
 
 
 class Op(Generic[P]):
@@ -294,17 +400,46 @@ def run_op(
     track: bool = True,
     progress_callback: "ProgressCallback | None" = None,
     cancel_token: CancelToken | None = None,
+    scope: "Scope | None" = None,
 ) -> str:
     """Run a registered op as a tracked Job-Contract attempt.
 
     *params* may be a validated ``Params`` instance or a plain dict (validated
     against the op's ``Params`` model). Returns the content ``run_id``.
+
+    Args:
+        ds: The dataset the op runs against.
+        kind: The registered op kind.
+        params: A validated ``Params`` instance, or a dict this validates.
+        execution_id: An externally minted ULID to reuse.
+        owner: Who to record the attempt under.
+        track: Whether to write a run-log for the attempt.
+        progress_callback: Where per-entry progress is reported.
+        cancel_token: How a caller asks the run to stop.
+        scope: What to cover. Resolved through
+            :meth:`~mosaic.core.dataset.Dataset.resolve_scope` and made
+            available to the op. Op params still declare their own entry
+            fields, and those are what an op body reads today. A caller passing
+            both is passing the same thing twice.
+
+    Returns:
+        The content ``run_id`` the op produced.
+
+    Raises:
+        KeyError: *kind* names no registered op.
+        FileNotFoundError: *scope* names groups or sequences and the originals
+            index does not exist.
     """
     op_cls = OPS.get(kind)
     if op_cls is None:
         raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(OPS)}")
     op = op_cls()
     p = op.Params.model_validate(params) if isinstance(params, dict) else params
+    # The seam an op body reads its scope from. Resolved here so one enumeration
+    # answers for every op, and read by nothing yet: an op body still takes its
+    # entries from its own params field, and every caller leaves this unset.
+    # :func:`check_scope_takes` is applied where those two meet.
+    _resolved_scope = ds.resolve_scope(scope)
     with job_context(
         ds,
         kind=kind,
@@ -326,7 +461,12 @@ def run_op(
 def list_ops(
     category: str | None = None, domain: str | None = None
 ) -> list[dict[str, object]]:
-    """Enumerate registered ops as ``{kind, domain, category, version}`` dicts."""
+    """Enumerate registered ops as one dict each.
+
+    Each row carries ``kind``, ``domain``, ``category``, ``version`` and the two
+    scope declarations. A client reads how much scope an op takes without
+    running it, and without reading it out of the params model.
+    """
     ops = sorted(OPS.values(), key=lambda c: c.kind)
     return [
         {
@@ -334,6 +474,8 @@ def list_ops(
             "domain": c.domain,
             "category": c.category,
             "version": c.version,
+            "scope_takes": c.scope_takes,
+            "scope_dependent": c.scope_dependent,
         }
         for c in ops
         if (category is None or c.category == category)
@@ -368,7 +510,15 @@ def op_resource_class(kind: str) -> str:
 
 
 def describe_op(kind: str) -> dict[str, object]:
-    """Return ``{kind, domain, category, version, params_schema}`` for one op."""
+    """Describe one op, as its identity, its declarations and its params schema.
+
+    The two scope declarations sit beside ``kind`` and never inside
+    ``params_schema``. They describe the op rather than its params, and a client
+    drawing controls from that schema draws only fields a caller fills in.
+
+    Raises:
+        KeyError: *kind* names no registered op.
+    """
     op_cls = OPS.get(kind)
     if op_cls is None:
         raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(OPS)}")
@@ -377,5 +527,7 @@ def describe_op(kind: str) -> dict[str, object]:
         "domain": op_cls.domain,
         "category": op_cls.category,
         "version": op_cls.version,
+        "scope_takes": op_cls.scope_takes,
+        "scope_dependent": op_cls.scope_dependent,
         "params_schema": op_cls.Params.model_json_schema(),
     }
