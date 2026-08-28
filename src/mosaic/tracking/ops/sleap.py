@@ -37,6 +37,7 @@ from mosaic.tracking.sleap.version import (
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.job import JobContext
 
 
@@ -55,10 +56,17 @@ class SleapOp(Op[SleapParams]):
     scope_dependent = False
     Params = SleapParams
 
-    def target(self, params: SleapParams) -> str:
+    def target(self, params: SleapParams, scope: ResolvedScope) -> str:
         return "sleap-track"
 
-    def plan_identity(self, ds: Dataset, params: SleapParams) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: Dataset,
+        params: SleapParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What a SLEAP run with these settings will be called.
 
         The model set resolves under the *training* kind rather than this
@@ -76,7 +84,14 @@ class SleapOp(Op[SleapParams]):
         )
         return tracker_identity(self.kind, self.version, settings)
 
-    def run(self, ds: Dataset, params: SleapParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: SleapParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         # conda-env / bin are environment (image) concerns, left unset so the
         # runner resolves them from MOSAIC_SLEAP_CONDA_ENV / _BIN -- the run_id
         # stays independent of *where* it ran.

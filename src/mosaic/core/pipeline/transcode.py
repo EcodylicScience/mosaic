@@ -64,7 +64,7 @@ from mosaic.core.media.facts_columns import (
     row_mapping,
     series_facts_or_none,
 )
-from mosaic.core.pipeline._utils import hash_params
+from mosaic.core.pipeline._utils import ResolvedScope, hash_params
 from mosaic.core.pipeline.index_lock import index_lock
 from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.media_index import (
@@ -495,7 +495,7 @@ class TranscodeOp(Op[TranscodeParams]):
     scope_dependent = True
     Params = TranscodeParams
 
-    def target(self, params: TranscodeParams) -> str:
+    def target(self, params: TranscodeParams, scope: ResolvedScope) -> str:
         entries = params.entries
         if len(entries) == 1:
             group, sequence = entries[0]
@@ -523,7 +523,14 @@ class TranscodeOp(Op[TranscodeParams]):
             return dict(params)
         return {**params, "entries": [[group, sequence] for group, sequence in entries]}
 
-    def plan_identity(self, ds: "Dataset", params: TranscodeParams) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: "Dataset",
+        params: TranscodeParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What this transcode will be called, without encoding anything.
 
         The identity is the recipe plus the identities of every source it will
@@ -548,13 +555,20 @@ class TranscodeOp(Op[TranscodeParams]):
         recipe_hash = transcode_recipe_hash(params, encoding, CHROME_149, thresholds)
         return OpIdentity(run_id=transcode_run_id(recipe_hash, source_uuids))
 
-    def run(self, ds: "Dataset", params: "TranscodeParams", ctx: "JobContext") -> str:
+    def run(
+        self,
+        ds: "Dataset",
+        params: "TranscodeParams",
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: "JobContext",
+    ) -> str:
         entries = params.entries
         _refuse_without_media_raw(ds, entries)
 
         # Named in one place, and before any encoding: a corpus that has not been
         # re-probed fails here rather than half way through.
-        run_id = self.plan_identity(ds, params).run_id
+        run_id = self.plan_identity(ds, params, scope).run_id
         ctx.set_run_id(run_id)
 
         encoding = (

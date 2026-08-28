@@ -65,6 +65,7 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
 
 
 # --- Where inference output lands ----------------------------------------
@@ -590,11 +591,25 @@ class InferPoseOp(Op[PoseInferParams]):
     scope_dependent = False
     Params = PoseInferParams
 
-    def plan_identity(self, ds: Dataset, params: PoseInferParams) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: Dataset,
+        params: PoseInferParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What this run and the tracks variant it bridges into are called."""
         return infer_identity(ds, self.kind, self.version, params, "train-pose")
 
-    def run(self, ds: Dataset, params: PoseInferParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: PoseInferParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         from mosaic.tracking.common.ultralytics_env import (
             ULTRALYTICS_ENV,
             UltralyticsError,
@@ -678,11 +693,25 @@ class InferPointsOp(Op[PointInferParams]):
     scope_dependent = False
     Params = PointInferParams
 
-    def plan_identity(self, ds: Dataset, params: PointInferParams) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: Dataset,
+        params: PointInferParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What this run and the tracks variant it bridges into are called."""
         return infer_identity(ds, self.kind, self.version, params, "train-points")
 
-    def run(self, ds: Dataset, params: PointInferParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: PointInferParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         from mosaic.tracking.common.ultralytics_env import POLO_ENV, PoloError
         from mosaic.tracking.external.runner.ultralytics_protocol import (
             POINT_COLUMNS,
@@ -769,11 +798,25 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
     scope_dependent = False
     Params = LocalizerInferParams
 
-    def plan_identity(self, ds: Dataset, params: LocalizerInferParams) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: Dataset,
+        params: LocalizerInferParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What this run and the tracks variant it bridges into are called."""
         return infer_identity(ds, self.kind, self.version, params, "train-localizer")
 
-    def run(self, ds: Dataset, params: LocalizerInferParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: LocalizerInferParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         from mosaic.tracking.pose_training.localizer_inference import (
             localizer_detections_to_dataframe,
             run_localizer_inference,

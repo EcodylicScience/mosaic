@@ -5,6 +5,7 @@ four ops that spell a scope four ways -- a required list, a singular field, a
 nullable default, an absence -- gave inference four answers to one question.
 """
 
+import inspect
 import json
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from mosaic.core.pipeline.ops import (
     list_ops,
     register_op,
 )
+from mosaic.core.scope import Scope
 from mosaic.tracking import register_ops
 from tests.helpers import add_tracks_variant, make_dataset, minimal_op_params
 
@@ -131,6 +133,16 @@ ENTRY_SETS: tuple[list[Entry] | None, ...] = (
 """Three scopes over one dataset: unset, one entry, and two others."""
 
 
+def _selector(entries: list[Entry] | None) -> Scope:
+    """The same coverage as a selector, matching the params field beside it.
+
+    An op reads its entries from its params field, and these gates write
+    them there. Passing the same entries through the scope argument keeps
+    the two saying one thing.
+    """
+    return Scope(entries=entries)
+
+
 GATED_OPS = frozenset(
     [
         "extract-frames",
@@ -231,8 +243,9 @@ class TestADeclaredIndependenceHoldsAgainstTheDataset:
             payload = minimal_op_params(kind)
             payload["entries"] = entries
             params = op.Params.model_validate(payload)
+            scope = three_entry_dataset.resolve_scope(_selector(entries))
             try:
-                identities.add(op().plan_identity(three_entry_dataset, params))
+                identities.add(op().plan_identity(three_entry_dataset, params, scope))
             except IdentityDeferred as exc:
                 deferred[repr(entries)] = exc.because
         if len(deferred) == len(ENTRY_SETS):
@@ -273,9 +286,14 @@ class TestTheIndirectPathIsMeasured:
         op = OPS["resample-tracks"]
 
         def identity_over(sequence: str) -> OpIdentity:
+            entries: list[Entry] = [("", sequence)]
             payload = minimal_op_params("resample-tracks")
-            payload["entries"] = [("", sequence)]
-            return op().plan_identity(dataset, op.Params.model_validate(payload))
+            payload["entries"] = entries
+            return op().plan_identity(
+                dataset,
+                op.Params.model_validate(payload),
+                dataset.resolve_scope(_selector(entries)),
+            )
 
         first, second = identity_over("one"), identity_over("two")
         assert first.run_id != second.run_id
@@ -326,3 +344,41 @@ class TestPublished:
         """The dataset's tracks are a producer rather than a step."""
         assert TRACKS_DECLARATION.scope_takes == ""
         assert TRACKS_DECLARATION.scope_dependent is False
+
+
+class TestOpInterface:
+    """Every op takes its coverage and its recompute decision as arguments.
+
+    A recipe states settings. Which entries a run covers and whether it
+    recomputes belong to the attempt, and the signature is the one place that
+    states it for every registered op at once.
+    """
+
+    @pytest.mark.parametrize("kind", sorted(OPS))
+    def test_run_takes_scope_and_overwrite(self, kind: str) -> None:
+        parameters = list(inspect.signature(OPS[kind].run).parameters)
+        assert parameters == ["self", "ds", "params", "scope", "overwrite", "ctx"]
+
+    @pytest.mark.parametrize("kind", sorted(OPS))
+    def test_plan_identity_takes_scope(self, kind: str) -> None:
+        parameters = list(inspect.signature(OPS[kind].plan_identity).parameters)
+        assert parameters[:4] == ["self", "ds", "params", "scope"]
+
+    @pytest.mark.parametrize("kind", sorted(OPS))
+    def test_plan_identity_keeps_require_data(self, kind: str) -> None:
+        """An override that drops it raises TypeError where a run body passes it.
+
+        Five run bodies call ``plan_identity(..., require_data=False)``.
+        Only basedpyright catches an override that omits the parameter, and
+        CI does not gate basedpyright.
+        """
+        parameter = inspect.signature(OPS[kind].plan_identity).parameters[
+            "require_data"
+        ]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is True
+
+    @pytest.mark.parametrize("kind", sorted(OPS))
+    def test_target_takes_scope(self, kind: str) -> None:
+        parameters = list(inspect.signature(OPS[kind].target).parameters)
+        assert parameters == ["self", "params", "scope"]

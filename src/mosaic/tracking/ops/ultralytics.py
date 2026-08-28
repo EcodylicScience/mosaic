@@ -27,6 +27,7 @@ from mosaic.tracking.ultralytics_track.version import (
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.job import JobContext
 
 
@@ -43,10 +44,17 @@ class UltralyticsOp(Op[UltralyticsParams]):
     scope_dependent = False
     Params = UltralyticsParams
 
-    def target(self, params: UltralyticsParams) -> str:
+    def target(self, params: UltralyticsParams, scope: ResolvedScope) -> str:
         return "ultralytics-track"
 
-    def plan_identity(self, ds: Dataset, params: UltralyticsParams) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: Dataset,
+        params: UltralyticsParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What an Ultralytics tracking run with these settings will be called.
 
         The tracker table is resolved in full rather than passed as the
@@ -74,7 +82,14 @@ class UltralyticsOp(Op[UltralyticsParams]):
         )
         return tracker_identity(self.kind, self.version, settings)
 
-    def run(self, ds: Dataset, params: UltralyticsParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: UltralyticsParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         # Ultralytics and torch stay inside run(), so registration is light.
         from mosaic.tracking.ultralytics_track.dataset_runs import run_ultralytics
 

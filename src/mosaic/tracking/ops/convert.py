@@ -39,6 +39,7 @@ from mosaic.tracking.ops._common import (
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
 
 
 def convert_points_run_id(
@@ -199,10 +200,17 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
     scope_dependent = False
     Params = ConvertPointsParams
 
-    def target(self, params: ConvertPointsParams) -> str:
+    def target(self, params: ConvertPointsParams, scope: ResolvedScope) -> str:
         return "cvat-points-polo"
 
-    def plan_identity(self, ds: Dataset, params: ConvertPointsParams) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: Dataset,
+        params: ConvertPointsParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What this conversion will be called.
 
         Both sources enter by content, because re-exporting the same CVAT task
@@ -228,7 +236,14 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
             )
         )
 
-    def run(self, ds: Dataset, params: ConvertPointsParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: ConvertPointsParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         from mosaic.tracking.pose_training.converters.cvat_points import (
             convert_cvat_points_polo,
         )
@@ -238,7 +253,7 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
         xml = Path(ds.resolve_path(params.cvat_xml))
         imgs = Path(ds.resolve_path(params.images_dir))
 
-        run_id = self.plan_identity(ds, params).run_id
+        run_id = self.plan_identity(ds, params, scope).run_id
         ctx.set_run_id(run_id)
         out = model_run_root(ds, self.kind, run_id)
         data_yaml = out / "data.yaml"

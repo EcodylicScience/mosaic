@@ -31,6 +31,7 @@ from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.job import JobContext
 
 
@@ -49,10 +50,17 @@ class TrexOp(Op[TrexParams]):
     scope_dependent = False
     Params = TrexParams
 
-    def target(self, params: TrexParams) -> str:
+    def target(self, params: TrexParams, scope: ResolvedScope) -> str:
         return "trex-track"
 
-    def plan_identity(self, ds: Dataset, params: TrexParams) -> OpIdentity:
+    def plan_identity(
+        self,
+        ds: Dataset,
+        params: TrexParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
+    ) -> OpIdentity:
         """What a TREx run with these settings will be called.
 
         Both model references are resolved to an identity first, which is the
@@ -88,7 +96,14 @@ class TrexOp(Op[TrexParams]):
         )
         return tracker_identity(self.kind, self.version, settings)
 
-    def run(self, ds: Dataset, params: TrexParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: TrexParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         # Within the op's Job Contract, so the run is not double-wrapped. Which
         # conda environment, binary and display TREx is launched from is read
         # from MOSAIC_TREX_CONDA_ENV / _BIN / _DISPLAY, which keeps the run_id

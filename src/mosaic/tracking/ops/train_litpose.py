@@ -49,6 +49,7 @@ from mosaic.tracking.litpose.version import TRAIN_LITPOSE_KIND
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.job import JobContext
 
 TRAIN_LITPOSE_VERSION: str = "0.1"
@@ -145,11 +146,16 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
     Params = TrainLitposeParams
     resource_class: ClassVar[str] = "gpu"
 
-    def target(self, params: TrainLitposeParams) -> str:
+    def target(self, params: TrainLitposeParams, scope: ResolvedScope) -> str:
         return f"litpose-train-{params.model_type}"
 
     def plan_identity(
-        self, ds: Dataset, params: TrainLitposeParams, *, require_data: bool = True
+        self,
+        ds: Dataset,
+        params: TrainLitposeParams,
+        scope: ResolvedScope,
+        *,
+        require_data: bool = True,
     ) -> OpIdentity:
         """What this run, and the model it produces, will be called.
 
@@ -177,7 +183,14 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
             require_data=require_data,
         )
 
-    def run(self, ds: Dataset, params: TrainLitposeParams, ctx: JobContext) -> str:
+    def run(
+        self,
+        ds: Dataset,
+        params: TrainLitposeParams,
+        scope: ResolvedScope,
+        overwrite: bool,
+        ctx: JobContext,
+    ) -> str:
         from mosaic.tracking.litpose.training import train_litpose
 
         ensure_models_root(ds)
@@ -201,7 +214,7 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
             if weights is not None:
                 overrides.setdefault("model.checkpoint", str(weights))
 
-        run_id = self.plan_identity(ds, params, require_data=False).run_id
+        run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
         if not params.overwrite and training_is_complete(ds, self.kind, run_id):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
