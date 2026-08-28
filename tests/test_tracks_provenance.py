@@ -13,6 +13,7 @@ observe its source pointer becoming portable.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,7 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracks_index import read_tracks_index, tracks_index_path
+from mosaic.core.scope import Scope
 
 from tests.helpers import write_trex_npz
 
@@ -547,7 +549,12 @@ def test_drop_entries_can_retire_one_variant_and_keep_the_rest(
     with pytest.raises(ValueError, match="tracks_run_id"):
         _ = select_variant_rows(read_tracks_index(ds))
 
-    assert ds.drop_entries([("", "seq_a")], run_id="trex.0.1-bbbbbbbbbb") == 1
+    assert (
+        ds.drop_entries(
+            scope=Scope(entries=[("", "seq_a")]), run_id="trex.0.1-bbbbbbbbbb"
+        )
+        == 1
+    )
 
     remaining = read_tracks_index(ds)
     assert list(remaining["run_id"]) == ["convert-x.0.1-aaaaaaaaaa"]
@@ -570,7 +577,7 @@ def test_drop_entries_without_a_variant_takes_every_row(tmp_path: Path) -> None:
             std_format="trex_v1",
             n_rows=40,
         )
-    assert ds.drop_entries([("", "seq_a")]) == 2
+    assert ds.drop_entries(scope=Scope(entries=[("", "seq_a")])) == 2
     assert len(read_tracks_index(ds)) == 0
 
 
@@ -622,7 +629,7 @@ def test_drop_entries_removes_the_row_and_optionally_the_table(
     assert tables["drop"].exists()
     assert tables["keep"].exists()
 
-    dropped = ds.drop_entries([("", "drop")], delete_files=True)
+    dropped = ds.drop_entries(scope=Scope(entries=[("", "drop")]), delete_files=True)
 
     assert dropped == 1
     assert not tables["drop"].exists()
@@ -641,15 +648,34 @@ def test_drop_entries_keeps_the_table_by_default(tmp_path: Path) -> None:
     ds.convert_all_tracks()
     table = _tables_by_sequence(ds)["seq_a"]
 
-    assert ds.drop_entries([("", "seq_a")]) == 1
+    assert ds.drop_entries(scope=Scope(entries=[("", "seq_a")])) == 1
     assert table.exists()
     assert len(read_tracks_index(ds)) == 0
 
 
 def test_dropping_an_absent_entry_is_a_no_op(tmp_path: Path) -> None:
     ds = _dataset(tmp_path)
-    assert ds.drop_entries([("", "never-existed")]) == 0
-    assert ds.drop_entries([]) == 0
+    assert ds.drop_entries(scope=Scope(entries=[("", "never-existed")])) == 0
+    assert ds.drop_entries(scope=Scope(entries=[])) == 0
+
+
+def test_drop_entries_cannot_be_called_without_a_scope() -> None:
+    """The selector is required because the call deletes what it resolves to.
+
+    An optional one would make a bare ``drop_entries()`` mean every row of the
+    index.
+    """
+    parameter = inspect.signature(Dataset.drop_entries).parameters["scope"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_drop_entries_refuses_a_selector_it_would_have_to_enumerate(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    with pytest.raises(ValueError, match="Resolve them"):
+        _ = ds.drop_entries(scope=Scope(groups=[""]))
 
 
 # --- media matching --------------------------------------------------------

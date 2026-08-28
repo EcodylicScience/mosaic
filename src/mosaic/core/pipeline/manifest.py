@@ -16,6 +16,7 @@ import pyarrow as pa
 
 from ...core.helpers import make_entry_key, text_cell
 from ...core.schema import LEGACY_SCHEMA, schema_family
+from ...core.scope import Scope
 from .sequence_index import read_entry_compositions
 from ._utils import ResolvedScope
 from .index import (
@@ -179,9 +180,7 @@ def _temporal_key(
 def build_manifest(
     ds: Dataset,
     inputs: InputsLike,
-    groups: set[str] | None = None,
-    sequences: set[str] | None = None,
-    entries: set[tuple[str, str]] | None = None,
+    scope: Scope | None = None,
     *,
     tracks_run_id: str | None = None,
     on_missing_run: MissingRunPolicy = "raise",
@@ -189,16 +188,21 @@ def build_manifest(
     """Build unified manifest for all input types.
 
     Returns the manifest (entry_key -> ManifestEntry) and the resolved
-    ``ResolvedScope`` (entries present in ALL inputs after intersection).
+    ``ResolvedScope`` (entries present in ALL inputs after intersection),
+    recording the selector it came from.
 
-    The scope can be narrowed three ways (all applied, intersecting):
+    *scope* is applied to every input and the results are intersected.
+    ``Scope(groups=..., sequences=...)`` keeps an entry whose group and whose
+    sequence are both named, combining as a cross product.
+    ``Scope(entries=...)`` keeps the pairs it lists, which an arbitrary subset
+    needs -- a tag-resolved selection, or a sequence name that repeats across
+    groups and a bare ``sequences`` filter cannot separate. ``None``, the
+    default, keeps every entry each input resolves.
 
-    - ``groups`` / ``sequences`` -- keep entries whose group / sequence is in
-      the given set. These combine as a *cross-product* filter.
-    - ``entries`` -- keep only these explicit ``(group, sequence)`` pairs. Use
-      this when an arbitrary subset is required (e.g. a tag-resolved selection),
-      especially when sequence names are not unique across groups, where a bare
-      ``sequences`` filter would be ambiguous.
+    The selector narrows each input against its **own** index rather than
+    against one enumeration shared between them. Resolving ``groups`` to entries
+    up front would need one index naming every entry, and a dataset whose tracks
+    predate its media index does not have one.
 
     ``tracks_run_id`` selects which tracks *variant* the ``"tracks"`` input
     resolves to. ``None``, the default, means **every row** -- see
@@ -209,6 +213,7 @@ def build_manifest(
 
     Both are keyword-only, so a positional argument cannot land in the wrong one.
     """
+    selector = scope if scope is not None else Scope()
     per_input_entries: list[set[tuple[str, str]]] = []
     per_input_paths: list[dict[tuple[str, str], tuple[Path, LoadSpec]]] = []
     per_input_paths_all: list[dict[tuple[str, str], tuple[Path, LoadSpec]]] = []
@@ -217,18 +222,14 @@ def build_manifest(
     variants: tuple[str, ...] = ()
     for i, item in enumerate(inputs.root):
         if item == "tracks":
-            input_result = _resolve_tracks(
-                ds, tracks_run_id, groups, sequences, entries, on_missing_run
-            )
+            input_result = _resolve_tracks(ds, tracks_run_id, selector, on_missing_run)
             variants = input_result.tracks_variants
         else:
             input_result = _resolve_feature(
                 ds,
                 item.feature,
                 item.run_id,
-                groups,
-                sequences,
-                entries,
+                selector,
                 on_missing_run,
             )
             if getattr(type(inputs), "_track_input", False):
@@ -250,8 +251,12 @@ def build_manifest(
     # declares keeps the resolver ignorant of features: what is *hashed* is
     # decided at the one payload site, and what is merely *recorded* on the index
     # row wants the others.
-    scope = ResolvedScope(
+    resolved = ResolvedScope(
         entries=shared_entries,
+        # What was asked for, beside what it resolved to. An empty resolution
+        # under an unset selector and one under a named group are different
+        # states, and the entry set alone does not distinguish them.
+        selector=selector,
         tracks_variants=variants,
         compositions=read_entry_compositions(ds, shared_entries),
     )
@@ -338,7 +343,7 @@ def build_manifest(
             next_extent=None if next_entry is None else frame_extents.get(next_entry),
         )
 
-    return manifest, scope
+    return manifest, resolved
 
 
 def order_values(df: pd.DataFrame, order_col: str) -> npt.NDArray[np.float64]:
@@ -490,9 +495,7 @@ def verify_overlap_supported(manifest: Manifest, overlap_frames: int) -> None:
 def _resolve_tracks(
     ds: Dataset,
     run_id: str | None,
-    groups: set[str] | None,
-    sequences: set[str] | None,
-    entries: set[tuple[str, str]] | None = None,
+    scope: Scope | None = None,
     on_missing_run: MissingRunPolicy = "raise",
 ) -> ResolvedInput:
     """Resolve track entries and paths from tracks/index.csv.
@@ -524,12 +527,17 @@ def _resolve_tracks(
     subset this call happens to want, and that distinction is what keeps it out
     of trouble: it feeds the feature identifier, and a scope-free feature must
     get one identifier for every scope. Were it scoped, ``run_feature(ds, f)``,
-    ``run_feature(ds, f, sequences=["a"])`` and ``...=["b"]`` would mint three
-    identifiers for one computation on a mixed dataset, and ``Pipeline.clean``
+    ``run_feature(ds, f, scope=Scope(sequences=["a"]))`` and the same with
+    ``["b"]`` would mint three identifiers for one computation on a mixed
+    dataset, and ``Pipeline.clean``
     -- whose keep set is the identifiers it predicted -- would delete two of
     them. Rows whose ``run_id`` is empty contribute nothing, so a dataset that
     predates variants yields an empty tuple and hashes exactly as it always has.
     """
+    selector = scope if scope is not None else Scope()
+    groups = selector.groups
+    sequences = selector.sequences
+    entries = selector.entry_pairs
     df = select_variant_rows(read_tracks_index(ds), run_id)
     if run_id is not None and df.empty:
         if on_missing_run == "raise":
@@ -582,14 +590,16 @@ def _resolve_tracks(
     # Sort by (group, sequence) for stable ordering
     full_order = sorted(set(all_entries))
 
-    # Filter for scoped subset
+    # Filter for scoped subset. Each test is against ``None`` and never against
+    # emptiness. A selector that lists nothing names nothing, the rule every
+    # other narrowing follows, from ``IndexCSV.read`` to ``narrow_target``.
     scoped: set[tuple[str, str]] = set()
     path_map: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     for entry, spec in path_map_all.items():
         g, s = entry
-        if groups and g not in groups:
+        if groups is not None and g not in groups:
             continue
-        if sequences and s not in sequences:
+        if sequences is not None and s not in sequences:
             continue
         if entries is not None and entry not in entries:
             continue
@@ -619,14 +629,14 @@ def tracks_variants_for(
     actually on disk. A second reader would eventually disagree with the first,
     and the way it would show is a hash that moved without the data moving.
     """
-    return _resolve_tracks(ds, tracks_run_id, None, None, None, "empty").tracks_variants
+    return _resolve_tracks(ds, tracks_run_id, None, "empty").tracks_variants
 
 
 def refuse_mixed_track_schemas(
     ds: Dataset,
     *,
     tracks_run_id: str | None = None,
-    entries: set[tuple[str, str]] | None = None,
+    scope: Scope | None = None,
 ) -> None:
     """Raise if this scope resolves tracks tables of incompatible schemas.
 
@@ -640,13 +650,13 @@ def refuse_mixed_track_schemas(
     Args:
         ds: The dataset whose tracks index to read.
         tracks_run_id: Which variant to resolve, or ``None`` for whichever each
-            entry carries.
-        entries: The scope to check, or ``None`` for everything.
+            entry has.
+        scope: What to check, or ``None`` for everything.
 
     Raises:
         ValueError: Naming the families and a sample of the entries in each.
     """
-    _ = _resolve_tracks(ds, tracks_run_id, None, None, entries, "empty")
+    _ = _resolve_tracks(ds, tracks_run_id, scope, "empty")
 
 
 def _refuse_mixed_schemas(
@@ -704,8 +714,8 @@ def _refuse_mixed_schemas(
         f"{listing}\n"
         f"A row with no recorded schema is read as {LEGACY_SCHEMA!r}, the only one "
         "there was before the column existed. Reconvert the odd entries out, or "
-        "narrow the scope with groups=/sequences=/entries= so one run reads one "
-        "schema."
+        "narrow the scope with a Scope naming groups, sequences or entries "
+        "until one run reads one schema."
     )
 
 
@@ -713,9 +723,7 @@ def _resolve_feature(
     ds: Dataset,
     feature_name: str,
     run_id: str | None,
-    groups: set[str] | None,
-    sequences: set[str] | None,
-    entries: set[tuple[str, str]] | None = None,
+    scope: Scope | None = None,
     on_missing_run: MissingRunPolicy = "raise",
 ) -> ResolvedInput:
     """Resolve feature result entries and paths from the feature index CSV.
@@ -732,6 +740,7 @@ def _resolve_feature(
     any params change the upstream index holds only the previous run, which is
     an ordinary state rather than a failure.
     """
+    selector = scope if scope is not None else Scope()
     idx_path = feature_index_path(ds, feature_name)
     if not idx_path.exists():
         return ResolvedInput(set(), {}, [], {})
@@ -799,9 +808,7 @@ def _resolve_feature(
     df = idx.read(
         run_id=run_id,
         filter_ext=".parquet",
-        groups=groups,
-        sequences=sequences,
-        entries=entries,
+        scope=selector,
         validate_paths=False,
     )
 

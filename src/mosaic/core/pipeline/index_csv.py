@@ -8,6 +8,7 @@ from typing import Generic, TypeVar
 
 import pandas as pd
 
+from ..scope import Scope
 from ._utils import atomic_write, now_iso
 from .index_lock import index_lock
 
@@ -237,9 +238,7 @@ class IndexCSV(Generic[RowT]):
         self,
         run_id: str | None = None,
         filter_ext: str | None = None,
-        groups: Iterable[str] | None = None,
-        sequences: Iterable[str] | None = None,
-        entries: Iterable[tuple[str, str]] | None = None,
+        scope: Scope | None = None,
         validate_paths: bool = False,
     ) -> pd.DataFrame:
         """Read the CSV with optional filtering and validation.
@@ -253,13 +252,13 @@ class IndexCSV(Generic[RowT]):
         filter_ext : str | None
             If set (e.g. ``".parquet"``), only rows whose ``abs_path``
             ends with this suffix are returned.
-        groups : Iterable[str] | None
-            If set, only rows whose ``group`` column is in this set.
-        sequences : Iterable[str] | None
-            If set, only rows whose ``sequence`` column is in this set.
-        entries : Iterable[tuple[str, str]] | None
-            If set, only rows whose ``(group, sequence)`` pair is in
-            this set.
+        scope : Scope | None
+            Which rows to keep. ``Scope(groups=...)`` and
+            ``Scope(sequences=...)`` keep the rows whose column is named, and
+            combine as a cross product. ``Scope(entries=...)`` keeps the
+            ``(group, sequence)`` pairs it lists, reducing a camera-addressed
+            selection to its pairs because an index row is keyed without a
+            camera. ``None`` and an unset selector both keep every row.
         validate_paths : bool
             If True, raise FileNotFoundError when abs_path entries point to
             missing files. Defaults to False. This check is deliberately
@@ -284,14 +283,15 @@ class IndexCSV(Generic[RowT]):
         if filter_ext is not None:
             self._assert_path_index()
             df = df[df["abs_path"].str.endswith(filter_ext)].reset_index(drop=True)
-        if groups is not None:
-            df = df[df["group"].isin(set(groups))].reset_index(drop=True)
-        if sequences is not None:
-            df = df[df["sequence"].isin(set(sequences))].reset_index(drop=True)
-        if entries is not None:
-            entry_set = set(entries)
+        selector = scope if scope is not None else Scope()
+        if selector.groups is not None:
+            df = df[df["group"].isin(set(selector.groups))].reset_index(drop=True)
+        if selector.sequences is not None:
+            df = df[df["sequence"].isin(set(selector.sequences))].reset_index(drop=True)
+        pairs = selector.entry_pairs
+        if pairs is not None:
             mask = [
-                (row["group"], row["sequence"]) in entry_set for _, row in df.iterrows()
+                (row["group"], row["sequence"]) in pairs for _, row in df.iterrows()
             ]
             df = df[mask].reset_index(drop=True)
         if not validate_paths:
@@ -505,23 +505,37 @@ class IndexCSV(Generic[RowT]):
 
     def drop_entries(
         self,
-        entries: Iterable[tuple[str, str]],
         *,
+        scope: Scope,
         run_id: str | None = None,
         dry_run: bool = False,
     ) -> pd.DataFrame:
-        """Drop rows for the given ``(group, sequence)`` entries.
+        """Drop the rows *scope* names.
 
         The per-entry sibling of :meth:`drop_runs`, for a change that invalidates
         some of a run's outputs and not others. *run_id* narrows it to one run;
         ``None`` drops the entries from every run in the file.
 
+        *scope* is required and must name entries. This deletes what it
+        resolves to, and an omitted selector would mean every row of the file.
+        Reading an index to enumerate a ``groups`` selector is the caller's job,
+        because which index answers depends on which one is being written.
+
         Same lock, same rewrite-only-if-something-drops rule. A caller deleting
         files as well must unlink them *after* this returns, so a crash between
         the two leaves rows naming files that are gone -- which a reconcile
         removes -- rather than files nothing names, which nothing finds.
+
+        Raises:
+            ValueError: *scope* names groups or sequences instead of entries.
         """
-        wanted = {(str(group), str(sequence)) for group, sequence in entries}
+        if scope.groups is not None or scope.sequences is not None:
+            raise ValueError(
+                f"drop_entries deletes the rows it is given and does not read "
+                f"an index to enumerate them, and {scope!r} names groups or "
+                f"sequences. Enumerate them first and pass Scope(entries=[...])."
+            )
+        wanted = scope.entry_pairs or set()
         if not wanted:
             return self._empty_frame()
         if run_id is not None:

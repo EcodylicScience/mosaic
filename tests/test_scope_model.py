@@ -1,14 +1,27 @@
-"""The scope selector: what a caller may ask a run to cover, and what it resolves to.
+"""What a caller may ask a run to cover, and what that request resolves to.
 
 The selector is a value with no dataset behind it. Resolving one enumerates the
-entries it names against the media index.
+entries it names against the media index. A feature run takes the same value,
+resolves it against the indexes its inputs read, and records it beside the
+entries it resolved to.
 """
 
+from __future__ import annotations
+
+from pathlib import Path
+
+import pandas as pd
 import pytest
 from pydantic import ValidationError
 
+from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.core.dataset import Dataset
+from mosaic.core.params import Params
 from mosaic.core.pipeline._utils import ResolvedScope
+from mosaic.core.pipeline.index import feature_index, feature_index_path
+from mosaic.core.pipeline.run import resolve_feature_identity, run_feature
+from mosaic.core.pipeline.types import Inputs, InputStream, Result, TrackInput
+from mosaic.core.pipeline.types.feature import EmitsLevel
 from mosaic.core.scope import Scope
 
 
@@ -193,3 +206,153 @@ class TestResolveScope:
         )
         assert resolved.entries == {("A", "one")}
         assert resolved.selector.addresses_cameras
+
+
+class _ScopeCapture:
+    """A do-nothing feature that keeps the ``ResolvedScope`` the run hands it.
+
+    ``run_feature`` returns the entries it wrote and does not return what it
+    resolved from. The ``set_scope`` callback is where a test reads the selector
+    a run was given.
+    """
+
+    name = "scope-capture"
+    version = "0.1"
+    parallelizable = False
+    scope_dependent = False
+    accepts_overlap = False
+    emits: EmitsLevel = "individual"
+    consumed_roots: tuple[str, ...] = ()
+
+    class Inputs(Inputs[TrackInput]):
+        pass
+
+    class Params(Params):
+        pass
+
+    def __init__(self) -> None:
+        self._inputs = self.Inputs(("tracks",))
+        self._params = self.Params.from_overrides(None)
+        self.seen: ResolvedScope | None = None
+
+    @property
+    def inputs(self) -> _ScopeCapture.Inputs:
+        return self._inputs
+
+    @property
+    def params(self) -> _ScopeCapture.Params:
+        return self._params
+
+    def set_scope(self, scope: ResolvedScope) -> None:
+        self.seen = scope
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, dict[tuple[str, str], Path]],
+    ) -> bool:
+        return True
+
+    def fit(self, inputs: InputStream) -> None:
+        pass
+
+    def save_state(self, run_root: Path) -> None:
+        pass
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame({"frame": df["frame"], "value": df["X"]})
+
+
+class TestFeatureScope:
+    """A feature run takes the selector, and covers the dataset without one."""
+
+    def _covered(self, dataset: Dataset, result: Result[str]) -> set[tuple[str, str]]:
+        """The entries *result* left index rows for."""
+        index = feature_index(feature_index_path(dataset, result.feature))
+        rows = index.read(run_id=result.run_id)
+        return {
+            (str(group), str(sequence))
+            for group, sequence in zip(rows["group"], rows["sequence"], strict=True)
+        }
+
+    def test_an_entry_selector_narrows_the_run(self, scenario_dataset: Dataset) -> None:
+        result = run_feature(
+            scenario_dataset, SpeedAngvel(), scope=Scope(entries=[("", "seq_a")])
+        )
+        assert self._covered(scenario_dataset, result) == {("", "seq_a")}
+
+    def test_an_omitted_scope_covers_the_dataset(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        result = run_feature(scenario_dataset, SpeedAngvel())
+        assert self._covered(scenario_dataset, result) == {
+            ("", "seq_a"),
+            ("", "seq_b"),
+        }
+
+    def test_a_sequence_selector_narrows_the_run(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        result = run_feature(
+            scenario_dataset, SpeedAngvel(), scope=Scope(sequences=["seq_b"])
+        )
+        assert self._covered(scenario_dataset, result) == {("", "seq_b")}
+
+    def test_the_run_records_the_selector_it_was_given(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        """The resolution alone cannot say what was asked for."""
+        feature = _ScopeCapture()
+        scope = Scope(entries=[("", "seq_a")])
+        _ = run_feature(scenario_dataset, feature, scope=scope)
+        assert feature.seen is not None
+        assert feature.seen.selector == scope
+        assert feature.seen.entries == {("", "seq_a")}
+
+    def test_an_omitted_scope_reaches_the_run_unset(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        feature = _ScopeCapture()
+        _ = run_feature(scenario_dataset, feature)
+        assert feature.seen is not None
+        assert feature.seen.selector.is_unset
+
+    def test_a_named_selector_that_resolves_to_nothing_stays_named(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        """An empty resolution under a named group is not an unscoped run."""
+        feature = _ScopeCapture()
+        _ = run_feature(scenario_dataset, feature, scope=Scope(groups=["absent"]))
+        assert feature.seen is not None
+        assert feature.seen.entries == set()
+        assert not feature.seen.selector.is_unset
+
+    def test_an_empty_selector_is_refused(self, scenario_dataset: Dataset) -> None:
+        """Naming nothing reads two ways across the input kinds, and raises."""
+        with pytest.raises(ValueError, match="selects nothing"):
+            _ = run_feature(scenario_dataset, SpeedAngvel(), scope=Scope(entries=[]))
+
+    def test_a_predicted_identity_records_the_selector(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        scope = Scope(entries=[("", "seq_a")])
+        _, resolved = resolve_feature_identity(
+            scenario_dataset, SpeedAngvel(), scope=scope
+        )
+        assert resolved.selector == scope
+        assert resolved.entries == {("", "seq_a")}
+
+    def test_prediction_refuses_a_selector_it_cannot_enumerate(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        """A group name needs an index that a cold step has yet to write."""
+        with pytest.raises(ValueError, match="Enumerate them"):
+            _ = resolve_feature_identity(
+                scenario_dataset, SpeedAngvel(), scope=Scope(groups=[""])
+            )
+
+    def test_the_exclusion_rule_reaches_a_feature_run(self) -> None:
+        """A caller cannot hand a feature run a selector the model refuses."""
+        with pytest.raises(ValidationError, match="cannot be combined"):
+            _ = Scope(entries=[("", "seq_a")], groups=[""])

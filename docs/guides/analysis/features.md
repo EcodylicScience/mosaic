@@ -21,9 +21,10 @@ or from Python, which is what a notebook does:
 ```python
 from mosaic.core.dataset import open_dataset
 from mosaic.behavior.feature_library import SpeedAngvel
+from mosaic.core.scope import Scope
 
 ds = open_dataset("dataset.yaml")
-result = ds.run_feature(SpeedAngvel(), entries=[("", "trial01")])
+result = ds.run_feature(SpeedAngvel(), scope=Scope(entries=[("", "trial01")]))
 ```
 
 If you run the exact same call twice, the second call computes nothing: the `run_id` is a hash of the

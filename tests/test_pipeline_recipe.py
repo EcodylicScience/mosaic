@@ -37,6 +37,7 @@ from mosaic.core.pipeline.graph import (
     storage_name_of,
     topological_order,
 )
+from mosaic.core.scope import Scope
 
 type Document = dict[str, object]
 
@@ -366,7 +367,7 @@ def test_a_request_round_trips(tmp_path: Path, worked: Recipe) -> None:
         request_id="req-1",
         recipe_digest=recipe_digest(worked),
         owner="jacob",
-        entries=[("", "seq_a")],
+        scope=Scope(entries=[("", "seq_a")]),
         allow_partial=True,
         step_executions={"speed": "01ABC"},
         step_versions={"speed": "0.3", "trex": "0.2"},
@@ -374,7 +375,7 @@ def test_a_request_round_trips(tmp_path: Path, worked: Recipe) -> None:
     _ = save_request(tmp_path, request)
     read_back = load_request(tmp_path, "req-1")
     assert read_back == request
-    assert read_back.entry_set() == frozenset({("", "seq_a")})
+    assert read_back.scope == Scope(entries=[("", "seq_a")])
     assert read_back.execution_of("speed") == "01ABC"
 
 

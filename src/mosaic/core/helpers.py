@@ -100,7 +100,7 @@ def make_entry_key(group: str, sequence: str) -> str:
     flat ``{safe_seq}`` key. It is part of the on-disk identity (kept for
     back-compat and to disambiguate non-unique sequence names), not the
     canonical way to categorize sequences — flexible grouping is via tags
-    (mosaic-api) and ``run_feature(entries=...)``.
+    (mosaic-api) and ``run_feature(scope=Scope(entries=...))``.
     """
     safe_group = to_safe_name(group) if group else ""
     safe_seq = to_safe_name(sequence)
@@ -663,7 +663,8 @@ def resolve_frame_range(
 # These derive structure by parsing the `__`-delimited group/sequence names.
 # They are *legacy convenience* for datasets that encode factors in names. The
 # canonical, redefinable way to group/categorize sequences is tags (owned by
-# mosaic-api), resolved to an explicit subset via run_feature(entries=...).
+# mosaic-api), resolved to an explicit subset via
+# run_feature(scope=Scope(entries=...)).
 # =============================================================================
 
 

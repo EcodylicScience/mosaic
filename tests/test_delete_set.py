@@ -13,6 +13,7 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.delete_set import delete_set
 from mosaic.core.pipeline.media_index import MediaIndexScope
+from mosaic.core.scope import Scope
 
 
 def _reorder(ds: Dataset, sequence: str = "seq_a") -> None:
@@ -45,7 +46,7 @@ class TestDryRunFirst:
         assert before, "the fixture produced no outputs"
 
         _reorder(ds)
-        report = delete_set(ds, [("", "seq_a")], "media_raw")
+        report = delete_set(ds, "media_raw", scope=Scope(entries=[("", "seq_a")]))
 
         assert not report.applied
         assert report.candidates, "the reorder reached nothing"
@@ -66,7 +67,9 @@ class TestDryRunFirst:
         assert output.exists()
 
         _reorder(ds)
-        report = delete_set(ds, [("", "seq_a")], "media_raw", apply=True)
+        report = delete_set(
+            ds, "media_raw", scope=Scope(entries=[("", "seq_a")]), apply=True
+        )
 
         assert report.applied
         assert not output.exists(), "the reached output survived"
@@ -92,7 +95,9 @@ class TestDryRunFirst:
         assert untouched.exists()
 
         _reorder(ds)
-        _ = delete_set(ds, [("", "seq_a")], "media_raw", apply=True)
+        _ = delete_set(
+            ds, "media_raw", scope=Scope(entries=[("", "seq_a")]), apply=True
+        )
 
         assert untouched.exists(), "a sequence nothing changed lost its output"
 
@@ -106,7 +111,7 @@ class TestTheCarveOuts:
     ) -> None:
         ds = scenario_dataset_with_media
         _reorder(ds)
-        report = delete_set(ds, [("", "seq_a")], "media_raw")
+        report = delete_set(ds, "media_raw", scope=Scope(entries=[("", "seq_a")]))
 
         assert not any(c.kind == "frames" for c in report.candidates)
         assert not any(d.kind == "frames" for d in report.declined)
@@ -122,7 +127,7 @@ class TestTheCarveOuts:
             "behavior,individual_pair_v1,,seq_a,labels/behavior/seq_a.npz\n"
         )
         _reorder(ds)
-        report = delete_set(ds, [("", "seq_a")], "media_raw")
+        report = delete_set(ds, "media_raw", scope=Scope(entries=[("", "seq_a")]))
 
         assert not any(c.kind == "labels" for c in report.candidates)
         assert not any("labels" in c.abs_path for c in report.candidates)
@@ -159,7 +164,9 @@ class TestDeclines:
             )
 
         monkeypatch.setattr(delete_set_mod, "read_fit_scope", wider)
-        report = delete_set(ds, [("", "seq_a")], "media_raw", apply=True)
+        report = delete_set(
+            ds, "media_raw", scope=Scope(entries=[("", "seq_a")]), apply=True
+        )
 
         assert not report.applied
         assert any("scope-dependent" in d.reason for d in report.declined)
@@ -190,7 +197,7 @@ class TestDeclines:
             ),
         )
 
-        report = delete_set(ds, [("", "seq_a")], "media_raw")
+        report = delete_set(ds, "media_raw", scope=Scope(entries=[("", "seq_a")]))
 
         assert not report.candidates
         assert report.declined
@@ -229,7 +236,9 @@ class TestTheSafeguard:
 
         monkeypatch.setattr(ds, "resolve_path", escape)
         with pytest.raises(RuntimeError, match="outside this dataset"):
-            _ = delete_set_mod.delete_set(ds, [("", "seq_a")], "media_raw", apply=True)
+            _ = delete_set_mod.delete_set(
+                ds, "media_raw", scope=Scope(entries=[("", "seq_a")]), apply=True
+            )
 
 
 @pytest.mark.usefixtures("requires_ffmpeg")
@@ -262,7 +271,9 @@ class TestUnknownIsNeverDeleted:
         frame.to_csv(index.path, index=False)
 
         _reorder(ds)
-        report = delete_set(ds, [("", "seq_a")], "media_raw", apply=True)
+        report = delete_set(
+            ds, "media_raw", scope=Scope(entries=[("", "seq_a")]), apply=True
+        )
 
         assert not any(c.kind == "features" for c in report.candidates), (
             "an output whose provenance is unrecorded was deleted on a guess"

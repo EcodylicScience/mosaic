@@ -27,6 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from mosaic.core.scope import Scope
+
 from .plan import plan_pipeline
 from .preflight import CoverageShortfall
 from .request import submit_request
@@ -34,8 +36,6 @@ from .step import StepOutcome, execute_step
 from .topo import topological_order
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from mosaic.core.dataset import Dataset
     from mosaic.core.entry import Entry
 
@@ -85,7 +85,7 @@ def run_pipeline(
     ds: Dataset,
     recipe: Recipe,
     *,
-    intended_entries: Iterable[Entry] | None = None,
+    scope: Scope | None = None,
     request: Request | None = None,
     allow_partial: bool = False,
     inventory: InventoryCache | None = None,
@@ -98,8 +98,7 @@ def run_pipeline(
     Args:
         ds: The dataset to run against.
         recipe: The graph. Refused before anything runs if it is malformed.
-        intended_entries: The entries to run over, or ``None`` for the dataset's
-            own scope.
+        scope: What to run over, or ``None`` for the dataset's own scope.
         request: An existing submission to run. One is recorded when none is
             given, so the dataset holds the recipe and the request either way.
         allow_partial: Proceed through a shortfall or a stall rather than
@@ -123,7 +122,7 @@ def run_pipeline(
         submitted = submit_request(
             ds,
             recipe,
-            entries=intended_entries,
+            scope=scope,
             allow_partial=allow_partial,
             owner=owner,
             inventory=inventory,

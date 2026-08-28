@@ -156,9 +156,11 @@ def check_scope_takes(
     """Raise unless *resolved* is a scope an op declaring *scope_takes* accepts.
 
     **The only place a scope refusal is raised.** An op implements no scope
-    validation and writes no scope message. That is what retires the required
-    ``entries`` list, the singular ``entry`` field and the per-op distinctness
-    validator, three private answers to one question.
+    validation and writes no scope message. Three private answers to that one
+    question are still in place: ``TranscodeParams.entries`` with its
+    ``min_length=1``, that model's distinctness validator, and the singular
+    ``StoreExportParams.entry``. This declaration is added beside them, and
+    retiring them is a separate change.
 
     Reads the selector as well as the resolved entries. Three scopes resolve to
     zero entries and mean three things. An unset selector covers every indexed

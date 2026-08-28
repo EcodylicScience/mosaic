@@ -93,6 +93,7 @@ def media_derivative_record(
     target_keys: set[str] = set()
     needs_transcode: set[str] = set()
     needs_probe: set[str] = set()
+    wanted = scope.selector.entry_pairs
 
     for row in read_media_index(index_path):
         if read_link_cell(row, "media_type") == "imgstore":
@@ -100,7 +101,7 @@ def media_derivative_record(
             # so it is not a row this coverage can be short of.
             continue
         entry = (read_link_cell(row, "group"), read_link_cell(row, "sequence"))
-        if scope.entries is not None and entry not in scope.entries:
+        if wanted is not None and entry not in wanted:
             continue
         key = media_row_uuid(row) or read_link_cell(row, "abs_path")
         if not key:

@@ -14,14 +14,15 @@ Example
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import pandas as pd
 
 from mosaic.core.helpers import resolve_frame_range
+from mosaic.core.scope import Scope
 
 from ._utils import derive_storage_name
 from .inventory.scan import entry_universe, narrow_target, run_covers
@@ -142,24 +143,51 @@ def storage_name(feature: object) -> str:
     return derive_storage_name(feature.name, feature.inputs.storage_suffix())  # type: ignore[union-attr]
 
 
-def _as_set(x: object) -> set[str] | None:
-    """Coerce a ``groups``/``sequences`` run_kwarg to ``set[str] | None``."""
-    return {str(v) for v in cast(Iterable[object], x)} if x else None
+RETIRED_SCOPE_KWARGS: Final = ("groups", "sequences", "entries")
+"""The run_kwargs a step used to spell its scope with.
+
+``run_feature`` takes one ``scope`` keyword and refuses these by name. A step
+still carrying one is refused here as well, because the identity is predicted
+before that call: a step whose full-dataset run is already on disk reads as a
+cache hit and the call never happens.
+"""
 
 
-def _as_entry_set(x: object) -> set[tuple[str, str]] | None:
-    """Coerce an ``entries`` run_kwarg to ``set[(group, sequence)] | None``."""
-    if not x:
-        return None
-    return {(str(g), str(s)) for g, s in cast(Iterable[tuple[object, object]], x)}
+def _step_scope(kwargs: Mapping[str, object]) -> Scope:
+    """The selector *kwargs* names, as a :class:`~mosaic.core.scope.Scope`.
+
+    An absent ``scope`` key and an explicit ``None`` are both the unset
+    selector, which covers every entry the step's inputs resolve.
+    ``run_kwargs`` is an untyped dict, and every other value is refused by type.
+
+    Raises:
+        TypeError: *kwargs* names a retired scope keyword, or its ``scope`` is
+            neither a :class:`~mosaic.core.scope.Scope` nor ``None``.
+    """
+    retired = [key for key in RETIRED_SCOPE_KWARGS if key in kwargs]
+    if retired:
+        named = ", ".join(retired)
+        raise TypeError(
+            f"a step's run_kwargs name {named}, which run_feature no longer "
+            f"takes. Give one 'scope' key holding a Scope instead."
+        )
+    value = kwargs.get("scope")
+    if value is None:
+        return Scope()
+    if isinstance(value, Scope):
+        return value
+    raise TypeError(
+        f"a step's 'scope' run_kwarg must be a Scope or None, not "
+        f"{type(value).__name__}."
+    )
 
 
 def _as_run_id(x: object) -> str | None:
     """Coerce a ``tracks_run_id`` run_kwarg to ``str | None``.
 
-    Unlike ``_as_set``/``_as_entry_set`` an empty value is *not* "no
-    restriction": ``""`` is a legal selector naming the unlabelled tables written
-    before tracks carried an identity. Only an absent key means "unrestricted".
+    Unlike ``_step_scope`` an empty value is *not* "no restriction": ``""`` is a
+    legal selector naming the unlabelled tables written before tracks carried an
+    identity. Only an absent key means "unrestricted".
     """
     return None if x is None else str(x)
 
@@ -336,14 +364,11 @@ class Pipeline:
             step_overlap = int(kwargs.get("overlap_frames") or 0)
 
             # Target scope for this step: the intended sequence universe
-            # narrowed by any groups/sequences/entries restriction. Used
-            # both for the completeness check and (for scope_dependent
-            # features) the run_id hash.
+            # narrowed by the step's selector. Used both for the completeness
+            # check and (for scope_dependent features) the run_id hash.
+            selector = _step_scope(kwargs)
             target = narrow_target(
-                track_universe_for(_as_run_id(kwargs.get("tracks_run_id"))),
-                groups=_as_set(kwargs.get("groups")),
-                sequences=_as_set(kwargs.get("sequences")),
-                entries=_as_entry_set(kwargs.get("entries")),
+                track_universe_for(_as_run_id(kwargs.get("tracks_run_id"))), selector
             )
 
             # Identity comes from the one site that answers this question, which
@@ -367,7 +392,7 @@ class Pipeline:
             expected_run_id, _ = resolve_feature_identity(
                 dataset,
                 feature,
-                target,
+                scope=Scope(entries=sorted(target)),
                 tracks_run_id=_as_run_id(kwargs.get("tracks_run_id")),
                 labels_run_id=_as_run_id(kwargs.get("labels_run_id")),
                 frame_start=frame_start,

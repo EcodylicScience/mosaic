@@ -27,6 +27,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Literal, cast
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
     from pydantic import ValidationError
@@ -281,7 +282,9 @@ def build_step_op_params(spec: "StepSpec") -> "Params":
     Raises:
         StepBuildError: As :func:`build_op_params`.
     """
-    return build_op_params(spec.op_kind, spec.params, spec.entries)
+    return build_op_params(
+        spec.op_kind, spec.params, sorted(spec.entries.entry_pairs or ())
+    )
 
 
 def _accepts(inputs_cls: type, payload: list[object]) -> bool:
@@ -398,8 +401,8 @@ def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
         emits="individual",
         category=str(getattr(op_cls, "category", "")),
         resource_class=op_resource_class(kind),
-        # Read directly: ``register_op`` refuses by name a class declaring
-        # neither, so no member of ``OPS`` can lack them.
+        # ``register_op`` refuses by name a class that declares neither of
+        # these. Every member of ``OPS`` therefore defines both.
         scope_takes=op_cls.scope_takes,
         scope_dependent=op_cls.scope_dependent,
     )
@@ -481,12 +484,12 @@ class StepSpec:
         default_factory=lambda: cast("dict[str, JsonValue]", {})
     )
     tracks_run_id: str | None = None
-    entries: tuple[tuple[str, str], ...] = ()
+    entries: Scope = field(default_factory=Scope)
     """What this step should compute, already narrowed.
 
     A step must not re-request its whole scope: it is the scope minus what is
-    covered and minus what is quarantined. Empty means everything in scope, which
-    is what a first run of a cold step gets.
+    covered and minus what is quarantined. An unset selector means everything in
+    scope, which is what a first run of a cold step gets.
     """
     filter_start_frame: int | None = None
     filter_end_frame: int | None = None
@@ -588,7 +591,7 @@ def resolve_step_spec(
     resolved: Mapping[str, ResolvedStep],
     *,
     bind: Mapping[str, BoundRef] | None = None,
-    entries: Sequence[tuple[str, str]] = (),
+    entries: Scope | None = None,
 ) -> StepSpec:
     """Substitute every reference in one step from what is already resolved.
 
@@ -634,7 +637,7 @@ def resolve_step_spec(
             kind="op",
             op_kind=step.kind,
             params=params,
-            entries=tuple(entries),
+            entries=entries if entries is not None else Scope(),
         )
 
     types = _params_field_types("feature", step.feature)
@@ -693,7 +696,7 @@ def resolve_step_spec(
         inputs=tuple(inputs),
         params=params,
         tracks_run_id=tracks_run_id,
-        entries=tuple(entries),
+        entries=entries if entries is not None else Scope(),
         filter_start_frame=step.run.filter_start_frame,
         filter_end_frame=step.run.filter_end_frame,
         filter_start_time=step.run.filter_start_time,

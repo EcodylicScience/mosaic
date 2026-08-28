@@ -25,6 +25,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 import pytest
 
@@ -58,6 +59,7 @@ from mosaic.core.pipeline.run import (
     MissingScopeDeclaration,
     compute_run_id,
 )
+from mosaic.core.scope import Scope
 
 PIPELINE_DIR = Path(inspect.getfile(compute_run_id)).parent
 
@@ -232,6 +234,44 @@ def test_scope_dependent_feature_identity_tracks_scope() -> None:
     assert narrow != wide
 
 
+_ONE_ENTRY_SET_ASKED_FIVE_WAYS: Final[tuple[Scope, ...]] = (
+    Scope(),
+    Scope(entries=[("", "a"), ("", "b")]),
+    Scope(entries=[("", "b"), ("", "a")]),
+    Scope(groups=[""]),
+    Scope(sequences=["a", "b"]),
+)
+"""Five selectors that resolve to the entries ``{("", "a"), ("", "b")}``."""
+
+
+@pytest.mark.parametrize(
+    ("name", "inputs"),
+    [("speed-angvel", None), ("arhmm", [{"feature": "pair-wavelet"}])],
+)
+def test_the_selector_is_not_a_term_of_any_run_identifier(
+    name: str, inputs: list[dict[str, str]] | None
+) -> None:
+    """Identity is a function of what a run resolved to, never of how it was asked.
+
+    A ``ResolvedScope`` carries the selector beside the entries, and no term of
+    the payload reads it. One entry set asked for five ways is one run, for a
+    scope-free feature and a scope-dependent one alike. The scope-dependent case
+    is the sharper one, being the only feature flavor whose payload holds a
+    scope term at all.
+    """
+    feature = build_feature(name, inputs, None)
+    entries = {("", "a"), ("", "b")}
+
+    minted = {
+        compute_run_id(
+            feature, None, None, ResolvedScope(entries=entries, selector=selector)
+        )[0]
+        for selector in _ONE_ENTRY_SET_ASKED_FIVE_WAYS
+    }
+
+    assert len(minted) == 1, f"{name} minted {len(minted)} identifiers for one scope"
+
+
 # --- P2: the digest itself ----------------------------------------------------
 
 
@@ -372,7 +412,7 @@ def test_chain_runner_predicts_what_run_feature_computes(
     predicted = pipeline._resolve_step_cache(scenario_dataset)[0]["expected_run_id"]
 
     feature = build_feature("pair-posedistance-pca", None, None)
-    _, scope = build_manifest(scenario_dataset, feature.inputs, None, None, None)
+    _, scope = build_manifest(scenario_dataset, feature.inputs)
     computed, _ = compute_run_id(feature, None, None, scope)
 
     assert feature.scope_dependent, "fixture must exercise the scope term"

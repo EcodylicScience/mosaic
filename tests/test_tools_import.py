@@ -34,8 +34,8 @@ def _import_standalone(script: Path) -> None:
     """Import *script* as an isolated module, leaving no trace in ``sys.modules``.
 
     The module name is unique to this check and never registered under the
-    script's own name, so importing one script cannot satisfy, or collide
-    with, an import of another.
+    script's own name. Importing one script therefore cannot satisfy, or
+    collide with, an import of another.
     """
     module_name = f"_tools_import_check__{script.stem}"
     spec = importlib.util.spec_from_file_location(module_name, script)

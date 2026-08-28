@@ -254,8 +254,8 @@ def build_work_items(
     joins = root is not None and root.joins_sources
     items: list[TrackerWorkItem] = []
 
-    # Reduced first, so an entry that is dropped is not also warned about for
-    # video count. That warning describes work this tracker will not do.
+    # Reduced first. An entry that is dropped is then not also warned about for
+    # video count, a warning that would describe work this tracker will not do.
     for entry in one_camera_per_entry(kind, scope):
         group, sequence, resolved = entry.group, entry.sequence, entry.resolved
         paths = list(resolved.paths)

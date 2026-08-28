@@ -121,7 +121,7 @@ from .resolve import (
 )
 from .rollup import RequestRollup, RequestStatus, StepAttempt, request_rollup
 from .run import PipelineRun, run_pipeline
-from .step import STEP_RUN_KIND, StepOutcome, execute_step
+from .step import STEP_RUN_KIND, StepOutcome, asked_of, execute_step
 from .scope import graph_writes_tracks, intended_scope, media_universe
 from .storage import storage_name_of
 from .store import (
@@ -215,6 +215,7 @@ __all__ = [
     "Verdict",
     "WaitingOnResource",
     "ancestors_of",
+    "asked_of",
     "build_feature",
     "build_op_params",
     "build_step_feature",

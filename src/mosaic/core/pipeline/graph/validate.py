@@ -59,6 +59,7 @@ from .resolve import (
 from .topo import RecipeCycle, topological_order
 from mosaic.core.pipeline.types import ArtifactSpec
 from mosaic.core.params import Params
+from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
     from .compatibility import DeclarationCatalog
@@ -297,7 +298,9 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
     if edge is not None:
         problems.append(edge)
 
-    spec = resolve_step_spec(recipe, step.id, walk.resolved, entries=_PROBE_ENTRIES)
+    spec = resolve_step_spec(
+        recipe, step.id, walk.resolved, entries=Scope(entries=list(_PROBE_ENTRIES))
+    )
     if overwrites:
         # Already reported, and reported for a reason the params model does not
         # know: on a feature there is no such field at all, so leaving it in

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from mosaic.behavior.feature_library import SpeedAngvel
 from mosaic.core.dataset import Dataset, new_dataset_manifest
@@ -185,3 +186,27 @@ def test_scope_dependent_run_id_matches_on_disk(tmp_path: Path) -> None:
     assert info["cached"] is True  # predicted run_id (with _scope_entries) matched
     run_root = feature_run_root(ds, info["storage_name"], info["expected_run_id"])
     assert run_root.exists() and any(run_root.glob("*.parquet"))
+
+
+def test_a_step_still_spelling_the_retired_scope_kwargs_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The refusal has to precede the identity, which precedes the cache check.
+
+    ``run_feature`` raises on a ``groups`` keyword. A step whose full-dataset
+    run is already on disk never reaches that call: the prediction reads the
+    run root as complete and reports a cache hit.
+    """
+    ds = _dataset_with_tracks(tmp_path)
+    done = Pipeline()
+    done.add(FeatureStep("scoped", _ScopedSpeed, {"step_size": 1}))
+    done.run(ds)
+
+    stale = Pipeline()
+    stale.add(
+        FeatureStep(
+            "scoped", _ScopedSpeed, {"step_size": 1}, run_kwargs={"groups": ["g"]}
+        )
+    )
+    with pytest.raises(TypeError, match="groups"):
+        stale.run(ds)

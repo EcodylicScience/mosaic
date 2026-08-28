@@ -8,6 +8,63 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — one selector model, and a request document's key is renamed
+
+**No identifier moves, and no run on disk is re-addressed.** The golden corpus
+has no diff. A selector says which entries a caller wants and never enters a
+payload. One entry set asked for five ways therefore mints one `run_id`, which
+`tests/test_hashing_rules.py` pins for a scope-free feature and a
+scope-dependent one.
+
+**`Request.entries` is now `Request.scope`, and a request written before this
+does not load.** Request models forbid unknown fields and `load_request` has no
+migration. A `.mosaic/pipelines/requests/*.json` holding the old key therefore
+fails validation with pydantic's `extra_forbidden`, and that file is what
+`mosaic run --graph-request` and `mosaic pipeline status` read. No migration is
+provided, on the same reasoning `TranscodeParams.entry` was removed under. A 0.x
+wire key moves in one step rather than growing an alias. A submission whose
+steps have finished keeps its results, which are addressed by `run_id` on disk
+and reported by the run-logs. Recovery for one still in flight is to resubmit
+the recipe.
+
+**One model replaces three loose keyword arguments everywhere.**
+`mosaic.core.scope.Scope` holds `entries`, `groups` and `sequences`, and
+`entries` excludes the other two rather than intersecting with them. Seventeen
+public entry points take `scope=Scope(...)` where they took `groups=`,
+`sequences=` and `entries=`: `run_feature`, `load_values`,
+`Dataset.run_feature`, `Dataset.drop_entries`, `Dataset.load_id_labels`,
+`extract_frames`, `inventory`, `build_manifest`, `IndexCSV.read`,
+`IndexCSV.drop_entries`, `yield_sequences`, `narrow_target`, `delete_set`,
+`plan_pipeline`, `run_pipeline`, `submit_request` and `intended_scope`.
+
+**A selector that names nothing covers nothing, and only an unset one covers
+everything.** `Scope()` is every indexed entry. `Scope(entries=[])`,
+`Scope(groups=[])` and a group name that matches no row all resolve to none. A
+misspelled group used to read as no restriction at all and measure coverage
+against the whole dataset.
+
+**A caller that cannot enumerate a `groups` selector refuses it by name.** Only
+an index can list the entries a group covers. `resolve_feature_identity`,
+`Dataset.drop_entries`, `delete_set`, `IndexCSV.drop_entries` and `asked_of`
+each raise a `ValueError` naming themselves and the `Scope(entries=[...])` to
+pass instead, rather than guessing at everything or at nothing.
+
+**`mosaic track --groups X --entries Y` is refused where it used to intersect.**
+The two spell one narrowing twice and the message says to give either alone. A
+dataset with no media index and an `--entries` beside `--groups` both come back
+as a message rather than a traceback.
+
+**`mosaic pipeline plan --json` reports what each step will be asked for.** The
+per-step `entries` value used to be the step's own narrowing, which was `[]` for
+a step the plan did not narrow. It is now the entries the step will actually
+compute, which for an unnarrowed step is the plan's whole scope.
+
+**An op declares how much scope it takes.** `ScopeTakes` is one of `"none"`,
+`"any"`, `"at-least-one"` or `"exactly-one"`, and `check_scope_takes` is the
+only place a scope refusal is raised. An unset selector, an empty entry list and
+a selector that named a group and missed resolve to zero entries and mean three
+different things, and each gets its own message.
+
 ## Unreleased — every parameter says what it means, and ten identifiers move
 
 **Ten identifiers move, and four of them name a directory on disk.** Six name a

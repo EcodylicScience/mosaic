@@ -36,6 +36,7 @@ from mosaic.core.pipeline.tracks_index import (
     select_variant_rows,
     tracks_index_path,
 )
+from mosaic.core.scope import Scope
 
 from ._read import IndexReader
 from .contributors import inventory_contributor, registered_inventory_kinds
@@ -135,21 +136,22 @@ def entry_universe(ds: Dataset, tracks_run_id: str | None = None) -> frozenset[E
 
 
 def narrow_target(
-    universe: frozenset[Entry],
-    *,
-    groups: Iterable[str] | None = None,
-    sequences: Iterable[str] | None = None,
-    entries: Iterable[Entry] | None = None,
+    universe: frozenset[Entry], scope: Scope | None = None
 ) -> frozenset[Entry]:
-    """Narrow the entry universe by a scope restriction.
+    """Narrow the entry universe to what *scope* names.
 
-    The same intersecting ``groups`` and ``sequences`` and ``entries`` filter
-    ``build_manifest`` applies, so what is measured matches what would actually
-    be processed. ``None`` or empty means no restriction on that axis.
+    The same narrowing ``build_manifest`` applies. What is measured therefore
+    matches what would be processed. ``None`` and an unset selector both keep
+    the whole universe. A named selector that lists nothing keeps nothing, the
+    rule :attr:`ResolvedScope.op_entries` states. An empty list used to read
+    here as no restriction at all.
     """
-    wanted_groups = set(groups) if groups else None
-    wanted_sequences = set(sequences) if sequences else None
-    wanted_entries = set(entries) if entries else None
+    selector = scope if scope is not None else Scope()
+    wanted_groups = set(selector.groups) if selector.groups is not None else None
+    wanted_sequences = (
+        set(selector.sequences) if selector.sequences is not None else None
+    )
+    wanted_entries = selector.entry_pairs
     return frozenset(
         (group, sequence)
         for group, sequence in universe
@@ -321,7 +323,7 @@ def _feature_records(
 ) -> list[ArtifactRecord[Entry]]:
     """Every feature run under ``features/<name>/<run_id>/``."""
     universe = reportable_universe(ds, scope.tracks_run_id)
-    target = narrow_target(universe, entries=scope.entries)
+    target = narrow_target(universe, scope.selector)
     records: list[ArtifactRecord[Entry]] = []
     for name in feature_storages(ds):
         index_path = feature_index_path(ds, name)
@@ -388,7 +390,8 @@ def _variant_records(
     records: list[ArtifactRecord[Entry]] = []
     for run_id in _run_ids(frame):
         rows = _rows_of(frame, run_id)
-        target = frozenset(rows if scope.entries is None else rows & scope.entries)
+        wanted = scope.selector.entry_pairs
+        target = frozenset(rows if wanted is None else rows & wanted)
         files = frozenset(
             entry for entry in rows if _variant_table_exists(ds, frame, run_id, entry)
         )
@@ -440,7 +443,8 @@ def _labels_records(
             continue
         for run_id in _run_ids(frame):
             rows = _rows_of(frame, run_id)
-            target = frozenset(rows if scope.entries is None else rows & scope.entries)
+            wanted = scope.selector.entry_pairs
+            target = frozenset(rows if wanted is None else rows & wanted)
             files = frozenset(
                 entry
                 for entry in rows
@@ -470,7 +474,7 @@ def inventory(
     ds: Dataset,
     *,
     kinds: Iterable[ArtifactKind] | None = None,
-    entries: Iterable[Entry] | None = None,
+    scope: Scope | None = None,
     tracks_run_id: str | None = None,
 ) -> DatasetInventory:
     """What this dataset holds: every artifact, its identity and its coverage.
@@ -480,8 +484,8 @@ def inventory(
         kinds: Which artifact kinds to report. ``None`` means every kind the
             running process can report on, which depends on what has been
             imported -- see ``unavailable_kinds`` on the result.
-        entries: Narrow coverage to these ``(group, sequence)`` pairs. ``None``
-            measures against everything the dataset can process.
+        scope: Narrow coverage to what this selector names. ``None`` measures
+            against everything the dataset can process.
         tracks_run_id: Which tracks variant defines the entry universe. Pass the
             one the runs were made under; measuring a variant-pinned run against
             the whole index reads as permanently incomplete.
@@ -490,9 +494,9 @@ def inventory(
         A :class:`DatasetInventory`, which is a cache and never the record.
     """
     wanted = frozenset(kinds) if kinds is not None else _every_kind()
-    scope = InventoryScope(
+    asked = InventoryScope(
         kinds=wanted,
-        entries=frozenset(entries) if entries is not None else None,
+        selector=scope if scope is not None else Scope(),
         tracks_run_id=tracks_run_id,
     )
     reader = IndexReader()
@@ -506,18 +510,18 @@ def inventory(
             # independent derivatives: a playback transcode never satisfies an
             # analysis read, and reporting one would hide the other.
             for media_target in ("analysis", "playback"):
-                records.append(media_derivative_record(ds, media_target, scope, reader))
+                records.append(media_derivative_record(ds, media_target, asked, reader))
             continue
         builder = _CORE_BUILDERS.get(kind)
         if builder is not None:
-            records.extend(builder(ds, scope, reader))
+            records.extend(builder(ds, asked, reader))
             continue
         contributor = inventory_contributor(kind)
         if contributor is None:
             unavailable.add(kind)
             continue
         try:
-            records.extend(contributor(ds, scope, reader))
+            records.extend(contributor(ds, asked, reader))
         except Exception as exc:
             # One producer's failure costs its kind, never the whole answer: an
             # inventory that raises because one tracker root is malformed tells
@@ -526,7 +530,7 @@ def inventory(
 
     return DatasetInventory(
         dataset_root=Path(ds.base_dir),
-        scope=scope,
+        scope=asked,
         records=tuple(records),
         unavailable_kinds=frozenset(unavailable),
         errors=tuple(errors),

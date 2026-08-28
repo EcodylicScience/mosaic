@@ -24,6 +24,7 @@ from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import Inputs
 from mosaic.core.params import Params
+from mosaic.core.scope import Scope
 
 
 class _P(Params):
@@ -67,7 +68,8 @@ class _ScopeFreeFit:
 
 
 def _run(ds: Dataset, feature: _ScopeFreeFit, sequences: list[str] | None):
-    return run_feature(ds, feature, sequences=sequences)
+    scope = Scope(sequences=sequences) if sequences is not None else None
+    return run_feature(ds, feature, scope=scope)
 
 
 def test_a_fit_records_the_scope_it_was_fitted_over(

@@ -28,6 +28,7 @@ from mosaic.core.helpers import (
     resolve_frame_range,
 )
 from mosaic.core.params import Params
+from mosaic.core.scope import Scope
 
 from ._utils import (
     FeatureMeta,
@@ -761,15 +762,15 @@ def compute_run_id(
 def resolve_feature_identity(
     ds: Dataset,
     feature: Feature,
-    entries: Iterable[tuple[str, str]],
     *,
+    scope: Scope,
     tracks_run_id: str | None = None,
     labels_run_id: str | None = None,
     frame_start: int | None = None,
     frame_end: int | None = None,
     overlap_frames: int = 0,
 ) -> tuple[str, ResolvedScope]:
-    """What a run of *feature* over *entries* will be called, without running it.
+    """What a run of *feature* over *scope* will be called, without running it.
 
     **The one place a predicted identity is built**, and both predictors call it:
     the graph planner walking a recipe, and the live ``Pipeline`` previewing its
@@ -777,20 +778,23 @@ def resolve_feature_identity(
     over another run's outputs, and the copy that gets forgotten is always the
     one a user meets first -- the notebooks are the documented reference.
 
-    It mirrors ``_run_feature_impl`` term for term, and the one place the two
-    deliberately differ is the point of the function. Execution resolves its
-    scope from a manifest, which is what is *there*; prediction is handed the
-    entries a run **will** see. Building a manifest to predict reports an empty
-    scope whenever the upstream index does not exist yet, so a cold
-    ``scope_dependent`` step predicted an identifier naming a directory nothing
-    would ever write.
+    It mirrors ``_run_feature_impl`` term for term. The one place the two differ
+    is the point of the function. Execution resolves its scope from a manifest,
+    which is what is *there*. Prediction is handed the entries a run **will**
+    see. Building a manifest to predict reports an empty scope whenever the
+    upstream index does not exist yet, and a cold ``scope_dependent`` step then
+    predicted an identifier naming a directory that nothing would ever write.
 
     Args:
         ds: The dataset, for the variants and compositions the terms read.
         feature: The constructed feature, with its references already pinned --
             call ``resolve_references`` first, exactly as execution does.
-        entries: The ``(group, sequence)`` pairs this run will cover. Ignored by
-            a scope-free feature, which is most of them.
+        scope: The entries this run will cover, named as
+            :class:`~mosaic.core.scope.Scope`. Required, and it must name
+            entries. Prediction does not read an index, and it runs before the
+            index a ``groups`` or ``sequences`` selector would be enumerated
+            against is guaranteed to exist. A scope-free feature ignores it,
+            which is most of them.
         tracks_run_id: Which tracks variant the ``"tracks"`` input resolves to,
             or ``None`` for whichever variant each entry has.
         labels_run_id: The same, for a labels-consuming feature's params.
@@ -803,17 +807,28 @@ def resolve_feature_identity(
         The ``run_id`` and the ``ResolvedScope`` it was computed from, so a
         caller that needs to explain the answer has the terms rather than
         only the digest.
+
+    Raises:
+        ValueError: *scope* names groups or sequences instead of entries.
     """
-    wanted = {(str(group), str(sequence)) for group, sequence in entries}
+    if scope.groups is not None or scope.sequences is not None:
+        raise ValueError(
+            f"resolve_feature_identity is handed the entries a run will cover "
+            f"and does not read an index to enumerate them. {scope!r} names "
+            f"groups or sequences instead. Enumerate them against the dataset "
+            f"first and pass Scope(entries=[...])."
+        )
+    wanted = scope.entry_pairs or set()
     if feature.inputs.is_empty:
         # A feature reading nothing resolves no scope at all, which is what
         # execution gives it -- and handing it the graph's entries would move a
         # scope-dependent identifier for a run that never looks at them.
-        scope = ResolvedScope()
+        resolved = ResolvedScope(selector=scope)
     else:
         reads_tracks = any(item == "tracks" for item in feature.inputs.root)
-        scope = ResolvedScope(
+        resolved = ResolvedScope(
             entries=wanted,
+            selector=scope,
             # Set only by a ``tracks`` input, which is the rule the manifest
             # applies: a feature reading another feature's output inherits no
             # variant, because its upstream already hashed the one it read. A
@@ -828,11 +843,11 @@ def resolve_feature_identity(
             # term is exact rather than predicted.
             compositions=read_entry_compositions(ds, wanted),
         )
-    scope.labels_variants = resolve_labels_variants(ds, feature, labels_run_id)
+    resolved.labels_variants = resolve_labels_variants(ds, feature, labels_run_id)
     run_id, _ = compute_run_id(
-        feature, frame_start, frame_end, scope, overlap_frames=overlap_frames
+        feature, frame_start, frame_end, resolved, overlap_frames=overlap_frames
     )
-    return run_id, scope
+    return run_id, resolved
 
 
 IDX_FLUSH_EVERY: Final = 10
@@ -954,9 +969,6 @@ def build_run_params_payload(
 def run_feature(
     ds: Dataset,
     feature: Feature,
-    groups: Iterable[str] | None = None,
-    sequences: Iterable[str] | None = None,
-    entries: Iterable[tuple[str, str]] | None = None,
     overwrite: bool = False,
     parallel_workers: int | None = None,
     parallel_mode: str | None = "thread",
@@ -967,6 +979,7 @@ def run_feature(
     filter_end_time: float | None = None,
     check_output: bool = False,
     *,
+    scope: Scope | None = None,
     tracks_run_id: str | None = None,
     labels_run_id: str | None = None,
     execution_id: str | None = None,
@@ -985,15 +998,15 @@ def run_feature(
     feature : Feature
         The feature object implementing the Feature protocol.  Its ``inputs``
         attribute controls where data is read from.
-    groups, sequences : optional iterables
-        Scope filter (applies to whichever input source is used). These combine
-        as a cross-product filter (any matching group AND any matching sequence).
-    entries : optional iterable of (group, sequence)
-        Restrict the run to exactly these ``(group, sequence)`` pairs. Unlike
-        ``groups``/``sequences`` this selects an arbitrary subset and is
-        unambiguous when sequence names repeat across groups -- e.g. running a
-        feature over a tag-resolved set of sequences. Intersects with
-        ``groups``/``sequences`` when those are also given.
+    scope : Scope | None
+        What to cover, as :class:`~mosaic.core.scope.Scope` -- the selector the
+        command line, a recipe and every op already take. ``None``, the default,
+        covers every entry the inputs resolve. ``Scope(entries=[...])`` names an
+        arbitrary subset, unambiguous where sequence names repeat across groups.
+        ``Scope(groups=[...], sequences=[...])`` narrows by name, combining as a
+        cross product. A camera-addressed selector narrows to the
+        ``(group, sequence)`` pairs it names, since a feature output is keyed
+        without a camera.
     tracks_run_id : str | None
         Which tracks *variant* the ``"tracks"`` input resolves to. ``None``, the
         default, lets each entry resolve to whichever variant it has -- which is
@@ -1085,9 +1098,7 @@ def run_feature(
             feature,
             ctx,
             storage_feature_name,
-            groups=groups,
-            sequences=sequences,
-            entries=entries,
+            scope=scope,
             tracks_run_id=tracks_run_id,
             labels_run_id=labels_run_id,
             overwrite=overwrite,
@@ -1108,9 +1119,7 @@ def _run_feature_impl(
     ctx: JobContext,
     storage_feature_name: str,
     *,
-    groups: Iterable[str] | None = None,
-    sequences: Iterable[str] | None = None,
-    entries: Iterable[tuple[str, str]] | None = None,
+    scope: Scope | None = None,
     tracks_run_id: str | None = None,
     labels_run_id: str | None = None,
     overwrite: bool = False,
@@ -1143,30 +1152,27 @@ def _run_feature_impl(
     if has_frame_filter and overlap_frames > 0:
         raise ValueError("Frame/time filters and overlap_frames are mutually exclusive")
 
-    # Scope sets
-    groups_set = {str(g) for g in groups} if groups is not None else None
-    sequences_set = {str(s) for s in sequences} if sequences is not None else None
-    entries_set = (
-        {(str(g), str(s)) for g, s in entries} if entries is not None else None
-    )
+    # The selector as the caller named it. An unset one covers every entry the
+    # inputs resolve, the same answer an absent narrowing has always given here.
+    selector = scope if scope is not None else Scope()
 
     # An explicitly empty selector is ambiguous, and currently answers two ways
     # within one call: on a tracks input the manifest tests truthiness and
     # yields the *full* scope, while on a feature input IndexCSV.read tests
-    # `is not None` and yields the *empty* one. Neither is what a caller passing
-    # [] meant. Reject it rather than pick a side. Checked after materializing,
-    # so a generator argument is not consumed by the check. Nothing in src/ or
-    # tests/ passes an empty collection, so this raises for no existing caller.
-    for name, selector in (
-        ("groups", groups_set),
-        ("sequences", sequences_set),
-        ("entries", entries_set),
+    # `is not None` and yields the *empty* one. A caller naming nothing meant
+    # neither answer. Reject it rather than pick a side. An op answers this
+    # question instead of refusing it, through ``check_scope_takes``, which
+    # reads the selector rather than the resolution.
+    for name, narrowing in (
+        ("groups", selector.groups),
+        ("sequences", selector.sequences),
+        ("entries", selector.entries),
     ):
-        if selector is not None and not selector:
+        if narrowing is not None and not narrowing:
             raise ValueError(
-                f"{name}=[] selects nothing, but is read as 'everything' on a "
-                f"tracks input and as 'nothing' on a feature input. Pass None "
-                f"(or omit it) to mean every sequence."
+                f"Scope({name}=[]) selects nothing, but is read as 'everything' "
+                f"on a tracks input and as 'nothing' on a feature input. Omit "
+                f"the scope to mean every sequence."
             )
 
     # Pin every unpinned upstream *before* anything hashes or reads it. An
@@ -1179,15 +1185,10 @@ def _run_feature_impl(
     # Build manifest
     if feature.inputs.is_empty:
         manifest: Manifest = {}
-        scope = ResolvedScope()
+        resolved = ResolvedScope(selector=selector)
     else:
-        manifest, scope = build_manifest(
-            ds,
-            feature.inputs,
-            groups_set,
-            sequences_set,
-            entries_set,
-            tracks_run_id=tracks_run_id,
+        manifest, resolved = build_manifest(
+            ds, feature.inputs, selector, tracks_run_id=tracks_run_id
         )
 
     # Overlap is refused up front, over the whole manifest, rather than as the
@@ -1204,12 +1205,12 @@ def _run_feature_impl(
     # run over different label content gets a different identifier. The same
     # labels_run_id is threaded into _resolve_dependencies below, so the variant
     # the identity is built from is the variant the fit actually reads.
-    scope.labels_variants = resolve_labels_variants(ds, feature, labels_run_id)
+    resolved.labels_variants = resolve_labels_variants(ds, feature, labels_run_id)
 
     # Run ID: content hash of params+inputs+frames (+scope). Attempt-level
     # identity (execution_id, progress, cancel) is deliberately NOT part of it.
     run_id, params_hash = compute_run_id(
-        feature, frame_start, frame_end, scope, overlap_frames=overlap_frames
+        feature, frame_start, frame_end, resolved, overlap_frames=overlap_frames
     )
     ctx.set_run_id(run_id)
     ctx.set_total(len(manifest))
@@ -1217,7 +1218,7 @@ def _run_feature_impl(
     # exactly what is wanted from an attempt that was killed halfway, and a fact
     # written at the end is one such an attempt never records. A global feature's
     # ResolvedScope is empty and honestly records none.
-    ctx.tracks_variant(scope.tracks_variants)
+    ctx.tracks_variant(resolved.tracks_variants)
 
     # Run root + params.json
     run_root = feature_run_root(ds, storage_feature_name, run_id)
@@ -1232,7 +1233,7 @@ def _run_feature_impl(
             feature,
             frame_start,
             frame_end,
-            scope,
+            resolved,
             resolution_payload(resolutions),
             overlap_frames=overlap_frames,
             execution_id=ctx.execution_id,
@@ -1278,7 +1279,7 @@ def _run_feature_impl(
     # `run_feature(..., tracks_run_id=...)` silently ineffective for exactly the
     # features whose whole job is to draw the result.
     if hasattr(feature, "set_scope"):
-        feature.set_scope(scope)
+        feature.set_scope(resolved)
 
     # Resolve dependencies
     artifact_paths, dependency_lookups = _resolve_dependencies(
@@ -1293,7 +1294,7 @@ def _run_feature_impl(
 
     # Build filter factory (shared by fit and apply phases)
     filter_factory = _make_filter_factory(
-        ds, scope, pair_filter_spec, frame_start, frame_end
+        ds, resolved, pair_filter_spec, frame_start, frame_end
     )
 
     # Wire the Job Contract into the feature: trainers (FERAL/kpms/...) that
@@ -1321,7 +1322,7 @@ def _run_feature_impl(
         # `_scope` is the scope of whichever run came last. For a params-level
         # fitter -- scope-free, so every apply scope shares one run root -- those
         # two are different answers, and this is the one that stays true.
-        write_fit_scope(run_root, scope, scope_dependent=feature.scope_dependent)
+        write_fit_scope(run_root, resolved, scope_dependent=feature.scope_dependent)
 
     # Apply phase — index rows are flushed periodically for interrupt recovery
     _pending_idx_rows: list[FeatureIndexRow] = []
@@ -1383,7 +1384,7 @@ def _run_feature_impl(
     # row records what its table was converted from, so the comparison is two index
     # reads rather than a new digest.
     prior_tracks = recorded_tracks_composition(ds, storage_feature_name, run_id)
-    tracks_now_by_entry = tracks_compositions(ds, scope.tracks_variants)
+    tracks_now_by_entry = tracks_compositions(ds, resolved.tracks_variants)
 
     skip_keys: set[str] = set()
     # Entries whose provenance neither side can establish. Collected rather than
@@ -1404,7 +1405,7 @@ def _run_feature_impl(
     tracks_blind: set[tuple[str, str]] = set()
     if state_ready and not overwrite:
         for entry_key in manifest:
-            group, sequence = resolve_sequence_identity(entry_key, scope.entry_map)
+            group, sequence = resolve_sequence_identity(entry_key, resolved.entry_map)
             meta = build_feature_meta(group, sequence, run_root)
             if not meta.out_path.exists():
                 continue
@@ -1440,7 +1441,7 @@ def _run_feature_impl(
             entry = (meta.group, meta.sequence)
             recorded = prior_compositions.get(entry)
             was_made_from = recorded if recorded is not None else ""
-            now_made_of = entry_composition(feature, scope, entry)
+            now_made_of = entry_composition(feature, resolved, entry)
             tracks_was = prior_tracks.get(entry, "")
             tracks_now = tracks_now_by_entry.get(entry, "")
             disposition = cached_entry_disposition(was_made_from, now_made_of)
@@ -1460,7 +1461,7 @@ def _run_feature_impl(
                 continue
             if feature.consumed_roots and disposition == "undetectable":
                 roots_blind.add(entry)
-            if scope.tracks_variants and tracks_disposition == "undetectable":
+            if resolved.tracks_variants and tracks_disposition == "undetectable":
                 tracks_blind.add(entry)
             _record_row(
                 FeatureIndexRow(
@@ -1494,7 +1495,7 @@ def _run_feature_impl(
     if tracks_blind:
         print(
             _blind_tracks_warning(
-                feature.name, scope.tracks_variants, len(tracks_blind)
+                feature.name, resolved.tracks_variants, len(tracks_blind)
             ),
             file=sys.stderr,
         )
@@ -1582,7 +1583,7 @@ def _run_feature_impl(
                     abs_path=Path(ds.relative_to_root(meta.out_path)),
                     consumed_roots=encode_consumed_roots(feature.consumed_roots),
                     consumed_composition=entry_composition(
-                        feature, scope, (meta.group, meta.sequence)
+                        feature, resolved, (meta.group, meta.sequence)
                     ),
                     consumed_tracks_composition=tracks_now_by_entry.get(
                         (meta.group, meta.sequence), ""
@@ -1603,7 +1604,7 @@ def _run_feature_impl(
         # Cooperative cancel checkpoint: covers both apply loops and both the
         # executor and inline branches. Completed entries are already durable.
         ctx.check_cancel()
-        group, sequence = resolve_sequence_identity(entry_key, scope.entry_map)
+        group, sequence = resolve_sequence_identity(entry_key, resolved.entry_map)
         meta = build_feature_meta(group, sequence, run_root)
 
         # Cache hits are resolved up-front in the pre-pass; any entry reaching
@@ -1648,7 +1649,7 @@ def _run_feature_impl(
                     abs_path=Path(ds.relative_to_root(meta.out_path)),
                     consumed_roots=encode_consumed_roots(feature.consumed_roots),
                     consumed_composition=entry_composition(
-                        feature, scope, (group, sequence)
+                        feature, resolved, (group, sequence)
                     ),
                     consumed_tracks_composition=tracks_now_by_entry.get(
                         (group, sequence), ""
@@ -1748,7 +1749,8 @@ def _run_feature_impl(
     # feature that resolved to nothing now writes no row above, so this marks
     # nothing: ``mark_finished`` is a no-op when no row carries the run_id.
     all_entries = {
-        resolve_sequence_identity(entry_key, scope.entry_map) for entry_key in manifest
+        resolve_sequence_identity(entry_key, resolved.entry_map)
+        for entry_key in manifest
     }
     complete = all(
         build_output_path(group, sequence, run_root).exists()
@@ -1869,9 +1871,7 @@ def load_values(
     ds: Dataset,
     sources: Iterable[ValueSource],
     *,
-    groups: Iterable[str] | None = None,
-    sequences: Iterable[str] | None = None,
-    entries: Iterable[tuple[str, str]] | None = None,
+    scope: Scope | None = None,
     filter_start_frame: int | None = None,
     filter_end_frame: int | None = None,
     filter_start_time: float | None = None,
@@ -1885,6 +1885,10 @@ def load_values(
     Sources can reference tracks columns, feature output columns, or
     ground-truth labels. All are aligned by frame/id via a single
     manifest pass.
+
+    ``scope`` is the selector every other entry point takes, as
+    :class:`~mosaic.core.scope.Scope`. ``None``, the default, covers every entry
+    the sources resolve.
 
     ``tracks_run_id`` names one tracks variant, and is only consulted when a
     ``TracksColumn`` is among the sources -- that is what puts the ``"tracks"``
@@ -1936,19 +1940,10 @@ def load_values(
     synthetic_inputs = Inputs(tuple(input_items))
 
     # Scope
-    groups_set = {str(g) for g in groups} if groups is not None else None
-    sequences_set = {str(s) for s in sequences} if sequences is not None else None
-    entries_set = (
-        {(str(g), str(s)) for g, s in entries} if entries is not None else None
-    )
+    selector = scope if scope is not None else Scope()
 
-    manifest, scope = build_manifest(
-        ds,
-        synthetic_inputs,
-        groups_set,
-        sequences_set,
-        entries_set,
-        tracks_run_id=tracks_run_id,
+    manifest, resolved_scope = build_manifest(
+        ds, synthetic_inputs, selector, tracks_run_id=tracks_run_id
     )
 
     # Frame range
@@ -1961,7 +1956,7 @@ def load_values(
     )
 
     filter_factory = _make_filter_factory(
-        ds, scope, pair_filter, frame_start, frame_end
+        ds, resolved_scope, pair_filter, frame_start, frame_end
     )
 
     # Pre-load labels lookups
@@ -1975,7 +1970,7 @@ def load_values(
     all_parts: list[pd.DataFrame] = []
 
     for entry_key, entry_df in iter_manifest(manifest, filter_factory=filter_factory):
-        group, sequence = resolve_sequence_identity(entry_key, scope.entry_map)
+        group, sequence = resolve_sequence_identity(entry_key, resolved_scope.entry_map)
 
         entry_data: dict[str, object] = {}
 

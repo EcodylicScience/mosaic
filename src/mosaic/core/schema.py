@@ -268,7 +268,8 @@ def ensure_track_schema(
 # composite identity/filename key (`<group>__<seq>`, or just `<seq>` when group is
 # empty). It is NOT the canonical way to categorize/group sequences for analysis:
 # flexible, redefinable grouping is done with tags (owned by mosaic-api), and an
-# arbitrary tag-resolved subset can be run via `run_feature(entries=[(group, seq), ...])`.
+# arbitrary tag-resolved subset can be run via
+# `run_feature(scope=Scope(entries=[(group, seq), ...]))`.
 # `group` keeps a structural meaning only as a temporal-contiguity key for the
 # future `continuous` dataset type (see core/pipeline/manifest.py).
 register_track_schema(
@@ -290,7 +291,8 @@ register_track_schema(
         },
         description="Minimal T-Rex-like per-frame, per-id tracks with centroid/pose columns. "
         "`group` is required but may be empty (an optional namespace, not the "
-        "canonical grouping — use tags / run_feature(entries=...) for that).",
+        "canonical grouping -- use tags / run_feature(scope=Scope(entries=...)) "
+        "for that).",
     )
 )
 

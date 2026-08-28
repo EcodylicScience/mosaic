@@ -3,7 +3,7 @@
 A test recording an unwired parameter field asserts an absence, and an absence
 has to be looked for everywhere a reader could sit. These functions parse that
 region and report the field names it reads. :func:`names_called_by` answers the
-neighbouring question about calls, and a negative assertion about a call belongs
+neighboring question about calls, and a negative assertion about a call belongs
 beside the positive one: a body that calls neither of two functions passes an
 "it does not call the wrong one" test without doing the work.
 

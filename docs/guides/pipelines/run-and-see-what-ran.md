@@ -27,7 +27,12 @@ grid.
 The same holds in Python:
 
 ```python
-ds.run_feature(SpeedAngvel(), entries=[("day1", "trial01"), ("day2", "trial07")])
+from mosaic.core.scope import Scope
+
+ds.run_feature(
+    SpeedAngvel(),
+    scope=Scope(entries=[("day1", "trial01"), ("day2", "trial07")]),
+)
 ```
 
 ## Reading the outcome

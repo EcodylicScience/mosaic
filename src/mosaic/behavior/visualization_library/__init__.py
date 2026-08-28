@@ -25,8 +25,9 @@ Example usage:
     playback.play_video(dataset, group="hex", sequence="hex_3", ...)
 
     from mosaic.behavior.visualization_library.egocentric_crop import EgocentricCrop
+    from mosaic.core.scope import Scope
     crop_feat = EgocentricCrop(params={"target_id": 0, "crop_size": (256, 256)})
-    dataset.run_feature(crop_feat, sequences=["hex_3"])
+    dataset.run_feature(crop_feat, scope=Scope(sequences=["hex_3"]))
 """
 
 from . import (

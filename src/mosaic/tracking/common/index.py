@@ -278,7 +278,8 @@ def _tracker_run_records(
                 present_by_run.setdefault(run_id, set()).add(entry)
         for run_id in sorted(rows_by_run):
             rows = frozenset(rows_by_run[run_id])
-            target = frozenset(rows if scope.entries is None else rows & scope.entries)
+            wanted = scope.selector.entry_pairs
+            target = frozenset(rows if wanted is None else rows & wanted)
             present = frozenset(present_by_run.get(run_id, set()))
             coverage = Coverage(target=target, present=present)
             finished = finished_by_run.get(run_id, "")

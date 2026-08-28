@@ -105,8 +105,9 @@ class EgocentricCrop:
     Examples
     --------
     Process a single individual:
+    >>> from mosaic.core.scope import Scope
     >>> crop = EgocentricCrop(params={"target_id": 0, "crop_size": (256, 256)})
-    >>> dataset.run_feature(crop, sequences=["hex_3"])
+    >>> dataset.run_feature(crop, scope=Scope(sequences=["hex_3"]))
 
     Bee-style crop with body masking and CLAHE:
     >>> crop = EgocentricCrop(params={
@@ -117,7 +118,7 @@ class EgocentricCrop:
     ...     "grayscale": True,
     ...     "angle_col": "ANGLE",
     ... })
-    >>> dataset.run_feature(crop, sequences=["hex_3"])
+    >>> dataset.run_feature(crop, scope=Scope(sequences=["hex_3"]))
     """
 
     category = "media"

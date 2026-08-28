@@ -151,3 +151,20 @@ class Scope(StrictModel):
     def addresses_cameras(self) -> bool:
         """Whether ``entries`` holds ``(group, sequence, camera)`` triples."""
         return self.entries is not None and _is_camera_grain(self.entries)
+
+    @property
+    def entry_pairs(self) -> set[Entry] | None:
+        """The ``(group, sequence)`` pairs ``entries`` names, or ``None``.
+
+        A camera-addressed selector reduces to its pairs. Every index whose row
+        is keyed without a camera narrows on these, and there are enough of
+        them -- the tracks index, each feature index, the labels index, a
+        feature manifest -- that the reduction belongs here instead of at each
+        one.
+
+        ``None`` where ``entries`` is unset, which keeps the empty selection
+        (a set naming no entry) distinct from the absent one.
+        """
+        if self.entries is None:
+            return None
+        return {(entry[0], entry[1]) for entry in self.entries}

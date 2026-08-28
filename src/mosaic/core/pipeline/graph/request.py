@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from mosaic.runlog import new_execution_id, now_iso
+from mosaic.core.scope import Scope
 
 from .digest import recipe_digest
 from .model import BoundRef, FeatureStepSpec, Recipe, Request
@@ -36,11 +37,10 @@ from .store import load_recipe, recipe_path, save_recipe, save_request
 from .topo import topological_order
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Mapping
     from pathlib import Path
 
     from mosaic.core.dataset import Dataset
-    from mosaic.core.entry import Entry
 
     from ..inventory.cache import InventoryCache
     from .compatibility import DeclarationCatalog
@@ -76,7 +76,7 @@ def submit_request(
     ds: Dataset,
     recipe: Recipe,
     *,
-    entries: Iterable[Entry] | None = None,
+    scope: Scope | None = None,
     bind: Mapping[str, BoundRef] | None = None,
     allow_partial: bool = False,
     max_concurrent_steps: int | None = None,
@@ -94,8 +94,8 @@ def submit_request(
     Args:
         ds: The dataset this submission is against.
         recipe: The graph. Refused before the dataset is touched if malformed.
-        entries: Narrow the graph to these entries, or ``None`` for the dataset's
-            own scope.
+        scope: Narrow the graph to what this selector names, or ``None`` for
+            the dataset's own scope.
         bind: Out-of-graph artifacts this submission pins, by step id.
         allow_partial: Whether a coverage shortfall may proceed.
         max_concurrent_steps: How many of this request's steps may run at once.
@@ -118,11 +118,11 @@ def submit_request(
     # is what makes that a refusal naming the schemas rather than an exception
     # out of the middle of a hash.
     refuse_mixed_schemas(ds, "")
-    narrowing = None if entries is None else [(str(g), str(s)) for g, s in entries]
+    narrowing = scope if scope is not None else Scope()
     plan = plan_pipeline(
         ds,
         recipe,
-        intended_entries=narrowing,
+        scope=narrowing,
         inventory=inventory,
         catalog=catalog,
     )
@@ -132,7 +132,7 @@ def submit_request(
         recipe_digest=recipe_digest(recipe),
         owner=owner,
         created_at=now_iso(),
-        entries=narrowing,
+        scope=narrowing,
         bind=dict(bind or {}),
         allow_partial=allow_partial,
         max_concurrent_steps=max_concurrent_steps,

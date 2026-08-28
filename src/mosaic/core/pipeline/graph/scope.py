@@ -17,17 +17,22 @@ entry set a step *will* see is knowable now, and supplying it makes the resolved
 identity exact.
 
 **Where the entries come from, in order.** An explicit narrowing if the caller
-gave one -- that is the submission saying what it wants. Otherwise the dataset's
-tracks universe, which is what every feature reads. And when that is empty
-*because the graph itself produces the tracks*, the media universe, since a
-tracker turns videos into tracks one entry at a time and those videos are on
-disk before anything is planned.
+gave one -- that is the submission saying what it wants. A selector naming
+groups or sequences is enumerated against the universe below rather than taken
+as an entry list, because only the index knows which entries those names cover.
+Otherwise the dataset's tracks universe, which is what every feature reads. And
+when that is empty *because the graph itself produces the tracks*, the media
+universe, since a tracker turns videos into tracks one entry at a time and those
+videos are on disk before anything is planned.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from mosaic.core.scope import Scope
+
+from .._utils import ResolvedScope
 from ..inventory.scan import narrow_target, reportable_universe
 from .model import Recipe
 from .topo import topological_order
@@ -36,7 +41,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
     from mosaic.core.dataset import Dataset
-    from mosaic.core.entry import Entry
 
 
 __all__ = ["graph_writes_tracks", "intended_scope", "media_universe"]
@@ -81,18 +85,18 @@ def graph_writes_tracks(recipe: Recipe, produces_tracks: Iterable[str]) -> bool:
 def intended_scope(
     ds: Dataset,
     recipe: Recipe,
-    intended_entries: Iterable[tuple[str, str]] | None = None,
+    scope: Scope | None = None,
     *,
     tracks_run_id: str | None = None,
     produces_tracks: Iterable[str] = (),
-) -> frozenset[Entry]:
-    """The entries this graph is planned over.
+) -> ResolvedScope:
+    """The entries this graph is planned over, beside the selector they came from.
 
     Args:
         ds: The dataset being planned against. Read only.
         recipe: The graph, consulted only for whether it produces its own tracks.
-        intended_entries: What the submission asked for, or ``None`` for
-            everything the dataset can process.
+        scope: What the submission asked for. ``None`` and an unset selector
+            both mean everything the dataset can process.
         tracks_run_id: Which tracks variant defines the universe. Pass the one
             the graph reads; measuring against the whole index would widen the
             scope past what any step will actually see.
@@ -101,15 +105,26 @@ def intended_scope(
             importing the op registry.
 
     Returns:
-        The ``(group, sequence)`` set every ``scope_dependent`` step in this
-        graph will hash. Empty is a real answer -- a dataset with neither tracks
-        nor media has nothing to plan over -- and is not a failure here; the
-        step that cares reports the shortfall.
+        A :class:`~mosaic.core.pipeline._utils.ResolvedScope` whose ``entries``
+        every ``scope_dependent`` step in this graph will hash, and whose
+        ``selector`` is what was asked. An empty resolution is a real answer --
+        a dataset with neither tracks nor media has nothing to plan over -- and
+        the step that cares reports the shortfall.
     """
-    if intended_entries is not None:
+    selector = scope if scope is not None else Scope()
+    if not selector.is_unset:
         # An explicit narrowing is the submission speaking, and it is not
-        # widened back out by anything found on disk.
-        return frozenset(intended_entries)
+        # widened back out by anything found on disk. A selector naming groups
+        # or sequences enumerates against the tracks universe, the one every
+        # feature step reads.
+        universe = reportable_universe(ds, tracks_run_id)
+        if not universe and graph_writes_tracks(recipe, produces_tracks):
+            universe = media_universe(ds)
+        named = selector.entry_pairs
+        entries = (
+            frozenset(named) if named is not None else narrow_target(universe, selector)
+        )
+        return ResolvedScope(entries=set(entries), selector=selector)
 
     # ``reportable_universe`` rather than ``entry_universe``: an entry carrying
     # two genuine tracks recipes makes the strict resolver raise, correctly,
@@ -118,11 +133,11 @@ def intended_scope(
     # plan down over an ambiguity that only matters when a step comes to read.
     universe = reportable_universe(ds, tracks_run_id)
     if universe:
-        return narrow_target(universe)
+        return ResolvedScope(entries=set(narrow_target(universe)), selector=selector)
 
     # No tracks yet. If this graph is what produces them, the entries it will
     # cover are the ones there is media for -- which is on disk now, so the
     # answer is exact rather than a guess.
     if graph_writes_tracks(recipe, produces_tracks):
-        return media_universe(ds)
-    return frozenset()
+        return ResolvedScope(entries=set(media_universe(ds)), selector=selector)
+    return ResolvedScope(selector=selector)

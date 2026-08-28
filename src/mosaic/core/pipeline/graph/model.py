@@ -35,6 +35,7 @@ from typing import Annotated, ClassVar, Final, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.scope import Scope
 
 __all__ = [
     "BoundRef",
@@ -327,8 +328,8 @@ class Request(GraphModel):
     recipe_digest: str
     owner: str = ""
     created_at: str = ""
-    entries: list[tuple[str, str]] | None = None
-    """Narrow the graph to these ``(group, sequence)`` pairs. ``None`` is all."""
+    scope: Scope = Field(default_factory=Scope)
+    """Narrow the graph to what this selector names. An unset one is all."""
     bind: dict[str, BoundRef] = Field(default_factory=dict)
     allow_partial: bool = False
     """Whether a coverage shortfall may proceed.
@@ -354,10 +355,6 @@ class Request(GraphModel):
                     f"bind[{step_id!r}] names no run_id; a bind exists to pin one"
                 )
         return self
-
-    def entry_set(self) -> frozenset[tuple[str, str]] | None:
-        """The narrowing as a set, or ``None`` when the whole dataset is meant."""
-        return None if self.entries is None else frozenset(self.entries)
 
     def execution_of(self, step_id: str) -> str:
         """Which attempt *step_id* is, or ``KeyError``.

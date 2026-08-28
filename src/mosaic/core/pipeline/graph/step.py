@@ -36,6 +36,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, Literal
 
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.scope import Scope
 from mosaic.runlog import JsonlRunLog, read_run, run_log_dir, run_log_path
 
 from ..inventory.cache import InventoryCache
@@ -220,7 +221,7 @@ def _execute(
 
     preflight(ds, plan, step_id, allow_partial=request.allow_partial)
 
-    asked = _asked_of(planned, plan)
+    asked = asked_of(planned, plan)
     storage, run_id = planned.storage_name, planned.run_id or ""
     quarantined = store.quarantined_entries(storage, run_id, asked)
     if quarantined:
@@ -243,7 +244,7 @@ def _execute(
         planned = plan.step(step_id)
         if planned.status in COMPLETE_STATUSES:
             return _cached(ds, planned, attempt=attempt, owner=owner)
-        asked = _asked_of(planned, plan)
+        asked = asked_of(planned, plan)
         storage, run_id = planned.storage_name, planned.run_id or ""
 
     # A wait is not a verdict, so it narrows this attempt and decides nothing.
@@ -312,7 +313,7 @@ def _measured(
     """
     _ = inventory.revalidate()
     view = coverage_against(
-        inventory.get(entries=plan.scope or None),
+        inventory.get(scope=Scope(entries=sorted(plan.scope)) if plan.scope else None),
         _produced_ref(planned, outcome.run_id),
         plan.scope,
     )
@@ -422,13 +423,37 @@ def _pinned_parents(
     return pinned
 
 
-def _asked_of(planned: PlannedStep, plan: Plan) -> tuple[Entry, ...]:
+def asked_of(planned: PlannedStep, plan: Plan) -> tuple[Entry, ...]:
     """What this step should be asked to compute.
 
     The narrowed list where the plan produced one, and the whole scope otherwise
     -- which is what a cold step and an all-or-nothing op step both get.
+
+    :attr:`Scope.is_unset` decides between the two. Every selector instance is
+    truthy, and testing the selector itself keeps the whole-scope answer from
+    ever being given.
+
+    A selector naming groups or sequences is refused. ``plan_pipeline``
+    enumerates one against the tracks universe before any step is planned, and
+    neither answer below fits it. The unset answer covers every entry in the
+    plan and the named one covers none.
+
+    Raises:
+        ValueError: ``planned.spec.entries`` names groups or sequences instead
+            of entries.
     """
-    return planned.spec.entries or tuple(sorted(plan.scope))
+    entries = planned.spec.entries
+    if entries.groups is not None or entries.sequences is not None:
+        raise ValueError(
+            f"asked_of returns the entries a step will compute and does not "
+            f"read an index to enumerate them. Step {planned.step_id!r} was "
+            f"given {entries!r}, which names groups or sequences. Plan the "
+            f"recipe first and pass each step the Scope(entries=[...]) that "
+            f"plan_pipeline enumerates."
+        )
+    if entries.is_unset:
+        return tuple(sorted(plan.scope))
+    return tuple(sorted(entries.entry_pairs or ()))
 
 
 def _run(
@@ -480,7 +505,7 @@ def _run(
         result = run_feature(
             ds,
             build_step_feature(spec),
-            entries=list(asked) or None,
+            scope=Scope(entries=sorted(asked)) if asked else None,
             overwrite=overwrite,
             tracks_run_id=spec.tracks_run_id,
             overlap_frames=spec.overlap_frames,

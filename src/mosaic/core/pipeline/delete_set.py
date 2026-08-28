@@ -34,13 +34,14 @@ declined rather than half-applied when the reached entries are only part of it.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from ..scope import Scope
 from .fit_scope import read_fit_scope
 from .index import feature_index, feature_index_path
 from .index import feature_run_root
@@ -103,22 +104,35 @@ class DeleteSetReport:
 
 def delete_set(
     ds: Dataset,
-    changed: Iterable[tuple[str, str]],
     root: str,
     *,
+    scope: Scope,
     apply: bool = False,
 ) -> DeleteSetReport:
-    """The artifacts a change to *root* under *changed* made wrong.
+    """The artifacts a change to *root* under *scope* made wrong.
 
     Dry-run unless *apply*. Deletes per ``(run_id, group, sequence)``: the output
     file, then the index row that named it.
+
+    *scope* is required and must name the entries whose source moved. This
+    deletes what it resolves to, and an omitted selector would mean every entry
+    in the dataset.
 
     Only ``drifted`` is a candidate. A reached artifact whose recorded and current
     compositions still agree is current; one whose verdict is ``unknown`` is
     declined, because an absent record is not evidence of change and deleting on
     it would be deleting on a guess.
+
+    Raises:
+        ValueError: *scope* names groups or sequences instead of entries.
     """
-    reached = reached_by(ds, changed, root)
+    if scope.groups is not None or scope.sequences is not None:
+        raise ValueError(
+            f"delete_set acts on the entries it is given and does not read an "
+            f"index to enumerate them, and {scope!r} names groups or "
+            f"sequences. Enumerate them first and pass Scope(entries=[...])."
+        )
+    reached = reached_by(ds, scope.entry_pairs or set(), root)
     if reached.empty:
         return DeleteSetReport(applied=False, candidates=(), declined=())
 
@@ -232,7 +246,7 @@ def _apply(ds: Dataset, candidates: Sequence[DeleteCandidate]) -> list[str]:
             index = feature_index(feature_index_path(ds, name))
         else:
             index = tracks_index(tracks_index_path(ds))
-        _ = index.drop_entries(entries, run_id=run_id)
+        _ = index.drop_entries(scope=Scope(entries=entries), run_id=run_id)
 
     removed: list[str] = []
     for candidate in candidates:

@@ -25,6 +25,7 @@ from mosaic.core.pipeline.inventory.scan import (
     narrow_target,
     run_covers,
 )
+from mosaic.core.scope import Scope
 
 STORAGE = "speed-angvel__from__tracks"
 
@@ -46,14 +47,29 @@ def test_the_universe_is_what_can_actually_be_processed(
 def test_narrowing_intersects_every_axis() -> None:
     universe = frozenset({("g", "a"), ("g", "b"), ("h", "a")})
 
-    assert narrow_target(universe, groups=["g"]) == frozenset({("g", "a"), ("g", "b")})
-    assert narrow_target(universe, sequences=["a"]) == frozenset(
+    assert narrow_target(universe, Scope(groups=["g"])) == frozenset(
+        {("g", "a"), ("g", "b")}
+    )
+    assert narrow_target(universe, Scope(sequences=["a"])) == frozenset(
         {("g", "a"), ("h", "a")}
     )
-    assert narrow_target(universe, groups=["g"], sequences=["a"]) == frozenset(
+    assert narrow_target(universe, Scope(groups=["g"], sequences=["a"])) == frozenset(
         {("g", "a")}
     )
     assert narrow_target(universe) == universe
+    assert narrow_target(universe, Scope()) == universe
+
+
+def test_a_named_selector_that_lists_nothing_narrows_to_nothing() -> None:
+    """The empty selection covers none, and an unset one covers everything.
+
+    An empty list used to read here as no restriction at all. A misspelled
+    scope then measured coverage against the whole dataset.
+    """
+    universe = frozenset({("g", "a"), ("g", "b")})
+
+    assert narrow_target(universe, Scope(entries=[])) == frozenset()
+    assert narrow_target(universe, Scope(groups=[])) == frozenset()
 
 
 # --- coverage over a run root -------------------------------------------------
@@ -141,7 +157,11 @@ def test_a_run_covering_some_of_the_universe_is_partial(
     ``absent`` would say nothing ran when half of it did.
     """
     feature = build_feature("speed-angvel", None, None)
-    run_id = str(scenario_dataset.run_feature(feature, entries=[("", "seq_a")]).run_id)
+    run_id = str(
+        scenario_dataset.run_feature(
+            feature, scope=Scope(entries=[("", "seq_a")])
+        ).run_id
+    )
 
     record = inventory(scenario_dataset, kinds=["feature"]).record(
         FeatureRunRef(name=STORAGE, run_id=run_id)
