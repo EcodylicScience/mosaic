@@ -54,19 +54,19 @@ $ mosaic run [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--feature <str>`: Feature slug to run, e.g. 'speed-angvel'.
-* `--kind <str>`: Op kind to run, e.g. 'infer-pose' or 'transcode'.
-* `--graph-request <str>`: Run one step of this submitted pipeline request. The request is read from the dataset that --manifest names.
-* `--step <str>`: Which step of --graph-request to run.
-* `--params <str>`: Params as inline JSON, @file.json, or @- (stdin).
-* `--inputs <str>`: Feature inputs as JSON (default ["tracks"]). Feature runs only.
-* `--entries <str>`: Restrict to group:sequence (repeatable). Feature runs only.
-* `--tracks-run-id <str>`: Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Feature runs only; needed when one sequence has two recipes.
-* `--labels-run-id <str>`: Which labels variant to read, e.g. 'trex.0.1-abc123def0'. Feature runs only; needed when one sequence has two recipes.
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--feature TEXT`: Feature slug to run, e.g. 'speed-angvel'.
+* `--kind TEXT`: Op kind to run, e.g. 'infer-pose' or 'transcode'.
+* `--graph-request TEXT`: Run one step of this submitted pipeline request. The request is read from the dataset that --manifest names.
+* `--step TEXT`: Which step of --graph-request to run.
+* `--params TEXT`: Params as inline JSON, @file.json, or @- (stdin).
+* `--inputs TEXT`: Feature inputs as JSON (default ["tracks"]). Feature runs only.
+* `--entries TEXT`: Restrict to group:sequence (repeatable). Feature runs only.
+* `--tracks-run-id TEXT`: Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Feature runs only; needed when one sequence has two recipes.
+* `--labels-run-id TEXT`: Which labels variant to read, e.g. 'trex.0.1-abc123def0'. Feature runs only; needed when one sequence has two recipes.
 * `--overwrite`: Recompute even if a cached run exists.
-* `--owner <str>`: Free-form attribution recorded on the attempt.
-* `--execution-id <str>`: Reuse an externally minted ULID (executor unit-of-work).
+* `--owner TEXT`: Free-form attribution recorded on the attempt.
+* `--execution-id TEXT`: Reuse an externally minted ULID (executor unit-of-work).
 * `--json`: Emit one JSON object on stdout; logs go to stderr.
 * `--help`: Show this message and exit.
 
@@ -82,8 +82,8 @@ $ mosaic status [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--execution-id <str>`: Attempt ULID to look up.  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--execution-id TEXT`: Attempt ULID to look up.  [required]
 * `--progress`: Attach the per-step progress stream.
 * `--json`: Emit the row as JSON on stdout.
 * `--help`: Show this message and exit.
@@ -100,10 +100,10 @@ $ mosaic runs [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Filter by runs.kind ('feature', 'trex', or an op kind).
-* `--status <str>`: Filter by status (running|finished|failed|cancelled).
-* `--target <str>`: Filter by exact runs.target (feature-slug filter).
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--kind TEXT`: Filter by runs.kind ('feature', 'trex', or an op kind).
+* `--status TEXT`: Filter by status (running|finished|failed|cancelled).
+* `--target TEXT`: Filter by exact runs.target (feature-slug filter).
 * `--json`: Emit the rows as a JSON array.
 * `--help`: Show this message and exit.
 
@@ -119,8 +119,8 @@ $ mosaic cancel [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--execution-id <str>`: Attempt ULID to cancel.  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--execution-id TEXT`: Attempt ULID to cancel.  [required]
 * `--json`: Emit the result as JSON on stdout.
 * `--help`: Show this message and exit.
 
@@ -131,26 +131,26 @@ Run an integrated tracker over scoped videos, bridging results into tracks/.
 **Usage**:
 
 ```console
-$ mosaic track [OPTIONS] {kind}
+$ mosaic track [OPTIONS] KIND
 ```
 
 **Arguments**:
 
-* `kind`: Which tracker to run, e.g. 'trex', 'sleap', 'litpose'.  [required]
+* `KIND`: Which tracker to run, e.g. 'trex', 'sleap', 'litpose'.  [required]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--set <str>`: A tracker parameter, as key=value (repeatable). Values are read as JSON when they parse as JSON, else as a string. Run 'mosaic tracking describe <kind>' for the available keys.
-* `--groups <str>`: Scope to these groups.
-* `--sequences <str>`: Scope to these sequences.
-* `--entries <str>`: Scope to group:sequence pairs (repeatable). A bare token is a sequence in the empty group.
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--set TEXT`: A tracker parameter, as key=value (repeatable). Values are read as JSON when they parse as JSON, else as a string. Run 'mosaic tracking describe <kind>' for the available keys.
+* `--groups TEXT`: Scope to these groups.
+* `--sequences TEXT`: Scope to these sequences.
+* `--entries TEXT`: Scope to group:sequence pairs (repeatable). A bare token is a sequence in the empty group.
 * `--overwrite`
 * `--convert-to-tracks / --no-convert-to-tracks`: [default: convert-to-tracks]
-* `--idle-timeout <float>`: Kill a phase after this many seconds with no output from the tool.  [default: 900]
-* `--max-runtime <float>`: Optional absolute wall-clock ceiling.
-* `--owner <str>`
-* `--execution-id <str>`: Reuse an externally minted ULID.
+* `--idle-timeout FLOAT`: Kill a phase after this many seconds with no output from the tool.  [default: 900]
+* `--max-runtime FLOAT`: Optional absolute wall-clock ceiling.
+* `--owner TEXT`
+* `--execution-id TEXT`: Reuse an externally minted ULID.
 * `--json`: Emit one JSON object on stdout.
 * `--help`: Show this message and exit.
 
@@ -166,8 +166,8 @@ $ mosaic sequences [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--group <str>`: Restrict to one group namespace.
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--group TEXT`: Restrict to one group namespace.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -183,8 +183,8 @@ $ mosaic inventory [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Restrict to an artifact kind (repeatable): feature, tracks-variant, labels-variant, tracker-run, frame-run, trained-model, media-derivative.
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--kind TEXT`: Restrict to an artifact kind (repeatable): feature, tracks-variant, labels-variant, tracker-run, frame-run, trained-model, media-derivative.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -195,21 +195,21 @@ Create a dataset: write dataset.yaml and the roots it declares.
 **Usage**:
 
 ```console
-$ mosaic init [OPTIONS] [directory]
+$ mosaic init [OPTIONS] [DIRECTORY]
 ```
 
 **Arguments**:
 
-* `directory`: Dataset directory. Created if it does not exist.  [default: .]
+* `[DIRECTORY]`: Dataset directory. Created if it does not exist.  [default: .]
 
 **Options**:
 
-* `--name <str>`: Dataset name. Defaults to the directory name.
-* `--version <str>`: The dataset's own version string.  [default: 0.1.0]
-* `--root <str>`: Override one root as KEY=PATH, relative to the dataset (repeatable).
-* `--tag <str>`: Add a text tag as NAME=VALUE (repeatable). For a typed tag, use 'mosaic tags define' afterwards.
-* `--note <str>`: Notes text for the dataset.
-* `--notes-file <path>`: Read the notes from this file instead.
+* `--name TEXT`: Dataset name. Defaults to the directory name.
+* `--version TEXT`: The dataset's own version string.  [default: 0.1.0]
+* `--root TEXT`: Override one root as KEY=PATH, relative to the dataset (repeatable).
+* `--tag TEXT`: Add a text tag as NAME=VALUE (repeatable). For a typed tag, use 'mosaic tags define' afterwards.
+* `--note TEXT`: Notes text for the dataset.
+* `--notes-file PATH`: Read the notes from this file instead.
 * `--force`: Overwrite an existing manifest.
 * `--json`: Emit the manifest path as JSON.
 * `--help`: Show this message and exit.
@@ -226,9 +226,9 @@ $ mosaic scan [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Restrict to one kind (repeatable). Default: all.
-* `--only <str>`: Restrict to these source ids (repeatable). The declaration is unchanged.
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--kind TEXT`: Restrict to one kind (repeatable). Default: all.
+* `--only TEXT`: Restrict to these source ids (repeatable). The declaration is unchanged.
 * `--reassign`: Let the scan re-derive identity for rows a caller assigned. Off by default: a scan's identity is a guess and an assignment is not.
 * `--prune-unsourced`: Also drop rows no scanned source claims. Off by default: those are usually an assignment or a reference to a file elsewhere.
 * `--json`: Emit the written index paths as JSON.
@@ -255,9 +255,9 @@ $ mosaic reindex [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--feature <str>`: Restrict to a single feature storage name.
-* `--root <str>`: Restrict to one root key (tracks, features, trex, sleap, ...). Default is every root with a reconcilable index.
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--feature TEXT`: Restrict to a single feature storage name.
+* `--root TEXT`: Restrict to one root key (tracks, features, trex, sleap, ...). Default is every root with a reconcilable index.
 * `--apply / --dry-run`: Rewrite indexes (drop stale rows). Default is a dry-run report.  [default: dry-run]
 * `--json`: Emit the result as JSON.
 * `--help`: Show this message and exit.
@@ -285,10 +285,10 @@ $ mosaic reconcile [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--apply / --dry-run`: Perform the re-addresses and marker refreshes. Default is a dry-run report.  [default: dry-run]
 * `--force`: Reserved for the destructive path (deleting derivatives whose identity moved but could not be re-addressed); not yet wired.
-* `--only <str>`: Restrict to one artifact kind (repeatable), e.g. --only features.
+* `--only TEXT`: Restrict to one artifact kind (repeatable), e.g. --only features.
 * `--json`: Emit the result as JSON.
 * `--help`: Show this message and exit.
 
@@ -328,7 +328,7 @@ $ mosaic reprobe-media [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--apply / --dry-run`: Rewrite the media index in place. Default is a dry-run report.  [default: dry-run]
 * `--skip-unreadable`: Leave rows untouched instead of aborting when their media is missing from disk or is present but cannot be probed. The two are reported separately either way.
 * `--json`: Emit the result as JSON.
@@ -353,9 +353,9 @@ $ mosaic prune-media [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--apply / --dry-run`: Delete unreferenced derivatives. Default is a dry-run report.  [default: dry-run]
-* `--min-age-hours <float>`: Never delete a file modified inside this window. An in-flight encode's working file looks exactly like a stranded one, so this is what keeps a prune from racing a running job.  [default: 24.0]
+* `--min-age-hours FLOAT`: Never delete a file modified inside this window. An in-flight encode's working file looks exactly like a stranded one, so this is what keeps a prune from racing a running job.  [default: 24.0]
 * `--relink`: Also repair: point a link at an unreferenced derivative a current recipe would reproduce, and clear a link whose file is gone. Turns the next run's re-encode into a skip.
 * `--include-stray`: Also delete files under the transcode directory that are not derivatives, such as an interrupted encode's working file. Subdirectories and symlinks are never deleted.
 * `--json`: Emit the result as JSON.
@@ -383,12 +383,12 @@ $ mosaic sweep-tracking [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--apply / --dry-run`: Delete what is reclaimable. Default is a dry-run report.  [default: dry-run]
-* `--root <str>`: Restrict to one tracker root (repeatable): trex, sleap, ...
-* `--tracker-days <float>`: Keep finished tracker output this long (default 14).  [default: 14.0]
-* `--inference-days <float>`: Keep finished inference output this long (default 3).  [default: 3.0]
-* `--conversion-days <float>`: Keep an unreferenced shared conversion this long (default 14). One a tracker run still names is refused whatever its age.  [default: 14.0]
+* `--root TEXT`: Restrict to one tracker root (repeatable): trex, sleap, ...
+* `--tracker-days FLOAT`: Keep finished tracker output this long (default 14).  [default: 14.0]
+* `--inference-days FLOAT`: Keep finished inference output this long (default 3).  [default: 3.0]
+* `--conversion-days FLOAT`: Keep an unreferenced shared conversion this long (default 14). One a tracker run still names is refused whatever its age.  [default: 14.0]
 * `--json`: Emit the result as JSON.
 * `--help`: Show this message and exit.
 
@@ -421,7 +421,7 @@ $ mosaic upgrade-tracks [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--apply / --dry-run`: Write the rescaled tables. Default is a dry-run report.  [default: dry-run]
 * `--json`: Emit the result as JSON.
 * `--help`: Show this message and exit.
@@ -438,11 +438,11 @@ $ mosaic convert-tracks [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--params <str>`: Converter params as JSON, @file.json, or @-.
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--params TEXT`: Converter params as JSON, @file.json, or @-.
 * `--overwrite`: Overwrite existing output parquet files.
 * `--merge-per-sequence / --no-merge-per-sequence`: Merge rows per (group, sequence). Default: each format's converter decides. --merge-per-sequence forces it for every format, --no-merge-per-sequence for none.
-* `--group-from <str>`: 'infile' | 'filename' | 'both'.
+* `--group-from TEXT`: 'infile' | 'filename' | 'both'.
 * `--strict-schema / --no-strict-schema`: Refuse a table that fails schema validation instead of warning and skipping its sequence. Off by default, which is the converter default.  [default: no-strict-schema]
 * `--json`: Emit the result as JSON.
 * `--help`: Show this message and exit.
@@ -459,10 +459,10 @@ $ mosaic convert-labels [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Label kind, e.g. 'behavior' or 'id_tags'.  [default: behavior]
-* `--source-format <str>`: Source format (e.g. 'calms21_npy', 'boris_csv').
-* `--params <str>`: Converter params as JSON, @file.json, or @-.
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--kind TEXT`: Label kind, e.g. 'behavior' or 'id_tags'.  [default: behavior]
+* `--source-format TEXT`: Source format (e.g. 'calms21_npy', 'boris_csv').
+* `--params TEXT`: Converter params as JSON, @file.json, or @-.
 * `--overwrite`: Overwrite existing label files.
 * `--json`: Emit the result as JSON.
 * `--help`: Show this message and exit.
@@ -508,12 +508,12 @@ Describe one feature: name, version, category, and its params JSON-Schema.
 **Usage**:
 
 ```console
-$ mosaic features describe [OPTIONS] {slug}
+$ mosaic features describe [OPTIONS] SLUG
 ```
 
 **Arguments**:
 
-* `slug`: Feature slug, e.g. 'speed-angvel'.  [required]
+* `SLUG`: Feature slug, e.g. 'speed-angvel'.  [required]
 
 **Options**:
 
@@ -551,7 +551,7 @@ $ mosaic tracking list [OPTIONS]
 
 **Options**:
 
-* `--category <str>`: Filter by category (extract|train|infer|convert).
+* `--category TEXT`: Filter by category (extract|train|infer|convert).
 * `--json`: Emit the list as a JSON array.
 * `--help`: Show this message and exit.
 
@@ -562,12 +562,12 @@ Describe one tracking op: kind, category, version, and its params JSON-Schema.
 **Usage**:
 
 ```console
-$ mosaic tracking describe [OPTIONS] {kind}
+$ mosaic tracking describe [OPTIONS] KIND
 ```
 
 **Arguments**:
 
-* `kind`: Tracking-op kind, e.g. 'infer-pose'.  [required]
+* `KIND`: Tracking-op kind, e.g. 'infer-pose'.  [required]
 
 **Options**:
 
@@ -601,12 +601,12 @@ Probe FILE and print its MediaFacts and both verdicts as JSON on stdout.
 **Usage**:
 
 ```console
-$ mosaic media probe [OPTIONS] {file}
+$ mosaic media probe [OPTIONS] FILE
 ```
 
 **Arguments**:
 
-* `file`: [required]
+* `FILE`: [required]
 
 **Options**:
 
@@ -629,18 +629,18 @@ code the other commands use, and 2 is skipped because click already exits
 **Usage**:
 
 ```console
-$ mosaic media compare [OPTIONS] {left} {right}
+$ mosaic media compare [OPTIONS] LEFT RIGHT
 ```
 
 **Arguments**:
 
-* `left`: [required]
-* `right`: [required]
+* `LEFT`: [required]
+* `RIGHT`: [required]
 
 **Options**:
 
-* `--fps-tolerance <float>`: Absolute frames-per-second tolerance. Omit to derive it from the reference file's duration, which is correct unless you have a specific reason to override it.
-* `--duration-tolerance <float>`: Absolute duration tolerance in seconds. Omit to derive it.
+* `--fps-tolerance FLOAT`: Absolute frames-per-second tolerance. Omit to derive it from the reference file's duration, which is correct unless you have a specific reason to override it.
+* `--duration-tolerance FLOAT`: Absolute duration tolerance in seconds. Omit to derive it.
 * `--help`: Show this message and exit.
 
 ### `mosaic media transcode`
@@ -650,18 +650,18 @@ Transcode FILE for the analysis or playback target, running the minimum operatio
 **Usage**:
 
 ```console
-$ mosaic media transcode [OPTIONS] {file}
+$ mosaic media transcode [OPTIONS] FILE
 ```
 
 **Arguments**:
 
-* `file`: [required]
+* `FILE`: [required]
 
 **Options**:
 
-* `--target <analysis|playback>`: Which derivative to produce: analysis or playback.  [required]
-* `--output <path>`: Output file path, or an existing directory the derivative is written into under the source stem. Required: the CLI knows no dataset layout.  [required]
-* `--profile <chrome-149>`: Playback policy profile.  [default: chrome-149]
+* `--target [analysis|playback]`: Which derivative to produce: analysis or playback.  [required]
+* `--output PATH`: Output file path, or an existing directory the derivative is written into under the source stem. Required: the CLI knows no dataset layout.  [required]
+* `--profile [chrome-149]`: Playback policy profile.  [default: chrome-149]
 * `--allow-hardware / --no-hardware`: Permit av1_nvenc hardware encoding. Taken only when this machine can actually open that encoder: a build listing it on a device that cannot run it encodes on the CPU instead. Off by default.  [default: no-hardware]
 * `--help`: Show this message and exit.
 
@@ -700,7 +700,7 @@ $ mosaic pipeline validate [OPTIONS]
 
 **Options**:
 
-* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-r, --recipe TEXT`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -716,9 +716,9 @@ $ mosaic pipeline plan [OPTIONS]
 
 **Options**:
 
-* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
+* `-r, --recipe TEXT`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--entry TEXT`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -734,7 +734,7 @@ $ mosaic pipeline show [OPTIONS]
 
 **Options**:
 
-* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-r, --recipe TEXT`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -755,12 +755,12 @@ $ mosaic pipeline submit [OPTIONS]
 
 **Options**:
 
-* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
+* `-r, --recipe TEXT`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--entry TEXT`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--allow-partial`: Let a step proceed when it would run over less than planned.
-* `--max-concurrent-steps <int>`: How many of this request's steps may run at once. Advisory here.
-* `--owner <str>`: Recorded on the request and its attempts.
+* `--max-concurrent-steps INTEGER`: How many of this request's steps may run at once. Advisory here.
+* `--owner TEXT`: Recorded on the request and its attempts.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -776,11 +776,11 @@ $ mosaic pipeline run [OPTIONS]
 
 **Options**:
 
-* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
+* `-r, --recipe TEXT`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--entry TEXT`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--allow-partial`: Proceed when a step would run over less than it was planned for, or when it produces nothing new.
-* `--owner <str>`: Recorded on each attempt.
+* `--owner TEXT`: Recorded on each attempt.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -800,8 +800,8 @@ $ mosaic pipeline status [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--request <str>`: Which submission to report on.  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--request TEXT`: Which submission to report on.  [required]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -839,8 +839,8 @@ $ mosaic sources list [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Restrict to one kind. Default: all three.
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--kind TEXT`: Restrict to one kind. Default: all three.
 * `--json`: Emit JSON.
 * `--help`: Show this message and exit.
 
@@ -856,22 +856,22 @@ $ mosaic sources add [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Which raw root: media, tracks or labels.  [required]
-* `--path <str>`: Where the files are. May be outside the dataset.  [required]
-* `--id <str>`: Stable handle. Defaults to the directory name.
-* `--file <str>`: Claim only this file, relative to --path (repeatable). Makes this a file source, which claims nothing else beside it.
-* `--files-from <path>`: Read the file list from this file, one per line.
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--kind TEXT`: Which raw root: media, tracks or labels.  [required]
+* `--path TEXT`: Where the files are. May be outside the dataset.  [required]
+* `--id TEXT`: Stable handle. Defaults to the directory name.
+* `--file TEXT`: Claim only this file, relative to --path (repeatable). Makes this a file source, which claims nothing else beside it.
+* `--files-from PATH`: Read the file list from this file, one per line.
 * `--recursive / --no-recursive`: Walk subdirectories.  [default: recursive]
-* `--extensions <str>`: Media only: comma-separated suffixes.
-* `--layout <str>`: Media only: 'stem' or 'per_sequence'.
-* `--match-mode <str>`: Media only: 'exact' or 'prefix'.
-* `--patterns <str>`: Tracks/labels only: comma-separated globs.
-* `--src-format <str>`: Tracks/labels only: which converter reads these.
-* `--exclude-patterns <str>`: Tracks/labels only: basename globs to skip.
+* `--extensions TEXT`: Media only: comma-separated suffixes.
+* `--layout TEXT`: Media only: 'stem' or 'per_sequence'.
+* `--match-mode TEXT`: Media only: 'exact' or 'prefix'.
+* `--patterns TEXT`: Tracks/labels only: comma-separated globs.
+* `--src-format TEXT`: Tracks/labels only: which converter reads these.
+* `--exclude-patterns TEXT`: Tracks/labels only: basename globs to skip.
 * `--multi-sequences-per-file`: One file holds several sequences.
-* `--group-from <str>`: 'filename' or 'parent'. Multi-sequence files only.
-* `--group-pattern <str>`: Regex extracting the group from a path.
+* `--group-from TEXT`: 'filename' or 'parent'. Multi-sequence files only.
+* `--group-pattern TEXT`: Regex extracting the group from a path.
 * `--md5 / --no-md5`: Checksum each file. On by default: the composition hash is over these.  [default: md5]
 * `--json`: Emit JSON.
 * `--help`: Show this message and exit.
@@ -888,10 +888,10 @@ $ mosaic sources add-files [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Which raw root: media, tracks or labels.  [required]
-* `--id <str>`: Which source to extend.  [required]
-* `--file <str>`: Path relative to the source (repeatable).  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--kind TEXT`: Which raw root: media, tracks or labels.  [required]
+* `--id TEXT`: Which source to extend.  [required]
+* `--file TEXT`: Path relative to the source (repeatable).  [required]
 * `--json`: Emit JSON.
 * `--help`: Show this message and exit.
 
@@ -907,10 +907,10 @@ $ mosaic sources remove-files [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Which raw root: media, tracks or labels.  [required]
-* `--id <str>`: Which source to shrink.  [required]
-* `--file <str>`: Path relative to the source (repeatable).  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--kind TEXT`: Which raw root: media, tracks or labels.  [required]
+* `--id TEXT`: Which source to shrink.  [required]
+* `--file TEXT`: Path relative to the source (repeatable).  [required]
 * `--json`: Emit JSON.
 * `--help`: Show this message and exit.
 
@@ -926,9 +926,9 @@ $ mosaic sources remove [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Which raw root: media, tracks or labels.  [required]
-* `--id <str>`: Which source to undeclare.  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--kind TEXT`: Which raw root: media, tracks or labels.  [required]
+* `--id TEXT`: Which source to undeclare.  [required]
 * `--drop-rows / --keep-rows`: Also delete the index rows this source was claiming.  [default: keep-rows]
 * `--json`: Emit JSON.
 * `--help`: Show this message and exit.
@@ -965,7 +965,7 @@ $ mosaic notes show [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--json`: Emit JSON.
 * `--help`: Show this message and exit.
 
@@ -976,17 +976,17 @@ Replace the dataset's notes.
 **Usage**:
 
 ```console
-$ mosaic notes set [OPTIONS] [text]
+$ mosaic notes set [OPTIONS] [TEXT]
 ```
 
 **Arguments**:
 
-* `text`: The notes. Use '-' to read them from standard input.
+* `[TEXT]`: The notes. Use '-' to read them from standard input.
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--from-file <path>`: Read the notes from this file.
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--from-file PATH`: Read the notes from this file.
 * `--help`: Show this message and exit.
 
 ### `mosaic notes clear`
@@ -1001,7 +1001,7 @@ $ mosaic notes clear [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--help`: Show this message and exit.
 
 ## `mosaic tags`
@@ -1037,7 +1037,7 @@ $ mosaic tags list [OPTIONS]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--json`: Emit JSON.
 * `--help`: Show this message and exit.
 
@@ -1048,24 +1048,24 @@ Declare a tag, or redeclare one, keeping any value that still fits.
 **Usage**:
 
 ```console
-$ mosaic tags define [OPTIONS] {name}
+$ mosaic tags define [OPTIONS] NAME
 ```
 
 **Arguments**:
 
-* `name`: The tag name.  [required]
+* `NAME`: The tag name.  [required]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--type <str>`: label, text, int, float, bool or categorical.  [required]
-* `--constraints <str>`: Constraints as a JSON object.
-* `--options <str>`: categorical: comma-separated allowed values.
-* `--min <float>`: int/float: lowest allowed value.
-* `--max <float>`: int/float: highest allowed value.
-* `--max-length <int>`: text: longest allowed value.
-* `--description <str>`: What the tag means.
-* `--order <int>`: Display order. Ties break on name.  [default: 0]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--type TEXT`: label, text, int, float, bool or categorical.  [required]
+* `--constraints TEXT`: Constraints as a JSON object.
+* `--options TEXT`: categorical: comma-separated allowed values.
+* `--min FLOAT`: int/float: lowest allowed value.
+* `--max FLOAT`: int/float: highest allowed value.
+* `--max-length INTEGER`: text: longest allowed value.
+* `--description TEXT`: What the tag means.
+* `--order INTEGER`: Display order. Ties break on name.  [default: 0]
 * `--help`: Show this message and exit.
 
 ### `mosaic tags set`
@@ -1075,17 +1075,17 @@ Set an already-defined tag's value, parsed as its declared type.
 **Usage**:
 
 ```console
-$ mosaic tags set [OPTIONS] {name} [value]
+$ mosaic tags set [OPTIONS] NAME [VALUE]
 ```
 
 **Arguments**:
 
-* `name`: The tag to set.  [required]
-* `value`: The value. Omit only for a label tag, which has none.
+* `NAME`: The tag to set.  [required]
+* `[VALUE]`: The value. Omit only for a label tag, which has none.
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--help`: Show this message and exit.
 
 ### `mosaic tags remove`
@@ -1095,14 +1095,14 @@ Drop a tag.
 **Usage**:
 
 ```console
-$ mosaic tags remove [OPTIONS] {name}
+$ mosaic tags remove [OPTIONS] NAME
 ```
 
 **Arguments**:
 
-* `name`: The tag to drop.  [required]
+* `NAME`: The tag to drop.  [required]
 
 **Options**:
 
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-m, --manifest PATH`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--help`: Show this message and exit.
