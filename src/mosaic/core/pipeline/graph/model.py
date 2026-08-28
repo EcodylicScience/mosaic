@@ -166,8 +166,8 @@ class OpStepSpec(_StepBase):
     """One op run: a kind and its settings.
 
     A step names no scope. Which entries it covers is the plan's answer, not the
-    recipe's, and it reaches the op as an argument. That is what keeps one
-    recipe runnable over several datasets.
+    recipe's, and it is given to the op as an argument. One recipe therefore
+    runs over several datasets.
     """
 
     type: Literal["op"] = "op"

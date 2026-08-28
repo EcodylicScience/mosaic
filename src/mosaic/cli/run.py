@@ -51,7 +51,7 @@ def split_op_scope(params: dict[str, object]) -> tuple[dict[str, object], Scope]
 
     ``groups`` / ``sequences`` name a cross product only the dataset can list.
     ``run_op`` enumerates it and refuses a scope the op's declaration does not
-    accept, so nothing here reads the dataset or the op.
+    accept. Nothing here reads the dataset or the op.
 
     Params naming no scope key at all come back unchanged beside an unset
     selector. Every other key belongs to the op, and the op's own model
@@ -359,9 +359,12 @@ def run_command(
     except ValidationError as exc:
         fail(f"Invalid params: {terse(exc)}")
     except ValueError as exc:
-        # e.g. an invalid input chain (a Result that isn't track-shaped). Present
-        # it cleanly rather than as a traceback. (ValidationError, a ValueError
-        # subclass, is handled above, so this only catches plain ValueErrors.)
+        # An invalid input chain (a Result that is not track-shaped), and every
+        # ScopeRefused, which subclasses ValueError. That is the whole mechanism
+        # behind the scope refusals this command reports. run_op raises one and
+        # it is rendered here as a message rather than a traceback.
+        # ValidationError is also a ValueError subclass and is handled above.
+        # This arm takes everything else.
         fail(str(exc))
 
     if as_json:

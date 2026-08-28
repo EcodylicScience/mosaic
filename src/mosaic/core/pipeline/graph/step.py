@@ -56,7 +56,12 @@ from .plan import (
 )
 from .preflight import CoverageShortfall, StepRefused, preflight, refuse_mixed_schemas
 from .request import load_recipe_for_request
-from .resolve import build_step_feature, build_step_op_params, declared_version
+from .resolve import (
+    build_step_feature,
+    build_step_op_params,
+    declared_version,
+    op_class_for_kind,
+)
 from .topo import ancestors_of
 
 if TYPE_CHECKING:
@@ -433,6 +438,12 @@ def asked_of(planned: PlannedStep, plan: Plan) -> tuple[Entry, ...]:
     truthy, and testing the selector itself keeps the whole-scope answer from
     ever being given.
 
+    An op declaring ``scope_takes = "none"`` is the one step that computes no
+    entry, and it returns ``()``. Its unset selector means it covers none of
+    them, inverting the rule above. The callers of this function query the
+    failure store by entry, and reading the whole plan scope here would
+    quarantine a training step over entries it never touched.
+
     A selector naming groups or sequences is refused. ``plan_pipeline``
     enumerates one against the tracks universe before any step is planned, and
     neither answer below fits it. The unset answer covers every entry in the
@@ -442,6 +453,10 @@ def asked_of(planned: PlannedStep, plan: Plan) -> tuple[Entry, ...]:
         ValueError: ``planned.spec.entries`` names groups or sequences instead
             of entries.
     """
+    if planned.kind == "op":
+        op_cls = op_class_for_kind(planned.spec.op_kind)
+        if op_cls is not None and op_cls.scope_takes == "none":
+            return ()
     entries = planned.spec.entries
     if entries.groups is not None or entries.sequences is not None:
         raise ValueError(
@@ -488,10 +503,11 @@ def _run(
             ds,
             planned.spec.op_kind,
             build_step_op_params(planned.spec),
-            # The entries this step was planned over. The planner resolved the
-            # same set for plan_identity, and a step covering more than its plan
-            # named would write under an identifier minted for less.
-            scope=Scope(entries=sorted(asked)) if asked else None,
+            # The selector the plan gave this step, rather than the entry tuple
+            # *asked* enumerates from it. The planner resolved this same
+            # selector for plan_identity, and a step cannot cover more than the
+            # identifier it was minted for.
+            scope=planned.spec.entries,
             execution_id=attempt,
             owner=owner,
             cancel_token=cancel_token,

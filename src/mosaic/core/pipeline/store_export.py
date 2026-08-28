@@ -109,14 +109,14 @@ class StoreExportParams(Params):
     """Parameters for one entry's store export.
 
     The encode settings alone. Which entry is exported is an argument to the
-    run, and the op's declaration is what holds it to one. Which cameras of
-    that entry are exported comes from the same selector: a triple names one,
-    and a pair names every camera of the entry.
+    run, and the op's declaration holds it to one. Which cameras of that entry
+    are exported comes from the same selector. A triple names one camera, and
+    a pair names every camera of the entry.
 
-    The identities of the stores actually exported are hashed in the
-    coverage's place. Exporting one camera and exporting both therefore name
-    two runs, where a coverage in the recipe would name the same camera's file
-    two different things.
+    The identities of the exported stores are hashed in the coverage's place.
+    Exporting one camera and exporting both therefore name two runs, where a
+    coverage in the recipe would name the same camera's file two different
+    things.
     """
 
     av1_crf: Annotated[int, Declared(_AV1_CRF_DESCRIPTION)] = ANALYSIS_ENCODING.quality
@@ -161,13 +161,24 @@ def export_run_id(recipe_hash: str, source_uuids: list[str]) -> str:
 def _one_entry(scope: ResolvedScope) -> Entry:
     """The single entry *scope* covers.
 
-    ``scope_takes = "exactly-one"`` is what holds a run to one entry, and
+    ``scope_takes = "exactly-one"`` restricts a run to one entry.
     :func:`~mosaic.core.pipeline.ops.check_scope_takes` raises before any op body
-    runs. This unwraps the result rather than re-checking it, and a scope holding
-    anything else is a caller that bypassed the runner.
+    runs, and the planner and the runner both call it. This unwraps rather
+    than re-checks. What it reports is the bypass, not the arity, because a
+    caller that arrives here has skipped the check and needs to hear that. The
+    vocabulary of a scope refusal belongs to the checker, and repeating its
+    opening clause here would give one refusal two wordings to drift apart.
     """
-    (entry,) = sorted(scope.entries)
-    return entry
+    entries = sorted(scope.entries)
+    if len(entries) != 1:
+        message = (
+            f"export-store was called outside run_op, with a scope of "
+            f"{len(entries)} entries. Call "
+            f"mosaic.core.pipeline.ops.run_op, which resolves the scope, "
+            f"refuses one this op does not accept, and states the arity."
+        )
+        raise TranscodeError(message)
+    return entries[0]
 
 
 def _stores_for(
@@ -189,21 +200,43 @@ def _stores_for(
     cameras = scope.selector.cameras
     matched = ds.match_media_rows(group, sequence)
     stores: list[tuple[int, Path, "pd.Series"]] = []
+    held: set[str] = set()
     for _, row in matched.iterrows():
         cells = row_mapping(row)
         if str(cells.get("media_type", "")) != "imgstore":
             continue
+        held.add(str(cells.get("camera", "")))
         if cameras and str(cells.get("camera", "")) not in cameras:
             continue
         video_order = int(str(cells.get("video_order", "") or 0))
         stores.append((video_order, ds.resolve_path(str(cells["abs_path"])), row))
     if not stores:
-        camera_note = f" camera {', '.join(sorted(cameras))}" if cameras else ""
-        raise TranscodeError(
-            f"{group}/{sequence}{camera_note}: no imgstore rows to export; "
-            f"a plain video needs no export and is read directly"
-        )
+        raise TranscodeError(_nothing_to_export(group, sequence, cameras, held))
     return stores
+
+
+def _nothing_to_export(
+    group: str, sequence: str, cameras: set[str], held: set[str]
+) -> str:
+    """Why an export found no store, told apart from why it found no camera.
+
+    Two failures produce one empty list. The entry records no imgstore at all,
+    and the entry records imgstores under other camera names. Reporting the
+    first for the second sends a caller to the media type when the camera name
+    is what is wrong.
+    """
+    if cameras and held:
+        named = ", ".join(sorted(cameras))
+        available = ", ".join(sorted(name for name in held if name)) or "none named"
+        return (
+            f"{group}/{sequence}: no imgstore is recorded under camera "
+            f"{named}. This entry's cameras are: {available}."
+        )
+    camera_note = f" camera {', '.join(sorted(cameras))}" if cameras else ""
+    return (
+        f"{group}/{sequence}{camera_note}: no imgstore rows to export; "
+        f"a plain video needs no export and is read directly"
+    )
 
 
 def _store_uuids(ds: "Dataset", scope: ResolvedScope) -> list[str]:
@@ -228,7 +261,13 @@ def _store_uuids(ds: "Dataset", scope: ResolvedScope) -> list[str]:
 
 @register_op
 class StoreExportOp(Op[StoreExportParams]):
-    """Export one entry's imgstore recordings as plain video and link them."""
+    """Export one entry's imgstore recordings as plain video and link them.
+
+    Reuse is decided per store by the recipe-addressed filename plus the forward
+    link, and ``overwrite`` opens that gate. An attempt that passes it re-encodes
+    and relinks an export already on disk. That is how a file written by a
+    build whose output is no longer trusted is replaced.
+    """
 
     kind = "export-store"
     domain = "media"

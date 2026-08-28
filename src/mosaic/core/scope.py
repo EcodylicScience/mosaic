@@ -158,9 +158,9 @@ class Scope(StrictModel):
 
         Empty where the selector names pairs or nothing, which both mean every
         camera of every entry named. The one op that reads a camera filters its
-        rows by this set, so naming two cameras of one entry narrows to those
-        two without changing the entry count an arity declaration is checked
-        against.
+        rows by this set. Naming two cameras of one entry narrows to those
+        two without changing the entry count an arity declaration is
+        checked against.
         """
         if self.entries is None or not _is_camera_grain(self.entries):
             return set()

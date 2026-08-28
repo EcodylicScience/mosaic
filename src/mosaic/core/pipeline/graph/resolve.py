@@ -240,13 +240,13 @@ def build_op_params(kind: str, params: Mapping[str, JsonValue]) -> "Params":
     """Validate one op step's params against the op's own model.
 
     The op half of :func:`build_feature`, and the same single-site rule. This is
-    what ``run_op`` does with the same mapping, so a recipe that validates here
-    is one that runs.
+    what ``run_op`` does with the same mapping. A recipe that validates here is
+    one that runs.
 
     The recipe's params are validated as written. An op step's scope comes from
-    the plan rather than from the recipe, which is what lets one recipe run over
-    several datasets, and it reaches the op as ``run_op``'s ``scope`` argument
-    rather than as a params field.
+    the plan rather than from the recipe, which lets one recipe run over several
+    datasets. It is given to the op as ``run_op``'s ``scope`` argument rather
+    than as a params field.
 
     Raises:
         StepBuildError: The kind names nothing, or the params do not validate.

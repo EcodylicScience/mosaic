@@ -187,10 +187,10 @@ class TestRunOpRefusesAScope:
     """``run_op`` resolves a scope and refuses one the op does not accept.
 
     The one place a scope is refused, and the choke point every execution
-    passes through: the library entry points, ``mosaic run --kind``,
-    ``mosaic track`` and a graph step all reach an op through here. An op that
-    checked its own scope would be a second copy of a rule that has to answer
-    the same way for all seventeen.
+    passes through. The library entry points, ``mosaic run --kind``,
+    ``mosaic track`` and a graph step all start an op here. An op that checked
+    its own scope would be a second copy of a rule that has to answer the same
+    way for all seventeen.
     """
 
     def test_run_op_takes_a_scope_keyword(self) -> None:
@@ -200,7 +200,7 @@ class TestRunOpRefusesAScope:
         assert parameter.default is None
 
     def test_run_op_resolves_the_scope_and_checks_it(self) -> None:
-        """Read out of the source, so a refusal cannot be lost to a mock."""
+        """Read out of the source, where a mock cannot hide a missing call."""
         called = names_called_by(ops_module, "run_op")
         assert "resolve_scope" in called
         assert "check_scope_takes" in called
@@ -208,7 +208,7 @@ class TestRunOpRefusesAScope:
     def test_no_op_body_checks_its_own_scope(self) -> None:
         """One rule, in one place. An op accepts the scope it is handed."""
         register_ops()
-        assert len(OPS) == 17, "every op is registered, so none is skipped below"
+        assert len(OPS) == 17, "every op is registered; none is skipped below"
         checking = {
             kind
             for kind, op in OPS.items()

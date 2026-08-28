@@ -383,9 +383,9 @@ class TestScopeInsideParams:
     def test_an_entry_list_alone_is_sorted_and_collapsed(self, tmp_path: Path) -> None:
         """The params key resolves the way ``--entries`` does, through one selector.
 
-        Read off ``op_entries``, which is what an op body receives. An entry
-        named twice is one entry, and the list is ordered, so a run covering
-        one set of entries records one list however a caller wrote them.
+        Read off ``op_entries``, the value an op body receives. An entry named
+        twice is one entry, and the list is ordered. A run covering one set of
+        entries therefore records one list however a caller wrote them.
         """
         ds = self._dataset(tmp_path)
         _, scope = split_op_scope(

@@ -437,7 +437,7 @@ class TranscodeOp(Op[TranscodeParams]):
 
     Reuse is decided per source by the recipe-addressed filename plus the forward
     link, and ``overwrite`` opens that gate. An attempt that passes it re-encodes
-    and relinks a derivative already on disk, which is how a file written by a
+    and relinks a derivative already on disk. That is how a file written by a
     build whose output is no longer trusted is replaced.
     """
 

@@ -496,6 +496,46 @@ def test_an_op_step_is_given_the_entries_its_plan_resolved(
     assert seen == [Scope(entries=[("", "seq_a")])]
 
 
+def test_a_scope_free_op_step_is_given_no_scope_inside_a_narrowed_graph(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A training step reads a directory, and a narrowed graph must not scope it.
+
+    Every op step used to be handed the plan's entries. An op declaring
+    ``scope_takes = "none"`` refuses those. A graph narrowed to any entry
+    therefore could not run a training step at all, failing with a scope
+    refusal before the trainer was reached.
+
+    Asserted on what ``run_op`` received, because the refusal it caused is
+    raised inside ``run_op`` and a test that only checked for an exception
+    would pass on any other failure.
+    """
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "id": "train",
+                    "type": "op",
+                    "kind": "train-pose",
+                    "params": {"data": "datasets/pose/data.yaml", "epochs": 1},
+                }
+            ],
+        }
+    )
+    submitted = submit_request(tracked, recipe, scope=Scope(entries=[("", "seq_a")]))
+    seen: list[Scope | None] = []
+
+    def _capture(*args: object, scope: Scope | None = None, **kwargs: object) -> str:
+        seen.append(scope)
+        return "train-pose.0.2-0000000000"
+
+    monkeypatch.setattr(step_module, "run_op", _capture)
+    _ = execute_step(tracked, submitted.request, "train")
+
+    assert seen == [Scope()], "a scope-free op is asked to cover nothing"
+
+
 # --- the request as a whole ---------------------------------------------------
 
 
@@ -655,3 +695,42 @@ def test_a_sequence_selector_is_refused_the_same_way() -> None:
 
     with pytest.raises(ValueError, match="names groups or sequences"):
         _ = asked_of(_planned(Scope(sequences=["seq_a"])), plan)
+
+
+def test_a_scope_free_op_step_is_asked_for_no_entry() -> None:
+    """A training step computes no entry, and its unset selector says so.
+
+    The unset-means-everything rule is a feature rule. An op declaring
+    ``scope_takes = "none"`` reads a prepared directory, and ``asked_of``'s
+    callers query the failure store by entry -- so answering with the plan
+    scope would quarantine the step over entries it never touched.
+    """
+    plan = Plan(recipe_digest="d", scope=frozenset({("", "seq_a"), ("", "seq_b")}))
+    training = PlannedStep(
+        step_id="train",
+        kind="op",
+        runs="train-pose",
+        spec=StepSpec(
+            step_id="train", kind="op", op_kind="train-pose", entries=Scope()
+        ),
+    )
+
+    assert asked_of(training, plan) == ()
+
+
+def test_a_scoped_op_step_is_still_asked_for_the_whole_plan_scope() -> None:
+    """The narrowing above is by declaration, not by a step being an op."""
+    plan = Plan(recipe_digest="d", scope=frozenset({("", "seq_a"), ("", "seq_b")}))
+    resample = PlannedStep(
+        step_id="resample",
+        kind="op",
+        runs="resample-tracks",
+        spec=StepSpec(
+            step_id="resample",
+            kind="op",
+            op_kind="resample-tracks",
+            entries=Scope(),
+        ),
+    )
+
+    assert asked_of(resample, plan) == (("", "seq_a"), ("", "seq_b"))

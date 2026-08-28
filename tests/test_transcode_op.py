@@ -24,8 +24,8 @@ from mosaic_media.transcode import ANALYSIS_ENCODING, TranscodeError
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS, row_to_facts
-from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.scope import Scope
+from tests.helpers import resolved_scope
 from mosaic.core.pipeline.media_index import (
     MediaIndexScope,
     frame_from_rows,
@@ -347,15 +347,15 @@ def test_overwrite_forces_a_re_encode(
     """A derivative already on disk is rebuilt rather than reused.
 
     Counted at ``run_transcode``, the call that does the encoding. A skipped
-    entry never reaches it, so the count is zero for a reuse and cannot be
-    satisfied by the file merely still being there. mtime would not do: the
-    reuse path leaves the file untouched and a re-encode on a coarse clock can
-    land in the same tick.
+    entry never calls it. The count is therefore zero for a reuse, and the file
+    still being on disk cannot satisfy it. mtime would not do. The reuse path
+    leaves the file untouched, and a re-encode on a coarse clock can land in
+    the same tick.
 
-    The second run's own reuse gate is the thing under test, so the first run
-    has to have written the file and its forward link. Both assertions are
-    needed -- one run and one skip together are what say the gate closed and
-    then opened.
+    The second run's own reuse gate is the thing under test. The first run
+    therefore has to have written the file and its forward link. Both
+    assertions are needed: one skip and one run together say the gate closed
+    and then opened.
     """
     import mosaic.core.pipeline.transcode as transcode_module
 
@@ -364,9 +364,20 @@ def test_overwrite_forces_a_re_encode(
     _ = run_op(ds, "transcode", params, scope=GS)
 
     encodes: list[Path] = []
-    real = transcode_module.run_transcode
 
-    def counted(source: Path, dest: Path, *args: object, **kwargs: object) -> object:
+    def counted(
+        source: Path,
+        dest: Path,
+        *args: object,
+        real: Callable[..., object] = transcode_module.run_transcode,
+        **kwargs: object,
+    ) -> object:
+        """Record the destination, then encode it for real.
+
+        *real* is bound as a default so it keeps the open callable type this
+        wrapper forwards to. Read as a module attribute it narrows back to the
+        concrete signature, which a ``*args`` forward cannot satisfy.
+        """
         encodes.append(dest)
         return real(source, dest, *args, **kwargs)
 
@@ -639,10 +650,9 @@ def test_the_run_identity_ignores_the_source_order() -> None:
 def test_the_params_declare_no_coverage() -> None:
     """The recipe hash cannot read an entry, because there is no field to read.
 
-    What a run covers reaches the identifier through ``transcode_run_id``'s
+    What a run covers enters the identifier through ``transcode_run_id``'s
     sources, never through the recipe. Two scopes therefore write derivatives
-    under one recipe hash, which is what lets a second scope reuse the first's
-    files.
+    under one recipe hash, and a second scope reuses the first's files.
     """
     assert "entries" not in TranscodeParams.model_fields
 
@@ -743,8 +753,9 @@ def test_transcode_refuses_a_run_with_no_scope(
 
     The refusal used to come from the params model, which declared a required
     non-empty ``entries``. It comes from the ``scope_takes`` declaration now,
-    read by the one checker every op passes through -- so this drives ``run_op``
-    rather than the checker, which is what says the two are wired together.
+    read by the one checker every op passes through. This drives ``run_op``
+    rather than the checker, which is the only way to say the two are wired
+    together.
     """
     ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
     from mosaic.core.pipeline.ops import ScopeRefused
@@ -766,7 +777,7 @@ def test_a_repeated_entry_names_the_entry_not_the_count() -> None:
     from mosaic.core.pipeline.transcode import TranscodeOp
 
     selector = Scope(entries=[("g", "s"), ("g", "s")])
-    scope = ResolvedScope(entries=set(selector.entries or []), selector=selector)
+    scope = resolved_scope(selector, ("g", "s"))
     assert TranscodeOp().target(TranscodeParams(target="analysis"), scope) == "g/s"
 
 
