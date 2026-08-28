@@ -6,35 +6,15 @@ entries and mean opposite things. Unset covers every indexed entry, and empty
 covers none.
 """
 
-import ast
 import inspect
-import textwrap
-from types import FunctionType
 
 import pytest
 
+from mosaic.core.pipeline import ops as ops_module
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.ops import ScopeRefused, check_scope_takes, run_op
 from mosaic.core.scope import Scope
-
-
-def _names_called_by(function: FunctionType) -> set[str]:
-    """Every function name *function*'s body calls, bare or through an object.
-
-    Attribute calls are collected by their final name, which is what makes
-    ``ds.resolve_scope(...)`` visible. An aliased import stays out of reach of
-    any source-level read of a body.
-    """
-    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        if isinstance(node.func, ast.Name):
-            names.add(node.func.id)
-        elif isinstance(node.func, ast.Attribute):
-            names.add(node.func.attr)
-    return names
+from tests.helpers import names_called_by
 
 
 def _resolved(scope: Scope, *entries: tuple[str, str]) -> ResolvedScope:
@@ -219,11 +199,7 @@ class TestRunOpAcceptsAScope:
         assert parameter.default is None
 
     def test_run_op_resolves_the_scope_and_checks_nothing(self) -> None:
-        """The seam is the whole product here, and the refusal is not wired.
-
-        Read from the parsed body rather than the source text, which keeps a
-        comment naming either function from being mistaken for a call to it.
-        """
-        called = _names_called_by(run_op)
+        """The seam is the whole product here, and the refusal is not wired."""
+        called = names_called_by(ops_module, "run_op")
         assert "resolve_scope" in called
         assert "check_scope_takes" not in called
