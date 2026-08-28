@@ -1,10 +1,16 @@
-"""How ``mosaic run`` is told what to cover, and what it refuses to be told.
+"""How a command is told what to cover, and what it refuses to be told.
 
 One vocabulary serves both arms. ``--entries``, ``--groups`` and
 ``--sequences`` name a scope for a feature run and for an op run alike, and a
 selector written inside ``--params`` is refused: those keys are fields on no
 feature and on no op, and a run that accepted one would take a narrowing its
 own model never validated.
+
+A refused scope is written once, by ``check_scope_takes``, in the
+``Scope(...)`` its library, planner and API callers construct. Each command
+appends the flags it offers, which differ: ``mosaic run`` has three and
+``mosaic pipeline`` has ``--entry``. Both are asserted here so the two cannot
+drift from the one sentence they share.
 
 Every case here drives the real command. A unit call to the selector builder
 proves the builder works and says nothing about whether the command gets to it,
@@ -332,3 +338,73 @@ def test_a_scope_free_op_is_not_refused_when_no_scope_is_named(
     )
 
     assert "takes no entry scope" not in result.output
+
+
+# --- how a refusal reads ---------------------------------------------------------
+
+
+def test_a_refused_scope_names_the_flags_this_command_offers(scoped: Dataset) -> None:
+    """The checker answers in ``Scope(...)``, which nobody types at a terminal.
+
+    Both halves are asserted. The consequence the checker states is what decides
+    whether to narrow or to proceed, and no flag list replaces it -- a rewrite
+    that dropped it would leave a message saying which flags exist and not why
+    they matter here.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(scoped.manifest_path),
+            "--kind",
+            "transcode",
+            "--params",
+            json.dumps({"target": "analysis"}),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "re-encode every video in the dataset" in result.output
+    assert "--entries group:sequence" in result.output
+    assert "--groups / --sequences" in result.output
+
+
+def test_a_pipeline_refusal_names_the_flag_that_command_offers(
+    scoped: Dataset, tmp_path: Path
+) -> None:
+    """``mosaic pipeline`` offers ``--entry``, and used to answer with a traceback.
+
+    ``plan_pipeline`` raises the refusal and no verb caught it, so the message
+    reached a terminal under a stack trace or not at all.
+    """
+    recipe = tmp_path / "recipe.json"
+    _ = recipe.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "steps": [
+                    {"id": "export", "type": "op", "kind": "export-store", "params": {}}
+                ],
+            }
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--manifest",
+            str(scoped.manifest_path),
+            "--recipe",
+            f"@{recipe}",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit), (
+        "a refusal must be a message, not a traceback"
+    )
+    assert "covers one entry and this scope resolves 3" in result.output
+    assert "--entry group:sequence" in result.output

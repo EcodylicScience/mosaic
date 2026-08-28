@@ -25,7 +25,15 @@ from typing import TYPE_CHECKING, Annotated
 import typer
 
 from mosaic.cli._context import load_dataset
-from mosaic.cli._io import emit_json, fail, load_json_arg, log, stdout_to_stderr
+from mosaic.cli._io import (
+    emit_json,
+    fail,
+    load_json_arg,
+    log,
+    stdout_to_stderr,
+    with_command_line_scope,
+)
+from mosaic.core.pipeline.ops import ScopeRefused
 from mosaic.cli._render import render_table
 from mosaic.core.scope import Scope
 
@@ -61,6 +69,15 @@ EntriesOption = Annotated[
     ),
 ]
 JsonOption = Annotated[bool, typer.Option("--json", help="Emit as a JSON object.")]
+
+SCOPE_FLAGS_REMEDY = (
+    "--entry group:sequence (repeatable). Omit it to cover the whole dataset."
+)
+"""How to name a scope on this command, appended to a refusal the library wrote.
+
+``check_scope_takes`` answers in ``Scope(...)``, which is right for the library
+and for mosaic-api. This command offers one flag and it is spelled ``--entry``.
+"""
 
 
 def _recipe(argument: str) -> "Recipe":
@@ -124,8 +141,11 @@ def plan_command(
     from mosaic.core.pipeline.graph import plan_pipeline
 
     ds = load_dataset(manifest)
-    with stdout_to_stderr():
-        plan = plan_pipeline(ds, _recipe(recipe), scope=_scope(entry))
+    try:
+        with stdout_to_stderr():
+            plan = plan_pipeline(ds, _recipe(recipe), scope=_scope(entry))
+    except ScopeRefused as refusal:
+        fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
     _emit_plan(plan, as_json=as_json)
 
 
@@ -207,6 +227,8 @@ def run_command(
                 allow_partial=allow_partial,
                 owner=owner,
             )
+    except ScopeRefused as refusal:
+        fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
     except StepRefused as refusal:
         fail(str(refusal))
 
@@ -284,15 +306,18 @@ def submit_command(
 
     ds = load_dataset(manifest)
     parsed = _recipe(recipe)
-    with stdout_to_stderr():
-        submitted = submit_request(
-            ds,
-            parsed,
-            scope=_scope(entry),
-            allow_partial=allow_partial,
-            max_concurrent_steps=max_concurrent_steps,
-            owner=owner,
-        )
+    try:
+        with stdout_to_stderr():
+            submitted = submit_request(
+                ds,
+                parsed,
+                scope=_scope(entry),
+                allow_partial=allow_partial,
+                max_concurrent_steps=max_concurrent_steps,
+                owner=owner,
+            )
+    except ScopeRefused as refusal:
+        fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
     request = submitted.request
     steps = [
         {
