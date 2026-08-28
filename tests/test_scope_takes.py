@@ -10,9 +10,12 @@ import inspect
 
 import pytest
 
+import sys
+
 from mosaic.core.pipeline import ops as ops_module
-from mosaic.core.pipeline.ops import ScopeRefused, check_scope_takes, run_op
+from mosaic.core.pipeline.ops import OPS, ScopeRefused, check_scope_takes, run_op
 from mosaic.core.scope import Scope
+from mosaic.tracking import register_ops
 from tests.helpers import names_called_by, resolved_scope
 
 
@@ -180,20 +183,14 @@ class TestEachRefusalSaysItsOwnReason:
         assert "every video" not in message
 
 
-class TestRunOpAcceptsAScope:
-    """``run_op`` takes a scope and resolves it, and refuses nothing itself.
+class TestRunOpRefusesAScope:
+    """``run_op`` resolves a scope and refuses one the op does not accept.
 
-    ``transcode`` and ``export-store`` still declare their own entry fields and
-    read those rather than this argument, so their callers leave it unset.
-    ``check_scope_takes`` refuses an unset selector for ``"at-least-one"`` and
-    ``"exactly-one"``, which those two declare. Calling the checker here would
-    therefore refuse every ``transcode`` and ``export-store`` run in mosaic and
-    in its consumers.
-
-    The refusal is applied where a caller does name a scope. ``mosaic run
-    --kind`` reaches it through ``split_op_scope``; see
-    ``tests/test_tracker_scope.py``. It moves here once those two ops read the
-    argument.
+    The one place a scope is refused, and the choke point every execution
+    passes through: the library entry points, ``mosaic run --kind``,
+    ``mosaic track`` and a graph step all reach an op through here. An op that
+    checked its own scope would be a second copy of a rule that has to answer
+    the same way for all seventeen.
     """
 
     def test_run_op_takes_a_scope_keyword(self) -> None:
@@ -202,8 +199,19 @@ class TestRunOpAcceptsAScope:
         assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
         assert parameter.default is None
 
-    def test_run_op_resolves_the_scope_and_checks_nothing(self) -> None:
-        """The seam is the whole product here, and the refusal is not wired."""
+    def test_run_op_resolves_the_scope_and_checks_it(self) -> None:
+        """Read out of the source, so a refusal cannot be lost to a mock."""
         called = names_called_by(ops_module, "run_op")
         assert "resolve_scope" in called
-        assert "check_scope_takes" not in called
+        assert "check_scope_takes" in called
+
+    def test_no_op_body_checks_its_own_scope(self) -> None:
+        """One rule, in one place. An op accepts the scope it is handed."""
+        register_ops()
+        assert len(OPS) == 17, "every op is registered, so none is skipped below"
+        checking = {
+            kind
+            for kind, op in OPS.items()
+            if "check_scope_takes" in names_called_by(sys.modules[op.__module__], "run")
+        }
+        assert checking == set()

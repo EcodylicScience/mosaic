@@ -287,16 +287,14 @@ def test_two_entries_are_refused_naming_both(
     could only satisfy one way. It is the ``scope_takes`` declaration now, and
     one shared checker raises for every op that states an arity.
     """
-    from mosaic.core.pipeline.ops import OPS, check_scope_takes
-
     ds, group, sequence = _store_dataset(tmp_path, make_media_dataset, make_imgstore)
-    selector = Scope(entries=[(group, sequence), ("other", "entry")])
 
     with pytest.raises(ScopeRefused, match="covers one entry") as caught:
-        check_scope_takes(
+        _ = run_op(
+            ds,
             "export-store",
-            OPS["export-store"].scope_takes,
-            ds.resolve_scope(selector),
+            StoreExportParams(),
+            scope=Scope(entries=[(group, sequence), ("other", "entry")]),
         )
 
     message = str(caught.value)

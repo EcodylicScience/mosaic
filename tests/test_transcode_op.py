@@ -736,25 +736,23 @@ def test_transcode_params_reject_unknown_key():
         TranscodeParams.model_validate({"entries": [("", "vid1")], "bogus": 1})
 
 
-def test_transcode_refuses_a_run_with_no_scope():
+def test_transcode_refuses_a_run_with_no_scope(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
     """A transcode with no entries would re-encode a whole corpus.
 
     The refusal used to come from the params model, which declared a required
-    non-empty ``entries``. It now comes from the ``scope_takes`` declaration,
-    read by one shared checker that every op passes through.
+    non-empty ``entries``. It comes from the ``scope_takes`` declaration now,
+    read by the one checker every op passes through -- so this drives ``run_op``
+    rather than the checker, which is what says the two are wired together.
     """
-    from mosaic.core.pipeline._utils import ResolvedScope
-    from mosaic.core.pipeline.ops import OPS, ScopeRefused, check_scope_takes
+    ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
+    from mosaic.core.pipeline.ops import ScopeRefused
 
-    takes = OPS["transcode"].scope_takes
     with pytest.raises(ScopeRefused, match="re-encode every video"):
-        check_scope_takes("transcode", takes, ResolvedScope())
+        _ = run_op(ds, "transcode", {"target": "analysis"}, scope=Scope())
     with pytest.raises(ScopeRefused, match="empty entry list"):
-        check_scope_takes(
-            "transcode",
-            takes,
-            ResolvedScope(selector=Scope(entries=[])),
-        )
+        _ = run_op(ds, "transcode", {"target": "analysis"}, scope=Scope(entries=[]))
 
 
 def test_a_repeated_entry_names_the_entry_not_the_count() -> None:

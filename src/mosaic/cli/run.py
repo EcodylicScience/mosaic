@@ -21,7 +21,7 @@ break precisely where it is hardest to see.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import Annotated, cast
 
 import typer
 from pydantic import ValidationError
@@ -40,13 +40,8 @@ from mosaic.cli._io import (
 from mosaic.cli._render import render_kv
 from mosaic.core.scope import Scope
 
-if TYPE_CHECKING:
-    from mosaic.core.dataset import Dataset
 
-
-def split_op_scope(
-    ds: "Dataset", kind: str, params: dict[str, object]
-) -> tuple[dict[str, object], Scope]:
+def split_op_scope(params: dict[str, object]) -> tuple[dict[str, object], Scope]:
     """Split the scope *params* names off the settings the op takes.
 
     ``mosaic run --kind`` declares no scope flags of its own and refuses
@@ -54,18 +49,15 @@ def split_op_scope(
     with the field names of :class:`~mosaic.core.scope.Scope`. It leaves here as
     a selector. ``run_op`` takes one, and an op body reads it.
 
-    ``groups`` / ``sequences`` name a cross product only the dataset can list,
-    and ``run_op`` enumerates it. A camera-addressed list is refused, because an
-    op covers a whole entry.
+    ``groups`` / ``sequences`` name a cross product only the dataset can list.
+    ``run_op`` enumerates it and refuses a scope the op's declaration does not
+    accept, so nothing here reads the dataset or the op.
 
     Params naming no scope key at all come back unchanged beside an unset
     selector. Every other key belongs to the op, and the op's own model
     validates it.
 
     Args:
-        ds: The dataset the selector is enumerated against.
-        kind: The registered op kind, whose declaration decides how much scope
-            it accepts.
         params: The ``--params`` mapping as the caller wrote it.
 
     Returns:
@@ -74,33 +66,28 @@ def split_op_scope(
     Raises:
         ValidationError: If the scope keys do not describe one selector, which
             an ``entries`` given beside ``groups`` or ``sequences`` does not.
-        ValueError: If ``entries`` names ``(group, sequence, camera)`` triples,
-            which an op's params do not take.
-        FileNotFoundError: If *groups* or *sequences* is given and the originals
-            index does not exist.
+        ValueError: If ``entries`` names ``(group, sequence, camera)`` triples.
     """
-    from mosaic.core.pipeline.ops import OPS, check_scope_takes
-
     named = {key: value for key, value in params.items() if key in Scope.model_fields}
     if not named:
         return params, Scope()
     scope = Scope.model_validate(named)
     if scope.addresses_cameras:
-        # Refused rather than resolved down to its pairs. An op covers a whole
-        # entry, and resolving a triple runs it over every camera of that entry
-        # under a selector that named one of them.
+        # Refused rather than resolved down to its pairs. Sixteen of the
+        # seventeen ops read the pairs and discard the camera, which runs the op
+        # over every camera of the entry under a selector that named one of
+        # them. ``export-store`` does read the camera, and reaching it with one
+        # through this command needs a per-op declaration of which ops do.
         message = (
-            "entries names (group, sequence, camera) triples, which an op does "
-            "not take. An op covers a whole (group, sequence) entry and "
-            "resolves every camera of it. Give (group, sequence) pairs instead."
+            "entries names (group, sequence, camera) triples, which this "
+            "command does not pass on. An op covers a whole (group, sequence) "
+            "entry and resolves every camera of it. Give (group, sequence) "
+            "pairs instead."
         )
         raise ValueError(message)
     settings = {
         key: value for key, value in params.items() if key not in Scope.model_fields
     }
-    op_cls = OPS.get(kind)
-    if op_cls is not None:
-        check_scope_takes(kind, op_cls.scope_takes, ds.resolve_scope(scope))
     return settings, scope
 
 
@@ -319,7 +306,7 @@ def run_command(
             register_ops()
             log(f"[mosaic] execution_id={exec_id} running {op_kind}")
             with stdout_to_stderr():
-                settings, op_scope = split_op_scope(ds, op_kind, params_dict or {})
+                settings, op_scope = split_op_scope(params_dict or {})
                 run_id = run_op(
                     ds,
                     op_kind,

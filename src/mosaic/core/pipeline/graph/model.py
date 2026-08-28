@@ -163,11 +163,11 @@ class FeatureStepSpec(_StepBase):
 
 
 class OpStepSpec(_StepBase):
-    """One op run: a kind and its params.
+    """One op run: a kind and its settings.
 
-    An op declares its scope inside ``params`` rather than beside them, which is
-    what the op registry already does and what ``mosaic run --kind`` already
-    accepts.
+    A step names no scope. Which entries it covers is the plan's answer, not the
+    recipe's, and it reaches the op as an argument. That is what keeps one
+    recipe runnable over several datasets.
     """
 
     type: Literal["op"] = "op"
