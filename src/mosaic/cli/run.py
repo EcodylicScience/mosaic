@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
-from pydantic import BaseModel, ConfigDict
+from pydantic import ValidationError
 
 from mosaic.cli._context import attempt_facts, load_dataset
 from mosaic.cli._features import build_feature
@@ -35,53 +35,65 @@ from mosaic.cli._io import (
     log,
     parse_entries,
     stdout_to_stderr,
+    terse,
 )
 from mosaic.cli._render import render_kv
-from mosaic.core.entry import Entry
+from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 
-class _ScopeKeys(BaseModel):
-    """The scope an op's ``--params`` may name, read before the op's own model.
-
-    ``extra="ignore"`` because every other key belongs to the op. The three are
-    read together: ``groups`` and ``sequences`` are a cross product this expands
-    into the entry list an op declares, and an ``entries`` given alongside them
-    intersects with it.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    groups: list[str] | None = None
-    sequences: list[str] | None = None
-    entries: list[Entry] | None = None
-
-
 def entries_from_scope(ds: "Dataset", params: dict[str, object]) -> dict[str, object]:
-    """Replace a ``groups`` / ``sequences`` scope in *params* with ``entries``.
+    """Resolve the scope keys in *params* into the ``entries`` an op declares.
 
     ``mosaic run --kind`` declares no scope flags of its own and refuses
-    ``--entries``, so an op's scope arrives inside ``--params``. Op params
-    declare one entry list, and the pair a person reaches for names a cross
-    product, so it is enumerated against the dataset here -- the same expansion
-    ``mosaic track`` does with its flags.
+    ``--entries``. An op's scope therefore arrives inside ``--params``, spelled
+    with the field names of :class:`~mosaic.core.scope.Scope`. Op params declare
+    one entry list, and ``groups`` / ``sequences`` name a cross product this
+    enumerates against the dataset -- the same resolution ``mosaic track``
+    performs with its flags. An ``entries`` given alone is resolved too, which
+    is what sorts it and collapses a pair named twice. A camera-addressed list
+    is refused, because every op's ``entries`` field declares pairs.
 
-    Params naming neither key are returned unchanged, so an op with no scope at
-    all keeps params its model accepts.
+    Params naming no scope key at all are returned unchanged, which keeps an op
+    that takes no scope holding params its model accepts. Every other key
+    belongs to the op, and the op's own model validates it.
+
+    Raises:
+        ValidationError: If the scope keys do not describe one selector, which
+            an ``entries`` given beside ``groups`` or ``sequences`` does not.
+        ValueError: If ``entries`` names ``(group, sequence, camera)`` triples,
+            which an op's params do not take.
+        FileNotFoundError: If *groups* or *sequences* is given and the originals
+            index does not exist.
     """
-    if "groups" not in params and "sequences" not in params:
+    named = {key: value for key, value in params.items() if key in Scope.model_fields}
+    if not named:
         return params
-    scope = _ScopeKeys.model_validate(params)
+    scope = Scope.model_validate(named)
+    if scope.addresses_cameras:
+        # Refused rather than resolved down to its pairs. An op's params
+        # declare ``list[Entry]``, and resolving a triple runs the op over the
+        # whole entry under a selector that named one camera of it.
+        message = (
+            "entries names (group, sequence, camera) triples, which an op's "
+            "params do not take. An op covers a whole (group, sequence) entry "
+            "and resolves every camera of it. Give (group, sequence) pairs "
+            "instead."
+        )
+        raise ValueError(message)
+    resolved = ds.resolve_scope(scope)
     expanded = {
         key: value
         for key, value in params.items()
         if key not in {"groups", "sequences"}
     }
-    expanded["entries"] = ds.expand_media_scope(
-        scope.groups, scope.sequences, scope.entries
-    )
+    # ``is_unset`` decides between the two empty resolutions, never their size.
+    # An unset selector reaches the op as ``None`` and covers every indexed
+    # entry. A selector naming a group that holds nothing reaches it as ``[]``
+    # and covers none.
+    expanded["entries"] = None if scope.is_unset else sorted(resolved.entries)
     return expanded
 
 
@@ -183,8 +195,6 @@ def run_command(
         fail("Provide exactly one of --feature, --kind or --graph-request.")
     if (graph_request is not None) != (step is not None):
         fail("--graph-request and --step are used together, or not at all.")
-
-    from pydantic import ValidationError
 
     from mosaic.core.pipeline._utils import new_execution_id
     from mosaic.core.pipeline.graph import REFUSED_EXIT_CODE, StepRefused
@@ -350,7 +360,7 @@ def run_command(
     except FileNotFoundError as exc:
         fail(str(exc))
     except ValidationError as exc:
-        fail(f"Invalid params: {exc}")
+        fail(f"Invalid params: {terse(exc)}")
     except ValueError as exc:
         # e.g. an invalid input chain (a Result that isn't track-shaped). Present
         # it cleanly rather than as a traceback. (ValidationError, a ValueError
