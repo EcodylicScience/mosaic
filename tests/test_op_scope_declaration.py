@@ -145,41 +145,52 @@ def _selector(entries: list[Entry] | None) -> Scope:
 
 GATED_OPS = frozenset(
     [
+        "convert-points",
         "extract-frames",
         "infer-localizer",
         "infer-points",
         "infer-pose",
         "litpose",
         "sleap",
+        "train-litpose",
+        "train-localizer",
+        "train-points",
+        "train-pose",
+        "train-sleap",
         "trex",
         "ultralytics",
     ]
 )
-"""The ops both gates below cover: they take a scope and declare independence."""
+"""The ops the dataset gate below covers: every op declaring independence.
+
+The payload gate runs over all seventeen and needs no population.
+"""
 
 
 def _gated_kinds() -> frozenset[str]:
     """The op kinds whose declarations the gates below check.
 
-    Selected from the two declarations rather than from a params field name.
+    Selected from ``scope_dependent`` rather than from a params field name.
     Reading the population off a field spelled ``entries`` is the inference
     these declarations replace, and it answers wrongly for an op spelling its
-    scope otherwise -- ``export-store`` already spells one ``entry``.
+    scope otherwise -- ``export-store`` spelled one ``entry``.
+
+    ``scope_takes = "none"`` does not exclude an op. Every op takes the scope
+    as an argument to ``plan_identity`` and ``run``, and one that declares it
+    reads no scope can read the argument anyway. That is the same defect as a
+    scoped op reading it, and the same gate finds both. The exclusion held only
+    while a scope arrived through a params field a scope-free op did not
+    declare.
     """
-    return frozenset(
-        kind
-        for kind, op in OPS.items()
-        if op.scope_takes != "none" and not op.scope_dependent
-    )
+    return frozenset(kind for kind, op in OPS.items() if not op.scope_dependent)
 
 
 def _op_these_gates_cover(kind: str) -> type[Op[Params]]:
-    """Op *kind*, or a skip when its declarations put it outside these gates.
+    """Op *kind*, or a skip when its declaration puts it outside these gates.
 
-    An op declaring ``scope_dependent`` claims the dependence these gates refuse
-    to find, and one declaring ``scope_takes = "none"`` takes no scope to leak.
-    Both are skipped by name rather than passed, which keeps the count of ops
-    actually exercised visible in the report.
+    An op declaring ``scope_dependent`` claims the dependence these gates
+    refuse to find. It is skipped by name rather than passed, which keeps the
+    count of ops actually exercised visible in the report.
 
     The population is pinned by
     :meth:`TestTheDeclarationsAreWhatWeIntend.test_the_ops_the_scope_gates_cover`,
@@ -187,10 +198,7 @@ def _op_these_gates_cover(kind: str) -> type[Op[Params]]:
     """
     op = OPS[kind]
     if kind not in _gated_kinds():
-        pytest.skip(
-            f"{kind} declares scope_takes={op.scope_takes!r} and "
-            f"scope_dependent={op.scope_dependent}"
-        )
+        pytest.skip(f"{kind} declares scope_dependent={op.scope_dependent}")
     return op
 
 
@@ -212,8 +220,8 @@ regression names which one came back.
 class TestNoScopeReachesTheHashedPayload:
     """What a run covers and whether it recomputes never name the run.
 
-    The direct leak, over **every** registered op rather than the eight the
-    gates below cover. Every op now takes both as arguments and declares no
+    The direct leak, over **every** registered op rather than the fourteen the
+    dataset gate below covers. Every op now takes both as arguments and declares no
     such field, which makes this pass for all seventeen by construction. It
     stays as the gate an op reintroducing one meets: the field would be
     ``HASH_EXCLUDE`` or the payload would name it, and a payload naming either
@@ -238,11 +246,12 @@ class TestADeclaredIndependenceHoldsAgainstTheDataset:
     has that shape. Its scope filters the tracks index and the surviving variant
     enters every identifier, while its params payload holds no scope at all.
 
-    Partial today, and prospective rather than additive. The two ops it reaches
-    are pure functions of their params. It currently proves nothing the payload
-    check does not, and it grows with the fixtures. Six ops defer on this
-    dataset, and each deferral is recorded as a skip carrying the reason the op
-    gave.
+    Partial today, and prospective rather than additive. Fourteen ops declare
+    independence and this dataset lets two of them answer -- ``extract-frames``
+    and ``trex``, both pure functions of their params. The other twelve defer,
+    each deferral recorded as a skip stating the reason the op gave: a training
+    op has no data.yaml here, an inference op no weights. It proves nothing the
+    payload check does not, and it grows as the fixture gains those artifacts.
 
     Whole :class:`OpIdentity` values are compared. ``run_id`` alone leaves a
     ``tracks_variant`` free to move with the scope, which mints one variant
