@@ -351,7 +351,7 @@ def _feature_declaration(cls: type) -> Declaration:
     )
 
 
-def _op_declaration(kind: str, op_cls: type) -> Declaration:
+def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
     """Read one op as a producer and a consumer.
 
     An op is never a feature's *input* in the ``inputs`` sense -- what a feature
@@ -398,8 +398,10 @@ def _op_declaration(kind: str, op_cls: type) -> Declaration:
         emits="individual",
         category=str(getattr(op_cls, "category", "")),
         resource_class=op_resource_class(kind),
-        scope_takes=str(getattr(op_cls, "scope_takes", "")),
-        scope_dependent=bool(getattr(op_cls, "scope_dependent", False)),
+        # Read directly: ``register_op`` refuses by name a class declaring
+        # neither, so no member of ``OPS`` can lack them.
+        scope_takes=op_cls.scope_takes,
+        scope_dependent=op_cls.scope_dependent,
     )
 
 

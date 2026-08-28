@@ -49,6 +49,19 @@ the repository consumes the lock: every CI job installs with `uv pip install`,
 and `scripts/gen_third_party_inventory.py` is the one reader, so `NOTICE`
 regeneration is blocked with it.
 
+**Regenerate `docs/reference/` under the `docs` dependency group.** The CLI page
+is rendered by the Typer that is installed, and `[dependency-groups] docs` pins
+the one the docs job's `--check` compares against. Install that group before
+running `scripts/gen_docs_reference.py --write`:
+
+```bash
+uv pip install --group docs
+python scripts/gen_docs_reference.py --write
+```
+
+Regenerating under any other Typer rewrites the page's metavars and CI rejects
+it.
+
 ## Code and Review Expectations
 
 - Keep changes minimal and scoped to one concern per PR.

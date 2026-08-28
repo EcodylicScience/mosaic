@@ -28,10 +28,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from ..loading import alignment_verdict
 from ..types.feature import EmitsLevel
+
+if TYPE_CHECKING:
+    # Annotation only. Importing ``ops`` at module scope would put the op
+    # registry behind every reader of a declaration, and this module answers
+    # a canvas with no registry loaded at all.
+    from ..ops import ScopeTakes
 
 __all__ = [
     "ConsumerDecl",
@@ -177,13 +183,12 @@ class Declaration:
     otherwise need the feature registry -- and deciding a lane is one of the read
     paths that must not pay for it.
     """
-    scope_takes: str = ""
+    scope_takes: ScopeTakes | Literal[""] = ""
     """How much scope an op accepts, or ``""`` for a step that is not an op.
 
-    One of ``mosaic.core.pipeline.ops.ScopeTakes``. A canvas reads it to say
-    whether a step needs an entry named before it can run. A feature declaration
-    keeps the empty default: no feature refuses a scope, and a field with one
-    legal value teaches a reader nothing.
+    A canvas reads it to say whether a step needs an entry named before it can
+    run. A feature declaration keeps the empty default, because a feature
+    refuses no scope and a field with one legal value teaches a reader nothing.
     """
     scope_dependent: bool = False
     """Whether the entries in scope decide what an op run is named.

@@ -1,8 +1,11 @@
-"""Reads a module's source as a tree, to assert what a code path never reads.
+"""Reads a module's source as a tree, to assert what a code path reads and calls.
 
 A test recording an unwired parameter field asserts an absence, and an absence
 has to be looked for everywhere a reader could sit. These functions parse that
-region and report the field names it reads.
+region and report the field names it reads. :func:`names_called_by` answers the
+neighbouring question about calls, and a negative assertion about a call belongs
+beside the positive one: a body that calls neither of two functions passes an
+"it does not call the wrong one" test without doing the work.
 
 A read counts only off the names that hold the object in the scanned region.
 ``np.load``, ``joblib.load`` and ``json.load`` are attribute reads named
@@ -59,6 +62,26 @@ def functions_named(module: ModuleType, names: Collection[str]) -> list[ast.AST]
     missing = sorted(set(names) - seen)
     assert not missing, f"{missing} renamed in {module.__name__}; this scan misses them"
     return found
+
+
+def names_called_by(module: ModuleType, function_name: str) -> set[str]:
+    """Returns every function name the body of *function_name* in *module* calls.
+
+    A call through an object is collected by its final name, which is what makes
+    ``ds.resolve_scope(...)`` visible as ``resolve_scope``. Read out of the
+    module's source rather than off an imported function object, which reaches a
+    module-private function without asking it to be exported. An aliased import
+    stays out of reach of any source-level read of a body.
+
+    Read the parsed body rather than the source text: a comment naming a
+    function is not a call to it, and a substring search cannot tell them apart.
+    """
+    called: set[str] = set()
+    for tree in functions_named(module, {function_name}):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and (name := _trailing_name(node.func)):
+                called.add(name)
+    return called
 
 
 def _dotted_name(node: ast.expr) -> str:

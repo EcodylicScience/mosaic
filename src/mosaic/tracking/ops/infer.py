@@ -57,6 +57,7 @@ from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.schema import ensure_track_schema
 from mosaic.runlog import now_iso
 from mosaic.tracking.common.entry import open_entry, phase_activity, release_entry
+from mosaic.tracking.common.scope import one_camera_per_entry
 from mosaic.tracking.common.tool_input import resolve_entry_input
 from mosaic.tracking.common.ultralytics_env import progress_activity
 from mosaic.tracking.model_refs import resolve_model
@@ -407,10 +408,8 @@ def _run_inference_op(
         return run_id
 
     work: list[tuple[str, str, Path, MediaFacts]] = []
-    for entry in scope:
-        # Each scope entry is one camera; per-camera inference output pathing +
-        # index dedup is Phase 2, so single-camera behavior here is unchanged.
-        # The op reads the first path; a required-but-unlinked entry already
+    for entry in one_camera_per_entry(kind, scope):
+        # The op reads the first path. A required-but-unlinked entry already
         # raised in resolve_media_scope, before any defective original was opened.
         group, sequence, resolved = entry.group, entry.sequence, entry.resolved
         source = resolved.paths[0]

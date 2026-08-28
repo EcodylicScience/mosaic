@@ -43,11 +43,18 @@ from mosaic.core.pipeline.composition import MediaMember, media_composition
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from mosaic_media import MediaFacts
 
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
 
-__all__ = ["JoinedSourceMismatchError", "TrackerWorkItem", "build_work_items"]
+__all__ = [
+    "JoinedSourceMismatchError",
+    "TrackerWorkItem",
+    "build_work_items",
+    "one_camera_per_entry",
+]
 
 
 class JoinedSourceMismatchError(ValueError):
@@ -169,6 +176,54 @@ class TrackerWorkItem:
         return media_composition(members).digest
 
 
+def one_camera_per_entry(
+    kind: str, scope: "Sequence[ResolvedScopeEntry]"
+) -> list["ResolvedScopeEntry"]:
+    """*scope* with a second camera of an entry dropped, and reported.
+
+    ``Dataset.resolve_media_scope`` yields one entry per
+    ``(group, sequence, camera)``. A working directory is keyed on
+    ``(group, sequence)`` with no camera. Two cameras of one sequence therefore
+    resolve to one directory. Left as two items, the second reads the first's source,
+    records that as a change, recomputes over the first's outputs and replaces
+    its index row, on every run. Dropping the second is what stops that, and the
+    line on stderr is what stops it being invisible.
+
+    Per-camera output needs the tracks layer to address a camera, and it does
+    not. ``tracks_table_path`` names one parquet per
+    ``(variant, group, sequence)``, the tracks index holds one row per
+    ``(run_id, group, sequence)``, and no registered track schema declares a
+    ``camera`` column.
+
+    Both the trackers and the ``infer-*`` ops reduce here. The rule was written
+    twice before, inline in each, and only the tracker's half of it ran.
+
+    Args:
+        kind: The op's kind, prefixing each message so it names the tool the
+            user invoked rather than the shared machinery.
+        scope: What ``Dataset.resolve_media_scope`` returned.
+
+    Returns:
+        The entries to work on, in the order they arrived, one per
+        ``(group, sequence)``.
+    """
+    claimed: set[str] = set()
+    kept: list[ResolvedScopeEntry] = []
+    for entry in scope:
+        key = make_entry_key(entry.group, entry.sequence)
+        if key in claimed:
+            print(
+                f"[{kind}] ({entry.group}, {entry.sequence}) camera "
+                f"{entry.camera or '<unnamed>'} shares one output directory "
+                f"with an earlier camera; skipping it.",
+                file=sys.stderr,
+            )
+            continue
+        claimed.add(key)
+        kept.append(entry)
+    return kept
+
+
 def build_work_items(
     ds: Dataset,
     scope: list[ResolvedScopeEntry],
@@ -198,9 +253,10 @@ def build_work_items(
     root = TRACKING_ROOTS.get(kind)
     joins = root is not None and root.joins_sources
     items: list[TrackerWorkItem] = []
-    claimed: set[str] = set()
 
-    for entry in scope:
+    # Reduced first, so an entry that is dropped is not also warned about for
+    # video count. That warning describes work this tracker will not do.
+    for entry in one_camera_per_entry(kind, scope):
         group, sequence, resolved = entry.group, entry.sequence, entry.resolved
         paths = list(resolved.paths)
         facts = list(resolved.facts)
@@ -213,16 +269,6 @@ def build_work_items(
             )
             paths, facts = paths[:1], facts[:1]
         key = make_entry_key(group, sequence)
-        if key in claimed:
-            print(
-                f"[{kind}] ({group}, {sequence}) camera "
-                f"{entry.camera or '<unnamed>'} shares one output directory with "
-                f"an earlier camera; skipping it. Per-camera tracker output is a "
-                f"later phase.",
-                file=sys.stderr,
-            )
-            continue
-        claimed.add(key)
 
         if len(paths) > 1:
             _refuse_unjoinable(kind, group, sequence, paths, facts)

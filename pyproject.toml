@@ -89,9 +89,12 @@ docs = [
     # metavar rendering changes between minor releases. Pinned here rather than
     # bounded in `[project.dependencies]`: the constraint belongs to generating
     # the page, not to every environment that installs mosaic. The docs job
-    # installs this group after the package, so this is the version the check
-    # compares against. Bumping it means regenerating the page in the same
-    # change.
+    # installs this group after the package. This is therefore the version the
+    # check compares against, and the version to regenerate under. Install this
+    # group before running `scripts/gen_docs_reference.py --write`. A plain
+    # `pip install -e .` leaves whatever Typer the environment already holds,
+    # and a page generated under that one fails the docs job's `--check`.
+    # Bumping the pin means regenerating the page in the same change.
     "typer==0.25.1",
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.27",
