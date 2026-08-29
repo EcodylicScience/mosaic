@@ -39,7 +39,7 @@ from mosaic.cli._io import (
     with_command_line_scope,
 )
 from mosaic.cli._render import render_kv
-from mosaic.core.scope import Scope
+from mosaic.core.scope import Scope, scope_in_params_refusal
 
 
 SCOPE_FLAGS_REMEDY = (
@@ -50,15 +50,6 @@ SCOPE_FLAGS_REMEDY = (
 
 ``check_scope_takes`` answers in ``Scope(...)`` for the library, the planner and
 mosaic-api alike. This is the one caller whose reader types flags.
-"""
-
-
-SCOPE_PARAM_KEYS = frozenset(Scope.model_fields)
-"""The selector field names, refused inside ``--params`` on both arms.
-
-No feature and no op declares a field under any of these names. A run
-accepting one would take a narrowing its own model never validated. A scope is
-named with ``--entries``, ``--groups`` or ``--sequences``.
 """
 
 
@@ -74,17 +65,9 @@ def refuse_scope_in_params(params: dict[str, object]) -> None:
     Raises:
         ValueError: A key names a selector field instead of a setting.
     """
-    named = sorted(SCOPE_PARAM_KEYS & set(params))
-    if not named:
-        return
-    listed = ", ".join(named)
-    flags = ", ".join(f"--{key}" for key in named)
-    message = (
-        f"--params names the scope key(s) {listed}, which no feature and no op "
-        f"declares. Name the scope with {flags} instead, and leave --params to "
-        f"the settings the model validates."
-    )
-    raise ValueError(message)
+    refusal = scope_in_params_refusal(params, prefix="--")
+    if refusal:
+        raise ValueError(refusal)
 
 
 def run_command(

@@ -22,7 +22,11 @@ from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.run import resolve_feature_identity, run_feature
 from mosaic.core.pipeline.types import Inputs, InputStream, Result, TrackInput
 from mosaic.core.pipeline.types.feature import EmitsLevel
-from mosaic.core.scope import Scope
+from mosaic.core.scope import (
+    SCOPE_PARAM_KEYS,
+    Scope,
+    entries_exclude_pair_refusal,
+)
 
 
 class TestExclusivity:
@@ -47,6 +51,55 @@ class TestExclusivity:
     def test_entries_with_sequences_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="entries"):
             _ = Scope(entries=[("A", "one")], sequences=["one"])
+
+
+class TestOneRefusalForBothVocabularies:
+    """The sentence another command line refuses in is this model's own.
+
+    mosaic-queue names the same selector as ``--entries`` / ``--groups`` /
+    ``--sequences``. It held a copy of this rule, which had already drifted:
+    it tested truthiness where the model tests presence, so an empty
+    ``entries`` list beside a group passed there and was refused here.
+    """
+
+    def test_the_model_raises_the_shared_sentence(self) -> None:
+        expected = entries_exclude_pair_refusal([("A", "one")], ["A"], None)
+        with pytest.raises(ValidationError) as caught:
+            _ = Scope(entries=[("A", "one")], groups=["A"])
+        assert expected in str(caught.value)
+
+    def test_a_prefix_spells_the_names_as_flags(self) -> None:
+        refusal = entries_exclude_pair_refusal(
+            [("A", "one")], ["A"], ["one"], prefix="--"
+        )
+        assert "--entries" in refusal
+        assert "--groups and --sequences" in refusal
+
+    def test_an_empty_selector_is_given_rather_than_absent(self) -> None:
+        """Naming no entry is a statement, and it excludes the pair too."""
+        assert entries_exclude_pair_refusal([], ["A"], None) != ""
+        assert entries_exclude_pair_refusal([], None, None) == ""
+        assert entries_exclude_pair_refusal(None, ["A"], ["one"]) == ""
+
+    def test_only_the_selectors_given_are_named(self) -> None:
+        """A selector nobody gave is left out of the sentence.
+
+        Naming all three regardless tells a caller to remove a flag they never
+        typed.
+        """
+        one = entries_exclude_pair_refusal([("A", "one")], ["A"], None)
+        assert "groups" in one
+        assert "sequences" not in one
+
+
+class TestScopeParamKeys:
+    def test_every_selector_is_covered(self) -> None:
+        """The names no params model may declare, read by two command lines.
+
+        A fourth selector added to the model widens this set, and both
+        refusals cover it without being edited.
+        """
+        assert SCOPE_PARAM_KEYS == {"entries", "groups", "sequences"}
 
 
 class TestUnset:
