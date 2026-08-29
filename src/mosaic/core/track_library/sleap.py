@@ -38,7 +38,6 @@ import json
 from pathlib import Path
 from typing import Annotated
 
-import h5py
 import numpy as np
 import pandas as pd
 
@@ -128,6 +127,16 @@ def _read_analysis_h5(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
     ``(n_frames, n_tracks, n_nodes, 2)`` and ``point_scores`` is
     ``(n_frames, n_tracks, n_nodes)`` or ``None`` when the file has no scores.
     """
+    # Deferred, against the convention that imports sit at module scope, because
+    # this is the only h5py import under ``core/`` and importing any
+    # ``mosaic.core.*`` module executes it: ``core/__init__`` imports
+    # ``track_library``, which imports this module. That made a binary HDF5 stack
+    # a hard requirement for reading three field names off a leaf, and an
+    # environment without h5py met a ModuleNotFoundError rather than the missing
+    # converter it could have done without. Costs 86 ms and 235 modules, paid by
+    # the one caller that opens a SLEAP file.
+    import h5py
+
     with h5py.File(str(path), "r") as handle:
         if "tracks" not in handle:
             raise ValueError(f"SLEAP analysis HDF5 has no 'tracks' dataset: {path}")

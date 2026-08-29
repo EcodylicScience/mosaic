@@ -194,11 +194,15 @@ def ensure_label_converters_registered() -> None:
     """Fill :data:`LABEL_CONVERTERS` from the in-tree library when nothing has.
 
     A converter registers only as a side effect of importing the module that
-    defines it, and the track registry gets that for free -- ``mosaic.core``
-    imports ``track_library``. Nothing imports the label library, so a caller who
-    reached a Dataset through ``mosaic.core`` alone held an empty registry and
-    was told the format they named does not exist, when what was missing was an
-    import they had no reason to know about.
+    defines it. Nothing imports the label library, so a caller who reached a
+    Dataset through ``mosaic.core`` alone held an empty registry and was told the
+    format they named does not exist, when what was missing was an import they
+    had no reason to know about.
+
+    :func:`~mosaic.core.track_converter.ensure_track_converters_registered` is
+    the same call for tracks. That registry used to fill for free, because
+    ``mosaic.core`` imported ``track_library`` on every import of anything
+    beneath it -- which is what made a leaf import cost pandas and h5py.
 
     Guarded on emptiness, so a caller who registered converters of their own
     keeps exactly those and pays none of ``mosaic.behavior``'s import cost --

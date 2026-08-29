@@ -3,12 +3,15 @@
 mosaic shares, and each stays importable without pulling in the rest of mosaic.
 
 The checks below read each file's own ast rather than measuring an import at
-run time. ``core/__init__.py`` imports ``Dataset`` eagerly, so pandas and the
-whole pipeline machinery already sit in ``sys.modules`` by the time any leaf
-module is reachable, whatever that module itself imports -- a runtime probe
-would report the same pollution regardless of which module earned it. Walking
-the full tree, not just the module body, also catches an import deferred
-inside a function.
+run time, because an ast walk covers the full tree and so catches an import
+deferred inside a function, which a runtime probe does not reach.
+
+They once read the ast for a second reason that no longer holds:
+``core/__init__.py`` imported ``Dataset`` eagerly, so pandas sat in
+``sys.modules`` by the time any leaf was reachable and a runtime probe reported
+the same pollution whichever module earned it. That file now binds its names on
+access, and ``tests/test_core_lazy_exports.py`` makes the runtime measurement
+the ast cannot: that importing a leaf loads neither pandas nor h5py.
 """
 
 from __future__ import annotations
