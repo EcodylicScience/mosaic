@@ -30,6 +30,7 @@ the camera the triple names.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import ClassVar, Self
 
 from pydantic import ConfigDict, field_validator, model_validator
@@ -38,7 +39,12 @@ from typing_extensions import TypeIs
 from mosaic.core.entry import CameraEntry, Entry
 from mosaic.core.strict_model import StrictModel
 
-__all__ = ["Scope"]
+__all__ = [
+    "SCOPE_PARAM_KEYS",
+    "Scope",
+    "entries_exclude_pair_refusal",
+    "scope_in_params_refusal",
+]
 
 
 def _is_camera_grain(
@@ -62,6 +68,50 @@ def _deduplicate[T: tuple[str, ...]](items: list[T]) -> list[T]:
         seen.add(item)
         unique.append(item)
     return unique
+
+
+def entries_exclude_pair_refusal(
+    entries: Sequence[object] | None,
+    groups: Sequence[object] | None,
+    sequences: Sequence[object] | None,
+    *,
+    prefix: str = "",
+) -> str:
+    """Why *entries* may not be given beside *groups* or *sequences*, or ``""``.
+
+    The rule :meth:`Scope._entries_exclude_the_pair` enforces, written once so
+    that a caller naming the same selector in another vocabulary refuses in the
+    same words. ``prefix="--"`` spells the three names as the flags a person
+    types at a command line.
+
+    Presence decides it. This reads whether each selector was given and never
+    what it names, so a caller holding unparsed command-line tokens asks without
+    parsing them first.
+
+    Args:
+        entries: The entries selector, or ``None`` where it was not given.
+        groups: The groups selector, or ``None`` where it was not given.
+        sequences: The sequences selector, or ``None`` where it was not given.
+        prefix: Prepended to each name.
+
+    Returns:
+        The refusal, or ``""`` where the three describe one selector.
+    """
+    if entries is None:
+        return ""
+    also = [
+        f"{prefix}{name}"
+        for name, value in (("groups", groups), ("sequences", sequences))
+        if value is not None
+    ]
+    if not also:
+        return ""
+    joined = " and ".join(also)
+    return (
+        f"{prefix}entries names the exact entries to cover and cannot be "
+        f"combined with {joined}. Give {prefix}entries alone, or give "
+        f"{joined} alone and let the index enumerate them."
+    )
 
 
 class Scope(StrictModel):
@@ -118,22 +168,15 @@ class Scope(StrictModel):
         The three used to intersect, which narrowed an enumeration the caller
         had already written out. Two ways to say one thing, and the narrower
         one is what ``entries`` alone already says.
+
+        The sentence is :func:`entries_exclude_pair_refusal`'s, so a caller
+        naming this selector as command-line flags refuses in the same words.
         """
-        if self.entries is None:
-            return self
-        also = [
-            name
-            for name, value in (("groups", self.groups), ("sequences", self.sequences))
-            if value is not None
-        ]
-        if also:
-            joined = " and ".join(also)
-            message = (
-                f"entries names the exact entries to cover and cannot be "
-                f"combined with {joined}. Give entries alone, or give "
-                f"{joined} alone and let the index enumerate them."
-            )
-            raise ValueError(message)
+        refusal = entries_exclude_pair_refusal(
+            self.entries, self.groups, self.sequences
+        )
+        if refusal:
+            raise ValueError(refusal)
         return self
 
     @property
@@ -182,3 +225,46 @@ class Scope(StrictModel):
         if self.entries is None:
             return None
         return {(entry[0], entry[1]) for entry in self.entries}
+
+
+SCOPE_PARAM_KEYS = frozenset(Scope.model_fields)
+"""The selector field names, refused inside a params mapping.
+
+No feature and no op declares a field under any of these names. A run accepting
+one would take a narrowing its own model never validated, and a caller naming a
+scope there has named it somewhere the model never reads.
+
+Derived from the model so that a fourth selector is covered the day it is
+declared. Both command lines that refuse it -- ``mosaic run`` and
+``mosaic-queue submit`` -- read it from here.
+"""
+
+
+def scope_in_params_refusal(params: Mapping[str, object], *, prefix: str = "") -> str:
+    """Why *params* names a scope it may not, or ``""`` when it names settings alone.
+
+    A feature's or an op's model validates a params mapping, and none of them
+    declares a field under a selector name. A scope belongs to the attempt and
+    arrives through the selector the caller states beside it.
+
+    Every offending key is named, and each is answered with the name that
+    replaces it. Reporting the first alone sends a caller round the loop once per
+    key, and each round costs a scheduled job.
+
+    Args:
+        params: The mapping as the caller wrote it.
+        prefix: Prepended to each name. ``"--"`` for a command line.
+
+    Returns:
+        The refusal, or ``""`` where *params* names settings alone.
+    """
+    named = sorted(SCOPE_PARAM_KEYS & set(params))
+    if not named:
+        return ""
+    listed = ", ".join(named)
+    flags = ", ".join(f"{prefix}{key}" for key in named)
+    return (
+        f"{prefix}params names the scope key(s) {listed}, which no feature and "
+        f"no op declares. Name the scope with {flags} instead, and leave "
+        f"{prefix}params to the settings the model validates."
+    )
