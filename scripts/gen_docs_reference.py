@@ -387,9 +387,13 @@ def render_track_formats() -> str:
         ensure_label_converters_registered,
     )
     from mosaic.core.schema import TRACK_SCHEMAS
-    from mosaic.core.track_converter import TRACK_CONVERTERS
+    from mosaic.core.track_converter import (
+        TRACK_CONVERTERS,
+        ensure_track_converters_registered,
+    )
 
     ensure_label_converters_registered()
+    ensure_track_converters_registered()
 
     lines = [
         BANNER,
@@ -506,11 +510,15 @@ def render_index() -> str:
     )
     from mosaic.core.pipeline.ops import OPS
     from mosaic.core.schema import TRACK_SCHEMAS
-    from mosaic.core.track_converter import TRACK_CONVERTERS
+    from mosaic.core.track_converter import (
+        TRACK_CONVERTERS,
+        ensure_track_converters_registered,
+    )
     from mosaic.tracking import register_ops
 
     register_ops()
     ensure_label_converters_registered()
+    ensure_track_converters_registered()
 
     return (
         f"{BANNER}\n"

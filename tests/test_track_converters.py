@@ -47,6 +47,35 @@ from tests.helpers import write_trex_npz
 # may accept them as parameters.
 ENTRY_KEYS = frozenset({"group", "sequence", "group_from"})
 
+assert TRACK_CONVERTERS, (
+    "the built-in converters are not registered, so every parametrize below "
+    "collects zero cases and reports green. The module-scope "
+    "`import mosaic.core.track_library` above is what fills the registry."
+)
+
+
+def test_registering_a_converter_first_keeps_the_built_ins() -> None:
+    """A caller's own converter does not displace the library's.
+
+    `ensure_track_converters_registered` used to return early whenever the
+    registry held anything. A notebook that registered its own converter before
+    touching a dataset -- which is what
+    `docs/guides/tracking/write-a-converter.md` tells it to do -- then held that
+    one converter and no others, and every built-in format reported as
+    unregistered for the rest of the process.
+    """
+
+    @register_track_converter
+    class _CallerConverter(TrackConverter[TrackConvertParams]):
+        src_format = "caller_registered_first"
+        version = "0.1"
+
+    try:
+        assert get_track_converter("trex_npz").src_format == "trex_npz"
+        assert "caller_registered_first" in TRACK_CONVERTERS
+    finally:
+        _ = TRACK_CONVERTERS.pop("caller_registered_first", None)
+
 
 # --- The rule -----------------------------------------------------------------
 

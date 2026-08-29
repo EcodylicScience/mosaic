@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Annotated, ClassVar, Generic
 
@@ -51,6 +52,7 @@ __all__ = [
     "EntryHints",
     "TrackConvertParams",
     "TrackConverter",
+    "ensure_track_converters_registered",
     "get_track_converter",
     "merge_on_column_union",
     "register_track_converter",
@@ -223,6 +225,7 @@ def get_track_converter(src_format: str) -> TrackConverter[TrackConvertParams]:
             choice, not a key they were handed, and the CLI interpolates the
             exception into a message where ``KeyError`` renders its own quotes.
     """
+    ensure_track_converters_registered()
     cls = TRACK_CONVERTERS.get(src_format)
     if cls is None:
         known = ", ".join(sorted(TRACK_CONVERTERS)) or "(none registered)"
@@ -230,6 +233,32 @@ def get_track_converter(src_format: str) -> TrackConverter[TrackConvertParams]:
             f"No converter registered for src_format={src_format!r}. Known: {known}"
         )
     return cls()
+
+
+def ensure_track_converters_registered() -> None:
+    """Fill :data:`TRACK_CONVERTERS` from the in-tree library when nothing has.
+
+    A converter registers only as a side effect of importing the module that
+    defines it. ``mosaic.core`` used to perform that import on every import of
+    anything beneath it, so no caller had to ask, and every consumer of every
+    leaf under ``core`` paid for pandas and for h5py. It imports nothing now, so
+    a caller reading the registry asks first.
+
+    Unconditional, and deliberately not guarded on the registry being empty.
+    The built-ins were guaranteed present before this file stopped importing
+    them, and a guard on contents reverses that guarantee for the one caller who
+    registers a converter of their own first: theirs fills the registry, the
+    guard then returns early, and every built-in is missing for the rest of the
+    process. That is the failure this function exists to prevent, arriving
+    through the guard instead of a missing call. A repeat call costs one
+    :data:`sys.modules` lookup, which is what the guard saved.
+
+    Read the registry through :func:`get_track_converter`, which calls this, or
+    call this before reading :data:`TRACK_CONVERTERS` directly. Reading it
+    without asking gives an empty mapping rather than an error, which answers
+    "no such format" for a format that is registered.
+    """
+    _ = import_module("mosaic.core.track_library")
 
 
 def merge_on_column_union(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:

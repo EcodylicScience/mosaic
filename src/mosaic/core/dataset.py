@@ -66,6 +66,7 @@ from .track_converter import (
     EntryHints,
     TrackConverter,
     TrackConvertParams,
+    ensure_track_converters_registered,
     get_track_converter,
     merge_on_column_union,
 )
@@ -319,6 +320,7 @@ def _format_merges_per_sequence(src_format: str) -> bool:
     unregistered format is one warning per file, not an aborted run over the
     rest of the dataset.
     """
+    ensure_track_converters_registered()
     converter_cls = TRACK_CONVERTERS.get(src_format)
     return converter_cls is not None and converter_cls.merges_per_sequence
 
@@ -5590,6 +5592,7 @@ class Dataset:
 
     def list_converters(self) -> Dict[str, type[TrackConverter[TrackConvertParams]]]:
         """Return registered raw->standard track converters."""
+        ensure_track_converters_registered()
         return dict(TRACK_CONVERTERS)
 
     def _tracks_variant(

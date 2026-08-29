@@ -723,10 +723,18 @@ it, and `core` is where the lookup happens. `core/__init__.py`'s module
 `__getattr__` re-exports `register_feature`, and
 `label_converter.ensure_label_converters_registered()` imports
 `behavior.label_library` when `LABEL_CONVERTERS` is still empty (guarded on
-emptiness, so a caller with its own converters pays nothing). `track_library`
-needs neither — it lives in `core` and `core/__init__.py` imports it directly.
-Anything else pointing from `core` at `behavior` or `tracking` is a layering
-break.
+emptiness, so a caller with its own converters pays nothing). Anything else
+pointing from `core` at `behavior` or `tracking` is a layering break.
+
+`track_converter.ensure_track_converters_registered()` is the same call one
+layer down, and needs no deferral for layering — `track_library` lives in
+`core`. It exists because `core/__init__.py` imports nothing at module scope:
+a package `__init__` runs before any submodule of it, so importing that library
+for its registration side effect charged every consumer of every leaf under
+`core` for pandas, and for h5py through the SLEAP converter. Unlike the label
+one it is **not** guarded on the registry being empty — the built-ins were
+guaranteed present before, and a contents guard drops all of them for a caller
+who registers one of their own first.
 
 `core.media` takes no import
 from `behavior` or `tracking`. It is not a dependency-free leaf: it reads verdict
