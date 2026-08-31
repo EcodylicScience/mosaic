@@ -30,7 +30,7 @@ the camera the triple names.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import ClassVar, Self
 
 from pydantic import ConfigDict, field_validator, model_validator
@@ -43,7 +43,6 @@ __all__ = [
     "SCOPE_PARAM_KEYS",
     "Scope",
     "camera_grain_refusal",
-    "entries_exclude_pair_refusal",
     "scope_in_params_refusal",
 ]
 
@@ -69,50 +68,6 @@ def _deduplicate[T: tuple[str, ...]](items: list[T]) -> list[T]:
         seen.add(item)
         unique.append(item)
     return unique
-
-
-def entries_exclude_pair_refusal(
-    entries: Sequence[object] | None,
-    groups: Sequence[object] | None,
-    sequences: Sequence[object] | None,
-    *,
-    prefix: str = "",
-) -> str:
-    """Why *entries* may not be given beside *groups* or *sequences*, or ``""``.
-
-    The rule :meth:`Scope._entries_exclude_the_pair` enforces, written once so
-    that a caller naming the same selector in another vocabulary refuses in the
-    same words. ``prefix="--"`` spells the three names as the flags a person
-    types at a command line.
-
-    Presence decides it. This reads whether each selector was given and never
-    what it names, so a caller holding unparsed command-line tokens asks without
-    parsing them first.
-
-    Args:
-        entries: The entries selector, or ``None`` where it was not given.
-        groups: The groups selector, or ``None`` where it was not given.
-        sequences: The sequences selector, or ``None`` where it was not given.
-        prefix: Prepended to each name.
-
-    Returns:
-        The refusal, or ``""`` where the three describe one selector.
-    """
-    if entries is None:
-        return ""
-    also = [
-        f"{prefix}{name}"
-        for name, value in (("groups", groups), ("sequences", sequences))
-        if value is not None
-    ]
-    if not also:
-        return ""
-    joined = " and ".join(also)
-    return (
-        f"{prefix}entries names the exact entries to cover and cannot be "
-        f"combined with {joined}. Give {prefix}entries alone, or give "
-        f"{joined} alone and let the index enumerate them."
-    )
 
 
 class Scope(StrictModel):
@@ -170,15 +125,32 @@ class Scope(StrictModel):
         had already written out. Two ways to say one thing, and the narrower
         one is what ``entries`` alone already says.
 
-        The sentence is :func:`entries_exclude_pair_refusal`'s, so a caller
-        naming this selector as command-line flags refuses in the same words.
+        Presence decides it, not truthiness. An empty ``entries`` list names no
+        entry, which is a statement rather than an omission, and it excludes the
+        pair as a populated one does.
+
+        Only the selectors the caller gave are named. Naming all three
+        regardless tells a caller to drop one they never wrote.
+
+        Raises:
+            ValueError: *entries* was given beside *groups* or *sequences*.
         """
-        refusal = entries_exclude_pair_refusal(
-            self.entries, self.groups, self.sequences
+        if self.entries is None:
+            return self
+        also = [
+            name
+            for name, value in (("groups", self.groups), ("sequences", self.sequences))
+            if value is not None
+        ]
+        if not also:
+            return self
+        joined = " and ".join(also)
+        refusal = (
+            f"entries names the exact entries to cover and cannot be combined "
+            f"with {joined}. Give entries alone, or give {joined} alone and "
+            f"let the index enumerate them."
         )
-        if refusal:
-            raise ValueError(refusal)
-        return self
+        raise ValueError(refusal)
 
     @property
     def is_unset(self) -> bool:
