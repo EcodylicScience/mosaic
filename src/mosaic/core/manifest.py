@@ -51,6 +51,7 @@ from pydantic import (
 )
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.strict_model import StrictModel
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.user_paths import user_path
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOT, TRACKING_ROOTS
@@ -325,20 +326,7 @@ _DISCOVERY_FIELDS: Final = frozenset(
 """Knobs that describe a *walk*. Meaningless once a source lists its files."""
 
 
-class _Strict(BaseModel):
-    """Base for every manifest submodel: an unknown key is an error, not noise.
-
-    The opposite of :class:`DatasetManifest`'s own tolerance, and deliberately.
-    A source is a replayable recipe and a tag is a typed contract, so a
-    mistyped key there means the next scan quietly runs a different recipe, or a
-    tag quietly loses a constraint. At the top level an unknown key is somebody's
-    future field and is preserved instead.
-    """
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
-
-
-class ScanSource(_Strict):
+class ScanSource(StrictModel):
     """A declared place a dataset draws raw files from.
 
     A source may point anywhere -- that is its purpose. Its directory is never
@@ -529,7 +517,7 @@ class LabelsScanSource(RawScanSource):
 AnyScanSource = MediaScanSource | TracksScanSource | LabelsScanSource
 
 
-class ScanSources(_Strict):
+class ScanSources(StrictModel):
     """Every declared source, by the root it feeds.
 
     Attributes:
@@ -688,7 +676,7 @@ def _claims_intersect(
 # ---------------------------------------------------------------- tags
 
 
-class DatasetTag(_Strict):
+class DatasetTag(StrictModel):
     """One typed attribute describing the dataset as a whole.
 
     The field names match the tag definitions and assignments mosaic-api keeps
@@ -791,6 +779,11 @@ class DatasetManifest(BaseModel):
             one. ``None`` for a manifest already at :data:`MANIFEST_VERSION`.
     """
 
+    # Tolerant where every submodel is strict. A source is a replayable recipe
+    # and a tag is a typed contract, where a mistyped key means the next scan
+    # runs a different recipe or a tag loses a constraint. Those models derive
+    # from ``StrictModel`` and raise. An unknown key here is somebody's future
+    # field, kept rather than refused.
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore")
 
     manifest_version: int = MANIFEST_VERSION
