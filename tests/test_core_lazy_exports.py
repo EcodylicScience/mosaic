@@ -81,3 +81,19 @@ def test_the_package_body_binds_no_name_from_mosaic() -> None:
         )
         == "none"
     )
+
+
+def test_the_entry_token_parser_loads_no_dataframe_library() -> None:
+    """mosaic-queue's submit commands parse tokens where pandas must not go.
+
+    The grammar lived on core/helpers.py, which imports pandas and numpy at
+    module scope. core/entry.py imports the standard library and nothing else.
+    """
+    assert (
+        _run(
+            "import sys\n"
+            "from mosaic.core.entry import parse_entry_tokens\n"
+            "print('pandas' if 'pandas' in sys.modules else 'clean')"
+        )
+        == "clean"
+    )
