@@ -25,6 +25,7 @@ from mosaic.core.pipeline.types.feature import EmitsLevel
 from mosaic.core.scope import (
     SCOPE_PARAM_KEYS,
     Scope,
+    camera_grain_refusal,
     entries_exclude_pair_refusal,
 )
 
@@ -128,6 +129,45 @@ class TestCameraGrain:
         """One scope names entries or camera-entries, never both grains."""
         with pytest.raises(ValidationError):
             _ = Scope.model_validate({"entries": [("A", "one"), ("A", "two", "cam0")]})
+
+
+class TestCameraGrainRefusal:
+    """Refuse a camera-addressed selector at every wire, in one shared sentence.
+
+    Sixteen of seventeen ops leave a camera narrowing unread. A grain accepted
+    on a wire covers every camera of the entry under a selector that names one,
+    and it reports success.
+    """
+
+    def test_an_absent_selector_is_not_refused(self) -> None:
+        """A caller that named no scope at all passes ``None``."""
+        assert camera_grain_refusal(None) == ""
+
+    def test_a_pair_selector_is_not_refused(self) -> None:
+        assert camera_grain_refusal(Scope(entries=[("A", "one")])) == ""
+
+    def test_an_unset_selector_is_not_refused(self) -> None:
+        assert camera_grain_refusal(Scope()) == ""
+
+    def test_an_empty_entry_list_is_not_refused(self) -> None:
+        assert camera_grain_refusal(Scope(entries=[])) == ""
+
+    def test_a_camera_addressed_selector_is_refused(self) -> None:
+        refusal = camera_grain_refusal(Scope(entries=[("A", "one", "cam0")]))
+        assert "camera" in refusal
+        assert "cam0" in refusal, "the refusal names what was asked for"
+
+    def test_the_refusal_names_every_camera_in_order(self) -> None:
+        refusal = camera_grain_refusal(
+            Scope(entries=[("A", "one", "cam1"), ("A", "two", "cam0")])
+        )
+        assert "cam0, cam1" in refusal
+
+    def test_the_sentence_names_no_command_line(self) -> None:
+        """A RunSpec is built in Python by mosaic-api, not only from flags."""
+        refusal = camera_grain_refusal(Scope(entries=[("A", "one", "cam0")]))
+        assert "--" not in refusal
+        assert "command line" not in refusal
 
 
 class TestDuplicates:

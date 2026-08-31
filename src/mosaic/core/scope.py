@@ -42,6 +42,7 @@ from mosaic.core.strict_model import StrictModel
 __all__ = [
     "SCOPE_PARAM_KEYS",
     "Scope",
+    "camera_grain_refusal",
     "entries_exclude_pair_refusal",
     "scope_in_params_refusal",
 ]
@@ -267,4 +268,41 @@ def scope_in_params_refusal(params: Mapping[str, object], *, prefix: str = "") -
         f"{prefix}params names the scope key(s) {listed}, which no feature and "
         f"no op declares. Name the scope with {flags} instead, and leave "
         f"{prefix}params to the settings the model validates."
+    )
+
+
+def camera_grain_refusal(scope: Scope | None) -> str:
+    """Why *scope* may not narrow to a camera, or ``""`` where it does not.
+
+    The camera axis is modeled here. One op narrows on it (``export-store``,
+    through :attr:`Scope.cameras`) and one produces per-camera output without
+    narrowing (``extract-frames``). Every other op reduces a camera-addressed
+    entry to its ``(group, sequence)`` pair, and a grain accepted on a wire then
+    covers every camera of the entry under a selector that named one, reporting
+    success.
+
+    The sentence is audience-neutral. A caller reaching it is a command line, a
+    queue building an argv, or a control plane constructing a spec in Python,
+    and it names the axis instead of a flag.
+
+    The Python API is unaffected. ``run_op`` with a camera-addressed scope still
+    exports one camera through ``export-store``. This refuses the wire, not the
+    capability.
+
+    Args:
+        scope: The selector a caller sent, or ``None`` where none was given.
+
+    Returns:
+        The refusal, or ``""`` where the selector names no camera.
+    """
+    if scope is None or not scope.addresses_cameras:
+        return ""
+    named = sorted(scope.cameras)
+    noun = "camera" if len(named) == 1 else "cameras"
+    listed = ", ".join(named)
+    return (
+        f"This scope narrows to the {noun} {listed}, which a submitted run "
+        f"cannot honor. Name the entry without a camera. Only export-store "
+        f"reads the camera axis, and every other op covers every camera of the "
+        f"entry and reports success."
     )
