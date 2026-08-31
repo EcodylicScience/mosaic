@@ -90,7 +90,7 @@ def _dynamic_import_names(path: Path) -> set[str]:
 def test_entry_has_no_mosaic_imports() -> None:
     """``Entry`` and ``CameraEntry`` import no mosaic module at all.
 
-    ``core/entry.py`` opens by claiming no dependencies at all. A scope imports
+    ``core/entry.py`` opens by claiming the standard library only. A scope imports
     it to name the entries a run covers. An import from here back into
     ``core.pipeline.inventory``, where both aliases began, is the cycle that
     move broke.

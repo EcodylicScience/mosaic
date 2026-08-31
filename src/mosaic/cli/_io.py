@@ -17,7 +17,7 @@ from typing import NoReturn
 import typer
 from pydantic import ValidationError
 
-from mosaic.core.helpers import parse_entry_tokens
+from mosaic.core.entry import parse_entry_tokens
 from mosaic.user_paths import user_path
 
 
@@ -123,7 +123,7 @@ def with_command_line_scope(refusal: str, remedy: str) -> str:
 def parse_entries(entries: list[str] | None) -> list[tuple[str, str]]:
     """Parse repeated ``group:sequence`` tokens into pairs.
 
-    One grammar, in :func:`mosaic.core.helpers.parse_entry_tokens`. This used to
+    One grammar, in :func:`mosaic.core.entry.parse_entry_tokens`. This used to
     reject a token with no ``:`` while the ops reading the same values out of
     ``--params`` accepted it as a bare sequence in the empty group, so the two
     ways of naming one entry on one command line disagreed.

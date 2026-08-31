@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import pytest
 
+import mosaic.core.helpers as helpers_module
 from mosaic.cli._io import parse_entries
-from mosaic.core.helpers import make_entry_key, parse_entry_tokens
+from mosaic.core.entry import parse_entry_tokens
+from mosaic.core.helpers import make_entry_key
 
 _CASES: list[tuple[list[str], list[tuple[str, str]]]] = [
     (["g:seq"], [("g", "seq")]),
@@ -57,3 +59,15 @@ def test_a_bare_token_names_the_key_it_is_stored_under() -> None:
     [(group, sequence)] = parse_entry_tokens(["seq"])
 
     assert make_entry_key(group, sequence) == "seq"
+
+
+def test_the_parser_lives_beside_the_type_it_produces() -> None:
+    """Assert the one import path ``core/entry.py``'s docstring declares.
+
+    It moved off core/helpers.py because that module imports pandas, and
+    mosaic-queue parses these tokens in a process that must not.
+    """
+    assert not hasattr(helpers_module, "parse_entry_tokens"), (
+        "core/helpers.py must not re-export it. A second import path is the "
+        "compatibility alias this move avoids"
+    )
