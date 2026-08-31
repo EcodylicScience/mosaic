@@ -290,6 +290,11 @@ class TestSourceSchema:
                 {"id": "a", "path": "/x", "extension": [".mp4"]}
             )
 
+    def test_an_unknown_key_in_the_sources_block_raises(self) -> None:
+        """``sources`` forbids one as each source under it does."""
+        with pytest.raises(ValueError, match="tracks_raw"):
+            _ = ScanSources.model_validate({"media": [], "tracks_raw": []})
+
     def test_an_unknown_key_at_the_top_level_does_not(self) -> None:
         assert migrate_to_current({"anything": 1}).preserved == {"anything": 1}
 
@@ -451,6 +456,13 @@ class TestOverlap:
 
 
 class TestTags:
+    def test_an_unknown_key_in_a_tag_raises(self) -> None:
+        """A tag is a typed contract, and an unknown key drops a constraint."""
+        with pytest.raises(ValueError, match="constraints"):
+            _ = DatasetTag.model_validate(
+                {"name": "cohort", "type": "label", "constraints": {"options": []}}
+            )
+
     def test_a_tag_round_trips_with_everything_it_declares(
         self, tmp_path: Path
     ) -> None:
