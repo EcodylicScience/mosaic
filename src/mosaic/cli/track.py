@@ -34,10 +34,10 @@ from mosaic.cli._io import (
     log,
     parse_entries,
     stdout_to_stderr,
-    terse,
 )
 from mosaic.cli._render import render_kv
 from mosaic.core.scope import Scope
+from mosaic.core.strict_model import terse
 
 __all__ = ["track_command", "tracker_kinds"]
 

@@ -83,17 +83,27 @@ def test_the_package_body_binds_no_name_from_mosaic() -> None:
     )
 
 
-def test_the_entry_token_parser_loads_no_dataframe_library() -> None:
-    """mosaic-queue's submit commands parse tokens where pandas must not go.
+QUEUE_IMPORTS = (
+    "from mosaic.core.entry import parse_entry_tokens",
+    "from mosaic.core.strict_model import terse",
+)
+"""The two leaves mosaic-queue's submit commands newly import, one per interpreter.
 
-    The grammar lived on core/helpers.py, which imports pandas and numpy at
-    module scope. core/entry.py imports the standard library and nothing else.
-    """
+Those commands parse entry tokens and print what a refused ``Scope`` says, in a
+process whose import weight the queue asserts. The grammar lived on
+``core/helpers.py`` and the renderer on a CLI helper module, which reach pandas
+and the whole command line respectively. ``core.scope`` is the third import
+those commands make, and :data:`LEAF_IMPORT` already covers it.
+"""
+
+
+@pytest.mark.parametrize("statement", QUEUE_IMPORTS)
+def test_what_the_queue_imports_loads_neither_pandas_nor_h5py(statement: str) -> None:
     assert (
         _run(
-            "import sys\n"
-            "from mosaic.core.entry import parse_entry_tokens\n"
-            "print('pandas' if 'pandas' in sys.modules else 'clean')"
+            f"import sys\n"
+            f"{statement}\n"
+            f"print(sorted(m for m in ('pandas', 'h5py') if m in sys.modules) or 'neither')"
         )
-        == "clean"
+        == "neither"
     )

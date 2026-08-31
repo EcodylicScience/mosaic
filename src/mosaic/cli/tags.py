@@ -18,7 +18,8 @@ from pydantic import TypeAdapter, ValidationError
 from mosaic.core.json_value import JsonValue
 
 from mosaic.cli._context import load_dataset
-from mosaic.cli._io import emit_json, fail, terse
+from mosaic.cli._io import emit_json, fail
+from mosaic.core.strict_model import terse
 from mosaic.user_paths import user_path
 
 notes_app = typer.Typer(
