@@ -461,7 +461,7 @@ def test_the_cli_refuses_a_scope_flag_on_a_step(tracked: Dataset, flag: str) -> 
 
     assert result.exit_code == 1
     assert flag in result.output
-    assert "a step covers the entries its plan resolved" in result.output
+    assert "A step covers the entries its plan resolved" in result.output
 
 
 def test_a_graph_op_step_passes_overwrite_to_the_op(
