@@ -35,11 +35,11 @@ from mosaic.cli._io import (
     log,
     parse_entries,
     stdout_to_stderr,
-    terse,
     with_command_line_scope,
 )
 from mosaic.cli._render import render_kv
 from mosaic.core.scope import Scope, camera_grain_refusal, scope_in_params_refusal
+from mosaic.core.strict_model import terse
 
 
 SCOPE_FLAGS_REMEDY = (

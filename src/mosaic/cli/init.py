@@ -12,7 +12,8 @@ from typing import Annotated
 
 import typer
 
-from mosaic.cli._io import emit_json, fail, terse
+from mosaic.cli._io import emit_json, fail
+from mosaic.core.strict_model import terse
 from mosaic.user_paths import user_path
 
 
