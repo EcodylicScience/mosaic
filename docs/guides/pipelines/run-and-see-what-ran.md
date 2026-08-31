@@ -15,14 +15,33 @@ both.
 
 ## Scoping
 
-Parameters come inline as JSON, from `@file.json`, or from `@-` on stdin.
+Parameters come inline as JSON, from `@file.json`, or from `@-` on stdin. `--scope`
+takes the same three forms.
 
-Both a feature run and an op run narrow with the same three flags. `--entries` takes
+Both a feature run and an op run narrow with the same four flags. `--entries` takes
 explicit `group:sequence` pairs, and a bare token is a sequence in the empty group.
+A token splits on its first colon. Everything before that colon is the group. The
+token `one:two` names the group `one`. The sequence `one:two` in the empty group is
+written `:one:two`, and a group whose own name contains a colon has no token spelling.
 `--groups` and `--sequences` name a cross product the dataset enumerates, and either
 may be given without the other. `--entries` cannot be combined with them.
 **Only an explicit pair list can express an arbitrary set** — groups and sequences
 combine as a cross-product, and three specific recordings out of a grid are not one.
+
+`--scope` names the whole selector as JSON, in the shape of the `Scope` model the
+Python example below constructs:
+
+```bash
+mosaic run -m dataset.yaml --kind transcode --scope '{"entries": [["day1", "trial01"]]}'
+```
+
+A program submitting work uses it, having formatted a selector rather than typed one.
+A pair arrives as a two-element array. Nothing splits it on the way in. That is the
+difference from `--entries`, and every group name reaches the run as it was written.
+
+`--scope` excludes `--entries`, `--groups` and `--sequences`. Name the scope one way
+or the other. `--params` and `--scope` cannot both read stdin, because the first `@-`
+consumes it.
 
 A scope key inside `--params` is refused. `--params` names the settings a feature's
 or an op's model validates, and a selector is not one of them.

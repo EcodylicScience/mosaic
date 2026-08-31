@@ -64,6 +64,7 @@ $ mosaic run [OPTIONS]
 * `--groups TEXT`: Scope to these groups.
 * `--sequences TEXT`: Scope to these sequences.
 * `--entries TEXT`: Scope to group:sequence pairs (repeatable). A bare token is a sequence in the empty group.
+* `--scope TEXT`: Scope as JSON: an inline object, @path.json, or @- for stdin. Excludes --entries / --groups / --sequences. --params and --scope cannot both read stdin.
 * `--tracks-run-id TEXT`: Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Feature runs only; needed when one sequence has two recipes.
 * `--labels-run-id TEXT`: Which labels variant to read, e.g. 'trex.0.1-abc123def0'. Feature runs only; needed when one sequence has two recipes.
 * `--overwrite`: Recompute even if a cached run exists.

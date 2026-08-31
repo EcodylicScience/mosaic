@@ -39,12 +39,13 @@ from mosaic.cli._io import (
     with_command_line_scope,
 )
 from mosaic.cli._render import render_kv
-from mosaic.core.scope import Scope, scope_in_params_refusal
+from mosaic.core.scope import Scope, camera_grain_refusal, scope_in_params_refusal
 
 
 SCOPE_FLAGS_REMEDY = (
     "--entries group:sequence (repeatable), or --groups / --sequences, which "
-    "combine as a cross product. Omit all three to cover everything."
+    "combine as a cross product, or --scope with the selector as JSON. Omit "
+    "them all to cover everything."
 )
 """How to name a scope on this command, appended to a refusal the library wrote.
 
@@ -128,6 +129,15 @@ def run_command(
             "sequence in the empty group.",
         ),
     ] = None,
+    scope_json: Annotated[
+        str | None,
+        typer.Option(
+            "--scope",
+            help="Scope as JSON: an inline object, @path.json, or @- for "
+            "stdin. Excludes --entries / --groups / --sequences. --params and "
+            "--scope cannot both read stdin.",
+        ),
+    ] = None,
     tracks_run_id: Annotated[
         str | None,
         typer.Option(
@@ -173,8 +183,34 @@ def run_command(
     named = [feature is not None, kind is not None, graph_request is not None]
     if sum(named) != 1:
         fail("Provide exactly one of --feature, --kind or --graph-request.")
+    # Presence decides both refusals below. ``--scope '{}'`` beside ``--entries``
+    # names a selector twice whatever either of them holds.
+    if scope_json is not None and (
+        entries is not None or groups is not None or sequences is not None
+    ):
+        fail(
+            "--scope names the whole selector as JSON and cannot be combined "
+            "with --entries / --groups / --sequences. Give --scope alone, or "
+            "give the flags alone."
+        )
     if (graph_request is not None) != (step is not None):
         fail("--graph-request and --step are used together, or not at all.")
+    # Below the pairing check, which reports the more actionable fault, and above
+    # ``load_dataset``. A step covers the entries its plan resolved: the
+    # submission's narrowing minus what is computed and minus what is
+    # quarantined. A flag here would name a fourth thing that nothing reads.
+    if graph_request is not None and (
+        entries is not None
+        or groups is not None
+        or sequences is not None
+        or scope_json is not None
+    ):
+        fail(
+            "--entries / --groups / --sequences / --scope are not supported "
+            "with --graph-request. A step covers the entries its plan resolved. "
+            "Narrow the submission instead, with "
+            "'mosaic pipeline submit --entry group:sequence'."
+        )
 
     from mosaic.core.pipeline._utils import new_execution_id
     from mosaic.core.pipeline.graph import REFUSED_EXIT_CODE, StepRefused
@@ -200,14 +236,29 @@ def run_command(
     # inputs and run_op enumerates it against the media index. Checked here so
     # an --entries named beside either of the other two becomes a message
     # rather than a traceback.
+    #
+    # --scope carries the whole model as JSON, for a caller that formats one
+    # rather than typing it. Both sources land in one value and meet one
+    # refusal. A bad selector reads the same however it arrived.
     try:
-        scope = Scope(
-            entries=parse_entries(entries) or None,
-            groups=groups or None,
-            sequences=sequences or None,
-        )
+        if scope_json is not None:
+            scope_value = load_json_arg(scope_json)
+            if not isinstance(scope_value, dict):
+                fail("--scope must be a JSON object.")
+            scope = Scope.model_validate(scope_value)
+        else:
+            scope = Scope(
+                entries=parse_entries(entries) or None,
+                groups=groups or None,
+                sequences=sequences or None,
+            )
     except ValidationError as exc:
         fail(f"Invalid scope: {terse(exc)}")
+
+    # After the construction because it reads the parsed model, and reached by
+    # the --kind arm and the --feature arm alike.
+    if refusal := camera_grain_refusal(scope):
+        fail(refusal)
 
     exec_id = execution_id or new_execution_id()
     token = CancelToken()
@@ -216,18 +267,6 @@ def run_command(
     payload: dict[str, object]
     try:
         if graph_request is not None:
-            if entries or groups or sequences:
-                # Refused rather than dropped. A step covers the entries its
-                # plan resolved -- the submission's narrowing minus what is
-                # already computed and minus what is quarantined. A
-                # flag here would name a fourth thing that nothing reads.
-                message = (
-                    "--entries / --groups / --sequences are not supported with "
-                    "--graph-request; a step covers the entries its plan "
-                    "resolved. Narrow the submission instead, with "
-                    "'mosaic pipeline submit --entry group:sequence'."
-                )
-                fail(message)
             from mosaic.core.pipeline.graph import (
                 execute_step,
                 load_request,

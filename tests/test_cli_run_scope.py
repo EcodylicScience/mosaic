@@ -33,6 +33,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index, write_tracks_row
 from mosaic.core.pipeline.writers import write_parquet_atomic
+from mosaic.core.scope import Scope, camera_grain_refusal
 from tests.helpers import MediaClip, make_dataset, write_media_index
 
 runner = CliRunner()
@@ -100,8 +101,12 @@ def scoped(tmp_path: Path) -> Dataset:
     return dataset
 
 
-def _regrid(dataset: Dataset, *flags: str) -> Result:
-    """``mosaic run --kind resample-tracks`` over *dataset*, as a caller types it."""
+def _regrid(dataset: Dataset, *flags: str, stdin: str | None = None) -> Result:
+    """``mosaic run --kind resample-tracks`` over *dataset*, as a caller types it.
+
+    *stdin* feeds the command's standard input, for the ``@-`` form of an
+    argument. ``None`` leaves it as :class:`CliRunner` defaults it.
+    """
     return runner.invoke(
         app,
         [
@@ -114,6 +119,7 @@ def _regrid(dataset: Dataset, *flags: str) -> Result:
             json.dumps({"target_fps": 30.0}),
             *flags,
         ],
+        input=stdin,
     )
 
 
@@ -164,7 +170,7 @@ def test_an_unscoped_op_run_covers_everything(scoped: Dataset) -> None:
 
 
 def test_a_feature_run_covers_the_group_the_flag_names(scoped: Dataset) -> None:
-    """The feature arm takes the same three flags, and had only ``--entries``."""
+    """The feature arm takes the same four flags, and had only ``--entries``."""
     result = runner.invoke(
         app,
         [
@@ -209,6 +215,54 @@ def test_index_order_does_not_reach_what_an_op_covers(scoped: Dataset) -> None:
 
     assert result.exit_code == 0, result.output
     assert _regridded(scoped) == [("A", "one"), ("A", "two"), ("B", "one")]
+
+
+def test_scope_json_reaches_the_same_selector_as_the_flags(scoped: Dataset) -> None:
+    """The machine channel and the human flags name one thing."""
+    result = _regrid(scoped, "--scope", json.dumps({"groups": ["A"]}))
+
+    assert result.exit_code == 0, result.output
+    assert _regridded(scoped) == [("A", "one"), ("A", "two")]
+
+
+def test_a_scope_naming_entries_covers_exactly_those_entries(
+    scoped: Dataset,
+) -> None:
+    """The form the channel exists for, with no splitting rule on the way in.
+
+    A pair arrives as a two-element array rather than as ``group:sequence``.
+    ``parse_entry_tokens`` splits a token on its first colon, which leaves a
+    group whose name holds one with no token spelling.
+    """
+    result = _regrid(scoped, "--scope", json.dumps({"entries": [["A", "one"]]}))
+
+    assert result.exit_code == 0, result.output
+    assert _regridded(scoped) == [("A", "one")]
+
+
+def test_a_scope_from_a_file_reaches_the_same_selector(
+    scoped: Dataset, tmp_path: Path
+) -> None:
+    """Accepts ``@path.json``, the second form ``load_json_arg`` already backs."""
+    payload = tmp_path / "scope.json"
+    _ = payload.write_text(json.dumps({"groups": ["A"]}), encoding="utf-8")
+
+    result = _regrid(scoped, "--scope", f"@{payload}")
+
+    assert result.exit_code == 0, result.output
+    assert _regridded(scoped) == [("A", "one"), ("A", "two")]
+
+
+def test_a_scope_from_stdin_reaches_the_same_selector(scoped: Dataset) -> None:
+    """``@-``, the third form the help text promises.
+
+    A queue building an argv pipes the selector rather than writing a file for
+    it. ``--params`` reads stdin the same way, and the two cannot both do it.
+    """
+    result = _regrid(scoped, "--scope", "@-", stdin=json.dumps({"groups": ["A"]}))
+
+    assert result.exit_code == 0, result.output
+    assert _regridded(scoped) == [("A", "one"), ("A", "two")]
 
 
 # --- overwrite -----------------------------------------------------------------
@@ -340,6 +394,101 @@ def test_a_scope_free_op_is_not_refused_when_no_scope_is_named(
     assert "takes no entry scope" not in result.output
 
 
+def test_scope_beside_a_human_flag_is_refused(tmp_path: Path) -> None:
+    """Naming a scope twice, refused before the dataset is opened.
+
+    Driven at a manifest that does not exist, which pins the ordering. The same
+    refusal below ``load_dataset`` reports the missing file first.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(tmp_path / "absent" / "dataset.yaml"),
+            "--kind",
+            "resample-tracks",
+            "--scope",
+            json.dumps({}),
+            "--entries",
+            "A:one",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--scope" in result.output
+    assert "--entries" in result.output
+    assert "Manifest not found" not in result.output
+
+
+def test_scope_beside_graph_request_is_refused_by_name(scoped: Dataset) -> None:
+    """A step covers the entries its plan resolved, and the payload is unread.
+
+    The refusal ran after the JSON was parsed before it moved up beside the
+    argument checks, which reported a malformed ``--scope`` as bad JSON rather
+    than as one that may not be given at all.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(scoped.manifest_path),
+            "--graph-request",
+            "01REQ00000000000000000000",
+            "--step",
+            "speed",
+            "--scope",
+            "[]",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--scope" in result.output
+    assert "--graph-request" in result.output
+    assert "must be a JSON object" not in result.output
+
+
+def test_a_scope_that_is_not_a_json_object_is_refused_plainly(
+    scoped: Dataset,
+) -> None:
+    """A JSON array reads as a plain sentence instead of a validator union."""
+    result = _regrid(scoped, "--scope", "[]")
+
+    assert result.exit_code == 1
+    assert "--scope must be a JSON object" in result.output
+
+
+def test_a_camera_addressed_scope_is_refused_on_the_kind_arm(
+    scoped: Dataset,
+) -> None:
+    result = _regrid(scoped, "--scope", json.dumps({"entries": [["A", "one", "cam0"]]}))
+
+    assert result.exit_code == 1
+    assert camera_grain_refusal(Scope(entries=[("A", "one", "cam0")])) in result.output
+
+
+def test_a_camera_addressed_scope_is_refused_on_the_feature_arm(
+    scoped: Dataset,
+) -> None:
+    """Features are untouched. The refusal is at the command, not in run_feature."""
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(scoped.manifest_path),
+            "--feature",
+            "speed-angvel",
+            "--scope",
+            json.dumps({"entries": [["A", "one", "cam0"]]}),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert camera_grain_refusal(Scope(entries=[("A", "one", "cam0")])) in result.output
+
+
 # --- how a refusal reads ---------------------------------------------------------
 
 
@@ -368,6 +517,7 @@ def test_a_refused_scope_names_the_flags_this_command_offers(scoped: Dataset) ->
     assert "re-encode every video in the dataset" in result.output
     assert "--entries group:sequence" in result.output
     assert "--groups / --sequences" in result.output
+    assert "--scope" in result.output
 
 
 def test_a_pipeline_refusal_names_the_flag_that_command_offers(
