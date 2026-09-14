@@ -277,13 +277,20 @@ class Op(Generic[P]):
     """
 
     scope_dependent: ClassVar[bool]
-    """Whether the set of entries in scope decides what this run is named.
+    """Whether the set of entries in scope decides the output.
 
-    The op-side twin of the feature declaration ``compute_run_id`` demands.
-    ``True`` where :meth:`plan_identity` reads the scope: ``transcode`` and
-    ``export-store`` hash the resolved source identities, and ``resample-tracks``
-    resolves the tracks variant it chains from by filtering the index with the
-    scope. A ``False`` written on an op whose identity does move mints one
+    The same question the feature side asks, and the op-side twin of the
+    declaration ``compute_run_id`` demands. The discriminator is whether the
+    identity addresses an artifact whose address is resolved from the dataset
+    under the scope, rather than being a function of the params alone.
+    ``resample-tracks`` meets it: its identity carries the tracks variant it
+    chains from, resolved by filtering the tracks index with the scope, and
+    the variant directory it writes is named for that. What that resolution
+    finds is whatever the index holds when it runs, so a scope resolving
+    today can refuse tomorrow, once a second producer has written another
+    labelled variant for the same entries. The declaration is the
+    conservative record that such an identity is not a pure function of the
+    recipe. A ``False`` written on an op whose identity does move mints one
     identifier for two different computations.
     """
 
@@ -317,10 +324,9 @@ class Op(Generic[P]):
         over another run's output, and the second copy is always the one that
         gets forgotten when a payload changes.
 
-        It may read the dataset -- a transcode identity covers the source videos'
-        recorded identities, and a tracker's covers the content digest of the
-        weights it was pointed at -- but it must not write, and it must not do
-        the work.
+        It may read the dataset -- a tracker's identity covers the content
+        digest of the weights it was pointed at -- but it must not write, and
+        it must not do the work.
 
         Args:
             ds: The dataset, for the recorded facts the identity covers.

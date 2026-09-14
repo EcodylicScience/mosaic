@@ -292,8 +292,9 @@ OP_CASES: tuple[OpCase, ...] = (
 )
 
 # The two transcode identifiers are minted by named, importable functions, so
-# unlike the op ids above these pin the real payload construction as well as
-# the digest.
+# unlike the op ids above these pin more than the digest: the recipe hash pins
+# the payload construction behind it, and the run id pins that the recipe is
+# namespaced rather than hashed a second time.
 _RECIPE_PARAMS = TranscodeParams(target="analysis")
 
 
@@ -304,9 +305,9 @@ def _recipe_hash() -> str:
 
 
 def _run_id() -> str:
-    # Deliberately unsorted, so a regression that stopped sorting the sources
-    # would move this line rather than pass.
-    return transcode_run_id(_recipe_hash(), ["uuid-b", "uuid-a", "uuid-c"])
+    # The recipe namespaced, with no second digest over it: a regression that
+    # re-hashed the recipe, or folded a term back in, would move this line.
+    return transcode_run_id(_recipe_hash())
 
 
 # The three tracks-variant identifiers. Function cases rather than OpCases,

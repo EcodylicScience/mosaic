@@ -22,6 +22,7 @@ from mosaic.core.pipeline.ops import (
     IdentityDeferred,
     Op,
     OpIdentity,
+    ScopeTakes,
     describe_op,
     list_ops,
     register_op,
@@ -114,7 +115,7 @@ class TestTheDeclarationsAreWhatWeIntend:
 
     def test_the_scope_dependent_ops(self) -> None:
         dependent = {kind for kind, op in OPS.items() if op.scope_dependent}
-        assert dependent == {"transcode", "export-store", "resample-tracks"}
+        assert dependent == {"resample-tracks"}
 
     def test_the_arity_constrained_ops(self) -> None:
         assert OPS["transcode"].scope_takes == "at-least-one"
@@ -132,15 +133,74 @@ ENTRY_SETS: tuple[list[Entry] | None, ...] = (
 )
 """Three scopes over one dataset: unset, one entry, and two others."""
 
+NARROWED_ENTRY_SETS: tuple[list[Entry] | None, ...] = ENTRY_SETS[1:]
+"""The two of :data:`ENTRY_SETS` an op refusing an unset selector can take."""
+
+SINGLE_ENTRY_SETS: tuple[list[Entry] | None, ...] = (
+    [("A", "one")],
+    [("A", "two")],
+)
+"""Two scopes an ``exactly-one`` op can receive: one entry, then another.
+
+Unreached today. ``export-store`` is the only ``exactly-one`` op and this
+dataset cannot feed it, so the gate skips it before these are chosen. Kept so
+the selection below stays total over ``SCOPE_TAKES_VALUES``, which is what the
+next such op will need.
+"""
+
+
+def _entry_sets_for(scope_takes: ScopeTakes) -> tuple[list[Entry] | None, ...]:
+    """The scopes the gate below asks an op declaring *scope_takes* about.
+
+    Chosen from the declaration, so an op is only ever handed a scope its own
+    declaration admits. ``check_scope_takes`` refuses the rest before any op
+    body runs, in ``run_op`` and in the planner alike, so a gate handing an op
+    a wider scope than it accepts tests a path production cannot reach -- and
+    what gets bent to survive such a test is the op.
+
+    An unset selector resolves to no entries and carries "every indexed entry"
+    in the selector, so ``at-least-one`` and ``exactly-one`` both refuse it and
+    both drop it here. ``any`` and ``none`` keep all three: an op declaring it
+    reads no scope still takes the argument and can still read it, which is
+    the defect this gate is here to find.
+
+    The ``exactly-one`` branch answers for no op today -- ``export-store`` is
+    the only one and :data:`OPS_THE_FIXTURE_CANNOT_FEED` skips it first -- and
+    is written rather than raised because the day such an op can be fed here,
+    the question it must be asked is :data:`SINGLE_ENTRY_SETS`: one entry,
+    then a different one. That is the sharper form of the same question, since
+    an identity moving with *which* entry was named survives a comparison
+    against a wider scope.
+    """
+    if scope_takes == "exactly-one":
+        return SINGLE_ENTRY_SETS
+    if scope_takes == "at-least-one":
+        return NARROWED_ENTRY_SETS
+    return ENTRY_SETS
+
 
 def _selector(entries: list[Entry] | None) -> Scope:
     """*entries* as the selector a caller writes.
 
     ``None`` gives an unset selector, which covers every indexed entry. That
-    is the first member of :data:`ENTRY_SETS` and the one an op must name the
-    same run under as the others.
+    is the first member of :data:`ENTRY_SETS` and the one an op accepting it
+    must name the same run under as the others.
     """
     return Scope(entries=entries)
+
+
+OPS_THE_FIXTURE_CANNOT_FEED = frozenset(["export-store"])
+"""Ops the dataset gate leaves out, holding no input this dataset can feed.
+
+``export-store`` reads imgstore recordings and ``three_entry_dataset`` holds
+plain videos, so ``_stores_for`` refuses every scope the op admits before an
+identity exists. Twelve of the gated ops sit out for the same kind of reason --
+no weights, no ``data.yaml`` -- and say so through ``IdentityDeferred``, which
+this one cannot: nothing upstream writes a recording, so an entry holding no
+store is a refusal rather than a deferral. Its invariance is measured against
+a store dataset instead, by
+``tests/test_store_export.py::test_two_single_entry_scopes_name_one_run``.
+"""
 
 
 GATED_OPS = frozenset(
@@ -157,23 +217,30 @@ GATED_OPS = frozenset(
         "train-points",
         "train-pose",
         "train-sleap",
+        "transcode",
         "trex",
         "ultralytics",
     ]
 )
-"""The ops the dataset gate below covers: every op declaring independence.
+"""The ops the dataset gate below covers.
 
-The payload gate runs over all seventeen and needs no population.
+Every op declaring independence, less the one
+:data:`OPS_THE_FIXTURE_CANNOT_FEED` names. The payload gate runs over all
+seventeen and needs no population.
 """
 
 
 def _gated_kinds() -> frozenset[str]:
     """The op kinds whose declarations the gates below check.
 
-    Selected from ``scope_dependent`` rather than from a params field name.
-    Reading the population off a field spelled ``entries`` is the inference
-    these declarations replace, and it answers wrongly for an op spelling its
-    scope otherwise -- ``export-store`` spelled one ``entry``.
+    Two axes, and they are about different things. The population is
+    selected from ``scope_dependent`` rather than from a params field name:
+    reading it off a field spelled ``entries`` is the inference these
+    declarations replace, and it answers wrongly for an op spelling its scope
+    otherwise -- ``export-store`` spelled one ``entry``. Then the ops
+    :data:`OPS_THE_FIXTURE_CANNOT_FEED` names are dropped, which is a
+    statement about this dataset rather than about any declaration, and each
+    is named individually so that a second one is a deliberate edit.
 
     ``scope_takes = "none"`` does not exclude an op. Every op takes the scope
     as an argument to ``plan_identity`` and ``run``, and one that declares it
@@ -182,7 +249,11 @@ def _gated_kinds() -> frozenset[str]:
     while a scope arrived through a params field a scope-free op did not
     declare.
     """
-    return frozenset(kind for kind, op in OPS.items() if not op.scope_dependent)
+    return frozenset(
+        kind
+        for kind, op in OPS.items()
+        if not op.scope_dependent and kind not in OPS_THE_FIXTURE_CANNOT_FEED
+    )
 
 
 def _op_these_gates_cover(kind: str) -> type[Op[Params]]:
@@ -190,13 +261,17 @@ def _op_these_gates_cover(kind: str) -> type[Op[Params]]:
 
     An op declaring ``scope_dependent`` claims the dependence these gates
     refuse to find. It is skipped by name rather than passed, which keeps the
-    count of ops the gates exercise visible in the report.
+    count of ops the gates exercise visible in the report. So is one this
+    dataset cannot feed, under its own reason: the two exclusions are not the
+    same statement.
 
     The population is pinned by
     :meth:`TestTheDeclarationsAreWhatWeIntend.test_the_ops_the_scope_gates_cover`,
     so a skip cannot shrink what these gates exercise.
     """
     op = OPS[kind]
+    if kind in OPS_THE_FIXTURE_CANNOT_FEED:
+        pytest.skip(f"{kind}: this dataset holds no input it can read")
     if kind not in _gated_kinds():
         pytest.skip(f"{kind} declares scope_dependent={op.scope_dependent}")
     return op
@@ -220,7 +295,7 @@ regression names which one came back.
 class TestNoScopeReachesTheHashedPayload:
     """What a run covers and whether it recomputes never name the run.
 
-    The direct leak, over **every** registered op rather than the fourteen the
+    The direct leak, over **every** registered op rather than the fifteen the
     dataset gate below covers. Every op now takes both as arguments and declares no
     such field, and that is why this passes for all seventeen. It
     stays as the gate an op reintroducing one meets. The field would be
@@ -246,12 +321,15 @@ class TestADeclaredIndependenceHoldsAgainstTheDataset:
     has that shape. Its scope filters the tracks index and the surviving variant
     enters every identifier, while its params payload holds no scope at all.
 
-    Partial today, and prospective rather than additive. Fourteen ops declare
-    independence and this dataset lets two of them answer -- ``extract-frames``
-    and ``trex``, both pure functions of their params. The other twelve defer,
-    each deferral recorded as a skip stating the reason the op gave: a training
-    op has no data.yaml here, an inference op no weights. It proves nothing the
-    payload check does not, and it grows as the fixture gains those artifacts.
+    Partial today, and prospective rather than additive. Sixteen ops declare
+    independence, fifteen of them are gated here, and this dataset lets three
+    answer: ``extract-frames`` and ``trex``, both pure functions of their
+    params, and ``transcode``, whose identity is its recipe and which reads
+    the dataset only for refusals that answer the same way for every entry
+    set. The other twelve defer, each deferral recorded as a skip stating the
+    reason the op gave: a training op has no data.yaml here, an inference op
+    no weights. It proves nothing the payload check does not, and it grows as
+    the fixture gains those artifacts.
 
     Whole :class:`OpIdentity` values are compared. ``run_id`` alone leaves a
     ``tracks_variant`` free to move with the scope, which mints one variant
@@ -266,13 +344,14 @@ class TestADeclaredIndependenceHoldsAgainstTheDataset:
         identities: set[OpIdentity] = set()
         deferred: dict[str, str] = {}
         params = op.Params.model_validate(minimal_op_params(kind))
-        for entries in ENTRY_SETS:
+        entry_sets = _entry_sets_for(op.scope_takes)
+        for entries in entry_sets:
             scope = three_entry_dataset.resolve_scope(_selector(entries))
             try:
                 identities.add(op().plan_identity(three_entry_dataset, params, scope))
             except IdentityDeferred as exc:
                 deferred[repr(entries)] = exc.because
-        if len(deferred) == len(ENTRY_SETS):
+        if len(deferred) == len(entry_sets):
             reasons = "; ".join(sorted(set(deferred.values())))
             pytest.skip(f"{kind} defers its identity: {reasons}")
         if deferred:
@@ -330,15 +409,16 @@ class TestPublished:
 
     def test_list_ops_carries_both_declarations(self) -> None:
         rows = {row["kind"]: row for row in list_ops()}
-        assert rows["transcode"]["scope_takes"] == "at-least-one"
-        assert rows["transcode"]["scope_dependent"] is True
+        assert rows["resample-tracks"]["scope_takes"] == "any"
+        assert rows["resample-tracks"]["scope_dependent"] is True
         assert rows["train-pose"]["scope_takes"] == "none"
         assert rows["train-pose"]["scope_dependent"] is False
 
     def test_describe_op_carries_both_declarations(self) -> None:
+        assert describe_op("resample-tracks")["scope_dependent"] is True
         described = describe_op("export-store")
         assert described["scope_takes"] == "exactly-one"
-        assert described["scope_dependent"] is True
+        assert described["scope_dependent"] is False
 
     def test_neither_reaches_the_params_schema(self) -> None:
         """A client drawing controls from the schema must not draw a declaration.
@@ -388,7 +468,8 @@ class TestPublished:
         """A canvas refuses a wire with no dataset and reads them here."""
         catalog = declaration_catalog()
         assert catalog.entries["transcode"].scope_takes == "at-least-one"
-        assert catalog.entries["transcode"].scope_dependent is True
+        assert catalog.entries["transcode"].scope_dependent is False
+        assert catalog.entries["resample-tracks"].scope_dependent is True
 
     def test_a_feature_declaration_takes_neither(self) -> None:
         """No feature refuses a scope, and one legal value teaches nothing."""

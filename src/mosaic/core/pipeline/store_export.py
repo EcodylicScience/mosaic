@@ -113,10 +113,10 @@ class StoreExportParams(Params):
     are exported comes from the same selector. A triple names one camera, and
     a pair names every camera of the entry.
 
-    The identities of the exported stores are hashed in the coverage's place.
-    Exporting one camera and exporting both therefore name two runs, where a
-    coverage in the recipe would name the same camera's file two different
-    things.
+    Nothing stands in the coverage's place either: the run identifier is the
+    recipe, so exporting one camera and exporting both name one run. What
+    they covered is told apart in the ledger instead, by the label
+    :meth:`StoreExportOp.target` writes.
     """
 
     av1_crf: Annotated[int, Declared(_AV1_CRF_DESCRIPTION)] = ANALYSIS_ENCODING.quality
@@ -146,16 +146,18 @@ def export_recipe_hash(params: StoreExportParams) -> str:
     return hash_params(fingerprint)
 
 
-def export_run_id(recipe_hash: str, source_uuids: list[str]) -> str:
-    """Ledger key: the recipe plus the sorted identities of the stores it ran over.
+def export_run_id(recipe_hash: str) -> str:
+    """Ledger key: the recipe, namespaced.
 
-    Mirrors :func:`mosaic.core.pipeline.transcode.transcode_run_id`, and for the
-    same reason: a store enters by ``video_uuid``, never by position or path, so
-    a reorder or a rename leaves the identity where it is. This value addresses
-    nothing -- the filename carries the recipe -- and reaches only the run log.
+    Mirrors :func:`mosaic.core.pipeline.transcode.transcode_run_id`, and is not
+    re-digested for the same reason: ``export_recipe_hash`` already returns a
+    ``hash_params`` digest, and a hash over it would carry nothing new. This
+    value addresses nothing -- the filename carries the recipe -- and reaches
+    only the run log. What a run covered reaches it too, through the
+    ``runs.target`` column :meth:`StoreExportOp.target` writes, which names
+    the entry and the cameras for exactly that reason.
     """
-    fingerprint = {"recipe": recipe_hash, "sources": sorted(source_uuids)}
-    return f"export-store-{hash_params(fingerprint)}"
+    return f"export-store-{recipe_hash}"
 
 
 def _one_entry(scope: ResolvedScope) -> Entry:
@@ -277,11 +279,22 @@ class StoreExportOp(Op[StoreExportParams]):
     # nothing here touches a GPU: the writer runs a CPU AV1 encode.
     resource_class = "heavy"
     scope_takes = "exactly-one"
-    scope_dependent = True
+    scope_dependent = False
     Params = StoreExportParams
 
     def target(self, params: StoreExportParams, scope: ResolvedScope) -> str:
+        """The entry, and the cameras when the selector names any.
+
+        The cameras are the whole of what one attempt here can cover
+        differently from another: they narrow what is encoded and they reach
+        no identifier, so a label without them records a one-camera export
+        and a whole-entry one identically. A short human label, not a key --
+        the ledger column is read, not matched on.
+        """
         group, sequence = _one_entry(scope)
+        cameras = sorted(scope.selector.cameras)
+        if cameras:
+            return f"{group}/{sequence}[{', '.join(cameras)}]"
         return f"{group}/{sequence}"
 
     def plan_identity(
@@ -294,14 +307,18 @@ class StoreExportOp(Op[StoreExportParams]):
     ) -> OpIdentity:
         """What this export will be called, without encoding anything.
 
-        The recipe plus the identities of the stores it will read, both of which
-        the media index already holds -- so nothing is deferred. Like a
+        The recipe alone, which is the params -- so nothing is deferred. Like a
         transcode's, this value addresses nothing: the filename carries the
         recipe, so it names the attempt rather than the output.
+
+        The scope is read for the precondition and for nothing the returned
+        value depends on. :func:`_store_uuids` refuses a store with no
+        ``video_uuid``, and it is here rather than in :meth:`run` alone
+        because a plan is where a corpus that cannot be exported should be
+        refused.
         """
-        return OpIdentity(
-            run_id=export_run_id(export_recipe_hash(params), _store_uuids(ds, scope))
-        )
+        _ = _store_uuids(ds, scope)
+        return OpIdentity(run_id=export_run_id(export_recipe_hash(params)))
 
     def run(
         self,

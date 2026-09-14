@@ -503,12 +503,12 @@ def _plan_step(
 def _as_recorded(base: PlannedStep, run_id: str) -> PlannedStep:
     """Replace a feature step's resolved identity with the one it actually got.
 
-    Feature steps only, and the asymmetry is not an omission. An op's identity is
-    a function of its params -- its settings, the recipe it encodes, the recorded
-    identities of the videos it reads -- and the plan passes execution those same
-    params, so the two cannot differ. A ``scope_dependent`` feature's identity
-    covers the entry set it was fitted over, and *that* can differ from what was
-    intended whenever some of the intended entries turn out not to be there.
+    Feature steps only, and the asymmetry is not an omission. An op step
+    covers its whole scope or none of it, so no op's identity is a function of
+    how much of that scope turned out to be there. A ``scope_dependent``
+    feature's identity covers the entry set it was fitted over, and *that* can
+    differ from what was intended whenever some of the intended entries turn
+    out not to be there.
     """
     if not run_id or base.kind != "feature" or run_id == base.run_id:
         return base
@@ -659,8 +659,8 @@ def _resolve_op_step(
     """One op step's identity, asked of the op rather than reconstructed.
 
     An op step covers its whole scope or none of it, so its entries are settled
-    before its identity is -- which is what a transcode needs, its identifier
-    covering the recorded identities of the videos it will read.
+    before its identity is -- which is what ``resample-tracks`` needs, its
+    identifier carrying the tracks variant its scope resolves.
     """
     op_cls = op_class_for_kind(step.kind)
     if op_cls is None:  # pragma: no cover - validation resolves every kind first

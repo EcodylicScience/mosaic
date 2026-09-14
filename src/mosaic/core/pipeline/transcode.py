@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -122,8 +122,8 @@ class TranscodeParams(Params):
 
     The settings alone. Which entries a run covers is an argument to the run,
     and an unscoped one is refused by the op's declaration rather than by this
-    model. The identities of the videos in scope are hashed in the coverage's
-    place. A sequence rename therefore does not move the run.
+    model. Nothing stands in the coverage's place either: the run identifier is
+    the recipe, so neither a sequence rename nor a wider scope moves the run.
     """
 
     # allow_hardware is excluded, and the reasoning cuts both ways. A hardware
@@ -215,21 +215,20 @@ def transcode_recipe_hash(
     return hash_params(fingerprint)
 
 
-def transcode_run_id(recipe_hash: str, source_uuids: Iterable[str]) -> str:
-    """Ledger key: the recipe plus the sorted identities of the sources it ran over.
+def transcode_run_id(recipe_hash: str) -> str:
+    """Ledger key: the recipe, namespaced.
 
-    Sources enter by ``video_uuid``, never by position, path, or size, because a
-    transcode consumes one video rather than the sequence it sits in: a reorder
-    or a rename must leave the identity where it is, or every ordering fix
-    triggers a full re-encode producing byte-identical output. Sorted before
-    hashing, since a set of sources has no inherent order.
+    Not re-digested. ``transcode_recipe_hash`` already returns a
+    ``hash_params`` digest, and with no sources left in the payload a second
+    hash over it would carry nothing the first does not.
 
     This value addresses nothing. It names no directory and gates no reuse --
     the filename carries the recipe and the derivative row records it -- so it
-    reaches only the run log and the queue row.
+    reaches only the run log and the queue row. What a run covered reaches the
+    ledger too, through the ``runs.target`` column :meth:`Op.target` writes,
+    rather than through this identifier.
     """
-    fingerprint = {"recipe": recipe_hash, "sources": sorted(source_uuids)}
-    return f"transcode-{hash_params(fingerprint)}"
+    return f"transcode-{recipe_hash}"
 
 
 def set_forward_link(
@@ -387,6 +386,31 @@ def _refuse_without_media_raw(
     )
 
 
+def _refuse_unresolvable_sources(
+    ds: "Dataset", entries: Sequence[tuple[str, str]]
+) -> None:
+    """Decline a scope holding a source this op could not name or read.
+
+    Two refusals, both :func:`_source_uuids_for`'s: a source with no
+    ``video_uuid``, which means the index has not been re-probed, and an
+    imgstore, which has no elementary stream to hand ffmpeg. The uuids
+    themselves are discarded -- since the identity stopped covering them this
+    call is here for what it refuses.
+
+    It runs at plan time, where the refusal belongs. ``plan_pipeline`` calls
+    :meth:`TranscodeOp.plan_identity`, so a corpus in either shape fails while
+    a preview is being built rather than after one has reported success, and
+    ``TranscodeOp.run`` inherits the same refusal by calling ``plan_identity``
+    first. That is what keeps
+    ``test_a_source_with_no_uuid_refuses_to_transcode`` and
+    ``test_an_imgstore_refuses_to_transcode`` refusals of the run rather than
+    of one entry: ``_transcode_entry``'s own call sits inside the per-entry
+    handler, which records a lost entry and carries on.
+    """
+    for entry in entries:
+        _ = _source_uuids_for(ds, entry)
+
+
 def _sources_for(
     ds: "Dataset", entry: tuple[str, str]
 ) -> list[tuple[int, Path, "pd.Series"]]:
@@ -459,7 +483,7 @@ class TranscodeOp(Op[TranscodeParams]):
     # CPU-only ones included, to separate files from byte-identical output.
     version = "0.2"
     scope_takes = "at-least-one"
-    scope_dependent = True
+    scope_dependent = False
     Params = TranscodeParams
 
     def target(self, params: TranscodeParams, scope: ResolvedScope) -> str:
@@ -479,28 +503,28 @@ class TranscodeOp(Op[TranscodeParams]):
     ) -> OpIdentity:
         """What this transcode will be called, without encoding anything.
 
-        The identity is the recipe plus the identities of every source it will
-        read, so both halves are readable at planning time: the recipe is the
-        params, and the sources are ``video_uuid`` cells the media index already
-        holds. Nothing here is deferred -- a transcode reads originals, which
-        exist before any graph runs.
+        The identity is the recipe alone, which is the params, so it is
+        readable at planning time and nothing here is deferred.
 
         It **addresses nothing**: the derivative's filename carries the recipe
-        and the source uuid, and reuse is gated on that plus the forward link. So
-        this value names the attempt for the run log and the queue, and widening
-        what one run covers moves no file.
+        and the source uuid, and reuse is gated on that plus the forward link.
+        So this value names the attempt for the run log and the queue, and
+        widening what one run covers moves no file.
+
+        The scope is read for the two preconditions and for nothing the
+        returned value depends on. They are here rather than in ``run``
+        because a plan is where a corpus that cannot be transcoded should be
+        refused, and ``run`` reaches them by calling this first.
         """
         entries = sorted(scope.entries)
         _refuse_without_media_raw(ds, entries)
-        source_uuids = [
-            uuid for entry in entries for uuid in _source_uuids_for(ds, entry)
-        ]
+        _refuse_unresolvable_sources(ds, entries)
         thresholds = media_thresholds()
         encoding = (
             ANALYSIS_ENCODING if params.target == "analysis" else PLAYBACK_ENCODING
         )
         recipe_hash = transcode_recipe_hash(params, encoding, CHROME_149, thresholds)
-        return OpIdentity(run_id=transcode_run_id(recipe_hash, source_uuids))
+        return OpIdentity(run_id=transcode_run_id(recipe_hash))
 
     def run(
         self,
