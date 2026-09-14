@@ -22,12 +22,14 @@ from mosaic_media.transcode import TranscodeError  # noqa: E402
 
 from mosaic.core.dataset import Dataset  # noqa: E402
 from mosaic.core.media.video_io import open_frame_reader  # noqa: E402
-from mosaic.core.pipeline.ops import ScopeRefused, run_op  # noqa: E402
+from mosaic.core.pipeline.ops import OpIdentity, ScopeRefused, run_op  # noqa: E402
 from mosaic.core.scope import Scope  # noqa: E402
 from mosaic.core.pipeline.store_export import (  # noqa: E402
     EXPORT_TARGET,
+    StoreExportOp,
     StoreExportParams,
     export_recipe_hash,
+    export_run_id,
 )
 from mosaic.tracking.common.scope import TrackerWorkItem  # noqa: E402
 from mosaic.tracking.common.tool_input import (  # noqa: E402
@@ -429,15 +431,124 @@ def test_the_recipe_ignores_scope_and_tracks_the_encode() -> None:
     """No coverage field to reach the recipe hash, and an encode knob in it.
 
     The coverage used to be two params fields marked ``HASH_EXCLUDE``. It is
-    an argument to the run now. The recipe therefore cannot read it at all.
-    The coverage enters ``export_run_id`` instead, through the identities of
-    the stores exported.
+    an argument to the run now. The recipe therefore cannot read it at all,
+    and neither can ``export_run_id``, which is the recipe namespaced. What a
+    run covered reaches the ledger through the ``runs.target`` column.
     """
     declared = set(StoreExportParams.model_fields)
     assert not declared & {"entry", "entries", "camera", "cameras"}
     base = StoreExportParams()
     assert export_recipe_hash(base) != export_recipe_hash(
         StoreExportParams(av1_crf=_LOSSLESS)
+    )
+
+
+def test_two_single_entry_scopes_name_one_run(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """One recipe over two entries is one run identifier.
+
+    ``StoreExportOp.scope_dependent = False`` is the declaration and this is
+    the measurement behind it.
+
+    It lives here rather than in the shared gate in
+    ``tests/test_op_scope_declaration.py`` because that gate's dataset holds
+    plain videos. Every scope this op admits is refused there before an
+    identity exists, and a refusal is not a deferral the gate can record as a
+    skip, so a store dataset is the only place the question can be asked.
+
+    Two single-entry scopes, because ``scope_takes = "exactly-one"`` admits no
+    wider one. That is the sharper question anyway: an identity that moved
+    with *which* store was named would survive a comparison against a wider
+    scope.
+    """
+    ds = make_media_dataset((tmp_path / "dataset").resolve())
+    search = ds.get_root("media_raw") / "recordings"
+    search.mkdir(parents=True, exist_ok=True)
+    for name in ("first", "second"):
+        _ = make_imgstore(name=name, parent=search, fill=True)
+    ds.index_media([search])
+    entries = [
+        (str(row["group"]), str(row["sequence"]))
+        for _, row in _originals(ds).iterrows()
+    ]
+    assert len(entries) == 2, "the two stores were not indexed as two entries"
+
+    op = StoreExportOp()
+    params = StoreExportParams()
+
+    def identity_over(entry: tuple[str, str]) -> OpIdentity:
+        scope = ds.resolve_scope(Scope(entries=[entry]))
+        return op.plan_identity(ds, params, scope)
+
+    # The whole record, not its run_id: a second field free to move with the
+    # scope mints one artifact address for two coverages just as a run_id does.
+    assert identity_over(entries[0]) == identity_over(entries[1])
+
+
+def test_a_plan_refuses_an_entry_with_no_store(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    write_cfr_mp4: Callable[..., None],
+    requires_ffmpeg: None,
+) -> None:
+    """Asking what an export would be called refuses what it cannot export.
+
+    The refusal is the reason ``plan_identity`` reads the scope at all now
+    that the store identities have left the identifier. A plan is where a
+    corpus that cannot be exported should be refused: without this, a preview
+    reports a run identifier for an entry holding no store, and the refusal
+    arrives only once the submission does.
+    """
+    ds = make_media_dataset((tmp_path / "dataset").resolve())
+    source = ds.get_root("media_raw") / "plain" / "clip.mp4"
+    write_cfr_mp4(source)
+    ds.index_media([source.parent])
+    row = _originals(ds).iloc[0]
+    scope = ds.resolve_scope(Scope(entries=[(str(row["group"]), str(row["sequence"]))]))
+
+    with pytest.raises(TranscodeError, match="no imgstore rows"):
+        _ = StoreExportOp().plan_identity(ds, StoreExportParams(), scope)
+    del requires_ffmpeg
+
+
+def test_the_run_identity_carries_the_recipe_verbatim() -> None:
+    """Namespaced, not digested a second time.
+
+    A hash over the recipe hash would produce an identifier of the same shape
+    and the same length, differing only in that the recipe could no longer be
+    read out of it -- so what pins the choice is that the digest appears
+    whole, not that the value equals any particular string.
+    """
+    recipe = export_recipe_hash(StoreExportParams())
+    assert recipe in export_run_id(recipe)
+
+
+def test_the_label_names_the_cameras_the_scope_named(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """``runs.target`` is where a one-camera export differs from a whole one.
+
+    The cameras narrow what is encoded and reach no identifier, so the ledger
+    label is the only place the two attempts read differently.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, make_imgstore, cameras=["CAMA", "CAMB"]
+    )
+    op = StoreExportOp()
+    params = StoreExportParams()
+
+    def label_over(selector: Scope) -> str:
+        return op.target(params, ds.resolve_scope(selector))
+
+    assert label_over(Scope(entries=[(group, sequence)])) == f"{group}/{sequence}"
+    assert (
+        label_over(Scope(entries=[(group, sequence, "CAMA")]))
+        == f"{group}/{sequence}[CAMA]"
     )
 
 

@@ -10,11 +10,10 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased — one selector model, a scope that leaves op params, and a request document's key is renamed
 
-**No identifier moves, and no run on disk is re-addressed.** The golden corpus
-has no diff. A selector says which entries a caller wants and never enters a
-payload. One entry set asked for five ways therefore mints one `run_id`, which
-`tests/test_hashing_rules.py` pins for a scope-free feature and a
-scope-dependent one.
+**No run on disk is re-addressed.** A selector says which entries a caller
+wants and never enters a payload. One entry set asked for five ways therefore
+mints one `run_id`, which `tests/test_hashing_rules.py` pins for a scope-free
+feature and a scope-dependent one.
 
 **`Request.entries` is now `Request.scope`, and a request written before this
 does not load.** Request models forbid unknown fields and `load_request` has no
@@ -73,9 +72,9 @@ whether it redoes the work belong to the attempt, and two attempts differing
 only in either are one recipe under one identifier.
 `tests/test_op_scope_declaration.py` pins both halves for every registered op.
 
-**No identifier moves.** Every deleted field was `HASH_EXCLUDE`, which
-`Params.identity_dump()` pops before the payload is hashed. `tests/data/` and
-`tests/test_identity_golden.py` have no diff.
+**No identifier moves for that removal.** Every deleted field was
+`HASH_EXCLUDE`, which `Params.identity_dump()` pops before the payload is
+hashed.
 
 **`OpParams` is deleted, and its four subclasses re-base on `Params`.**
 `TrackerOpParams`, `_InferParamsBase`, `ExtractFramesParams` and
@@ -88,6 +87,30 @@ params as the recipe wrote them.
 `Op.run` also takes `overwrite`.** `run_op` gained keyword-only `scope=` and
 `overwrite=`. Anything outside mosaic that subclasses `Op` or calls those
 methods positionally must be updated.
+
+**The `transcode` and `export-store` identifiers move, and nothing on disk is
+renamed.** Both dropped the sorted source uuids they carried and are now the
+recipe hash namespaced: `transcode-<recipe>` and `export-store-<recipe>`. A
+derivative is addressed by its own filename and reuse is gated on that plus the
+forward link, so neither identifier names a file and no encode is repeated.
+Both golden corpora that record a transcode identifier land on
+`transcode-49bf3aa578`: the op corpus moves from `transcode-03632a82d2` and
+the worked plan from `transcode-816195ccbd`, which covered two entries and so
+hashed two source uuids. Both ops now declare `scope_dependent = False`, which
+is what the declaration always meant: whether coverage decides the output.
+What a run covered still reaches the ledger through the `runs.target` column,
+and `export-store`'s label now names the cameras the selector named, which is
+the only place a one-camera export differs from a whole-entry one.
+
+**A transcode entry's failure budget now accumulates across scopes.** Attempts
+are counted under `(storage_name, run_id, group, sequence)` in
+`.mosaic/claims/`, and an op step's `storage_name` is empty, so the run
+identifier was what separated one submission's count from another's. Varying
+the scope used to mint a fresh `transcode` identifier and start the count
+over, which is how an entry could keep failing without ever reaching
+`QUARANTINE_AFTER`. One recipe is one counter now: three failures of an entry
+quarantine it whichever scope asked for it, and a success under any scope
+clears it.
 
 **`mosaic run --kind` takes the scope flags a feature run takes, and refuses a
 selector inside `--params`.** `--entries`, `--groups` and `--sequences` are

@@ -641,18 +641,55 @@ def test_a_dataset_with_no_media_raw_refuses_to_transcode(tmp_path: Path) -> Non
     assert not (ds.get_root("media") / "transcode").exists()
 
 
-def test_the_run_identity_ignores_the_source_order() -> None:
-    assert transcode_run_id("abc123", ["b", "a"]) == transcode_run_id(
-        "abc123", ["a", "b"]
+def test_the_run_identity_does_not_move_across_entry_sets(
+    three_entry_dataset: Dataset,
+) -> None:
+    """One recipe over two coverages is one run identifier.
+
+    The identifier used to carry the sorted uuids of the sources, and this
+    asked whether the sort held. It carries the recipe and nothing else now,
+    which is the contract that replaced it: a derivative is addressed by its
+    own filename, so widening what one attempt covers must leave the ledger
+    key where it is. ``TranscodeOp.scope_dependent = False`` is the
+    declaration and this is the measurement behind it.
+    """
+    from mosaic.core.pipeline.transcode import TranscodeOp
+
+    op = TranscodeOp()
+    params = TranscodeParams(target="analysis")
+
+    def identity_over(*entries: tuple[str, str]) -> str:
+        scope = three_entry_dataset.resolve_scope(Scope(entries=list(entries)))
+        return op.plan_identity(three_entry_dataset, params, scope).run_id
+
+    assert identity_over(("A", "one")) == identity_over(("A", "two"), ("B", "one"))
+
+
+def test_the_run_identity_carries_the_recipe_verbatim() -> None:
+    """Namespaced, not digested a second time.
+
+    A hash over the recipe hash would produce an identifier of the same shape
+    and the same length, differing only in that the recipe could no longer be
+    read out of it -- so what pins the choice is that the digest appears
+    whole, not that the value equals any particular string.
+    """
+    recipe = transcode_recipe_hash(
+        TranscodeParams(target="analysis"),
+        ANALYSIS_ENCODING,
+        CHROME_149,
+        media_thresholds(),
     )
+    assert recipe in transcode_run_id(recipe)
 
 
 def test_the_params_declare_no_coverage() -> None:
     """The recipe hash cannot read an entry, because there is no field to read.
 
-    What a run covers enters the identifier through ``transcode_run_id``'s
-    sources, never through the recipe. Two scopes therefore write derivatives
-    under one recipe hash, and a second scope reuses the first's files.
+    What a run covers reaches no identifier at all: not the recipe, and not
+    ``transcode_run_id``, which is the recipe namespaced. It reaches the ledger
+    through the ``runs.target`` column instead. Two scopes therefore write
+    derivatives under one recipe hash, and a second scope reuses the first's
+    files.
     """
     assert "entries" not in TranscodeParams.model_fields
 
@@ -770,8 +807,8 @@ def test_a_repeated_entry_names_the_entry_not_the_count() -> None:
 
     A duplicate names one entry twice rather than covering more, and
     :class:`~mosaic.core.scope.Scope` collapses it. Left standing it would
-    transcode that entry twice and contribute its source uuids twice to an
-    identifier that sorts its sources without collapsing them.
+    transcode that entry twice, and report the pair as a two-entry batch under
+    a label a reader would read as covering two entries.
     """
     from mosaic.core.pipeline.transcode import TranscodeOp
 
