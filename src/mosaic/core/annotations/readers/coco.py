@@ -32,8 +32,9 @@ import json
 from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 from mosaic.core.annotations.model import (
     AnnotationFrame,
@@ -46,6 +47,24 @@ from mosaic.core.annotations.model import (
 )
 
 __all__ = ["read_coco_keypoints"]
+
+
+def _as_track_id(value: object) -> object:
+    """Accept the two spellings of "no identity" and the common integer one.
+
+    A track id is a name, not a number, so the representation holds a ``str``.
+    But a COCO producer numbering instances writes ``7`` and one marking an
+    untracked instance writes ``null``, and a bare ``str`` field rejects both --
+    which would stop a file parsing that parsed before this key was read at all.
+    That is a worse outcome than losing the identity, so those two are narrowed
+    here and everything else is left to fail with pydantic's own message.
+    """
+    if value is None:
+        return ""
+    # ``bool`` is an ``int``; a boolean track id is malformed, not a number.
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return value
 
 
 class _Category(BaseModel):
@@ -70,6 +89,13 @@ class _Annotation(BaseModel):
     category_id: int = 0
     keypoints: list[float] = Field(default_factory=list)
     bbox: list[float] = Field(default_factory=list)
+    # One spelling, deliberately. Other producers put the same identity under
+    # ``attributes.object_id`` or ``instance_id``, and reading all three would
+    # mean mosaic reads three keys and writes one -- so a round trip through a
+    # foreign file would move the identity to a different key than it arrived
+    # under. Defaulting to "" keeps every file that carries none parsing
+    # unchanged.
+    track_id: Annotated[str, BeforeValidator(_as_track_id)] = ""
 
 
 class _CocoFile(BaseModel):
@@ -203,6 +229,7 @@ def _read_object(
     return AnnotationObject(
         keypoints=tuple(keypoints),
         category=category,
+        track_id=annotation.track_id,
         source_id=str(annotation.id),
         bbox=(
             Bbox(x=box[0], y=box[1], width=box[2], height=box[3])

@@ -8,6 +8,7 @@ result is published atomically, and that nothing is left behind either way.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
@@ -28,7 +29,8 @@ from mosaic.tracking.sleap.run import SleapError
 SCHEMA = KeypointSchema(names=("nose", "thorax", "tail"), skeleton=((0, 1), (1, 2)))
 
 
-def _set(tmp_path: Path, *, frames: int = 2) -> AnnotationSet:
+def _set(tmp_path: Path, *, frames: int = 2, tracks: bool = False) -> AnnotationSet:
+    """*frames* frames of one instance each, optionally carrying an identity."""
     images = tmp_path / "images"
     images.mkdir(exist_ok=True)
     made: list[AnnotationFrame] = []
@@ -46,7 +48,10 @@ def _set(tmp_path: Path, *, frames: int = 2) -> AnnotationSet:
                             Keypoint(40.0, 50.0, 2),
                             Keypoint(52.0, 56.0, 1),
                             Keypoint.absent(),
-                        )
+                        ),
+                        # The same animal across every frame, which is what a
+                        # multi_class head is trained to recognize.
+                        track_id="1" if tracks else "",
                     ),
                 ),
             )
@@ -54,6 +59,32 @@ def _set(tmp_path: Path, *, frames: int = 2) -> AnnotationSet:
     return AnnotationSet(
         schema=SCHEMA, frames=tuple(made), categories=("mouse",), image_root=images
     )
+
+
+def _stub_sleap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the location ladder at a SLEAP install that never runs."""
+    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-track"))
+    (tmp_path / "bin").mkdir(exist_ok=True)
+    _ = (tmp_path / "bin" / "python").write_text("")
+
+
+def _hand_over(
+    annotations: AnnotationSet, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    """Run ``write_slp`` and give back the COCO text the subprocess was handed."""
+    handed_over: list[str] = []
+
+    def capture(argv: Sequence[str], **kw: object) -> tuple[str, str, int]:
+        # Keep the text: the file is deleted once the conversion returns.
+        handed_over.append(Path(argv[-3]).read_text())
+        _ = Path(argv[-1]).write_bytes(b"slp")
+        return ("ok", "", 0)
+
+    _stub_sleap(tmp_path, monkeypatch)
+    monkeypatch.setattr(labels_module, "run_supervised", capture)
+    _ = write_slp(annotations, tmp_path / "out.slp")
+    assert handed_over, "the subprocess was invoked"
+    return handed_over[0]
 
 
 def _fake_run(
@@ -83,30 +114,14 @@ def test_the_coco_handed_over_says_what_the_set_said(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The subprocess only sees the COCO file, so that file is the whole contract."""
-    handed_over: list[str] = []
-    seen: list[list[str]] = []
-
-    def capture(argv: Sequence[str], **kw: object) -> tuple[str, str, int]:
-        seen.append(list(argv))
-        # Keep the text: the file is deleted once the conversion returns.
-        handed_over.append(Path(argv[-3]).read_text())
-        _ = Path(argv[-1]).write_bytes(b"slp")
-        return ("ok", "", 0)
-
-    monkeypatch.setattr(labels_module, "run_supervised", capture)
-    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-track"))
-    (tmp_path / "bin").mkdir()
-    _ = (tmp_path / "bin" / "python").write_text("")
-
     original = _set(tmp_path)
-    _ = write_slp(original, tmp_path / "out.slp")
-    assert seen, "the subprocess was invoked"
+    handed_over = _hand_over(original, tmp_path, monkeypatch)
 
     # Read the handed-over file back the way sleap-io will, and compare against
     # what went in. Asserting on the parsed set rather than on raw JSON keys is
     # the same question a consumer asks.
     replay = tmp_path / "handed_over.json"
-    _ = replay.write_text(handed_over[0])
+    _ = replay.write_text(handed_over)
     delivered = read_coco_keypoints(replay, tmp_path / "images")
 
     assert delivered.schema == original.schema, "names and skeleton survive"
@@ -114,6 +129,40 @@ def test_the_coco_handed_over_says_what_the_set_said(
     received = delivered.frames[0].objects[0].keypoints
     assert [k.visibility for k in received] == [2, 1, 0], "occlusion included"
     assert not received[2].is_placed, "an unplaced point stays unplaced"
+
+
+def test_an_identified_instance_hands_over_its_track(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without this key sleap-io builds a .slp with no tracks at all.
+
+    Asserted on the raw JSON rather than on a parsed set, because presence and
+    absence of a key is the whole contract and a parsed set cannot express it.
+    And asserted on what mosaic writes, never on what sleap-io does with it:
+    that library lives in the user's SLEAP environment, so mosaic cannot pin
+    its behavior from here.
+    """
+    handed_over = _hand_over(_set(tmp_path, tracks=True), tmp_path, monkeypatch)
+    records = json.loads(handed_over)["annotations"]
+
+    assert records, "an instance was written"
+    assert [r["track_id"] for r in records] == ["1", "1"], "one animal, two frames"
+
+
+def test_an_unidentified_instance_omits_the_key_entirely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard that keeps a falsy value from reading as an identity.
+
+    sleap-io chains its candidate keys with ``or``, so an empty string present
+    in the file is indistinguishable from one absent -- and writing it anyway
+    would make every unidentified instance look like a key that failed.
+    """
+    handed_over = _hand_over(_set(tmp_path), tmp_path, monkeypatch)
+    records = json.loads(handed_over)["annotations"]
+
+    assert records, "an instance was written"
+    assert all("track_id" not in r for r in records), "absent, not empty"
 
 
 def test_the_result_is_published_atomically(
@@ -131,9 +180,7 @@ def test_the_result_is_published_atomically(
         return ("", "", 0)
 
     monkeypatch.setattr(labels_module, "run_supervised", run)
-    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-track"))
-    (tmp_path / "bin").mkdir()
-    _ = (tmp_path / "bin" / "python").write_text("")
+    _stub_sleap(tmp_path, monkeypatch)
 
     written = write_slp(_set(tmp_path), target)
     assert observed == {"target_absent_during_write": True, "writes_elsewhere": True}
@@ -146,9 +193,7 @@ def test_a_failed_conversion_leaves_nothing_behind(
     """No half-written .slp, and no intermediate COCO for a later run to trip on."""
     run, _ = _fake_run(write=False, returncode=1)
     monkeypatch.setattr(labels_module, "run_supervised", run)
-    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-track"))
-    (tmp_path / "bin").mkdir()
-    _ = (tmp_path / "bin" / "python").write_text("")
+    _stub_sleap(tmp_path, monkeypatch)
 
     with pytest.raises(SleapError):
         _ = write_slp(_set(tmp_path), tmp_path / "out.slp")
@@ -163,9 +208,7 @@ def test_a_silent_failure_is_still_a_failure(
     """Exit zero having written nothing is the case existence-gating misses."""
     run, _ = _fake_run(write=False, returncode=0)
     monkeypatch.setattr(labels_module, "run_supervised", run)
-    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-track"))
-    (tmp_path / "bin").mkdir()
-    _ = (tmp_path / "bin" / "python").write_text("")
+    _stub_sleap(tmp_path, monkeypatch)
 
     with pytest.raises(FileNotFoundError, match="wrote no .slp"):
         _ = write_slp(_set(tmp_path), tmp_path / "out.slp")

@@ -58,6 +58,13 @@ the fork.
 and `results.csv` complete up to the epoch that finished. Ultralytics cannot be
 interrupted inside an epoch, so on a long one a cancel is not immediate.
 
+**SLEAP's two identity heads need labels that carry identity.** `multi_class_topdown`
+and `multi_class_bottomup` classify which animal each detection is, so they train
+against the tracks in the `.slp`. Labels with no identity give them no classes, and
+training then succeeds and produces a model that learned none. Annotations reaching
+mosaic as COCO carry identity in each annotation's `track_id`; CVAT point exports
+carry none, so a set built from one trains the other four heads only.
+
 ## 4. Use it
 
 Either run the model directly over scoped videos, which bridges into `tracks/` like a

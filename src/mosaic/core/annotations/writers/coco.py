@@ -110,7 +110,7 @@ def _write_object(
             else [0.0] * 4
         )
 
-    return {
+    record: dict[str, object] = {
         "id": annotation_id,
         "image_id": image_id,
         "category_id": 1,
@@ -120,3 +120,13 @@ def _write_object(
         "bbox": box,
         "keypoints": flat,
     }
+    # Emitted only when there is one. The readers on the other side chain their
+    # candidate keys with ``or``, so a falsy value reads the same as an absent
+    # one and an instance carrying it loses its identity silently rather than
+    # failing. ``track_id`` is a ``str`` where ``""`` means "no track", so
+    # truthiness is exactly the right test: a caller numbering animals from zero
+    # passes ``"0"``, which is truthy. Widening the field to an int is what would
+    # reintroduce the silent case.
+    if obj.track_id:
+        record["track_id"] = obj.track_id
+    return record

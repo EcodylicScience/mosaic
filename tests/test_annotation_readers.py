@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from mosaic.core.annotations.readers import read_coco_keypoints
 
@@ -200,6 +201,60 @@ def test_a_short_keypoint_list_is_padded_rather_than_misaligned(
     assert not keypoints[1].is_placed and not keypoints[2].is_placed
 
 
+def test_an_annotation_with_no_track_reads_as_no_track(tmp_path: Path) -> None:
+    """The default that keeps every COCO file written before this parsing."""
+    annotations = read_coco_keypoints(_coco(tmp_path), tmp_path / "images")
+    assert annotations.frames[0].objects[0].track_id == ""
+
+
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [("7", "7"), (7, "7"), (0, "0"), (None, "")],
+    ids=["string", "integer", "zero", "null"],
+)
+def test_a_track_id_is_read_however_the_producer_spelled_it(
+    tmp_path: Path, written: object, expected: str
+) -> None:
+    """A number and a null are spellings, not malformed input.
+
+    The representation holds a ``str``, but a producer numbering instances writes
+    ``7`` and one marking an untracked instance writes ``null``. Rejecting either
+    would stop a file parsing that parsed before this key was read at all --
+    strictly worse than losing the identity it carries.
+    """
+    path = _coco(
+        tmp_path,
+        annotations=[
+            {
+                "id": 11,
+                "image_id": 1,
+                "category_id": 1,
+                "track_id": written,
+                "keypoints": [1.0, 1.0, 2] * 3,
+            }
+        ],
+    )
+    assert read_coco_keypoints(path, tmp_path).frames[0].objects[0].track_id == expected
+
+
+def test_a_malformed_track_id_is_refused_rather_than_guessed(tmp_path: Path) -> None:
+    """Narrowing stops at the two spellings; a list is not one of them."""
+    path = _coco(
+        tmp_path,
+        annotations=[
+            {
+                "id": 11,
+                "image_id": 1,
+                "category_id": 1,
+                "track_id": ["7"],
+                "keypoints": [1.0, 1.0, 2] * 3,
+            }
+        ],
+    )
+    with pytest.raises(ValidationError):
+        _ = read_coco_keypoints(path, tmp_path)
+
+
 # --- round trip -------------------------------------------------------------
 
 
@@ -212,7 +267,31 @@ def test_writing_then_reading_gives_back_the_same_set(tmp_path: Path) -> None:
     """
     from mosaic.core.annotations.writers import write_coco_keypoints
 
-    original = read_coco_keypoints(_coco(tmp_path), tmp_path / "images")
+    # Two instances on one image, one identified and one not, so the round trip
+    # covers both what is carried and what is deliberately absent.
+    source = _coco(
+        tmp_path,
+        annotations=[
+            {
+                "id": 11,
+                "image_id": 1,
+                "category_id": 1,
+                "track_id": "7",
+                "bbox": [10.0, 20.0, 30.0, 40.0],
+                "keypoints": [10.0, 20.0, 2, 15.0, 25.0, 1, 0.0, 0.0, 0],
+            },
+            {
+                "id": 12,
+                "image_id": 1,
+                "category_id": 1,
+                "bbox": [50.0, 20.0, 30.0, 40.0],
+                "keypoints": [50.0, 20.0, 2, 55.0, 25.0, 2, 60.0, 30.0, 2],
+            },
+        ],
+    )
+    original = read_coco_keypoints(source, tmp_path / "images")
+    assert [o.track_id for o in original.frames[0].objects] == ["7", ""]
+
     path = write_coco_keypoints(original, tmp_path / "round" / "ann.json")
     again = read_coco_keypoints(path, tmp_path / "images")
 
@@ -222,6 +301,9 @@ def test_writing_then_reading_gives_back_the_same_set(tmp_path: Path) -> None:
     assert [f.width for f in again] == [f.width for f in original]
     for before, after in zip(original.frames, again.frames, strict=True):
         assert len(after.objects) == len(before.objects)
+        assert [o.track_id for o in after.objects] == [
+            o.track_id for o in before.objects
+        ], "identity is the axis a .slp needs and the one a converter drops"
         for a, b in zip(before.objects, after.objects, strict=True):
             assert [k.visibility for k in a.keypoints] == [
                 k.visibility for k in b.keypoints

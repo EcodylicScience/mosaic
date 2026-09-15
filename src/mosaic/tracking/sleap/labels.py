@@ -67,6 +67,12 @@ def write_slp(
 ) -> Path:
     """Write *annotations* as a ``.slp``, via COCO and the SLEAP environment.
 
+    **Identity survives.** An object carrying a ``track_id`` arrives as a SLEAP
+    ``Track``, which is what the ``multi_class_topdown`` and
+    ``multi_class_bottomup`` heads classify against; a set carrying none produces
+    a ``.slp`` with no tracks, and those two heads then have nothing to learn.
+    A track named ``N`` arrives as ``track_N`` -- sleap-io's naming, not mosaic's.
+
     Args:
         annotations: What to write. Frames with no instances are written too --
             a labelled-empty frame is a negative example, and SLEAP can use it.

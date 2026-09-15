@@ -56,6 +56,13 @@ class TrainSleapParams(Params):
     labels: str
     base_model: str = ""
     head: SleapHead = "centered_instance"
+    """Which task the network is trained for.
+
+    The two ``multi_class_`` heads classify identity, so they need labels that
+    carry it: a ``.slp`` whose instances have no track trains one of them against
+    no classes at all, which succeeds and produces a model that learned nothing.
+    """
+
     backbone: SleapBackbone = "unet"
     max_epochs: int = 200
     seed: int = 42
