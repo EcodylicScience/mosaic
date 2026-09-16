@@ -19,6 +19,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputStream,
+    POSE_CONFIG_DESCRIPTION,
     PoseConfig,
     TrackInputs,
     resolve_order_col,
@@ -27,11 +28,7 @@ from mosaic.core.params import Declared, Params
 
 from .helpers import clean_tracks_grouped, ensure_columns
 from .registry import register_feature
-from .types import InterpolationConfig
-
-_INTERPOLATION_DESCRIPTION = "Interpolation settings for missing pose data."
-
-_POSE_DESCRIPTION = "Pose keypoint configuration: indices and column prefixes."
+from .types import INTERPOLATION_CONFIG_DESCRIPTION, InterpolationConfig
 
 _INCLUDE_INTRA_A_DESCRIPTION = (
     "Include the pairwise distances between the focal individual's own keypoints."
@@ -114,9 +111,9 @@ class PairPoseDistancePCA:
 
     class Params(Params):
         interpolation: Annotated[
-            InterpolationConfig, Declared(_INTERPOLATION_DESCRIPTION)
+            InterpolationConfig, Declared(INTERPOLATION_CONFIG_DESCRIPTION)
         ] = Field(default_factory=InterpolationConfig)
-        pose: Annotated[PoseConfig, Declared(_POSE_DESCRIPTION)] = Field(
+        pose: Annotated[PoseConfig, Declared(POSE_CONFIG_DESCRIPTION)] = Field(
             default_factory=PoseConfig
         )
         include_intra_A: Annotated[bool, Declared(_INCLUDE_INTRA_A_DESCRIPTION)] = True

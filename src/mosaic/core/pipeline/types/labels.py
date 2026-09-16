@@ -9,8 +9,7 @@ from mosaic.core.pipeline._loaders import (
     LoadSpec,
     NpzLoadSpec,
 )
-from mosaic.core.params import Declared
-from mosaic.core.strict_model import StrictModel
+from mosaic.core.params import Declared, DeclaredModel
 from mosaic.core.pipeline.types.results import ResultColumn
 
 K = TypeVar("K", bound=str, default=str)
@@ -44,7 +43,7 @@ _PATTERN_UNWIRED = (
 )
 
 
-class LabelsSource(StrictModel, Generic[K]):
+class LabelsSource(DeclaredModel, Generic[K]):
     """Base class for dataset label dependencies.
 
     Resolved to <dataset_root>/labels/<kind>/ by _build_labels_lookup and

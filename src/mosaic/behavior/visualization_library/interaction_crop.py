@@ -33,6 +33,7 @@ from mosaic.core.pipeline.types import (
     DependencyLookup,
     Inputs,
     InputStream,
+    POSE_CONFIG_DESCRIPTION,
     PoseConfig,
     Result,
     TrackInput,
@@ -56,7 +57,6 @@ from mosaic.behavior.visualization_library._crop_descriptions import (
     INTERPOLATION_FLAG_DESCRIPTION,
     MARGIN_FACTOR_DESCRIPTION,
     OUTPUT_FPS_DESCRIPTION,
-    POSE_DESCRIPTION,
     ROTATE_TO_HEADING_DESCRIPTION,
     USE_CLAHE_DESCRIPTION,
 )
@@ -127,7 +127,7 @@ class InteractionCropPipeline:
         crop_size: Annotated[
             tuple[int, int], Declared(CROP_SIZE_DESCRIPTION, unit="px")
         ] = (192, 192)
-        pose: Annotated[PoseConfig, Declared(POSE_DESCRIPTION)] = Field(
+        pose: Annotated[PoseConfig, Declared(POSE_CONFIG_DESCRIPTION)] = Field(
             default_factory=PoseConfig
         )
         center_mode: Annotated[

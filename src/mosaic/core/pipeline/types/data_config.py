@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from pydantic import model_validator
 
-from mosaic.core.params import Declared
+from mosaic.core.params import Declared, DeclaredModel
 from mosaic.core.strict_model import StrictModel
 
 if TYPE_CHECKING:
@@ -108,26 +108,25 @@ _KEYPOINT_NAMES_DESCRIPTION = (
 )
 
 
-class PoseConfig(StrictModel):
-    """Pose keypoint column naming and selection.
+POSE_CONFIG_DESCRIPTION = "Pose keypoint configuration: indices and column prefixes."
+"""What a field holding a :class:`PoseConfig` is described as, written once.
 
-    Attributes:
-        pose_n: Total number of pose keypoints per individual, before any
-            subset selection by pose_indices.
-        pose_indices: Zero-based keypoint indices to use, as positions into
-            the full keypoint set. Unset uses every keypoint counted by
-            pose_n.
-        x_prefix: Column name prefix for a keypoint's X coordinate, followed
-            by its index.
-        y_prefix: Column name prefix for a keypoint's Y coordinate, followed
-            by its index.
-        confidence_prefix: Column name prefix for a keypoint's confidence
-            score, followed by its index.
-        keypoint_names: Human-readable name for each keypoint, ordered to
-            match the keypoint columns. Its length must equal pose_n when
-            set. Unset, a feature that needs names generates its own (kp0,
-            kp1, ...).
-    """
+Six features carry such a field on their nested ``Params`` -- ``KpmsFeature``,
+``PairEgocentricFeatures``, ``PairPoseDistancePCA``, ``TrackSubsample``,
+``EgocentricCrop`` and ``InteractionCropPipeline`` -- and every one of them
+reaches this sentence rather than spelling its own.
+
+It must not restate ``PoseConfig``'s docstring summary, and the reason is
+mechanical rather than stylistic: pydantic's ``handle_ref_overrides`` deletes a
+sibling key beside a ``$ref`` whose value equals the referenced schema's, so a
+field description character-identical to the object description is dropped from
+the property outright. Tidying the two into agreement would silently take the
+description off every property that refs the type.
+"""
+
+
+class PoseConfig(DeclaredModel):
+    """Pose keypoint column naming and selection."""
 
     pose_n: Annotated[int, Declared(_POSE_N_DESCRIPTION)] = 7
     pose_indices: Annotated[list[int] | None, Declared(_POSE_INDICES_DESCRIPTION)] = (

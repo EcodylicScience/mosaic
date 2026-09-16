@@ -51,9 +51,9 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
+    DeclaredModel,
     Params,
 )
-from mosaic.core.strict_model import StrictModel
 
 from mosaic.core.pipeline.progress import CSVProgressCallback
 
@@ -380,7 +380,7 @@ _WANDB_PROJECT_DESCRIPTION = (
 )
 
 
-class FeralTrainingConfig(StrictModel):
+class FeralTrainingConfig(DeclaredModel):
     """Training hyperparameters for FERAL ViT fine-tuning.
 
     These mirror the FERAL default_vjepa.yaml configuration.

@@ -16,7 +16,6 @@ import pandas as pd
 from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
 
-from mosaic.core.strict_model import StrictModel
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -30,7 +29,7 @@ from mosaic.core.pipeline.types import (
     NpzLoadSpec,
     Result,
 )
-from mosaic.core.params import Declared
+from mosaic.core.params import Declared, DeclaredModel
 from mosaic.optional_dependency import require
 
 from .helpers import ensure_columns
@@ -143,25 +142,8 @@ _FIT_ITERS_DESCRIPTION = (
 _FIT_MOMENTUM_DESCRIPTION = "The momentum during the refinement phase."
 
 
-class TSNEFitConfig(StrictModel):
-    """openTSNE fitting parameters.
-
-    Attributes:
-        learning_rate: The learning rate for the t-SNE embedding, forwarded
-            to both optimization phases. The value auto makes openTSNE
-            compute one from the template count and the exaggeration
-            factor.
-        exaggeration_iters: The number of iterations in the early
-            exaggeration phase.
-        exaggeration: The exaggeration factor during the early exaggeration
-            phase, increasing the attractive force between nearby points to
-            form more compact clusters.
-        exaggeration_momentum: The momentum during the early exaggeration
-            phase.
-        iters: The number of iterations in the refinement phase that
-            follows early exaggeration.
-        momentum: The momentum during the refinement phase.
-    """
+class TSNEFitConfig(DeclaredModel):
+    """openTSNE fitting parameters."""
 
     learning_rate: Annotated[float | str, Declared(_FIT_LEARNING_RATE_DESCRIPTION)] = (
         "auto"
@@ -208,23 +190,8 @@ _MAP_CHUNK_SIZE_DESCRIPTION = (
 )
 
 
-class TSNEMapConfig(StrictModel):
-    """Parameters for mapping new points into the fitted embedding.
-
-    Attributes:
-        k: The number of nearest neighbors used to place a new point's
-            initial position in the fitted embedding.
-        iters: The number of optimization iterations when mapping a new
-            point into the fitted embedding.
-        learning_rate: The learning rate used when mapping a new point into
-            the fitted embedding.
-        exaggeration: The exaggeration factor used when mapping a new point
-            into the fitted embedding.
-        momentum: The momentum used when mapping a new point into the
-            fitted embedding.
-        chunk_size: How many rows apply() maps into the fitted embedding in
-            one prepare_partial call.
-    """
+class TSNEMapConfig(DeclaredModel):
+    """Parameters for mapping new points into the fitted embedding."""
 
     k: Annotated[int, Declared(_MAP_K_DESCRIPTION)] = Field(default=25, ge=1)
     iters: Annotated[int, Declared(_MAP_ITERS_DESCRIPTION)] = Field(default=100, ge=1)

@@ -1,4 +1,9 @@
-"""Provides the vocabulary every parameter model in mosaic declares itself with.
+"""Provides the vocabulary a mosaic model declares its fields with.
+
+:class:`Declared` and :class:`HashExclude` are that vocabulary, and
+:class:`DeclaredModel` is the base that reads it -- taken by parameter models
+through :class:`Params` and by the configuration models a parameter field
+points at, which are not parameter models themselves.
 
 Imports pydantic, the standard library, and StrictModel.
 """
@@ -11,6 +16,7 @@ from inspect import cleandoc
 from typing import Annotated, Final, Self, TypeAlias
 
 from pydantic import BaseModel, Field, GetJsonSchemaHandler
+from pydantic.fields import FieldInfo
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema
 
@@ -145,35 +151,99 @@ class HashExclude:
 HASH_EXCLUDE = HashExclude()
 
 
-class Params(StrictModel):
-    """Base for every parameter model in mosaic.
+def own_declaration(info: FieldInfo) -> Declared | None:
+    """The :class:`Declared` in a field's own ``Annotated``, if it carries one.
 
-    Provides from_overrides() constructor for user-config dicts.
-    Subclasses declare feature-specific fields.
+    The one place the metadata is searched. Its two readers ask different
+    questions of the same answer: :func:`_declared_for` wants the declaration,
+    and the schema pass below wants only whether there is one.
+    """
+    for entry in info.metadata:
+        if isinstance(entry, Declared):
+            return entry
+    return None
+
+
+def _declared_for(model: type[BaseModel], field: str) -> Declared | None:
+    """The :class:`Declared` for *field*, from the nearest class holding one.
+
+    A subclass that re-annotates an inherited field replaces that field's whole
+    ``Annotated``, so ``TemplatesRef.load`` carries no ``Declared`` where
+    ``ArtifactSpec.load`` declares one. Pydantic keeps a separate
+    ``model_fields`` per class, so the declaration is still reachable up the
+    method resolution order, and a subclass narrowing a type or pinning a
+    default is not asked to restate prose that has not changed.
+
+    A class re-annotating a field *with* a ``Declared`` shadows its ancestors',
+    because its own is found first.
+    """
+    for base in model.__mro__:
+        if not issubclass(base, BaseModel):
+            continue
+        info = base.model_fields.get(field)
+        if info is None:
+            continue
+        declared = own_declaration(info)
+        if declared is not None:
+            return declared
+    return None
+
+
+class DeclaredModel(StrictModel):
+    """Base for any model whose fields carry :class:`Declared`.
+
+    Two hooks, and between them they keep a class's own prose and its fields'
+    declarations from being published as one string.
+    ``__pydantic_init_subclass__`` renders the declarations into an
+    ``Attributes:`` section appended to the subclass's docstring, so ``help()``
+    reports them; ``__get_pydantic_json_schema__`` publishes the prose alone as
+    the schema description, so a client reads each field's description once, on
+    the property that carries it.
+
+    A base of :class:`Params` rather than merged into it because the nested
+    configuration models a ``Params`` field points at need the same two hooks
+    and are not parameter models: a load spec, a pose column naming scheme and
+    a fitting-algorithm configuration are composed into parameters rather than
+    being them. The duplication those two hooks prevent is sharpest at that
+    depth. A field typed as a model renders as a bare ``$ref``, pydantic writes
+    a sibling ``description`` only where the field declares one of its own, and
+    a client that merges sibling over target therefore reads the
+    class docstring whole.
+
+    Not on :class:`StrictModel`, which is a leaf declaring the pydantic base
+    and nothing beyond it. The rendering reads ``Declared``, which lives here.
     """
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
         """Render the fields' declared prose into an ``Attributes:`` section.
 
-        ``help(SomeParams)`` already reports every description, inside the
-        ``__init__`` signature pydantic synthesizes -- one line per field
-        carrying ``<HashExclude object at 0x...>``, a repr of every ``Declared``
-        and pydantic's own ``FieldInfo`` for any aliased constraint. The prose is
-        in there and nobody can read it. This is the same prose as a list.
+        ``help()`` on a declaring model already reports every description,
+        inside the ``__init__`` signature pydantic synthesizes -- one line per
+        field carrying ``<HashExclude object at 0x...>``, a repr of every
+        ``Declared`` and pydantic's own ``FieldInfo`` for any aliased
+        constraint. The prose is in there and nobody can read it. This is the
+        same prose as a list.
 
         ``__pydantic_init_subclass__`` rather than a decorator: pydantic
-        guarantees ``model_fields`` is complete here, and no model can forget to
-        opt in. A decorator would also read as registry membership, which is what
-        one means everywhere else in this codebase.
+        guarantees ``model_fields`` is complete here, and every subclass is
+        covered without listing one. A decorator would also read as registry
+        membership, which is what one means everywhere else in this codebase.
+
+        Opting in is picking this base, and that is a thing a model can get
+        wrong -- a model declaring its fields on top of ``StrictModel``
+        publishes each description on its property, because ``Declared`` writes
+        those itself, and gets no section at all. The guard named
+        ``test_every_model_carrying_a_declared_subclasses_declared_model`` is
+        what refuses it.
 
         Written onto the subclass, and read from ``cls.__dict__`` rather than
         ``cls.__doc__``, so a class that declares no docstring of its own neither
-        inherits its parent's prose nor has this section appended to it. Prose is
-        never invented for such a class: it gets the section alone.
+        inherits its parent's prose nor has this section appended to it. Prose
+        is never invented for such a class: it gets the section alone.
 
-        Fields declared :data:`NEEDS_DESCRIPTION` are left out. An entry with no
-        description states nothing, and the ceiling in
+        Fields declared :data:`NEEDS_DESCRIPTION` are left out. An entry with
+        no description states nothing, and the ceiling in
         ``tests/test_params_declaration.py`` is what tracks them.
         """
         super().__pydantic_init_subclass__(**kwargs)
@@ -184,12 +254,11 @@ class Params(StrictModel):
         # ``__get_pydantic_json_schema__`` publishes this rather than
         # ``__doc__``, which pydantic would otherwise copy whole.
         cls.__mosaic_prose__ = prose
-        described = [
-            (name, declared)
-            for name, info in cls.model_fields.items()
-            for declared in info.metadata
-            if isinstance(declared, Declared) and declared.description
-        ]
+        described: list[tuple[str, Declared]] = []
+        for name in cls.model_fields:
+            declared = _declared_for(cls, name)
+            if declared is not None and declared.description:
+                described.append((name, declared))
         if not described:
             return
         lines = ["Attributes:"]
@@ -206,18 +275,34 @@ class Params(StrictModel):
     def __get_pydantic_json_schema__(
         cls, source: CoreSchema, handler: GetJsonSchemaHandler
     ) -> JsonSchemaValue:
-        """Publish the model's own prose as the schema description, alone.
+        """Publish the model's own prose, and describe its inherited fields.
 
         pydantic copies ``__doc__`` into the schema verbatim, and
         ``__pydantic_init_subclass__`` appends a rendered ``Attributes:`` section
         to it. Left alone, every field's description is published twice: once
         under ``properties`` where a client reads it, and once inside a
-        multi-kilobyte newline-laden string at the top. The generated section is
-        for ``help()`` in a REPL and a schema client has the structured form
-        already.
+        multi-kilobyte newline-laden string at the top. The generated section
+        is for ``help()`` in a REPL, and a schema client already holds the
+        structured form of it.
 
         A model with no prose of its own publishes no description rather than
         its parent's: the same rule ``__doc__`` follows above.
+
+        The per-field pass writes what :func:`declared_for` finds for a field
+        whose own metadata carries none. It has to happen here because
+        ``Declared.__get_pydantic_json_schema__`` is the hook that publishes a
+        description, and that hook never runs for a field carrying no
+        ``Declared``. A property already holding a description is left alone.
+
+        The pass is skipped when ``handler`` returns a bare ``$ref`` rather
+        than the expanded object, which is a shape this writes nothing into
+        rather than guesses at.
+
+        One asymmetry to know about: ``handle_ref_overrides`` has already run
+        by the time this writes, so a description written here survives even
+        where it equals the referenced schema's, while a declared one in that
+        position is deleted. Nothing in the tree is in that position, and no
+        check guards against it.
         """
         schema = handler(source)
         prose = cls.__dict__.get("__mosaic_prose__")
@@ -225,7 +310,32 @@ class Params(StrictModel):
             schema["description"] = prose
         else:
             _ = schema.pop("description", None)
+        if "properties" not in schema:
+            return schema
+        properties: dict[str, JsonSchemaValue] = schema["properties"]
+        for name, info in cls.model_fields.items():
+            if own_declaration(info) is not None:
+                continue
+            declared = _declared_for(cls, name)
+            if declared is None:
+                continue
+            field_schema = properties.get(name)
+            if field_schema is None or "description" in field_schema:
+                continue
+            field_schema["description"] = declared.description
+            if declared.unit:
+                field_schema["x-mosaic-unit"] = declared.unit
+            if declared.unwired:
+                field_schema["x-mosaic-unwired"] = declared.unwired
         return schema
+
+
+class Params(DeclaredModel):
+    """Base for every parameter model in mosaic.
+
+    Provides from_overrides() constructor for user-config dicts.
+    Subclasses declare feature-specific fields.
+    """
 
     def identity_dump(self) -> dict[str, object]:
         """model_dump() minus HASH_EXCLUDE-marked fields -- the run_id hash

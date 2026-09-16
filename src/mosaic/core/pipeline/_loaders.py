@@ -13,8 +13,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.params import Declared
-from mosaic.core.strict_model import StrictModel
+from mosaic.core.params import Declared, DeclaredModel
 
 _KIND_DESCRIPTION = (
     "Fixed tag identifying this load specification's format. Selects the "
@@ -54,38 +53,16 @@ _JOBLIB_KEY_DESCRIPTION = (
 )
 
 
-class NpzLoadSpec(StrictModel):
-    """Load spec for numpy .npz archives.
-
-    Attributes:
-        kind: Fixed tag identifying this load specification's format.
-            Selects the matching spec when a LoadSpec value is parsed.
-        key: Array key read from the .npz archive. Raises when the archive
-            has no such key.
-        transpose: Transpose the loaded array after it is read.
-    """
+class NpzLoadSpec(DeclaredModel):
+    """Load spec for numpy .npz archives."""
 
     kind: Annotated[Literal["npz"], Declared(_KIND_DESCRIPTION)] = "npz"
     key: Annotated[str, Declared(_NPZ_KEY_DESCRIPTION)]
     transpose: Annotated[bool, Declared(_NPZ_TRANSPOSE_DESCRIPTION)] = False
 
 
-class ParquetLoadSpec(StrictModel):
-    """Load spec for parquet files.
-
-    Attributes:
-        kind: Fixed tag identifying this load specification's format.
-            Selects the matching spec when a LoadSpec value is parsed.
-        transpose: Transpose the loaded table after column filtering.
-        columns: Column names read from the file. Unset reads every column,
-            and numeric_only then filters the result.
-        drop_columns: Column names dropped after loading. A name absent
-            from the file is ignored.
-        numeric_only: Keep only numeric-dtype columns. Ignored when columns
-            is set.
-        frame_column: Column meant to be extracted as frame indices. Unwired
-            -- no code path reads this field.
-    """
+class ParquetLoadSpec(DeclaredModel):
+    """Load spec for parquet files."""
 
     kind: Annotated[Literal["parquet"], Declared(_KIND_DESCRIPTION)] = "parquet"
     transpose: Annotated[bool, Declared(_PARQUET_TRANSPOSE_DESCRIPTION)] = False
@@ -102,15 +79,8 @@ class ParquetLoadSpec(StrictModel):
     ] = None
 
 
-class JoblibLoadSpec(StrictModel):
-    """Load spec for joblib-serialized objects.
-
-    Attributes:
-        kind: Fixed tag identifying this load specification's format.
-            Selects the matching spec when a LoadSpec value is parsed.
-        key: Dict key extracted from the loaded object. Unset returns the
-            object as loaded.
-    """
+class JoblibLoadSpec(DeclaredModel):
+    """Load spec for joblib-serialized objects."""
 
     kind: Annotated[Literal["joblib"], Declared(_KIND_DESCRIPTION)] = "joblib"
     key: Annotated[str | None, Declared(_JOBLIB_KEY_DESCRIPTION)] = None
