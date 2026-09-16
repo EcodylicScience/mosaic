@@ -25,8 +25,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from click.testing import Result
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
@@ -106,6 +105,12 @@ def _regrid(dataset: Dataset, *flags: str, stdin: str | None = None) -> Result:
 
     *stdin* feeds the command's standard input, for the ``@-`` form of an
     argument. ``None`` leaves it as :class:`CliRunner` defaults it.
+
+    The return type comes from ``typer.testing`` rather than ``click.testing``
+    because that is where this runner's result is actually defined: Typer
+    vendored Click at 0.26.0, so ``CliRunner.invoke`` stops returning a
+    ``click.testing.Result`` there, and ``click`` stops being installed at all
+    unless something else asks for it. Nothing in this repository declares it.
     """
     return runner.invoke(
         app,

@@ -95,7 +95,21 @@ docs = [
     # `pip install -e .` leaves whatever Typer the environment already holds,
     # and a page generated under that one fails the docs job's `--check`.
     # Bumping the pin means regenerating the page in the same change.
-    "typer==0.25.1",
+    #
+    # **A pin below 0.26 is one pin short, and that is what this used to be.**
+    # Typer vendored Click at 0.26.0 (`typer._click`; its metadata carries no
+    # `click` requirement at all), and before that it rendered through whichever
+    # Click the environment held. The docs job resolves fresh with `uv pip
+    # install` rather than from the lock, so Click floats while Typer is held --
+    # and Click 8.5.0 added a `help` parameter to `Argument`, whose `__init__`
+    # assigns `self.help` unconditionally. Typer 0.25.1 sets that attribute
+    # before calling `super().__init__` and never passes it through, so 8.5.0
+    # overwrote every positional argument's help with `None` and the generated
+    # page lost the lot. No developer met it: it takes the exact pair
+    # `typer==0.25.1` with `click>=8.5`, which only a machine that resolves this
+    # group fresh ever builds. Staying on a vendoring Typer makes the page a
+    # function of this one line, which is what the pin was for.
+    "typer==0.27.2",
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.27",
     # Not a linter here. mkdocstrings formats rendered signatures with Black or
