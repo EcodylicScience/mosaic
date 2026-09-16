@@ -25,6 +25,7 @@ from mosaic.core.pipeline.types import (
     EmitsLevel,
     COLUMNS,
     Inputs,
+    POSE_CONFIG_DESCRIPTION,
     PoseConfig,
     Result,
     TrackInput,
@@ -50,7 +51,6 @@ from ._crop_descriptions import (
     INTERPOLATION_FLAG_DESCRIPTION,
     MARGIN_FACTOR_DESCRIPTION,
     OUTPUT_FPS_DESCRIPTION,
-    POSE_DESCRIPTION,
     ROTATE_TO_HEADING_DESCRIPTION,
     USE_CLAHE_DESCRIPTION,
 )
@@ -140,7 +140,7 @@ class EgocentricCrop:
             Field(examples=["default", "xy", "pose0"]),
             Declared(CENTER_MODE_DESCRIPTION),
         ] = "default"
-        pose: Annotated[PoseConfig, Declared(POSE_DESCRIPTION)] = Field(
+        pose: Annotated[PoseConfig, Declared(POSE_CONFIG_DESCRIPTION)] = Field(
             default_factory=PoseConfig
         )
         crop_size: Annotated[

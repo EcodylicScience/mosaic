@@ -3,9 +3,13 @@
 :class:`~mosaic.behavior.visualization_library.egocentric_crop.EgocentricCrop`
 and
 :class:`~mosaic.behavior.visualization_library.interaction_crop.InteractionCropPipeline`
-extract the same rotated, optionally masked crop around a focal individual.
-Every field they hold in common means the same thing in both, declared once
-here instead of twice.
+extract the same rotated, optionally masked crop around a focal individual, and
+a field they hold in common means the same thing in both.
+
+What lands here is a field the two of them share and nothing else does.
+``pose`` is shared more widely -- six parameter models hold one -- so it is
+declared as ``POSE_CONFIG_DESCRIPTION`` beside ``PoseConfig`` itself, where
+every holder reaches it.
 """
 
 from __future__ import annotations
@@ -21,8 +25,6 @@ CENTER_MODE_DESCRIPTION = (
     "where the table has no pose columns. An unrecorded schema is read as "
     "trex_v1."
 )
-
-POSE_DESCRIPTION = "Pose keypoint column naming and selection."
 
 CROP_SIZE_DESCRIPTION = "Width and height of the output crop."
 

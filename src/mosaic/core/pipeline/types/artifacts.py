@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final, Generic, Literal, Self
+from typing import Annotated, Final, Generic, Literal, Self
 
 import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 from typing_extensions import TypeVar
 
+from mosaic.core.params import Declared
 from mosaic.core.pipeline._loaders import (
     JoblibLoadSpec,
     NpzLoadSpec,
@@ -15,6 +16,12 @@ from mosaic.core.pipeline._loaders import (
     load_from_spec,
 )
 from mosaic.core.pipeline.types.results import Result
+
+_LOAD_DESCRIPTION = "How to load the matched files."
+
+_PATTERN_DESCRIPTION = "Glob pattern. Auto-derived from load.kind when empty."
+
+_FEATURE_SOURCE_DESCRIPTION = "Fixed tag naming this as a feature-output dependency."
 
 L = TypeVar(
     "L",
@@ -33,14 +40,10 @@ class ArtifactSpec(Result[str], Generic[L, R]):
     defaults to `object`. Both are declared through `Generic[L, R]` rather than
     the PEP 695 form, because each carries a `default=` that PEP 696 makes
     available only from Python 3.13 and this package targets 3.12.
-
-    Attributes:
-        load: How to load the matched files.
-        pattern: Glob pattern. Auto-derived from load.kind when empty.
     """
 
-    load: L
-    pattern: str = ""
+    load: Annotated[L, Declared(_LOAD_DESCRIPTION)]
+    pattern: Annotated[str, Declared(_PATTERN_DESCRIPTION)] = ""
 
     @model_validator(mode="after")
     def _derive_pattern(self) -> Self:
@@ -131,5 +134,7 @@ class LabeledTemplatesRef(TemplatesRef):
 class FeatureLabelsSource(ArtifactSpec[NpzLoadSpec, np.ndarray]):
     """Labels loaded from a feature's output files."""
 
-    source: Literal["feature"] = "feature"
+    source: Annotated[Literal["feature"], Declared(_FEATURE_SOURCE_DESCRIPTION)] = (
+        "feature"
+    )
     load: NpzLoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))

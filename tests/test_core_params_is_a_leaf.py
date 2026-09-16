@@ -1,6 +1,7 @@
 """:mod:`mosaic.core.entry`, :mod:`mosaic.core.params` and
-:mod:`mosaic.core.strict_model` declare the vocabulary every parameter model in
-mosaic shares, and each stays importable without pulling in the rest of mosaic.
+:mod:`mosaic.core.strict_model` declare the vocabulary a mosaic model declares
+its fields with, and each stays importable without dragging in the rest of the
+package.
 
 The checks below read each file's own ast rather than measuring an import at
 run time, because an ast walk covers the full tree and so catches an import

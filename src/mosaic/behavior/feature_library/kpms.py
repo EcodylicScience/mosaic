@@ -34,6 +34,7 @@ from mosaic.core.pipeline.types import (
     InputStream,
     JoblibArtifact,
     JoblibLoadSpec,
+    POSE_CONFIG_DESCRIPTION,
     PoseConfig,
     TrackInputs,
 )
@@ -235,8 +236,6 @@ _KPMS_PYTHON_DESCRIPTION = (
     "environment under feature_library/external/.venv."
 )
 
-_POSE_DESCRIPTION = "Pose keypoint configuration: indices and column prefixes."
-
 _ANTERIOR_BODYPARTS_DESCRIPTION = (
     "Bodypart names marking the front of the body, used to initialize "
     "heading for egocentric alignment."
@@ -388,7 +387,7 @@ class KpmsFeature:
         kpms_python: Annotated[
             str | None, HASH_EXCLUDE, Declared(_KPMS_PYTHON_DESCRIPTION)
         ] = None
-        pose: Annotated[PoseConfig, Declared(_POSE_DESCRIPTION)] = Field(
+        pose: Annotated[PoseConfig, Declared(POSE_CONFIG_DESCRIPTION)] = Field(
             default_factory=PoseConfig
         )
         anterior_bodyparts: Annotated[

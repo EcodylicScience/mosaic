@@ -37,6 +37,7 @@ from mosaic.core.pipeline.types import (
     COLUMNS,
     DependencyLookup,
     InputStream,
+    POSE_CONFIG_DESCRIPTION,
     PoseConfig,
     TrackInputs,
 )
@@ -57,8 +58,6 @@ _TARGET_FRAMES_DESCRIPTION = (
 )
 
 _CLIP_LEN_DESCRIPTION = "The clip length, for method=clips. Ignored otherwise."
-
-_POSE_DESCRIPTION = "Pose-column naming and count configuration."
 
 _SEED_DESCRIPTION = "The random seed for k-means."
 
@@ -130,7 +129,7 @@ class TrackSubsample:
         clip_len: Annotated[int, Declared(_CLIP_LEN_DESCRIPTION, unit="frames")] = (
             Field(default=8, ge=2)
         )
-        pose: Annotated[PoseConfig, Declared(_POSE_DESCRIPTION)] = Field(
+        pose: Annotated[PoseConfig, Declared(POSE_CONFIG_DESCRIPTION)] = Field(
             default_factory=PoseConfig
         )
         seed: Annotated[int, Declared(_SEED_DESCRIPTION)] = 42

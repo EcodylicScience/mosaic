@@ -1,24 +1,26 @@
 """Every parameter field declares itself, and every declared fact reaches the schema.
 
-Two states are separable at the schema and each has its own ratchet. A field with
-no ``Declared`` publishes no description key and sits in
+Two states are separable at the schema and each has its own ratchet. A field
+with no ``Declared`` publishes no description key and sits in
 ``ALLOWED_MISSING_DESCRIPTION``, bounded by ``ALLOWLIST_CEILING``. A field
 declared ``Declared(NEEDS_DESCRIPTION)`` publishes an empty one. Declaring a
-field and describing it are separate pieces of work, so ``UNDOCUMENTED_CEILING``
-bounds the two states together: moving a field between them leaves it flat and
-only writing prose brings it down. Both ceilings only ever come down, which is
-what stops either state from being reached by adding a line. A client drawing a
-form from the schema has no other source for a control's label.
+field and describing it are separate pieces of work, so
+``UNDOCUMENTED_CEILING`` bounds the two states together: moving a field between
+them leaves it flat and only writing prose brings it down. Both ceilings only
+ever come down, which is what stops either state from being reached by adding a
+line. A client drawing a form from the schema has no other source for a
+control's label.
 
-``ALLOWED_FIELD_DESCRIPTION`` is the second ratchet, over the forbidden spelling.
+``ALLOWED_FIELD_DESCRIPTION`` is the second ratchet, over the forbidden
+spelling.
 ``Field(description=...)`` overrides a ``Declared`` silently, in either
 declaration order, and the resulting property still carries a description -- so
-the prose guard passes while the ``Declared`` is dead. ``FieldInfo.description is
-None`` is the signal that separates the two. ``FIELD_DESCRIPTION_CEILING`` bounds
-that allowlist as ``ALLOWLIST_CEILING`` bounds the first. Unbounded, the one-line
-repair in front of whoever writes the spelling is to list the field. Its prose
-then survives and its unit, its hash-exclude flag and its unwired record do not,
-and the unit guard stops seeing it.
+the prose guard passes while the ``Declared`` is dead. ``FieldInfo.description
+is None`` is the signal that separates the two. ``FIELD_DESCRIPTION_CEILING``
+bounds that allowlist as ``ALLOWLIST_CEILING`` bounds the first. Unbounded, the
+one-line repair in front of whoever writes the spelling is to list the field.
+Its prose then survives and its unit, its hash-exclude flag and its unwired
+record do not, and the unit guard stops seeing it.
 
 The prose guard reads ``model_json_schema()`` rather than ``FieldInfo.metadata``.
 A constraint reached through a reusable ``Annotated`` alias lives inside that
@@ -32,19 +34,30 @@ describe different sets of fields.
 once its module has been imported, so the models enumerated here are the two
 registries plus ``UNREGISTERED_PARAMS_MODULES``.
 :func:`test_the_import_list_reaches_every_declared_params_model` reads
-``src/mosaic`` as source and names any module that list stops reaching, which is
-the one gap no other guard here can report: an unimported model is invisible to
+``src/mosaic`` as source and names any module that list stops reaching, which
+is the one gap no other guard here can report: an unimported model is invisible
+to
 every walk over ``__subclasses__()``. The two modules a name match suggests it
 misses, ``feature_library.external.kpms_server`` and
 ``pose_training.localizer_model``, declare no ``Params`` subclass at all.
 
-**Both tiers, one bar.** A ``Params`` field typed as another model publishes that
-model's fields as a nested object, and ``NESTED_CONFIG_MODELS`` walks to those.
-``DECLARING_MODELS`` merges the two key spaces for the guards whose subject is
-the same at either depth -- the prose home, the repeated ``Declared``, the unit
-rule. The ``HASH_EXCLUDE`` guard is the one that reads them differently. A
-top-level marker must agree with the schema. A nested one is refused outright,
-because ``identity_dump()`` pops top-level names only.
+**Reached by subclass, not by annotation.** ``DECLARED_MODELS`` holds every
+``DeclaredModel`` in the tree, and every guard reads it or the
+``NON_PARAMS_DECLARED_MODELS`` half of it -- the prose home, the repeated
+``Declared``, the unit rule, the ``HASH_EXCLUDE`` agreement, the description.
+Following field annotations out from a ``Params`` model reaches fewer: not a
+model no annotation names, which is how ``ResultColumn`` and
+``FeatureLabelsSource`` each shipped a defect through a sweep that had just
+repaired their siblings.
+
+**Two tiers, two bars.** The description guard is the one place they differ.
+``UNDOCUMENTED_CEILING`` counts over ``PARAMS_MODELS``, so a
+``Declared(NEEDS_DESCRIPTION)`` placeholder there is a tracked debt; on a
+``NON_PARAMS_DECLARED_MODELS`` entry nothing would count it, so a placeholder
+is refused outright. The ``HASH_EXCLUDE`` guard splits the same way for its own
+reason: a top-level marker must agree with the schema, and a nested one is
+refused, because ``identity_dump()`` pops top-level names only.
+
 """
 
 from __future__ import annotations
@@ -63,10 +76,11 @@ from mosaic.core.params import (
     HASH_EXCLUDE,
     NEEDS_DESCRIPTION,
     Declared,
+    DeclaredModel,
     HashExclude,
     Params,
+    own_declaration,
 )
-from mosaic.core.pipeline.types import Result
 from mosaic.core.strict_model import StrictModel
 from mosaic.tracking import register_ops
 from tests.helpers import (
@@ -141,84 +155,75 @@ PARAMS_MODELS = params_models()
 MODEL_NAMES = sorted(PARAMS_MODELS)
 
 
-def nested_config_models() -> dict[str, type[StrictModel]]:
-    """Every plain ``StrictModel`` a ``Params`` field points at, transitively.
+def subclasses_in_the_tree(base: type[StrictModel]) -> dict[str, type[StrictModel]]:
+    """Every shipped subclass of *base*, transitively, *base* included.
 
-    A ``Params`` field whose type is another model publishes that model's own
-    fields as a nested object, and a client drawing a form renders a control per
-    leaf. Those leaves are outside ``PARAMS_MODELS``, so the ceilings above said
-    nothing about them and 62 of them shipped unlabelled.
+    ``__subclasses__()`` rather than a registry or a field walk, because the
+    guards reading this ask about models those would not have reached: one that
+    picked the wrong base, or one reachable through no field annotation at all.
+    ``ResultColumn`` and ``FeatureLabelsSource`` were each the second of those.
 
-    ``Result`` subclasses are excluded, and the discriminator is the class rather
-    than its name: an ``ArtifactSpec`` is a pointer to output some earlier run
-    produced, which a client picks whole rather than filling in. Everything else
-    reachable is configuration a caller composes.
+    Keyed by module and qualified name together. The qualified name alone is
+    unique -- it is what tells 48 models named ``Params`` apart, each named for
+    the feature nesting it -- but a failure reports its key, and a bare
+    ``KpmsFeature.Params`` does not say which file to open. Test fixtures are
+    left out by module.
     """
     found: dict[str, type[StrictModel]] = {}
     seen: set[type[StrictModel]] = set()
-
-    def walk(model: type[StrictModel]) -> None:
+    pending: list[type[StrictModel]] = [base]
+    while pending:
+        model = pending.pop()
         if model in seen:
-            return
+            continue
         seen.add(model)
-        for info in model.model_fields.values():
-            annotation = info.annotation
-            args: tuple[object, ...] = getattr(annotation, "__args__", ()) or ()
-            candidates: tuple[object, ...] = (annotation, *args)
-            for candidate in candidates:
-                if not isinstance(candidate, type):
-                    continue
-                if not issubclass(candidate, StrictModel):
-                    continue
-                if issubclass(candidate, Params):
-                    continue
-                # The ``Result`` test below narrows ``candidate``; ``walk`` takes
-                # the binding from before it.
-                nested: type[StrictModel] = candidate
-                if not issubclass(candidate, Result):
-                    found[candidate.__name__] = candidate
-                walk(nested)
-
-    for model in PARAMS_MODELS.values():
-        walk(model)
+        pending.extend(model.__subclasses__())
+        if model.__module__.startswith("mosaic."):
+            found[f"{model.__module__}.{model.__qualname__}"] = model
     return found
 
 
-NESTED_CONFIG_MODELS = nested_config_models()
-NESTED_CONFIG_NAMES = sorted(NESTED_CONFIG_MODELS)
+DECLARED_MODELS = subclasses_in_the_tree(DeclaredModel)
+DECLARED_MODEL_NAMES = sorted(DECLARED_MODELS)
+"""Every model that takes ``DeclaredModel``'s hooks, however it is reached.
 
-NESTED_CONFIG_EXPECTED: frozenset[str] = frozenset(
-    {
-        "FeralTrainingConfig",
-        "GroundTruthLabelsSource",
-        "InterpolationConfig",
-        "JoblibLoadSpec",
-        "LabelsSource",
-        "NpzLoadSpec",
-        "ParquetLoadSpec",
-        "PoolConfig",
-        "PoseConfig",
-        "SamplingConfig",
-        "TSNEFitConfig",
-        "TSNEMapConfig",
-    }
-)
-"""The whole set the walk reaches, pinned by name rather than counted.
-
-Every nested guard below is parametrized over what the walk returns. A model
-that stops being reachable takes its guards away with it. The remaining guards
-still pass over what is left.
+By subclass, because no narrower rule reaches them all. Following annotations
+out from a ``Params`` field misses a model nothing annotates, and that is not a
+corner: ``ResultColumn`` published a hand-written ``Attributes:`` block long
+after the sweep that removed the others, and ``FeatureLabelsSource`` shipped a
+blank control beside the labelled one its sibling declares.
 """
 
-DECLARING_MODELS: dict[str, type[StrictModel]] = {
-    **PARAMS_MODELS,
-    **NESTED_CONFIG_MODELS,
-}
-"""Both tiers under one key space, for the guards whose subject is the same at
-either depth. The nested-walk guard asserts the two key spaces stay
-disjoint."""
 
-DECLARING_NAMES = sorted(DECLARING_MODELS)
+NON_PARAMS_DECLARED_MODELS = {
+    name: model
+    for name, model in DECLARED_MODELS.items()
+    if not issubclass(model, Params)
+}
+NON_PARAMS_DECLARED_NAMES = sorted(NON_PARAMS_DECLARED_MODELS)
+"""The declaring models that are not parameter models.
+
+The two tiers meet a description bar of different strictness, and the split is
+not style: :data:`UNDOCUMENTED_CEILING` counts over ``PARAMS_MODELS`` alone, so
+a
+``Declared(NEEDS_DESCRIPTION)`` placeholder is a tracked debt on a ``Params``
+model and an untracked one anywhere else. These are refused a placeholder
+outright.
+"""
+
+
+ALLOWLISTED_MODELS: dict[str, type[StrictModel]] = {
+    **PARAMS_MODELS,
+    **DECLARED_MODELS,
+}
+"""Every key space an allowlist entry can be written in, for resolving one.
+
+The two allowlists are keyed by whatever their guard calls a model, and those
+guards read different collections: ``ALLOWED_MISSING_DESCRIPTION`` by qualified
+name out of ``PARAMS_MODELS``, ``ALLOWED_FIELD_DESCRIPTION`` by module and
+qualified name out of ``DECLARED_MODELS``. The two shapes cannot collide, since
+only the second carries a module prefix.
+"""
 
 PACKAGE_ROOT = Path(mosaic.__file__ or "").resolve().parent
 
@@ -255,6 +260,49 @@ FIELD_DESCRIPTION_CEILING = 0
 ``Declared``, where the unit, the hash-exclude flag and the unwired record are
 published beside it. Listing a field here keeps the prose and drops the rest."""
 
+REF_SIBLING_REPAIR = (
+    "{fields} render as a bare $ref, so check the declaration before assuming "
+    "there is none: pydantic's handle_ref_overrides deletes a sibling key "
+    "beside a $ref whose value equals the referenced schema's, so a Declared "
+    "description character-identical to the referenced model's object "
+    "description is dropped from the property outright. Reword one of the two "
+    "-- a field description that restates its type's summary was saying "
+    "nothing about the field anyway."
+)
+"""What to check first when a field that visibly declares prose fails a guard.
+
+Read by :func:`missing_description_repair`, and so by both guards that report
+an undescribed field, for the fields whose property is a ``$ref``. Nothing else
+distinguishes the two causes at the schema: a field carrying no ``Declared``
+and a field whose ``Declared`` collided with its type's docstring both publish
+a property with no description key.
+
+It replaces the "add a ``Declared``" advice for those fields rather than
+following it, because for a ``$ref`` the likely repair is the opposite one --
+the declaration is already written and one of the two strings has to move.
+"""
+
+
+def missing_description_repair(
+    properties: dict[str, dict[str, object]], fields: list[str]
+) -> str:
+    """What to do about *fields*, which publish no description on that model.
+
+    Splits on how the property renders, because the two shapes fail for
+    different reasons and the wrong advice sends a reader to write a
+    declaration that is already there.
+    """
+    by_ref = {field for field in fields if "$ref" in properties[field]}
+    refs = sorted(by_ref)
+    plain = [field for field in fields if field not in by_ref]
+    parts: list[str] = []
+    if plain:
+        parts.append(f"Add a Declared(...) to the Annotated of {plain}.")
+    if refs:
+        parts.append(REF_SIBLING_REPAIR.format(fields=refs))
+    return " ".join(parts)
+
+
 ALLOWED_FIELD_DESCRIPTION: frozenset[tuple[str, str]] = frozenset()
 
 ALLOWED_MISSING_DESCRIPTION: frozenset[tuple[str, str]] = frozenset()
@@ -279,17 +327,21 @@ def test_every_field_declares_a_description(model_name: str) -> None:
     Presence of the description key is the question, not whether the prose is
     written: ``Declared(NEEDS_DESCRIPTION)`` publishes an empty one, which
     declares the field and hands the debt to
-    :func:`test_the_pending_prose_only_shrinks`. A field with no ``Declared`` at
-    all publishes no key, and nothing else writes one --
+    :func:`test_the_undocumented_count_only_shrinks`. A field with no
+    ``Declared`` at all publishes no key, and nothing else writes one --
     ``use_attribute_docstrings`` is off and
     :func:`test_no_field_states_its_prose_on_field` forbids the ``Field``
     spelling.
+
+    The failure names its own repair through
+    :func:`missing_description_repair`, which splits on how the property
+    renders: one way to fail this while visibly carrying a ``Declared`` reaches
+    only the fields typed as a model. See :data:`REF_SIBLING_REPAIR`.
     """
     model = PARAMS_MODELS[model_name]
+    properties = field_schemas(model)
     undescribed = {
-        field
-        for field, spec in field_schemas(model).items()
-        if "description" not in spec
+        field for field, spec in properties.items() if "description" not in spec
     }
     unlisted = sorted(
         field
@@ -298,7 +350,7 @@ def test_every_field_declares_a_description(model_name: str) -> None:
     )
     undeclared = (
         f"{model_name} declares no description for {unlisted}. "
-        f"Add a Declared(...) to each field's Annotated."
+        + missing_description_repair(properties, unlisted)
     )
     assert not unlisted, undeclared
 
@@ -315,7 +367,7 @@ def test_every_field_declares_a_description(model_name: str) -> None:
     assert not stale, described
 
 
-@pytest.mark.parametrize("model_name", DECLARING_NAMES)
+@pytest.mark.parametrize("model_name", DECLARED_MODEL_NAMES)
 def test_no_field_states_its_prose_on_field(model_name: str) -> None:
     """``Declared`` is the one home for a description, at either depth.
 
@@ -327,7 +379,7 @@ def test_no_field_states_its_prose_on_field(model_name: str) -> None:
     A nested config's fields render as controls the same way a top-level
     field's do. A ``Field`` description there loses the same three records.
     """
-    model = DECLARING_MODELS[model_name]
+    model = DECLARED_MODELS[model_name]
     on_field = sorted(
         field
         for field, info in model.model_fields.items()
@@ -341,10 +393,10 @@ def test_no_field_states_its_prose_on_field(model_name: str) -> None:
     assert not on_field, misplaced
 
 
-@pytest.mark.parametrize("model_name", DECLARING_NAMES)
+@pytest.mark.parametrize("model_name", DECLARED_MODEL_NAMES)
 def test_no_field_declares_two_descriptions(model_name: str) -> None:
     """Two ``Declared`` in one ``Annotated``: the last one wins, silently."""
-    model = DECLARING_MODELS[model_name]
+    model = DECLARED_MODELS[model_name]
     doubled = sorted(
         field
         for field in model.model_fields
@@ -357,7 +409,7 @@ def test_no_field_declares_two_descriptions(model_name: str) -> None:
     assert not doubled, repeated
 
 
-@pytest.mark.parametrize("model_name", DECLARING_NAMES)
+@pytest.mark.parametrize("model_name", DECLARED_MODEL_NAMES)
 def test_hash_exclude_agrees_between_metadata_and_schema(model_name: str) -> None:
     """The set ``identity_dump()`` strips is the set the schema publishes.
 
@@ -373,7 +425,7 @@ def test_hash_exclude_agrees_between_metadata_and_schema(model_name: str) -> Non
     hash covers it. A throughput knob belongs on the ``Params`` model, where the
     strip reaches it.
     """
-    model = DECLARING_MODELS[model_name]
+    model = DECLARED_MODELS[model_name]
     from_metadata = {
         field
         for field in model.model_fields
@@ -390,10 +442,10 @@ def test_hash_exclude_agrees_between_metadata_and_schema(model_name: str) -> Non
     )
     assert from_metadata == from_schema, disagreement
 
-    if model_name not in NESTED_CONFIG_MODELS:
+    if issubclass(model, Params):
         return
     nested = (
-        f"{model_name} is a nested config and marks {sorted(from_metadata)} "
+        f"{model_name} is not a Params model and marks {sorted(from_metadata)} "
         f"HASH_EXCLUDE. identity_dump() strips top-level names only. The hash "
         f"still covers those fields while the schema says otherwise. Move the "
         f"knob onto the Params model."
@@ -454,7 +506,9 @@ def test_the_attributes_section_states_only_what_was_declared() -> None:
     assert undocumented.startswith("Attributes:"), (
         "a class that declared no docstring gets the section and no invented summary"
     )
-    assert "Base for all feature parameter models" not in undocumented, (
+    inherited = (Params.__doc__ or "").splitlines()[0]
+    assert inherited, "read from Params so this cannot go stale against its docstring"
+    assert inherited not in undocumented, (
         "the parent's prose must not be copied onto a child that declared none"
     )
 
@@ -525,7 +579,7 @@ def test_the_allowlist_only_shrinks() -> None:
     assert len(ALLOWED_FIELD_DESCRIPTION) <= FIELD_DESCRIPTION_CEILING, spelled
 
     allowed = ALLOWED_MISSING_DESCRIPTION | ALLOWED_FIELD_DESCRIPTION
-    unknown_models = sorted({model for model, _ in allowed} - set(DECLARING_MODELS))
+    unknown_models = sorted({model for model, _ in allowed} - set(ALLOWLISTED_MODELS))
     vanished = (
         f"allowlisted models {unknown_models} resolve to no declaring model. "
         f"Delete their entries."
@@ -535,7 +589,7 @@ def test_the_allowlist_only_shrinks() -> None:
     unknown_fields = sorted(
         f"{model}.{field}"
         for model, field in allowed
-        if field not in DECLARING_MODELS[model].model_fields
+        if field not in ALLOWLISTED_MODELS[model].model_fields
     )
     renamed = (
         f"allowlisted fields {unknown_fields} no longer exist. Delete their "
@@ -695,58 +749,92 @@ def test_every_declared_fact_appears_in_the_schema() -> None:
     assert properties["inert"]["x-mosaic-unwired"] == "nothing reads it"
 
 
-def test_the_nested_walk_reaches_the_configs_a_form_renders() -> None:
-    """A guard on the walk itself, not on what it finds.
+def test_every_model_carrying_a_declared_subclasses_declared_model() -> None:
+    """``DeclaredModel`` is what reading a ``Declared`` is opted into by.
 
-    The nested guards are parametrized over what the walk returns. A refactor
-    that renames a field or stops a model being reachable takes that model's
-    guards away with it. Every one of them then passes over what is left. A
-    count admits that trade for anything above the floor; the pinned set names
-    the model that left.
+    Nothing reads a ``Declared`` off a plain ``StrictModel``: the rendered
+    ``Attributes:`` section and the inherited-description pass both live on
+    ``DeclaredModel``'s hooks. A model that declares its fields and then picks
+    the wrong base publishes them on its properties -- ``Declared`` writes
+    those itself -- and silently gets no section at all. That is how
+    ``FeralTrainingConfig`` came to declare twenty fields and print no section
+    for any of them.
 
-    The merge into ``DECLARING_MODELS`` is checked here for the same reason
-    :func:`params_models` checks its own keys: two models under one key leave one
-    of them unchecked.
+    The walk is over ``StrictModel``'s subclasses rather than over
+    ``DECLARED_MODELS``, because a model that picked the wrong base is by
+    definition not in the latter.
     """
-    found = frozenset(NESTED_CONFIG_MODELS)
-    appeared = sorted(found - NESTED_CONFIG_EXPECTED)
-    disappeared = sorted(NESTED_CONFIG_EXPECTED - found)
-    drift = (
-        f"the nested walk gained {appeared} and lost {disappeared}. Add a new "
-        f"config to NESTED_CONFIG_EXPECTED once it declares its fields; a lost "
-        f"one means its guards stopped running."
+    offenders: list[str] = []
+    for name, model in sorted(subclasses_in_the_tree(StrictModel).items()):
+        if issubclass(model, DeclaredModel):
+            continue
+        declared = sorted(
+            field
+            for field, info in model.model_fields.items()
+            if own_declaration(info) is not None
+        )
+        if declared:
+            offenders.append(f"{name} declares {declared}")
+    assert not offenders, (
+        "; ".join(offenders)
+        + ". Each subclasses StrictModel, so its declared prose reaches no "
+        "Attributes: section and no inherited-description pass. Parent it on "
+        "DeclaredModel."
     )
-    assert found == NESTED_CONFIG_EXPECTED, drift
-
-    shared = sorted(set(PARAMS_MODELS) & found)
-    collide = (
-        f"{shared} name both a Params model and a nested config; one of the two "
-        f"is dropped from DECLARING_MODELS and goes unchecked."
-    )
-    assert not shared, collide
 
 
-@pytest.mark.parametrize("model_name", NESTED_CONFIG_NAMES)
-def test_every_nested_config_field_declares_a_description(model_name: str) -> None:
-    """The same bar the top-level fields meet, with no allowlist behind it.
+@pytest.mark.parametrize("model_name", NON_PARAMS_DECLARED_NAMES)
+def test_every_non_params_field_declares_a_description(model_name: str) -> None:
+    """The same bar the parameter fields meet, with no allowlist behind it.
 
     These were declared after the top-level sweep reached zero, so this starts
     with nothing owed and there is no ceiling to lower. A new undescribed field
-    fails here the day it is added.
+    fails here the day it is added, and a placeholder is refused rather than
+    counted -- :data:`UNDOCUMENTED_CEILING` does not reach this tier.
+
+    Reached by subclass rather than by following annotations out from a
+    ``Params`` field, which never arrives at a model nothing annotates.
+    ``FeatureLabelsSource`` is one: it is exported beside
+    ``GroundTruthLabelsSource`` and shipped a blank ``source`` control next to
+    that model's labelled one.
     """
-    model = NESTED_CONFIG_MODELS[model_name]
+    model = NON_PARAMS_DECLARED_MODELS[model_name]
+    properties = field_schemas(model)
     undescribed = sorted(
-        field
-        for field, spec in field_schemas(model).items()
-        if not spec.get("description")
+        field for field, spec in properties.items() if not spec.get("description")
     )
     assert not undescribed, (
         f"{model_name} declares no description for {undescribed}. "
-        "A client drawing this nested form renders those controls unlabelled."
+        "A client drawing this nested form renders those controls unlabelled. "
+        + missing_description_repair(properties, undescribed)
     )
 
 
-@pytest.mark.parametrize("model_name", DECLARING_NAMES)
+@pytest.mark.parametrize("model_name", DECLARED_MODEL_NAMES)
+def test_no_model_publishes_a_field_list_in_its_description(model_name: str) -> None:
+    """The generated section reaches ``help()`` and stops there.
+
+    A client renders a model as a group of controls, with the model's own
+    description above them and each field's description on its control.
+    Publishing an ``Attributes:`` section as that group description prints
+    every child twice: once in the header and once on the control.
+
+    Parametrized over every ``DeclaredModel`` subclass rather than over what a
+    ``Params`` field annotates, because the one model that reached this state,
+    ``ResultColumn``, is annotated by nothing. ``DeclaredModel`` trims a
+    section it generated; a block written by hand sits inside the prose it
+    preserves, and only deleting that block helps.
+    """
+    model = DECLARED_MODELS[model_name]
+    description = str(model.model_json_schema().get("description", ""))
+    assert "Attributes:" not in description, (
+        f"{model_name} publishes its field list inside its schema description. "
+        f"Delete the hand-written Attributes: block; DeclaredModel renders one "
+        f"for help() from the fields' Declared entries."
+    )
+
+
+@pytest.mark.parametrize("model_name", DECLARED_MODEL_NAMES)
 def test_no_description_states_the_unit_it_already_declares(model_name: str) -> None:
     """``Declared``'s two halves must not say the same thing twice.
 
@@ -765,7 +853,7 @@ def test_no_description_states_the_unit_it_already_declares(model_name: str) -> 
     A nested config renders the same ``description [unit]`` cell and meets the
     same bar under the same match.
     """
-    model = DECLARING_MODELS[model_name]
+    model = DECLARED_MODELS[model_name]
     offenders: list[str] = []
     for field, spec in field_schemas(model).items():
         unit = str(spec.get("x-mosaic-unit", "") or "").strip()
@@ -795,13 +883,20 @@ def test_no_description_states_the_unit_it_already_declares(model_name: str) -> 
 
 
 def test_the_schema_description_is_the_prose_without_the_field_list() -> None:
-    """The generated section reaches ``help()`` and stops there.
+    """The two halves of the split, pinned against one model at once.
 
     pydantic copies ``__doc__`` into the schema whole, and the ``Attributes:``
     section is appended to ``__doc__``. Published as-is, every description
     appears twice -- once under ``properties``, where a client reads it, and
     once inside one long newline-laden string a client has to parse back apart.
     ``mosaic tracking describe`` printed both.
+
+    The negative half is held over the whole tree by
+    :func:`test_no_model_publishes_a_field_list_in_its_description`. What is
+    here and nowhere else is the pair. The exact description says the prose is
+    published whole and *alone*, which is what rules out publishing nothing at
+    all -- the reading that a rendered docstring carrying the section would
+    otherwise be perfectly happy with.
     """
     schema = DeclarationSample.model_json_schema()
 
@@ -809,8 +904,6 @@ def test_the_schema_description_is_the_prose_without_the_field_list() -> None:
         schema["description"]
         == "A field of each declared kind, for reading the emitted schema back."
     )
-    assert "Attributes:" not in schema["description"]
-    assert "the maximum plausible speed" not in schema["description"]
 
     rendered = DeclarationSample.__doc__ or ""
     assert "Attributes:" in rendered
@@ -831,6 +924,74 @@ def test_a_model_with_no_prose_publishes_no_description() -> None:
 
     assert "description" not in schema
     assert schema["properties"]["count"]["description"] == "how many"
+
+
+def test_a_re_annotated_field_keeps_its_parents_declaration() -> None:
+    """Narrowing a field or pinning its default does not strip its prose.
+
+    Re-annotating a field replaces its whole ``Annotated``, so the ``Declared``
+    goes with it -- which is how twenty-two of the twenty-three
+    ``ArtifactSpec`` subclasses came to publish a ``load`` and a ``pattern``
+    with no description while ``ArtifactSpec`` declared both. Over the whole
+    ``Result`` tree, the wider denominator, twenty-six models lost at least one
+    declaration this way.
+
+    :func:`mosaic.core.params._declared_for` reads the nearest class in the
+    method resolution order that still holds one, and both consumers go through
+    it: the property a client reads, and the section ``help()`` prints.
+    """
+
+    class Parent(DeclaredModel):
+        """Parent prose."""
+
+        kept: Annotated[
+            str, Declared("what kept means", unit="px", unwired="nothing reads it")
+        ] = "a"
+
+    class Child(Parent):
+        """Child prose."""
+
+        kept: str = "b"
+
+    field = Child.model_json_schema()["properties"]["kept"]
+
+    assert field["description"] == "what kept means"
+    # Every key ``Declared`` publishes is inherited, not the description alone.
+    # No shipped field inherits a declaration carrying a unit or an unwired
+    # record, so dropping either from the pass is green without these two.
+    assert field["x-mosaic-unit"] == "px"
+    assert field["x-mosaic-unwired"] == "nothing reads it"
+    assert "kept: what kept means [px]" in (Child.__doc__ or "")
+
+
+def test_a_re_annotated_field_may_restate_its_own_prose() -> None:
+    """A subclass whose meaning changed declares again, and its own wins.
+
+    The lookup stops at the first class holding a ``Declared``, so a subclass
+    that narrows what a field means is not stuck with the description of the
+    wider one it replaced.
+    """
+
+    class Parent(DeclaredModel):
+        """Parent prose."""
+
+        kept: Annotated[str, Declared("the wide meaning")] = "a"
+
+    class Child(Parent):
+        """Child prose."""
+
+        kept: Annotated[str, Declared("the narrow meaning")] = "b"
+
+    field = Child.model_json_schema()["properties"]["kept"]
+    rendered = Child.__doc__ or ""
+
+    assert field["description"] == "the narrow meaning"
+    # The property is written by ``Declared``'s own hook, which the lookup
+    # never reaches, so the rendered section is the only consumer that reads
+    # the search order. Without this line a lookup walking the bases outward is
+    # green.
+    assert "kept: the narrow meaning" in rendered
+    assert "the wide meaning" not in rendered
 
 
 def test_an_unwired_field_still_reaches_the_run_identity() -> None:

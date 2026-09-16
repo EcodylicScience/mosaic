@@ -21,6 +21,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputStream,
+    POSE_CONFIG_DESCRIPTION,
     PoseConfig,
     TrackInputs,
     resolve_order_col,
@@ -30,11 +31,11 @@ from mosaic.core.params import Declared, Params
 from ._sampling_descriptions import SAMPLING_WITH_SMOOTHING_DESCRIPTION
 from .helpers import clean_tracks_grouped, ensure_columns, smooth_1d, unwrap_diff
 from .registry import register_feature
-from .types import InterpolationConfig, SamplingConfig
-
-_INTERPOLATION_DESCRIPTION = "Interpolation settings for missing pose data."
-
-_POSE_DESCRIPTION = "Pose keypoint column naming and selection."
+from .types import (
+    INTERPOLATION_CONFIG_DESCRIPTION,
+    InterpolationConfig,
+    SamplingConfig,
+)
 
 _NECK_IDX_DESCRIPTION = (
     "Index of the neck keypoint in the pose array. Paired with "
@@ -99,12 +100,12 @@ class PairEgocentricFeatures:
 
     class Params(Params):
         interpolation: Annotated[
-            InterpolationConfig, Declared(_INTERPOLATION_DESCRIPTION)
+            InterpolationConfig, Declared(INTERPOLATION_CONFIG_DESCRIPTION)
         ] = Field(default_factory=InterpolationConfig)
         sampling: Annotated[
             SamplingConfig, Declared(SAMPLING_WITH_SMOOTHING_DESCRIPTION)
         ] = Field(default_factory=SamplingConfig)
-        pose: Annotated[PoseConfig, Declared(_POSE_DESCRIPTION)] = Field(
+        pose: Annotated[PoseConfig, Declared(POSE_CONFIG_DESCRIPTION)] = Field(
             default_factory=PoseConfig
         )
         neck_idx: Annotated[int, Declared(_NECK_IDX_DESCRIPTION)] = 3

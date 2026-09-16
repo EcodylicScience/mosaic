@@ -4,10 +4,10 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from mosaic.core.params import Declared
-from mosaic.core.strict_model import StrictModel
+from mosaic.core.params import Declared, DeclaredModel
 
 __all__ = [
+    "INTERPOLATION_CONFIG_DESCRIPTION",
     "InterpolationConfig",
     "PoolConfig",
     "SamplingConfig",
@@ -58,18 +58,22 @@ _MAX_ENTRY_FRACTION_DESCRIPTION = (
 )
 
 
-class InterpolationConfig(StrictModel):
-    """Interpolation parameters for missing pose/position data.
+INTERPOLATION_CONFIG_DESCRIPTION = "Interpolation settings for missing pose data."
+"""What a field holding an :class:`InterpolationConfig` over pose data is
+described as, written once.
 
-    Attributes:
-        linear_interp_limit: Maximum run of consecutive missing values filled
-            by linear interpolation.
-        edge_fill_limit: Maximum run of consecutive missing values
-            forward-filled, then back-filled, after interpolation leaves them
-            unresolved.
-        max_missing_fraction: Fraction of missing columns above which a row
-            is dropped entirely.
-    """
+``PairEgocentricFeatures`` and ``PairPoseDistancePCA`` reach this rather than
+spelling it. ``ApproachAvoidance`` and ``PairPosition`` deliberately do not --
+the first names the gaps it fills and the second interpolates position rather
+than pose, so both say something this does not.
+
+As with ``POSE_CONFIG_DESCRIPTION``, it must not restate the class docstring
+above: pydantic drops a field description identical to the referenced schema's.
+"""
+
+
+class InterpolationConfig(DeclaredModel):
+    """Interpolation parameters for missing pose/position data."""
 
     linear_interp_limit: Annotated[
         int, Declared(_LINEAR_INTERP_LIMIT_DESCRIPTION, unit="frames")
@@ -82,16 +86,8 @@ class InterpolationConfig(StrictModel):
     ] = Field(default=0.10, ge=0.0, le=1.0)
 
 
-class SamplingConfig(StrictModel):
-    """Frame rate and temporal smoothing parameters.
-
-    Attributes:
-        fps_default: Frame rate used when the data's fps column is absent
-            or does not resolve to exactly one value.
-        smooth_win: Length of the moving-average window applied to smooth
-            position and angle values before feature computation. A value
-            of 1 or less disables smoothing.
-    """
+class SamplingConfig(DeclaredModel):
+    """Frame rate and temporal smoothing parameters."""
 
     fps_default: Annotated[float, Declared(_FPS_DEFAULT_DESCRIPTION, unit="fps")] = (
         Field(default=30.0, gt=0)
@@ -101,25 +97,11 @@ class SamplingConfig(StrictModel):
     )
 
 
-class PoolConfig(StrictModel):
+class PoolConfig(DeclaredModel):
     """Candidate pool configuration for template extraction.
 
     Controls how per-entry contributions to the candidate pool are
     allocated before the final template selection step.
-
-    Attributes:
-        size: Number of candidates collected before selecting the final
-            templates. Unset sets the pool to the target template count,
-            so selection makes no reduction.
-        allocation: How the per-entry quota for the pool is computed.
-            reservoir performs weighted reservoir sampling in one pass.
-            exact counts rows first, then samples a second pass with
-            proportional quotas.
-        max_entry_fraction: Cap on one entry's contribution to the pool, as
-            a fraction of the pool size. Unset applies no cap, so each
-            entry's share is proportional to its row count. The effective
-            cap never drops below one divided by the number of entries
-            seen so far, so the pool can still fill completely.
     """
 
     size: Annotated[int | None, Declared(_POOL_SIZE_DESCRIPTION)] = None
