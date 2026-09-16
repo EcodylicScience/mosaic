@@ -57,6 +57,29 @@ is only needed until the bridge has run.
 `upgrade-tracks` **refuses** a table that does not record its conversion factor,
 rather than guessing one. Nothing can divide back out a number nobody wrote down.
 
+### After an upgrade that moves an identifier
+
+`reconcile` is what a mosaic upgrade calls for, and 0.13.0 is one. Twelve run
+identifiers move in it, because which media a run covered used to decide what its
+outputs were called: six tracker run roots, the four `resample-tracks` variant
+directories and their tracks-index rows, and the `transcode` and `export-store`
+identifiers, which name no file. Run it without `--apply` first; it reports and
+writes nothing.
+
+```bash
+mosaic reconcile -m dataset.yaml
+mosaic reconcile -m dataset.yaml --apply
+```
+
+It **re-addresses** an artifact rather than recomputing it, so this is a rename pass
+and not a re-run. Nothing is decoded again and no derivative is re-encoded.
+
+One thing it cannot repair: a pipeline request still in flight. `Request.entries`
+became `Request.scope`, request models forbid unknown fields, and there is no
+migration, so a `.mosaic/pipelines/requests/*.json` written before the upgrade fails
+to load. A submission whose steps have finished keeps its results, which are
+addressed by `run_id`. Resubmit one that is still running.
+
 ## Describing the dataset
 
 `mosaic notes` holds free text. `mosaic tags` holds typed attributes — `label`,

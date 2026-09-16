@@ -472,7 +472,7 @@ Train a SLEAP model, registering the directory it produces.
 | --- | --- | --- | --- | --- |
 | `labels` | `string` | _required_ |  | The .slp file to train on. |
 | `base_model` | `string` | `""` |  | Weights to fine-tune from, as a path or as the run id of the training op that produced them. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. |
-| `head` | `"single_instance"` \| `"centroid"` \| `"centered_instance"` \| `"bottomup"` \| `"multi_class_bottomup"` \| `"multi_class_topdown"` | `"centered_instance"` |  | Which task the network is trained for. centroid and centered_instance are the two halves of a top-down model, trained separately and passed to inference as a pair. The multi_class_ heads add identity classification. |
+| `head` | `"single_instance"` \| `"centroid"` \| `"centered_instance"` \| `"bottomup"` \| `"multi_class_bottomup"` \| `"multi_class_topdown"` | `"centered_instance"` |  | Which task the network is trained for. centroid and centered_instance are the two halves of a top-down model, trained separately and passed to inference as a pair. The multi_class_ heads add identity classification, so they need labels that carry it: a .slp whose instances have no track trains one of them against no classes at all, which succeeds and produces a model that learned nothing. |
 | `backbone` | `"unet"` \| `"convnext"` \| `"swint"` | `"unet"` |  | The feature extractor architecture, independent of the head. |
 | `max_epochs` | `integer` | `200` |  | How long the model trains at most. [epochs] |
 | `seed` | `integer` | `42` |  | Seeds sleap-nn's initialization. |

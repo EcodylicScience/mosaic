@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased — one selector model, a scope that leaves op params, and a request document's key is renamed
+## 0.13.0 — one selector model, a scope that leaves op params, and a request document's key is renamed
 
 **No run on disk is re-addressed.** A selector says which entries a caller
 wants and never enters a payload. One entry set asked for five ways therefore
@@ -76,12 +76,12 @@ only in either are one recipe under one identifier.
 `HASH_EXCLUDE`, which `Params.identity_dump()` pops before the payload is
 hashed.
 
-**`OpParams` is deleted, and its four subclasses re-base on `Params`.**
+**Four op params models lose their selector and their `overwrite`.**
 `TrackerOpParams`, `_InferParamsBase`, `ExtractFramesParams` and
-`ResampleTracksParams` keep their names and lose the inherited `entries` and
-`overwrite`. `Op.scoped_params` is deleted with it. An op step's scope comes
-from the plan through `_op_scope`, and `build_op_params` validates a recipe's
-params as the recipe wrote them.
+`ResampleTracksParams` keep their names and base directly on `Params`.
+`Op.scoped_params` is deleted. An op step's scope comes from the plan through
+`_op_scope`, and `build_op_params` validates a recipe's params as the recipe
+wrote them.
 
 **`Op.target`, `Op.plan_identity` and `Op.run` take a `ResolvedScope`, and
 `Op.run` also takes `overwrite`.** `run_op` gained keyword-only `scope=` and
@@ -152,8 +152,8 @@ a second identifier for the same recipe. `groups`, `sequences` and `entries` are
 now `HASH_EXCLUDE` on `TrackerOpParams` and on `ResampleTracksParams`. That
 exclusion moves the ten digests above.
 
-**Every parameter field a client can set now publishes a description.** 801
-fields across 91 parameter models, and 62 more across the 12 nested
+**Every parameter field a client can set now publishes a description.** 766
+fields across 90 parameter models, and 46 more across the seven nested
 configuration models those point at, declare their prose through `Declared`, a
 marker placed in the field's `Annotated` beside pydantic's own `Field`. `mosaic
 features describe`, `mosaic tracking describe` and mosaic-api's `/features`
@@ -209,6 +209,14 @@ stay in `mosaic.core.pipeline.types`.
 worksteal`, and `pytest-xdist` joins the `test` dependency group beside
 `imgstore`. `-n0` is the opt-out a debugger or `-s` needs. A whole run takes 43
 seconds where it took 358.
+
+**`uv.lock` is regenerated, not amended.** 68 packages in, 8 out. The committed
+lock had drifted from `pyproject.toml` well before this work: it resolved
+`mosaic-media` 0.3.0 against a `>=0.3.3` requirement, and it still carried
+Ultralytics and `albumentations`, which belong to the environments outside the
+package rather than to any extra. It gains the `movement` tree, `pytest-xdist`
+and the pinned Typer the reference pages are generated from. No CI job reads the
+lock, so this corrects a stale file rather than changing what any job installs.
 
 ## 0.12.0 — the install has a default worth having
 

@@ -131,6 +131,10 @@ def compute_cluster_label_agreement(
         Column name inside the feature parquet holding cluster IDs (default "cluster").
     sequences : Sequence[str], optional
         Optional subset of sequences to analyze. Accepts raw names or already-safe names.
+        Deliberately a list of names rather than a ``Scope``: this filters rows a
+        run already wrote, by the sequence name the parquet carries, and has no
+        group axis to resolve against an index. A ``Scope`` is what a *run* is
+        asked to cover, and nothing here runs anything.
     max_frames : int, optional
         If provided, subsample the aligned frames to this many rows for faster metrics.
     rng_seed : int, optional

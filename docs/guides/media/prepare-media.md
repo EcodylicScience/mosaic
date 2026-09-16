@@ -72,7 +72,10 @@ mosaic run -m dataset.yaml --kind extract-frames \
 
 Writes PNGs into `media/frames`. `uniform` spreads the sample evenly across each video;
 `kmeans` picks visually diverse frames, so the annotation budget is not spent on near
-duplicates. [Train a pose model](../tracking/train-a-pose-model.md) picks up from here.
+duplicates. Those two spellings are the whole vocabulary and are matched exactly —
+`"KMeans"` is refused rather than folded to lower case. Narrow with `--entries`,
+`--groups` or `--sequences`; naming a selector inside `--params` is refused.
+[Train a pose model](../tracking/train-a-pose-model.md) picks up from here.
 
 ## Calibrate for physical units
 

@@ -8,6 +8,12 @@ from typing_extensions import TypeVar
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.types.artifacts import JoblibArtifact, TemplatesRef
 
+# ``Params`` is imported here to subclass it, and is not re-exported. The
+# package facade refuses ``from mosaic.core.pipeline.types import Params``
+# because the name moved to ``mosaic.core.params``; an import naming this
+# module instead reaches the same class through the binding above, which is an
+# implementation detail rather than a second supported spelling.
+
 # ``JsonValue`` used to live here. It moved to ``mosaic.core.json_value`` -- a
 # module with no imports at all -- because the dataset manifest needs the same
 # type and importing this one drags the loader and artifact machinery, and

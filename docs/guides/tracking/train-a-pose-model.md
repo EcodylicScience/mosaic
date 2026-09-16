@@ -16,7 +16,9 @@ mosaic run -m dataset.yaml --kind extract-frames \
 
 Writes PNGs into `media/frames`. `uniform` spreads the sample evenly across each
 video; `kmeans` picks diverse frames, so the annotation budget is not spent on near
-duplicates of the same pose.
+duplicates of the same pose. Those two spellings are matched exactly. Sample from
+part of the dataset with `--entries`, `--groups` or `--sequences` rather than a key
+inside `--params`, which is refused.
 
 ## 2. Annotate
 

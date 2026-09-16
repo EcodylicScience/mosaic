@@ -30,6 +30,13 @@ from pathlib import Path
 from typing import ClassVar, Final, Literal, TypeGuard, overload
 
 from mosaic.core.entry import CameraEntry, Entry
+
+# Both names are imported here to annotate the records below, and neither is
+# re-exported. The package facade refuses ``from
+# mosaic.core.pipeline.inventory import Entry`` because the aliases moved to
+# ``mosaic.core.entry``; an import naming this module instead reaches them
+# through the binding above, which is an implementation detail rather than a
+# second supported spelling.
 from mosaic.core.scope import Scope
 
 from .params import ParamsState, RunParams
