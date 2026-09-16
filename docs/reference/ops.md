@@ -381,7 +381,7 @@ Train a Lightning Pose model, registering the directory it produces.
 | `backbone` | `string` | `"resnet50_animal_ap10k"` |  | The feature extractor. Defaults to a ResNet-50 pretrained on animal pose rather than ImageNet. |
 | `max_epochs` | `integer` | `300` |  | How long the model trains at most. [epochs] |
 | `litpose_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied last, over model_type, backbone and max_epochs as well as anything else Lightning Pose exposes with no field here. A key set here wins over base_model where they would set the same key. |
-| `device` | `string` | `"auto"` |  | The accelerator to train the model on. **Unwired:** the training subprocess never receives it. |
+| `device` | `string` | `"auto"` |  | Which CUDA devices train the model, as a comma-separated list of indices. auto takes whatever Lightning Pose finds. There is no cpu setting: Lightning Pose fixes its trainer's accelerator to gpu. |
 | `idle_timeout` | `number` | `1800` |  | How long the training subprocess may go without output before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |
 
@@ -477,8 +477,8 @@ Train a SLEAP model, registering the directory it produces.
 | `max_epochs` | `integer` | `200` |  | How long the model trains at most. [epochs] |
 | `seed` | `integer` | `42` |  | Seeds sleap-nn's initialization. |
 | `validation_fraction` | `number` | `0.1` |  | Fraction of labels held out for validation, when no separate validation file is given. |
-| `sleap_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied over the generated config, for anything sleap-nn exposes with no field here. A key set here wins over base_model and device where they would set the same key. |
-| `device` | `string` | `"auto"` |  | Which accelerator trains the model, forwarded to sleap-nn as trainer_accelerator. auto leaves the choice to sleap-nn. |
+| `sleap_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied over the generated config, for anything sleap-nn exposes with no field here. A key the generated config does not carry is appended for you, so it needs no + prefix; a key written with an explicit + or ~ is passed through as written. A key set here wins over base_model and device where they would set the same key. |
+| `device` | `string` | `"auto"` |  | Which accelerator trains the model. auto leaves the choice to sleap-nn; cpu, gpu and mps each name a family; a comma-separated list of CUDA indices such as 0 or 0,1 names devices within the gpu family. |
 | `idle_timeout` | `number` | `1800` |  | How long the training subprocess may go without output before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |
 

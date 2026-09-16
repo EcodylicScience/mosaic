@@ -8,6 +8,59 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — the SLEAP and Lightning Pose training ops can be given a device, and a short run
+
+**No run on disk is re-addressed.** `device` is `HASH_EXCLUDE` on both ops, and
+Lightning Pose's newly derived epoch keys are computed inside the trainer, below
+`Params`. The golden digests in `tests/data/op_identity_golden.json` do not move,
+and a model already trained stays a cache hit.
+
+**`train-sleap --params '{"device": ...}'` works, and means what it means
+everywhere else.** Any value but `auto` used to die during Hydra config
+composition before a single epoch, because the key was injected bare into a
+document that does not carry it. It now takes `auto`, an accelerator family
+(`cpu`, `gpu`, `mps`) or a comma-separated list of CUDA indices (`0`, `0,1`),
+the spelling `train-pose` and `train-localizer` already use, and translates to
+sleap-nn's `trainer_accelerator` plus `trainer_device_indices`. Selecting GPU 1
+was not expressible before. An unusable value is refused when the run is
+submitted, so mosaic-api answers it with a 422.
+
+**A `sleap_overrides` key needs no `+` prefix.** `train_sleap` compares each
+override against the config it just wrote and appends the ones that config does
+not carry, leaving an explicit `+` or `~` as written. `data_config.preprocessing.scale`
+and `data_config.preprocessing.crop_size` used to fail the same way `device`
+did. So did resuming from a `base_model`, which injects
+`trainer_config.resume_ckpt_path`.
+
+**`train-litpose` completes below 250 epochs.** `max_epochs` scaled only itself,
+while the config carries four keys tied to it, so every short run — every smoke
+test — failed, either at `ModelConfig.validate` or, between three and four
+epochs, after paying for every epoch with no checkpoint to show. `min_epochs`,
+the multi-step `milestones`, `check_val_every_n_epoch` and `unfreezing_epoch`
+are now derived from `max_epochs`, and at the template's own 300 they reproduce
+the template's own values.
+
+**`TrainLitposeParams.device` reaches the trainer, and its schema no longer
+carries `x-mosaic-unwired`.** A client that hid the control because it changed
+nothing should now offer it. It names CUDA devices, as a comma-separated list of
+indices, through `CUDA_VISIBLE_DEVICES` and `training.num_gpus`. There is no
+`cpu` setting and one is refused: Lightning Pose fixes its trainer's accelerator
+to `gpu`.
+
+**`train-sleap` refuses two runs it used to accept.** An environment holding
+`sleap-nn-train` but not `sleap_nn` — which is what `pip install sleap` without
+the `nn` extra leaves, since the console script belongs to the base
+distribution. And a `multi_class_` head against a `.slp` whose instances carry
+no track, which trained against no classes at all and produced a model that had
+learned nothing. Both are decided from one probe of the SLEAP environment, run
+after the reuse gate and before the run root is claimed.
+
+**`metrics_path` on a `models/<kind>/index.csv` row holds metrics or holds
+nothing.** `train-sleap` and `train-litpose` recorded their `config.yaml` there,
+which exists, so the index advertised a metrics path with no metric in it. They
+now record sleap-nn's `training_log.csv` and Lightning Pose's
+`predictions_pixel_error.csv`, and the empty string when the run wrote neither.
+
 ## 0.13.0 — one selector model, a scope that leaves op params, and a request document's key is renamed
 
 **No run on disk is re-addressed.** A selector says which entries a caller

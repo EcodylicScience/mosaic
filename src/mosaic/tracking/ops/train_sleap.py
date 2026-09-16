@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.models import model_run_root
@@ -45,7 +45,16 @@ from mosaic.tracking.ops._train_descriptions import (
     IDLE_TIMEOUT_DESCRIPTION,
     MAX_RUNTIME_DESCRIPTION,
 )
-from mosaic.tracking.sleap.training import SleapBackbone, SleapHead
+from mosaic.tracking.sleap.probe import (
+    probe_sleap,
+    require_identity_labels,
+    require_sleap_nn,
+)
+from mosaic.tracking.sleap.training import (
+    SleapBackbone,
+    SleapHead,
+    sleap_device_overrides,
+)
 from mosaic.tracking.sleap.version import TRAIN_SLEAP_KIND
 
 if TYPE_CHECKING:
@@ -77,13 +86,17 @@ _VALIDATION_FRACTION_DESCRIPTION = (
 
 _SLEAP_OVERRIDES_DESCRIPTION = (
     "Hydra key=value overrides applied over the generated config, for "
-    "anything sleap-nn exposes with no field here. A key set here wins "
-    "over base_model and device where they would set the same key."
+    "anything sleap-nn exposes with no field here. A key the generated "
+    "config does not carry is appended for you, so it needs no + prefix; a "
+    "key written with an explicit + or ~ is passed through as written. A key "
+    "set here wins over base_model and device where they would set the same "
+    "key."
 )
 
 _DEVICE_DESCRIPTION = (
-    "Which accelerator trains the model, forwarded to sleap-nn as "
-    "trainer_accelerator. auto leaves the choice to sleap-nn."
+    "Which accelerator trains the model. auto leaves the choice to sleap-nn; "
+    "cpu, gpu and mps each name a family; a comma-separated list of CUDA "
+    "indices such as 0 or 0,1 names devices within the gpu family."
 )
 
 
@@ -113,7 +126,7 @@ class TrainSleapParams(Params):
     device: Annotated[
         str,
         HASH_EXCLUDE,
-        Field(examples=["auto", "cpu", "gpu", "0"]),
+        Field(examples=["auto", "cpu", "gpu", "mps", "0", "0,1"]),
         Declared(_DEVICE_DESCRIPTION),
     ] = "auto"
     idle_timeout: Annotated[
@@ -122,6 +135,19 @@ class TrainSleapParams(Params):
     max_runtime: Annotated[
         float | None, HASH_EXCLUDE, Declared(MAX_RUNTIME_DESCRIPTION, unit="s")
     ] = None
+
+    @field_validator("device")
+    @classmethod
+    def _device_is_usable(cls, value: str) -> str:
+        """Refuse a device sleap-nn cannot be given, at submit time.
+
+        :func:`~mosaic.tracking.sleap.training.sleap_device_overrides` is the
+        translation, and calling it here is what lets mosaic-api answer an
+        unusable spelling with a 422 rather than leaving it to fail during
+        Hydra config composition on a GPU node once the job is scheduled.
+        """
+        _ = sleap_device_overrides(value)
+        return value
 
 
 @register_op
@@ -195,6 +221,21 @@ class TrainSleapOp(Op[TrainSleapParams]):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id
+
+        # After the reuse gate and before the root is claimed. A cache hit pays
+        # for no cold import, and a refusal is a message rather than a claim
+        # left behind on a run that was never going to start. The probe reports
+        # and the refusals below are mosaic's, so both are decided here without
+        # importing anything the SLEAP environment owns.
+        probe = probe_sleap(
+            labels_path,
+            idle_timeout=params.idle_timeout,
+            max_runtime=params.max_runtime,
+            cancel_check=ctx.cancel_token.is_cancelled if ctx.cancel_token else None,
+        )
+        require_sleap_nn(probe)
+        require_identity_labels(probe, params.head, labels_path)
+
         ctx.set_total(params.max_epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
@@ -204,8 +245,8 @@ class TrainSleapOp(Op[TrainSleapParams]):
         overrides: dict[str, JsonValue] = dict(params.sleap_overrides or {})
         if resume_from:
             overrides.setdefault("trainer_config.resume_ckpt_path", resume_from)
-        if params.device != "auto":
-            overrides.setdefault("trainer_config.trainer_accelerator", params.device)
+        for key, value in sleap_device_overrides(params.device).items():
+            overrides.setdefault(key, value)
 
         produced = train_sleap(
             labels_path,
@@ -238,7 +279,11 @@ class TrainSleapOp(Op[TrainSleapParams]):
             base_run_id,
             base_digest,
             weights if weights is not None else produced,
-            run_root / "config.yaml",
+            # sleap-nn's CSVLoggerCallback writes this beside the checkpoints,
+            # one row per epoch. The config that used to be recorded here is a
+            # file that exists, so the index advertised a metrics path holding
+            # no metrics, which a reader has to open to discover.
+            produced / "training_log.csv",
             params.max_epochs,
             artifact_shape="directory",
             artifact_path=produced,

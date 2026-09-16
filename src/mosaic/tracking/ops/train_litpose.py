@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
@@ -44,6 +44,7 @@ from mosaic.tracking.ops._train_descriptions import (
     MAX_RUNTIME_DESCRIPTION,
 )
 from mosaic.tracking.litpose.templates import default_config_path
+from mosaic.tracking.litpose.training import litpose_device_placement
 from mosaic.tracking.litpose.version import TRAIN_LITPOSE_KIND
 
 if TYPE_CHECKING:
@@ -91,9 +92,11 @@ _LITPOSE_OVERRIDES_DESCRIPTION = (
     "the same key."
 )
 
-_DEVICE_DESCRIPTION = "The accelerator to train the model on."
-
-_DEVICE_UNWIRED = "the training subprocess never receives it"
+_DEVICE_DESCRIPTION = (
+    "Which CUDA devices train the model, as a comma-separated list of "
+    "indices. auto takes whatever Lightning Pose finds. There is no cpu "
+    "setting: Lightning Pose fixes its trainer's accelerator to gpu."
+)
 
 
 class TrainLitposeParams(Params):
@@ -119,7 +122,10 @@ class TrainLitposeParams(Params):
         dict[str, JsonValue] | None, Declared(_LITPOSE_OVERRIDES_DESCRIPTION)
     ] = None
     device: Annotated[
-        str, HASH_EXCLUDE, Declared(_DEVICE_DESCRIPTION, unwired=_DEVICE_UNWIRED)
+        str,
+        HASH_EXCLUDE,
+        Field(examples=["auto", "0", "0,1"]),
+        Declared(_DEVICE_DESCRIPTION),
     ] = "auto"
     idle_timeout: Annotated[
         float, HASH_EXCLUDE, Declared(IDLE_TIMEOUT_DESCRIPTION, unit="s")
@@ -127,6 +133,19 @@ class TrainLitposeParams(Params):
     max_runtime: Annotated[
         float | None, HASH_EXCLUDE, Declared(MAX_RUNTIME_DESCRIPTION, unit="s")
     ] = None
+
+    @field_validator("device")
+    @classmethod
+    def _device_is_usable(cls, value: str) -> str:
+        """Refuse a device Lightning Pose cannot be given, at submit time.
+
+        :func:`~mosaic.tracking.litpose.training.litpose_device_placement` is
+        the translation, and calling it here is what lets mosaic-api answer an
+        unusable spelling with a 422 rather than leaving it to fail on a GPU
+        node once the job is scheduled.
+        """
+        _ = litpose_device_placement(value)
+        return value
 
 
 @register_op
@@ -229,6 +248,7 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
             model_type=params.model_type,
             backbone=params.backbone,
             max_epochs=params.max_epochs,
+            device=params.device,
             overrides=overrides,
             idle_timeout=params.idle_timeout,
             max_runtime=params.max_runtime,
@@ -251,7 +271,12 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
             base_run_id,
             base_digest,
             weights if weights is not None else produced,
-            produced / "config.yaml",
+            # Lightning Pose copies its labelled-image predictions into the
+            # model directory once training finishes. A run that never
+            # validated leaves none, and finalize_training then records the
+            # empty string, which is the honest answer; the config that used to
+            # be recorded here always exists and never holds a metric.
+            produced / "predictions_pixel_error.csv",
             params.max_epochs,
             artifact_shape="directory",
             artifact_path=produced,

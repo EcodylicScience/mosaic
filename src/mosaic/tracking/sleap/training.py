@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Final, Literal, TypedDict
+from typing import Final, Literal, TypedDict, TypeGuard
 
 import yaml
 
@@ -42,11 +42,19 @@ __all__ = [
     "SleapBackbone",
     "SleapHead",
     "SleapTrainConfig",
+    "sleap_device_overrides",
     "sleap_train_config",
     "train_sleap",
 ]
 
 _SLEAP_NN_TRAIN: str = "sleap-nn-train"
+
+_ACCELERATOR_FAMILIES: Final = frozenset({"cpu", "gpu", "mps"})
+"""The accelerator families sleap-nn's ``trainer_accelerator`` names.
+
+``auto`` is deliberately absent: it is sleap-nn's own default, so selecting it
+means injecting nothing rather than injecting the word.
+"""
 
 SleapHead = Literal[
     "single_instance",
@@ -181,6 +189,97 @@ def sleap_train_config(
     }
 
 
+_HYDRA_PREFIXES: Final = ("+", "~")
+"""Override forms that already say what to do with the key they name.
+
+Hydra spells appending ``+key=value``, forcing an append ``++key=value`` and
+deleting ``~key``. A caller who wrote one of these has answered the question
+:func:`_hydra_assignment` is there to answer, so the spelling is passed through
+untouched.
+"""
+
+
+def _is_section(value: object) -> TypeGuard[Mapping[str, object]]:
+    """Is *value* a nested section of the document rather than a leaf?"""
+    return isinstance(value, dict)
+
+
+def _declared_keys(node: Mapping[str, object], prefix: str = "") -> frozenset[str]:
+    """Every dotted key *node* carries, at every depth.
+
+    Derived from the document rather than listed, so a key added to
+    :func:`sleap_train_config` changes how an override naming it is rendered
+    without anyone remembering to say so here.
+    """
+    keys: set[str] = set()
+    for name, value in node.items():
+        dotted = f"{prefix}{name}"
+        keys.add(dotted)
+        if _is_section(value):
+            keys |= _declared_keys(value, f"{dotted}.")
+    return frozenset(keys)
+
+
+def _hydra_assignment(declared: frozenset[str], key: str, value: JsonValue) -> str:
+    """One Hydra argument, appended when the document does not carry *key*.
+
+    ``sleap_train_config`` writes a deliberately minimal document, so most of
+    what sleap-nn exposes has no key in it -- and Hydra refuses a bare
+    assignment to a key the config it composed does not already hold, with
+    ``Could not override '<key>'``. Every override therefore has to know whether
+    mosaic happened to write its key, which is not a thing a caller can be
+    expected to know. So the question is answered here, against the document
+    that was just written.
+    """
+    if key.startswith(_HYDRA_PREFIXES):
+        # A deletion carries no value; anything else keeps the caller's form.
+        return key if key.startswith("~") and value is None else f"{key}={value}"
+    prefix = "" if key in declared else "+"
+    return f"{prefix}{key}={value}"
+
+
+def sleap_device_overrides(device: str) -> dict[str, JsonValue]:
+    """The ``trainer_config`` assignments that put training on *device*.
+
+    sleap-nn splits the question in two, and neither half takes the spelling
+    the rest of mosaic uses: ``trainer_accelerator`` is an accelerator *family*
+    (``cpu`` / ``gpu`` / ``mps`` / ``auto``) and ``trainer_device_indices`` is
+    the list of devices within it. Passing ``"0"`` straight through would set
+    the family to the string ``"0"``. So *device* is spelled the way
+    ``train-pose`` and ``train-localizer`` spell it -- a family name or a CUDA
+    index -- and translated here.
+
+    Args:
+        device: ``auto`` or empty to leave the choice to sleap-nn; ``cpu``,
+            ``gpu`` or ``mps`` to name a family; or a comma-separated list of
+            CUDA indices such as ``0`` or ``0,1``.
+
+    Returns:
+        The Hydra assignments, empty when *device* leaves the choice open.
+
+    Raises:
+        ValueError: *device* is none of those. Raised from a field validator
+            too, so an unusable value is refused when the run is submitted
+            rather than on a GPU node once it is scheduled.
+    """
+    if device in ("", "auto"):
+        return {}
+    if device in _ACCELERATOR_FAMILIES:
+        return {"trainer_config.trainer_accelerator": device}
+    parts = [part.strip() for part in device.split(",")]
+    if parts and all(part.isdigit() for part in parts):
+        return {
+            "trainer_config.trainer_accelerator": "gpu",
+            "trainer_config.trainer_device_indices": [int(part) for part in parts],
+        }
+    families = ", ".join(sorted(_ACCELERATOR_FAMILIES))
+    msg = (
+        f"unusable device {device!r}: give 'auto', one of {families}, or a "
+        f"comma-separated list of CUDA indices such as '0' or '0,1'."
+    )
+    raise ValueError(msg)
+
+
 def train_sleap(
     labels_path: str | Path,
     run_root: str | Path,
@@ -252,13 +351,17 @@ def train_sleap(
     )
     config_path = run_root / "config.yaml"
     _ = config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    declared = _declared_keys(config)
 
     args = [
         "--config-dir",
         str(run_root),
         "--config-name",
         config_path.stem,
-        *(f"{key}={value}" for key, value in (overrides or {}).items()),
+        *(
+            _hydra_assignment(declared, key, value)
+            for key, value in (overrides or {}).items()
+        ),
     ]
     invocation = tool_invocation(
         SLEAP_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),

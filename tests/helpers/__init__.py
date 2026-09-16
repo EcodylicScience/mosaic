@@ -65,6 +65,7 @@ from tests.helpers.source_scan import (
     names_read,
     source_tree,
 )
+from tests.helpers.documents import dotted_values, is_section
 from tests.helpers.training import FakeTrainer, healthy_probe
 from tests.helpers.tracks import (
     add_track_sequences,
@@ -85,8 +86,10 @@ __all__ = [
     "assert_no_literal_tilde",
     "healthy_probe",
     "clean_facts_cells",
+    "dotted_values",
     "functions_named",
     "inside_a_virtualenv",
+    "is_section",
     "make_dataset",
     "make_pair_df",
     "make_sequence_df",

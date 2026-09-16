@@ -37,6 +37,7 @@ from pydantic import ValidationError
 from mosaic.core.pipeline.subprocess_util import run_supervised
 from mosaic.tracking.common.entry import INFLIGHT_REFRESH_SECONDS
 from mosaic.tracking.common.toolenv import (
+    PROBE_DEADLINE_FLOOR_SECONDS,
     ToolEnv,
     ToolExitError,
     ToolNotFoundError,
@@ -76,24 +77,6 @@ a subprocess, where the checker can refuse it here.
 _PYTHON: Final = "python"
 _YOLO_SCRIPT: Final = "yolo"
 _RUNNER_SCRIPT: Final = "ultralytics_runner.py"
-
-PROBE_DEADLINE_FLOOR_SECONDS: Final = 900.0
-"""The least time a silent subcommand gets to answer, whatever the caller's bound is.
-
-``idle_timeout`` bounds *silence*, which is the right unit once work is under
-way: the runner prints a line per decoded batch, so a quiet stretch there means
-hung. A probe prints nothing at all between spawn and answer, so the same number
-would be a deadline on a cold torch import and a checkpoint load off a network
-mount -- work proceeding exactly as intended. A user who shortens the window so a
-hung tool dies quickly must not thereby put a stopwatch on loading a model, so
-the probe gets the caller's value or this floor, whichever is longer.
-``tracker-defaults`` is silent for the same stretch -- the torch import is most of
-what it costs -- and takes the same floor.
-
-No such floor belongs on ``track`` or on the two inference subcommands: those
-report per batch, and raising their bound would blunt the one thing supervising
-them.
-"""
 
 ULTRALYTICS_BOOTSTRAP: Final = (
     "Build it with 'uv sync --python 3.12' in "
@@ -360,7 +343,7 @@ def probe_environment(
     A probe writes no progress lines -- it loads the weights and answers -- so an
     inactivity bound on it is a deadline on the whole operation. *idle_timeout*
     is therefore raised to
-    :data:`~mosaic.tracking.common.ultralytics_env.PROBE_DEADLINE_FLOOR_SECONDS`
+    :data:`~mosaic.tracking.common.toolenv.PROBE_DEADLINE_FLOOR_SECONDS`
     when the caller's value is shorter.
 
     Raises:
@@ -494,7 +477,6 @@ def training_activity(
 __all__ = [
     "POLO_BOOTSTRAP",
     "POLO_ENV",
-    "PROBE_DEADLINE_FLOOR_SECONDS",
     "ULTRALYTICS_BOOTSTRAP",
     "ULTRALYTICS_ENV",
     "PoloError",

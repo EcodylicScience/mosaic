@@ -41,10 +41,29 @@ __all__ = [
     "ToolNotFoundError",
     "conda_invocation",
     "display_overlay",
+    "PROBE_DEADLINE_FLOOR_SECONDS",
     "missing_output_error",
     "subprocess_env",
     "tool_invocation",
 ]
+
+PROBE_DEADLINE_FLOOR_SECONDS: Final = 900.0
+"""The least time a silent subcommand gets to answer, whatever the caller's bound is.
+
+``idle_timeout`` bounds *silence*, which is the right unit once work is under
+way: a tool that prints a line per decoded batch is hung if it goes quiet. A
+probe prints nothing at all between spawn and answer, so the same number would
+be a deadline on a cold torch import and a checkpoint load off a network mount
+-- work proceeding exactly as intended. A user who shortens the window so a hung
+tool dies quickly must not thereby put a stopwatch on loading a model, so a
+probe gets the caller's value or this floor, whichever is longer.
+
+A property of probes rather than of any one tool, which is why it lives here:
+the Ultralytics probe, ``tracker-defaults`` and the SLEAP probe are silent for
+the same stretch and take the same floor. No such floor belongs on tracking or
+inference, which report per batch, and raising their bound would blunt the one
+thing supervising them.
+"""
 
 _TAIL: Final = 500
 """How much of each captured stream a failure message echoes."""
