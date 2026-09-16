@@ -205,6 +205,215 @@ def test_cancel_on_finished_run_is_noop(dataset: tuple[Path, Dataset]) -> None:
     assert res["status"] == "finished"
 
 
+def _running_attempt(ds: Dataset, pid: int) -> str:
+    """A run-log for an attempt that started on this host and never ended."""
+    import socket
+
+    from mosaic.runlog import JsonlRunLog, new_execution_id, run_log_path
+
+    execution_id = new_execution_id()
+    with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as run_log:
+        run_log.started(
+            kind="op", target="train-sleap", host=socket.gethostname(), pid=pid
+        )
+    return execution_id
+
+
+def test_cancel_on_a_dead_process_records_the_terminal_event(
+    dataset: tuple[Path, Dataset], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one state that was neither live nor reclaimable.
+
+    ``inflight_state`` reads a holder as orphaned only once its run-log has
+    gone terminal, so an attempt whose process died without writing one held
+    its run root until the marker expired, with no gesture to release it.
+    """
+    import os
+
+    from mosaic.runlog import read_run, run_log_dir
+
+    manifest, ds = dataset
+    execution_id = _running_attempt(ds, pid=424242)
+
+    def gone(pid: int, sig: int) -> None:
+        raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(os, "kill", gone)
+
+    res = _run_json(
+        ["cancel", "-m", str(manifest), "--execution-id", execution_id, "--json"]
+    )
+    assert res["status"] == "cancelled"
+    assert res["signalled"] is False
+
+    snapshot = read_run(run_log_dir(ds.base_dir), execution_id)
+    assert snapshot is not None
+    assert snapshot["status"] == "cancelled"
+
+
+def test_a_reaped_attempt_no_longer_holds_its_run_root(
+    dataset: tuple[Path, Dataset], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What the terminal event is *for*: the next attempt can have the root."""
+    import os
+
+    from mosaic.core.pipeline.markers import inflight_state, new_inflight
+
+    manifest, ds = dataset
+    execution_id = _running_attempt(ds, pid=424242)
+    marker = new_inflight(
+        execution_id=execution_id,
+        host="",
+        pid=424242,
+        phase=None,
+        idle_seconds=1800,
+    )
+    before = inflight_state(marker, run_log_base=ds.base_dir, execution_id="other")
+    assert before == "live", "a running attempt holds its root"
+
+    def gone(pid: int, sig: int) -> None:
+        raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(os, "kill", gone)
+    _ = _run_json(
+        ["cancel", "-m", str(manifest), "--execution-id", execution_id, "--json"]
+    )
+
+    after = inflight_state(marker, run_log_base=ds.base_dir, execution_id="other")
+    assert after == "orphaned"
+
+
+def test_cancel_on_a_live_process_leaves_the_run_log_alone(
+    dataset: tuple[Path, Dataset], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One file, one writer. The signalled process writes its own ending.
+
+    Recording one here would put a second writer on a file whose first writer
+    is still running, which is the thing the run-log format rules out.
+    """
+    import os
+
+    from mosaic.runlog import read_run, run_log_dir
+
+    manifest, ds = dataset
+    execution_id = _running_attempt(ds, pid=424242)
+    signalled: list[tuple[int, int]] = []
+
+    def record(pid: int, sig: int) -> None:
+        signalled.append((pid, sig))
+
+    monkeypatch.setattr(os, "kill", record)
+
+    res = _run_json(
+        ["cancel", "-m", str(manifest), "--execution-id", execution_id, "--json"]
+    )
+    assert res["signalled"] is True
+    assert signalled == [(424242, 15)]
+
+    snapshot = read_run(run_log_dir(ds.base_dir), execution_id)
+    assert snapshot is not None
+    assert snapshot["status"] == "running"
+
+
+# --- release ---------------------------------------------------------------
+
+
+def _claimed_root(ds: Dataset, execution_id: str, pid: int, host: str) -> Path:
+    """A run root carrying an in-flight claim, as an op would have left one."""
+    from mosaic.core.pipeline.markers import new_inflight, try_create_inflight
+
+    root = ds.base_dir / "models" / "train-sleap" / "train-sleap.0.1-abcdef0123"
+    root.mkdir(parents=True, exist_ok=True)
+    marker = new_inflight(
+        execution_id=execution_id, host=host, pid=pid, phase=None, idle_seconds=1800
+    )
+    assert try_create_inflight(root, marker)
+    return root
+
+
+def test_release_frees_a_root_whose_process_is_gone(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    """The residual case: a claim with no terminal record anywhere to find.
+
+    An untracked run leaves no run-log, so ``inflight_state`` can only wait out
+    the marker's own expiry and the next attempt is refused for half an hour.
+    """
+    import socket
+
+    from mosaic.core.pipeline.markers import INFLIGHT_MARKER_NAME
+
+    manifest, ds = dataset
+    root = _claimed_root(ds, "01ABANDONED", pid=424242, host=socket.gethostname())
+
+    res = _run_json(
+        ["release", "-m", str(manifest), "--execution-id", "01ABANDONED", "--json"]
+    )
+    assert res["released"] == [str(root)]
+    assert not (root / INFLIGHT_MARKER_NAME).exists()
+
+
+def test_release_refuses_a_claim_held_from_another_host(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    """Deciding it here means guessing about a machine this process cannot see."""
+    from mosaic.core.pipeline.markers import INFLIGHT_MARKER_NAME
+
+    manifest, ds = dataset
+    root = _claimed_root(ds, "01ELSEWHERE", pid=1, host="some-other-box")
+
+    result = runner.invoke(
+        app,
+        ["release", "-m", str(manifest), "--execution-id", "01ELSEWHERE", "--json"],
+    )
+    assert result.exit_code != 0
+    assert (root / INFLIGHT_MARKER_NAME).exists(), "the claim must survive a refusal"
+
+
+def test_release_refuses_a_claim_whose_process_is_still_running(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    """A live run keeps its root; ``--force`` is what says otherwise."""
+    import os
+    import socket
+
+    from mosaic.core.pipeline.markers import INFLIGHT_MARKER_NAME
+
+    manifest, ds = dataset
+    root = _claimed_root(ds, "01ALIVE", pid=os.getpid(), host=socket.gethostname())
+
+    result = runner.invoke(
+        app, ["release", "-m", str(manifest), "--execution-id", "01ALIVE", "--json"]
+    )
+    assert result.exit_code != 0
+    assert (root / INFLIGHT_MARKER_NAME).exists()
+
+    forced = _run_json(
+        [
+            "release",
+            "-m",
+            str(manifest),
+            "--execution-id",
+            "01ALIVE",
+            "--force",
+            "--json",
+        ]
+    )
+    assert forced["released"] == [str(root)]
+    assert not (root / INFLIGHT_MARKER_NAME).exists()
+
+
+def test_release_says_so_when_nothing_is_claimed(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    """Not an error: having nothing to release is the state the user wanted."""
+    manifest, _ = dataset
+    res = _run_json(
+        ["release", "-m", str(manifest), "--execution-id", "01NOTHING", "--json"]
+    )
+    assert res["released"] == []
+
+
 def test_sequences(dataset: tuple[Path, Dataset]) -> None:
     manifest, _ = dataset
     payload = _run_json(["sequences", "-m", str(manifest), "--json"])

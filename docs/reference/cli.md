@@ -21,6 +21,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `status`: Show the status of one run attempt by...
 * `runs`: List run attempts, optionally filtered by...
 * `cancel`: Request cancellation of a running attempt...
+* `release`: Release the run roots claimed by an...
 * `track`: Run an integrated tracker over scoped...
 * `sequences`: List sequences (optionally filtered by...
 * `inventory`: Report every computed artifact, its...
@@ -124,6 +125,24 @@ $ mosaic cancel [OPTIONS]
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--execution-id <str>`: Attempt ULID to cancel.  [required]
+* `--json`: Emit the result as JSON on stdout.
+* `--help`: Show this message and exit.
+
+## `mosaic release`
+
+Release the run roots claimed by an attempt that is no longer running.
+
+**Usage**:
+
+```console
+$ mosaic release [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--execution-id <str>`: Attempt ULID whose claim to release.  [required]
+* `--force`: Release even though the claiming process is still running here.
 * `--json`: Emit the result as JSON on stdout.
 * `--help`: Show this message and exit.
 

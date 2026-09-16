@@ -61,6 +61,20 @@ which exists, so the index advertised a metrics path with no metric in it. They
 now record sleap-nn's `training_log.csv` and Lightning Pose's
 `predictions_pixel_error.csv`, and the empty string when the run wrote neither.
 
+**`mosaic cancel` on an attempt whose process has already exited succeeds.** It
+used to exit non-zero having touched nothing, leaving the attempt `running`
+forever — and a run-log that never goes terminal is the one state
+`inflight_state` reads as neither live nor reclaimable, so the run root stayed
+claimed until the marker expired. It now records the terminal `cancelled` event
+and reports success. Scoped to that branch: the run-log has one writer, and in
+the branch where SIGTERM was delivered that writer is alive.
+
+**`mosaic release --execution-id <id>` is new.** It frees the run roots claimed
+by an attempt with no terminal record anywhere to find — one that ran untracked,
+or whose run-log never reached the dataset. A claim held from another host is
+refused, and one whose process is still running here is refused without
+`--force`.
+
 ## 0.13.0 — one selector model, a scope that leaves op params, and a request document's key is renamed
 
 **No run on disk is re-addressed.** A selector says which entries a caller

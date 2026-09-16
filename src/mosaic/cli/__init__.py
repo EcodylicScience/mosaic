@@ -13,6 +13,7 @@ from __future__ import annotations
 import typer
 
 from mosaic.cli.cancel import cancel_command
+from mosaic.cli.release import release_command
 from mosaic.cli.convert_labels import convert_labels_command
 from mosaic.cli.convert_tracks import convert_tracks_command
 from mosaic.cli.features import features_app
@@ -48,6 +49,7 @@ _ = app.command(name="run")(run_command)
 _ = app.command(name="status")(status_command)
 _ = app.command(name="runs")(runs_command)
 _ = app.command(name="cancel")(cancel_command)
+_ = app.command(name="release")(release_command)
 _ = app.command(name="track")(track_command)
 
 # Discover.
