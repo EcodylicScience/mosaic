@@ -107,6 +107,7 @@ def run_supervised(
     idle_timeout: float | None = None,
     poll_interval: float = 0.5,
     on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
 ) -> tuple[str, str, int]:
     """Run *argv* in its own killable process group and return (stdout, stderr, rc).
 
@@ -131,9 +132,17 @@ def run_supervised(
         progress while healthy (e.g. TREx): a live long run keeps resetting it,
         a wedged one trips it. ``None`` disables it.
     on_output:
-        Optional per-stdout-line callback (e.g. to parse progress). Output on
-        either stream counts as activity for ``idle_timeout`` regardless of
-        this callback.
+        Optional per-stdout-line callback, for *reading* what the child says --
+        parsing a progress event, an epoch, a JSON response line. Stdout only,
+        because a parser is written against one stream's format.
+    on_activity:
+        Optional per-line callback for every line on **either** stream, for
+        callers that only need to know the child spoke. That is the same signal
+        ``idle_timeout`` measures, so a caller hanging liveness on this one --
+        a claim refresh, a heartbeat -- keeps it alive for exactly as long as
+        the watchdog considers the child alive. A tool whose progress bar goes
+        to stderr is invisible to ``on_output`` and would otherwise be read as
+        silent.
     """
     popen_kwargs: dict[str, object] = {}
     if sys.platform != "win32":
@@ -170,9 +179,14 @@ def run_supervised(
             for line in iter(stream.readline, ""):
                 sink.append(line)
                 _note_activity()
-                if echo is not None:
+                for callback in (echo, on_activity):
+                    if callback is None:
+                        continue
+                    # Swallowed on purpose: this is the reader thread, so a
+                    # raise here reaches nobody and would end the drain, and an
+                    # undrained pipe deadlocks a chatty child.
                     try:
-                        echo(line)
+                        callback(line)
                     except Exception:
                         pass
         finally:

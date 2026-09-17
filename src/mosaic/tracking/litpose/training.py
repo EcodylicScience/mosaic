@@ -225,6 +225,7 @@ def train_litpose(
     max_runtime: float | None = None,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
 ) -> Path:
     """Train a Lightning Pose model and return the directory it produced.
 
@@ -256,6 +257,12 @@ def train_litpose(
             environment.
         idle_timeout: Kill the subprocess after this long with no output.
         max_runtime: Optional absolute ceiling.
+        cancel_check: Polled while the subprocess runs.
+        on_output: Called with each line Lightning Pose writes to standard
+            output, for a caller parsing epochs out of them.
+        on_activity: Called with each line on **either** stream, for a caller
+            keeping the run root's claim alive. Both are passed straight to
+            ``run_supervised``; see its two parameters of the same names.
 
     Returns:
         The model directory, which is the ``litpose`` artifact shape:
@@ -316,6 +323,7 @@ def train_litpose(
         timeout=max_runtime,
         idle_timeout=idle_timeout,
         on_output=on_output,
+        on_activity=on_activity,
     )
     if returncode != 0:
         raise LitposeError(cmd, returncode, stdout, stderr)

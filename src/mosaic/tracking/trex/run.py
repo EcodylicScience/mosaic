@@ -186,6 +186,7 @@ def _run_trex(
     env_overlay: dict[str, str] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
 ) -> tuple[str, str]:
     """Execute ``trex`` with *args* and return (stdout, stderr).
 
@@ -216,6 +217,7 @@ def _run_trex(
         timeout=max_runtime,
         idle_timeout=idle_timeout,
         on_output=on_output,
+        on_activity=on_activity,
     )
 
     if returncode != 0:
@@ -254,6 +256,7 @@ def run_trex_convert(
     env: ToolEnv = TREX_ENV,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
 ) -> TRexConvertResult:
     """Convert a raw video to T-Rex ``.pv`` format.
 
@@ -307,8 +310,11 @@ def run_trex_convert(
         Polled while T-Rex runs; if it fires, T-Rex's whole process group is
         killed and ``ProcessCancelled`` propagates.
     on_output : callable, optional
-        Called with each line T-Rex prints, which is the activity signal a
-        progress display and an in-flight claim are refreshed from.
+        Called with each line T-Rex prints to standard output, for a caller
+        parsing progress out of them.
+    on_activity : callable, optional
+        Called with each line on either stream, for a caller refreshing an
+        in-flight claim: what proves the tool alive is that it spoke at all.
 
     Returns
     -------
@@ -358,6 +364,7 @@ def run_trex_convert(
         env_overlay=display_overlay(env),
         cancel_check=cancel_check,
         on_output=on_output,
+        on_activity=on_activity,
     )
 
     # Locate output files. `output_name` pins the stem when it was given;
@@ -470,6 +477,7 @@ def run_trex_track(
     env: ToolEnv = TREX_ENV,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
 ) -> TRexTrackResult:
     """Track individuals in a converted ``.pv`` video.
 
@@ -506,7 +514,7 @@ def run_trex_track(
         ``.pv``, so once a conversion is shared the implicit lookup finds
         nothing and says nothing. Passed as an absolute path it is honoured
         verbatim, and a named-but-missing file is an error rather than silence.
-    env, cancel_check, on_output
+    env, cancel_check, on_output, on_activity
         As :func:`run_trex_convert` takes them.
 
     Returns
@@ -563,6 +571,7 @@ def run_trex_track(
         env_overlay=display_overlay(env),
         cancel_check=cancel_check,
         on_output=on_output,
+        on_activity=on_activity,
     )
 
     # Locate output files

@@ -80,6 +80,67 @@ def test_output_on_stderr_also_counts_as_activity() -> None:
     assert "11" in stderr
 
 
+def test_the_activity_callback_sees_stderr_that_on_output_never_does() -> None:
+    """The two callbacks answer two different questions, so they take two streams.
+
+    *on_output* is for reading what the child says, which is written against one
+    stream's format. *on_activity* is for knowing it said anything, and that is
+    the same signal the idle watchdog measures -- so a caller hanging a claim
+    refresh on it keeps the claim alive for exactly as long as the watchdog
+    considers the child alive. A tool whose progress bar goes to standard error
+    reaches only the second, and until it existed such a tool read as silent.
+    """
+    parsed: list[str] = []
+    alive: list[str] = []
+    _stdout, stderr, rc = run_supervised(
+        _argv(CHATTY_STDERR),
+        idle_timeout=0.6,
+        poll_interval=0.05,
+        on_output=parsed.append,
+        on_activity=alive.append,
+    )
+
+    assert rc == 0
+    assert "11" in stderr, "the child really did write only to stderr"
+    assert not parsed, "on_output is stdout only"
+    assert len(alive) == 12, "on_activity sees every line, whichever stream it is on"
+
+
+def test_the_activity_callback_also_sees_stdout() -> None:
+    """Both streams, not the other one: a caller wires it once and stops caring."""
+    alive: list[str] = []
+    _stdout, _stderr, rc = run_supervised(
+        _argv(CHATTY_STDOUT),
+        idle_timeout=0.6,
+        poll_interval=0.05,
+        on_activity=alive.append,
+    )
+
+    assert rc == 0
+    assert len(alive) == 12
+
+
+def test_a_raising_activity_callback_does_not_end_the_drain() -> None:
+    """It runs on the reader thread, where a raise reaches nobody.
+
+    Worse than useless: the raise would end the loop draining the pipe, and an
+    undrained pipe deadlocks a chatty child.
+    """
+
+    def explode(_line: str) -> None:
+        raise RuntimeError("the liveness callback is not the child's problem")
+
+    stdout, _stderr, rc = run_supervised(
+        _argv(CHATTY_STDOUT),
+        idle_timeout=0.6,
+        poll_interval=0.05,
+        on_activity=explode,
+    )
+
+    assert rc == 0
+    assert "11" in stdout, "every line was still drained and captured"
+
+
 def test_a_silent_child_is_idle_killed_with_partial_output() -> None:
     """The core fix: a hung run is reclaimed, and what it printed is preserved."""
     with pytest.raises(IdleTimeoutExpired) as excinfo:

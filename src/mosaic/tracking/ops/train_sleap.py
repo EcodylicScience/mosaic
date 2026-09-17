@@ -29,6 +29,7 @@ from mosaic.core.params import (
     Declared,
     Params,
 )
+from mosaic.tracking.common.entry import phase_activity
 from mosaic.tracking.model_refs import resolve_model, resolve_model_set
 from mosaic.tracking.ops._common import (
     claim_run_root,
@@ -239,7 +240,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
         ctx.set_total(params.max_epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
-        claim_run_root(ds, ctx, run_root, self.kind, params.idle_timeout)
+        marker = claim_run_root(ds, ctx, run_root, self.kind, params.idle_timeout)
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         overrides: dict[str, JsonValue] = dict(params.sleap_overrides or {})
@@ -260,6 +261,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
             idle_timeout=params.idle_timeout,
             max_runtime=params.max_runtime,
             cancel_check=ctx.cancel_token.is_cancelled if ctx.cancel_token else None,
+            on_activity=phase_activity(ctx, run_root, marker, params.idle_timeout),
         )
         ctx.check_cancel()
 

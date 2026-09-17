@@ -25,6 +25,7 @@ import os
 import shutil
 import socket
 import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
 __all__ = [
     "INFLIGHT_REFRESH_SECONDS",
     "AdoptEvidence",
+    "ClaimRefreshingProgress",
     "adopt_completed_directory",
     "claim",
     "clear_outputs",
@@ -103,22 +105,102 @@ def phase_activity(
     multi-hour subprocess as lost, and re-stamps the in-flight claim, so a
     concurrent execution does not read the working directory as abandoned. Both
     are best-effort: a missed refresh only shortens the claim, never aborts the
-    run. Runs on the subprocess reader thread.
+    run.
+
+    Pass it as ``run_supervised``'s *on_activity* rather than its *on_output*.
+    What proves a phase alive is that the child spoke at all, and a tool whose
+    progress goes to standard error -- which is where a PyTorch Lightning
+    trainer's may land -- is invisible to the stdout-only callback. Taking both
+    streams also makes the claim outlive exactly the window ``idle_timeout``
+    measures, so the watchdog and the claim agree about when a tool is dead.
+
+    Runs on both subprocess reader threads, hence the lock inside
+    :func:`_throttled_refresh`.
     """
-    last_refresh = [0.0]
+    refresh = _throttled_refresh(work_dir, marker, idle_seconds)
 
     def on_line(_line: str) -> None:
+        if refresh():
+            ctx.heartbeat()
+
+    return on_line
+
+
+def _throttled_refresh(
+    work_dir: Path, marker: InflightMarker, idle_seconds: float
+) -> Callable[[], bool]:
+    """Re-stamp *marker* on :data:`INFLIGHT_REFRESH_SECONDS`, reporting whether it did.
+
+    The throttle is a read-then-write across whatever threads the activity
+    signal arrives on -- two subprocess readers, or a trainer's own -- so the
+    lock is what keeps a burst of lines from becoming a burst of disk writes.
+    Best-effort: a refusal by the filesystem shortens the claim and never aborts
+    the run.
+
+    Returns:
+        Whether this call was the one that acted, so a caller with a second
+        thing to do on the same cadence -- the run-log heartbeat -- can hang it
+        off the same decision.
+    """
+    last_refresh = [0.0]
+    throttle = threading.Lock()
+
+    def refresh() -> bool:
         now = time.monotonic()
-        if now - last_refresh[0] < INFLIGHT_REFRESH_SECONDS:
-            return
-        last_refresh[0] = now
-        ctx.heartbeat()
+        with throttle:
+            if now - last_refresh[0] < INFLIGHT_REFRESH_SECONDS:
+                return False
+            last_refresh[0] = now
         try:
             _ = refresh_inflight(work_dir, marker, idle_seconds)
         except OSError:
             pass
+        return True
 
-    return on_line
+    return refresh
+
+
+class ClaimRefreshingProgress:
+    """Keeps a one-shot op's claim alive from an in-process trainer's callbacks.
+
+    :func:`phase_activity` is this guard for a tool mosaic runs as a subprocess:
+    a line arrives, the claim is re-stamped. A trainer running *in* this process
+    prints no line mosaic reads -- it calls a progress callback instead -- so
+    that is where its claim refresh has to hang, and without one its run root is
+    read as abandoned ``idle_seconds`` after it started.
+
+    Every method refreshes, because every one of them is equally proof the
+    trainer is alive, and none reports anything: compose it beside
+    ``ctx.progress`` with
+    :class:`~mosaic.core.pipeline.progress.CompositeProgressCallback` so
+    reporting stays one object's job and the claim another's. The run-log needs
+    no separate heartbeat here -- it advances liveness from the timestamp of
+    whatever event the reporting half wrote.
+    """
+
+    def __init__(
+        self, work_dir: Path, marker: InflightMarker, idle_seconds: float
+    ) -> None:
+        self._refresh = _throttled_refresh(work_dir, marker, idle_seconds)
+
+    def on_epoch_end(
+        self, epoch: int, total_epochs: int, metrics: dict[str, float]
+    ) -> None:
+        _ = self._refresh()
+
+    def on_class_start(
+        self, class_idx: int, total_classes: int, class_name: str
+    ) -> None:
+        _ = self._refresh()
+
+    def on_phase(self, phase: str, message: str) -> None:
+        _ = self._refresh()
+
+    def on_entry_start(self, index: int, total: int, key: str) -> None:
+        _ = self._refresh()
+
+    def on_entry_end(self, index: int, total: int, key: str) -> None:
+        _ = self._refresh()
 
 
 def open_entry(

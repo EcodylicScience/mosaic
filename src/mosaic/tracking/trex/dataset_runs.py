@@ -792,7 +792,7 @@ def run_trex(
                 )
             )
 
-            def on_output(line: str) -> None:
+            def on_activity(line: str) -> None:
                 entry_tick(line)
                 if slot_tick is not None:
                     slot_tick(line)
@@ -815,7 +815,7 @@ def run_trex(
                 params=params,
                 detect_model_path=detect_model_path,
                 cancel_check=cancel_check,
-                on_output=on_output,
+                on_activity=on_activity,
             ).pv_path
 
         def pin(where: Path, pv: Path) -> None:
@@ -937,7 +937,7 @@ def run_trex(
                 params=params,
                 vi_model_path=vi_model_path,
                 cancel_check=cancel_check,
-                on_output=phase_activity(
+                on_activity=phase_activity(
                     seq_ctx, work_dir, track_claim, params.idle_timeout
                 ),
             )

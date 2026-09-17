@@ -175,6 +175,7 @@ def _run_litpose(
     max_runtime: float | None = None,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
 ) -> tuple[str, str]:
     """Execute the Lightning Pose ``python`` with *args* and return (stdout, stderr).
 
@@ -198,6 +199,7 @@ def _run_litpose(
         timeout=max_runtime,
         idle_timeout=idle_timeout,
         on_output=on_output,
+        on_activity=on_activity,
     )
 
     if returncode != 0:
@@ -224,6 +226,7 @@ def run_litpose_predict(
     litpose_bin: Path | str | None = None,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
 ) -> LitposePredictResult:
     """Run Lightning Pose video inference, writing a DeepLabCut-style CSV.
 
@@ -277,6 +280,7 @@ def run_litpose_predict(
         max_runtime=max_runtime,
         cancel_check=cancel_check,
         on_output=on_output,
+        on_activity=on_activity,
     )
 
     if not out_csv.exists():

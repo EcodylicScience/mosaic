@@ -45,6 +45,8 @@ from mosaic.core.params import (
     Params,
 )
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
+from mosaic.core.pipeline.progress import CompositeProgressCallback
+from mosaic.tracking.common.entry import ClaimRefreshingProgress
 from mosaic.tracking.common.mint import planned_model_id
 from mosaic.tracking.common.toolenv import ToolEnv, ToolExitError
 from mosaic.tracking.model_refs import ModelShape, resolve_model
@@ -1082,7 +1084,7 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
-        claim_run_root(ds, ctx, run_root, self.kind, _TRAIN_IDLE_SECONDS)
+        marker = claim_run_root(ds, ctx, run_root, self.kind, _TRAIN_IDLE_SECONDS)
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         result = train_localizer(
@@ -1100,7 +1102,14 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             seed=params.seed,
             project=str(run_root),
             name="train",
-            callback=ctx.progress,
+            # The trainer is in this process, so there is no output line to
+            # hang the claim refresh on; its own progress callbacks are the
+            # activity signal instead. Composed rather than wrapped, so
+            # reporting and the claim stay separate objects.
+            callback=CompositeProgressCallback(
+                ctx.progress,
+                ClaimRefreshingProgress(run_root, marker, _TRAIN_IDLE_SECONDS),
+            ),
             cancel_check=ctx.cancel_token.is_cancelled,
         )
         ctx.check_cancel()

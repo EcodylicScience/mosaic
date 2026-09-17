@@ -297,6 +297,7 @@ def train_sleap(
     max_runtime: float | None = None,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
 ) -> Path:
     """Train a SLEAP model and return the directory it produced.
 
@@ -321,6 +322,12 @@ def train_sleap(
             Generous by default -- an epoch on a large set is slow, and the
             watchdog must not mistake slow for dead.
         max_runtime: Optional absolute ceiling.
+        cancel_check: Polled while the subprocess runs.
+        on_output: Called with each line the trainer writes to standard output,
+            for a caller parsing epochs out of them.
+        on_activity: Called with each line on **either** stream, for a caller
+            keeping the run root's claim alive. Both are passed straight to
+            ``run_supervised``; see its two parameters of the same names.
 
     Returns:
         The model directory, which is what
@@ -377,6 +384,7 @@ def train_sleap(
         timeout=max_runtime,
         idle_timeout=idle_timeout,
         on_output=on_output,
+        on_activity=on_activity,
     )
     if returncode != 0:
         raise SleapError(cmd, returncode, stdout, stderr)

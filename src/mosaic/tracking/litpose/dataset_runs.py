@@ -327,7 +327,7 @@ def run_litpose(
                 litpose_conda_env=litpose_conda_env,
                 litpose_bin=litpose_bin,
                 cancel_check=seq_ctx.cancel_token.is_cancelled,
-                on_output=phase_activity(
+                on_activity=phase_activity(
                     seq_ctx, work_dir, track_claim, params.idle_timeout
                 ),
             )

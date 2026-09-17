@@ -169,6 +169,7 @@ def _run_sleap(
     max_runtime: float | None = None,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
 ) -> tuple[str, str]:
     """Execute a SLEAP console script with *args* and return (stdout, stderr).
 
@@ -192,6 +193,7 @@ def _run_sleap(
         timeout=max_runtime,
         idle_timeout=idle_timeout,
         on_output=on_output,
+        on_activity=on_activity,
     )
 
     if returncode != 0:
@@ -228,6 +230,7 @@ def run_sleap_track(
     sleap_bin: Path | str | None = None,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
 ) -> SleapTrackResult:
     """Run SLEAP inference + tracking on a video, writing a ``.slp`` file.
 
@@ -336,6 +339,7 @@ def run_sleap_track(
         max_runtime=max_runtime,
         cancel_check=cancel_check,
         on_output=on_output,
+        on_activity=on_activity,
     )
 
     if not output_slp.exists():
@@ -354,6 +358,7 @@ def run_sleap_convert(
     sleap_bin: Path | str | None = None,
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
 ) -> SleapConvertResult:
     """Export a SLEAP ``.slp`` file to its analysis HDF5 form.
 
@@ -398,6 +403,7 @@ def run_sleap_convert(
         max_runtime=max_runtime,
         cancel_check=cancel_check,
         on_output=on_output,
+        on_activity=on_activity,
     )
 
     produced = output_h5

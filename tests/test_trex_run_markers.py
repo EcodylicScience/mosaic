@@ -397,6 +397,11 @@ def test_the_activity_callback_re_stamps_the_running_claim(
     it lapse -- and a concurrent execution would read the directory as
     abandoned -- unless output activity re-stamps it. The callback the phase
     receives must write the claim back to *this* working directory.
+
+    It arrives as *on_activity* rather than *on_output*, which is the parameter
+    that carries both of the tool's streams: what proves a phase alive is that
+    the tool spoke at all, and a tool printing only to standard error would
+    otherwise read as silent.
     """
     fake = FakeTrex()
 
@@ -404,14 +409,14 @@ def test_the_activity_callback_re_stamps_the_running_claim(
         video_path: Path,
         seq_dir: Path,
         *,
-        on_output: Callable[[str], None] | None = None,
+        on_activity: Callable[[str], None] | None = None,
         **kwargs: object,
     ) -> TRexConvertResult:
-        assert on_output is not None, "the phase must receive the activity callback"
+        assert on_activity is not None, "the phase must receive the activity callback"
         # Drop the claim, then fire one progress line; the callback must restore
         # it -- proof the closure captured this seq_dir and its claim.
         inflight_marker_path(Path(seq_dir)).unlink(missing_ok=True)
-        on_output("[Statistics] Progress: 10%")
+        on_activity("[Statistics] Progress: 10%")
         assert read_inflight(Path(seq_dir)) is not None, (
             "output activity re-stamped the claim for this directory"
         )

@@ -362,7 +362,7 @@ def run_sleap(
                 sleap_conda_env=sleap_conda_env,
                 sleap_bin=sleap_bin,
                 cancel_check=seq_ctx.cancel_token.is_cancelled,
-                on_output=phase_activity(
+                on_activity=phase_activity(
                     seq_ctx, work_dir, track_claim, params.idle_timeout
                 ),
             )
@@ -404,7 +404,7 @@ def run_sleap(
                 sleap_conda_env=sleap_conda_env,
                 sleap_bin=sleap_bin,
                 cancel_check=seq_ctx.cancel_token.is_cancelled,
-                on_output=phase_activity(
+                on_activity=phase_activity(
                     seq_ctx, work_dir, export_claim, params.idle_timeout
                 ),
             )
