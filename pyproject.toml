@@ -344,6 +344,25 @@ where = ["src"]
 [tool.uv.sources]
 microsoft-python-type-stubs = { git = "https://github.com/microsoft/python-type-stubs" }
 
+[[tool.uv.dependency-metadata]]
+# `lightning-action` requires `nvidia-dali-cuda110`, which NVIDIA ships as a
+# placeholder sdist that downloads the real wheel from pypi.nvidia.com at build
+# time. There is no macOS wheel to download, so resolving it means building it,
+# and building it fails on any machine without CUDA -- which is what stopped
+# `uv lock` resolving at all, on any platform, and left the lock stale.
+# Declaring the metadata here lets uv resolve without building, and the package
+# and its dependencies still land in the lock, so the licence inventory that
+# `scripts/gen_third_party_inventory.py` reads keeps seeing them.
+#
+# `requires-dist` is DALI 1.43.0's own declared set, recovered from the lock it
+# last resolved into. Declaring `[]` instead also unblocks the lock, but it
+# silently drops astunparse, dm-tree, gast, nvidia-nvimgcodec-cu11 and wrapt
+# from the resolved set, which would quietly shrink that inventory. There is no
+# `version` key, so this applies to whatever version the resolver picks; if
+# NVIDIA ever changes the stub's dependencies, update this list.
+name = "nvidia-dali-cuda110"
+requires-dist = ["astunparse", "dm-tree", "gast", "nvidia-nvimgcodec-cu11", "six"]
+
 [tool.uv.workspace]
 exclude = [
     "src/mosaic/behavior/feature_library/external",

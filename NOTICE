@@ -402,9 +402,21 @@ PyAV
   decoding.
 
 The remaining runtime and development dependencies are permissively
-licensed (BSD, MIT, Apache-2.0, PSF). The NVIDIA CUDA runtime libraries
-that arrive with GPU builds of PyTorch are proprietary but commercially
-redistributable under NVIDIA's own terms.
+licensed (BSD, MIT, Apache-2.0, PSF), with two exceptions that a default
+install does reach.
+
+certifi is MPL-2.0, and arrives unconditionally on every platform:
+mosaic-behavior -> tables -> blosc2 -> httpx -> certifi. MPL-2.0 is
+file-level copyleft. It reaches modifications to certifi's own files,
+which mosaic does not make, and not the work that depends on it, so it
+imposes nothing here beyond keeping the notice.
+
+nvidia-nccl-cu12 arrives on Linux only, through xgboost, which declares
+it for GPU support. It publishes no license metadata; NVIDIA's own terms
+apply, and they permit commercial redistribution. The NVIDIA CUDA
+runtime libraries that arrive with GPU builds of PyTorch, under the
+deep-learning and lightning-action extras, are proprietary on the same
+footing.
 
 The resolved set is recorded in uv.lock, and
 

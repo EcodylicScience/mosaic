@@ -100,8 +100,10 @@ gates reading a file the user already has, and the three are ~30 MB together.
   that as an sdist for every current version, so the extra fails to install
   anywhere without CUDA. Every release does it -- 1.0.2 declares the requirement
   exactly as 1.1.0 does -- so the `<1.1` bound this carried, on the reasoning
-  that 1.1.0 introduced it, only held the extra on an older release. It is also
-  what stops `uv lock` resolving; see [CONTRIBUTING.md](CONTRIBUTING.md).
+  that 1.1.0 introduced it, only held the extra on an older release. It also
+  used to stop `uv lock` resolving outright; a `[[tool.uv.dependency-metadata]]`
+  entry for `nvidia-dali-cuda110` is what unblocks that, and the lock is current
+  again -- see [CONTRIBUTING.md](CONTRIBUTING.md).
 - `movement` declares the movement-library integration behind
   `movement-smooth` and `movement-filter-interpolate`. Before it existed those
   were two registered features with no declared dependency at all.

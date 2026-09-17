@@ -38,16 +38,22 @@ Prefer `uv pip install` over `uv sync`. `uv sync` installs the project without
 extras and prunes anything it considers extraneous, silently undoing an extras
 install.
 
-**`uv lock` currently does not resolve at all**, on any platform:
-`lightning-action` requires `nvidia-dali-cuda110` with no environment marker, and
-PyPI serves that as an sdist only, so the resolver tries to build NVIDIA DALI from
-source and fails. `uv.lock` is therefore stale and cannot be regenerated until
-that is settled — by marker-gating the requirement, by dropping the extra from the
-resolution, or by upstream publishing wheels. (Ultralytics used to be the blocker,
-for a different reason; it no longer appears in mosaic's dependency graph at all.) Nothing in
-the repository consumes the lock: every CI job installs with `uv pip install`,
-and `scripts/gen_third_party_inventory.py` is the one reader, so `NOTICE`
-regeneration is blocked with it.
+**`uv lock` resolves, and it does so only because DALI's metadata is declared
+for it.** `lightning-action` requires `nvidia-dali-cuda110` with no environment
+marker, and NVIDIA serves that as a placeholder sdist that downloads the real
+wheel from pypi.nvidia.com at build time. There is no macOS wheel to download,
+so resolving it meant building it, and building it fails on any machine without
+CUDA — which stopped `uv lock` on every platform and left the lock stale at
+0.12.0. A `[[tool.uv.dependency-metadata]]` entry in `pyproject.toml` declares
+the stub's requirements, so uv resolves without building it. Two things about
+that entry: `requires-dist` must carry DALI's real dependencies, because
+declaring `[]` also unblocks the lock but silently drops five distributions from
+the resolved set and so shrinks the licence inventory; and it pins no version, so
+if NVIDIA ever changes the stub's requirements it needs updating. (Ultralytics
+used to be the blocker, for a different reason; it no longer appears in mosaic's
+dependency graph at all.) Nothing in the repository consumes the lock: every CI
+job installs with `uv pip install`, and `scripts/gen_third_party_inventory.py` is
+the one reader.
 
 **Regenerate `docs/reference/` under the `docs` dependency group.** The CLI page
 is rendered by the Typer that is installed, and `[dependency-groups] docs` pins
