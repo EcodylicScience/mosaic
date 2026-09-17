@@ -1,4 +1,0 @@
-behavior
-core
-media
-tracking
