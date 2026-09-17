@@ -32,9 +32,11 @@ trained model weights.
                  is fetched at install time and nothing is redistributed
                  here.
 
-Two components carry restrictions the AGPL does not: keypoint-MoSeq
-prohibits commercial use, and TRex requires a paid license for company use.
-Both are stated in full below.
+Three components carry restrictions the AGPL does not. keypoint-MoSeq
+prohibits commercial use. TRex requires a paid license for company use. The
+MegaDescriptor identity weights, which a user may name but mosaic never
+selects, are CC-BY-NC-4.0 and likewise prohibit commercial use. All three
+are stated in full below.
 
 
 INCORPORATED SOURCE
@@ -165,6 +167,17 @@ keypoint-MoSeq
                MOSAIC_KPMS_LICENSE_ACCEPTED=1. The arhmm feature fits a
                comparable model in mosaic's own code, under no such
                restriction.
+  Acknowledgement:
+               keypoint-MoSeq is provided by the President and Fellows of
+               Harvard College, through the Harvard University Office of
+               Technology Development, as the license asks.
+  Citation:    Weinreb, C., Osman, M. A. M., Zhang, L., Lin, S., Pearl, J.,
+               Annapragada, S., Conlin, E., Hoffmann, R., Makowska, S.,
+               Gillis, W. F., Jay, M., Ye, S., Mathis, A., Mathis, M. W.,
+               Pereira, T., Linderman, S. W., Datta, S. R. (2024).
+               Keypoint-MoSeq: parsing behavior by linking point tracking
+               to pose dynamics. Nature Methods 21:1329-1339.
+               https://doi.org/10.1038/s41592-024-02318-2
 
 Ultralytics YOLO
   Origin:      https://github.com/ultralytics/ultralytics
@@ -214,6 +227,14 @@ POLO
   reads video through it. mosaic-behavior is declared in neither and is not
   importable from either.
 
+  lap, the linear-assignment solver Ultralytics' tracker matching imports at
+  module scope, is declared by both environments and by no mosaic extra --
+  it appears in no Ultralytics extra either, so an undeclared one would be
+  pip-installed mid-run. https://github.com/gatagat/lap, (c) 2012-2017 Tomas
+  Kazmar and contributors, BSD-2-Clause. It reaches a user only by way of an
+  environment they build, which is why it is recorded here rather than under
+  OPTIONAL DISTRIBUTIONS.
+
   Obligation. AGPL v3 section 13 extends the duty to offer Corresponding
   Source to anyone who interacts with the program remotely over a network,
   so operating a pipeline that includes Ultralytics as a service reaches a
@@ -227,6 +248,11 @@ SLEAP
   Driven by:   src/mosaic/tracking/sleap/, in an environment the user
                builds. Mosaic's converter reads the analysis .h5 SLEAP
                writes, which creates no obligation.
+  Citation:    Pereira, T. D., Tabris, N., Matsliah, A., Turner, D. M.,
+               Li, J., Ravindranath, S., et al. (2022). SLEAP: A deep
+               learning system for multi-animal pose tracking. Nature
+               Methods 19:486-495.
+               https://doi.org/10.1038/s41592-022-01426-1
 
 Lightning Pose
   Origin:      https://github.com/paninski-lab/lightning-pose
@@ -234,6 +260,11 @@ Lightning Pose
   Driven by:   src/mosaic/tracking/litpose/, in an environment the user
                builds. One configuration file is also redistributed; see
                INCORPORATED SOURCE.
+  Citation:    Biderman, D., Whiteway, M. R., Hurwitz, C., et al. (2024).
+               Lightning Pose: improved animal pose estimation via
+               semi-supervised learning, Bayesian ensembling and
+               cloud-native open-source tools. Nature Methods 21:1316-1328.
+               https://doi.org/10.1038/s41592-024-02319-1
 
 FFmpeg
   Origin:      https://ffmpeg.org/
@@ -292,6 +323,10 @@ FERAL
                its LICENSE.
   Installed:   by the [feral] extra. Wrapped by
                src/mosaic/behavior/feature_library/feral_feature.py.
+  Citation:    Skovorodnikov, P. and Razzauti, J. (2025). FERAL. bioRxiv
+               preprint. https://doi.org/10.1101/2025.11.16.688666
+               The repository asks that the preprint be cited and notes
+               that the revised manuscript (v2) adds further benchmarks.
 
 lightning-action
   Origin:      Paninski lab
@@ -306,16 +341,6 @@ movement
   License:     BSD-3-Clause
   Installed:   by the [movement] extra. Wrapped by
                src/mosaic/behavior/feature_library/movement/.
-
-lap
-  Origin:      https://github.com/gatagat/lap
-  Copyright:   (c) 2012-2017 Tomas Kazmar and contributors
-  License:     BSD-2-Clause
-  Installed:   declared by both Ultralytics environments and by no mosaic
-               extra. It is the linear-assignment solver Ultralytics'
-               tracker matching imports at module scope, and it appears in
-               no Ultralytics extra.
-
 
 FETCHED MODEL WEIGHTS
 =====================
