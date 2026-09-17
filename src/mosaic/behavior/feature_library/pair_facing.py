@@ -1,9 +1,12 @@
 """
 PairFacing -- per-frame directional facing metric for all ordered pairs.
 
-Ported from Valerie's BeesInADish ``Dish.compute_social_facing``
-(Apis/BeesInADish/object_trex.py). For every ordered (focal, target) pair
-of individuals in a sequence, computes:
+Ported from ``Dish.compute_social_facing`` in BeesInADish
+(Apis/BeesInADish/object_trex.py), developed with Valerie Kuklovsky,
+University of Konstanz, and used with her permission. See NOTICE.
+
+For every ordered (focal, target) pair of individuals in a sequence,
+computes:
 
   - body_angle_deg:  focal's body-axis angle (head -> abdomen by default), deg
   - bearing_deg:     direction from focal head to target head, deg
@@ -51,7 +54,7 @@ from .registry import register_feature
 
 
 def _wrap180_deg(angle: np.ndarray) -> np.ndarray:
-    """Wrap angles in degrees to [-180, 180]. Mirrors Valerie's wrap180."""
+    """Wrap angles in degrees to [-180, 180]. Mirrors BeesInADish's wrap180."""
     return (angle + 180.0) % 360.0 - 180.0
 
 

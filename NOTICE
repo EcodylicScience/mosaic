@@ -10,199 +10,251 @@ the obligations attached to them. AGPL v3 section 5 requires such notices to
 be preserved in modified and redistributed versions. Keep this file with the
 code.
 
-This file is the record. A reader-facing licensing page, with more explanation
-and the reasoning behind each arrangement, is being written and is not yet
-published.
+
+HOW COMPONENTS REACH A USER
+===========================
+
+Everything under src/, scripts/, tests/, docs/ and notebooks/ is the work of
+Ecodylic Science unless a module docstring says otherwise. Mosaic ships no
+trained model weights.
+
+  incorporated   Third-party source inside src/, adapted or verbatim. It
+                 ships in the wheel.
+
+  invoked        A separate program mosaic starts and talks to over a pipe,
+                 a socket or the filesystem. Mosaic does not link, import or
+                 ship it; the user installs it.
+
+  optional       A distribution named in an optional extra. Installing
+                 mosaic-behavior does not install it.
+
+  fetched        Model weights downloaded from a hub at first use. Nothing
+                 is fetched at install time and nothing is redistributed
+                 here.
+
+Two components carry restrictions the AGPL does not: keypoint-MoSeq
+prohibits commercial use, and TRex requires a paid license for company use.
+Both are stated in full below.
 
 
-HOW THIRD-PARTY COMPONENTS REACH A USER
-=======================================
+INCORPORATED SOURCE
+===================
 
-Everything under src/, scripts/, tests/, docs/, and notebooks/ is the work of
-Ecodylic Science unless a module docstring says otherwise. Mosaic bundles no
-third-party source code and no trained model weights.
+The complete list of third-party work inside src/. Each module also names
+its origin in its own docstring.
 
-The components below reach a user in one of four ways, and which one decides
-what that user owes:
+BeesInADish
+  Developed with:  Valerie Kuklovsky, University of Konstanz
+  Terms:           unpublished; used with the author's permission
+  In:              src/mosaic/behavior/feature_library/pair_facing.py
+                   src/mosaic/behavior/feature_library/attention_target.py
+  Taken:           Dish.compute_social_facing and its angle-wrapping
+                   helper. attention_target generalizes the in_pair /
+                   out_pair attention metric to any id-to-group mapping.
 
-  invoked        A separate program that mosaic starts and talks to over a
-                 pipe, a socket, or the filesystem. Mosaic does not link it,
-                 import it, or ship it; the user installs it independently.
+train-custom-YOLO-Colab
+  Developed with:  Angela Albi, Max Planck Institute of Animal Behavior
+  Origin:          https://github.com/albiangela/train-custom-YOLO-Colab
+  Terms:           no license document upstream; used with the author's
+                   permission. Name the license here when one is added.
+  In:              src/mosaic/tracking/pose_training/prep.py
+  Taken:           dataset filtering, label simplification,
+                   train/val/test splitting and data.yaml generation from
+                   utils/prep.py. Mosaic adds pose (kpt_shape) and POLO
+                   (radii) handling, drops the tiling and Colab interface
+                   code, and has diverged further since.
 
-  optional       A Python distribution named in an optional extra in
-                 pyproject.toml. Installing mosaic-behavior does not install
-                 it. Asking for the extra makes pip fetch it from its own
-                 publisher, under that publisher's license.
+trajognize
+  Origin:          https://github.com/vasarhelyi/trajognize
+  Copyright:       (c) Gabor Vasarhelyi and contributors
+  License:         GPL-3.0
+  In:              src/mosaic/behavior/feature_library/approach_avoidance.py
+  Taken:           the approach-avoidance decision logic: role-specific
+                   speed thresholds for approacher and avoider, the
+                   distance threshold, the cosine thresholds between
+                   velocity and pair direction, the approacher
+                   forward-motion gate against body orientation, and the
+                   event-continuity rule.
+  Citation:        Nagy, M., Vasarhelyi, G., Pettit, B., Roberts-Mariani,
+                   I., Vicsek, T., Biro, D. (2013). Context-dependent
+                   hierarchies in pigeons. PNAS 110:13049-13054.
+                   https://doi.org/10.1073/pnas.1305552110
 
-  fetched        Model weights that a component downloads from a model hub
-                 the first time it runs. Nothing is fetched at install time,
-                 nothing is redistributed here, and the terms are the ones
-                 the hub entry states at the moment of download.
+                   Nagy, M., Davidson, J. D., Vasarhelyi, G., Abel, D.,
+                   et al. (2024). Long-term tracking of social structure
+                   in groups of rats. Scientific Reports 14:22857.
+                   https://doi.org/10.1038/s41598-024-72437-5
 
-Two components carry restrictions that the AGPL does not, and both are called
-out below: keypoint-MoSeq prohibits commercial use outright, and TRex requires
-a paid license for company use.
+bb_pipeline_models (BeesBook)
+  Origin:          https://github.com/BioroboticsLab/bb_pipeline_models
+  Copyright:       Biorobotics Lab, Freie Universitaet Berlin
+  License:         Apache-2.0
+  In:              src/mosaic/tracking/pose_training/localizer_model.py
+  Taken:           get_conv_model, a fully convolutional heatmap encoder.
+  Changes:         ported from TensorFlow/Keras to PyTorch. The layer
+                   structure and its strides, padding and output geometry
+                   are preserved; the framework and the surrounding code
+                   are mosaic's own. Stated as Apache-2.0 section 4(b)
+                   requires.
 
-
-TREX -- INVOKED PROGRAM, EXCHANGED FORMAT
-========================================
-
-TRex. Copyright (C) Tristan Walter and contributors.
-https://trex.run/ -- https://github.com/mooch443/trex
-
-TRex is licensed under the GNU Affero General Public License v3 or later.
-Its Application/src/commons subtree is maintained under the GNU General
-Public License v3.
-
-    Company use of TRex requires a paid commercial license from the TRex
-    project. Free use is available under AGPL v3 or later. Enquiries:
-    a@trex.run
-
-Invoked. src/mosaic/tracking/trex/ drives the TRex binary in its own
-environment. Mosaic never links or bundles it.
-
-Format. src/mosaic/core/track_library/ reads TRex track exports. Reading a
-file format creates no license obligation.
-
-Obligation. A user who runs TRex -- to produce the tracks these modules
-read -- obtains TRex from the TRex project and is bound by TRex's license,
-the commercial-use clause included. Nothing in mosaic's license grants or
-substitutes for that.
-
-Citation, owed as scholarly credit:
-
-    Walter, T. and Couzin, I. D. (2021). TRex, a fast multi-animal tracking
-    system with markerless identification, and 2D estimation of posture and
-    visual fields. eLife 10:e64000. https://doi.org/10.7554/eLife.64000
-
-
-KEYPOINT-MOSEQ -- INVOKED, AND NON-COMMERCIAL
-=============================================
-
-keypoint-moseq. Licensor: President and Fellows of Harvard College, through
-the Harvard University Office of Technology Development.
-https://github.com/dattalab/keypoint-moseq
-
-    "End User shall not use the Software for Commercial use and any such use
-    of the Software is expressly prohibited."
-
-Harvard defines commercial use to include fee-for-service arrangements, use
-by core facilities or laboratories providing research services to or with
-for-profit third parties for a fee, and industry-sponsored or collaborative
-research projects granting the sponsor or collaborator commercial rights.
-This is not a copyleft license, so no paid exception cures it; a commercial
-license requires a separate agreement with Harvard (otd@harvard.edu). The
-license also asks that Harvard be acknowledged as the provider, that the
-relevant publications be cited, and that its notices be retained.
-
-Invoked, deliberately at arm's length. keypoint-moseq is not a dependency of
-mosaic-behavior. It appears in no extra, in no dependency group, and in
-mosaic's uv.lock not at all: the directory that installs it,
-src/mosaic/behavior/feature_library/external/, is excluded from the uv
-workspace. The user creates that environment. Mosaic's kpms feature starts
-its interpreter as a subprocess and exchanges newline-delimited JSON over a
-Unix domain socket. Mosaic never imports the package.
-
-That separation is a license requirement, not a convenience. Mosaic is
-AGPL-3.0-or-later, and AGPL section 7 forbids adding a restriction such as
-"non-commercial only" to a covered work. A mosaic that imported or linked
-keypoint-moseq would be a combined work that could not be distributed at all.
-It follows that keypoint-moseq must never be bundled into a packaged mosaic
-installer.
-
-On top of the separation, the kpms feature refuses to start until the user
-sets MOSAIC_KPMS_LICENSE_ACCEPTED=1, asserting that their use is permitted.
-The arhmm feature fits a comparable model in mosaic's own code, with no
-keypoint-MoSeq dependency and no license restriction.
+Lightning Pose configuration template
+  Origin:          https://github.com/paninski-lab/lightning-pose
+  Copyright:       (c) 2021 Dan Biderman, Matthew Whiteway, Liam Paninski
+  License:         MIT
+  In:              src/mosaic/tracking/litpose/templates/config_default.yaml
+  Taken:           scripts/configs/config_default.yaml from release 2.3.1,
+                   verbatim. Used when a caller names no config.
 
 
-ULTRALYTICS YOLO, AND THE POLO FORK -- INVOKED
-==============================================
+INVOKED PROGRAMS
+================
 
-Ultralytics YOLO. Copyright (C) Ultralytics.
-https://github.com/ultralytics/ultralytics
+TRex
+  Origin:      https://trex.run/ -- https://github.com/mooch443/trex
+  Copyright:   (C) Tristan Walter and contributors
+  License:     AGPL-3.0-or-later. The Application/src/commons subtree is
+               GPL-3.0.
+  Driven by:   src/mosaic/tracking/trex/
+  Obligation:
 
-Dual-licensed: GNU Affero General Public License v3 or later, or a paid
-Ultralytics Enterprise License that lifts the open-source requirements. Its
-dependency ultralytics-thop carries the same AGPL v3 or later terms and is
-named in no pyproject.toml, arriving only through Ultralytics itself.
+      Company use of TRex requires a paid commercial license from the TRex
+      project. Free use is available under AGPL v3 or later. Enquiries:
+      a@trex.run
 
-POLO. https://github.com/mooch443/POLO
+               A user who runs TRex obtains it from the TRex project and
+               is bound by its license, the commercial-use clause
+               included. Nothing in mosaic's license substitutes for that.
+  Citation:    Walter, T. and Couzin, I. D. (2021). TRex, a fast
+               multi-animal tracking system with markerless
+               identification, and 2D estimation of posture and visual
+               fields. eLife 10:e64000.
+               https://doi.org/10.7554/eLife.64000
 
-A third-party fork of Ultralytics YOLO that adds point detection, and ships
-the AGPL v3 text. The Ultralytics Enterprise License is offered by
-Ultralytics for its own distribution and does not extend to a third-party
-fork, so POLO is AGPL-only.
+  src/mosaic/core/track_library/ also reads TRex track exports. Reading a
+  file format creates no license obligation.
 
-No mosaic install carries Ultralytics. No extra, bundle or alias installs
-it, and no module under src/mosaic imports it outside
-src/mosaic/tracking/external/runner/, which runs only inside an environment
-the user builds.
+keypoint-MoSeq
+  Origin:      https://github.com/dattalab/keypoint-moseq
+  Licensor:    President and Fellows of Harvard College, through the
+               Harvard University Office of Technology Development
+  License:     non-commercial research and academic use only
+  Driven by:   the kpms feature, which starts the interpreter of an
+               environment the user builds at
+               src/mosaic/behavior/feature_library/external/ and exchanges
+               newline-delimited JSON over a Unix domain socket. Mosaic
+               never imports the package, and it appears in no extra, no
+               dependency group and not in uv.lock.
+  Obligation:
 
-Invoked, on every path. `mosaic track ultralytics` and `mosaic run --kind`
-with `infer-pose`, `infer-points`, `train-pose` or `train-points` drive
-Ultralytics as a separate program in an environment the user builds. There
-are two such environments, because the POLO fork ships under the
-distribution name `ultralytics` and so cannot occupy one with upstream:
-src/mosaic/tracking/external/ultralytics-env/ for the tracker, pose
-inference and pose training, and src/mosaic/tracking/external/polo-env/ for
-point inference and point training. The program that runs inside both is
-src/mosaic/tracking/external/runner/, and what crosses between mosaic and
-that program is a JSON request file, a JSON response file, progress lines on
-standard output, and -- for a cancelled training run -- a file mosaic writes
-that the program stats between epochs. Mosaic locates each environment
-through MOSAIC_ULTRALYTICS_CONDA_ENV / MOSAIC_ULTRALYTICS_BIN and
-MOSAIC_POLO_CONDA_ENV / MOSAIC_POLO_BIN and spawns its interpreter. On every
-one of these paths mosaic imports Ultralytics nowhere: the user builds the
-environment, obtains Ultralytics or POLO from its own publisher under that
-publisher's terms, and is the licensee.
+      "End User shall not use the Software for Commercial use and any such
+      use of the Software is expressly prohibited."
 
-One package by these authors is installed into those environments beside
-Ultralytics: mosaic-media, under the Apache License 2.0, which the runner
-reads video through. That is a licensing decision and not a packaging one.
-Apache-2.0 is one-way compatible with AGPL-3.0 -- it may be taken into an
-AGPL-covered work, and the combining is done by the user who builds the
-environment -- so it can sit there where mosaic-behavior, being
-AGPL-3.0-or-later, cannot. mosaic-behavior is declared nowhere in either
-environment and is not importable from either, and
-tests/test_ultralytics_separation.py checks both, for both.
+               Harvard defines commercial use to include fee-for-service
+               arrangements, use by core facilities or laboratories
+               providing research services to or with for-profit third
+               parties for a fee, and industry-sponsored or collaborative
+               research projects granting the sponsor or collaborator
+               commercial rights. This is not a copyleft license, so no
+               paid exception cures it; a commercial license requires a
+               separate agreement with Harvard (otd@harvard.edu). The
+               license also asks that Harvard be acknowledged as the
+               provider, that the relevant publications be cited, and that
+               its notices be retained.
 
-That separation is a license requirement, not a packaging convenience. A
-program that imports an AGPL-3.0 library is one work with it, so a mosaic
-that imported Ultralytics could not be offered under terms of its own
-without also licensing Ultralytics; two programs exchanging files are two
-works. tests/test_ultralytics_separation.py holds that line in both
-directions: no mosaic module outside the runner program may import
-Ultralytics, no extra or bundle may declare it, and the runner program may
-not import mosaic.
+               The kpms feature will not start until the user sets
+               MOSAIC_KPMS_LICENSE_ACCEPTED=1. The arhmm feature fits a
+               comparable model in mosaic's own code, under no such
+               restriction.
 
-Obligation. AGPL v3 section 13 extends the duty to offer Corresponding
-Source to anyone who interacts with the program remotely over a network, so
-a commercial user is reached by operating a pipeline that includes
-Ultralytics as a service, without ever redistributing a copy. That
-obligation attaches to the environment the user built and to their
-deployment of it, not to mosaic: mosaic asks for none of it on their behalf,
-and installs nothing that carries it. The choices -- comply, buy an
-Enterprise License from Ultralytics for its own distribution, or build
-neither environment and use another tracker -- are the user's own, made
-where they build it.
+Ultralytics YOLO
+  Origin:      https://github.com/ultralytics/ultralytics
+  Copyright:   (C) Ultralytics
+  License:     AGPL-3.0-or-later, or a paid Ultralytics Enterprise
+               License. Two dependencies carry the same terms and are
+               named in no pyproject.toml, arriving only through
+               Ultralytics itself: ultralytics-thop, in both environments,
+               and ultralytics-platform, in the upstream one.
 
-THE ULTRALYTICS TRACKER DEFAULTS, AND THE METHODS THEY CONFIGURE
-===============================================================
+POLO
+  Origin:      https://github.com/mooch443/POLO
+  License:     AGPL-3.0. The Ultralytics Enterprise License is offered by
+               Ultralytics for its own distribution and does not extend to
+               either fork.
+  Authors:     three parties hold work in the build mosaic pins.
+               Ultralytics YOLO is the base. The point-detection model,
+               its training losses and its post-processing are POLO, by
+               Giacomo May, Emanuele Dalsasso, Benjamin Kellenberger and
+               Devis Tuia at EPFL, released at
+               https://github.com/gigumay/POLO. The fork mosaic pins is
+               maintained by Tristan Walter at the Max Planck Institute of
+               Animal Behavior, who carries current upstream Ultralytics
+               into it and has made his own changes to point training and
+               validation.
+  Citation:    May, G., Dalsasso, E., Kellenberger, B., Tuia, D. (2024).
+               POLO -- Point-based, multi-class animal detection.
+               CV4Ecology workshop, ECCV 2024. arXiv:2410.11741.
+               https://arxiv.org/abs/2410.11741
+
+  No mosaic install carries Ultralytics or POLO. `mosaic track ultralytics`
+  and `mosaic run --kind` with infer-pose, infer-points, train-pose or
+  train-points drive them as separate programs in environments the user
+  builds: src/mosaic/tracking/external/ultralytics-env/ for the tracker,
+  pose inference and pose training, and .../polo-env/ for point inference
+  and point training. They are two environments because POLO ships under
+  the distribution name `ultralytics` and cannot occupy one with upstream.
+  The program that runs inside both is
+  src/mosaic/tracking/external/runner/. What crosses between mosaic and it
+  is a JSON request file, a JSON response file, progress lines on standard
+  output, and -- for a cancelled training run -- a file mosaic writes that
+  the program stats between epochs. Mosaic locates each environment through
+  MOSAIC_ULTRALYTICS_CONDA_ENV / MOSAIC_ULTRALYTICS_BIN and
+  MOSAIC_POLO_CONDA_ENV / MOSAIC_POLO_BIN.
+
+  mosaic-media, Apache-2.0, is installed into both environments; the runner
+  reads video through it. mosaic-behavior is declared in neither and is not
+  importable from either.
+
+  Obligation. AGPL v3 section 13 extends the duty to offer Corresponding
+  Source to anyone who interacts with the program remotely over a network,
+  so operating a pipeline that includes Ultralytics as a service reaches a
+  commercial user without any copy being redistributed. That obligation
+  attaches to the environment the user built and to their deployment of it.
+  Mosaic installs nothing that carries it.
+
+SLEAP
+  Origin:      https://sleap.ai/
+  License:     BSD-3-Clause-Clear
+  Driven by:   src/mosaic/tracking/sleap/, in an environment the user
+               builds. Mosaic's converter reads the analysis .h5 SLEAP
+               writes, which creates no obligation.
+
+Lightning Pose
+  Origin:      https://github.com/paninski-lab/lightning-pose
+  License:     MIT
+  Driven by:   src/mosaic/tracking/litpose/, in an environment the user
+               builds. One configuration file is also redistributed; see
+               INCORPORATED SOURCE.
+
+FFmpeg
+  Origin:      https://ffmpeg.org/
+  License:     LGPL-2.1-or-later, or GPL if built with GPL-only components
+  Driven by:   the system ffprobe binary for media indexing and probing,
+               and the system ffmpeg binary for transcoding. Neither is
+               distributed with mosaic; the user installs them. A
+               redistributor who bundles an ffmpeg build must observe that
+               build's terms, which depend on how it was configured.
+
+
+ULTRALYTICS TRACKER DEFAULTS
+============================
 
 `mosaic track ultralytics` selects one of six tracker backends Ultralytics
-ships. Mosaic records each backend's default settings in
-src/mosaic/tracking/ultralytics_track/tracker_defaults.py, so that a run
-identifier names the exact settings a run used and an upstream retune cannot
-silently re-mint identifiers already on disk.
-
-Those defaults are transcribed -- the setting names and their values, in
-mosaic's own structure with mosaic's own commentary -- from the six files
+ships. Their default settings are transcribed -- the setting names and
+their values, in mosaic's own structure -- into
+src/mosaic/tracking/ultralytics_track/tracker_defaults.py from
 ultralytics/cfg/trackers/{botsort,bytetrack,ocsort,deepocsort,fasttrack,
-tracktrack}.yaml as of Ultralytics 8.4.63. The YAML files themselves are not
-copied and no AGPL-licensed source is vendored into src/. A test reads the
-tables back out of the Ultralytics environment and compares them against the
-transcription, so drift fails by name.
+tracktrack}.yaml as of Ultralytics 8.4.63. The YAML files themselves are
+not copied and no AGPL-licensed source is vendored into src/.
 
 The backends implement published methods. Results produced with one should
 cite it:
@@ -210,172 +262,132 @@ cite it:
   ByteTrack. Zhang, Y. et al. (2021). ByteTrack: Multi-Object Tracking by
   Associating Every Detection Box. arXiv:2110.06864.
 
-  BoT-SORT. Aharon, N., Orfaig, R., Bobrovsky, B.-Z. (2022). BoT-SORT: Robust
-  Associations Multi-Pedestrian Tracking. arXiv:2206.14651.
+  BoT-SORT. Aharon, N., Orfaig, R., Bobrovsky, B.-Z. (2022). BoT-SORT:
+  Robust Associations Multi-Pedestrian Tracking. arXiv:2206.14651.
 
-  OC-SORT. Cao, J. et al. (2022). Observation-Centric SORT: Rethinking SORT
-  for Robust Multi-Object Tracking. arXiv:2203.14360.
+  OC-SORT. Cao, J. et al. (2022). Observation-Centric SORT: Rethinking
+  SORT for Robust Multi-Object Tracking. arXiv:2203.14360.
 
-  Deep OC-SORT. Maggiolino, G. et al. (2023). Deep OC-SORT: Multi-Pedestrian
-  Tracking by Adaptive Re-Identification. arXiv:2302.11813.
+  Deep OC-SORT. Maggiolino, G. et al. (2023). Deep OC-SORT:
+  Multi-Pedestrian Tracking by Adaptive Re-Identification.
+  arXiv:2302.11813.
 
-  FastTracker. Hashempoor, H., Hwang, Y. D. (2025). FastTracker: Real-Time and
-  Accurate Visual Tracking. arXiv:2508.14370.
+  FastTracker. Hashempoor, H., Hwang, Y. D. (2025). FastTracker:
+  Real-Time and Accurate Visual Tracking. arXiv:2508.14370.
 
-  TrackTrack. Shim et al. (2025). Focusing on Tracks for Online Multi-Object
-  Tracking. CVPR 2025.
-
-
-LAP -- OPTIONAL
-===============
-
-lap. Copyright (c) 2012-2017 Tomas Kazmar and contributors.
-https://github.com/gatagat/lap
-
-BSD 2-Clause License. Declared by both Ultralytics environments, in
-src/mosaic/tracking/external/ultralytics-env/pyproject.toml and
-src/mosaic/tracking/external/polo-env/pyproject.toml, and by no mosaic
-extra. It is the linear-assignment solver Ultralytics'
-tracker matching imports at module scope, and it appears in no Ultralytics
-extra: declaring it is what makes it arrive when an environment is built,
-rather than being fetched by Ultralytics during a run.
+  TrackTrack. Shim et al. (2025). Focusing on Tracks for Online
+  Multi-Object Tracking. CVPR 2025.
 
 
-FERAL, AND THE BACKBONE WEIGHTS IT DOWNLOADS
-============================================
+OPTIONAL DISTRIBUTIONS
+======================
 
-FERAL. Copyright (c) Peter Skovorodnikov. Authors Peter Skovorodnikov and
-Jacopo Razzauti (Rockefeller University), equal contribution. MIT License.
-https://github.com/Skovorp/feral
+FERAL
+  Origin:      https://github.com/Skovorp/feral
+  Copyright:   (c) Peter Skovorodnikov. Authors Peter Skovorodnikov and
+               Jacopo Razzauti (Rockefeller University), equal
+               contribution.
+  License:     MIT, published as free text rather than a PEP 639
+               expression or a classifier, so the identifier is read from
+               its LICENSE.
+  Installed:   by the [feral] extra. Wrapped by
+               src/mosaic/behavior/feature_library/feral_feature.py.
 
-Installed from PyPI by the [feral] extra. MIT imposes no obligation beyond
-preserving the copyright and permission notices, which travel with the
-installed package. The project publishes its license as free text rather than
-as a PEP 639 expression or a classifier, so the identifier above is read from
-its LICENSE.
+lightning-action
+  Origin:      Paninski lab
+  Copyright:   Matt Whiteway
+  License:     MIT
+  Installed:   by the [lightning-action] extra. Wrapped by
+               src/mosaic/behavior/feature_library/lightning_action_feature.py.
 
-Fetched. FERAL builds its backbone from weights downloaded from the
-HuggingFace hub at first use. Mosaic redistributes none of them, and no hub
-token or license acceptance is involved for any registry entry. The default,
-facebook/vjepa2-vitl-fpc32-256-diving48, declares MIT.
+movement
+  Origin:      https://github.com/neuroinformatics-unit/movement
+  Copyright:   Neuroinformatics Unit, Sainsbury Wellcome Centre, UCL
+  License:     BSD-3-Clause
+  Installed:   by the [movement] extra. Wrapped by
+               src/mosaic/behavior/feature_library/movement/.
+
+lap
+  Origin:      https://github.com/gatagat/lap
+  Copyright:   (c) 2012-2017 Tomas Kazmar and contributors
+  License:     BSD-2-Clause
+  Installed:   declared by both Ultralytics environments and by no mosaic
+               extra. It is the linear-assignment solver Ultralytics'
+               tracker matching imports at module scope, and it appears in
+               no Ultralytics extra.
+
+
+FETCHED MODEL WEIGHTS
+=====================
+
+Mosaic distributes no weights. The terms are the ones the hub entry states
+at the moment of download.
+
+FERAL backbones, built at first use.
 
   V-JEPA 2 and V-JEPA 2.1, from facebookresearch/vjepa2 and the
-  facebook/vjepa2-* hub entries. The repository states that "The majority of
-  V-JEPA 2 is licensed under MIT, however portions of the project are
-  available under separate license terms"; three files are Apache-2.0. Each
-  facebook/vjepa2-* card mosaic can reach declares MIT.
+  facebook/vjepa2-* hub entries. The repository states that "The majority
+  of V-JEPA 2 is licensed under MIT, however portions of the project are
+  available under separate license terms"; three files are Apache-2.0.
+  Each facebook/vjepa2-* card mosaic can reach declares MIT. The default,
+  facebook/vjepa2-vitl-fpc32-256-diving48, declares MIT.
 
   VideoPrism, from the sposiboh/videoprism-*-pt hub entries. These are
   third-party PyTorch ports, not Google DeepMind's own release, and each
   port's card declares Apache-2.0. Upstream google-deepmind/videoprism
   licenses its code under Apache-2.0 and states that "All other materials
   are licensed under the Creative Commons Attribution 4.0 International
-  License (CC-BY)", which covers the weights. The port's Apache-2.0
-  declaration and the upstream CC-BY-4.0 terms for weights have not been
-  reconciled by either party. A user who needs certainty should obtain the
-  weights from DeepMind directly and observe CC-BY-4.0 attribution.
+  License (CC-BY)", which covers the weights. The two declarations have
+  not been reconciled by either party. A user who needs certainty should
+  obtain the weights from DeepMind directly and observe CC-BY-4.0
+  attribution.
+
+Identity backbones, loaded through timm by global-identity-embedding.
+The default, timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k, is MIT.
+
+  MegaDescriptor. https://huggingface.co/BVRA/MegaDescriptor-L-384
+
+      Creative Commons Attribution-NonCommercial 4.0 International
+      (CC-BY-NC-4.0). Non-commercial use only.
+
+  BVRA/MegaDescriptor-L-384 and BVRA/MegaDescriptor-T-224 both declare
+  CC-BY-NC-4.0. The restriction is on the trained parameters, not on
+  mosaic's code and not on the architecture. Mosaic never selects
+  MegaDescriptor; naming it is the user's act.
+
+  DINOv2. Copyright (c) Meta Platforms, Inc. and affiliates.
+  Apache-2.0. https://github.com/facebookresearch/dinov2
+  Loaded through torch.hub by the DINOv2 identity backbone.
 
 
-IDENTITY BACKBONE WEIGHTS -- FETCHED
-====================================
+REQUIRED DEPENDENCIES
+=====================
 
-The global-identity-embedding feature loads whatever backbone model_name
-names, through timm, and mosaic distributes no weights. The default,
-timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k, is MIT.
+mosaic-media
+  Origin:      https://github.com/EcodylicScience/mosaic-media
+  Copyright:   (C) Ecodylic Science
+  License:     Apache-2.0
+  A sibling package by the same authors and a required dependency. Also
+  installed into both Ultralytics environments.
 
-MegaDescriptor. https://huggingface.co/BVRA/MegaDescriptor-L-384
+PyAV
+  Origin:      https://github.com/PyAV-Org/PyAV
+  License:     BSD-3-Clause
+  Installed as the av wheel through mosaic-media[io], for in-process frame
+  decoding.
 
-    Creative Commons Attribution-NonCommercial 4.0 International
-    (CC-BY-NC-4.0). Non-commercial use only.
-
-BVRA/MegaDescriptor-L-384 and BVRA/MegaDescriptor-T-224 both declare
-CC-BY-NC-4.0. The restriction is on the trained parameters, not on mosaic's
-code and not on the architecture. Mosaic never selects MegaDescriptor;
-naming it is the user's deliberate act, and complying with its terms is the
-user's decision.
-
-DINOv2. Copyright (c) Meta Platforms, Inc. and affiliates. Apache License
-2.0. https://github.com/facebookresearch/dinov2
-
-Loaded through torch.hub by the DINOv2 identity backbone. Apache-2.0 imposes
-attribution and notice-preservation obligations only.
-
-
-OTHER INTEGRATED TOOLS
-======================
-
-SLEAP. BSD 3-Clause Clear License. https://sleap.ai/
-An external tracker in its own environment. Mosaic never imports it and does
-not install it: the [sleap] extra installs only h5py, so mosaic's converter
-can read the analysis .h5 SLEAP writes. Reading that file creates no
-obligation.
-
-Lightning Pose. MIT License. https://github.com/paninski-lab/lightning-pose
-An external pose estimator in its own environment, driven the same way.
-
-  Mosaic additionally redistributes one file from that project verbatim:
-  scripts/configs/config_default.yaml, carried at
-  src/mosaic/tracking/litpose/templates/config_default.yaml and taken from
-  release 2.3.1. Lightning Pose merges no configuration defaults of its own
-  and ships no template in its distribution, so training needs a complete
-  config that mosaic cannot generate without inventing training settings it
-  has no opinion about. The copy is used when a caller names no config.
-
-  Copyright (c) 2021 Dan Biderman, Matthew Whiteway, Liam Paninski.
-  Redistributed under the MIT License, whose terms are reproduced in that
-  project's LICENSE and permit this use with the notice above.
-
-lightning-action. Paninski lab. MIT License.
-Installed by the [lightning-action] extra and wrapped by
-src/mosaic/behavior/feature_library/lightning_action_feature.py.
-
-
-FFMPEG AND PYAV
-===============
-
-FFmpeg. LGPL-2.1-or-later, or GPL if built with GPL-only components.
-https://ffmpeg.org/
-
-Mosaic shells out to the system ffprobe binary for media indexing and
-probing, and to the system ffmpeg binary for transcoding. Neither is
-distributed with mosaic; the user installs them, and the documented route is
-conda-forge. A redistributor who bundles an ffmpeg build must observe that
-build's terms, which depend on how it was configured.
-
-PyAV. BSD 3-Clause License. https://github.com/PyAV-Org/PyAV
-Installed as the av wheel through mosaic-media[io] and used for in-process
-frame decoding, so reading video needs no ffmpeg binary.
-
-
-MOSAIC-MEDIA
-============
-
-mosaic-media. Copyright (C) Ecodylic Science. Apache License 2.0.
-https://github.com/EcodylicScience/mosaic-media
-
-A sibling package by the same authors, and a required dependency of
-mosaic-behavior. Apache-2.0 is compatible with, and is absorbed by, the
-AGPL v3 terms of the combined work.
-
-It is also the one distribution by these authors that the Ultralytics
-tracking environment installs, for that same one-way compatibility, as the
-Ultralytics section above records.
-
-
-THE REST OF THE DEPENDENCY GRAPH
-================================
-
-The remaining runtime and development dependencies are permissively licensed
-(BSD, MIT, Apache-2.0, PSF). The NVIDIA CUDA runtime libraries that arrive
-with GPU builds of PyTorch are proprietary but commercially redistributable
-under NVIDIA's own terms; they are not open source and not non-commercial.
+The remaining runtime and development dependencies are permissively
+licensed (BSD, MIT, Apache-2.0, PSF). The NVIDIA CUDA runtime libraries
+that arrive with GPU builds of PyTorch are proprietary but commercially
+redistributable under NVIDIA's own terms.
 
 The resolved set is recorded in uv.lock, and
 
     python scripts/gen_third_party_inventory.py
 
-regenerates the full inventory from it: per extra and per dependency group,
-the transitive closure with each distribution's license resolved from PyPI
-metadata and flagged when it is not permissive. It reads the isolated
-keypoint-MoSeq lock as well. No count is written down in this file, because a
-written count goes stale silently; the script emits its own.
+regenerates the full inventory from it: per extra and per dependency
+group, the transitive closure with each distribution's license resolved
+from PyPI metadata and flagged when it is not permissive. By default it
+reads mosaic's own lock and the isolated keypoint-MoSeq lock. Pass --lock
+for the Ultralytics and POLO environment locks, which carry the
+AGPL-licensed distributions and are not read by default.

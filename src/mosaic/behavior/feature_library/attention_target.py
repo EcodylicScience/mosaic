@@ -11,7 +11,8 @@ with the target as a nullable measurement rather than a second identity. A row
 with no facing target has no second individual to name, so the target cannot be
 a join key -- which is what ``emits = "pair"`` would have promised.
 
-This generalizes Valerie's BeesInADish in_pair/out_pair attention metric:
+This generalizes the in_pair/out_pair attention metric of BeesInADish,
+developed with Valerie Kuklovsky, University of Konstanz (see NOTICE):
 for the petri-dish experiment the group map encodes scent role
 (scented_1, scented_2 -> "scented"; unscented_1, unscented_2 -> "unscented"),
 so attention_type "in_group" corresponds to her "in_pair" and "out_group" to
