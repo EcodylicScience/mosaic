@@ -67,7 +67,12 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.job import JobContext
 
-TRAIN_SLEAP_VERSION: str = "0.1"
+# 0.2 fingerprints the labels by their own bytes, where 0.1 listed every file
+# under their folder and so moved with anything written beside them. That moves
+# the digest, so the visible segment moves with it: ``train-sleap.0.1-*`` runs
+# stay readable and keep their index rows rather than sitting under a name that
+# now means something else.
+TRAIN_SLEAP_VERSION: str = "0.2"
 
 _LABELS_DESCRIPTION = "The .slp file to train on."
 

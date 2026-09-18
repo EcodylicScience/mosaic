@@ -24,7 +24,7 @@ factory rather than being a literal, so there is no value to print.
 
 #### `convert-points`
 
-Version `0.1` &middot; `mosaic.tracking.ops.convert.ConvertPointsOp`
+Version `0.2` &middot; `mosaic.tracking.ops.convert.ConvertPointsOp`
 
 Convert CVAT point annotations into a POLO point-detection dataset + ``data.yaml``.
 
@@ -467,7 +467,7 @@ Train a YOLO pose model, registering the directory it produces.
 
 #### `train-sleap`
 
-Version `0.1` &middot; `mosaic.tracking.ops.train_sleap.TrainSleapOp` &middot; resource class `gpu`
+Version `0.2` &middot; `mosaic.tracking.ops.train_sleap.TrainSleapOp` &middot; resource class `gpu`
 
 Train a SLEAP model, registering the directory it produces.
 

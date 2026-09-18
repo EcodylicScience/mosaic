@@ -130,11 +130,7 @@ class _Sleap:
         monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-nn-train"))
         monkeypatch.setattr(probe_module, "run_supervised", self._probe)
         monkeypatch.setattr(training_module, "run_supervised", self._train)
-        # In a directory of its own. The labels fingerprint walks the file's
-        # parent, so labels beside the dataset's `models/` would change identity
-        # when the first run wrote its output, whatever the worker count.
-        self.labels = tmp_path / "slp" / "session.slp"
-        self.labels.parent.mkdir()
+        self.labels = tmp_path / "session.slp"
         _ = self.labels.write_bytes(b"slp")
 
     def _probe(self, argv: Sequence[str], **kw: object) -> tuple[str, str, int]:

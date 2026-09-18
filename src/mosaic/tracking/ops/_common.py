@@ -17,6 +17,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline._utils import hash_params
+from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.markers import (
     InflightMarker,
@@ -38,45 +39,46 @@ def ensure_models_root(ds: Dataset) -> None:
 
 
 def fingerprint_dataset(path: Path) -> str:
-    """Cheap digest of a training/converted dataset (file text + size listing).
+    """Content digest of the data a training or conversion op reads.
 
-    Uses relative paths + file sizes (not mtimes), so a copied or moved *directory*
-    fingerprints identically and its run_ids stay deterministic across machines.
+    Two forms, one per shape of input:
 
-    Two limits, both of which bite only the **file** form and are why
-    :func:`fingerprint_yolo_dataset` exists for the YOLO / POLO ``data.yaml``:
+    - **A file** is digested by its own bytes (:func:`file_digest`), so a copy
+      fingerprints identically wherever it sits. Nothing beside it enters. This
+      form used to list every file under the file's *parent*, recursively, which
+      made a ``.slp`` or a CVAT XML at a dataset root depend on the whole dataset
+      -- including each run's own output, so an identical resubmission minted a
+      new identifier and reuse could never hit.
+    - **A directory** is digested by a listing of relative paths and sizes (not
+      mtimes), so a copied or moved directory fingerprints identically. Sizes
+      rather than bytes because a directory of images is too large to read on
+      every planning call. ``train-localizer`` and ``train-litpose`` pass one.
 
-    - the listing walks ``path.parent`` recursively, so unrelated siblings enter
-      the digest;
-    - the file's text enters verbatim, so a file naming an absolute path -- as a
-      ``data.yaml`` written by ``make_data_yaml`` does -- carries its own location
-      into the digest and is not copy-stable after all.
+    What a file names by path is not followed: a ``.slp`` carries the names of
+    the videos its labels sit on, not their pixels. YOLO / POLO ``data.yaml``
+    files have :func:`fingerprint_yolo_dataset`, which reads what the YAML
+    declares for exactly that reason.
 
-    Callers passing a purpose-built directory (``train-localizer``,
-    ``train-litpose``) meet neither.
+    A missing or unreadable path still yields a digest, the same one for both:
+    identity computation is not the place to refuse a dataset, and the tool that
+    reads it says which file is wrong and why.
     """
     path = Path(path)
-    parts: dict[str, object] = {}
     if path.is_file():
-        parts["file"] = path.name
         try:
-            parts["text"] = path.read_text(errors="ignore")
-        except Exception:
-            parts["text"] = ""
-        base = path.parent
-    else:
-        base = path
+            return file_digest(path)
+        except OSError:
+            return hash_params({"listing": []})
     listing: list[str] = []
-    if base.exists():
-        for f in sorted(base.rglob("*")):
+    if path.exists():
+        for f in sorted(path.rglob("*")):
             if f.is_file():
                 try:
                     size = f.stat().st_size
                 except OSError:
                     size = -1
-                listing.append(f"{f.relative_to(base).as_posix()}:{size}")
-    parts["listing"] = listing
-    return hash_params(parts)
+                listing.append(f"{f.relative_to(path).as_posix()}:{size}")
+    return hash_params({"listing": listing})
 
 
 # The keys a YOLO / POLO ``data.yaml`` uses to name its splits. ``path`` is
@@ -140,11 +142,11 @@ def _listing_under(root: Path) -> list[str]:
 def fingerprint_yolo_dataset(data_yaml: Path) -> str:
     """Digest a YOLO / POLO training dataset by what its ``data.yaml`` declares.
 
-    :func:`fingerprint_dataset` handed a file digests the file's text and then
-    walks its parent **recursively**, which makes a training identity depend on
-    whatever else happens to sit beside the YAML -- including anything the run
-    itself writes, so an identical resubmission mints a different ``run_id`` and
-    content-addressed reuse can never hit.
+    :func:`fingerprint_dataset` digests a file by its bytes, which for a
+    ``data.yaml`` is the wrong answer twice over: the images it trains on are not
+    in those bytes, and the absolute ``path`` it carries is. (It used to walk the
+    YAML's parent recursively instead, folding in whatever sat beside it,
+    including the run's own output.)
 
     This reads the YAML instead and digests two things: the declared *content*
     (class names, keypoint shape, radii, and the relative split spellings) and a

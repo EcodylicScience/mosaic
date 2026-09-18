@@ -311,11 +311,9 @@ def test_a_finished_run_is_reused_unless_overwrite_says_otherwise(
     ds = make_dataset(tmp_path / "ds", save=False)
     _point_at_sleap(tmp_path, monkeypatch)
     seen = _fake_trainer(monkeypatch)
-    # In a directory of its own. The labels fingerprint walks the file's
-    # parent, and a run writing beside it would move the identity between the
-    # two calls.
-    labels = tmp_path / "labels" / "session.slp"
-    labels.parent.mkdir()
+    # At the dataset root, beside `models/` and the run-logs, where the first
+    # run's output used to move the second run's identity.
+    labels = ds.base_dir / "session.slp"
     _ = labels.write_bytes(b"slp")
     params = {"labels": str(labels), "max_epochs": 1}
 

@@ -189,7 +189,10 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
     kind = "convert-points"
     category = "convert"
     domain = "tracking"
-    version = "0.1"
+    # 0.2 fingerprints the CVAT XML by its own bytes, where 0.1 listed every file
+    # under its folder. The digest moved, so the visible segment moves with it;
+    # see TrainPoseOp.version.
+    version = "0.2"
     scope_takes = "none"
     scope_dependent = False
     Params = ConvertPointsParams

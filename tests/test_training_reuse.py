@@ -28,7 +28,12 @@ import pytest
 from mosaic.core.pipeline.markers import new_inflight, write_inflight
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.ops import run_op
-from mosaic.tracking.ops._common import RunRootHeld, fingerprint_yolo_dataset
+from mosaic.core.pipeline._utils import hash_params
+from mosaic.tracking.ops._common import (
+    RunRootHeld,
+    fingerprint_dataset,
+    fingerprint_yolo_dataset,
+)
 from mosaic.tracking.ops.train import trained_model_index
 from tests.helpers import FakeTrainer
 from tests.test_tracking_ops import _make_dataset
@@ -59,6 +64,12 @@ def _data_yaml(tmp_path: Path) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "data.yaml"
     _ = path.write_text("kpt_shape: [4, 3]\n")
+    return path
+
+
+def _write(path: Path, content: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_bytes(content)
     return path
 
 
@@ -287,6 +298,54 @@ def test_a_declaration_free_data_yaml_still_fingerprints(tmp_path: Path) -> None
         fingerprint_yolo_dataset(directory / "does-not-exist.yaml"),
     }
     assert len(digests) == 4  # each is a digest, and none collides with another
+
+
+def test_a_data_file_is_its_own_bytes_and_nothing_beside_it(tmp_path: Path) -> None:
+    """A ``.slp`` or a CVAT XML is fingerprinted by its bytes alone.
+
+    ``fingerprint_dataset`` used to list every file under a file's parent,
+    recursively, so labels at a dataset root moved with each run's own output.
+    Each of the three writes below moved it then.
+    """
+    labels = _write(tmp_path / "workspace" / "session.slp", b"fake slp bytes")
+    before = fingerprint_dataset(labels)
+
+    _ = _write(tmp_path / "workspace" / "models" / "index.csv", b"run_id,status\n")
+    assert fingerprint_dataset(labels) == before, "a new subfolder beside it"
+    _ = _write(tmp_path / "workspace" / "run.log", b"one line\n")
+    assert fingerprint_dataset(labels) == before, "a new sibling"
+    _ = _write(tmp_path / "workspace" / "run.log", b"one line\nand another\n")
+    assert fingerprint_dataset(labels) == before, "a sibling that grew"
+
+    copy = _write(tmp_path / "elsewhere" / "renamed.slp", b"fake slp bytes")
+    assert fingerprint_dataset(copy) == before, "same bytes, another place and name"
+
+    _ = _write(labels, b"fake slp bytes, relabelled")
+    assert fingerprint_dataset(labels) != before, "changed labels are a new model"
+
+
+def test_absent_data_still_fingerprints(tmp_path: Path) -> None:
+    """Planning for execution must reach the tool that says which file is missing.
+
+    ``run`` plans with ``require_data=False``, so a raise here would replace
+    SLEAP's "labels file does not exist" with a bare ``open()`` error.
+    """
+    assert fingerprint_dataset(tmp_path / "nope.slp")
+
+
+def test_a_data_directory_digests_as_it_always_has(tmp_path: Path) -> None:
+    """The directory form is unchanged, so no localizer or litpose run moves.
+
+    Spelled out against ``hash_params`` rather than a literal, because the
+    golden corpus stubs every fingerprint and nothing else would notice.
+    """
+    directory = tmp_path / "project"
+    _ = _write(directory / "labeled-data" / "a.png", b"12345")
+    _ = _write(directory / "CollectedData.csv", b"xy")
+
+    assert fingerprint_dataset(directory) == hash_params(
+        {"listing": ["CollectedData.csv:2", "labeled-data/a.png:5"]}
+    )
 
 
 # --- train_overrides -------------------------------------------------------
