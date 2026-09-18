@@ -28,6 +28,7 @@ from mosaic.core.params import (
     Params,
 )
 from mosaic.tracking.common.entry import phase_activity
+from mosaic.tracking.common.training_progress import epoch_reporter
 from mosaic.tracking.model_refs import resolve_model, resolve_model_set
 from mosaic.tracking.ops._common import (
     claim_run_root,
@@ -255,6 +256,7 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
             max_runtime=params.max_runtime,
             cancel_check=ctx.cancel_token.is_cancelled if ctx.cancel_token else None,
             on_activity=phase_activity(ctx, run_root, marker, params.idle_timeout),
+            on_output=epoch_reporter(ctx, params.max_epochs),
         )
         ctx.check_cancel()
 

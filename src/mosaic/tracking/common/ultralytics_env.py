@@ -456,20 +456,20 @@ def training_activity(
     hundreds of thousands, and a two-epoch run finishing inside the throttle
     window would report its first epoch and swallow its second.
 
-    ``ctx.heartbeat(epoch + 1)`` is not decoration. ``phase_activity`` calls
-    ``ctx.heartbeat()`` with no argument, and the run-log reduction takes
-    ``progress_done`` from whichever of the two spoke last -- so without the
-    count being set here, the next heartbeat after an epoch would reset the
-    reduced progress to zero.
+    How an epoch is written down is
+    :func:`~mosaic.tracking.common.training_progress.report_epoch`, shared with
+    the reader for the trainers that print a progress bar instead of a JSON
+    line. What differs between them is reading the tool, not recording the
+    result.
     """
+    from mosaic.tracking.common.training_progress import report_epoch
 
     def on_line(line: str) -> None:
         liveness(line)
         event = reported_epoch(line)
         if event is None:
             return
-        ctx.progress.on_epoch_end(event.epoch, event.total_epochs, event.metrics)
-        ctx.heartbeat(event.epoch + 1)
+        report_epoch(ctx, event.epoch, event.total_epochs, event.metrics)
 
     return on_line
 
