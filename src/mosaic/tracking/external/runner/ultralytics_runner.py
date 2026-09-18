@@ -1041,6 +1041,8 @@ def _train_kwargs(request: TrainRequestBase, task: str) -> dict[str, object]:
         "name": request.run_name,
         "exist_ok": True,
     }
+    if request.workers is not None:
+        kwargs["workers"] = request.workers
     if isinstance(request, TrainPointsRequest):
         kwargs["loc"] = request.loc
         kwargs["loc_loss"] = request.loc_loss

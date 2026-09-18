@@ -43,10 +43,14 @@ from mosaic.tracking.ops._train_descriptions import (
     BASE_MODEL_DESCRIPTION,
     EPOCHS_DESCRIPTION,
     IDLE_TIMEOUT_DESCRIPTION,
+    LOADER_WORKERS_DESCRIPTION,
     MAX_RUNTIME_DESCRIPTION,
 )
 from mosaic.tracking.litpose.templates import default_config_path
-from mosaic.tracking.litpose.training import litpose_device_placement
+from mosaic.tracking.litpose.training import (
+    LITPOSE_LOADER_WORKER_KEY,
+    litpose_device_placement,
+)
 from mosaic.tracking.litpose.version import TRAIN_LITPOSE_KIND
 
 if TYPE_CHECKING:
@@ -91,7 +95,8 @@ _LITPOSE_OVERRIDES_DESCRIPTION = (
     "Hydra key=value overrides applied last, over model_type, backbone and "
     "max_epochs as well as anything else Lightning Pose exposes with no "
     "field here. A key set here wins over base_model where they would set "
-    "the same key."
+    "the same key. The data-loader worker count is refused here: set "
+    "num_workers, which leaves the run identity alone."
 )
 
 _DEVICE_DESCRIPTION = (
@@ -135,6 +140,12 @@ class TrainLitposeParams(Params):
     max_runtime: Annotated[
         float | None, HASH_EXCLUDE, Declared(MAX_RUNTIME_DESCRIPTION, unit="s")
     ] = None
+    num_workers: Annotated[
+        int | None,
+        HASH_EXCLUDE,
+        Field(ge=0, examples=[4, 8]),
+        Declared(LOADER_WORKERS_DESCRIPTION),
+    ] = None
 
     @field_validator("device")
     @classmethod
@@ -147,6 +158,26 @@ class TrainLitposeParams(Params):
         node once the job is scheduled.
         """
         _ = litpose_device_placement(value)
+        return value
+
+    @field_validator("litpose_overrides")
+    @classmethod
+    def _worker_count_is_not_an_override(
+        cls, value: dict[str, JsonValue] | None
+    ) -> dict[str, JsonValue] | None:
+        """Refuse the loader worker count in the hashed bag, naming its field.
+
+        Everything in *litpose_overrides* reaches the run identity, so a worker
+        count set there mints a new identifier and retrains a model that
+        nothing about has changed. *num_workers* is the one route to it.
+        """
+        if value and LITPOSE_LOADER_WORKER_KEY in value:
+            msg = (
+                f"litpose_overrides may not set {LITPOSE_LOADER_WORKER_KEY}: set "
+                "num_workers instead, which does not retrain the model when it "
+                "changes."
+            )
+            raise ValueError(msg)
         return value
 
 
@@ -251,6 +282,7 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
             backbone=params.backbone,
             max_epochs=params.max_epochs,
             device=params.device,
+            num_workers=params.num_workers,
             overrides=overrides,
             idle_timeout=params.idle_timeout,
             max_runtime=params.max_runtime,

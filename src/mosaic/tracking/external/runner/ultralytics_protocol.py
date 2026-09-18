@@ -685,6 +685,13 @@ class TrainRequestBase(BaseModel):
     device: str
     patience: int
 
+    workers: int | None = None
+    """Ultralytics' ``workers``: data-loader processes, or ``None`` for its default.
+
+    ``None`` sends nothing, so an unset field leaves Ultralytics' own default in
+    force rather than mosaic restating it.
+    """
+
     project_dir: str
     """The claimed run root, passed as Ultralytics' ``project``.
 

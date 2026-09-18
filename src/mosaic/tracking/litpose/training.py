@@ -33,6 +33,7 @@ from mosaic.tracking.litpose.run import LITPOSE_ENV, LitposeError
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "LITPOSE_LOADER_WORKER_KEY",
     "LitposeDevicePlacement",
     "epoch_coupled_assignments",
     "litpose_device_placement",
@@ -91,6 +92,13 @@ _DEFAULT_UNFREEZING_EPOCH: Final = 20
 
 Left at 20 on a two-epoch run the backbone never unfreezes at all, so the run
 completes having trained only the head.
+"""
+
+LITPOSE_LOADER_WORKER_KEY: Final = "training.num_workers"
+"""Where Lightning Pose reads its data-loader worker count.
+
+Absent from the template config, which is why Lightning Pose reads it with
+``cfg.training.get``: unset, the key is simply not assigned.
 """
 
 
@@ -218,6 +226,7 @@ def train_litpose(
     backbone: str = "resnet50_animal_ap10k",
     max_epochs: int = 300,
     device: str = "auto",
+    num_workers: int | None = None,
     overrides: Mapping[str, JsonValue] | None = None,
     litpose_conda_env: str | None = None,
     litpose_bin: str | Path | None = None,
@@ -242,6 +251,8 @@ def train_litpose(
         max_epochs: Training length.
         device: Which CUDA devices train the model. See
             :func:`litpose_device_placement`.
+        num_workers: Data-loader worker processes, or ``None`` to leave
+            Lightning Pose's own default.
         overrides: Further Hydra assignments, applied last.
         litpose_conda_env: Run in this conda env, overriding the environment.
         base_config: A complete Lightning Pose config to train from. Lightning
@@ -299,6 +310,8 @@ def train_litpose(
         **epoch_coupled_assignments(max_epochs),
         **placement.assignments,
     }
+    if num_workers is not None:
+        assignments[LITPOSE_LOADER_WORKER_KEY] = num_workers
     assignments.update(overrides or {})
 
     invocation = tool_invocation(

@@ -13,6 +13,11 @@ IDLE_TIMEOUT_DESCRIPTION and MAX_RUNTIME_DESCRIPTION belong only to
 ``TrainLitposeParams`` and ``TrainSleapParams``, the two ops that watch the
 trainer as a subprocess and can kill it. train.py's trainers bound their
 runtime with the module constant ``_TRAIN_IDLE_SECONDS`` instead.
+
+LOADER_WORKERS_DESCRIPTION belongs to every op whose tool takes a data-loader
+worker count: ``TrainSleapParams``, ``TrainLitposeParams`` and
+``PoseTrainParams``. ``LocalizerTrainParams`` has none, because the localizer
+loads its own data in process.
 """
 
 from __future__ import annotations
@@ -36,4 +41,10 @@ MAX_RUNTIME_DESCRIPTION = (
     "Absolute wall-clock ceiling for the training run. Unset leaves the "
     "ceiling to whatever queue submitted the run, and idle_timeout still "
     "applies."
+)
+
+LOADER_WORKERS_DESCRIPTION = (
+    "Worker processes loading training data. Throughput only: excluded from "
+    "the run identity, so changing it never retrains a model. Unset leaves "
+    "the tool's own default."
 )

@@ -59,6 +59,7 @@ from mosaic.tracking.ops._common import (
 from mosaic.tracking.ops._train_descriptions import (
     BASE_MODEL_DESCRIPTION,
     EPOCHS_DESCRIPTION,
+    LOADER_WORKERS_DESCRIPTION,
 )
 
 if TYPE_CHECKING:
@@ -466,6 +467,7 @@ def build_train_request[RequestT: TrainRequestBase](
         epochs=params.epochs,
         imgsz=params.imgsz,
         batch=params.batch,
+        workers=params.workers,
         device=params.device,
         patience=params.patience,
         project_dir=str(run_root),
@@ -691,6 +693,12 @@ class PoseTrainParams(Params):
         Declared(_DEVICE_DESCRIPTION),
     ] = "0"
     batch: Annotated[int, HASH_EXCLUDE, Declared(_BATCH_DESCRIPTION)] = 16
+    workers: Annotated[
+        int | None,
+        HASH_EXCLUDE,
+        Field(ge=0, examples=[4, 8]),
+        Declared(LOADER_WORKERS_DESCRIPTION),
+    ] = None
 
     @model_validator(mode="after")
     def _train_overrides_do_not_shadow(self) -> Self:

@@ -39,10 +39,13 @@ from mosaic.tracking.sleap.run import SLEAP_ENV, SleapError
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "SLEAP_LOADER_WORKER_KEYS",
     "SleapBackbone",
     "SleapHead",
     "SleapTrainConfig",
+    "loader_worker_keys_in",
     "sleap_device_overrides",
+    "sleap_loader_overrides",
     "sleap_train_config",
     "train_sleap",
 ]
@@ -278,6 +281,48 @@ def sleap_device_overrides(device: str) -> dict[str, JsonValue]:
         f"comma-separated list of CUDA indices such as '0' or '0,1'."
     )
     raise ValueError(msg)
+
+
+SLEAP_LOADER_WORKER_KEYS: Final = (
+    "trainer_config.train_data_loader.num_workers",
+    "trainer_config.val_data_loader.num_workers",
+)
+"""Where sleap-nn reads its data-loader worker count: once per loader.
+
+Both are set from one value, because the question a caller is answering -- how
+many processes may load data -- does not differ between them. Neither key is in
+the document :func:`sleap_train_config` writes, so :func:`_hydra_assignment`
+appends them.
+"""
+
+
+def sleap_loader_overrides(num_workers: int | None) -> dict[str, JsonValue]:
+    """The assignments that give both of sleap-nn's data loaders *num_workers*.
+
+    Args:
+        num_workers: Worker processes per loader, or ``None`` to leave sleap-nn's
+            own default, which loads in the main process.
+
+    Returns:
+        The Hydra assignments, empty for ``None``.
+    """
+    if num_workers is None:
+        return {}
+    return {key: num_workers for key in SLEAP_LOADER_WORKER_KEYS}
+
+
+def loader_worker_keys_in(overrides: Mapping[str, JsonValue]) -> list[str]:
+    """The keys of *overrides* that set a loader worker count, however spelled.
+
+    Each key is compared with its Hydra prefix removed. :func:`_hydra_assignment`
+    passes a ``+``, ``++`` or ``~`` spelling through as written, so without this
+    ``+trainer_config.train_data_loader.num_workers`` would still reach the
+    worker count through a hashed parameter.
+    """
+    prefixes = "".join(_HYDRA_PREFIXES)
+    return sorted(
+        key for key in overrides if key.lstrip(prefixes) in SLEAP_LOADER_WORKER_KEYS
+    )
 
 
 def train_sleap(

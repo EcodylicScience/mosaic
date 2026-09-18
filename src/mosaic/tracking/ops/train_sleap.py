@@ -45,6 +45,7 @@ from mosaic.tracking.ops._train_descriptions import (
     BASE_MODEL_DESCRIPTION,
     EPOCHS_DESCRIPTION,
     IDLE_TIMEOUT_DESCRIPTION,
+    LOADER_WORKERS_DESCRIPTION,
     MAX_RUNTIME_DESCRIPTION,
 )
 from mosaic.tracking.sleap.probe import (
@@ -55,7 +56,9 @@ from mosaic.tracking.sleap.probe import (
 from mosaic.tracking.sleap.training import (
     SleapBackbone,
     SleapHead,
+    loader_worker_keys_in,
     sleap_device_overrides,
+    sleap_loader_overrides,
 )
 from mosaic.tracking.sleap.version import TRAIN_SLEAP_KIND
 
@@ -92,13 +95,20 @@ _SLEAP_OVERRIDES_DESCRIPTION = (
     "config does not carry is appended for you, so it needs no + prefix; a "
     "key written with an explicit + or ~ is passed through as written. A key "
     "set here wins over base_model and device where they would set the same "
-    "key."
+    "key. The data-loader worker count is refused here: set num_workers, "
+    "which leaves the run identity alone."
 )
 
 _DEVICE_DESCRIPTION = (
     "Which accelerator trains the model. auto leaves the choice to sleap-nn; "
     "cpu, gpu and mps each name a family; a comma-separated list of CUDA "
     "indices such as 0 or 0,1 names devices within the gpu family."
+)
+
+_NUM_WORKERS_DESCRIPTION = LOADER_WORKERS_DESCRIPTION + (
+    " Sets both the training and the validation loader. sleap-nn's own "
+    "caveat: under its default data pipeline, workers above 0 can fail on "
+    "labels that read frames from video, which does not pickle."
 )
 
 
@@ -137,6 +147,12 @@ class TrainSleapParams(Params):
     max_runtime: Annotated[
         float | None, HASH_EXCLUDE, Declared(MAX_RUNTIME_DESCRIPTION, unit="s")
     ] = None
+    num_workers: Annotated[
+        int | None,
+        HASH_EXCLUDE,
+        Field(ge=0, examples=[4, 8]),
+        Declared(_NUM_WORKERS_DESCRIPTION),
+    ] = None
 
     @field_validator("device")
     @classmethod
@@ -149,6 +165,27 @@ class TrainSleapParams(Params):
         Hydra config composition on a GPU node once the job is scheduled.
         """
         _ = sleap_device_overrides(value)
+        return value
+
+    @field_validator("sleap_overrides")
+    @classmethod
+    def _worker_count_is_not_an_override(
+        cls, value: dict[str, JsonValue] | None
+    ) -> dict[str, JsonValue] | None:
+        """Refuse the loader worker count in the hashed bag, naming its field.
+
+        Everything in *sleap_overrides* reaches the run identity, so a worker
+        count set there mints a new identifier and retrains a model that
+        nothing about has changed. *num_workers* is the one route to it.
+        """
+        shadowed = loader_worker_keys_in(value or {})
+        if shadowed:
+            names = ", ".join(shadowed)
+            msg = (
+                f"sleap_overrides may not set {names}: set num_workers "
+                "instead, which does not retrain the model when it changes."
+            )
+            raise ValueError(msg)
         return value
 
 
@@ -249,6 +286,8 @@ class TrainSleapOp(Op[TrainSleapParams]):
             overrides.setdefault("trainer_config.resume_ckpt_path", resume_from)
         for key, value in sleap_device_overrides(params.device).items():
             overrides.setdefault(key, value)
+        # The bag refuses these keys, so there is nothing here to defer to.
+        overrides.update(sleap_loader_overrides(params.num_workers))
 
         produced = train_sleap(
             labels_path,

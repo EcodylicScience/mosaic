@@ -367,6 +367,28 @@ def test_a_resumed_run_carries_the_keyword_and_the_checkpoint(
     assert _FakeYolo.last.kwargs["resume"] is True
 
 
+def test_the_worker_count_reaches_the_trainer(
+    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the field mosaic excludes from identity."""
+    _install_ultralytics(monkeypatch)
+    _ = runner.run_train_pose(_request(runner, tmp_path, workers=8))
+
+    assert _FakeYolo.last is not None
+    assert _FakeYolo.last.kwargs["workers"] == 8
+
+
+def test_an_unset_worker_count_leaves_ultralytics_its_default(
+    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absent, not ``None``: Ultralytics would try to use ``None`` as a count."""
+    _install_ultralytics(monkeypatch)
+    _ = runner.run_train_pose(_request(runner, tmp_path))
+
+    assert _FakeYolo.last is not None
+    assert "workers" not in _FakeYolo.last.kwargs
+
+
 def test_point_training_carries_the_fork_only_arguments(
     runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

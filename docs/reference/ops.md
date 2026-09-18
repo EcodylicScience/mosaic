@@ -380,10 +380,11 @@ Train a Lightning Pose model, registering the directory it produces.
 | `model_type` | `"heatmap"` \| `"heatmap_mhcrnn"` \| `"regression"` \| `"heatmap_multiview_transformer"` | `"heatmap"` |  | Which prediction head trains. heatmap_mhcrnn adds temporal context over five frames. The multiview transformer is for synchronized cameras. |
 | `backbone` | `string` | `"resnet50_animal_ap10k"` |  | The feature extractor. Defaults to a ResNet-50 pretrained on animal pose rather than ImageNet. |
 | `max_epochs` | `integer` | `300` |  | How long the model trains at most. [epochs] |
-| `litpose_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied last, over model_type, backbone and max_epochs as well as anything else Lightning Pose exposes with no field here. A key set here wins over base_model where they would set the same key. |
+| `litpose_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied last, over model_type, backbone and max_epochs as well as anything else Lightning Pose exposes with no field here. A key set here wins over base_model where they would set the same key. The data-loader worker count is refused here: set num_workers, which leaves the run identity alone. |
 | `device` | `string` | `"auto"` |  | Which CUDA devices train the model, as a comma-separated list of indices. auto takes whatever Lightning Pose finds. There is no cpu setting: Lightning Pose fixes its trainer's accelerator to gpu. |
 | `idle_timeout` | `number` | `1800` |  | How long the training subprocess may go without output before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |
+| `num_workers` | `integer` \| `None` | `null` |  | Worker processes loading training data. Throughput only: excluded from the run identity, so changing it never retrains a model. Unset leaves the tool's own default. |
 
 ??? note "`JsonValue`"
 
@@ -429,6 +430,7 @@ Train a POLO point-detection model, registering the directory it produces.
 | `train_overrides` | `object` \| `None` | `null` |  | Extra keyword arguments forwarded verbatim to yolo.train. Keys that would collide with a typed field or with an argument the op supplies are refused. |
 | `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. |
 | `batch` | `integer` | `16` |  | How many training images the model reads in one forward pass. |
+| `workers` | `integer` \| `None` | `null` |  | Worker processes loading training data. Throughput only: excluded from the run identity, so changing it never retrains a model. Unset leaves the tool's own default. |
 | `loc` | `number` | `5.0` |  | The localization loss weight, a POLO train keyword. |
 | `loc_loss` | `string` | `"mse"` |  | Which localization loss POLO minimizes. |
 | `dor` | `number` | `0.8` |  | The Distance of Reference threshold POLO evaluates against. |
@@ -457,6 +459,7 @@ Train a YOLO pose model, registering the directory it produces.
 | `train_overrides` | `object` \| `None` | `null` |  | Extra keyword arguments forwarded verbatim to yolo.train. Keys that would collide with a typed field or with an argument the op supplies are refused. |
 | `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. |
 | `batch` | `integer` | `16` |  | How many training images the model reads in one forward pass. |
+| `workers` | `integer` \| `None` | `null` |  | Worker processes loading training data. Throughput only: excluded from the run identity, so changing it never retrains a model. Unset leaves the tool's own default. |
 
 ??? note "`JsonValue`"
 
@@ -477,10 +480,11 @@ Train a SLEAP model, registering the directory it produces.
 | `max_epochs` | `integer` | `200` |  | How long the model trains at most. [epochs] |
 | `seed` | `integer` | `42` |  | Seeds sleap-nn's initialization. |
 | `validation_fraction` | `number` | `0.1` |  | Fraction of labels held out for validation, when no separate validation file is given. |
-| `sleap_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied over the generated config, for anything sleap-nn exposes with no field here. A key the generated config does not carry is appended for you, so it needs no + prefix; a key written with an explicit + or ~ is passed through as written. A key set here wins over base_model and device where they would set the same key. |
+| `sleap_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied over the generated config, for anything sleap-nn exposes with no field here. A key the generated config does not carry is appended for you, so it needs no + prefix; a key written with an explicit + or ~ is passed through as written. A key set here wins over base_model and device where they would set the same key. The data-loader worker count is refused here: set num_workers, which leaves the run identity alone. |
 | `device` | `string` | `"auto"` |  | Which accelerator trains the model. auto leaves the choice to sleap-nn; cpu, gpu and mps each name a family; a comma-separated list of CUDA indices such as 0 or 0,1 names devices within the gpu family. |
 | `idle_timeout` | `number` | `1800` |  | How long the training subprocess may go without output before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |
+| `num_workers` | `integer` \| `None` | `null` |  | Worker processes loading training data. Throughput only: excluded from the run identity, so changing it never retrains a model. Unset leaves the tool's own default. Sets both the training and the validation loader. sleap-nn's own caveat: under its default data pipeline, workers above 0 can fail on labels that read frames from video, which does not pickle. |
 
 ??? note "`JsonValue`"
 
