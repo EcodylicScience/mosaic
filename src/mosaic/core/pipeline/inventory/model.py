@@ -55,8 +55,10 @@ __all__ = [
     "FeatureRunRef",
     "FrameRunRef",
     "InventoryScope",
+    "LabelSeriesRef",
     "LabelsVariantRef",
     "MediaDerivativeRef",
+    "PreparedDatasetRef",
     "TrackerRunRef",
     "TracksVariantRef",
     "TrainedModelRef",
@@ -69,9 +71,11 @@ ArtifactKind = Literal[
     "feature",
     "tracks-variant",
     "labels-variant",
+    "label-series",
     "tracker-run",
     "frame-run",
     "trained-model",
+    "prepared-dataset",
     "media-derivative",
 ]
 """Every kind of artifact a dataset can hold, named once."""
@@ -80,9 +84,11 @@ ARTIFACT_KINDS: Final[tuple[ArtifactKind, ...]] = (
     "feature",
     "tracks-variant",
     "labels-variant",
+    "label-series",
     "tracker-run",
     "frame-run",
     "trained-model",
+    "prepared-dataset",
     "media-derivative",
 )
 """The same vocabulary as a value, for anything that has to enumerate or check it.
@@ -191,6 +197,22 @@ class LabelsVariantRef:
 
 
 @dataclass(frozen=True, slots=True)
+class LabelSeriesRef:
+    """One key of a versioned label series: ``labels_raw/<series>/<key>/``.
+
+    It carries no run identifier, because nothing computed it: a series is an
+    editor's saved states, and each revision is addressed by its number and its
+    content digest. ``origin_uuid`` is the dataset the revisions were written in,
+    which is this one for a project and another for a library that claimed them.
+    """
+
+    kind: ClassVar[ArtifactKind] = "label-series"
+    series: str
+    key: str
+    origin_uuid: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class TrackerRunRef:
     """One tracker or inference run under ``_tracking/<root_key>/<run_id>/``."""
 
@@ -218,6 +240,21 @@ class TrainedModelRef:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedDatasetRef:
+    """One prepared training dataset: ``models/<op_kind>/<run_id>/``.
+
+    It shares the ``models/`` root with the models trained from it, because that
+    root is a contract -- what a trainer reads and writes -- rather than a
+    provenance. It is its own kind because it is not a model: it has no weights,
+    so judging it by the trained-model rule reported every one as damaged.
+    """
+
+    kind: ClassVar[ArtifactKind] = "prepared-dataset"
+    op_kind: str
+    run_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class MediaDerivativeRef:
     """Every media row's derivative for one target.
 
@@ -235,9 +272,11 @@ type ArtifactRef = (
     FeatureRunRef
     | TracksVariantRef
     | LabelsVariantRef
+    | LabelSeriesRef
     | TrackerRunRef
     | FrameRunRef
     | TrainedModelRef
+    | PreparedDatasetRef
     | MediaDerivativeRef
 )
 

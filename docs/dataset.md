@@ -83,6 +83,7 @@ accessor on it then fails against a manifest file that is perfectly correct.
 ├── media_raw/
 ├── tracks_raw/
 ├── labels_raw/
+│   └── keypoints/          saved revisions of annotation sets
 ├── media/
 │   └── frames/
 ├── labels/
@@ -105,6 +106,16 @@ Directory assignments:
   by `mosaic sweep-tracking` once a run is finished.
 
 Deleting a derived or temporary folder costs time, never data.
+
+**`labels_raw/keypoints/` is versioned, and the rest of `labels_raw/` is not.** An
+uploaded label file is the current truth about its sequence: change it, and whatever
+was computed from it is stale. A keypoint annotation set is saved again every time
+the annotator is closed, so each changed save becomes a new folder,
+`<set>/rev1`, `<set>/rev2`, and nothing is ever rewritten. A trained model names the
+revision it read, which is how it stays tied to exactly those annotations. Treat a
+revision folder as read-only: one that was edited afterwards is refused.
+`labels_raw/behavior/` is reserved for saved behavior scorings, which will work the
+same way.
 
 ## Index files placed in the dataset
 
@@ -180,6 +191,24 @@ scan replaces only what its own sources claim.
 
 A source path may also be relative to the dataset, so `--path media_raw` declares the
 files you placed there as a source and brings them under `mosaic scan` too.
+
+## Link a model library
+
+A trained model is named by its run id. To use one that was trained in another
+dataset, link that dataset as a library:
+
+```bash
+mosaic libraries add -m dataset.yaml --id lab --path ../libraries/lab
+mosaic libraries list -m dataset.yaml
+```
+
+A model the dataset does not hold is then looked up in each linked library, so
+`infer-pose --params '{"model": "<run_id>"}'` and a tracker's `detect_model=<run_id>`
+work as they do for a local model. Like a source, a library may sit outside the
+dataset and nothing is written through the link. The link records the library's own
+id, so if a different dataset later appears at that path it is refused instead of
+being used by mistake. See [train one model from several
+datasets](guides/tracking/train-a-pose-model.md#5-train-one-model-from-several-datasets).
 
 ## Dataset inventory
 

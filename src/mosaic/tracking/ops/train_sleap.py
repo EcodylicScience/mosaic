@@ -14,7 +14,6 @@ additionally write a tracks variant naming a table that does not exist.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from pydantic import Field, field_validator
@@ -31,11 +30,16 @@ from mosaic.core.params import (
 )
 from mosaic.tracking.common.entry import phase_activity
 from mosaic.tracking.common.training_progress import epoch_reporter
-from mosaic.tracking.model_refs import resolve_model, resolve_model_set
+from mosaic.tracking.model_refs import (
+    observed_model_source,
+    resolve_model,
+    resolve_model_set,
+)
 from mosaic.tracking.ops._common import (
     claim_run_root,
     ensure_models_root,
     fingerprint_dataset,
+    resolve_training_data,
 )
 from mosaic.tracking.ops.train import (
     finalize_training,
@@ -230,7 +234,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
             kind=self.kind,
             version=self.version,
             params=params,
-            data_path=Path(ds.resolve_path(params.labels)),
+            data_path=resolve_training_data(ds, params.labels),
             fingerprint=fingerprint_dataset,
             base_model=params.base_model,
             require_data=require_data,
@@ -247,15 +251,17 @@ class TrainSleapOp(Op[TrainSleapParams]):
         from mosaic.tracking.sleap.training import train_sleap
 
         ensure_models_root(ds)
-        labels_path = Path(ds.resolve_path(params.labels))
+        labels_path = resolve_training_data(ds, params.labels)
 
         base_run_id = ""
         base_digest = ""
+        base_origin = ""
         resume_from = ""
         if params.base_model:
             base = resolve_model(ds, params.base_model, self.kind)
             base_run_id = base.model_id
             base_digest = base.digest
+            base_origin = observed_model_source(base).get("model_source", "")
             weights = base.artifacts[0].file_for("weights")
             resume_from = str(weights) if weights is not None else ""
 
@@ -265,6 +271,8 @@ class TrainSleapOp(Op[TrainSleapParams]):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id
+        # Before training, never after: see TrainPoseOp.run.
+        data_fingerprint = fingerprint_dataset(labels_path)
 
         # After the reuse gate and before the root is claimed. A cache hit pays
         # for no cold import, and a refusal is a message rather than a claim
@@ -336,5 +344,8 @@ class TrainSleapOp(Op[TrainSleapParams]):
             artifact_shape="directory",
             artifact_path=produced,
             model_type=resolved.model_type,
+            data_path=labels_path,
+            data_fingerprint=data_fingerprint,
+            base_origin=base_origin,
         )
         return run_id

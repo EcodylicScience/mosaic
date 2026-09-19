@@ -533,6 +533,7 @@ _REGISTERED_OP_KINDS: frozenset[str] = frozenset(
         "litpose",
         "ultralytics",
         "convert-points",
+        "prepare-training-data",
         "resample-tracks",
         "train-sleap",
         "train-litpose",

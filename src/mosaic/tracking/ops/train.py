@@ -20,6 +20,8 @@ registration stays import-light, and so the seams stay replaceable by a test.
 
 from __future__ import annotations
 
+import json
+import sys
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -36,7 +38,11 @@ from mosaic.core.pipeline.job import Cancelled, JobContext
 from mosaic.core.pipeline.inventory._read import IndexReader
 from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
 from mosaic.core.pipeline.inventory.model import ArtifactRecord, InventoryScope
-from mosaic.core.pipeline.models import model_index_path, model_run_root
+from mosaic.core.pipeline.models import (
+    PREPARED_DATA_KINDS,
+    model_index_path,
+    model_run_root,
+)
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.params import (
@@ -49,12 +55,17 @@ from mosaic.core.pipeline.progress import CompositeProgressCallback
 from mosaic.tracking.common.entry import ClaimRefreshingProgress
 from mosaic.tracking.common.mint import planned_model_id
 from mosaic.tracking.common.toolenv import ToolEnv, ToolExitError
-from mosaic.tracking.model_refs import ModelShape, resolve_model
+from mosaic.tracking.model_refs import (
+    ModelShape,
+    observed_model_source,
+    resolve_model,
+)
 from mosaic.tracking.ops._common import (
     claim_run_root,
     ensure_models_root,
     fingerprint_dataset,
     fingerprint_yolo_dataset,
+    resolve_training_data,
 )
 from mosaic.tracking.ops._train_descriptions import (
     BASE_MODEL_DESCRIPTION,
@@ -282,6 +293,18 @@ class TrainedModelIndexRow(RunIndexRowBase):
     # Provenance, never identity -- the tracker rows already record this and the
     # trained-model row had nowhere to put it.
     model_type: str = ""
+    # What the run was trained on: the data reference as the run resolved it,
+    # root-relative when it lies inside the dataset, and the content fingerprint
+    # that entered the identifier. The first link of the provenance chain from a
+    # model back to the annotations behind it. Before these columns the data
+    # path survived only in whatever submitted the run, so nothing reading the
+    # dataset alone could say what a model had seen. ``data_path`` is listed in
+    # the ``models`` entry of ``_INDEX_PATH_COLUMNS``.
+    data_path: str = ""
+    data_fingerprint: str = ""
+    # Which linked library served the base weights, as ``<link id>@<uuid>``.
+    # Empty when they were local or a bare path. Provenance, never identity.
+    base_origin: str = ""
 
 
 TRAINED_MODEL_INDEX_COLUMNS: list[str] = [
@@ -320,6 +343,63 @@ def trained_model_index(path: Path) -> IndexCSV[TrainedModelIndexRow]:
 # --- Shared helpers ------------------------------------------------------
 
 
+TRAINING_PROVENANCE_FILENAME: Final = "training.json"
+"""The readable record a training run leaves in its own run root.
+
+Its own name, not the one a feature run's parameter document carries: that
+name belongs to one schema with one reader, and a third document sharing it
+would be a third thing to tell apart by where it was found.
+"""
+
+
+def write_training_provenance(
+    run_root: Path,
+    *,
+    kind: str,
+    run_id: str,
+    params: Params,
+    data_path: str,
+    data_fingerprint: str,
+    base_model: str,
+    base_run_id: str,
+    base_digest: str,
+    base_origin: str,
+) -> None:
+    """Record what a training run was, beside what it produced.
+
+    A training run root used to hold weights and nothing that said how they came
+    to be: the parameters lived in the identifier's digest, which cannot be read
+    back, and the data reference lived in whatever submitted the run. This is
+    the copy a person, an export, or a provenance walk reads.
+
+    Provenance and never identity, so a field added here moves no identifier.
+    Best-effort for the same reason ``run_params.json`` is: the index row carries
+    the load-bearing half, and failing to write a readable copy must not lose a
+    run that has otherwise finished.
+    """
+    document = {
+        "kind": kind,
+        "run_id": run_id,
+        "params": params.model_dump(mode="json"),
+        "data": {"path": data_path, "fingerprint": data_fingerprint},
+        "base": {
+            "model": base_model,
+            "run_id": base_run_id,
+            "digest": base_digest,
+            "origin": base_origin,
+        },
+    }
+    try:
+        _ = (run_root / TRAINING_PROVENANCE_FILENAME).write_text(
+            json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        print(
+            f"[{kind}] failed to save {TRAINING_PROVENANCE_FILENAME}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def finalize_training(
     ds: Dataset,
     kind: str,
@@ -335,6 +415,10 @@ def finalize_training(
     artifact_shape: ModelShape = "file",
     artifact_path: Path | None = None,
     model_type: str = "",
+    *,
+    data_path: Path | None = None,
+    data_fingerprint: str = "",
+    base_origin: str = "",
 ) -> None:
     """Register a finished training run in ``models/<kind>/index.csv``.
 
@@ -342,7 +426,25 @@ def finalize_training(
     directory rather than one ``best.pt``. Left ``None`` for the single-file case,
     where ``best_model_path`` already says everything and storing it twice would
     be two things to keep agreeing.
+
+    *data_path* and *data_fingerprint* record what the run was trained on, taken
+    **before** training started: a trainer may write caches beside its data, and
+    a fingerprint taken afterwards would describe a directory the identifier was
+    never minted over.
     """
+    stored_data = ds.relative_to_root(data_path) if data_path is not None else ""
+    write_training_provenance(
+        run_root,
+        kind=kind,
+        run_id=run_id,
+        params=p,
+        data_path=stored_data,
+        data_fingerprint=data_fingerprint,
+        base_model=base_model,
+        base_run_id=base_run_id,
+        base_digest=base_digest,
+        base_origin=base_origin,
+    )
     idx = trained_model_index(model_index_path(ds, kind))
     idx.ensure()
     idx.append(
@@ -366,6 +468,9 @@ def finalize_training(
                     else ""
                 ),
                 model_type=model_type,
+                data_path=stored_data,
+                data_fingerprint=data_fingerprint,
+                base_origin=base_origin,
                 abs_path=Path(ds.relative_to_root(run_root)),
             )
         ]
@@ -409,7 +514,9 @@ def training_is_complete(ds: Dataset, kind: str, run_id: str) -> bool:
     return ds.resolve_path(recorded).exists()
 
 
-def _resolved_base(ds: Dataset, kind: str, base_model: str) -> tuple[str, str, str]:
+def _resolved_base(
+    ds: Dataset, kind: str, base_model: str
+) -> tuple[str, str, str, str]:
     """What this run fine-tunes from: the path to hand the tool, and its lineage.
 
     ``model_id`` rather than ``run_id``: a bare path has no run, and hashing an
@@ -417,9 +524,10 @@ def _resolved_base(ds: Dataset, kind: str, base_model: str) -> tuple[str, str, s
     whenever their params and data matched.
     """
     if not base_model:
-        return "", "", ""
+        return "", "", "", ""
     base = resolve_model(ds, base_model, kind)
-    return str(base.path), base.model_id, base.digest
+    origin = observed_model_source(base).get("model_source", "")
+    return str(base.path), base.model_id, base.digest, origin
 
 
 def build_train_request[RequestT: TrainRequestBase](
@@ -812,7 +920,7 @@ class TrainPoseOp(Op[PoseTrainParams]):
             kind=self.kind,
             version=self.version,
             params=params,
-            data_path=Path(ds.resolve_path(params.data)),
+            data_path=resolve_training_data(ds, params.data),
             fingerprint=fingerprint_yolo_dataset,
             base_model=params.base_model,
             require_data=require_data,
@@ -839,8 +947,8 @@ class TrainPoseOp(Op[PoseTrainParams]):
         )
 
         ensure_models_root(ds)
-        data_yaml = Path(ds.resolve_path(params.data))
-        base_weights, base_run_id, base_digest = _resolved_base(
+        data_yaml = resolve_training_data(ds, params.data)
+        base_weights, base_run_id, base_digest, base_origin = _resolved_base(
             ds, self.kind, params.base_model
         )
 
@@ -853,6 +961,9 @@ class TrainPoseOp(Op[PoseTrainParams]):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id
+        # Before training, never after: a trainer may write caches beside its
+        # data, and the row must record what the identifier was minted over.
+        data_fingerprint = fingerprint_yolo_dataset(data_yaml)
 
         run_root = model_run_root(ds, self.kind, run_id)
         request = build_train_request(
@@ -893,6 +1004,9 @@ class TrainPoseOp(Op[PoseTrainParams]):
             outcome.save_dir / "weights" / "best.pt",
             outcome.save_dir / "results.csv",
             outcome.epochs_completed,
+            data_path=data_yaml,
+            data_fingerprint=data_fingerprint,
+            base_origin=base_origin,
         )
         return run_id
 
@@ -931,7 +1045,7 @@ class TrainPointsOp(Op[PointTrainParams]):
             kind=self.kind,
             version=self.version,
             params=params,
-            data_path=Path(ds.resolve_path(params.data)),
+            data_path=resolve_training_data(ds, params.data),
             fingerprint=fingerprint_yolo_dataset,
             base_model=params.base_model,
             require_data=require_data,
@@ -961,8 +1075,8 @@ class TrainPointsOp(Op[PointTrainParams]):
             )
 
         ensure_models_root(ds)
-        data_yaml = Path(ds.resolve_path(params.data))
-        base_weights, base_run_id, base_digest = _resolved_base(
+        data_yaml = resolve_training_data(ds, params.data)
+        base_weights, base_run_id, base_digest, base_origin = _resolved_base(
             ds, self.kind, params.base_model
         )
 
@@ -975,6 +1089,9 @@ class TrainPointsOp(Op[PointTrainParams]):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id
+        # Before training, never after: a trainer may write caches beside its
+        # data, and the row must record what the identifier was minted over.
+        data_fingerprint = fingerprint_yolo_dataset(data_yaml)
 
         run_root = model_run_root(ds, self.kind, run_id)
         request = build_train_request(
@@ -1018,6 +1135,9 @@ class TrainPointsOp(Op[PointTrainParams]):
             outcome.save_dir / "weights" / "best.pt",
             outcome.save_dir / "results.csv",
             outcome.epochs_completed,
+            data_path=data_yaml,
+            data_fingerprint=data_fingerprint,
+            base_origin=base_origin,
         )
         return run_id
 
@@ -1056,7 +1176,7 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             kind=self.kind,
             version=self.version,
             params=params,
-            data_path=Path(ds.resolve_path(params.dataset_dir)),
+            data_path=resolve_training_data(ds, params.dataset_dir),
             fingerprint=fingerprint_dataset,
             base_model=params.base_model,
             require_data=require_data,
@@ -1073,15 +1193,17 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
         from mosaic.tracking.pose_training.localizer_train import train_localizer
 
         ensure_models_root(ds)
-        dataset_dir = Path(ds.resolve_path(params.dataset_dir))
+        dataset_dir = resolve_training_data(ds, params.dataset_dir)
         weights = None
         base_run_id = ""
         base_digest = ""
+        base_origin = ""
         if params.base_model:
             base = resolve_model(ds, params.base_model, self.kind)
             base_run_id = base.model_id
             base_digest = base.digest
             weights = str(base.path)
+            base_origin = observed_model_source(base).get("model_source", "")
 
         run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
@@ -1089,6 +1211,8 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id
+        # Before training, never after: see TrainPoseOp.run.
+        data_fingerprint = fingerprint_dataset(dataset_dir)
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
@@ -1133,6 +1257,9 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
             Path(result.best_model_path),
             run_root / "train" / "results.csv",
             params.epochs,
+            data_path=dataset_dir,
+            data_fingerprint=data_fingerprint,
+            base_origin=base_origin,
         )
         return run_id
 
@@ -1164,6 +1291,11 @@ def _trained_model_records(
 
     records: list[ArtifactRecord[str]] = []
     for kind in root_subdirectories(ds, "models"):
+        # ``models/`` also holds prepared training data, which has no weights.
+        # Judged as a model, every such directory read as a finished row whose
+        # artifact was missing -- damage that was never there.
+        if kind in PREPARED_DATA_KINDS:
+            continue
         index_path = model_index_path(ds, kind)
         reader.note(index_path)
         frame = reader.frame(

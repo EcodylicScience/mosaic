@@ -59,7 +59,7 @@ from mosaic.tracking.common.entry import open_entry, phase_activity, release_ent
 from mosaic.tracking.common.scope import one_camera_per_entry
 from mosaic.tracking.common.tool_input import resolve_entry_input
 from mosaic.tracking.common.ultralytics_env import progress_activity
-from mosaic.tracking.model_refs import resolve_model
+from mosaic.tracking.model_refs import observed_model_source, resolve_model
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
 if TYPE_CHECKING:
@@ -462,6 +462,7 @@ def _run_inference_op(
         kind,
         version,
         infer_variant_payload(params.identity_dump(), model_id),
+        observed=observed_model_source(model) or None,
     )
 
     ctx.set_total(len(work))

@@ -190,7 +190,7 @@ class TestRunOpRefusesAScope:
     passes through. The library entry points, ``mosaic run --kind``,
     ``mosaic track`` and a graph step all start an op here. An op that checked
     its own scope would be a second copy of a rule that has to answer the same
-    way for all seventeen.
+    way for all eighteen.
     """
 
     def test_run_op_takes_a_scope_keyword(self) -> None:
@@ -208,7 +208,7 @@ class TestRunOpRefusesAScope:
     def test_no_op_body_checks_its_own_scope(self) -> None:
         """One rule, in one place. An op accepts the scope it is handed."""
         register_ops()
-        assert len(OPS) == 17, "every op is registered; none is skipped below"
+        assert len(OPS) == 18, "every op is registered; none is skipped below"
         checking = {
             kind
             for kind, op in OPS.items()

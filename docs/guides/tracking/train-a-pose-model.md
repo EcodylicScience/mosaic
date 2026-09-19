@@ -95,6 +95,99 @@ The difference is identity. Inference detects animals frame by frame; a tracker 
 those detections across frames into individuals. If you need to know which animal is
 which, you want the tracker.
 
+## 5. Train one model from several datasets
+
+A detector usually gets better with annotations from more than one experiment, and a
+good one is worth using everywhere. Both want the model to live somewhere that is not
+any single experiment's dataset. That place is a **library**: an ordinary mosaic
+dataset whose job is to hold models.
+
+### Save annotations as revisions
+
+Annotations reach a dataset as **revisions** of a keypoint set, under
+`labels_raw/keypoints/<set>/rev1`, `rev2`, and so on. The Mosaic app saves one every
+time the annotator is closed. From Python:
+
+```python
+from mosaic.core.annotations.projection import write_keypoint_set_revision
+
+saved = write_keypoint_set_revision(
+    ds, set_key="openfield", annotations=annotation_set, origin={"note": "after review"}
+)
+saved.revision   # 3
+saved.written    # False if nothing had changed since revision 2
+```
+
+A revision is never rewritten, and saving a state that did not change writes nothing.
+That is what lets a model say exactly which annotations it was trained on.
+
+### Build the library and claim what to train on
+
+```bash
+mosaic init libraries/lab
+
+mosaic sources add -m libraries/lab/dataset.yaml --kind labels --series keypoints \
+    --id mice-openfield --path /data/mice/labels_raw/keypoints/openfield \
+    --file rev3/annotations.coco.json
+mosaic sources add -m libraries/lab/dataset.yaml --kind labels --series keypoints \
+    --id rats-arena --path /data/rats/labels_raw/keypoints/arena \
+    --file rev1/annotations.coco.json
+
+mosaic scan -m libraries/lab/dataset.yaml --kind labels
+```
+
+Name the revisions you want with `--file`. The list is then also the record of what
+this library has trained on. To train on a later revision, add it with
+`mosaic sources add-files` and scan again.
+
+### Prepare, then train
+
+```bash
+mosaic run -m libraries/lab/dataset.yaml --kind prepare-training-data \
+    --params '{"sets": [{"set_key": "openfield"}, {"set_key": "arena"}], "target": "yolo-pose"}'
+```
+
+This merges the sets into one training dataset and **copies the images in**, so the
+library can be moved, and the datasets it drew from can be archived, without breaking
+the model. `target` is `yolo-pose`, `polo`, `sleap` or `litpose`. Frames from one
+recording are kept together in one split, which is what makes a validation score
+honest; `"split_by": "frame"` turns that off, and its scores are optimistic.
+
+Leave `revision` out to take the latest one claimed, or pin it with
+`{"set_key": "openfield", "revision": 3}`. Either way the run is named by what the
+revision contains, so the same annotations always give the same prepared dataset.
+
+Then hand the trainer the **run id** the preparation returned:
+
+```bash
+mosaic run -m libraries/lab/dataset.yaml --kind train-pose \
+    --params '{"data": "prepare-training-data.0.1-<digest>", "epochs": 100}'
+```
+
+Pass the run id rather than a path to its `data.yaml`. A path is a location, so the
+same data at two paths would count as two different models.
+
+### Use the model from any dataset
+
+```bash
+mosaic libraries add -m /data/mice/dataset.yaml --id lab --path ../../libraries/lab
+mosaic run -m /data/mice/dataset.yaml --kind infer-pose --params '{"model": "<run_id>"}'
+```
+
+Once a dataset links a library, a model there is named by its run id exactly as one
+trained locally is. Give the link as a relative path when the two datasets move
+together.
+
+### Ask a model what it saw
+
+```bash
+mosaic models provenance -m /data/mice/dataset.yaml train-pose.0.2-<digest>
+```
+
+Prints the prepared dataset behind the model and each annotation revision behind
+that, with whatever was recorded when the revision was saved. If a dataset it drew
+from has since been archived, the answer says which revisions are no longer on disk.
+
 ## Augmentation is opt-in
 
 Build the training environment with `uv sync --python 3.12 --extra augment` to add

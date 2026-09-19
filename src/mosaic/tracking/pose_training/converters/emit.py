@@ -138,6 +138,7 @@ def write_split_tree(
     line_of: Callable[[AnnotationFrame], list[str]],
     *,
     symlink_images: bool = True,
+    name_of: Callable[[AnnotationFrame, Path], str] | None = None,
 ) -> tuple[int, int]:
     """Write labels and place images under ``<output_dir>/<split>/``.
 
@@ -145,6 +146,18 @@ def write_split_tree(
     skipped rather than written empty: an empty label file means "this image
     contains no instances", which is a different claim from "this image had
     instances mosaic could not express".
+
+    *name_of* chooses the file name an image is placed under, and the key
+    *split_of* is looked up by. Left out, that is the source image's own
+    basename, which is right for one exported folder and wrong for a union:
+    frames extracted by mosaic are all called ``frame_NNNNNN.png`` under their
+    sequence's directory, so two sequences' frame 12 would land on one name and
+    the second would silently replace the first, image and label both. A caller
+    merging sets passes a rule that makes the name unique, and this refuses a
+    rule that does not.
+
+    Raises:
+        ValueError: If two frames are given the same name.
     """
     for subset in SPLITS:
         (output_dir / subset / "images").mkdir(parents=True, exist_ok=True)
@@ -152,12 +165,23 @@ def write_split_tree(
 
     written = 0
     skipped = 0
+    placed: dict[str, Path] = {}
     for frame, source in frames:
         lines = line_of(frame)
         if not lines:
             skipped += 1
             continue
-        filename = frame.image_path.name
+        filename = name_of(frame, source) if name_of else frame.image_path.name
+        if name_of is not None:
+            earlier = placed.get(filename)
+            if earlier is not None:
+                msg = (
+                    f"{source} and {earlier} would both be written as {filename!r}. "
+                    "A training tree holds one image per name, so the second would "
+                    "replace the first."
+                )
+                raise ValueError(msg)
+            placed[filename] = source
         subset = split_of.get(filename, "train")
         write_yolo_label(
             output_dir / subset / "labels" / f"{Path(filename).stem}.txt", lines

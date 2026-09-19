@@ -38,10 +38,12 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `features`: Discover features and their parameter...
 * `tracking`: Discover tracking ops and their parameter...
 * `media`: Probe a video, compare two videos for...
+* `models`: Ask about trained models: this dataset's,...
 * `pipeline`: Validate, plan and run a pipeline recipe.
 * `sources`: Declare and inspect the directories and...
 * `notes`: Read and write the dataset's free-text notes.
 * `tags`: Declare and set the dataset's typed tags.
+* `libraries`: Link the datasets a trained model may be...
 
 ## `mosaic run`
 
@@ -206,7 +208,7 @@ $ mosaic inventory [OPTIONS]
 **Options**:
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Restrict to an artifact kind (repeatable): feature, tracks-variant, labels-variant, tracker-run, frame-run, trained-model, media-derivative.
+* `--kind <str>`: Restrict to an artifact kind (repeatable): feature, tracks-variant, labels-variant, label-series, tracker-run, frame-run, trained-model, prepared-dataset, media-derivative.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -687,6 +689,45 @@ $ mosaic media transcode [OPTIONS] {file}
 * `--allow-hardware / --no-hardware`: Permit av1_nvenc hardware encoding. Taken only when this machine can actually open that encoder: a build listing it on a device that cannot run it encodes on the CPU instead. Off by default.  [default: no-hardware]
 * `--help`: Show this message and exit.
 
+## `mosaic models`
+
+Ask about trained models: this dataset's, and its linked libraries'.
+
+**Usage**:
+
+```console
+$ mosaic models [OPTIONS] COMMAND [ARGS]...
+```
+
+**Options**:
+
+* `--help`: Show this message and exit.
+
+**Commands**:
+
+* `provenance`: Show what a model was trained on, back to...
+
+### `mosaic models provenance`
+
+Show what a model was trained on, back to the exact annotation revisions.
+
+**Usage**:
+
+```console
+$ mosaic models provenance [OPTIONS] {run_id}
+```
+
+**Arguments**:
+
+* `run_id`: The model's run id.  [required]
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--kind <str>`: The training op. Read from the run id when it is left out.
+* `--json`: Emit JSON.
+* `--help`: Show this message and exit.
+
 ## `mosaic pipeline`
 
 Validate, plan and run a pipeline recipe.
@@ -895,6 +936,7 @@ $ mosaic sources add [OPTIONS]
 * `--group-from <str>`: 'filename' or 'parent'. Multi-sequence files only.
 * `--group-pattern <str>`: Regex extracting the group from a path.
 * `--md5 / --no-md5`: Checksum each file. On by default: the composition hash is over these.  [default: md5]
+* `--series <str>`: Labels only: claim revisions of this versioned label series (e.g. 'keypoints') instead of uploaded label files. Usually with --file, naming exactly the revisions wanted.
 * `--json`: Emit JSON.
 * `--help`: Show this message and exit.
 
@@ -1127,4 +1169,74 @@ $ mosaic tags remove [OPTIONS] {name}
 **Options**:
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--help`: Show this message and exit.
+
+## `mosaic libraries`
+
+Link the datasets a trained model may be resolved from, by run id.
+
+**Usage**:
+
+```console
+$ mosaic libraries [OPTIONS] COMMAND [ARGS]...
+```
+
+**Options**:
+
+* `--help`: Show this message and exit.
+
+**Commands**:
+
+* `list`: Show every linked library, in the order a...
+* `add`: Link a library, recording its uuid so a...
+* `remove`: Drop a link.
+
+### `mosaic libraries list`
+
+Show every linked library, in the order a model lookup tries them.
+
+**Usage**:
+
+```console
+$ mosaic libraries list [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--json`: Emit JSON.
+* `--help`: Show this message and exit.
+
+### `mosaic libraries add`
+
+Link a library, recording its uuid so a moved one is told from a wrong one.
+
+**Usage**:
+
+```console
+$ mosaic libraries add [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--id <str>`: What to call the link.  [required]
+* `--path <str>`: The library dataset: its directory or its manifest. Relative to this dataset, which is the spelling that survives the tree being mounted somewhere else.  [required]
+* `--uuid <str>`: The library's own uuid, to insist on. Left out, the uuid found at the path is recorded.
+* `--help`: Show this message and exit.
+
+### `mosaic libraries remove`
+
+Drop a link. Nothing on disk changes; its models stop resolving from here.
+
+**Usage**:
+
+```console
+$ mosaic libraries remove [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--id <str>`: The link to drop.  [required]
 * `--help`: Show this message and exit.

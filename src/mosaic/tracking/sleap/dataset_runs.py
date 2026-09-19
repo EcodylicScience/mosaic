@@ -73,7 +73,7 @@ from mosaic.tracking.common.index import (
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_input
-from mosaic.tracking.model_refs import resolve_model_set
+from mosaic.tracking.model_refs import observed_model_source, resolve_model_set
 from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.sleap.version import (
     SLEAP_KIND,
@@ -295,6 +295,7 @@ def run_sleap(
         observed={
             "model_id": resolved_models.model_id,
             "model_type": resolved_models.model_type,
+            **observed_model_source(resolved_models),
         },
     )
     scope_entries = scope.op_entries if scope is not None else None

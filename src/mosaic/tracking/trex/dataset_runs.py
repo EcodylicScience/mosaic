@@ -51,7 +51,11 @@ import pandas as pd
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.track_library.trex import is_per_individual_export
-from mosaic.tracking.model_refs import resolve_model
+from mosaic.tracking.model_refs import (
+    ResolvedModel,
+    observed_model_source,
+    resolve_model,
+)
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.op_identity import (
     op_run_id,
@@ -661,6 +665,7 @@ def run_trex(
     # could not be found describes a run that never happened.
     detect_model_path: Path | None = None
     detect_model_id: str | None = None
+    resolved_model: ResolvedModel | None = None
     if params.detect_model is not None:
         # Ask the identity module rather than splitting the string: a reference
         # that is not a run identifier at all -- a bare weights path -- falls
@@ -677,6 +682,7 @@ def run_trex(
     # durable cache and a mutable key on a durable cache never expires.
     vi_model_path: Path | None = None
     vi_model_id: str | None = None
+    resolved_vi: ResolvedModel | None = None
     if params.visual_identification_model_path is not None:
         vi_ref = params.visual_identification_model_path
         vi_parsed = parse_op_run_id(vi_ref)
@@ -690,7 +696,13 @@ def run_trex(
         params, detect_model_id=detect_model_id, vi_model_id=vi_model_id
     )
     minted = mint_tracker_run(
-        ds, kind=TREX_KIND, version=TREX_VERSION, settings=settings
+        ds,
+        kind=TREX_KIND,
+        version=TREX_VERSION,
+        settings=settings,
+        # Absent unless a linked library served a model, so a run over local
+        # weights writes the sidecar it always did.
+        observed=observed_model_source(resolved_model, resolved_vi) or None,
     )
 
     # TREx alone gates two phases on different parameter subsets, so it projects

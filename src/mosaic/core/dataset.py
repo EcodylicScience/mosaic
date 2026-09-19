@@ -9,6 +9,7 @@ import re
 import sys
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
@@ -92,6 +93,8 @@ from .manifest import (
     AnyScanSource,
     DatasetManifest,
     DatasetTag,
+    LabelsScanSource,
+    LibraryLink,
     MediaLayout,
     MediaScanSource,
     RawScanSource,
@@ -149,7 +152,17 @@ from .pipeline.composition import (
     media_composition,
     tracks_raw_composition,
 )
+from .pipeline.index_csv import index_records
 from .pipeline.index_lock import index_lock
+from .pipeline.label_series import revision_of, series_spec
+from .pipeline.label_series_index import (
+    carried_series_digests,
+    ensure_series_root,
+    read_label_series,
+    row_for_revision_file,
+    series_index_path,
+    write_label_series_rows,
+)
 from .pipeline.sequence_index import (
     SequenceLabelRow,
     SourceRoot,
@@ -259,7 +272,13 @@ _INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
     # ``abs_path``, so a dataset moved between machines kept a labels row
     # pointing at the old one's filesystem -- and reported itself portable.
     "labels": LABELS_INDEX_PATH_COLUMNS,
-    "models": ("best_model_path", "metrics_path", "artifact_path", "data_yaml"),
+    "models": (
+        "best_model_path",
+        "metrics_path",
+        "artifact_path",
+        "data_yaml",
+        "data_path",
+    ),
     **{key: root.path_columns for key, root in TRACKING_ROOTS.items()},
 }
 
@@ -689,6 +708,41 @@ class ConversionOutcome:
         return self.failed == 0
 
 
+class LibraryMismatchError(ValueError):
+    """A library link resolves to a dataset other than the one it was made to.
+
+    The link records the library manifest's ``uuid``. A different ``uuid`` at the
+    linked path means another dataset now sits there, and resolving a model
+    through it would hand back weights under a name they do not own.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class LinkedLibrary:
+    """A library link and the dataset it opened."""
+
+    link: LibraryLink
+    dataset: Dataset
+
+
+def _series_of(source: ScanSource) -> str | None:
+    """The label series *source* claims, or ``None`` for every other source."""
+    return source.series if isinstance(source, LabelsScanSource) else None
+
+
+def _check_manifest(manifest: DatasetManifest) -> None:
+    """Validate *manifest* whole, after a ``model_copy`` that ran no validators.
+
+    Re-parsed from a dump, which is what runs every validator. That round trip is
+    safe for a manifest holding file sources because a source's dump leaves out
+    the knobs it never declared -- see
+    :meth:`~mosaic.core.manifest.ScanSource._omit_what_was_never_declared`. Before
+    it did, this re-parse made every file source look as though it had declared a
+    walk, and the dataset refused every manifest edit from then on.
+    """
+    _ = DatasetManifest.model_validate(manifest.model_dump())
+
+
 class Dataset:
     """A mosaic dataset: a manifest, the roots it declares, and the work over them.
 
@@ -735,6 +789,9 @@ class Dataset:
                 meta=dict(meta) if meta is not None else {},
             )
         self._path_map: list[tuple[Path, Path]] = []
+        self._linked: (
+            tuple[tuple[LibraryLink, ...], tuple[LinkedLibrary, ...]] | None
+        ) = None
 
     def __repr__(self) -> str:
         return f"Dataset(manifest_path={self.manifest_path!r}, name={self.name!r})"
@@ -858,7 +915,7 @@ class Dataset:
                 every reader parses.
         """
         self.manifest = self.manifest.model_copy(update={"notes": text})
-        _ = DatasetManifest.model_validate(self.manifest.model_dump())
+        _check_manifest(self.manifest)
         if save:
             self.save()
 
@@ -912,7 +969,7 @@ class Dataset:
         """
         named = tuple(str(group) for group in groups)
         self.manifest = self.manifest.model_copy(update={"continuous_groups": named})
-        _ = DatasetManifest.model_validate(self.manifest.model_dump())
+        _check_manifest(self.manifest)
         if save:
             self.save()
 
@@ -930,7 +987,7 @@ class Dataset:
             if existing.name.casefold() != tag.name.casefold()
         ]
         self.manifest = self.manifest.model_copy(update={"tags": (*others, tag)})
-        _ = DatasetManifest.model_validate(self.manifest.model_dump())
+        _check_manifest(self.manifest)
         if save:
             self.save()
 
@@ -1002,6 +1059,125 @@ class Dataset:
             self.manifest = current
             self._ensure_roots()
             write_manifest(self.manifest_path, current)
+
+    # ---- Linked libraries ----
+
+    @property
+    def libraries(self) -> tuple[LibraryLink, ...]:
+        """The datasets a model reference may resolve through, in lookup order."""
+        return self.manifest.libraries
+
+    def add_library(self, link: LibraryLink, *, save: bool = True) -> LibraryLink:
+        """Declare *link* and persist the manifest. Returns the link as stored.
+
+        The target is opened once, here, so a link that names nothing fails at
+        the gesture that made it and not at the first inference that needs it.
+        A link declared without a ``uuid`` records the target's, so that the
+        library moving and a different dataset taking its place are told apart
+        from then on.
+
+        Args:
+            link: The link to declare.
+            save: Write the manifest. Pass ``False`` to batch several changes.
+
+        Raises:
+            ValueError: If the id is taken, or the link points at this dataset.
+            FileNotFoundError: If no manifest is at the linked path.
+            LibraryMismatchError: If *link* names a ``uuid`` the target does not
+                carry.
+        """
+        if any(existing.id == link.id for existing in self.manifest.libraries):
+            msg = f"a library named {link.id!r} is already linked"
+            raise ValueError(msg)
+        target = self._open_library(link)
+        if target.manifest_path.resolve() == self.manifest_path.resolve():
+            msg = f"library {link.id!r} points at this dataset; a dataset cannot link itself"
+            raise ValueError(msg)
+        stored = link.model_copy(
+            update={
+                "uuid": link.uuid or (target.uuid or ""),
+                "added_at": link.added_at or now_stamp(),
+            }
+        )
+        self.manifest = self.manifest.model_copy(
+            update={"libraries": (*self.manifest.libraries, stored)}
+        )
+        _check_manifest(self.manifest)
+        if save:
+            self.save()
+        return stored
+
+    def remove_library(self, link_id: str, *, save: bool = True) -> bool:
+        """Drop the link called *link_id*. Returns whether one was there.
+
+        Nothing on disk changes. A run that named a model by run identifier
+        keeps the identifier; it stops resolving here until a link, or a copy of
+        the model in this dataset's own ``models/``, provides it again.
+        """
+        remaining = tuple(
+            existing for existing in self.manifest.libraries if existing.id != link_id
+        )
+        if len(remaining) == len(self.manifest.libraries):
+            return False
+        self.manifest = self.manifest.model_copy(update={"libraries": remaining})
+        if save:
+            self.save()
+        return True
+
+    def linked_libraries(self) -> tuple[LinkedLibrary, ...]:
+        """Every linked library that is reachable now, opened, in lookup order.
+
+        One level deep: a library's own links are never followed, so a lookup
+        terminates and a model is served by a dataset this manifest names.
+
+        An unreachable link is skipped with a warning, the tolerance a source on
+        an unmounted share gets, because a dataset must stay usable while a
+        library is offline. A reachable target carrying the wrong ``uuid`` is not
+        tolerated: that is a different dataset, not an absent one.
+
+        Raises:
+            LibraryMismatchError: If a link's recorded ``uuid`` disagrees with
+                the dataset found at its path.
+        """
+        links = self.manifest.libraries
+        if self._linked is not None and self._linked[0] == links:
+            return self._linked[1]
+        opened: list[LinkedLibrary] = []
+        for link in links:
+            try:
+                target = self._open_library(link)
+            except FileNotFoundError:
+                where = self._resolve_declared_path(link.path)
+                print(
+                    f"[libraries] {link.id!r} is not reachable at {where}; "
+                    "models it holds will not resolve until it is.",
+                    file=sys.stderr,
+                )
+                continue
+            opened.append(LinkedLibrary(link=link, dataset=target))
+        found = tuple(opened)
+        # Cached only when every link opened. A library that was offline must be
+        # looked for again, or a long-lived process would go on reporting its
+        # models missing after the share came back.
+        if len(found) == len(links):
+            self._linked = (links, found)
+        return found
+
+    def _open_library(self, link: LibraryLink) -> Dataset:
+        """Open the dataset *link* names, checking it is the one the link recorded."""
+        where = self._resolve_declared_path(link.path)
+        target = Dataset(manifest_path=resolve_manifest_path(where)).load(
+            ensure_roots=False
+        )
+        if link.uuid and target.uuid and link.uuid != target.uuid:
+            msg = (
+                f"library {link.id!r} was linked to dataset {link.uuid}, but "
+                f"{where} holds dataset {target.uuid} ({target.name!r}). If the "
+                "library moved, repoint the link at where it is now; if this is "
+                "the intended dataset, remove the link and add it again."
+            )
+            raise LibraryMismatchError(msg)
+        return target
 
     # ---- Declared scan sources ----
 
@@ -1081,7 +1257,9 @@ class Dataset:
                 f"no {kind} source named {source_id!r}; declared: {declared or 'none'}"
             )
             raise KeyError(msg)
-        orphaned = self._rows_claimed_by(kind, self.source_claim(match))
+        orphaned = self._rows_claimed_by(
+            kind, self.source_claim(match), series=_series_of(match)
+        )
         remaining = [s for s in existing if s.id != source_id]
         self.manifest.sources = self.manifest.sources.with_kind(kind, remaining)
         if save:
@@ -1123,16 +1301,37 @@ class Dataset:
             )
             base = self.resolve_source_path(source)
             self.drop_claimed_rows(
-                kind, ScanClaim.over_files(base / entry for entry in files)
+                kind,
+                ScanClaim.over_files(base / entry for entry in files),
+                series=_series_of(source),
             )
         return removed
 
-    def drop_claimed_rows(self, kind: SourceKind, claim: ScanClaim) -> int:
+    def drop_claimed_rows(
+        self, kind: SourceKind, claim: ScanClaim, *, series: str | None = None
+    ) -> int:
         """Remove every row of *kind*'s index inside *claim*. Returns the count.
 
         Public because ``mosaic sources remove --drop-rows`` is the gesture that
         wants it: undeclaring keeps rows by default, and this is the opt-in.
+
+        *series* names the label series the source claimed. Its rows are in that
+        series' index, and dropping them touches no composition, because a series
+        row never entered one.
         """
+        if series is not None:
+            index_path = series_index_path(self, series)
+            if not index_path.exists():
+                return 0
+            with index_lock(index_path):
+                revisions = index_records(read_label_series(self, series))
+                remaining = [
+                    row for row in revisions if not self._row_claimed(row, claim)
+                ]
+                if len(remaining) == len(revisions):
+                    return 0
+                write_label_series_rows(index_path, remaining)
+            return len(revisions) - len(remaining)
         if kind == "media":
             index_path = self.get_root(self.resolve_media_root()) / "index.csv"
             with index_lock(index_path):
@@ -1337,9 +1536,18 @@ class Dataset:
             raise ValueError(msg)
         scan = self.index_tracks_raw if kind == "tracks" else self.index_labels_raw
         written = self.get_root(_RAW_ROOT_FOR_KIND[kind]) / index_filename
-        for position, source in enumerate(selected):
+        position = 0
+        for source in selected:
             if not isinstance(source, RawScanSource):
                 continue
+            if isinstance(source, LabelsScanSource) and source.series is not None:
+                # A versioned series has its own index and its own rule: one row
+                # per revision, never a per-sequence composition. It is also
+                # never pruned as unsourced, because the rows a dataset wrote
+                # for its own saves sit under no source at all.
+                written = self.index_label_series(source)
+                continue
+            position += 1
             written = scan(
                 self._search_paths(source),
                 patterns=list(source.patterns),
@@ -1354,8 +1562,9 @@ class Dataset:
                 claim=self.source_claim(source),
                 # Only the first pass may prune: a later one would see the
                 # earlier sources' rows as unclaimed and delete what this same
-                # scan had just written.
-                prune_unsourced=prune_unsourced and position == 0,
+                # scan had just written. Counted over the per-sequence sources
+                # alone, so a series source declared first does not use it up.
+                prune_unsourced=prune_unsourced and position == 1,
             )
         return written
 
@@ -1391,8 +1600,19 @@ class Dataset:
                 )
         return present
 
-    def _rows_claimed_by(self, kind: SourceKind, claim: ScanClaim) -> int:
-        """How many rows of *kind*'s index fall inside *claim*."""
+    def _rows_claimed_by(
+        self, kind: SourceKind, claim: ScanClaim, *, series: str | None = None
+    ) -> int:
+        """How many rows of *kind*'s index fall inside *claim*.
+
+        *series* names the label series a source claimed, whose rows live in that
+        series' own index rather than in ``labels_raw/index.csv``.
+        """
+        if series is not None:
+            frame = read_label_series(self, series)
+            return sum(
+                1 for row in index_records(frame) if self._row_claimed(row, claim)
+            )
         try:
             rows = (
                 self.read_media_index()
@@ -5235,6 +5455,75 @@ class Dataset:
         composition_writer(df.to_dict("records"))
         print(f"[index_{target_root}] {len(df)} -> {out_csv}")
         return out_csv
+
+    def index_label_series(self, source: LabelsScanSource) -> Path:
+        """Index the revisions *source* claims into ``labels_raw/<series>/index.csv``.
+
+        The series sibling of :meth:`index_labels_raw`, and deliberately not built
+        on its body. That body derives a ``(group, sequence)`` per file and ends by
+        rewriting the per-sequence composition; a revision has neither. A keypoint
+        set spans sequences, and even a per-sequence series must stay out of the
+        composition, because a composition that moved on every save would block
+        every derivative each time an editor was closed.
+
+        **A replace over what the source claims, and nothing else**, the rule every
+        scan follows. Rows this dataset's own writer appended sit under no source
+        and survive; a claimed revision that has gone leaves.
+
+        Each revision is checked against the digest recorded when it was written.
+        A file whose size and modification time have not moved since the last scan
+        keeps the digest it had, so a rescan of many unchanged revisions reads
+        none of them.
+
+        Raises:
+            ValueError: *source* declares no series.
+            LabelSeriesTamperedError: A claimed revision's bytes have changed.
+        """
+        if source.series is None:
+            msg = f"labels source {source.id!r} declares no series"
+            raise ValueError(msg)
+        spec = series_spec(source.series)
+        index_path = series_index_path(self, spec.name)
+        ensure_series_root(index_path.parent, spec)
+
+        if source.mode == "files":
+            payloads = sorted(self._source_files(source))
+        else:
+            base = self.resolve_source_path(source)
+            found = (
+                base.rglob(spec.payload_filename)
+                if source.recursive
+                else base.glob(spec.payload_filename)
+            )
+            payloads = sorted(
+                path
+                for path in found
+                if path.is_file() and revision_of(path.parent.name)
+            )
+
+        carried = carried_series_digests(self, spec.name)
+        rows = [
+            row_for_revision_file(
+                self,
+                path,
+                series=spec.name,
+                source_id=source.id,
+                known_digest=carried.get(path.resolve(), ""),
+            )
+            for path in payloads
+        ]
+
+        claim = self.source_claim(source)
+        with index_lock(index_path):
+            committed = index_records(read_label_series(self, spec.name))
+            preserved = [row for row in committed if not self._row_claimed(row, claim)]
+            merged: list[dict[str, object]] = [
+                *[dict(row) for row in preserved],
+                *[dataclasses.asdict(row) for row in rows],
+            ]
+            write_label_series_rows(index_path, merged)
+        print(f"[index_label_series:{spec.name}] {len(merged)} -> {index_path}")
+        return index_path
 
     def index_labels_raw(
         self,

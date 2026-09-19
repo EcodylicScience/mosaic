@@ -25,7 +25,7 @@ from pathlib import Path
 
 from mosaic.core.annotations.model import AnnotationObject, AnnotationSet
 
-__all__ = ["write_coco_keypoints"]
+__all__ = ["coco_keypoints_document", "write_coco_keypoints"]
 
 
 def write_coco_keypoints(
@@ -49,7 +49,23 @@ def write_coco_keypoints(
         The path written.
     """
     json_path = Path(json_path)
+    document = coco_keypoints_document(annotations)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    _ = json_path.write_text(json.dumps(document, indent=indent))
+    return json_path
 
+
+def coco_keypoints_document(annotations: AnnotationSet) -> dict[str, object]:
+    """*annotations* as the COCO Keypoints mapping, not yet serialized.
+
+    Separate from :func:`write_coco_keypoints` for a caller that decides the
+    serialization itself. A label series stores the document compact and with
+    sorted keys, because its digest is what says whether a save changed anything
+    and indentation is not a change.
+
+    Ids are assigned by position, so the same frames in the same order always
+    produce the same document.
+    """
     category = {
         "id": 1,
         "name": annotations.categories[0] if annotations.categories else "animal",
@@ -63,25 +79,28 @@ def write_coco_keypoints(
     images: list[dict[str, object]] = []
     records: list[dict[str, object]] = []
     for image_id, frame in enumerate(annotations.frames, start=1):
-        images.append(
-            {
-                "id": image_id,
-                "file_name": frame.image_path.as_posix(),
-                "width": frame.width,
-                "height": frame.height,
-            }
-        )
+        image: dict[str, object] = {
+            "id": image_id,
+            "file_name": frame.image_path.as_posix(),
+            "width": frame.width,
+            "height": frame.height,
+        }
+        # Written only when the frame carries them, so a set that never knew its
+        # recordings produces the file it always did. COCO permits extra keys
+        # and every other reader ignores these.
+        if frame.video:
+            image["video"] = frame.video
+        if frame.frame_index >= 0:
+            image["frame_index"] = frame.frame_index
+        images.append(image)
         for obj in frame.objects:
             records.append(_write_object(obj, image_id, len(records) + 1))
 
-    document = {
+    return {
         "images": images,
         "annotations": records,
         "categories": [category],
     }
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    _ = json_path.write_text(json.dumps(document, indent=indent))
-    return json_path
 
 
 def _write_object(

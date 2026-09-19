@@ -76,6 +76,7 @@ _RAW_MINTERS = frozenset(
         "train_run_id",
         "infer_run_id",
         "convert_points_run_id",
+        "prepare_training_data_run_id",
         "transcode_run_id",
         "export_run_id",
         "frames_run_id",

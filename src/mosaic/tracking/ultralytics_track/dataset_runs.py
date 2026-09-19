@@ -66,7 +66,7 @@ from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_input
 from mosaic.tracking.common.ultralytics_env import progress_activity
 from mosaic.tracking.external.runner.ultralytics_protocol import TrackRequest
-from mosaic.tracking.model_refs import resolve_model
+from mosaic.tracking.model_refs import observed_model_source, resolve_model
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
     TrackerSetting,
@@ -385,6 +385,7 @@ def run_ultralytics(
             # Which Ultralytics ran is a property of the machine, so it is
             # recorded beside the variant as provenance and enters no digest.
             "ultralytics_version": probe.ultralytics_version,
+            **observed_model_source(resolved_model),
         },
     )
     scope_entries = scope.op_entries if scope is not None else None

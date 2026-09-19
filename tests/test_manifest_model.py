@@ -202,7 +202,7 @@ class TestSerialization:
     def test_the_header_is_regenerated_on_every_write(self, tmp_path: Path) -> None:
         path = tmp_path / "dataset.yaml"
         write_manifest(path, new_manifest("x"))
-        assert "mosaic dataset manifest (v2)" in path.read_text(encoding="utf-8")
+        assert "mosaic dataset manifest (v3)" in path.read_text(encoding="utf-8")
 
     def test_a_written_manifest_reads_back_identical(self, tmp_path: Path) -> None:
         manifest = new_manifest("full")

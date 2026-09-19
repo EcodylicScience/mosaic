@@ -57,6 +57,22 @@ def _points_conversion(ds: Dataset, params: dict[str, object]) -> list[Path]:
     return [xml, images]
 
 
+def _keypoint_revision(ds: Dataset, params: dict[str, object]) -> list[Path]:
+    """One saved revision of the set ``minimal_op_params`` names."""
+    from mosaic.core.pipeline.label_series_index import write_series_revision
+
+    saved = write_series_revision(
+        ds,
+        series="keypoints",
+        key="set-a",
+        payload=b'{"images":[],"annotations":[],"categories":[]}',
+        origin={},
+        n_records=0,
+    )
+    _ = params
+    return [saved.path]
+
+
 def _directory(key: str) -> Callable[[Dataset, dict[str, object]], list[Path]]:
     def build(ds: Dataset, params: dict[str, object]) -> list[Path]:
         directory = Path(ds.resolve_path(str(params[key])))
@@ -68,6 +84,7 @@ def _directory(key: str) -> Callable[[Dataset, dict[str, object]], list[Path]]:
 
 _BUILDERS: dict[str, Callable[[Dataset, dict[str, object]], list[Path]]] = {
     "convert-points": _points_conversion,
+    "prepare-training-data": _keypoint_revision,
     "train-litpose": _directory("project"),
     "train-localizer": _directory("dataset_dir"),
     "train-points": lambda ds, params: _yolo(ds, str(params["data"])),

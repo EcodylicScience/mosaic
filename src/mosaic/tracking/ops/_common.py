@@ -18,6 +18,12 @@ from pydantic import TypeAdapter, ValidationError
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.file_digest import file_digest
+from mosaic.core.pipeline.models import (
+    PREPARED_DATA_KINDS,
+    model_index_path,
+    prepared_artifact_cell,
+)
+from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.markers import (
     InflightMarker,
@@ -137,6 +143,46 @@ def _listing_under(root: Path) -> list[str]:
             size = -1
         entries.append(f"{f.relative_to(root).as_posix()}:{size}")
     return entries
+
+
+def resolve_training_data(ds: Dataset, reference: str) -> Path:
+    """What a training op's data argument names: a path, or a preparation run.
+
+    A training op has always taken a path. It now also takes the run identifier
+    of a preparation -- ``prepare-training-data`` or ``convert-points`` -- and
+    reads what that run wrote, the way a model reference may be a path or the run
+    that trained it.
+
+    The difference matters to identity. The reference string is part of a
+    training run's parameters, so it is hashed. A path is a location: the same
+    data at two places mints two models, and moving a dataset re-mints every one.
+    A run identifier is content, so it names the same data from anywhere, and it
+    moves exactly when the annotations behind it do.
+
+    A path wins when it exists, as it does for a model reference. A reference
+    that names neither is returned as the path it spells, so the caller's own
+    "not found" is what is reported rather than a second one from here.
+    """
+    candidate = Path(ds.resolve_path(reference))
+    if candidate.exists():
+        return candidate
+    parsed = parse_op_run_id(reference)
+    if parsed is None or parsed.kind not in PREPARED_DATA_KINDS:
+        return candidate
+    index_path = model_index_path(ds, parsed.kind)
+    if not index_path.exists():
+        return candidate
+    import pandas as pd
+
+    frame = pd.read_csv(index_path, dtype="string", keep_default_na=False)
+    if "run_id" not in frame.columns:
+        return candidate
+    match = frame[frame["run_id"] == reference]
+    if match.empty:
+        return candidate
+    row = {str(name): str(value) for name, value in match.iloc[-1].items()}
+    stored = prepared_artifact_cell(row)
+    return Path(ds.resolve_path(stored)) if stored else candidate
 
 
 def fingerprint_yolo_dataset(data_yaml: Path) -> str:

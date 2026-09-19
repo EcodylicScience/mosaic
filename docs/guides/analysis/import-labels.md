@@ -6,6 +6,10 @@ classifiers train on them, `overlay` draws them, and clustering is scored agains
 Three steps, the same shape as importing tracks: declare where the files are, scan,
 convert.
 
+Keypoint annotations for training a pose model are a different kind of label and
+arrive a different way, as saved revisions: see [train a pose
+model](../tracking/train-a-pose-model.md#5-train-one-model-from-several-datasets).
+
 ```bash
 mosaic sources add -m dataset.yaml --kind labels \
     --path /data/boris_exports --patterns '*.csv' --src-format boris_aggregated_csv

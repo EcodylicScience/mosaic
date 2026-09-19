@@ -17,11 +17,43 @@ Note:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+
+
+PREPARED_DATA_KINDS: Final[frozenset[str]] = frozenset(
+    {"convert-points", "prepare-training-data"}
+)
+"""The ``models/<kind>/`` directories that hold training *data*, not a model.
+
+A prepared dataset lives under ``models/`` because that root is what a trainer
+reads and writes. It carries no weights, so anything that judges a directory
+there as a trained model has to be told which ones are not. Named here, once,
+because the two readers that need it -- the trained-model inventory and the
+prepared-dataset one -- would otherwise each keep a list that drifts.
+"""
+
+
+PREPARED_ARTIFACT_COLUMNS: Final = ("artifact_path", "data_yaml")
+"""Where a prepared-data row names what a trainer is handed, newest first.
+
+``convert-points`` records ``data_yaml``. ``prepare-training-data`` records
+``artifact_path``, because its artifact is a ``data.yaml``, a ``.slp`` file or a
+Lightning Pose project depending on the target.
+"""
+
+
+def prepared_artifact_cell(row: Mapping[str, str]) -> str:
+    """The stored path of what a trainer is handed, from one prepared-data row."""
+    for column in PREPARED_ARTIFACT_COLUMNS:
+        stored = row.get(column, "").strip()
+        if stored:
+            return stored
+    return ""
 
 
 def model_run_root(ds: Dataset, model_name: str, run_id: str) -> Path:

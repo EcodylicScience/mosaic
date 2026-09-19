@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 import pandas as pd
 
+from mosaic.core.pipeline.label_series import LABEL_SERIES, SERIES_MARKER
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.scope import Scope
 
@@ -59,8 +60,14 @@ __all__ = [
     "root_subdirectories",
 ]
 
-IndexShape = Literal["root", "per_subdir"]
-"""Whether a root holds one ``index.csv`` or one per child directory."""
+IndexShape = Literal["root", "per_subdir", "label_series"]
+"""Whether a root holds one ``index.csv``, one per child directory, or one per series.
+
+``label_series`` is ``labels_raw``'s second shape. ``per_subdir`` would be wrong
+for it: that root's children are mostly uploaded entry folders, which hold no
+index, so every one of them would be offered to every pass as an absent file.
+A series directory is recognized by its marker instead.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +93,10 @@ _ROOT_SHAPES: Final[tuple[tuple[str, IndexShape], ...]] = (
     # declares no extra path columns for the same reason ``tracks_raw`` declares
     # none: its rows carry ``abs_path`` and nothing else that is a path.
     ("labels_raw", "root"),
+    # The versioned series under the same root, each with an index of its own.
+    # Without this a library's claimed revisions -- absolute paths into other
+    # datasets -- would be invisible to the portability passes.
+    ("labels_raw", "label_series"),
     ("media", "root"),
     ("tracks", "root"),
     # ``per_subdir``, not ``root``: every model index is ``models/<kind>/index.csv``
@@ -184,6 +195,11 @@ def iter_dataset_indexes(
         columns = tuple(lookup.get(key, ()))
         if shape == "root":
             found.append(DatasetIndex(key, root / "index.csv", columns))
+            continue
+        if shape == "label_series":
+            for name in sorted(LABEL_SERIES):
+                if (root / name / SERIES_MARKER).is_file():
+                    found.append(DatasetIndex(key, root / name / "index.csv", columns))
             continue
         for name in root_subdirectories(ds, key):
             found.append(DatasetIndex(key, root / name / "index.csv", columns))

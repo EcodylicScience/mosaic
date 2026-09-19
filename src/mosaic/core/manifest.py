@@ -44,9 +44,11 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     TypeAdapter,
     ValidationError,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -54,6 +56,7 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.strict_model import StrictModel
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.user_paths import user_path
+from mosaic.core.pipeline.label_series import series_spec
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOT, TRACKING_ROOTS
 from mosaic.core.typed_attribute import (
     TypedAttributeType,
@@ -72,6 +75,7 @@ __all__ = [
     "AnyScanSource",
     "DatasetManifest",
     "DatasetTag",
+    "LibraryLink",
     "GroupFrom",
     "LabelsScanSource",
     "ManifestVersionError",
@@ -102,12 +106,17 @@ __all__ = [
 ]
 
 
-MANIFEST_VERSION: Final = 2
+MANIFEST_VERSION: Final = 3
 """The manifest format this code writes.
 
 Bumped only for a change that older code would misread. Reading tolerates any
 version at or below this one and migrates it in memory; a *higher* one raises
 :class:`ManifestVersionError` rather than being read with the wrong rules.
+
+3 added ``series`` to a labels source. Sources forbid unknown keys, so older
+code met one with a schema error naming a field, which sends a reader looking
+for a typo. The bump makes it the version error it is. ``libraries`` needed no
+bump: it is a top-level key, and unknown top-level keys are preserved.
 """
 
 MANIFEST_FILENAMES: Final = ("dataset.yaml", "dataset.yml", "dataset.json")
@@ -401,14 +410,40 @@ class ScanSource(StrictModel):
             seen.add(entry)
         return value
 
+    def _inapplicable_fields(self) -> frozenset[str]:
+        """The knobs that mean nothing on this source, given its mode."""
+        return _DISCOVERY_FIELDS if self.files else frozenset()
+
+    @model_serializer(mode="wrap")
+    def _omit_what_was_never_declared(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, object]:
+        """Leave an inapplicable knob out of a dump unless the source declared it.
+
+        The rules below read ``model_fields_set`` to tell a knob the author wrote
+        from one sitting at its default, and they are right to: a manifest that
+        says ``recursive: true`` beside a file list is stating something false,
+        even though the value is the default.
+
+        A plain dump defeats that. It names every field, so re-parsing it made
+        every file source look as though it had declared a walk, and a dataset
+        holding one refused every later edit to its manifest. Omitting what was
+        never declared keeps the two in step: what a dump says is what the source
+        said, and ``model_validate(model_dump())`` returns the source it was given.
+        """
+        dumped: dict[str, object] = handler(self)
+        for name in self._inapplicable_fields() - self.model_fields_set:
+            _ = dumped.pop(name, None)
+        return dumped
+
     @model_validator(mode="after")
     def _a_file_list_declares_no_walk(self) -> Self:
         if not self.files:
             return self
-        declared = _DISCOVERY_FIELDS & self.model_fields_set
+        declared = sorted(_DISCOVERY_FIELDS & self.model_fields_set)
         if declared:
             msg = (
-                f"source {self.id!r} lists files, so {sorted(declared)} "
+                f"source {self.id!r} lists files, so {declared} "
                 "do not apply -- a listed file is claimed whatever a glob says. "
                 "Drop them, or drop 'files' to make this a directory source."
             )
@@ -506,12 +541,76 @@ class TracksScanSource(RawScanSource):
     src_format: str = "calms21_npy"
 
 
+_PER_SEQUENCE_FIELDS: Final = frozenset(
+    {
+        "patterns",
+        "src_format",
+        "exclude_patterns",
+        "multi_sequences_per_file",
+        "group_from",
+        "group_pattern",
+        "md5",
+    }
+)
+"""Knobs that describe a per-sequence label file. Meaningless on a series source."""
+
+
 class LabelsScanSource(RawScanSource):
-    """A source feeding ``labels_raw``."""
+    """A source feeding ``labels_raw``.
+
+    Two shapes, told apart by *series*.
+
+    Left unset, this is a source of uploaded label files: one current state per
+    sequence, read by the converter *src_format* names, indexed into
+    ``labels_raw/index.csv``.
+
+    Set, it claims **revisions of a versioned label series** -- an editor's saved
+    states, such as the keypoint annotator's -- usually from another dataset.
+    Those are indexed into ``labels_raw/<series>/index.csv``, one row per
+    revision, and never enter a per-sequence composition. File mode is the usual
+    spelling: a dataset that trains a model lists exactly the revisions it
+    trained on, which is also the record of what it consumed.
+
+    Attributes:
+        series: A declared label series, or ``None`` for uploaded label files.
+    """
 
     kind: Literal["labels"] = "labels"
     patterns: tuple[str, ...] = ("*.csv", "*.npy", "*.pkl")
     src_format: str = "boris_aggregated_csv"
+    series: str | None = None
+
+    def _inapplicable_fields(self) -> frozenset[str]:
+        base = super()._inapplicable_fields()
+        return base | _PER_SEQUENCE_FIELDS if self.series is not None else base
+
+    @model_validator(mode="after")
+    def _a_series_declares_no_per_sequence_knobs(self) -> Self:
+        """What a series holds is fixed by its declaration, not by the source.
+
+        The payload filename and format come from the series registry. A source
+        that also named a glob or a converter would be stating the same fact a
+        second way, and the two could disagree. ``model_fields_set`` is read
+        rather than the values, because the defaults are per-sequence defaults
+        and are present on every instance; a dump leaves the undeclared ones out,
+        so this holds across a round trip too.
+        """
+        if self.series is None:
+            return self
+        try:
+            _ = series_spec(self.series)
+        except KeyError as exc:
+            raise ValueError(str(exc.args[0])) from exc
+        declared = sorted(_PER_SEQUENCE_FIELDS & self.model_fields_set)
+        if declared:
+            msg = (
+                f"source {self.id!r} claims the {self.series!r} label series, so "
+                f"{declared} do not apply -- a series fixes what its files "
+                "are. Drop them, or drop 'series' to make this a source of "
+                "uploaded label files."
+            )
+            raise ValueError(msg)
+        return self
 
 
 AnyScanSource = MediaScanSource | TracksScanSource | LabelsScanSource
@@ -754,6 +853,59 @@ class DatasetTag(StrictModel):
         return self
 
 
+# ---------------------------------------------------------------- library links
+
+
+class LibraryLink(StrictModel):
+    """Another dataset this one may resolve trained models from.
+
+    A model is named by its run identifier, which is content and carries no
+    location. A link is what lets that name resolve when the model was trained
+    somewhere else: a lookup that misses this dataset's own ``models/`` index
+    falls through to each linked library in declaration order. The identifier an
+    inference run mints is therefore the same from every dataset that links the
+    library, and the same again after the model is copied in beside it.
+
+    **A link, like a source, may point outside the dataset.** It names storage
+    this dataset reads and does not own, and nothing is ever written through it.
+
+    Attributes:
+        id: What the link is called. Unique within a manifest.
+        path: Where the library is. Absolute, or relative to this dataset, which
+            is the spelling that survives the tree being mounted elsewhere.
+        uuid: The library manifest's own ``uuid``, recorded when the link was
+            made. It is what tells a library that moved from a different dataset
+            now sitting at the old path; empty means it was never recorded and
+            is not checked.
+        added_at: When the link was declared, ISO-8601 UTC.
+    """
+
+    id: str
+    path: str
+    uuid: str = ""
+    added_at: str = ""
+
+    @field_validator("id")
+    @classmethod
+    def _id_is_a_safe_token(cls, value: str) -> str:
+        if not _SOURCE_ID_RE.match(value):
+            msg = (
+                f"library id {value!r} must start with a letter or digit and hold "
+                f"only letters, digits, '.', '_' and '-', up to "
+                f"{SOURCE_ID_MAX_LENGTH} characters"
+            )
+            raise ValueError(msg)
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def _path_is_not_empty(cls, value: str) -> str:
+        if not value.strip():
+            msg = "library path must not be empty"
+            raise ValueError(msg)
+        return value
+
+
 # ---------------------------------------------------------------- the manifest
 
 
@@ -773,6 +925,8 @@ class DatasetManifest(BaseModel):
         continuous_groups: Groups whose sequences are time divisions of one
             recording rather than independent trials. See
             :meth:`is_continuous_group`.
+        libraries: Other datasets a model reference may resolve through. See
+            :class:`LibraryLink`.
         meta: Structured per-subsystem metadata, written by converters.
         preserved: Top-level keys this version does not model, kept verbatim.
         migrated_from: The version read from disk, when it was not the current
@@ -796,6 +950,7 @@ class DatasetManifest(BaseModel):
     notes: str = ""
     tags: tuple[DatasetTag, ...] = ()
     continuous_groups: tuple[str, ...] = ()
+    libraries: tuple[LibraryLink, ...] = ()
     meta: dict[str, JsonValue] = Field(default_factory=dict)
 
     # Not written as themselves: `preserved` is re-emitted by name after the
@@ -879,6 +1034,20 @@ class DatasetManifest(BaseModel):
                 msg = f"continuous_groups lists {name!r} more than once"
                 raise ValueError(msg)
             seen.add(name)
+        return value
+
+    @field_validator("libraries")
+    @classmethod
+    def _library_ids_are_unique(
+        cls, value: tuple[LibraryLink, ...]
+    ) -> tuple[LibraryLink, ...]:
+        """Two links may not share an id: removal and provenance both name one."""
+        seen: set[str] = set()
+        for link in value:
+            if link.id in seen:
+                msg = f"two library links share the id {link.id!r}"
+                raise ValueError(msg)
+            seen.add(link.id)
         return value
 
     def is_continuous_group(self, group: str) -> bool:
@@ -1052,7 +1221,9 @@ def manifest_header() -> str:
 #          purpose; its files are indexed by absolute abs_path into an index
 #          that stays inside. `mosaic scan` rescans exactly this set, and a
 #          source directory is never created. Give `files:` to claim an
-#          explicit selection rather than everything a glob matches.
+#          explicit selection rather than everything a glob matches. A labels
+#          source with `series:` claims revisions of a versioned label series
+#          (an editor's saved states) instead of uploaded label files.
 # notes    Free text that travels with the dataset.
 # tags     Typed dataset attributes: the same type / type_constraints / value
 #          shape as the sequence and individual tags in mosaic-api. These
@@ -1063,6 +1234,11 @@ def manifest_header() -> str:
 #          group, and their media resolves as one shared timeline. This is what
 #          `overlap_frames` reads across; mosaic verifies it against the
 #          recorded frame ranges and refuses where the two disagree.
+# libraries
+#          Other datasets a trained model may be resolved from, by run id. A
+#          link may point OUTSIDE the dataset, like a source; nothing is ever
+#          written through it. `uuid` is the library's own, so a library that
+#          moved is told apart from a different dataset at the old path.
 # meta     Structured per-subsystem metadata, written by converters.
 #
 # Comments are NOT preserved across a save: this header is regenerated and
@@ -1081,6 +1257,19 @@ def _source_payload(source: AnyScanSource) -> dict[str, JsonValue]:
     both -- writing them would produce a file this code could not read back.
     """
     payload: dict[str, JsonValue] = {"id": source.id, "path": source.path}
+    series = source.series if isinstance(source, LabelsScanSource) else None
+    if series is not None:
+        # The whole recipe of a series source: where, which files, which series.
+        # The per-sequence knobs are refused on it, so writing their defaults
+        # would produce a file this code could not read back.
+        if source.mode == "files":
+            payload["files"] = list(source.files)
+        else:
+            payload["recursive"] = source.recursive
+        payload["series"] = series
+        if source.added_at:
+            payload["added_at"] = source.added_at
+        return payload
     if source.mode == "files":
         payload["files"] = list(source.files)
     else:
@@ -1124,6 +1313,15 @@ def _tag_payload(tag: DatasetTag) -> dict[str, JsonValue]:
     return payload
 
 
+def _library_payload(link: LibraryLink) -> dict[str, JsonValue]:
+    payload: dict[str, JsonValue] = {"id": link.id, "path": link.path}
+    if link.uuid:
+        payload["uuid"] = link.uuid
+    if link.added_at:
+        payload["added_at"] = link.added_at
+    return payload
+
+
 def manifest_payload(manifest: DatasetManifest) -> dict[str, JsonValue]:
     """The manifest as the mapping that gets serialized.
 
@@ -1156,6 +1354,8 @@ def manifest_payload(manifest: DatasetManifest) -> dict[str, JsonValue]:
         payload["tags"] = [_tag_payload(tag) for tag in manifest.ordered_tags()]
     if manifest.continuous_groups:
         payload["continuous_groups"] = list(manifest.continuous_groups)
+    if manifest.libraries:
+        payload["libraries"] = [_library_payload(link) for link in manifest.libraries]
     if manifest.meta:
         payload["meta"] = dict(manifest.meta)
 

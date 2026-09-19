@@ -660,8 +660,15 @@ def make_data_yaml(
     kpt_shape: list[int] | None = None,
     yaml_name: str = "data.yaml",
     has_test: bool | None = None,
+    portable: bool = False,
 ) -> str:
     """Write a YOLO-style data.yaml, optionally with pose kpt_shape.
+
+    *portable* leaves the ``path`` key out. Ultralytics then takes the
+    directory the YAML is in as the dataset root, so the tree works wherever
+    it is copied or mounted. A relative ``path`` is not the same thing: it is
+    resolved against the process's working directory, or against the
+    Ultralytics datasets folder, never against the YAML.
 
     Parameters
     ----------
@@ -693,6 +700,8 @@ def make_data_yaml(
         "nc": len(names),
         "names": names,
     }
+    if portable:
+        del data["path"]
     if has_test:
         data["test"] = "test/images"
     if kpt_shape is not None:
@@ -711,8 +720,11 @@ def make_polo_data_yaml(
     *,
     yaml_name: str = "data.yaml",
     has_test: bool | None = None,
+    portable: bool = False,
 ) -> str:
     """Write a POLO-style data.yaml with radii instead of kpt_shape.
+
+    *portable* leaves the ``path`` key out; see :func:`make_data_yaml`.
 
     Parameters
     ----------
@@ -759,6 +771,8 @@ def make_polo_data_yaml(
         "names": {i: name for i, name in enumerate(names_list)},
         "radii": {int(k): float(v) for k, v in radii.items()},
     }
+    if portable:
+        del data["path"]
     if has_test:
         data["test"] = "test/images"
 

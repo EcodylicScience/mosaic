@@ -40,6 +40,7 @@ from mosaic.core.scope import Scope
 
 from ._read import IndexReader
 from .contributors import inventory_contributor, registered_inventory_kinds
+from .label_series import label_series_records
 from .media import media_derivative_record
 from .model import (
     AnyRecord,
@@ -89,7 +90,13 @@ per-entry file set could never contain, which reads as a row with no output.
 """
 
 CORE_KINDS: frozenset[ArtifactKind] = frozenset(
-    {"feature", "tracks-variant", "labels-variant", "media-derivative"}
+    {
+        "feature",
+        "tracks-variant",
+        "labels-variant",
+        "label-series",
+        "media-derivative",
+    }
 )
 """The kinds ``core`` can report on by itself, with no producer registered."""
 
@@ -511,6 +518,16 @@ def inventory(
             # analysis read, and reporting one would hide the other.
             for media_target in ("analysis", "playback"):
                 records.append(media_derivative_record(ds, media_target, asked, reader))
+            continue
+        if kind == "label-series":
+            # Keyed by revision rather than by entry, so it cannot share the
+            # entry-keyed builder table below. Guarded like a contributor: a
+            # library's series index reaches into other datasets, and one
+            # unreadable row must not cost the rest of the answer.
+            try:
+                records.extend(label_series_records(ds, asked, reader))
+            except Exception as exc:
+                errors.append(f"{kind}: {exc}")
             continue
         builder = _CORE_BUILDERS.get(kind)
         if builder is not None:

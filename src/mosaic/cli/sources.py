@@ -190,6 +190,17 @@ def add_source(
             help="Checksum each file. On by default: the composition hash is over these.",
         ),
     ] = True,
+    series: Annotated[
+        str | None,
+        typer.Option(
+            "--series",
+            help=(
+                "Labels only: claim revisions of this versioned label series "
+                "(e.g. 'keypoints') instead of uploaded label files. Usually "
+                "with --file, naming exactly the revisions wanted."
+            ),
+        ),
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     """Declare a source. A source may point outside the dataset, unlike a root."""
@@ -242,6 +253,27 @@ def add_source(
             if match_mode is not None:
                 media["match_mode"] = match_mode
             source = MediaScanSource.model_validate(media)
+        elif series is not None:
+            if kind != "labels":
+                fail("--series applies to --kind labels: a series is a kind of label.")
+            per_sequence = {
+                "--patterns": patterns,
+                "--src-format": src_format,
+                "--exclude-patterns": exclude_patterns,
+                "--group-from": group_from,
+                "--group-pattern": group_pattern,
+            }
+            given = [name for name, value in per_sequence.items() if value is not None]
+            if multi_sequences_per_file:
+                given.append("--multi-sequences-per-file")
+            if given:
+                fail(
+                    f"--series and {', '.join(given)} cannot both be given: a "
+                    "series fixes what its files are."
+                )
+            claimed: dict[str, object] = dict(common)
+            claimed["series"] = series
+            source = LabelsScanSource.model_validate(claimed)
         else:
             raw: dict[str, object] = dict(common)
             raw["md5"] = md5
@@ -336,14 +368,21 @@ def remove_source(
     dataset = load_dataset(manifest)
     checked = _check_kind(kind)
     try:
-        claim = dataset.source_claim(
-            next(s for s in dataset.scan_sources(checked) if s.id == source_id)
-        )
+        matched = next(s for s in dataset.scan_sources(checked) if s.id == source_id)
+        claim = dataset.source_claim(matched)
     except StopIteration:
         declared = sorted(s.id for s in dataset.scan_sources(checked))
         fail(f"no {checked} source named {source_id!r}; declared: {declared or 'none'}")
     orphaned = dataset.remove_scan_source(checked, source_id)
-    dropped = dataset.drop_claimed_rows(checked, claim) if drop_rows else 0
+    # A series source's rows are in that series' own index, not the root's.
+    from mosaic.core.manifest import LabelsScanSource
+
+    claimed_series = matched.series if isinstance(matched, LabelsScanSource) else None
+    dropped = (
+        dataset.drop_claimed_rows(checked, claim, series=claimed_series)
+        if drop_rows
+        else 0
+    )
 
     if as_json:
         emit_json(

@@ -88,6 +88,7 @@ from mosaic.media_probe_config import media_thresholds
 from mosaic.tracking import register_ops
 from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION
 from mosaic.tracking.ops.infer import infer_run_id
+from mosaic.tracking.ops.prepare import ResolvedSet, prepare_training_data_run_id
 from mosaic.tracking.ops.train import train_run_id
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
@@ -585,6 +586,56 @@ def _train_run_id_from_a_bare_path() -> str:
     )
 
 
+def _prepared_sets() -> tuple[ResolvedSet, ...]:
+    # Two sets from two datasets, given out of order on purpose: the minter sorts
+    # them, so the order sets are named in is not a difference.
+    return (
+        ResolvedSet(
+            origin_uuid="uuid-b",
+            set_key="21-rats",
+            revision=4,
+            digest="bbbbbbbbbbbbbbbb",
+            payload=Path("labels_raw/keypoints/21-rats/rev4/annotations.coco.json"),
+        ),
+        ResolvedSet(
+            origin_uuid="uuid-a",
+            set_key="17-mice",
+            revision=12,
+            digest="aaaaaaaaaaaaaaaa",
+            payload=Path("labels_raw/keypoints/17-mice/rev12/annotations.coco.json"),
+        ),
+    )
+
+
+def _prepare_run_id() -> str:
+    # The references name no revision here and one in the case below. Both select
+    # the same content, and a selector is not content, so the two are one run.
+    return prepare_training_data_run_id(
+        "prepare-training-data",
+        OPS["prepare-training-data"].version,
+        _op_params(
+            "prepare-training-data",
+            sets=[{"set_key": "17-mice"}, {"set_key": "21-rats"}],
+        ),
+        _prepared_sets(),
+    )
+
+
+def _prepare_run_id_with_revisions_named() -> str:
+    return prepare_training_data_run_id(
+        "prepare-training-data",
+        OPS["prepare-training-data"].version,
+        _op_params(
+            "prepare-training-data",
+            sets=[
+                {"set_key": "21-rats", "revision": 4},
+                {"set_key": "17-mice", "revision": 12},
+            ],
+        ),
+        tuple(reversed(_prepared_sets())),
+    )
+
+
 def _infer_run_id() -> str:
     return infer_run_id(
         "infer-points",
@@ -748,6 +799,10 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "train-pose/run-id": _train_run_id,
     "train-pose/run-id-bare-base": _train_run_id_from_a_bare_path,
     "infer-points/run-id": _infer_run_id,
+    "prepare-training-data/run-id": _prepare_run_id,
+    "prepare-training-data/run-id-revisions-named": (
+        _prepare_run_id_with_revisions_named
+    ),
 }
 
 
@@ -796,6 +851,7 @@ def test_every_family_is_covered() -> None:
         "train-sleap",
         "train-litpose",
         "convert-points",
+        "prepare-training-data",
         "resample-tracks",
         "infer-pose",
         "infer-points",

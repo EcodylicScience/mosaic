@@ -47,6 +47,49 @@ The second exists because no glob can express an arbitrary subset. Importing ele
 the thirty clips in a folder is a files source; two files sources may share a directory
 as long as their lists are disjoint.
 
+## Two rules under `labels_raw`
+
+Everything a person authored about the data lives in `labels_raw`, and it follows one
+of two rules depending on how it got there.
+
+| | An uploaded label file | A saved series, such as `keypoints/` |
+| --- | --- | --- |
+| What it is | The current truth about a sequence | One saved state of an editor |
+| When it changes | Whatever was computed from it is stale | A new revision is written beside the old |
+| Who reads it | A converter reads the current file | A consumer names the revision it read |
+
+The second rule exists because an annotation tool saves often, and because a trained
+model has to be answerable for the exact annotations it saw. If saving replaced the
+previous state, the model's answer would change underneath it. So a revision is never
+rewritten, a save that changed nothing writes nothing, and revisions simply
+accumulate.
+
+Which rule applies is declared, never guessed from a folder name: a series directory
+carries a marker file, and a folder you happen to call `keypoints` elsewhere is an
+ordinary folder.
+
+## Libraries: a dataset that holds models
+
+A model trained on annotations from several datasets belongs to none of them. It lives
+in a **library**, which is an ordinary dataset used for that purpose, and other
+datasets **link** it:
+
+```yaml
+libraries:
+  - id: lab
+    path: ../libraries/lab
+    uuid: 6f1c...            # the library's own id, recorded when the link was made
+```
+
+A link is to models what a source is to raw files: a declared place outside the
+dataset that it reads and never writes. A model reference that the dataset itself
+cannot resolve is looked up in each linked library, so a model is named by run id the
+same way wherever it is used, and that name does not change when the library moves.
+
+Training in a library **copies** the annotated images it uses. That costs disk and buys
+independence: a dataset the library drew from can be archived without breaking any
+model trained from it.
+
 ## Identity a scan will not overwrite
 
 A scan refreshes the cells it measured — duration, frame count, resolution — and never

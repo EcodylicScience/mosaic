@@ -3,7 +3,7 @@
 
 # Ops
 
-17 ops are registered. An op is the unit `mosaic run --kind <kind>`
+18 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
@@ -59,6 +59,46 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 ??? note "`JsonValue`"
 
     No parameters.
+
+#### `prepare-training-data`
+
+Version `0.1` &middot; `mosaic.tracking.ops.prepare.PrepareTrainingDataOp`
+
+Merge revisions of keypoint annotation sets into one training dataset.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `sets` | list of `KeypointSetRef` | _required_ | min items `1` | The annotation sets to train on, merged into one dataset. |
+| `target` | `"yolo-pose"` \| `"polo"` \| `"sleap"` \| `"litpose"` | `"yolo-pose"` |  | Which trainer's layout to write. |
+| `bbox` | `BboxPolicy` | _constructed_ |  | How an instance's box is derived from its keypoints when the annotation carries none of its own. |
+| `point_index` | `integer` | `0` | >= `0` | polo only: which keypoint of each instance is the point. |
+| `radius` | `number` | `100.0` | > `0` | polo only: the detection radius. [px] |
+| `split` | tuple of (`number`, `number`, `number`) | `[0.8, 0.15, 0.05]` | min items `3`, max items `3` | Train, validation and test fractions. |
+| `split_by` | `"sequence"` \| `"group"` \| `"frame"` | `"sequence"` |  | What is kept together when the split is drawn. sequence keeps one recording's frames in one split, which is what makes a validation score honest. group keeps a whole sequence_groups label together. frame splits image by image, and its scores are optimistic. |
+| `sequence_groups` | `object` | _constructed_ |  | group only: the group each sequence belongs to, keyed by sequence name or by '<origin_uuid>:<sequence>' where names repeat across datasets. A sequence not listed is a group of its own. |
+| `seed` | `integer` | `42` |  | Random seed for the split assignment. |
+| `symlink_images` | `boolean` | `false` |  | Symlink images instead of copying them. Off by default: a symlinked tree stops being reproducible the moment a source dataset moves. |
+
+??? note "`BboxPolicy`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `method` | `"tight"` \| `"isotropic"` \| `"oriented"` | `"tight"` |  | Which strategy derives the box from the keypoints when the source supplied none. Known values are tight, isotropic and oriented. |
+    | `margin` | `number` | `0.1` |  | The padding added around the tight hull of valid keypoints, as a fraction of the hull's own size. Used only when method is tight. |
+    | `pad_frac_of_body` | `number` | `0.3` |  | The padding added around the tight hull of valid keypoints, as a fraction of body length. Used when method is isotropic, and as the isotropic fallback for oriented when the head or tail keypoint is invalid, or when the head-tail distance is zero. |
+    | `min_pad_px` | `number` | `20.0` |  | The floor for the padding around the tight hull, for degenerate or overlapping keypoints. Used when method is isotropic, and as the isotropic fallback for oriented when the head or tail keypoint is invalid, or when the head-tail distance is zero. [px] |
+    | `length_pad_frac` | `number` | `0.25` |  | The padding extending the oriented rectangle beyond the head and tail, as a fraction of the head-tail distance. Used only when method is oriented. |
+    | `side_pad_frac` | `number` | `0.35` |  | The padding extending the oriented rectangle across the head-tail axis, as a fraction of the head-tail distance. Used only when method is oriented. |
+    | `head_index` | `integer` \| `None` | `null` |  | The keypoint index of the head. Required when method is oriented. When given together with tail_index for isotropic, body length is the distance between them instead of the tight hull's diagonal. |
+    | `tail_index` | `integer` \| `None` | `null` |  | The keypoint index of the tail. Required when method is oriented. When given together with head_index for isotropic, body length is the distance between them instead of the tight hull's diagonal. |
+
+??? note "`KeypointSetRef`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `set_key` | `string` | _required_ |  | The set's key in the keypoints label series. |
+    | `origin_uuid` | `string` | `""` |  | The manifest uuid of the dataset the set was saved in. Needed only when two datasets' sets share a key; empty matches the one that has it. |
+    | `revision` | `integer` \| `None` | `null` |  | Which revision to read. Left unset, the latest one indexed when the run is named. The number selects and is recorded; only the content it resolves to enters the run identifier. |
 
 #### `resample-tracks`
 

@@ -22,6 +22,7 @@ _MINIMAL: dict[str, dict[str, object]] = {
     "infer-points": {"model": "models/infer-points/run/best.pt"},
     "infer-pose": {"model": "models/infer-pose/run/best.pt"},
     "litpose": {"model_path": "models/litpose/run"},
+    "prepare-training-data": {"sets": [{"set_key": "set-a"}]},
     "resample-tracks": {"target_fps": 30.0},
     "sleap": {"model_paths": ["models/sleap/run"]},
     "train-litpose": {"project": "models/train-litpose/project"},

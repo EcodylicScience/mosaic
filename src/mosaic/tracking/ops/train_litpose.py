@@ -29,11 +29,16 @@ from mosaic.core.params import (
 )
 from mosaic.tracking.common.entry import phase_activity
 from mosaic.tracking.common.training_progress import epoch_reporter
-from mosaic.tracking.model_refs import resolve_model, resolve_model_set
+from mosaic.tracking.model_refs import (
+    observed_model_source,
+    resolve_model,
+    resolve_model_set,
+)
 from mosaic.tracking.ops._common import (
     claim_run_root,
     ensure_models_root,
     fingerprint_dataset,
+    resolve_training_data,
 )
 from mosaic.tracking.ops.train import (
     finalize_training,
@@ -224,7 +229,7 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
             kind=self.kind,
             version=self.version,
             params=params,
-            data_path=Path(ds.resolve_path(params.project)),
+            data_path=resolve_training_data(ds, params.project),
             fingerprint=fingerprint_dataset,
             base_model=params.base_model,
             extra={"config": file_digest(base_config)},
@@ -242,7 +247,7 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
         from mosaic.tracking.litpose.training import train_litpose
 
         ensure_models_root(ds)
-        project = Path(ds.resolve_path(params.project))
+        project = resolve_training_data(ds, params.project)
         # Named or vendored, resolved once: the digest below and the trainer must
         # read the same file, and the identity is over its contents.
         base_config = (
@@ -253,11 +258,13 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
 
         base_run_id = ""
         base_digest = ""
+        base_origin = ""
         overrides: dict[str, JsonValue] = dict(params.litpose_overrides or {})
         if params.base_model:
             base = resolve_model(ds, params.base_model, self.kind)
             base_run_id = base.model_id
             base_digest = base.digest
+            base_origin = observed_model_source(base).get("model_source", "")
             weights = base.artifacts[0].file_for("weights")
             if weights is not None:
                 overrides.setdefault("model.checkpoint", str(weights))
@@ -268,6 +275,8 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
             print(f"[{self.kind}] {run_id} already trained; reusing it.")
             ctx.cache_hit()
             return run_id
+        # Before training, never after: see TrainPoseOp.run.
+        data_fingerprint = fingerprint_dataset(project)
         ctx.set_total(params.max_epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
@@ -317,5 +326,8 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
             artifact_shape="directory",
             artifact_path=produced,
             model_type=resolved.model_type,
+            data_path=project,
+            data_fingerprint=data_fingerprint,
+            base_origin=base_origin,
         )
         return run_id

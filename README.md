@@ -35,7 +35,7 @@ tells you exactly what a dataset already holds.
 | **Model** | t-SNE, k-means, Ward, AR-HMM, keypoint-MoSeq; XGBoost / Lightning-Action / FERAL classifiers; three visual identity models |
 | **Annotate** | Overlay video with identities, poses and predicted behavior; egocentric crops for identity work |
 | **Train pose** | No tracks yet? Sample frames for annotation and train YOLO pose, POLO point detection, or a heatmap localizer from CVAT / COCO / Lightning Pose |
-| **Operate** | **25 CLI commands** and **17 ops** behind one job contract, with a run log, cancellation, and a dataset inventory |
+| **Operate** | **27 CLI commands** and **18 ops** behind one job contract, with a run log, cancellation, and a dataset inventory |
 
 ## Install
 

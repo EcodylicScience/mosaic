@@ -52,6 +52,7 @@ __all__ = [
     "RoleSpec",
     "model_id_for_ref",
     "model_id_for_ref_set",
+    "observed_model_source",
     "resolve_model",
     "resolve_model_set",
     "spec_for",
@@ -311,12 +312,19 @@ class ResolvedModel:
     ``run_id`` is the training run that produced these weights, or ``""`` for
     weights handed in as a bare path -- there is no run to name. ``digest`` is
     what makes that second case identifiable anyway.
+
+    ``library_id`` and ``library_uuid`` say which linked library served a
+    registered run, and are empty when this dataset's own index did. They are
+    provenance and never reach identity: the run identifier already names the
+    model, and naming where it was found would make one model two.
     """
 
     artifacts: tuple[ModelArtifact, ...]
     run_id: str
     digest: str
     model_type: str = ""
+    library_id: str = ""
+    library_uuid: str = ""
 
     @property
     def path(self) -> Path:
@@ -545,8 +553,17 @@ def _model_type_of(artifact: ModelArtifact, spec: ModelKindSpec) -> str:
 # --- Public entry points ----------------------------------------------------
 
 
-def _registered_artifact_path(ds: Dataset, ref: str, kind: str) -> Path:
-    """The artifact a registered training run left behind, or raise.
+@dataclass(frozen=True, slots=True)
+class _RegisteredArtifact:
+    """Where a registered run's artifact is, and which dataset's index said so."""
+
+    path: Path
+    library_id: str = ""
+    library_uuid: str = ""
+
+
+def _artifact_path_in(ds: Dataset, ref: str, kind: str) -> Path | None:
+    """The artifact *ds*'s own index registers for *ref*, or ``None``.
 
     ``artifact_path`` when the row carries one, ``best_model_path`` otherwise --
     rows written before a model could be a directory name only the single file,
@@ -556,17 +573,19 @@ def _registered_artifact_path(ds: Dataset, ref: str, kind: str) -> Path:
     to its defaults, pandas turns it into ``NaN``, which is *truthy*, so an
     absent ``artifact_path`` resolved to the literal path ``nan`` instead of
     falling back.
+
+    The cell is resolved against *ds*, the dataset that wrote it. A model index
+    stores its paths relative to its own root, so a row found in a linked
+    library and resolved against the dataset that followed the link would name
+    a path under the wrong tree.
     """
     idx_path = model_index_path(ds, kind)
     if not idx_path.exists():
-        raise FileNotFoundError(
-            f"Model reference '{ref}' is not a path and {idx_path} does not "
-            f"exist; cannot resolve as a run_id."
-        )
+        return None
     df = pd.read_csv(idx_path, keep_default_na=False)
     match = df[df["run_id"].astype(str) == ref]
     if match.empty:
-        raise KeyError(f"No model run_id '{ref}' found in {idx_path}")
+        return None
     row = match.iloc[0]
     stored = ""
     if "artifact_path" in match.columns:
@@ -576,11 +595,56 @@ def _registered_artifact_path(ds: Dataset, ref: str, kind: str) -> Path:
     return ds.resolve_path(stored)
 
 
+def _registered_artifact(ds: Dataset, ref: str, kind: str) -> _RegisteredArtifact:
+    """The artifact a registered training run left behind, or raise.
+
+    This dataset's own index is asked first, then each linked library in
+    declaration order. Own-first is what makes a model copied in beside a
+    library keep resolving locally: the copy shares the run identifier, so both
+    rows name the same content and the nearer one is the right answer.
+
+    Raises:
+        FileNotFoundError: No index for *kind* exists here or in any library.
+        KeyError: An index exists and none of them registers *ref*.
+    """
+    own = _artifact_path_in(ds, ref, kind)
+    if own is not None:
+        return _RegisteredArtifact(path=own)
+
+    searched = [str(model_index_path(ds, kind))]
+    any_index = model_index_path(ds, kind).exists()
+    for linked in ds.linked_libraries():
+        idx_path = model_index_path(linked.dataset, kind)
+        searched.append(str(idx_path))
+        any_index = any_index or idx_path.exists()
+        found = _artifact_path_in(linked.dataset, ref, kind)
+        if found is not None:
+            return _RegisteredArtifact(
+                path=found,
+                library_id=linked.link.id,
+                library_uuid=linked.dataset.uuid or "",
+            )
+
+    own_index = searched[0]
+    libraries = (
+        f" Linked libraries searched: {', '.join(searched[1:])}."
+        if len(searched) > 1
+        else ""
+    )
+    if not any_index:
+        raise FileNotFoundError(
+            f"Model reference '{ref}' is not a path and {own_index} does not "
+            f"exist; cannot resolve as a run_id.{libraries}"
+        )
+    raise KeyError(f"No model run_id '{ref}' found in {own_index}.{libraries}")
+
+
 def resolve_model(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
     """Resolve a model reference to its artifact, lineage and content digest.
 
     *ref* is either a filesystem path to a model artifact or a prior training
-    ``run_id`` in ``models/<kind>/index.csv``. This powers
+    ``run_id`` in ``models/<kind>/index.csv`` -- this dataset's, or that of a
+    library its manifest links. This powers
     retrain-from-existing-model and the trained-model -> TREx ``detect_model``
     handoff.
 
@@ -606,7 +670,8 @@ def resolve_model(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
         FileNotFoundError: The reference names nothing, or the artifact is
             missing a required file.
         NotADirectoryError: A directory-shaped kind was given a file.
-        KeyError: A ``run_id`` absent from the index.
+        KeyError: A ``run_id`` absent from this dataset's index and from every
+            linked library's.
     """
     spec = spec_for(kind)
     # Only the filesystem probe is expanded. `ref` itself stays as given, because
@@ -624,13 +689,38 @@ def resolve_model(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
             model_type=_model_type_of(artifact, spec),
         )
 
-    artifact = _resolve_artifact(_registered_artifact_path(ds, ref, kind), spec)
+    registered = _registered_artifact(ds, ref, kind)
+    artifact = _resolve_artifact(registered.path, spec)
     return ResolvedModel(
         artifacts=(artifact,),
         run_id=ref,
         digest=_identity((artifact,), spec),
         model_type=_model_type_of(artifact, spec),
+        library_id=registered.library_id,
+        library_uuid=registered.library_uuid,
     )
+
+
+def observed_model_source(*resolved: ResolvedModel | None) -> dict[str, str]:
+    """Which linked library served a run's models, as variant provenance.
+
+    Merged into the ``observed`` mapping a variant sidecar records. Empty when
+    every model came from this dataset's own index or from a bare path, so a
+    sidecar written before libraries existed and one written now for a local
+    model are byte-identical.
+
+    Provenance and never identity. The run identifier already names the model;
+    which dataset happened to hold it is what a later export needs to find the
+    weights, and must not make one model mint two variants.
+    """
+    sources = sorted(
+        {
+            f"{model.library_id}@{model.library_uuid}"
+            for model in resolved
+            if model is not None and model.library_id
+        }
+    )
+    return {"model_source": ",".join(sources)} if sources else {}
 
 
 def resolve_model_set(
@@ -667,6 +757,7 @@ def resolve_model_set(
 
     artifacts: list[ModelArtifact] = []
     registered: list[str] = []
+    served: list[_RegisteredArtifact] = []
     model_type = ""
     for ref in refs:
         reference = user_path(ref)
@@ -675,8 +766,10 @@ def resolve_model_set(
                 raise FileNotFoundError(
                     f"{spec.label} directory does not exist: {reference}"
                 )
-            reference = _registered_artifact_path(ds, ref, kind)
+            found = _registered_artifact(ds, ref, kind)
+            reference = found.path
             registered.append(ref)
+            served.append(found)
         artifact = _resolve_artifact(reference, spec)
         artifacts.append(artifact)
         if not model_type:
@@ -685,12 +778,15 @@ def resolve_model_set(
     # A run identity names one run. A set assembled from several has no single
     # one to name, so it falls back to the content digest -- exactly as
     # identifying, and it does not pretend otherwise.
-    run_id = registered[0] if len(refs) == 1 and len(registered) == 1 else ""
+    single = len(refs) == 1 and len(registered) == 1
+    run_id = registered[0] if single else ""
     return ResolvedModel(
         artifacts=tuple(artifacts),
         run_id=run_id,
         digest=_identity(artifacts, spec),
         model_type=model_type,
+        library_id=served[0].library_id if single else "",
+        library_uuid=served[0].library_uuid if single else "",
     )
 
 

@@ -75,7 +75,7 @@ from mosaic.tracking.litpose.version import (
     LITPOSE_VERSION,
     TRAIN_LITPOSE_KIND,
 )
-from mosaic.tracking.model_refs import resolve_model_set
+from mosaic.tracking.model_refs import observed_model_source, resolve_model_set
 
 from .run import run_litpose_predict
 
@@ -281,6 +281,7 @@ def run_litpose(
         observed={
             "model_id": resolved_model.model_id,
             "model_type": resolved_model.model_type,
+            **observed_model_source(resolved_model),
         },
     )
     scope_entries = scope.op_entries if scope is not None else None

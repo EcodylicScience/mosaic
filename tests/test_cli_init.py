@@ -35,7 +35,7 @@ class TestInit:
 
     def test_a_fresh_manifest_is_at_the_current_version(self, tmp_path: Path) -> None:
         _ = runner.invoke(app, ["init", str(tmp_path / "ds")])
-        assert read_manifest_file(tmp_path / "ds")["manifest_version"] == 2
+        assert read_manifest_file(tmp_path / "ds")["manifest_version"] == 3
 
     def test_the_name_defaults_to_the_directory(self, tmp_path: Path) -> None:
         target = tmp_path / "cage-b"

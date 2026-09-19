@@ -332,6 +332,29 @@ class IndexCSV(Generic[RowT]):
         with index_lock(self.path):
             self._append_locked(rows)
 
+    def append_holding_lock(self, rows: list[RowT]) -> None:
+        """Append *rows* for a caller that already holds ``index_lock(self.path)``.
+
+        :meth:`append` is a read-merge-write under the lock, which is all most
+        writers need. A writer whose *decision* depends on what the index holds
+        -- "is this the next revision, or the one already there?" -- has to read,
+        decide, act and append inside one locked block, or a second writer's row
+        lands between its read and its append. Taking the lock twice is not an
+        option: it is not re-entrant.
+
+        The caller must have called :meth:`ensure` before taking the lock, for
+        the reason :meth:`append` gives.
+        """
+        self._append_locked(rows)
+
+    def read_holding_lock(self) -> pd.DataFrame:
+        """The whole index, for a caller that already holds the lock.
+
+        The read half of :meth:`append_holding_lock`. It is the same typed read
+        every other path uses, so an all-digit cell stays a string.
+        """
+        return self._read_frame()
+
     def _append_locked(self, rows: list[RowT]) -> None:
         """Body of :meth:`append`, with the index lock already held.
 

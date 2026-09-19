@@ -65,6 +65,7 @@ from mosaic.core.pipeline.composition import SourceMember
 
 from mosaic.core.helpers import validate_entry_name
 from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline.label_series import is_under_label_series
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOT, is_under_tracking_root
 from mosaic.core.pipeline.media_index import mtime_iso
 
@@ -223,6 +224,14 @@ def iter_track_files(
     would match nothing while the walk descended anyway. That is not a gap
     callers could have worked around; it was unexpressible.
 
+    **A label series is never descended into either**, for the sibling reason. A
+    series holds an editor's saved revisions, indexed one row per revision under
+    their own rule. Read as uploaded label files, a projected scoring export
+    would become a second, conflicting source for its sequence, and its checksum
+    would move that sequence's composition on every save. It is recognized by
+    the marker the series writer leaves, not by a directory name, so a folder a
+    user happened to call ``keypoints`` is still walked.
+
     Skips are counted rather than announced per file: on a real tracker root that
     would be thousands of lines. The count goes to stderr in one line, because a
     scan that quietly returns less than the caller expected is the thing worth
@@ -230,6 +239,7 @@ def iter_track_files(
     """
     by_resolved: dict[Path, tuple[Path, os.stat_result]] = {}
     skipped = 0
+    series_skipped = 0
     for directory in search_dirs:
         for pattern in patterns:
             matches = directory.rglob(pattern) if recursive else directory.glob(pattern)
@@ -243,6 +253,9 @@ def iter_track_files(
                 if is_under_tracking_root(path.parts):
                     skipped += 1
                     continue
+                if is_under_label_series(path):
+                    series_skipped += 1
+                    continue
                 resolved = path.resolve()
                 if resolved in by_resolved:
                     continue
@@ -251,6 +264,13 @@ def iter_track_files(
         print(
             f"[INFO] skipped {skipped} generated file(s) under {TRACKING_ROOT}/ "
             "-- tracker intermediates are not raw tracks",
+            file=sys.stderr,
+        )
+    if series_skipped:
+        print(
+            f"[INFO] skipped {series_skipped} file(s) inside a versioned label "
+            "series -- those are indexed per revision, by a source that declares "
+            "`series`",
             file=sys.stderr,
         )
     return [by_resolved[key] for key in sorted(by_resolved)]

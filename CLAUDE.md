@@ -292,7 +292,10 @@ named roots:
                   derivative, reached through `media_routing_context`
 - `media/frames/` — extracted PNGs for annotation (root key `frames`)
 - `tracks_raw/`   — user-uploaded raw tracks + `index.csv`
-- `labels_raw/`   — user-uploaded raw labels + `index.csv`
+- `labels_raw/`   — user-uploaded raw labels + `index.csv`, and beside them the
+                  **versioned label series** (`keypoints/`, with `behavior/`
+                  reserved): an editor's saved revisions, under a different
+                  change rule. See "Versioned label series" below
 - `_tracking/<tool>/` — run-addressed *raw* output of integrated trackers
                   (`trex` / `sleap` / `litpose` / `ultralytics`) and of model inference
                   (`infer-pose` / `infer-points` / `infer-localizer`), before
@@ -320,7 +323,9 @@ named roots:
 [`core/manifest.py`](src/mosaic/core/manifest.py) as pydantic models that take no
 import from `Dataset`; `Dataset` holds one and exposes its fields as properties.
 
-- `manifest_version: 2` is current. An older manifest is migrated **in memory**
+- `manifest_version: 3` is current (3 added `series` to a labels source, which
+  an older reader would have met as a schema error rather than as the version
+  error it is). An older manifest is migrated **in memory**
   on read and stays as it is on disk until something saves, so a read-only mount
   works. A *newer* one raises rather than being read under the wrong rules.
 - **Unknown top-level keys are preserved**, which is what made retiring
@@ -330,6 +335,9 @@ import from `Dataset`; `Dataset` holds one and exposes its fields as properties.
 - `save()` is atomic. `Dataset.mutate_manifest()` is the read-modify-write seam
   for a writer that may be racing another one.
 - **Roots live inside the dataset; sources deliberately do not.** See below.
+- **`libraries:` links the datasets a trained model may be resolved from.** A
+  top-level key, so it needed no version bump: an older reader preserves it.
+  See "Library datasets" below.
 
 ### Scan sources: where a dataset draws its raw files from
 
@@ -379,6 +387,100 @@ and those methods resolve through `resolve_media_root()` rather than pinning a
 root a `_raw` name would promise. They read and write the **originals** index;
 the derivative index (`media/index.csv`, one row per transcode) is reached
 through `media_routing_context`.
+
+### Versioned label series
+
+`labels_raw` holds two things under two rules, and **the rule is declared per
+series in a registry, never inferred from a path**
+([`core/pipeline/label_series.py`](src/mosaic/core/pipeline/label_series.py)).
+
+| | Uploaded label files | A series (`labels_raw/<series>/<key>/rev<N>/`) |
+| --- | --- | --- |
+| Rule | Truth: one current state per sequence | Versioned: revisions coexist |
+| A change | Moves the composition, blocks while derivatives exist | Is a new `rev<N>`; nothing blocks |
+| Consumer | Reads the current state | Names the revision it read |
+| Index | `labels_raw/index.csv`, per sequence | `labels_raw/<series>/index.csv`, per revision |
+| Composition | Enters `sequences.csv` | **Never** enters it |
+
+A series is an editor's committed state projected to disk on every close -- the
+keypoint annotator's now (`keypoints`, unit `set`), the scoring tool's later
+(`behavior`, reserved and unspecified). Hashing rule P1 already said an editor's
+state is projected into `labels_raw` and that a new kind is a subdirectory, never
+a root. The promoted-correction series in `tracks_raw` is the older cousin and
+follows the *other* rule: there the newest revision supersedes the rest.
+
+- **mosaic owns the layout; a caller hands it content.**
+  `write_series_revision` (generic) and `write_keypoint_set_revision`
+  ([`core/annotations/projection.py`](src/mosaic/core/annotations/projection.py))
+  choose every filename and revision number. mosaic-api supplies bytes and an
+  `origin` mapping, which is where a Dolt commit belongs.
+- **A revision is immutable; a save that changed nothing writes nothing.** The
+  digest of the new payload is compared with the latest revision's. The payload
+  must therefore be deterministic: frames sorted, keys sorted, compact, and no
+  timestamp (timestamps go in `manifest.json`). A revision whose bytes changed
+  afterwards raises `LabelSeriesTamperedError` at scan rather than being
+  re-indexed under its new digest, which would rewrite what a model saw.
+- **Numbering happens inside `index_lock` on the series index**, and consults the
+  directory as well as the index, so two saves landing together never share a
+  number and a revision whose row was lost still occupies its own.
+- **A series is recognized by its `.mosaic-series` marker, never by its name.**
+  `is_under_label_series` is the path-component exclusion in `iter_track_files`,
+  the sibling of `is_under_tracking_root` and needed for the same reason:
+  `exclude_patterns` matches basenames. Without it a recursive labels source
+  rooted at `labels_raw/` would index a projected file as an uploaded one. The
+  marker also makes creation race-safe: mosaic's own bookkeeping files in a
+  half-made series directory are not a squatter.
+- **A series source is `LabelsScanSource(series=...)`**, usually in file mode,
+  naming exactly the revisions wanted. `SourceKind` stays at three, and
+  `_scan_raw_sources` routes it to `Dataset.index_label_series`, never to
+  `_index_raw`, which is per-sequence and ends in a mandatory composition write.
+  Series rows are never pruned as unsourced: the rows a dataset wrote for its
+  own saves sit under no source at all.
+- **A consumed revision is never pruned.** No prune verb exists yet; the rule is
+  stated so the verb is built to it.
+
+### Library datasets
+
+A model trained from several datasets' annotations lives in a **library**, an
+ordinary dataset other datasets link through `libraries:` in the manifest. mosaic
+knows nothing of mosaic-api's groups; the API keys one library per group.
+
+- **A model is referenced by run id, across datasets.** `_registered_artifact`
+  ([`tracking/model_refs.py`](src/mosaic/tracking/model_refs.py)) asks this
+  dataset's own index, then each linked library in order, and resolves the cell
+  against the dataset that *wrote* it. Own-first, so a model copied in beside a
+  library keeps resolving locally under the same id. Every tracker, `infer-*` and
+  `base_model` call site funnels through `resolve_model` / `resolve_model_set`.
+- **The reference string is hashed** (it is in `params.identity_dump()`), which is
+  why it must be a run id and not a path: a path is a location, and the same
+  model at two paths would mint two inference identities.
+- **The link carries the library's manifest `uuid`.** Unreachable is skipped with
+  a warning, like an unmounted source; a reachable dataset with a different uuid
+  raises `LibraryMismatchError`. One level deep, never transitive.
+- **`prepare-training-data` copies its images** and gives each a collision-free
+  name. mosaic-extracted frames are all `frame_NNNNNN.png` under their sequence
+  directory, and `write_split_tree` keyed on basename, so a union across
+  sequences silently overwrote image and label both; it now takes `name_of`.
+  The op's identity is over the resolved revisions' **content digests, sorted**,
+  measured off disk at plan time. A revision *number* is a selector and is never
+  hashed, so naming revision 12 and leaving it to resolve to 12 are one run.
+- **A training op's data argument may be a preparation run id**
+  (`resolve_training_data`), which is what makes a training identity
+  location-free. `data.yaml` is written with **no `path` key**: Ultralytics then
+  roots the tree at the YAML's own directory. A relative `path` does *not* mean
+  that; it resolves against the working directory or the Ultralytics datasets
+  folder.
+- **The provenance chain is walked, never stored**
+  ([`tracking/training_provenance.py`](src/mosaic/tracking/training_provenance.py)):
+  model row (`data_path`, `data_fingerprint`) -> prepared-data row
+  (`consumed_sets`) -> series index row -> the revision's `manifest.json`. A
+  training run root also holds `training.json`. That name is deliberate:
+  `params.json` belongs to one schema with one reader, and
+  `tests/test_run_params_reader.py` holds the line.
+- `models/` also holds prepared training **data**
+  (`PREPARED_DATA_KINDS` in `core/pipeline/models.py`), which has no weights. The
+  trained-model inventory skips those kinds and a `prepared-dataset` kind reports
+  them; judged as models they all read as damaged.
 
 ### Dataset notes and tags
 
@@ -506,7 +608,8 @@ reporting *attempts*) and `mosaic features list` (the registry) each do not.
 - **Coverage is which keys exist, never a flag**, and the key type differs by
   kind: `(group, sequence)` for a feature run or tracks variant,
   `(group, sequence, camera)` for a frame run (the cameras of one recording
-  share an entry), the run id for a trained model, and a media row's
+  share an entry), the run id for a trained model or a prepared dataset, the
+  revision for a label series, and a media row's
   `video_uuid` for a transcode. **Transcode has no run-addressed directory at
   all**, so a single `coverage(storage, run_id)` signature makes an
   already-clean corpus read as permanently incomplete forever.
@@ -667,6 +770,8 @@ src/mosaic/
 │   │   ├── manifest.py         # unified manifest + per-sequence iterator
 │   │   ├── loading.py          # sequence identity / NN-lookup construction
 │   │   ├── index_csv.py        # generic typed IndexCSV + index_records
+│   │   ├── label_series.py     # the versioned-series registry, layout and marker (no pandas)
+│   │   ├── label_series_index.py  # series index row, revision writer, revision reader
 │   │   ├── inventory/          # what a dataset holds: coverage, status, params.json
 │   │   ├── graph/              # a pipeline as a file: recipe, plan, submit, run a step
 │   │   ├── writers.py          # parquet output writing, overlap trimming
@@ -761,6 +866,14 @@ raw tracks/labels
    ├─ scan_tracks() / scan_labels()   → <root>_raw/index.csv
    ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet
    └─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
+
+an editor's saved state (mosaic-api on annotator close, or a notebook)
+   └─ write_keypoint_set_revision()  → labels_raw/keypoints/<set>/rev<N>/   (immutable)
+
+in a library dataset, linked from each project by `libraries:`
+   ├─ scan_labels() over a series source → labels_raw/keypoints/index.csv (claimed revisions)
+   ├─ prepare-training-data   → models/prepare-training-data/<run_id>/  (images copied)
+   └─ train-*  (data = that run id)     → models/<kind>/<run_id>/ + training.json
 
 run_trex / run_sleap / run_litpose / infer-*
    ├─ (working)              → _tracking/<tool>/<run_id>/<group>__<seq>/
@@ -1199,6 +1312,18 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   `IndexLockUnsupported` immediately rather than spinning the full timeout and
   then blaming a writer that does not exist. It never degrades to an unlocked
   write, and an unfamiliar errno keeps polling rather than guessing.
+- **A label series revision is immutable, and a series never enters a
+  composition.** A revision is what a trained model names as what it saw. One
+  that could be rewritten, or whose save moved a sequence's composition and so
+  blocked every derivative on each annotator close, defeats the reason the series
+  exists. A changed state is a new `rev<N>`; nothing is replaced.
+- **A model is named by run id, never by where it is.** Across datasets that
+  means a `libraries:` link, not a path into another dataset's `models/`. The
+  reference string is hashed, so a path would make one model mint a different
+  inference identity from every place it was read.
+- **Only a revision's content is hashed, never its number.** Two spellings that
+  select the same bytes are one run, and annotations restored to an earlier state
+  reuse what was computed for it.
 
 ## Common Pitfalls
 

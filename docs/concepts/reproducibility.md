@@ -50,6 +50,27 @@ Coverage is which entries exist, never a boolean. "Complete" means every entry i
 has an artifact, and `complete-but-drifted` means they all exist but the code that
 produced them has since moved.
 
+## A trained model can say what it saw
+
+A model's identifier covers its training data by content, so it is reproducible in the
+usual sense. It is also *traceable*, because each step records the one before it:
+
+```
+the model              records the prepared dataset it was trained on
+the prepared dataset   records each annotation set, revision and content digest it merged
+the revision           records what was noted when it was saved -- a database commit, say
+```
+
+`mosaic models provenance <run_id>` walks that chain and prints it. Nothing stores the
+chain as a whole, for the same reason status is not stored: a summary is a second thing
+to keep agreeing with the records it summarizes. When a link is missing the answer
+says where it stopped, for instance a model trained from a folder of labels that no
+preparation run wrote, or a revision in a dataset that has since been archived.
+
+Only the revision's *content* enters an identifier. Its number is a label, so asking
+for "the latest" and asking for the number that resolves to are the same run, and
+annotations restored to an earlier state reuse what was computed for that state.
+
 ## What this does not promise
 
 Determinism is a property of the *code*, and the identifier only records inputs. A
