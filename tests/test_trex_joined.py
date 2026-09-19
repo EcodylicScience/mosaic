@@ -71,8 +71,24 @@ class TestTime:
         out = retime_joined_frame(exported, concatenated_timeline(SESSION))
         assert out["time"].iloc[-1] != pytest.approx(exported["time"].iloc[-1])
 
-    def test_frame_is_left_alone(self) -> None:
-        """VideoSource sums the clip lengths, so the global index is already right."""
+    def test_frame_stays_on_the_axis_the_tracker_numbered(self) -> None:
+        """Left alone -- and **not** because it is right.
+
+        The premise this used to assert, that ``VideoSource`` sums the clip
+        lengths so the global index is already correct, is false. TRex
+        under-counts every file it opens and reads only that many frames, so a
+        joined conversion drops the tail of each clip: 1,800 media frames
+        measured down to 1,788 on a six-clip fixture, 390,986 to 390,916 on the
+        real seventeen-clip session.
+
+        The column stays where the tracker put it because mosaic holds no map
+        from that axis to the media's, and inventing one would fabricate a
+        correspondence -- the rule that a tracker reports and a feature derives,
+        applied to a column nobody can derive. So this assertion is now the net
+        against "fixing" the observed drift by quietly shifting ``frame``, which
+        would move every coordinate onto a frame it was not measured in. The
+        shortfall is *reported* instead, by the bridge.
+        """
         exported = _export()
         out = retime_joined_frame(exported, concatenated_timeline(SESSION))
         assert list(out["frame"]) == list(exported["frame"])

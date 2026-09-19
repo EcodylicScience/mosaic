@@ -340,3 +340,66 @@ def test_a_run_whose_outputs_are_not_parquet_is_not_called_damaged(
     assert record.status != "inconsistent", (
         "attributing no files is missing evidence, not evidence of damage"
     )
+
+
+# --- a frame axis that is not its media's ----------------------------------
+
+
+def _measured_variant(ds: Dataset, *, tracked: int, media: int | None) -> str:
+    """One tracks variant over one entry, with both measurements recorded."""
+    from mosaic.core.pipeline.tracks_index import write_tracks_row
+    import pandas as pd
+
+    out = ds.get_root("tracks") / "measured" / "seq_m.parquet"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {"frame": range(tracked), "id": [0] * tracked, "X": 0.0, "Y": 0.0}
+    ).to_parquet(out)
+    write_tracks_row(
+        ds,
+        run_id="measured",
+        group="",
+        sequence="seq_m",
+        out_path=out,
+        producer="trex",
+        std_format="trex_v2",
+        n_rows=tracked,
+        media_frames=media,
+    )
+    return "measured"
+
+
+def test_a_short_frame_axis_is_named_on_the_variant(scenario_dataset: Dataset) -> None:
+    """Reported in ``extra``, never as a status.
+
+    The status set is five closed members crossing the CLI and mosaic-api's
+    wire, and this is not a state of the artifact: the table is there, it is
+    complete, and everything computed inside it is right. What it does not do is
+    address the video its frames name.
+    """
+    run_id = _measured_variant(scenario_dataset, tracked=1782, media=1800)
+
+    found = inventory(scenario_dataset, kinds=["tracks-variant"])
+    record = next(r for r in found.records if r.run_id == run_id)
+
+    assert record.extra["frame_axis_mismatch"] == frozenset({"seq_m"})
+    assert record.status == "complete"
+
+
+def test_an_agreeing_variant_names_nothing(scenario_dataset: Dataset) -> None:
+    run_id = _measured_variant(scenario_dataset, tracked=1800, media=1800)
+
+    found = inventory(scenario_dataset, kinds=["tracks-variant"])
+    record = next(r for r in found.records if r.run_id == run_id)
+
+    assert record.extra["frame_axis_mismatch"] == frozenset()
+
+
+def test_an_unmeasured_variant_names_nothing(scenario_dataset: Dataset) -> None:
+    """Absence of an answer is not evidence that the two agree."""
+    run_id = _measured_variant(scenario_dataset, tracked=1782, media=None)
+
+    found = inventory(scenario_dataset, kinds=["tracks-variant"])
+    record = next(r for r in found.records if r.run_id == run_id)
+
+    assert record.extra["frame_axis_mismatch"] == frozenset()

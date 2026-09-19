@@ -87,6 +87,14 @@ class RunLogSnapshot(TypedDict):
     consumer can act on the difference and a tri-state would make every reader
     special-case it.
 
+    ``entries_frame_axis_mismatch`` counts the entries whose published table
+    numbers a different span of frames from the media it was made from. It
+    accumulates like ``entries_failed`` and, unlike it, says nothing about the
+    attempt's success: the entry published, and everything computed inside its
+    table is right. What is wrong is only the correspondence between a ``frame``
+    in that table and a frame of the video, which is what every consumer reading
+    pixels depends on.
+
     ``tracks_variant`` names the tracks recipes the attempt *read*, comma-joined
     and sorted, empty for a run that reads none. Never what an op *produced* --
     those are different relations and one key cannot hold both, which is what
@@ -114,6 +122,7 @@ class RunLogSnapshot(TypedDict):
     progress_total: int
     entries_failed: int
     entries_written: int
+    entries_frame_axis_mismatch: int
     cache_hit: bool
     tracks_variant: str
 
@@ -279,6 +288,28 @@ class JsonlRunLog:
         """
         self._emit("entry_error", key=key, error=error_json)
 
+    def frame_axis_mismatch(self, key: str, *, tracked: int, media: int) -> None:
+        """One entry's published frame axis is not the length of its media's.
+
+        Recorded, never raised. The table is real and its own contents are
+        sound -- dropout counts, neighbour distances, body size and coverage are
+        all computed *within* the frame axis and do not care which video frame a
+        row corresponds to. What breaks is anything that takes a ``frame`` from
+        the table and reads a pixel at it, and that is a reason to tell someone,
+        not a reason to throw the table away.
+
+        The numbers travel with the event because the gap is the whole content of
+        the report: "1782 against 1800" says how far a late crop is off, where a
+        bare flag says only that something is wrong somewhere.
+
+        An ordinary event kind, for the reason :meth:`entry_failed` gives at
+        length -- an unrecognised ``ev`` falls off ``reduce_run_log``'s if/elif
+        chain, advancing liveness and changing nothing else -- and emphatically
+        not a status: this attempt is `finished`, and a run whose every entry
+        mismatched is still a run that did what it was asked.
+        """
+        self._emit("frame_axis_mismatch", key=key, tracked=tracked, media=media)
+
     def entries_written(self, count: int) -> None:
         """How many entries this attempt leaves holding a valid output row.
 
@@ -438,6 +469,7 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         "progress_total": 0,
         "entries_failed": 0,
         "entries_written": 0,
+        "entries_frame_axis_mismatch": 0,
         "cache_hit": False,
         "tracks_variant": "",
     }
@@ -472,6 +504,8 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
             snap["progress_total"] = rec.get("total_epochs", snap["progress_total"])
         elif ev == "entry_error":
             snap["entries_failed"] += 1
+        elif ev == "frame_axis_mismatch":
+            snap["entries_frame_axis_mismatch"] += 1
         elif ev == "entries_written":
             snap["entries_written"] = rec.get(
                 "entries_written", snap["entries_written"]

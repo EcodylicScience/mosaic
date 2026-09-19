@@ -67,7 +67,10 @@ from tests.helpers import scope_over
 
 
 def clean_facts_cells(
-    width: int = 640, height: int = 480, video_uuid: str = ""
+    width: int = 640,
+    height: int = 480,
+    video_uuid: str = "",
+    frame_count: int = 100,
 ) -> dict[str, object]:
     """Flat + JSON facts cells for one analysis-clean media row.
 
@@ -79,9 +82,9 @@ def clean_facts_cells(
         width=width,
         height=height,
         fps=30.0,
-        frame_count=100,
+        frame_count=frame_count,
         codec="h264",
-        duration=100 / 30.0,
+        duration=frame_count / 30.0,
         video_uuid=video_uuid,
         identity_scheme="video/1" if video_uuid else "",
     )
@@ -152,6 +155,15 @@ class FakeTrex:
     converted: list[Path] = field(default_factory=list)
     tracked: list[Path] = field(default_factory=list)
     npz_per_track: int = 1
+    npz_frames: int = 4
+    """How many frames each per-individual export carries.
+
+    Four by default, which is what every marker and reuse test here needs and
+    what they were written against. A test about the *frame axis* sets it: a
+    value short of the media's total is what TREx's joined conversion produces
+    when it drops the tail of each clip, and is the only way to reach that path
+    without a real tool.
+    """
     pv_beside_the_video: bool = False
     on_convert: Callable[[Path], None] | None = None
     sources: list[list[Path]] = field(default_factory=list)
@@ -217,14 +229,15 @@ class FakeTrex:
             # every bridge in this suite fail, which used to be swallowed and is
             # now recorded as a lost entry. Writing what TREx writes keeps the
             # suite exercising the real publish path instead of a broken one.
+            n = self.npz_frames
             np.savez(
                 data_dir / f"fish{i}.npz",
-                frame=np.arange(4),
-                time=np.arange(4) / 30.0,
+                frame=np.arange(n),
+                time=np.arange(n) / 30.0,
                 cm_per_pixel=np.array([1.0]),
                 **{
-                    "X#wcentroid": np.arange(4, dtype=float),
-                    "Y#wcentroid": np.arange(4, dtype=float),
+                    "X#wcentroid": np.arange(n, dtype=float),
+                    "Y#wcentroid": np.arange(n, dtype=float),
                 },
             )
         _ = (Path(seq_dir) / f"{Path(pv_path).stem}.results").write_bytes(b"results")
@@ -586,6 +599,7 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
         producer_run_id: str,
         video_paths: Sequence[Path],
         timeline: object,
+        media_frames: int | None,
         overwrite: bool,
     ) -> BridgeCounts | None:
         written.append(Path(f"{group}__{sequence}"))
@@ -824,11 +838,18 @@ def test_an_absent_uid_still_falls_back_to_the_path(
 # cannot see.
 
 
-def _session(ds: Dataset, *names: str, widths: dict[str, int] | None = None) -> None:
+def _session(
+    ds: Dataset,
+    *names: str,
+    widths: dict[str, int] | None = None,
+    frame_count: int = 100,
+) -> None:
     """Put *names* in one sequence, in the order given, each with an identity.
 
     *widths* overrides a clip's frame width, for the one case that needs clips
-    which cannot be read as one video.
+    which cannot be read as one video. *frame_count* is how many frames each clip
+    holds, so a caller can state the media axis its export is to be compared
+    against.
     """
     media_root = ds.get_root(ds.resolve_media_root())
     sizes = widths or {}
@@ -855,7 +876,9 @@ def _session(ds: Dataset, *names: str, widths: dict[str, int] | None = None) -> 
                 "codec": "h264",
                 "media_type": "video",
                 "video_order": order,
-                **clean_facts_cells(width=width, video_uuid=f"uid-{name}"),
+                **clean_facts_cells(
+                    width=width, video_uuid=f"uid-{name}", frame_count=frame_count
+                ),
             }
         )
     pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
@@ -997,3 +1020,139 @@ def test_a_joined_session_reuses_a_slot_that_proves_its_composition(
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
     assert len(trex.sources) == 1, "the slot's conversion covers this clip set"
     assert len(trex.tracked) == 1, "tracking is redone, never adopted"
+
+
+# --- the frame axis of a joined conversion ---------------------------------
+#
+# TREx's `FFmpegVideoCapture` under-counts every file it opens and then reads
+# only as many frames as it counted, so a session's clips convert into a `.pv`
+# that has dropped the tail of each one. Measured on a six-clip fixture carrying
+# its own frame numbers: 1,800 media frames converted to 1,788, the offset
+# constant inside each clip and stepping by two at every boundary. The published
+# table is then numbered on the tracker's axis while every consumer that reads
+# pixels is on the media's -- right at the start of a sequence and progressively
+# wrong through it.
+#
+# mosaic cannot correct that (it holds no map from one axis to the other, and
+# TREx records none), so what these pin is that it is *measured and reported*,
+# and that reporting it costs the table nothing.
+
+
+def _latest_snapshot(ds: Dataset) -> dict[str, object]:
+    """The folded run-log of the most recent attempt in *ds*."""
+    from mosaic.runlog import reduce_run_log, run_log_dir
+
+    logs = sorted(run_log_dir(ds.base_dir).glob("*.jsonl"))
+    snapshot = reduce_run_log(max(logs, key=lambda p: p.stat().st_mtime))
+    assert snapshot is not None
+    return dict(snapshot)
+
+
+def _tracks_row(ds: Dataset) -> "pd.Series[object]":
+    from mosaic.core.pipeline.tracks_index import read_tracks_index
+
+    frame = read_tracks_index(ds)
+    assert len(frame) == 1
+    return frame.iloc[0]
+
+
+def test_a_joined_session_records_the_length_of_its_media(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """The comparison needs both numbers, and this is where the second is taken."""
+    from mosaic.core.pipeline.tracks_index import read_media_frames
+
+    trex.npz_frames = 600
+    _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
+
+    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
+
+    assert read_media_frames(_tracks_row(ds)) == 600
+    assert _latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
+
+
+def test_a_short_joined_conversion_records_both_numbers(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """The defect itself: 596 frames published against 600 frames of media."""
+    from mosaic.core.pipeline.tracks_index import read_frame_extent, read_media_frames
+
+    trex.npz_frames = 596
+    _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
+
+    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
+
+    row = _tracks_row(ds)
+    assert read_media_frames(row) == 600
+    assert read_frame_extent(row) == (0, 595)
+    assert ds.frame_axis_mismatches() == {("", "sess"): (596, 600)}
+
+
+def test_a_short_joined_conversion_reports_itself_on_the_run_log(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """The record that survives a queue sending the child's stderr to DEVNULL."""
+    trex.npz_frames = 596
+    _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
+
+    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
+
+    assert _latest_snapshot(ds)["entries_frame_axis_mismatch"] == 1
+
+
+def test_a_short_joined_conversion_still_publishes_a_usable_table(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """Recorded, never refused -- and this is the assertion that holds that line.
+
+    Raising instead would be permanent. The condition is deterministic, so every
+    re-run fails the same entry, and a published table cannot be re-bridged
+    without re-tracking. Everything computed inside the table is unaffected by
+    the axis being short, so throwing it away would cost the analyses that never
+    depended on registration in order to flag the one thing that does.
+    """
+    trex.npz_frames = 596
+    _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
+
+    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
+
+    row = _tracks_row(ds)
+    table = ds.resolve_path(str(row["abs_path"]))
+    assert pd.read_parquet(table).shape[0] == 596
+    snapshot = _latest_snapshot(ds)
+    assert snapshot["entries_failed"] == 0
+    assert snapshot["entries_written"] == 1
+    assert snapshot["status"] == "finished"
+
+
+def test_an_analysis_range_run_asks_no_question(ds: Dataset, trex: FakeTrex) -> None:
+    """A run told to cover part of the video is not a run that lost the rest."""
+    from mosaic.core.pipeline.tracks_index import read_media_frames
+
+    trex.npz_frames = 100
+    _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
+
+    _ = dr.run_trex(ds, TrexParams(analysis_range=(0, 100)), scope_over(("", "sess")))
+
+    assert read_media_frames(_tracks_row(ds)) is None
+    assert ds.frame_axis_mismatches() == {}
+    assert _latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
+
+
+def test_a_single_clip_entry_asks_no_question(ds: Dataset, trex: FakeTrex) -> None:
+    """One file has no concatenation to lose frames at, so there is nothing to catch.
+
+    And a great deal to get wrong: ``frame_max`` is the last frame carrying a
+    row, not the last frame the tracker saw, so an animal that leaves before the
+    end of a single-clip video would otherwise be reported as a broken frame
+    axis on every ordinary run.
+    """
+    from mosaic.core.pipeline.tracks_index import read_media_frames
+
+    trex.npz_frames = 40
+    _session(ds, "c0.mp4", frame_count=300)
+
+    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
+
+    assert read_media_frames(_tracks_row(ds)) is None
+    assert ds.frame_axis_mismatches() == {}

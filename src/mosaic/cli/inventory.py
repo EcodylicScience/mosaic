@@ -118,6 +118,18 @@ def inventory_command(
         typer.echo("No artifacts recorded in this dataset.")
     else:
         render_table(rows, ["kind", "name", "run_id", "status", "coverage", "drift"])
+    for record in ordered:
+        # Not a status and not a column: a frame-axis mismatch is a measurement
+        # about a table that is otherwise complete and correct, so it reads as a
+        # note beside the table rather than changing what the table says.
+        mismatched = record.extra.get("frame_axis_mismatch", frozenset())
+        if mismatched:
+            typer.echo(
+                f"note: {len(mismatched)} entry(ies) of {record.run_id} have a "
+                "frame axis that is not their media's, so anything reading "
+                "pixels at a track frame is off; see mosaic measure-tracks",
+                err=True,
+            )
     for missing in sorted(found.unavailable_kinds):
         typer.echo(f"note: {missing} was not reported (no producer imported)", err=True)
     for message in found.errors:

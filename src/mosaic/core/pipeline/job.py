@@ -184,6 +184,17 @@ class JobContext:
         if self.run_log is not None:
             self.run_log.entry_failed(key, _capture_error(exc))
 
+    def frame_axis_mismatch(self, key: str, *, tracked: int, media: int) -> None:
+        """Record that one entry's frame axis is not its media's.
+
+        The seam :meth:`entry_failed` is, for a report rather than a failure: the
+        entry published and the attempt is unaffected, so nothing is appended to
+        ``failed_keys`` and no status moves. Silent without a run-log, like every
+        other recorder here.
+        """
+        if self.run_log is not None:
+            self.run_log.frame_axis_mismatch(key, tracked=tracked, media=media)
+
     def entries_written(self, count: int) -> None:
         """Record how many entries this attempt leaves holding an output row.
 

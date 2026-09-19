@@ -183,6 +183,8 @@ from .pipeline.tracks_index import (
     TRACKS_INDEX_PATH_COLUMNS,
     adopt_legacy_columns,
     backfill_frame_extents,
+    backfill_media_frames,
+    frame_axis_mismatches,
     consumed_composition_for,
     legacy_view,
     read_frame_extents,
@@ -958,6 +960,28 @@ class Dataset:
         Returns the rows filled, with their measured values.
         """
         return backfill_frame_extents(self, dry_run=dry_run)
+
+    def measure_media_frames(self, *, dry_run: bool = False) -> "pd.DataFrame":
+        """Record the media-axis length of every tracks row that lacks one.
+
+        The other half of :meth:`measure_frame_extents`, and the only way an
+        already-tracked session can be compared against the video it addresses:
+        a table on disk cannot be re-bridged without re-tracking. Returns the
+        rows filled, with their measured values.
+        """
+        return backfill_media_frames(self, dry_run=dry_run)
+
+    def frame_axis_mismatches(
+        self, run_id: str | None = None
+    ) -> dict[tuple[str, str], tuple[int, int]]:
+        """Entries whose tracks table does not address the length of its media.
+
+        ``(group, sequence)`` to ``(tracked_frames, media_frames)``, from what
+        the index already records -- an entry measured on neither side is absent
+        rather than reported as agreeing. See
+        :func:`~mosaic.core.pipeline.tracks_index.frame_axis_mismatches`.
+        """
+        return frame_axis_mismatches(self, run_id)
 
     def set_continuous_groups(
         self, groups: Iterable[str], *, save: bool = True

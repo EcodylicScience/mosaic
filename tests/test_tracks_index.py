@@ -23,9 +23,12 @@ from mosaic.core.scope import Scope
 from mosaic.core.pipeline.tracks_index import (
     DROPPED_LEGACY_COLUMNS,
     backfill_frame_extents,
+    backfill_media_frames,
+    frame_axis_mismatches,
     frame_extent,
     read_frame_extent,
     read_frame_extents,
+    read_media_frames,
     TRACKS_INDEX_COLUMNS,
     TRACKS_INDEX_PATH_COLUMNS,
     TracksIndexRow,
@@ -1156,3 +1159,147 @@ def test_backfill_measures_only_the_rows_that_lack_an_extent(tmp_path: Path) -> 
     assert read_frame_extents(ds) == {("g", "s1"): (0, 9), ("g", "s2"): (10, 19)}
 
     assert len(backfill_frame_extents(ds, dry_run=False)) == 0, "not idempotent"
+
+
+# --- the media axis, and the comparison it exists for -----------------------
+#
+# A table's frame axis and the axis of the media it addresses are two different
+# things, and a joined conversion is where they come apart: TREx under-counts
+# every file it opens and reads only that many frames, so a session's clips
+# convert into a `.pv` that has dropped the tail of each one. The published
+# table is then numbered on the tracker's axis while every consumer that reads
+# pixels is on the media's. Recording both numbers is what makes that visible.
+
+
+def test_a_blank_media_frames_cell_reads_as_unknown_not_as_zero() -> None:
+    """The same trap the extent cells have, and the same answer."""
+    assert read_media_frames(pd.Series({"media_frames": ""})) is None
+    assert read_media_frames(pd.Series({"media_frames": "1800"})) == 1800
+    assert read_media_frames(pd.Series({"media_frames": "not a number"})) is None
+
+
+def test_a_legacy_row_reads_media_frames_as_unknown(tmp_path: Path) -> None:
+    """A row written before the column existed asked no question, and says so."""
+    ds = _dataset(tmp_path)
+    _write_legacy_index(
+        ds, [{"group": "g", "sequence": "s1", "abs_path": "tracks/g__s1.parquet"}]
+    )
+    assert read_media_frames(read_tracks_index(ds).iloc[0]) is None
+
+
+def test_a_row_written_without_a_media_length_records_a_blank(tmp_path: Path) -> None:
+    """The default every producer takes: a conversion opened no video to measure."""
+    ds = _dataset(tmp_path)
+    out = ds.get_root("tracks") / "g__s1.parquet"
+    _write_table(out, start=0, n_frames=4)
+    write_tracks_row(
+        ds,
+        run_id="v1",
+        group="g",
+        sequence="s1",
+        out_path=out,
+        producer="convert-x",
+        std_format="mosaic_v1",
+        n_rows=4,
+    )
+    assert read_media_frames(read_tracks_index(ds).iloc[0]) is None
+    assert frame_axis_mismatches(ds) == {}
+
+
+def _entry_row(ds: Dataset, sequence: str, *, tracked: int, media: int | None) -> None:
+    out = ds.get_root("tracks") / f"g__{sequence}.parquet"
+    _write_table(out, start=0, n_frames=tracked)
+    write_tracks_row(
+        ds,
+        run_id="v1",
+        group="g",
+        sequence=sequence,
+        out_path=out,
+        producer="trex",
+        std_format="trex_v2",
+        n_rows=tracked,
+        media_frames=media,
+    )
+
+
+def test_a_mismatch_is_reported_with_both_numbers(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    _entry_row(ds, "short", tracked=1782, media=1800)
+    _entry_row(ds, "exact", tracked=300, media=300)
+    assert frame_axis_mismatches(ds) == {("g", "short"): (1782, 1800)}
+
+
+def test_an_overshoot_is_reported_too(tmp_path: Path) -> None:
+    """Still the two axes disagreeing, and still not this function's call to make.
+
+    A container count that disagrees with what a tool decoded by a frame or two
+    is mundane and the timeline already tolerates it -- but which direction is
+    benign is a decision for a caller holding both numbers, not one this makes
+    by dropping the row.
+    """
+    ds = _dataset(tmp_path)
+    _entry_row(ds, "long", tracked=302, media=300)
+    assert frame_axis_mismatches(ds) == {("g", "long"): (302, 300)}
+
+
+def test_a_mismatch_needs_both_cells(tmp_path: Path) -> None:
+    """The honest-empty rule: one measurement cannot disagree with an absent one."""
+    ds = _dataset(tmp_path)
+    _entry_row(ds, "unmeasured", tracked=10, media=None)
+    assert frame_axis_mismatches(ds) == {}
+
+
+def test_backfill_media_frames_fills_only_the_rows_that_lack_one(
+    tmp_path: Path,
+) -> None:
+    """The migration for a session tracked before the column existed.
+
+    It is the only route for such a table: a published parquet cannot be
+    re-bridged without re-tracking, because the bridge serves an existing table
+    before it converts anything.
+    """
+    from tests.helpers import MediaClip, write_media_index
+
+    ds = _dataset(
+        tmp_path,
+        roots={
+            "tracks": str(tmp_path / "tracks"),
+            "tracks_raw": str(tmp_path / "tracks_raw"),
+            "media_raw": str(tmp_path / "media_raw"),
+            # Declared because resolving an entry's media routes through the
+            # derivative index, which lives under this root even when, as here,
+            # nothing has been transcoded.
+            "media": str(tmp_path / "media"),
+        },
+    )
+    write_media_index(
+        ds,
+        [
+            MediaClip(sequence="s1", filename="c0.mp4", video_order=0, frame_count=300),
+            MediaClip(sequence="s1", filename="c1.mp4", video_order=1, frame_count=300),
+        ],
+    )
+    out = ds.get_root("tracks") / "s1.parquet"
+    _write_table(out, start=0, n_frames=596)
+    pd.DataFrame(
+        [{"group": "", "sequence": "s1", "abs_path": str(out), "n_rows": 596}]
+    ).to_csv(tracks_index_path(ds), index=False)
+
+    assert read_media_frames(read_tracks_index(ds).iloc[0]) is None
+
+    would = backfill_media_frames(ds, dry_run=True)
+    assert len(would) == 1
+    assert read_media_frames(read_tracks_index(ds).iloc[0]) is None, (
+        "a dry run must not write"
+    )
+
+    filled = backfill_media_frames(ds, dry_run=False)
+    assert len(filled) == 1
+    assert read_media_frames(read_tracks_index(ds).iloc[0]) == 600
+
+    assert len(backfill_media_frames(ds, dry_run=False)) == 0, "not idempotent"
+
+    # Which is the whole point: the comparison is now answerable for a table
+    # that was published before anyone was recording the second number.
+    _ = backfill_frame_extents(ds)
+    assert frame_axis_mismatches(ds) == {("", "s1"): (596, 600)}

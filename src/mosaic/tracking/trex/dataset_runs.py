@@ -294,6 +294,7 @@ def _bridge_npz_to_tracks(
     producer_run_id: str,
     video_paths: Sequence[Path],
     timeline: ConcatenatedTimeline | None,
+    media_frames: int | None,
     overwrite: bool,
 ) -> BridgeCounts | None:
     """Merge per-individual TREx NPZ into ``tracks/<variant>/<group>__<seq>.parquet``.
@@ -308,6 +309,14 @@ def _bridge_npz_to_tracks(
     puts a joined entry's ``time`` on the clips' own measured rates instead of
     the single rate TREx took from the first of them. ``None`` (or a
     single-segment timeline) leaves the export exactly as it was.
+
+    *media_frames* is how long that media axis was, recorded on the index row so
+    the published table can be compared against the video it is supposed to
+    address. ``None`` records a blank and makes no comparison -- see
+    :func:`~mosaic.tracking.common.bridge.publish_tracks_table`. Separate from
+    *timeline* rather than derived from it here, because whether the number is
+    answerable is a property of the *run* (an ``analysis_range`` covers less on
+    purpose) and the caller is what knows.
 
     Returns ``None`` when there was nothing to convert or the conversion failed.
     """
@@ -327,6 +336,13 @@ def _bridge_npz_to_tracks(
         # reuse was indistinguishable from a failed conversion, and the counts the
         # caller records came from nowhere. An unreadable table falls through and
         # is reconverted.
+        #
+        # A reused table makes no frame-axis comparison, and cannot: the reuse
+        # returns before the converter, before `retime_joined_frame`, and before
+        # anything opens the parquet's `frame` column. Its row keeps whatever it
+        # was written with, which for a table published before `media_frames`
+        # existed is a blank. `mosaic measure-tracks` is what fills those in --
+        # a re-run cannot, because re-publishing a table costs a re-track.
         reusable = readable_tracks_table(out_path)
         if reusable is not None:
             return reusable
@@ -362,6 +378,7 @@ def _bridge_npz_to_tracks(
         producer_run_id=producer_run_id,
         source=npz_paths[0].parent,
         consumed=[npz_paths[0], *video_paths],
+        media_frames=media_frames,
     )
 
 
@@ -1034,6 +1051,28 @@ def run_trex(
                     producer_run_id=minted.run_id,
                     video_paths=item.video_paths,
                     timeline=timeline,
+                    # What the tracker was pointed at, for the runs where the
+                    # question has an answer worth recording.
+                    #
+                    # Joined entries only. A single-clip entry's frame axis IS
+                    # the media's -- there is no concatenation to lose frames at
+                    # -- so the comparison can catch nothing there and would
+                    # false-positive on the ordinary case of a tracker writing no
+                    # rows for the frames after the animal left: `frame_max` is
+                    # the last frame carrying a row, not the last frame seen.
+                    #
+                    # `analysis_range` is excluded for the opposite reason: it
+                    # narrows the tracking phase on purpose, so a short span is
+                    # the run working as asked. Blank says "the producer did not
+                    # ask this question", and `mosaic measure-tracks` fills the
+                    # cell afterwards for anyone who wants the comparison anyway.
+                    media_frames=(
+                        timeline.total_frames
+                        if timeline is not None
+                        and len(timeline.segments) > 1
+                        and params.analysis_range is None
+                        else None
+                    ),
                     overwrite=job.overwrite or recomputed,
                 ),
                 kind=TREX_KIND,

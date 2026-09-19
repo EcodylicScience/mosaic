@@ -33,6 +33,26 @@ tracker reports, a feature derives -- applied to the case where the tracker did
 not in fact report.
 
 A uniform-rate session keeps all of it: nothing was wrong with it.
+
+**A joined conversion gets two things wrong, and this module owns only the
+first.** The second is that TRex's ``.pv`` is *shorter* than the media: its
+``FFmpegVideoCapture`` under-counts every file it opens and then reads only as
+many frames as it counted, so each clip loses its tail and the loss accumulates
+across the session. Measured on a six-clip fixture carrying its own frame
+numbers -- 1,800 media frames converting to 1,788, the offset stepping by two at
+every boundary, constant within each clip -- and reproduced by invoking ``trex``
+directly, with no mosaic in the process. The 17-clip session that prompted this
+lost 70.
+
+Nothing here can correct that: mosaic holds no map from the ``.pv`` index to the
+media index, and TRex records none (``pvinfo`` prints ``Video conversion offsets:
+N/A``). What mosaic does instead is *measure* it -- the bridge records the media
+axis length beside the table's own extent, and
+:func:`~mosaic.core.pipeline.tracks_index.frame_axis_mismatches` compares them --
+and, going forward, avoid it, by handing the tool one concatenated file so there
+are no clip boundaries to lose frames at. A single file converts with no drift at
+all: every ``.pv`` index equals its media index, and only the tail is lost, which
+costs no registration.
 """
 
 from __future__ import annotations
@@ -79,8 +99,23 @@ def retime_joined_frame(
         timeline: The concatenation the conversion was built from.
 
     Returns:
-        A new frame. ``frame`` is untouched -- TRex's global index is already
-        right, because ``VideoSource`` sums the clip lengths.
+        A new frame. ``frame`` is untouched.
+
+        **Not because it is right.** It is left on the axis TRex numbered
+        because mosaic holds no map from that axis to the media's, and inventing
+        one would fabricate a correspondence -- the standing rule that a tracker
+        reports and a feature derives, applied to a column no one can derive.
+        TRex numbers continuously across the frames it *kept*, which is fewer
+        than the media holds: see the module docstring.
+
+        ``time`` inherits that. :meth:`ConcatenatedTimeline.times` places each
+        index as though the two axes agreed, and
+        :meth:`ConcatenatedTimeline.segment_for_frame` clamps rather than
+        raising, so a shortfall is silent here and shows up only as a late frame
+        attributed to the wrong clip. The error is the accumulated loss divided
+        by the local rate -- seconds at worst, against the whole-session error of
+        3% that this function exists to remove, so it is still worth computing.
+        The loss itself is reported by the bridge, not corrected here.
     """
     present = column_names(df)
     if len(timeline.segments) < 2 or "frame" not in present:

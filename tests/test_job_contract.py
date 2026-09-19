@@ -9,6 +9,7 @@ features (no heavy dependencies).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -459,3 +460,87 @@ def test_completeness_gate_marks_index_finished_only_when_all_outputs_present(
     # every entry present on disk -> finished_at stamped on all rows
     assert len(idx_df) == 2
     assert (idx_df["finished_at"] != "").all()
+
+
+# --- a frame-axis mismatch is a report, never a status ----------------------
+
+
+def test_a_frame_axis_mismatch_accumulates_and_leaves_the_status_alone(
+    tmp_path: Path,
+) -> None:
+    """Two entries whose tables do not address their media, on a finished run.
+
+    Both halves matter. The count accumulates like ``entries_failed``, because
+    each event is one entry. The status does not move, because the entries
+    *succeeded*: their tables published, and everything computed inside them is
+    right. What is wrong is only the correspondence between a ``frame`` in the
+    table and a frame of the video.
+    """
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    log = JsonlRunLog(path, eid)
+    log.started(kind="trex", target="trex", owner="me", host="h", pid=1)
+    log.frame_axis_mismatch("a", tracked=1782, media=1800)
+    log.frame_axis_mismatch("b", tracked=596, media=600)
+    log.entries_written(2)
+    log.finished()
+    log.close()
+
+    snap = reduce_run_log(path)
+    assert snap is not None
+    assert snap["entries_frame_axis_mismatch"] == 2
+    assert snap["entries_failed"] == 0
+    assert snap["entries_written"] == 2
+    assert snap["status"] == "finished"
+
+
+def test_the_mismatch_event_carries_both_numbers(tmp_path: Path) -> None:
+    """The gap is the content of the report, so it travels with the event.
+
+    "1782 against 1800" says how far a late crop is off; a bare flag says only
+    that something is wrong somewhere, and the run-log is the only channel out
+    of a queued job.
+    """
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    log = JsonlRunLog(path, eid)
+    log.started(kind="trex", target="trex", owner="me", host="h", pid=1)
+    log.frame_axis_mismatch("sess", tracked=1782, media=1800)
+    log.close()
+
+    events = [
+        json.loads(line)
+        for line in path.read_text().splitlines()
+        if json.loads(line).get("ev") == "frame_axis_mismatch"
+    ]
+    assert events == [
+        {
+            "t": events[0]["t"],
+            "ev": "frame_axis_mismatch",
+            "key": "sess",
+            "tracked": 1782,
+            "media": 1800,
+        }
+    ]
+
+
+def test_an_older_reader_folds_a_log_holding_the_event(tmp_path: Path) -> None:
+    """Additive by construction, asserted rather than only argued.
+
+    ``reduce_run_log`` is an if/elif fold: an ``ev`` it does not recognise
+    advances liveness and changes nothing else. This is the same claim from the
+    other side -- a log carrying an event a reader predates still reduces to the
+    right terminal status.
+    """
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    log = JsonlRunLog(path, eid)
+    log.started(kind="trex", target="trex", owner="me", host="h", pid=1)
+    log._emit("an_event_from_the_future", detail="whatever this turns out to be")  # pyright: ignore[reportPrivateUsage]
+    log.finished()
+    log.close()
+
+    snap = reduce_run_log(path)
+    assert snap is not None
+    assert snap["status"] == "finished"
+    assert snap["entries_frame_axis_mismatch"] == 0

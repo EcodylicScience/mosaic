@@ -32,6 +32,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `reprobe-media`: Re-probe the media files the media index...
 * `prune-media`: Delete transcode derivatives that no...
 * `sweep-tracking`: Delete tracker working directories that...
+* `measure-tracks`: Measure the frame axis of this dataset's...
 * `upgrade-tracks`: Convert this dataset's TRex tables from...
 * `convert-tracks`: Convert all raw tracks into schema-valid...
 * `convert-labels`: Convert all raw labels for a kind into...
@@ -413,6 +414,47 @@ $ mosaic sweep-tracking [OPTIONS]
 * `--tracker-days <float>`: Keep finished tracker output this long (default 14).  [default: 14.0]
 * `--inference-days <float>`: Keep finished inference output this long (default 3).  [default: 3.0]
 * `--conversion-days <float>`: Keep an unreferenced shared conversion this long (default 14). One a tracker run still names is refused whatever its age.  [default: 14.0]
+* `--json`: Emit the result as JSON.
+* `--help`: Show this message and exit.
+
+## `mosaic measure-tracks`
+
+Measure the frame axis of this dataset's tracks tables, and their media's.
+
+Two passes over ``tracks/index.csv``, both filling only the cells that are
+blank and neither touching a table:
+
+* the **frame extent** (``frame_min`` / ``frame_max``), read from each
+  parquet. Blank refuses ``overlap_frames``, so a dataset converted before
+  the columns existed has to be measured once before it can use overlap.
+* the **media length** (``media_frames``), read from the media index by the
+  same routing a producer resolves the entry through.
+
+Then it reports the entries where the two disagree. A tracker that joins a
+session's clips can number fewer frames than the media holds -- TRex does,
+dropping the tail of every clip -- and the result is a table whose ``frame``
+column no longer addresses the video: correct at the start of a sequence and
+progressively wrong through it. Everything computed *inside* such a table is
+unaffected; what breaks is anything that reads a pixel at a track frame.
+
+This is the only way to ask that question of a table already on disk. A run
+records the comparison as it publishes, but a published table cannot be
+re-bridged without re-tracking, so a session tracked before that existed can
+be measured and never re-reported.
+
+Dry-run by default. A disagreement it finds is a measurement, not a verdict:
+nothing is rewritten and no table is refused.
+
+**Usage**:
+
+```console
+$ mosaic measure-tracks [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--apply / --dry-run`: Write the measurements. Default is a dry-run report.  [default: dry-run]
 * `--json`: Emit the result as JSON.
 * `--help`: Show this message and exit.
 

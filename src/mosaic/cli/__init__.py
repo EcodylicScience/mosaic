@@ -28,6 +28,7 @@ from mosaic.cli.pipeline import pipeline_app
 from mosaic.cli.prune_media import prune_media_command
 from mosaic.cli.reconcile import reconcile_command
 from mosaic.cli.reindex import reindex_command
+from mosaic.cli.measure_tracks import measure_tracks_command
 from mosaic.cli.upgrade_tracks import upgrade_tracks_command
 from mosaic.cli.sweep_tracking import sweep_tracking_command
 from mosaic.cli.reprobe_media import reprobe_media_command
@@ -75,6 +76,7 @@ _ = app.command(name="reconcile")(reconcile_command)
 _ = app.command(name="reprobe-media")(reprobe_media_command)
 _ = app.command(name="prune-media")(prune_media_command)
 _ = app.command(name="sweep-tracking")(sweep_tracking_command)
+_ = app.command(name="measure-tracks")(measure_tracks_command)
 _ = app.command(name="upgrade-tracks")(upgrade_tracks_command)
 _ = app.command(name="convert-tracks")(convert_tracks_command)
 _ = app.command(name="convert-labels")(convert_labels_command)

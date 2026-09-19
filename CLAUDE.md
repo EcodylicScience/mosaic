@@ -933,7 +933,12 @@ variant* — which recipe produced the table, from
 the parquet** at write time rather than passed in, so no call site can record a
 false zero). Since keypoints are optional, "does this entry have any" would
 otherwise need a parquet open per entry; a blank cell means *unknown*, not zero,
-exactly as it does for `n_rows`.
+exactly as it does for `n_rows`. `frame_min`/`frame_max` and `media_frames` follow
+the same rule: the first pair is the table's own frame axis, measured from the
+parquet, and the third is the length of the **media axis** that table's frames are
+supposed to address, *passed* by the producer because only it knows what it
+resolved. Blank means unknown on all three, and
+`frame_axis_mismatches()` refuses to compare unless both sides are filled.
 
 Three invariants worth knowing:
 
@@ -1248,6 +1253,21 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   today -- `merges_per_sequence` is the individual axis, not the time axis, and only
   TREx joins an entry's clips -- so a converter fed per-clip files can still produce
   colliding frames inside one sequence.
+
+  **And TREx, the one tracker that does join, delivers a shorter axis than the
+  media has.** Its `FFmpegVideoCapture` under-counts every file it opens and reads
+  only that many frames, so each clip loses its tail: measured as a staircase,
+  +2 frames per clip boundary on a six-clip fixture (1,800 media frames converting
+  to 1,788), 70 lost over the real 17-clip session. The published table is then on
+  the tracker's axis while every pixel-reading consumer is on the media's. So the
+  axis is now **measured against the media and reported** rather than merely
+  asserted -- `media_frames` beside `frame_min`/`frame_max` on the tracks row, a
+  `frame_axis_mismatch` run-log event, an `extra` key on the inventory record, and
+  `mosaic measure-tracks` for tables published before the cell existed. Recorded,
+  never refused: the condition is deterministic and a table cannot be re-bridged
+  without re-tracking, so raising would fail the same entry forever and cost the
+  analyses that never depended on registration. The repair is to hand the tool one
+  concatenated file, which converts with no drift at all.
 - **Tracks are pixels, and `X` is the body centre.** Both hold on every tracker,
   and neither did before: TREx reports centimetres and puts the *head* in `X`. A
   physical unit is obtained by the `scale-to-cm` feature, never stored in the

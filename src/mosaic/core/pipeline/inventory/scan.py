@@ -32,6 +32,7 @@ from mosaic.core.pipeline.labels_index import labels_index_path, read_labels_ind
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.tracks_index import (
     drifted_media_entries,
+    frame_axis_mismatches,
     read_tracks_index,
     select_variant_rows,
     tracks_index_path,
@@ -389,6 +390,13 @@ def _variant_records(
     comparison a re-encode is served as a cache hit over different frames. A
     converted variant records no media composition and so never drifts here,
     which is right: it opened no video.
+
+    ``extra["frame_axis_mismatch"]`` names the entries whose table does not span
+    as many frames as its media -- what a joined conversion leaves behind. It
+    rides in ``extra`` rather than in ``status`` deliberately: the status set is
+    five closed members crossing the CLI and mosaic-api's wire, and this is a
+    measurement two cells apart rather than a state of the artifact. The table is
+    there, it is complete, and it is internally right.
     """
     index_path = tracks_index_path(ds)
     frame = reader.frame(index_path, lambda: read_tracks_index(ds))
@@ -405,6 +413,10 @@ def _variant_records(
         coverage = Coverage(target=target, present=files)
         started, finished_at, finished = _finish_state(frame, run_id)
         drift = drifted_media_entries(ds, run_id)
+        mismatched = frozenset(
+            make_entry_key(group, sequence)
+            for group, sequence in frame_axis_mismatches(ds, run_id)
+        )
         records.append(
             ArtifactRecord[Entry](
                 ref=TracksVariantRef(run_id=run_id),
@@ -419,6 +431,7 @@ def _variant_records(
                 drift=drift,
                 started_at=started,
                 finished_at=finished_at,
+                extra={"frame_axis_mismatch": mismatched},
             )
         )
     return records

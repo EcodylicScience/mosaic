@@ -937,3 +937,75 @@ def test_reprobe_media_names_the_column_it_drops(
 
     payload = _run_json(["reprobe-media", "-m", str(ds.manifest_path), "--json"])
     assert payload["unknown_columns_dropped"] == []
+
+
+# --- measure-tracks --------------------------------------------------------
+#
+# The only way to ask an already-published table whether its frame axis is its
+# media's. A run records the comparison as it publishes, but a table on disk
+# cannot be re-bridged without re-tracking, so a session tracked before anyone
+# was recording the second number can only be measured afterwards.
+
+
+def test_measure_tracks_is_a_dry_run_by_default(dataset: tuple[Path, Dataset]) -> None:
+    manifest, ds = dataset
+    payload = _run_json(["measure-tracks", "-m", str(manifest), "--json"])
+
+    assert payload["applied"] is False
+    assert payload["frame_extents_measured"] == 2
+    from mosaic.core.pipeline.tracks_index import read_frame_extents
+
+    assert read_frame_extents(ds) == {}, "a dry run must not write"
+
+
+def test_measure_tracks_apply_records_the_extents(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, ds = dataset
+    payload = _run_json(["measure-tracks", "-m", str(manifest), "--apply", "--json"])
+
+    assert payload["applied"] is True
+    from mosaic.core.pipeline.tracks_index import read_frame_extents
+
+    assert read_frame_extents(ds) == {("g", "s1"): (0, 11), ("g", "s2"): (0, 11)}
+
+
+def test_measure_tracks_names_a_frame_axis_that_is_not_its_media(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    """Both numbers, because the gap is the content of the report."""
+    from mosaic.core.pipeline.tracks_index import (
+        read_tracks_index,
+        tracks_index_path,
+        write_tracks_row,
+    )
+
+    manifest, ds = dataset
+    out = ds.get_root("tracks") / "g__s1.parquet"
+    write_tracks_row(
+        ds,
+        run_id="v1",
+        group="g",
+        sequence="s1",
+        out_path=out,
+        producer="trex",
+        std_format="trex_v2",
+        n_rows=12,
+        media_frames=20,
+    )
+    # The fixture's hand-written rows carry no run_id, so drop them: an
+    # unlabelled row and a labelled one for the same entry is a resolution
+    # question this test is not about.
+    frame = read_tracks_index(ds)
+    frame[frame["run_id"] == "v1"].to_csv(tracks_index_path(ds), index=False)
+
+    payload = _run_json(["measure-tracks", "-m", str(manifest), "--apply", "--json"])
+
+    assert payload["frame_axis_mismatch"] == [
+        {
+            "group": "g",
+            "sequence": "s1",
+            "tracked_frames": 12,
+            "media_frames": 20,
+        }
+    ]
