@@ -3,7 +3,7 @@
 
 # Ops
 
-18 ops are registered. An op is the unit `mosaic run --kind <kind>`
+19 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
@@ -143,7 +143,7 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 
 #### `trex`
 
-Version `0.1` &middot; `mosaic.tracking.ops.trex.TrexOp` &middot; resource class `gpu`
+Version `0.2` &middot; `mosaic.tracking.ops.trex.TrexOp` &middot; resource class `gpu`
 
 Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``.
 
@@ -533,6 +533,14 @@ Train a SLEAP model, registering the directory it produces.
 ## Media
 
 ### transcode
+
+#### `export-joined`
+
+Version `0.1` &middot; `mosaic.core.pipeline.joined_export.JoinedExportOp` &middot; resource class `heavy`
+
+Join one entry's clips into the single video an external tool opens.
+
+No parameters.
 
 #### `export-store`
 

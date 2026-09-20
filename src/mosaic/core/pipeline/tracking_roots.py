@@ -128,14 +128,23 @@ class TrackingRoot:
     tracked table and a tracker whose columns genuinely differed had nowhere to
     say so. One row per producer, and the bridge reads it.
 
-    ``joins_sources`` is whether this tool can read an entry's several clips as
-    one continuous video. It lives here, beside the other producer knowledge,
-    rather than as a check against the tool's name in the scope builder: "what
-    can this tool do" is exactly what this table is for, and a fifth tracker
-    copying a row has to answer it rather than inherit someone else's answer by
-    matching a string. ``False`` means the scope builder truncates an entry to
-    its first clip and says so, which is what every tracker did before any of
-    them could join.
+    ``joins_sources`` is whether this producer covers an entry's several clips
+    rather than just the first. It lives here, beside the other producer
+    knowledge, rather than as a check against the tool's name in the scope
+    builder: "what can this tool do" is exactly what this table is for, and a
+    fifth tracker copying a row has to answer it rather than inherit someone
+    else's answer by matching a string. ``False`` means the scope builder
+    truncates an entry to its first clip and says so, which is what every
+    tracker did before any of them could join.
+
+    **It no longer means "this tool accepts a list of files".** It did, and that
+    was the whole difficulty: TREx accepted one and lost the tail of every clip
+    to its own under-counting, while the three that did not accept one tracked
+    clip 0 and dropped the rest of the recording. Every tool is now handed a
+    single video -- the entry's clips already joined, by
+    :mod:`mosaic.core.pipeline.joined_export` -- so what this flag declares is
+    that the producer covers the whole entry, and no tool is trusted with the
+    arrangement.
     """
 
     key: str
@@ -236,6 +245,10 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 TrackingPhase("track", ("*.predictions.slp", "*.analysis.h5")),
             ),
             path_columns=("video_abs_path", "slp_path", "analysis_h5_path"),
+            # The whole entry, as one joined video. SLEAP opens one file, which
+            # is why this was False and why a multi-clip session used to track
+            # its first clip and nothing else.
+            joins_sources=True,
         ),
         TrackingRoot(
             key="litpose",
@@ -244,6 +257,8 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             outputs=("*.predictions.csv",),
             phase_outputs=(TrackingPhase("track", ("*.predictions.csv",)),),
             path_columns=("video_abs_path", "csv_path"),
+            # As SLEAP: one joined video, so the whole entry is covered.
+            joins_sources=True,
         ),
         # The tracker configuration this run used lives at the *run* root, beside
         # run_params.json, rather than in an entry directory -- it is one value
@@ -268,6 +283,8 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 ),
             ),
             path_columns=("video_abs_path", "predictions_path"),
+            # As SLEAP: one joined video, so the whole entry is covered.
+            joins_sources=True,
         ),
         # Model inference (item 8.7). Audit-only: the parquet is what a detector
         # emitted *before* schema coercion, which is what you want when debugging

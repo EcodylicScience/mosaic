@@ -139,6 +139,33 @@ def write_media_index(ds: Dataset, entries: list[MediaEntry]) -> None:
     pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
 
 
+def _joined_export(ds: Dataset, uids: list[str]) -> Path:
+    """Put the join of *uids* where a tracker will look for it.
+
+    A stub, like the clips themselves: TREx is faked in this file, so nothing
+    decodes it. What is being exercised is the *address* -- a tracker resolves
+    the join of exactly these clips in this order, so a test that reorders or
+    adds one has to write the new address or see the refusal.
+    """
+    from mosaic.core.pipeline.composition import MediaMember, media_composition
+    from mosaic.core.pipeline.joined_export import (
+        JoinedExportParams,
+        joined_export_path,
+        joined_recipe_hash,
+    )
+
+    members = [
+        MediaMember(camera="", video_order=order, uid=uid)
+        for order, uid in enumerate(uids)
+    ]
+    path = joined_export_path(
+        ds, media_composition(members).digest, joined_recipe_hash(JoinedExportParams())
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_bytes(b"joined")
+    return path
+
+
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
     """A dataset with one sequence, ``vid1``, backed by ``vid1.mp4``."""
@@ -843,13 +870,15 @@ def _session(
     *names: str,
     widths: dict[str, int] | None = None,
     frame_count: int = 100,
+    joined: bool = True,
 ) -> None:
     """Put *names* in one sequence, in the order given, each with an identity.
 
     *widths* overrides a clip's frame width, for the one case that needs clips
     which cannot be read as one video. *frame_count* is how many frames each clip
     holds, so a caller can state the media axis its export is to be compared
-    against.
+    against. *joined* also writes the joined export a multi-clip entry now
+    resolves to; ``False`` leaves it absent, which is what a run must refuse.
     """
     media_root = ds.get_root(ds.resolve_media_root())
     sizes = widths or {}
@@ -882,14 +911,39 @@ def _session(
             }
         )
     pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
+    if len(names) > 1 and joined:
+        _ = _joined_export(ds, [f"uid-{name}" for name in names])
 
 
-def test_a_session_converts_once_with_every_clip(ds: Dataset, trex: FakeTrex) -> None:
+def test_a_session_converts_once_from_the_joined_video(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """One conversion, and its source is the join -- not the clip list.
+
+    TREx used to be handed all three files and left to join them, which is where
+    it lost the tail of each one. It is handed one video now, so there are no
+    boundaries for it to lose frames at and no arrangement for it to get wrong.
+    """
     _session(ds, "c0.mp4", "c1.mp4", "c2.mp4")
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
 
     assert len(trex.sources) == 1, "three clips, one conversion"
-    assert [p.name for p in trex.sources[0]] == ["c0.mp4", "c1.mp4", "c2.mp4"]
+    (sources,) = trex.sources
+    assert len(sources) == 1, "one video, not the clip list"
+    assert sources[0].name.endswith(".joined.mp4")
+
+
+def test_a_session_with_no_joined_video_is_refused_naming_the_command(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """Refused, not silently truncated and not silently joined by the tool."""
+    from mosaic.tracking.common.tool_input import JoinedExportMissingError
+
+    _session(ds, "c0.mp4", "c1.mp4", "c2.mp4", joined=False)
+
+    with pytest.raises(JoinedExportMissingError, match="export-joined"):
+        _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
+    assert trex.sources == [], "nothing was converted"
 
 
 def test_the_pv_is_named_for_the_entry_not_the_first_clip(

@@ -16,6 +16,7 @@ _MINIMAL: dict[str, dict[str, object]] = {
         "class_names": ["individual"],
         "radii": {"individual": 4.0},
     },
+    "export-joined": {},
     "export-store": {},
     "extract-frames": {"n_frames": 1},
     "infer-localizer": {"model": "models/infer-localizer/run/best.pt"},

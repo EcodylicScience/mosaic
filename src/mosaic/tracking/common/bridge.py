@@ -259,8 +259,9 @@ def publish_or_record(
     the entry succeeded: the table is schema-valid, its rows are dense, and every
     quantity computed inside it is right. What is wrong is the correspondence
     between a ``frame`` in that table and a frame of the video -- so `overlay`,
-    the crop features and frame extraction read the wrong image, by an amount
-    that is zero at the start of a sequence and grows through it.
+    the crop features and frame extraction can read the wrong image. How far
+    out, and where, depends on what the tool did with the frames it missed, and
+    mosaic knows only the size of the gap. It reports that and says so.
 
     Raising instead was considered and rejected. It would be permanent: the
     condition is deterministic, so every re-run would fail the same entry, and
@@ -299,10 +300,10 @@ def publish_or_record(
         # the event is the record that survives a queue sending stderr to
         # DEVNULL, and the line is what a person running this in a terminal sees.
         print(
-            f"[{kind}] {key}: this table numbers {tracked} frames but its media "
-            f"holds {media}; the frame axis is not the media's, so anything "
-            f"reading pixels at a track frame is off by up to "
-            f"{abs(media - tracked)} frames by the end of the sequence. "
+            f"[{kind}] {key}: this table spans {tracked} frames but its media "
+            f"holds {media}, so the two are not one axis and a frame read for "
+            f"this table may be up to {abs(media - tracked)} frames out. Check "
+            f"any overlay or crop from this entry before trusting it. "
             f"Everything computed inside the table is unaffected.",
             file=sys.stderr,
         )

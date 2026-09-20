@@ -121,6 +121,7 @@ class TestTheDeclarationsAreWhatWeIntend:
     def test_the_arity_constrained_ops(self) -> None:
         assert OPS["transcode"].scope_takes == "at-least-one"
         assert OPS["export-store"].scope_takes == "exactly-one"
+        assert OPS["export-joined"].scope_takes == "exactly-one"
 
     def test_the_ops_the_scope_gates_cover(self) -> None:
         """Pinned so the gates below cannot quietly cover more ops or fewer."""
@@ -143,10 +144,10 @@ SINGLE_ENTRY_SETS: tuple[list[Entry] | None, ...] = (
 )
 """Two scopes an ``exactly-one`` op can receive: one entry, then another.
 
-Unreached today. ``export-store`` is the only ``exactly-one`` op and this
-dataset cannot feed it, so the gate skips it before these are chosen. Kept so
-the selection below stays total over ``SCOPE_TAKES_VALUES``, which is what the
-next such op will need.
+Reached by ``export-joined``, which is ``exactly-one`` and *can* be fed by this
+dataset: its identity is the recipe alone, so it needs no store, no weights and
+no ``data.yaml``. ``export-store`` is the other ``exactly-one`` op and is
+skipped by the gate for want of a recording.
 """
 
 
@@ -207,6 +208,7 @@ a store dataset instead, by
 GATED_OPS = frozenset(
     [
         "convert-points",
+        "export-joined",
         "extract-frames",
         "infer-localizer",
         "infer-points",
@@ -228,7 +230,7 @@ GATED_OPS = frozenset(
 
 Every op declaring independence, less the one
 :data:`OPS_THE_FIXTURE_CANNOT_FEED` names. The payload gate runs over all
-eighteen and needs no population.
+nineteen and needs no population.
 """
 
 

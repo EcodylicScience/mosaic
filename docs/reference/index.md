@@ -10,7 +10,7 @@ name and the knobs.
 | Page | Holds |
 | --- | --- |
 | [Features](features.md) | 45 registered features, grouped by category, with their parameters |
-| [Ops](ops.md) | 18 registered ops -- trackers, training, inference, frame extraction and media |
+| [Ops](ops.md) | 19 registered ops -- trackers, training, inference, frame extraction and media |
 | [CLI](cli.md) | Every `mosaic` command and flag |
 | [Track formats](track-formats.md) | 8 track converters, 4 schemas, 3 label converters |
 

@@ -1254,20 +1254,30 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   TREx joins an entry's clips -- so a converter fed per-clip files can still produce
   colliding frames inside one sequence.
 
-  **And TREx, the one tracker that does join, delivers a shorter axis than the
-  media has.** Its `FFmpegVideoCapture` under-counts every file it opens and reads
-  only that many frames, so each clip loses its tail: measured as a staircase,
-  +2 frames per clip boundary on a six-clip fixture (1,800 media frames converting
-  to 1,788), 70 lost over the real 17-clip session. The published table is then on
-  the tracker's axis while every pixel-reading consumer is on the media's. So the
-  axis is now **measured against the media and reported** rather than merely
+  **No tool joins an entry's clips any more; mosaic does, and hands over one
+  file.** Both ways of leaving it to the tool were wrong. SLEAP, Lightning Pose
+  and Ultralytics were truncated to clip 0 and tracked none of the rest of a
+  recording. TREx took the whole clip list and its `FFmpegVideoCapture`
+  under-counts every file it opens, so each clip lost its tail -- a staircase,
+  +2 frames per boundary on a six-clip fixture (1,800 media frames converting to
+  1,788), 70 lost over the real 17-clip session -- leaving a table on the
+  tracker's axis while every pixel-reading consumer was on the media's.
+  `export-joined` ([`core/pipeline/joined_export.py`](src/mosaic/core/pipeline/joined_export.py))
+  writes one stream-copied video per multi-clip entry, **verified frame-exact
+  against the sum of the clips' own counts and refused rather than published when
+  it comes up short**, and `resolve_tool_inputs` is the seam that hands it over.
+  Measured through the pipeline: the `.pv` index then equals the media index at
+  every former boundary. So `joins_sources` no longer means "this tool accepts a
+  list of files" but "this producer covers the whole entry", and all four
+  trackers declare it.
+
+  The axis is also **measured against the media and reported** rather than merely
   asserted -- `media_frames` beside `frame_min`/`frame_max` on the tracks row, a
   `frame_axis_mismatch` run-log event, an `extra` key on the inventory record, and
   `mosaic measure-tracks` for tables published before the cell existed. Recorded,
   never refused: the condition is deterministic and a table cannot be re-bridged
   without re-tracking, so raising would fail the same entry forever and cost the
-  analyses that never depended on registration. The repair is to hand the tool one
-  concatenated file, which converts with no drift at all.
+  analyses that never depended on registration.
 - **Tracks are pixels, and `X` is the body centre.** Both hold on every tracker,
   and neither did before: TREx reports centimetres and puts the *head* in `X`. A
   physical unit is obtained by the `scale-to-cm` feature, never stored in the

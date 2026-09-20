@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from mosaic.tracking.common.scope import TrackerWorkItem
 
 __all__ = [
+    "JoinedExportMissingError",
     "StoreExportMissingError",
     "resolve_entry_input",
     "resolve_tool_input",
@@ -46,16 +47,35 @@ class StoreExportMissingError(FileNotFoundError):
     """An imgstore has no exported video for a subprocess tool to open."""
 
 
+class JoinedExportMissingError(FileNotFoundError):
+    """A multi-clip entry has no joined video for a subprocess tool to open.
+
+    Its own class rather than a reuse of the one above, because the two have
+    different remedies -- ``export-store`` and ``export-joined`` -- and a caller
+    catching one should not silently swallow the other.
+    """
+
+
 def resolve_tool_inputs(
     ds: "Dataset", item: "TrackerWorkItem", *, kind: str
 ) -> tuple[Path, ...]:
     """Every path *kind*'s external tool should open for *item*, in order.
 
-    One element per clip, so a tool that reads a session as one video gets the
-    whole arrangement. Each clip is resolved independently: a store becomes its
-    registered export, a plain video passes through, and a sequence mixing the
-    two is fine here because an export *is* a plain video by the time the tool
-    sees it.
+    Each clip is resolved independently first: a store becomes its registered
+    export, a plain video passes through, and a sequence mixing the two is fine
+    here because an export *is* a plain video by the time the tool sees it.
+
+    **A multi-clip entry then resolves to exactly one path: the join of those
+    clips.** Not the list. Handing a tool several files was wrong in both
+    directions -- the three tools that cannot take a list tracked clip 0 and
+    dropped the rest of the recording, and TREx, which can, under-counts every
+    file it opens and so lost the tail of each clip, leaving a table whose
+    ``frame`` column no longer addressed the video. One file has one
+    unambiguous frame index and needs neither tool to be trusted with the
+    arrangement. See :mod:`mosaic.core.pipeline.joined_export`.
+
+    A single-clip entry is unchanged, and is the overwhelming majority: it
+    resolves to its one file with nothing built and nothing required.
 
     Args:
         ds: The dataset, read for the media index and the ``media`` root.
@@ -65,11 +85,16 @@ def resolve_tool_inputs(
     Raises:
         StoreExportMissingError: If a source is a store with no export
             registered, or with a link pointing at a file that is gone.
+        JoinedExportMissingError: If the entry has several clips and no joined
+            export has been built for exactly that clip set.
     """
-    return tuple(
+    clips = tuple(
         resolve_entry_input(ds, item.group, item.sequence, source, kind=kind)
         for source in item.video_paths
     )
+    if len(clips) < 2:
+        return clips
+    return (_joined_input(ds, item, kind=kind),)
 
 
 def resolve_tool_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
@@ -117,6 +142,52 @@ def resolve_entry_input(
         )
         raise StoreExportMissingError(message)
     return export
+
+
+def _joined_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
+    """The one video holding *item*'s clips, or a refusal naming how to build it.
+
+    Addressed by the clip set's own ordered composition digest -- the value
+    ``item.source_uid`` already computes for the reuse gate -- so this looks for
+    the join of *these* clips in *this* order and never for whatever join
+    happens to be on disk.
+
+    Refused rather than built here. Joining is minutes of I/O over tens of
+    gigabytes: it belongs to an op with a ledger entry, a claim and a
+    cancellation point, not to a path resolution that a planner also calls.
+    """
+    from mosaic.core.pipeline.joined_export import (
+        JoinedExportParams,
+        joined_export_path,
+        joined_recipe_hash,
+    )
+
+    source_uid = item.source_uid
+    where = (
+        f"    mosaic run -m <manifest> --kind export-joined --params "
+        f'\'{{"entry": ["{item.group}", "{item.sequence}"]}}\''
+    )
+    if not source_uid:
+        message = (
+            f"[{kind}] ({item.group}, {item.sequence}) has {item.n_sources} "
+            f"clips and at least one carries no content identity, so the join "
+            f"of them cannot be addressed. Run 'mosaic reprobe-media --apply' "
+            f"to mint one for every clip, then:\n{where}"
+        )
+        raise JoinedExportMissingError(message)
+
+    joined = joined_export_path(
+        ds, source_uid, joined_recipe_hash(JoinedExportParams())
+    )
+    if not joined.is_file():
+        message = (
+            f"[{kind}] ({item.group}, {item.sequence}) is one recording in "
+            f"{item.n_sources} clips. {kind} is handed one video file, and a "
+            f"tool that joins clips itself loses frames at every boundary, so "
+            f"mosaic joins them first. Build it:\n{where}"
+        )
+        raise JoinedExportMissingError(message)
+    return joined
 
 
 def _registered_export(

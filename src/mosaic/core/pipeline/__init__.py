@@ -23,6 +23,7 @@ from .pipeline import CallbackStep, FeatureStep, Pipeline
 from .run import load_values
 
 # Explicit re-exports: importing each module is what registers its media op.
+from . import joined_export as joined_export
 from . import store_export as store_export
 from . import transcode as transcode
 from .types import (

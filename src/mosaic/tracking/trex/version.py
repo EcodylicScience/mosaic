@@ -12,7 +12,7 @@ from typing import Final
 
 TREX_KIND: Final = "trex"
 
-TREX_VERSION: Final = "0.1"
+TREX_VERSION: Final = "0.2"
 """The declared compatibility version of the TREx integration.
 
 **Declared, never detected.** TREx is updated continuously, so deriving this
@@ -25,4 +25,20 @@ row, and never part of identity.
 
 ``TrexOp.version`` and the standalone ``run_trex`` both read this, so the two
 entry points cannot drift into naming one run two ways.
+
+**0.1 -> 0.2: a multi-clip entry is now converted from one joined video.** TRex
+used to be handed the clip list and joined it itself, and its
+``FFmpegVideoCapture`` under-counts every file it opens -- so each clip lost its
+tail and the ``.pv`` frame index stopped addressing the media. mosaic joins the
+clips instead (:mod:`mosaic.core.pipeline.joined_export`) and hands over one
+file.
+
+The bump is what makes the fix reachable, and nothing smaller would be. A
+conversion slot is addressed by ``<convert run id>/<source uid>``, and neither
+term moved: ``source_uid`` is the composition of the clips, which is the same
+clips, and the convert run id is the settings, which are the same settings. So
+without this the wrong ``.pv`` would be served as a cache hit for every session
+already converted. The other three trackers needed no bump for the same change,
+because they were truncated to clip 0 before it and their ``source_uid`` moves
+from one clip's uuid to the composition of all of them by itself.
 """

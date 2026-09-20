@@ -208,7 +208,7 @@ class TestRunOpRefusesAScope:
     def test_no_op_body_checks_its_own_scope(self) -> None:
         """One rule, in one place. An op accepts the scope it is handed."""
         register_ops()
-        assert len(OPS) == 18, "every op is registered; none is skipped below"
+        assert len(OPS) == 19, "every op is registered; none is skipped below"
         checking = {
             kind
             for kind, op in OPS.items()

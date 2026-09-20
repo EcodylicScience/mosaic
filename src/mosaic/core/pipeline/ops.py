@@ -151,6 +151,7 @@ class ScopeRefused(ValueError):
 _UNSCOPED_CONSEQUENCE: Final[dict[str, str]] = {
     "transcode": "re-encode every video in the dataset",
     "export-store": "export every imgstore in the dataset",
+    "export-joined": "join the clips of every multi-clip entry in the dataset",
 }
 """What an unscoped run of one op covers, in the words its refusal uses.
 

@@ -548,7 +548,7 @@ def test_trex_leaves_this_shape(ds: Dataset, fake_trex: _FakeTrex) -> None:
             "params_hash": "<masked>",
             "phase": "convert",
             "recorded_output": (
-                "_tracking/trex-convert/trex-convert.0.1-66a0875bb3/uid-vid1/"
+                "_tracking/trex-convert/trex-convert.0.2-66a0875bb3/uid-vid1/"
                 "conversion.pv"
             ),
             "run_id": "<run>",
