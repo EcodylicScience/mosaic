@@ -3,10 +3,10 @@
 Wraps :func:`mosaic.tracking.sleap.run_sleap` as a registered ``Op`` so SLEAP rides
 the schema-driven runner and every execution backend (local / rq / k8s) with
 Pydantic param validation + discovery -- the same one-contract path TREx uses. The
-implementation is unchanged: ``run_sleap`` still shells out to the ``sleap-track`` /
-``sleap-convert`` console scripts in their own environment and hashes its *internal
-settings dict* for the ``run_id`` (the op only re-routes the same call through a
-``JobContext``).
+implementation is unchanged: ``run_sleap`` still shells out to the ``sleap-nn
+track`` / ``sleap-convert`` console scripts in their own environment and hashes its
+*internal settings dict* for the ``run_id`` (the op only re-routes the same call
+through a ``JobContext``).
 
 :class:`~mosaic.tracking.sleap.params.SleapParams` is declared beside the
 integration, which both this op and ``run_sleap`` read, so the adapter and the
@@ -57,7 +57,7 @@ class SleapOp(Op[SleapParams]):
     Params = SleapParams
 
     def target(self, params: SleapParams, scope: ResolvedScope) -> str:
-        return "sleap-track"
+        return "sleap-nn track"
 
     def plan_identity(
         self,

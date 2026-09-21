@@ -54,7 +54,7 @@ for. The four differ, because the tools do:
 | Tracker | Parameter | Reaches the tool as |
 | --- | --- | --- |
 | `trex` | `convert_extra_settings`, `track_extra_settings` | entries in TRex's settings, one dictionary per phase |
-| `sleap` | `sleap_extra_settings` | `--key value` arguments appended to `sleap-track` |
+| `sleap` | `sleap_extra_settings` | `--key value` arguments appended to `sleap-nn track` |
 | `litpose` | `litpose_overrides` | Hydra `key=value` overrides on the model's own config |
 | `ultralytics` | `tracker_overrides` | fields of the tracker backend's config table |
 

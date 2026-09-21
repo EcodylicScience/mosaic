@@ -125,17 +125,19 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
 | `model_paths` | list of `string` | _required_ |  | One trained SLEAP model directory, or two for a top-down model (centroid, then centered-instance). |
 | `tracking` | `boolean` | `true` |  | Assign identities to detections across frames. When False, no tracker is attached. |
-| `tracker` | `string` | `"flow"` |  | The tracker algorithm. Known values are simple, flow, simplemaxtracks and flowmaxtracks. |
-| `similarity` | `string` | `"instance"` |  | The similarity metric for matching detections across frames, for example instance, centroid, or iou. |
-| `match` | `string` | `"hungarian"` |  | The assignment algorithm for matching detections across frames. Known values are hungarian and greedy. |
-| `track_window` | `integer` | `5` |  | The candidate window for track matching. [frames] |
+| `use_flow` | `boolean` | `true` |  | Shift each candidate pose by optical flow before matching it to a detection, sent as --use_flow. |
+| `candidates_method` | `"fixed_window"` \| `"local_queues"` | `"fixed_window"` |  | Where match candidates come from, sent as --candidates_method: fixed_window takes every instance of the last few frames, local_queues the last few instances of each track. |
+| `features` | `"keypoints"` \| `"centroids"` \| `"bboxes"` \| `"image"` | `"keypoints"` |  | What a detection and a candidate are compared by, sent as --features: keypoints, centroids, bboxes or image. |
+| `scoring_method` | `"oks"` \| `"cosine_sim"` \| `"iou"` \| `"euclidean_dist"` | `"oks"` |  | How that comparison is scored, sent as --scoring_method: oks, cosine_sim, iou or euclidean_dist. |
+| `track_matching_method` | `"hungarian"` \| `"greedy"` | `"hungarian"` |  | How detections are assigned to tracks from those scores, sent as --track_matching_method: hungarian or greedy. |
+| `tracking_window_size` | `integer` | `5` |  | How many frames, or instances per track under local_queues, are kept as match candidates, sent as --tracking_window_size. |
+| `max_tracks` | `integer` \| `None` | `null` |  | The maximum number of tracks, sent as --max_tracks. sleap-nn enforces it only through local_queues candidates, so it requires that candidates_method. |
 | `max_instances` | `integer` \| `None` | `null` |  | The maximum number of instances to detect per frame. |
-| `max_tracking` | `integer` \| `None` | `null` |  | The maximum number of tracks to maintain. Requires a tracker whose name ends in maxtracks. |
 | `peak_threshold` | `number` | `0.2` |  | The minimum confidence for a detected peak. |
 | `analysis_range` | tuple of (`integer`, `integer`) \| `None` | `null` |  | The first and last frame to analyze. Unset, SLEAP analyzes the whole video. |
-| `sleap_extra_settings` | `object` \| `None` | `null` |  | Additional sleap-track flags, sent as --key value pairs. A boolean value becomes a bare --key flag when true and is omitted when false, and a None value is skipped. |
+| `sleap_extra_settings` | `object` \| `None` | `null` |  | Additional sleap-nn track options, sent as --key value pairs. A boolean value becomes a bare --key flag when true and is omitted when false, and a None value is skipped. |
 | `batch_size` | `integer` | `4` |  | The inference batch size. |
-| `device` | `string` \| `None` | `null` |  | The device to run inference on: cpu, or a GPU index. Unset, cuda and auto all leave the choice to SLEAP. |
+| `device` | `string` \| `None` | `null` |  | The device to run inference on: cpu, cuda, mps, a CUDA index such as 0, or cuda:<index>. Unset and auto leave the choice to sleap-nn; a named device fails where it is absent. |
 
 ??? note "`JsonValue`"
 

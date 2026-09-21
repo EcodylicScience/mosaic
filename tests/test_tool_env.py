@@ -117,6 +117,26 @@ def test_a_locator_is_looked_up_and_the_executable_resolved_beside_it() -> None:
     assert tool_invocation(_LOCATED, executable="python") == ["/p/bin/python"]
 
 
+def test_a_linked_locator_is_resolved_to_the_environment_it_belongs_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``uv tool install`` links its scripts into ``~/.local/bin``.
+
+    What sits beside the link is the user's other tools, not the environment,
+    and the scripts a tool install does not link -- ``sleap-nn``, the
+    environment's ``python`` -- are only beside the target.
+    """
+    env_bin = tmp_path.resolve() / "tools" / "fake" / "bin"
+    env_bin.mkdir(parents=True)
+    (env_bin / "finder").touch()
+    linked = tmp_path / "local-bin" / "finder"
+    linked.parent.mkdir()
+    linked.symlink_to(env_bin / "finder")
+    monkeypatch.setattr(toolenv.shutil, "which", {"finder": str(linked)}.get)
+
+    assert tool_invocation(_LOCATED, executable="python") == [str(env_bin / "python")]
+
+
 # --- the environment ------------------------------------------------------
 
 

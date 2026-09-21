@@ -1,22 +1,33 @@
 """Run SLEAP from the command line for inference + identity tracking.
 
-This module provides Python wrappers around the ``sleap-track`` and
-``sleap-convert`` CLI console scripts, enabling headless batch pose inference +
-tracking of animal videos and export of the analysis HDF5 that mosaic bridges
-into standardized tracks.
+This module wraps two console scripts: ``sleap-nn track``, for headless batch
+pose inference + tracking of animal videos, and ``sleap-convert``, for the
+analysis HDF5 export that mosaic bridges into standardized tracks.
+
+**Inference is sleap-nn's own CLI, not a wrapper around it.** The ``sleap``
+distribution ships two inference scripts of its own, ``sleap-track`` and
+``sleap-nn-track``, and both import ``sleap_nn.predict``, which sleap-nn removed
+after 0.3.1. ``sleap`` 1.6.4 therefore cannot infer on the sleap-nn 0.3.3 its own
+dependency range allows, and reports the ``ImportError`` as "sleap-nn is not
+installed". ``sleap-nn`` (``sleap_nn.cli:cli``) ships with the modules it
+imports, so the two cannot skew. ``sleap-nn-track`` is the near-miss: it looks
+like that CLI and is the ``sleap`` wrapper. ``sleap-convert`` imports no
+``sleap_nn`` module and is unaffected.
 
 Requires:
-    The ``sleap-track`` / ``sleap-convert`` console scripts. SLEAP 1.6 is heavy
-    (PyTorch + Qt), so it usually lives in its **own** environment rather than
-    the mosaic env. Point the wrappers at it one of three ways (highest
-    precedence first), via per-call args or env vars:
+    SLEAP 1.6 with its ``nn`` extra. It is heavy (PyTorch + Qt), so it usually
+    lives in its **own** environment rather than the mosaic env. Point the
+    wrappers at it one of three ways (highest precedence first), via per-call
+    args or env vars:
 
     * ``sleap_conda_env=`` / ``MOSAIC_SLEAP_CONDA_ENV`` -- run via
-      ``conda run -n <env> sleap-track``;
+      ``conda run -n <env> sleap-nn``;
     * ``sleap_bin=`` / ``MOSAIC_SLEAP_BIN`` -- a path to one SLEAP console
       script (its siblings are resolved in the same directory);
-    * otherwise ``sleap-track`` / ``sleap-convert`` are looked up on ``$PATH``
-      (the ``uv tool install sleap`` case).
+    * otherwise ``sleap-convert`` is looked up on ``$PATH`` and every script
+      runs from the environment it belongs to. That is the ``uv tool install
+      sleap[nn]`` case, which links ``sleap-convert`` into ``~/.local/bin`` but
+      not ``sleap-nn``, a script of the ``sleap-nn`` distribution.
 
     Unlike TRex, SLEAP inference is headless and needs no ``DISPLAY`` / ``Xvfb``.
 """
@@ -27,7 +38,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 from mosaic.core.pipeline.subprocess_util import run_supervised
 from mosaic.tracking.common.toolenv import (
@@ -41,8 +52,28 @@ from mosaic.tracking.common.toolenv import (
 
 logger = logging.getLogger(__name__)
 
-_SLEAP_TRACK: str = "sleap-track"
+# sleap-nn's own CLI, shipped by the sleap-nn distribution. It dispatches on a
+# subcommand, so the verb is argv[1] rather than part of the script name.
+_SLEAP_TRACK_SCRIPT: Final = "sleap-nn"
+_SLEAP_TRACK_SUBCOMMAND: Final = "track"
 _SLEAP_CONVERT: str = "sleap-convert"
+
+SleapCandidatesMethod = Literal["fixed_window", "local_queues"]
+"""Where ``sleap-nn track`` draws match candidates from: every instance of the
+last few frames, or the last few instances of each track."""
+
+SleapFeatures = Literal["keypoints", "centroids", "bboxes", "image"]
+"""What ``sleap-nn track`` compares a detection and a candidate by."""
+
+SleapScoringMethod = Literal["oks", "cosine_sim", "iou", "euclidean_dist"]
+"""How ``sleap-nn track`` scores the association between those features."""
+
+SleapMatchingMethod = Literal["hungarian", "greedy"]
+"""How ``sleap-nn track`` assigns detections to tracks from those scores."""
+
+# The device families sleap-nn names as they are. A CUDA index is the other
+# spelling mosaic accepts, and is translated.
+_DEVICE_FAMILIES: Final = frozenset({"cpu", "cuda", "mps"})
 
 
 # ---------------------------------------------------------------------------
@@ -54,10 +85,11 @@ class SleapNotFoundError(ToolNotFoundError):
     """Raised when a SLEAP console script (or ``conda``) cannot be located."""
 
     default_message = (
-        "The 'sleap-track' console script was not found on $PATH.  "
-        "Install SLEAP (e.g. 'uv tool install sleap[nn]') and ensure it "
-        "is accessible, or point MOSAIC_SLEAP_CONDA_ENV / MOSAIC_SLEAP_BIN "
-        "at it.  See https://sleap.ai for installation instructions."
+        "No SLEAP install was found: mosaic looks up 'sleap-convert' on $PATH "
+        "and runs 'sleap-nn' from the same environment. Install SLEAP with its "
+        "nn extra (e.g. 'uv tool install \"sleap[nn]\"'), or point "
+        "MOSAIC_SLEAP_CONDA_ENV / MOSAIC_SLEAP_BIN at an environment that has "
+        "it. See https://sleap.ai for installation instructions."
     )
 
 
@@ -69,29 +101,22 @@ class SleapError(ToolExitError):
 
 # SLEAP's console scripts are always installed together, so MOSAIC_SLEAP_BIN
 # pointing at any one of them names the directory the others live in. Plainly
-# named because the training and label-export modules resolve through it too:
-# one environment serves sleap-track, sleap-convert and sleap-nn-train alike,
-# and declaring it twice is how the three drift apart.
+# named because the training, probe and label-export modules resolve through it
+# too: one environment serves sleap-nn, sleap-convert, sleap-nn-train and its
+# own python alike, and declaring it twice is how they drift apart.
+#
+# On $PATH the environment is found through sleap-convert rather than through
+# each executable, because a `uv tool install "sleap[nn]"` links only the sleap
+# distribution's scripts: sleap-nn and python are in the environment and not on
+# $PATH. Looking every executable up beside one locator is also what keeps
+# inference and export from answering from two different installs.
 SLEAP_ENV: Final = ToolEnv(
     tool="SLEAP",
     conda_env_var="MOSAIC_SLEAP_CONDA_ENV",
     bin_var="MOSAIC_SLEAP_BIN",
     bin_mode="sibling",
     not_found=SleapNotFoundError,
-)
-
-
-# The same environment addressed as an interpreter, for work that needs a SLEAP
-# library rather than one of its verbs. ``locator`` is what makes that possible:
-# looking up ``python`` on PATH would find the caller's, so the ladder looks up
-# a script it knows SLEAP installs and takes the interpreter beside it.
-SLEAP_PYTHON_ENV: Final = ToolEnv(
-    tool="SLEAP",
-    conda_env_var="MOSAIC_SLEAP_CONDA_ENV",
-    bin_var="MOSAIC_SLEAP_BIN",
-    bin_mode="sibling",
-    not_found=SleapNotFoundError,
-    locator=_SLEAP_TRACK,
+    locator=_SLEAP_CONVERT,
 )
 
 
@@ -133,7 +158,7 @@ def _sleap_invocation(
 
     The shared five-step ladder (:func:`tool_invocation`) applied to
     :data:`SLEAP_ENV`, with the script as the executable -- so one SLEAP
-    environment serves both ``sleap-track`` and ``sleap-convert``.
+    environment serves both ``sleap-nn`` and ``sleap-convert``.
     """
     return tool_invocation(
         SLEAP_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),
@@ -207,18 +232,58 @@ def _run_sleap(
 # ---------------------------------------------------------------------------
 
 
+def sleap_track_device_args(device: str | None) -> list[str]:
+    """The ``-d`` argument that puts ``sleap-nn track`` on *device*.
+
+    sleap-nn takes one torch device string, where the rest of mosaic spells a
+    device as a family name or a bare CUDA index. Sent through as it is, ``"0"``
+    names no device sleap-nn knows, so an index is sent as ``cuda:<index>``.
+
+    Args:
+        device: ``None``, empty or ``auto`` to leave the choice to sleap-nn;
+            ``cpu``, ``cuda`` or ``mps`` to name a device family, which then
+            fails loudly where it is absent; a CUDA index such as ``0``; or
+            ``cuda:<index>``.
+
+    Returns:
+        The argv tokens, empty when *device* leaves the choice open.
+
+    Raises:
+        ValueError: *device* is none of those. Raised from a field validator on
+            :class:`~mosaic.tracking.sleap.params.SleapParams` too, so an
+            unusable value is refused when the run is submitted rather than on a
+            GPU node once it is scheduled.
+    """
+    if device is None or device in ("", "auto"):
+        return []
+    if device in _DEVICE_FAMILIES:
+        return ["-d", device]
+    index = device.removeprefix("cuda:")
+    if index.isascii() and index.isdigit():
+        return ["-d", f"cuda:{index}"]
+    families = ", ".join(sorted(_DEVICE_FAMILIES))
+    msg = (
+        f"unusable device {device!r}: give 'auto', one of {families}, a CUDA "
+        "index such as '0', or 'cuda:<index>'. sleap-nn track runs on one "
+        "device, so a list of them is refused."
+    )
+    raise ValueError(msg)
+
+
 def run_sleap_track(
     video_path: Path | str,
     output_slp: Path | str,
     *,
     model_paths: Sequence[Path | str],
     tracking: bool = True,
-    tracker: str = "flow",
-    similarity: str = "instance",
-    match: str = "hungarian",
-    track_window: int = 5,
+    use_flow: bool = True,
+    candidates_method: SleapCandidatesMethod = "fixed_window",
+    features: SleapFeatures = "keypoints",
+    scoring_method: SleapScoringMethod = "oks",
+    track_matching_method: SleapMatchingMethod = "hungarian",
+    tracking_window_size: int = 5,
+    max_tracks: int | None = None,
     max_instances: int | None = None,
-    max_tracking: int | None = None,
     peak_threshold: float = 0.2,
     batch_size: int = 4,
     frames: str | None = None,
@@ -234,35 +299,48 @@ def run_sleap_track(
 ) -> SleapTrackResult:
     """Run SLEAP inference + tracking on a video, writing a ``.slp`` file.
 
-    Invokes the classic-dialect ``sleap-track`` console script against one or
-    more trained model directories (two for top-down: centroid + centered
-    instance), assigning ``Track`` identities across frames when *tracking*.
+    Invokes ``sleap-nn track`` against one or more trained model directories
+    (two for top-down: centroid + centered instance), assigning ``Track``
+    identities across frames when *tracking*.
+
+    Every tracking option is sent explicitly rather than left to sleap-nn's
+    defaults. Its ``track`` and ``predict`` subcommands already disagree on
+    ``--candidates_method``, and a default that moves under an unchanged
+    ``run_id`` is a differently configured tracker that still produces
+    plausible tracks.
 
     Parameters
     ----------
     video_path : path
-        Input video file (or a ``.slp`` for re-tracking existing predictions).
+        Input video file (or a ``.slp`` for re-tracking existing predictions),
+        passed as ``-i``.
     output_slp : path
         Destination ``.slp`` predictions file (passed as ``-o``).
     model_paths : sequence of paths
         One trained SLEAP model directory, or two for a top-down model
-        (centroid, then centered-instance), passed as repeated ``-m`` flags.
+        (centroid, then centered-instance), passed as repeated ``-m`` flags in
+        order.
     tracking : bool
-        Assign cross-frame identities. When False, no tracker is attached.
-    tracker : str
-        Tracker flavor: ``simple`` / ``flow`` / ``simplemaxtracks`` /
-        ``flowmaxtracks``.
-    similarity : str
-        ``--tracking.similarity`` (e.g. ``instance`` / ``centroid`` / ``iou``).
-    match : str
-        ``--tracking.match`` (``hungarian`` / ``greedy``).
-    track_window : int
-        ``--tracking.track_window`` (candidate window in frames).
+        Assign cross-frame identities (``-t``). When False, no tracking option
+        is sent at all.
+    use_flow : bool
+        ``--use_flow``: shift candidate poses by optical flow before matching.
+    candidates_method : str
+        ``--candidates_method``: ``fixed_window`` or ``local_queues``.
+    features : str
+        ``--features``: what a detection and a candidate are compared by.
+    scoring_method : str
+        ``--scoring_method``: how that comparison is scored.
+    track_matching_method : str
+        ``--track_matching_method``: ``hungarian`` or ``greedy``.
+    tracking_window_size : int
+        ``--tracking_window_size``: how many frames, or instances per track,
+        are kept as candidates.
+    max_tracks : int, optional
+        ``--max_tracks``: cap on the number of tracks. sleap-nn applies it only
+        with ``local_queues`` candidates.
     max_instances : int, optional
         ``-n`` cap on instances per frame.
-    max_tracking : int, optional
-        Cap on the number of maintained tracks (``--tracking.max_tracking 1`` +
-        ``--tracking.max_tracks``); requires a ``*maxtracks`` tracker.
     peak_threshold : float
         Minimum confidence for a detected peak.
     batch_size : int
@@ -270,10 +348,10 @@ def run_sleap_track(
     frames : str, optional
         Frame selection, e.g. ``"0-1000"`` or ``"1,2,3"``.
     device : str, optional
-        ``"cpu"`` -> ``--cpu``; a GPU index string -> ``--gpu <i>``; ``None`` /
-        ``"auto"`` lets SLEAP choose.
+        Translated by :func:`sleap_track_device_args`; ``None`` / ``"auto"``
+        lets sleap-nn choose.
     extra_settings : mapping, optional
-        Additional ``sleap-track`` flags passed as ``--key value`` pairs.
+        Additional ``sleap-nn track`` options passed as ``--key value`` pairs.
     idle_timeout : float
         Kill the subprocess after this many seconds with no output (inactivity
         watchdog; default 900).
@@ -292,13 +370,13 @@ def run_sleap_track(
     Raises
     ------
     SleapNotFoundError
-        If ``sleap-track`` cannot be located.
+        If no SLEAP install can be located.
     SleapError
         If SLEAP exits with a non-zero return code.
     FileNotFoundError
         If the expected ``.slp`` output is not found after inference.
     ValueError
-        If *model_paths* is empty.
+        If *model_paths* is empty, or *device* is unusable.
     """
     video_path = Path(video_path)
     output_slp = Path(output_slp)
@@ -307,7 +385,15 @@ def run_sleap_track(
     if not models:
         raise ValueError("run_sleap_track requires at least one model directory")
 
-    args: list[str] = [str(video_path), "-o", str(output_slp)]
+    # The verb first, because this CLI dispatches on a subcommand, and the video
+    # by -i: a positional path is an unexpected argument to it.
+    args: list[str] = [
+        _SLEAP_TRACK_SUBCOMMAND,
+        "-i",
+        str(video_path),
+        "-o",
+        str(output_slp),
+    ]
     for model in models:
         args.extend(["-m", str(model)])
     args.extend(["--peak_threshold", str(peak_threshold)])
@@ -316,23 +402,23 @@ def run_sleap_track(
         args.extend(["-n", str(max_instances)])
     if frames is not None:
         args.extend(["--frames", frames])
-    if device == "cpu":
-        args.append("--cpu")
-    elif device is not None and device not in ("auto", "cuda"):
-        args.extend(["--gpu", device])
+    args.extend(sleap_track_device_args(device))
     if tracking:
-        args.extend(["--tracking.tracker", tracker])
-        args.extend(["--tracking.similarity", similarity])
-        args.extend(["--tracking.match", match])
-        args.extend(["--tracking.track_window", str(track_window)])
-        if max_tracking is not None:
-            args.extend(["--tracking.max_tracking", "1"])
-            args.extend(["--tracking.max_tracks", str(max_tracking)])
+        args.append("-t")
+        if use_flow:
+            args.append("--use_flow")
+        args.extend(["--candidates_method", candidates_method])
+        args.extend(["--features", features])
+        args.extend(["--scoring_method", scoring_method])
+        args.extend(["--track_matching_method", track_matching_method])
+        args.extend(["--tracking_window_size", str(tracking_window_size)])
+        if max_tracks is not None:
+            args.extend(["--max_tracks", str(max_tracks)])
     args.extend(_flatten_extra(extra_settings))
 
     stdout, stderr = _run_sleap(
         _sleap_invocation(
-            _SLEAP_TRACK, sleap_conda_env=sleap_conda_env, sleap_bin=sleap_bin
+            _SLEAP_TRACK_SCRIPT, sleap_conda_env=sleap_conda_env, sleap_bin=sleap_bin
         ),
         args,
         idle_timeout=idle_timeout,

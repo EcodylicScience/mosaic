@@ -1,8 +1,9 @@
 """Unit tests for the env-aware SLEAP CLI invocation resolution.
 
 Covers :func:`mosaic.tracking.sleap.run._sleap_invocation` (how a SLEAP console
-script is launched: in a conda env, via a sibling of an explicit binary, or from
-``$PATH``) and the ``_run_sleap`` wiring, without invoking the real SLEAP.
+script is launched: in a conda env, via a sibling of an explicit binary, or
+beside ``sleap-convert`` on ``$PATH``) and the ``_run_sleap`` wiring, without
+invoking the real SLEAP.
 """
 
 from __future__ import annotations
@@ -21,7 +22,12 @@ from mosaic.tracking.sleap.run import (
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch):
-    """Remove SLEAP env vars and make ``which`` resolve fake script/conda paths."""
+    """Remove SLEAP env vars and make ``which`` resolve fake script/conda paths.
+
+    ``sleap-nn`` is on this fake ``$PATH`` somewhere else entirely, which a
+    ``$PATH`` lookup must not answer from: SLEAP's scripts are found beside
+    ``sleap-convert``, so inference and export run from one install.
+    """
     for var in (
         "MOSAIC_SLEAP_CONDA_ENV",
         "MOSAIC_SLEAP_BIN",
@@ -33,7 +39,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
         toolenv.shutil,
         "which",
         lambda name: {
-            "sleap-track": "/p/sleap-track",
+            "sleap-nn": "/elsewhere/sleap-nn",
             "sleap-convert": "/p/sleap-convert",
             "conda": "/p/bin/conda",
         }.get(name),
@@ -44,58 +50,59 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_param_conda_env_wins():
-    assert _sleap_invocation("sleap-track", sleap_conda_env="sleap") == [
+    assert _sleap_invocation("sleap-nn", sleap_conda_env="sleap") == [
         "/p/bin/conda",
         "run",
         "--no-capture-output",
         "-n",
         "sleap",
-        "sleap-track",
+        "sleap-nn",
     ]
 
 
 def test_param_bin_resolves_the_named_script_as_a_sibling():
     # MOSAIC_SLEAP_BIN may point at any one console script; the requested script
     # is resolved in the same directory.
-    assert _sleap_invocation("sleap-convert", sleap_bin="/x/bin/sleap-track") == [
-        "/x/bin/sleap-convert"
+    assert _sleap_invocation("sleap-nn", sleap_bin="/x/bin/sleap-convert") == [
+        "/x/bin/sleap-nn"
     ]
 
 
 def test_param_conda_beats_param_bin():
     got = _sleap_invocation(
-        "sleap-track", sleap_conda_env="sleap", sleap_bin="/x/sleap-track"
+        "sleap-nn", sleap_conda_env="sleap", sleap_bin="/x/sleap-convert"
     )
     assert got[0] == "/p/bin/conda"
 
 
 def test_env_conda(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOSAIC_SLEAP_CONDA_ENV", "envc")
-    assert _sleap_invocation("sleap-track") == [
+    assert _sleap_invocation("sleap-nn") == [
         "/p/bin/conda",
         "run",
         "--no-capture-output",
         "-n",
         "envc",
-        "sleap-track",
+        "sleap-nn",
     ]
 
 
 def test_param_beats_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOSAIC_SLEAP_CONDA_ENV", "envc")
-    assert _sleap_invocation("sleap-track", sleap_bin="/x/bin/sleap-track") == [
-        "/x/bin/sleap-track"
+    assert _sleap_invocation("sleap-nn", sleap_bin="/x/bin/sleap-convert") == [
+        "/x/bin/sleap-nn"
     ]
 
 
 def test_env_bin_resolves_sibling(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("MOSAIC_SLEAP_BIN", "/y/bin/sleap-track")
-    assert _sleap_invocation("sleap-convert") == ["/y/bin/sleap-convert"]
+    monkeypatch.setenv("MOSAIC_SLEAP_BIN", "/y/bin/sleap-convert")
+    assert _sleap_invocation("sleap-nn") == ["/y/bin/sleap-nn"]
 
 
-def test_default_path_lookup():
-    assert _sleap_invocation("sleap-track") == ["/p/sleap-track"]
+def test_default_path_lookup_runs_every_script_beside_sleap_convert():
+    assert _sleap_invocation("sleap-nn") == ["/p/sleap-nn"]
     assert _sleap_invocation("sleap-convert") == ["/p/sleap-convert"]
+    assert _sleap_invocation("python") == ["/p/python"]
 
 
 # --- error paths ---
@@ -104,19 +111,30 @@ def test_default_path_lookup():
 def test_default_missing_raises(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     with pytest.raises(SleapNotFoundError):
-        _sleap_invocation("sleap-track")
+        _sleap_invocation("sleap-nn")
+
+
+def test_sleap_nn_alone_on_path_is_not_a_sleap_install(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A bare ``pip install sleap-nn`` has no ``sleap-convert`` to export with."""
+    monkeypatch.setattr(
+        toolenv.shutil, "which", {"sleap-nn": "/elsewhere/sleap-nn"}.get
+    )
+    with pytest.raises(SleapNotFoundError):
+        _sleap_invocation("sleap-nn")
 
 
 def test_conda_missing_raises(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     with pytest.raises(SleapNotFoundError):
-        _sleap_invocation("sleap-track", sleap_conda_env="sleap")
+        _sleap_invocation("sleap-nn", sleap_conda_env="sleap")
 
 
 def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
     monkeypatch.setenv("CONDA_EXE", "/opt/conda/bin/conda")
-    assert _sleap_invocation("sleap-track", sleap_conda_env="sleap")[0] == (
+    assert _sleap_invocation("sleap-nn", sleap_conda_env="sleap")[0] == (
         "/opt/conda/bin/conda"
     )
 
@@ -138,11 +156,11 @@ def test_run_sleap_threads_invocation_and_neutralizes_mpl(
     monkeypatch.setenv("MPLBACKEND", "module://matplotlib_inline.backend_inline")
 
     out, err = _run_sleap(
-        ["/p/bin/conda", "run", "-n", "sleap", "sleap-track"],
+        ["/p/bin/conda", "run", "-n", "sleap", "sleap-nn"],
         ["video.mp4", "-o", "out.slp"],
         idle_timeout=5,
     )
-    assert captured["cmd"][:5] == ["/p/bin/conda", "run", "-n", "sleap", "sleap-track"]
+    assert captured["cmd"][:5] == ["/p/bin/conda", "run", "-n", "sleap", "sleap-nn"]
     assert captured["cmd"][-3:] == ["video.mp4", "-o", "out.slp"]
     # an inherited Jupyter module:// backend is neutralised for the subprocess
     assert captured["env"]["MPLBACKEND"] == "Agg"

@@ -17,7 +17,7 @@ identity, because a run trained with a different learning rate is a different
 model whether or not mosaic has a field for it.
 
 Requires:
-    ``sleap-nn-train``, from a SLEAP install. It is a sibling of ``sleap-track``,
+    ``sleap-nn-train``, from a SLEAP install. It is a sibling of ``sleap-nn``,
     so the environment variables that already point mosaic at SLEAP for tracking
     serve training too -- see :data:`mosaic.tracking.sleap.run.SLEAP_ENV`.
 """

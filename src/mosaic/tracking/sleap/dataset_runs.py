@@ -17,8 +17,8 @@ mirroring :func:`mosaic.tracking.trex.run_trex`:
   ``tracks/<variant>/<group>__<seq>.parquet`` via the registered
   ``sleap_analysis_h5`` converter.
 
-There is one expensive, gated phase -- ``track`` (``sleap-track`` inference +
-identity tracking, producing a ``.slp``). Its completion marker lets a killed
+There is one expensive, gated phase -- ``track`` (``sleap-nn track`` inference
++ identity tracking, producing a ``.slp``). Its completion marker lets a killed
 run resume without re-running inference. The cheap, deterministic analysis
 export (``sleap-convert``, producing the ``.h5`` the converter reads) is not
 marker-gated: it is re-run only when its output is missing or the inference was
@@ -151,12 +151,14 @@ def sleap_settings(params: SleapParams, *, model_id: str) -> dict[str, object]:
     return {
         "model": model_id,
         "tracking": tracking,
-        "tracker": params.tracker if tracking else None,
-        "similarity": params.similarity if tracking else None,
-        "match": params.match if tracking else None,
-        "track_window": params.track_window if tracking else None,
+        "use_flow": params.use_flow if tracking else None,
+        "candidates_method": params.candidates_method if tracking else None,
+        "features": params.features if tracking else None,
+        "scoring_method": params.scoring_method if tracking else None,
+        "track_matching_method": params.track_matching_method if tracking else None,
+        "tracking_window_size": params.tracking_window_size if tracking else None,
+        "max_tracks": params.max_tracks if tracking else None,
         "max_instances": params.max_instances,
-        "max_tracking": params.max_tracking,
         "peak_threshold": params.peak_threshold,
         "analysis_range": (
             list(params.analysis_range) if params.analysis_range else None
@@ -304,7 +306,7 @@ def run_sleap(
         print("[run_sleap] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
 
-    # sleap-track takes a frame selection as one "start-end" token.
+    # sleap-nn track takes a frame selection as one "start-end" token.
     analysis_range = params.analysis_range
     frames_arg = f"{analysis_range[0]}-{analysis_range[1]}" if analysis_range else None
 
@@ -347,12 +349,14 @@ def run_sleap(
                 slp_path,
                 model_paths=resolved_models.paths,
                 tracking=params.tracking,
-                tracker=params.tracker,
-                similarity=params.similarity,
-                match=params.match,
-                track_window=params.track_window,
+                use_flow=params.use_flow,
+                candidates_method=params.candidates_method,
+                features=params.features,
+                scoring_method=params.scoring_method,
+                track_matching_method=params.track_matching_method,
+                tracking_window_size=params.tracking_window_size,
+                max_tracks=params.max_tracks,
                 max_instances=params.max_instances,
-                max_tracking=params.max_tracking,
                 peak_threshold=params.peak_threshold,
                 batch_size=params.batch_size,
                 frames=frames_arg,
@@ -463,7 +467,7 @@ def run_sleap(
     return run_tracker(
         ds,
         kind=SLEAP_KIND,
-        target="sleap-track",
+        target="sleap-nn track",
         minted=minted,
         work_items=build_work_items(ds, media_scope, kind=SLEAP_KIND),
         index=sleap_index(sleap_index_path(ds)),

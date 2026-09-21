@@ -70,7 +70,7 @@ def _fake_trainer(
 
 def _point_at_sleap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "bin").mkdir(exist_ok=True)
-    for name in ("sleap-nn-train", "sleap-track", "python"):
+    for name in ("sleap-nn-train", "sleap-convert", "python"):
         _ = (tmp_path / "bin" / name).write_text("")
     monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-nn-train"))
 
@@ -267,7 +267,7 @@ def test_the_trained_model_resolves_back_as_a_sleap_model(
     resolved = resolve_model(ds, run_id, "train-sleap")
 
     assert resolved.model_id == run_id, "named by its run, not a digest"
-    assert resolved.path.is_dir(), "a directory, which is what sleap-track wants"
+    assert resolved.path.is_dir(), "a directory, which is what sleap-nn track wants"
     assert [p.name for p in resolved.significant_files] == ["best.ckpt"]
 
 

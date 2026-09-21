@@ -190,10 +190,13 @@ class ToolEnv:
         not_found: This tool's :class:`ToolNotFoundError` subclass, raised for
             both a missing tool and a missing ``conda``.
         locator: What to look up on ``$PATH`` when it is not the executable
-            itself. Empty means the executable is its own locator. Only
-            Lightning Pose differs: it looks up ``litpose`` in order to find the
-            ``python`` beside it, because the interpreter is not on ``$PATH``
-            under a distinguishing name.
+            itself. Empty means the executable is its own locator. A locator
+            names the environment rather than the thing run: Lightning Pose and
+            Ultralytics look up a script in order to find the ``python`` beside
+            it, which is not on ``$PATH`` under a distinguishing name, and SLEAP
+            looks up ``sleap-convert`` in order to run ``sleap-nn``, which a
+            ``uv tool install`` does not link. The locator found is resolved
+            through any symlink before its directory is read.
         display_var: The variable naming this tool's ``DISPLAY``, for a tool
             that needs one. Empty means the tool runs without a display, which
             is every tool but TRex.
@@ -332,7 +335,11 @@ def tool_invocation(env: ToolEnv, *, executable: str) -> list[str]:
     found = shutil.which(env.locator or executable)
     if found is None:
         raise env.not_found()
-    return [str(Path(found).parent / executable) if env.locator else found]
+    if not env.locator:
+        return [found]
+    # Resolved, because a uv or pipx tool install links its scripts into
+    # ~/.local/bin, and what sits beside the link is not the environment.
+    return [str(Path(found).resolve().parent / executable)]
 
 
 def _from_bin(env: ToolEnv, bin_path: str | Path, executable: str) -> str:

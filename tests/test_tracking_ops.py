@@ -837,7 +837,7 @@ def test_sleap_registered_as_gpu_convert_op():
     assert "sleap" in OPS
     d = describe_op("sleap")
     assert d["category"] == "convert"
-    assert {"model_paths", "tracker"} <= set(d["params_schema"]["properties"])
+    assert {"model_paths", "use_flow"} <= set(d["params_schema"]["properties"])
     from mosaic.core.pipeline.ops import op_resource_class
 
     # declared "gpu" despite category "convert" (SLEAP inference wants the GPU)

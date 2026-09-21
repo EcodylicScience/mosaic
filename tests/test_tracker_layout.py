@@ -402,16 +402,18 @@ def test_sleap_leaves_this_shape(
     assert got["index_rows"] == 1
     assert got["run_params_keys"] == [
         "analysis_range",
-        "match",
+        "candidates_method",
+        "features",
         "max_instances",
-        "max_tracking",
+        "max_tracks",
         "model",
         "peak_threshold",
-        "similarity",
+        "scoring_method",
         "sleap_extra_settings",
-        "track_window",
-        "tracker",
+        "track_matching_method",
         "tracking",
+        "tracking_window_size",
+        "use_flow",
     ]
     assert got["tracks_files"] == ["<run>/vid1.parquet"]
 

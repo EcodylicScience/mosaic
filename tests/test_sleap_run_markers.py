@@ -1,6 +1,6 @@
 """End-to-end ``run_sleap`` reuse and provenance, without a real SLEAP binary.
 
-``sleap-track`` / ``sleap-convert`` are replaced with recording fakes (the shape
+``sleap-nn track`` / ``sleap-convert`` are replaced with recording fakes (the shape
 established in ``test_trex_run_markers.py``): the fake inference writes a ``.slp``
 and the fake export writes a small, converter-readable analysis ``.h5``. This
 exercises the Job-Contract machinery -- content ``run_id``, phase-marker reuse,
@@ -67,13 +67,15 @@ class FakeSleap:
     """Recording stand-ins for the two SLEAP phases."""
 
     tracked: list[Path] = field(default_factory=list)
+    track_settings: list[dict[str, object]] = field(default_factory=list)
     converted: list[Path] = field(default_factory=list)
     frames: int = 6
 
     def track(
-        self, video_path: Path, output_slp: Path, **_kwargs: object
+        self, video_path: Path, output_slp: Path, **kwargs: object
     ) -> SleapTrackResult:
         self.tracked.append(Path(video_path))
+        self.track_settings.append(kwargs)
         out = Path(output_slp)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"slp")
@@ -197,6 +199,55 @@ def test_overwrite_forces_a_recompute(
 
     dr.run_sleap(ds, SleapParams(model_paths=[str(model)]), overwrite=True)
     assert len(sleap.tracked) == 2  # inference ran again
+
+
+# --- every tracking setting reaches the tool ---------------------------------
+
+
+def test_every_tracking_setting_reaches_the_tool(
+    ds: Dataset, model: Path, sleap: FakeSleap
+) -> None:
+    """A setting ``run_sleap`` forgot to pass would run at the tool's default.
+
+    ``run_sleap_track`` gives each option a default, so an omission is silent:
+    the run_id would name the params while the tracker ran something else. Each
+    value here differs from that default.
+    """
+    params = SleapParams(
+        model_paths=[str(model)],
+        use_flow=False,
+        candidates_method="local_queues",
+        features="centroids",
+        scoring_method="euclidean_dist",
+        track_matching_method="greedy",
+        tracking_window_size=9,
+        max_tracks=3,
+        max_instances=2,
+        peak_threshold=0.4,
+        batch_size=16,
+        device="cpu",
+        sleap_extra_settings={"of_img_scale": 0.5},
+    )
+
+    dr.run_sleap(ds, params)
+
+    (settings,) = sleap.track_settings
+    expected: dict[str, object] = {
+        "tracking": True,
+        "use_flow": False,
+        "candidates_method": "local_queues",
+        "features": "centroids",
+        "scoring_method": "euclidean_dist",
+        "track_matching_method": "greedy",
+        "tracking_window_size": 9,
+        "max_tracks": 3,
+        "max_instances": 2,
+        "peak_threshold": 0.4,
+        "batch_size": 16,
+        "device": "cpu",
+        "extra_settings": {"of_img_scale": 0.5},
+    }
+    assert {key: settings.get(key) for key in expected} == expected
 
 
 # --- different weights are a different run ---------------------------------

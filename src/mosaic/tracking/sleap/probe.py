@@ -47,7 +47,7 @@ from mosaic.tracking.common.toolenv import (
     tool_invocation,
 )
 from mosaic.tracking.sleap.run import (
-    SLEAP_PYTHON_ENV,
+    SLEAP_ENV,
     SleapError,
     SleapNotFoundError,
 )
@@ -182,7 +182,7 @@ def probe_sleap(
         FileNotFoundError: It exited cleanly and wrote no answer.
     """
     invocation = tool_invocation(
-        SLEAP_PYTHON_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),
+        SLEAP_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),
         executable="python",
     )
     with tempfile.TemporaryDirectory(prefix="mosaic-sleap-probe-") as scratch:

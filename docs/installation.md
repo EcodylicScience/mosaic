@@ -94,7 +94,9 @@ SLEAP 1.6 brings PyTorch and Qt, so it installs on its own:
 uv tool install "sleap[nn]"
 ```
 
-This puts `sleap-track` and `sleap-convert` on `$PATH`, where mosaic finds them.
+This puts `sleap-convert` on `$PATH`, where mosaic finds it. mosaic runs inference
+with `sleap-nn track` from the same environment, so `sleap-nn` itself does not need
+to be on `$PATH`.
 Installed into a conda environment instead, name it with
 `export MOSAIC_SLEAP_CONDA_ENV=sleap`.
 

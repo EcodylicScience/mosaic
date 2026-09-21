@@ -1,15 +1,16 @@
 """SLEAP CLI integration for pose inference + identity tracking.
 
 This module wraps the SLEAP command-line interface, enabling mosaic to run
-``sleap-track`` inference + tracking headlessly against a pre-trained SLEAP model
-and bridge the results into standardized tracks.
+``sleap-nn track`` inference + tracking headlessly against a pre-trained SLEAP
+model and bridge the results into standardized tracks.
 
 Requires:
-    The ``sleap-track`` / ``sleap-convert`` console scripts (https://sleap.ai).
-    SLEAP 1.6 is heavy (PyTorch + Qt), so it usually lives in its **own**
-    environment; point the wrappers at it with ``sleap_conda_env=`` /
-    ``MOSAIC_SLEAP_CONDA_ENV`` (or ``sleap_bin=`` / ``MOSAIC_SLEAP_BIN``), else
-    the console scripts are found on ``$PATH`` (the ``uv tool install`` case).
+    The ``sleap-nn`` / ``sleap-convert`` console scripts of a SLEAP 1.6 install
+    with its ``nn`` extra (https://sleap.ai). SLEAP is heavy (PyTorch + Qt), so it
+    usually lives in its **own** environment; point the wrappers at it with
+    ``sleap_conda_env=`` / ``MOSAIC_SLEAP_CONDA_ENV`` (or ``sleap_bin=`` /
+    ``MOSAIC_SLEAP_BIN``), else the environment is found through
+    ``sleap-convert`` on ``$PATH`` (the ``uv tool install`` case).
     Unlike TRex, SLEAP inference is headless and needs no ``DISPLAY``.
 
 Usage

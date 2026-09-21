@@ -33,7 +33,7 @@ from mosaic.core.annotations.model import AnnotationSet
 from mosaic.core.annotations.writers import write_coco_keypoints
 from mosaic.core.pipeline.subprocess_util import run_supervised
 from mosaic.tracking.common.toolenv import subprocess_env, tool_invocation
-from mosaic.tracking.sleap.run import SLEAP_PYTHON_ENV, SleapError
+from mosaic.tracking.sleap.run import SLEAP_ENV, SleapError
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ def write_slp(
     _ = write_coco_keypoints(annotations, coco_path)
 
     invocation = tool_invocation(
-        SLEAP_PYTHON_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),
+        SLEAP_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),
         executable="python",
     )
     cmd = [*invocation, "-c", _TO_SLP_SNIPPET, str(coco_path), str(root), str(staging)]

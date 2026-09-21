@@ -14,9 +14,9 @@ The model is declared beside the integration rather than beside the op, because
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.core.params import (
@@ -24,6 +24,13 @@ from mosaic.core.params import (
     Declared,
 )
 from mosaic.tracking.common.params import TrackerOpParams
+from mosaic.tracking.sleap.run import (
+    SleapCandidatesMethod,
+    SleapFeatures,
+    SleapMatchingMethod,
+    SleapScoringMethod,
+    sleap_track_device_args,
+)
 
 __all__ = ["SleapParams"]
 
@@ -36,47 +43,62 @@ _TRACKING_DESCRIPTION = (
     "Assign identities to detections across frames. When False, no tracker is attached."
 )
 
-_TRACKER_DESCRIPTION = (
-    "The tracker algorithm. Known values are simple, flow, simplemaxtracks and "
-    "flowmaxtracks."
+_USE_FLOW_DESCRIPTION = (
+    "Shift each candidate pose by optical flow before matching it to a "
+    "detection, sent as --use_flow."
 )
 
-_SIMILARITY_DESCRIPTION = (
-    "The similarity metric for matching detections across frames, for example "
-    "instance, centroid, or iou."
+_CANDIDATES_METHOD_DESCRIPTION = (
+    "Where match candidates come from, sent as --candidates_method: "
+    "fixed_window takes every instance of the last few frames, local_queues the "
+    "last few instances of each track."
 )
 
-_MATCH_DESCRIPTION = (
-    "The assignment algorithm for matching detections across frames. Known "
-    "values are hungarian and greedy."
+_FEATURES_DESCRIPTION = (
+    "What a detection and a candidate are compared by, sent as --features: "
+    "keypoints, centroids, bboxes or image."
+)
+
+_SCORING_METHOD_DESCRIPTION = (
+    "How that comparison is scored, sent as --scoring_method: oks, cosine_sim, "
+    "iou or euclidean_dist."
+)
+
+_TRACK_MATCHING_METHOD_DESCRIPTION = (
+    "How detections are assigned to tracks from those scores, sent as "
+    "--track_matching_method: hungarian or greedy."
 )
 
 _ANALYSIS_RANGE_DESCRIPTION = (
     "The first and last frame to analyze. Unset, SLEAP analyzes the whole video."
 )
 
-_TRACK_WINDOW_DESCRIPTION = "The candidate window for track matching."
+_TRACKING_WINDOW_SIZE_DESCRIPTION = (
+    "How many frames, or instances per track under local_queues, are kept as "
+    "match candidates, sent as --tracking_window_size."
+)
 
 _MAX_INSTANCES_DESCRIPTION = "The maximum number of instances to detect per frame."
 
-_MAX_TRACKING_DESCRIPTION = (
-    "The maximum number of tracks to maintain. Requires a tracker whose name "
-    "ends in maxtracks."
+_MAX_TRACKS_DESCRIPTION = (
+    "The maximum number of tracks, sent as --max_tracks. sleap-nn enforces it "
+    "only through local_queues candidates, so it requires that candidates_method."
 )
 
 _PEAK_THRESHOLD_DESCRIPTION = "The minimum confidence for a detected peak."
 
 _SLEAP_EXTRA_SETTINGS_DESCRIPTION = (
-    "Additional sleap-track flags, sent as --key value pairs. A boolean value "
-    "becomes a bare --key flag when true and is omitted when false, and a None "
-    "value is skipped."
+    "Additional sleap-nn track options, sent as --key value pairs. A boolean "
+    "value becomes a bare --key flag when true and is omitted when false, and a "
+    "None value is skipped."
 )
 
 _BATCH_SIZE_DESCRIPTION = "The inference batch size."
 
 _DEVICE_DESCRIPTION = (
-    "The device to run inference on: cpu, or a GPU index. Unset, cuda and auto "
-    "all leave the choice to SLEAP."
+    "The device to run inference on: cpu, cuda, mps, a CUDA index such as 0, "
+    "or cuda:<index>. Unset and auto leave the choice to sleap-nn; a named "
+    "device fails where it is absent."
 )
 
 
@@ -87,26 +109,28 @@ class SleapParams(TrackerOpParams):
     # centered-instance). Part of the run_id identity -- via a content digest of
     # the weights, never the paths themselves.
     model_paths: Annotated[list[str], Declared(_MODEL_PATHS_DESCRIPTION)]
-    # tracking (part of the run_id identity)
+    # tracking (part of the run_id identity). Named for the sleap-nn track
+    # options they are sent as; the defaults are what the legacy defaults ran
+    # (the flow tracker, keypoint OKS, hungarian matching, a five-frame window).
     tracking: Annotated[bool, Declared(_TRACKING_DESCRIPTION)] = True
-    tracker: Annotated[
-        str,
-        Field(examples=["simple", "flow", "simplemaxtracks", "flowmaxtracks"]),
-        Declared(_TRACKER_DESCRIPTION),
-    ] = "flow"
-    similarity: Annotated[
-        str,
-        Field(examples=["instance", "centroid", "iou"]),
-        Declared(_SIMILARITY_DESCRIPTION),
-    ] = "instance"
-    match: Annotated[
-        str,
-        Field(examples=["hungarian", "greedy"]),
-        Declared(_MATCH_DESCRIPTION),
+    use_flow: Annotated[bool, Declared(_USE_FLOW_DESCRIPTION)] = True
+    candidates_method: Annotated[
+        SleapCandidatesMethod, Declared(_CANDIDATES_METHOD_DESCRIPTION)
+    ] = "fixed_window"
+    features: Annotated[SleapFeatures, Declared(_FEATURES_DESCRIPTION)] = "keypoints"
+    scoring_method: Annotated[
+        SleapScoringMethod, Declared(_SCORING_METHOD_DESCRIPTION)
+    ] = "oks"
+    track_matching_method: Annotated[
+        SleapMatchingMethod, Declared(_TRACK_MATCHING_METHOD_DESCRIPTION)
     ] = "hungarian"
-    track_window: Annotated[int, Declared(_TRACK_WINDOW_DESCRIPTION, unit="frames")] = 5
+    # No unit: it counts frames under fixed_window and instances per track
+    # under local_queues.
+    tracking_window_size: Annotated[
+        int, Declared(_TRACKING_WINDOW_SIZE_DESCRIPTION)
+    ] = 5
+    max_tracks: Annotated[int | None, Declared(_MAX_TRACKS_DESCRIPTION)] = None
     max_instances: Annotated[int | None, Declared(_MAX_INSTANCES_DESCRIPTION)] = None
-    max_tracking: Annotated[int | None, Declared(_MAX_TRACKING_DESCRIPTION)] = None
     peak_threshold: Annotated[float, Declared(_PEAK_THRESHOLD_DESCRIPTION)] = 0.2
     analysis_range: Annotated[
         tuple[int, int] | None, Declared(_ANALYSIS_RANGE_DESCRIPTION)
@@ -120,10 +144,42 @@ class SleapParams(TrackerOpParams):
     ] = None
     # execution knobs -- throughput/environment only, excluded from the run_id.
     batch_size: Annotated[int, HASH_EXCLUDE, Declared(_BATCH_SIZE_DESCRIPTION)] = 4
-    # cpu / cuda / a gpu index / None (auto). Where it ran, not what it produced.
+    # cpu / cuda / mps / a CUDA index / None (auto). Where it ran, not what it
+    # produced.
     device: Annotated[
         str | None,
         HASH_EXCLUDE,
-        Field(examples=["cpu", "cuda", "auto", "0"]),
+        Field(examples=["cpu", "cuda", "mps", "auto", "0"]),
         Declared(_DEVICE_DESCRIPTION),
     ] = None
+
+    @field_validator("device")
+    @classmethod
+    def _device_is_usable(cls, value: str | None) -> str | None:
+        """Refuse a device sleap-nn cannot be given, at submit time.
+
+        :func:`~mosaic.tracking.sleap.run.sleap_track_device_args` is the
+        translation, and calling it here refuses an unusable spelling before the
+        job is scheduled rather than on a GPU node once it runs.
+        """
+        _ = sleap_track_device_args(value)
+        return value
+
+    @model_validator(mode="after")
+    def _max_tracks_has_local_queues(self) -> Self:
+        """Refuse a track cap under candidates that cannot enforce it.
+
+        sleap-nn enforces ``--max_tracks`` only through ``local_queues``
+        candidates. Under ``fixed_window``, earlier releases discard the cap and
+        later ones switch to ``local_queues`` themselves, so the same params
+        would name two tracker configurations depending on the installed
+        release, and neither is the one they state.
+        """
+        if self.max_tracks is not None and self.candidates_method != "local_queues":
+            msg = (
+                f"max_tracks={self.max_tracks} needs "
+                "candidates_method='local_queues', the only candidates sleap-nn "
+                f"enforces a track cap through; got {self.candidates_method!r}."
+            )
+            raise ValueError(msg)
+        return self

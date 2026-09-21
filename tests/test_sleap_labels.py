@@ -63,7 +63,7 @@ def _set(tmp_path: Path, *, frames: int = 2, tracks: bool = False) -> Annotation
 
 def _stub_sleap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Point the location ladder at a SLEAP install that never runs."""
-    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-track"))
+    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-convert"))
     (tmp_path / "bin").mkdir(exist_ok=True)
     _ = (tmp_path / "bin" / "python").write_text("")
 

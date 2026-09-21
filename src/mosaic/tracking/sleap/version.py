@@ -32,7 +32,7 @@ SLEAP_VERSION: Final = "1.6"
 Seeded at ``1.6`` to mark the SLEAP release line this integration targets, so
 ``tracks/sleap.1.6-<digest>/`` reads legibly against the SLEAP version a human
 knows. It is still the *integration's* number, **declared, never detected**: it
-is not read from the installed ``sleap-track``. Deriving it from the installed
+is not read from the installed ``sleap-nn``. Deriving it from the installed
 tool would invalidate every tracks variant on every upstream patch release for
 bit-identical output. Bump it by hand when the integration's *output semantics*
 change -- typically at an upstream major/minor release, or when the settings
