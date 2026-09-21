@@ -296,3 +296,72 @@ def test_a_tracker_is_refused_when_the_join_is_missing(ds: Dataset) -> None:
     """Refused, not silently truncated and not silently joined by the tool."""
     with pytest.raises(JoinedExportMissingError, match="export-joined"):
         _ = resolve_tool_inputs(ds, _item(ds), kind="trex")
+
+
+# --- a consumer asks for the clips, not for one recipe ---------------------
+#
+# The first version re-derived the filename from DEFAULT parameters, so a join
+# built with any non-default setting was invisible: `export-joined` with
+# reencode=true wrote one file and the tracker looked for another, then reported
+# the join missing on a session that had just been joined successfully. It cost
+# a canary run on a 30-clip session to find.
+
+
+def test_a_join_built_with_non_default_params_is_still_found(ds: Dataset) -> None:
+    """The regression. Any complete join of these clips answers the question."""
+    _ = run_op(
+        ds,
+        "export-joined",
+        {"reencode": True},
+        scope=Scope(entries=[("", "sess")]),
+    )
+    resolved = ds.resolve_media("", "sess")
+    uid = joined_source_uid(list(resolved.facts))
+    built = (
+        ds.get_root("media")
+        / "joined"
+        / f"{uid}.{joined_recipe_hash(JoinedExportParams(reencode=True))}.joined.mp4"
+    )
+    assert built.is_file(), "the op wrote the reencode-recipe file"
+    assert not joined_export_path(
+        ds, uid, joined_recipe_hash(JoinedExportParams())
+    ).exists(), "and deliberately not the default-recipe one"
+
+    assert resolve_tool_inputs(ds, _item(ds), kind="trex") == (built,)
+
+
+def test_two_joins_of_one_clip_set_are_refused_not_chosen_between(
+    ds: Dataset,
+) -> None:
+    """Different inputs, so picking by sort order would be picking by accident.
+
+    The same refusal `select_variant_rows` makes for two recipes of one entry,
+    and for the same reason: what a run read must not depend on which filename
+    happens to sort first.
+    """
+    _ = run_op(ds, "export-joined", {}, scope=Scope(entries=[("", "sess")]))
+    _ = run_op(
+        ds,
+        "export-joined",
+        {"reencode": True},
+        scope=Scope(entries=[("", "sess")]),
+    )
+
+    with pytest.raises(JoinedExportMissingError, match="different recipes"):
+        _ = resolve_tool_inputs(ds, _item(ds), kind="trex")
+
+
+def test_the_op_reports_that_it_joined_something(ds: Dataset) -> None:
+    """ "finished" alone could not tell a joined session from a skipped one.
+
+    Which is how the addressing bug above hid behind a clean exit: the run said
+    finished, entries_written 0, and 0 means "not reported".
+    """
+    from mosaic.runlog import reduce_run_log, run_log_dir
+
+    _ = run_op(ds, "export-joined", {}, scope=Scope(entries=[("", "sess")]))
+
+    logs = sorted(run_log_dir(ds.base_dir).glob("*.jsonl"))
+    snapshot = reduce_run_log(max(logs, key=lambda p: p.stat().st_mtime))
+    assert snapshot is not None
+    assert snapshot["entries_written"] == 1

@@ -497,6 +497,9 @@ class JoinedExportOp(Op[JoinedExportParams]):
                 "export-joined", f"{group}/{sequence}: one clip, nothing to join"
             )
             ctx.heartbeat(done=1)
+            # Nothing was joined, so nothing is reported: zero means "not
+            # reported" by the run-log's own convention, which is the honest
+            # answer for an entry that needed no join.
             return run_id
 
         source_uid = joined_source_uid(facts)
@@ -514,6 +517,7 @@ class JoinedExportOp(Op[JoinedExportParams]):
         dest = joined_export_path(ds, source_uid, joined_recipe_hash(params))
         if dest.is_file() and not overwrite:
             ctx.progress.on_phase("export-joined", f"{group}/{sequence}: reused")
+            ctx.entries_written(1)
             ctx.heartbeat(done=1)
             return run_id
 
@@ -529,5 +533,9 @@ class JoinedExportOp(Op[JoinedExportParams]):
         ctx.progress.on_phase(
             "export-joined", f"{group}/{sequence}: {written} frames -> {dest.name}"
         )
+        # Reported, because "finished" alone could not tell a joined session
+        # from one the op decided needed no join -- which is exactly the
+        # ambiguity that hid a recipe-addressing bug behind a clean exit.
+        ctx.entries_written(1)
         ctx.heartbeat(done=1)
         return run_id

@@ -147,25 +147,35 @@ def resolve_entry_input(
 def _joined_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
     """The one video holding *item*'s clips, or a refusal naming how to build it.
 
-    Addressed by the clip set's own ordered composition digest -- the value
+    Found by the clip set's own ordered composition digest -- the value
     ``item.source_uid`` already computes for the reuse gate -- so this looks for
     the join of *these* clips in *this* order and never for whatever join
     happens to be on disk.
+
+    **The recipe is deliberately not part of the question.** A joined export's
+    filename carries its recipe so that two of them cannot overwrite each other,
+    but a consumer is asking "give me these clips as one video", and every
+    complete join of one clip set answers that: they hold the same frames in the
+    same order, which the op verifies before publishing either. Re-deriving the
+    name from default parameters instead made every non-default join invisible
+    -- a ``reencode`` run wrote one file and the tracker looked for another,
+    then reported the join missing on a session that had just been joined.
+
+    Two joins of one clip set are refused rather than chosen between, for the
+    reason ``select_variant_rows`` refuses two recipes for one entry: they are
+    different inputs, and picking by sort order would make what a tracker read
+    -- and so what it published -- depend on a filesystem accident.
 
     Refused rather than built here. Joining is minutes of I/O over tens of
     gigabytes: it belongs to an op with a ledger entry, a claim and a
     cancellation point, not to a path resolution that a planner also calls.
     """
-    from mosaic.core.pipeline.joined_export import (
-        JoinedExportParams,
-        joined_export_path,
-        joined_recipe_hash,
-    )
+    from mosaic.core.pipeline.joined_export import JOINED_KIND_DIRECTORY
 
     source_uid = item.source_uid
     where = (
-        f"    mosaic run -m <manifest> --kind export-joined --params "
-        f'\'{{"entry": ["{item.group}", "{item.sequence}"]}}\''
+        f"    mosaic run -m <manifest> --kind export-joined "
+        f'--entries "{item.group}:{item.sequence}"'
     )
     if not source_uid:
         message = (
@@ -176,10 +186,9 @@ def _joined_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
         )
         raise JoinedExportMissingError(message)
 
-    joined = joined_export_path(
-        ds, source_uid, joined_recipe_hash(JoinedExportParams())
-    )
-    if not joined.is_file():
+    root = ds.get_root("media") / JOINED_KIND_DIRECTORY
+    found = sorted(root.glob(f"{source_uid}.*.joined.mp4")) if root.is_dir() else []
+    if not found:
         message = (
             f"[{kind}] ({item.group}, {item.sequence}) is one recording in "
             f"{item.n_sources} clips. {kind} is handed one video file, and a "
@@ -187,7 +196,17 @@ def _joined_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
             f"mosaic joins them first. Build it:\n{where}"
         )
         raise JoinedExportMissingError(message)
-    return joined
+    if len(found) > 1:
+        listed = "\n".join(f"      {p.name}" for p in found)
+        message = (
+            f"[{kind}] ({item.group}, {item.sequence}) has {len(found)} joins of "
+            f"the same clips, made by different recipes:\n{listed}\n"
+            f"They are different inputs, and choosing between them here would "
+            f"make what this run read depend on which sorts first. Delete the "
+            f"ones you do not want and re-run."
+        )
+        raise JoinedExportMissingError(message)
+    return found[0]
 
 
 def _registered_export(
