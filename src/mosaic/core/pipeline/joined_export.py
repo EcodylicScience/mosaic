@@ -53,13 +53,14 @@ joined export, and only a caller that explicitly asks for one
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Annotated, Final
 
 from mosaic_media import MediaFacts, probe_media
 from mosaic_media.ffmpeg import run_to_completion
 from mosaic_media.transcode import TranscodeError
 
 from mosaic.core.entry import Entry
+from mosaic.core.params import Declared
 from mosaic.core.pipeline._utils import ResolvedScope, hash_params
 from mosaic.core.params import Params
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
@@ -88,6 +89,26 @@ the directory would put two addressing schemes in one place and let
 ``prune-media`` judge one by the other's rules.
 """
 
+_ENCODERS: Final[dict[str, str]] = {
+    "h264": "libx264",
+    "av1": "libsvtav1",
+    "hevc": "libx265",
+}
+"""Which encoder re-makes a clip in a given codec.
+
+Only the three this corpus produces. An outlier in any other codec is refused by
+name rather than guessed at: picking an encoder mosaic did not choose would put
+an unrecorded decision in the middle of a file a tracker then reads as truth.
+"""
+
+_NORMALISE_CRF: Final = 18
+"""Quality for a normalised clip -- visually lossless, and not archival.
+
+A joined export is a tool input, addressed by recipe and disposable, not a
+derivative anything keeps. What matters is that it decodes to the same frames in
+the same order; this is high enough that a second generation does not show.
+"""
+
 _CONCAT_TIMEOUT_SECONDS: Final = 3600.0
 """How long one concatenation may take.
 
@@ -97,14 +118,26 @@ should hear about it rather than wait.
 """
 
 
+_REENCODE_DESCRIPTION = (
+    "Normalise clips whose stream profile differs from the rest before joining "
+    "them, instead of refusing. Off by default: it re-encodes, which costs time "
+    "and a generation of quality, so it is opted into rather than inherited."
+)
+
+
 class JoinedExportParams(Params):
     """Parameters for one entry's joined export.
 
-    Empty, and that is a statement rather than an omission: a stream copy has no
-    settings. Nothing about this op can vary the bytes it writes except which
-    clips it was given, and those are the scope, not a parameter. The recipe hash
-    is therefore over the op version alone.
+    One knob, and it exists because of a real corpus. ``transcode`` gives a
+    *defective* clip an analysis derivative and leaves its clean siblings alone,
+    and :meth:`~mosaic.core.dataset.Dataset.route_media_row` then follows the
+    link only for the rows whose verdict demanded it -- so a session where one
+    clip of seventeen was defective resolves to sixteen h264 originals and one
+    AV1 derivative. That mix cannot be stream-copied, and nothing upstream can
+    make it uniform: routing is per row and verdict-driven by design.
     """
+
+    reencode: Annotated[bool, Declared(_REENCODE_DESCRIPTION)] = False
 
 
 def joined_recipe_hash(params: JoinedExportParams) -> str:
@@ -149,55 +182,144 @@ def joined_export_path(ds: "Dataset", source_uid: str, recipe_hash: str) -> Path
     return root / f"{source_uid}.{recipe_hash}.joined.mp4"
 
 
-def _refuse_uncopyable(paths: list[Path], facts: list[MediaFacts]) -> None:
-    """Raise unless every clip can be copied into one stream.
+def _refuse_mismatched_geometry(paths: list[Path], facts: list[MediaFacts]) -> None:
+    """Raise if the clips do not share a frame geometry. Never negotiable.
 
-    The concat demuxer copies packets; it does not reconcile streams. Clips that
-    disagree on codec, geometry or pixel format produce a file that plays as far
-    as the first change and then does not, or one whose frame count silently
-    differs -- which the verification below would catch, but far too late to say
-    anything useful about why.
+    Unlike a codec difference this one cannot be normalised away, and must not
+    be: making the clips agree would mean rescaling or rotating one of them, and
+    every coordinate a tracker then reported for those frames would be in a
+    different space from the rest of the session -- a plausible number recorded
+    nowhere, which is what the schema's forbidden set exists to refuse.
 
-    Refused rather than re-encoded, because the remedy is a real one and already
-    exists: making the clips uniform is what ``transcode`` does, with progress and
-    cancellation this op has no business reimplementing.
+    The remedy is to fix the arrangement, the same one
+    :class:`~mosaic.tracking.common.scope.JoinedSourceMismatchError` names.
     """
     first = facts[0]
     for path, clip in zip(paths[1:], facts[1:], strict=True):
         differences = [
             f"{name} {getattr(first, name)!r} then {getattr(clip, name)!r}"
-            for name in (
-                "codec_name",
-                "width",
-                "height",
-                "pixel_format",
-                "rotation_degrees",
-            )
+            for name in ("width", "height", "rotation_degrees")
             if getattr(first, name) != getattr(clip, name)
         ]
         if differences:
             message = (
-                f"{path.name} cannot be joined to {paths[0].name} by copying: "
-                f"{'; '.join(differences)}. A joined export copies packets and "
-                f"never re-encodes, so the clips have to agree. Run "
-                f"`mosaic run --kind transcode` over this entry to make them "
-                f"uniform, then export the join of the derivatives."
+                f"{path.name} cannot be joined to {paths[0].name}: "
+                f"{'; '.join(differences)}. Clips of one session have to share a "
+                f"frame geometry -- joining them by rescaling or rotating one "
+                f"would put its coordinates in a different space from the rest "
+                f"of the session. Fix the arrangement instead."
             )
             raise TranscodeError(message)
 
 
-def write_joined_export(paths: list[Path], facts: list[MediaFacts], dest: Path) -> int:
+def _stream_profile(clip: MediaFacts) -> tuple[str, str]:
+    """What has to match for two clips to be copied into one stream."""
+    return (clip.codec_name, clip.pixel_format)
+
+
+def _outliers(facts: list[MediaFacts]) -> tuple[tuple[str, str], list[int]]:
+    """The profile most clips share, and the positions of the ones that do not.
+
+    Majority rather than "whatever the first clip is", because normalising one
+    derivative back to its sixteen siblings is minutes and normalising sixteen
+    originals to one derivative is hours. Ties go to the earliest profile, which
+    keeps the answer deterministic.
+    """
+    profiles = [_stream_profile(clip) for clip in facts]
+    ranked = sorted(
+        dict.fromkeys(profiles),
+        key=lambda p: (-profiles.count(p), profiles.index(p)),
+    )
+    majority = ranked[0]
+    return majority, [i for i, p in enumerate(profiles) if p != majority]
+
+
+def _normalise_clip(
+    source: Path, clip: MediaFacts, profile: tuple[str, str], dest: Path
+) -> None:
+    """Re-encode *source* into *profile*, keeping every frame and its order.
+
+    ``-fps_mode passthrough`` is what makes this safe to do to one clip of a
+    session: it writes one output frame per input frame and never resamples, so
+    a mixed-rate session keeps each clip's own count. Verified afterwards
+    anyway, because a silent frame drop here would be indistinguishable from the
+    concat defect this whole op exists to prevent.
+    """
+    codec, pixel_format = profile
+    encoder = _ENCODERS.get(codec)
+    if encoder is None:
+        message = (
+            f"{source.name} would have to be re-encoded to {codec!r} to join its "
+            f"siblings, and mosaic declares no encoder for that codec (it knows "
+            f"{', '.join(sorted(_ENCODERS))}). Make the clips uniform with "
+            f"`mosaic run --kind transcode` instead."
+        )
+        raise TranscodeError(message)
+    _ = run_to_completion(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            str(source),
+            "-map",
+            "0:v:0",
+            "-c:v",
+            encoder,
+            "-crf",
+            str(_NORMALISE_CRF),
+            "-pix_fmt",
+            pixel_format,
+            "-fps_mode",
+            "passthrough",
+            str(dest),
+        ],
+        timeout=_CONCAT_TIMEOUT_SECONDS,
+        action=f"re-encoding {source.name} to {codec} so it can be joined",
+        error_type=TranscodeError,
+    )
+    written = int(probe_media(dest).frame_count)
+    expected = int(clip.frame_count)
+    if written != expected:
+        dest.unlink(missing_ok=True)
+        message = (
+            f"{source.name}: re-encoding it to {codec} produced {written} frames "
+            f"where the clip holds {expected}. A normalisation that loses a frame "
+            f"would shift every later frame of the session."
+        )
+        raise TranscodeError(message)
+
+
+def write_joined_export(
+    paths: list[Path],
+    facts: list[MediaFacts],
+    dest: Path,
+    *,
+    reencode: bool = False,
+) -> int:
     """Copy *paths* into *dest* back to back, and return the frames written.
 
     Writes to a sibling partial and renames, so an interrupted copy never leaves
     a truncated video at the recipe address -- where the name alone would
     otherwise claim it is that clip set's complete join.
 
+    The clips are joined by **copying packets**, which is minutes rather than
+    hours and cannot lose a frame to a rate conversion. *reencode* handles the
+    corpus where that is not possible outright: clips whose stream profile
+    differs from the majority are re-made in the majority's profile first, one
+    file at a time, and the copy proceeds over the result. The majority is
+    normalised *to*, never *from*, so a single derivative among sixteen
+    originals costs one re-encode and not sixteen.
+
     Raises:
-        TranscodeError: If the clips cannot be copied as one stream, or if the
-            result does not decode to exactly the sum of their frame counts.
+        TranscodeError: If the clips disagree on frame geometry; if they
+            disagree on stream profile and *reencode* is off; if normalising one
+            of them changes its frame count; or if the join does not decode to
+            exactly the sum of the clips' own counts.
     """
-    _refuse_uncopyable(paths, facts)
+    _refuse_mismatched_geometry(paths, facts)
     expected = sum(int(clip.frame_count) for clip in facts)
     if expected <= 0:
         message = (
@@ -210,6 +332,29 @@ def write_joined_export(paths: list[Path], facts: list[MediaFacts], dest: Path) 
     dest.parent.mkdir(parents=True, exist_ok=True)
     partial = dest.with_name(f"{dest.stem}.partial{dest.suffix}")
     listing = dest.with_name(f"{dest.stem}.concat.txt")
+    majority, odd = _outliers(facts)
+    if odd and not reencode:
+        named = ", ".join(
+            f"{paths[i].name} ({facts[i].codec_name}/{facts[i].pixel_format})"
+            for i in odd[:3]
+        )
+        message = (
+            f"{dest.name}: {len(odd)} of {len(paths)} clips do not share the "
+            f"stream profile of the rest ({majority[0]}/{majority[1]}): {named}"
+            f"{' ...' if len(odd) > 3 else ''}. A joined export copies packets, "
+            f"so the clips have to agree. Either make them uniform with "
+            f"`mosaic run --kind transcode`, or pass reencode=true to re-make "
+            f"just the odd ones in the majority profile before joining."
+        )
+        raise TranscodeError(message)
+    # Normalised beside the partial and swept with it, so an interrupted run
+    # leaves no half-encoded clip at a name a later run would trust.
+    normalised: list[Path] = []
+    for i in odd:
+        temp = dest.with_name(f"{dest.stem}.normalised{i}{dest.suffix}")
+        _normalise_clip(paths[i], facts[i], majority, temp)
+        normalised.append(temp)
+        paths = [*paths[:i], temp, *paths[i + 1 :]]
     # ffmpeg's concat demuxer reads a file of paths. Single quotes are its
     # quoting, and a literal one is escaped the way its own documentation
     # specifies; a path holding one is rare and silently wrong without this.
@@ -258,6 +403,8 @@ def write_joined_export(paths: list[Path], facts: list[MediaFacts], dest: Path) 
     finally:
         partial.unlink(missing_ok=True)
         listing.unlink(missing_ok=True)
+        for temp in normalised:
+            temp.unlink(missing_ok=True)
 
 
 def _one_entry(scope: ResolvedScope) -> Entry:
@@ -371,10 +518,14 @@ class JoinedExportOp(Op[JoinedExportParams]):
             return run_id
 
         ctx.check_cancel()
-        ctx.progress.on_phase(
-            "export-joined", f"{group}/{sequence}: joining {len(paths)} clips"
+        _, odd = _outliers(facts)
+        note = (
+            f", re-encoding {len(odd)} of them first" if odd and params.reencode else ""
         )
-        written = write_joined_export(paths, facts, dest)
+        ctx.progress.on_phase(
+            "export-joined", f"{group}/{sequence}: joining {len(paths)} clips{note}"
+        )
+        written = write_joined_export(paths, facts, dest, reencode=params.reencode)
         ctx.progress.on_phase(
             "export-joined", f"{group}/{sequence}: {written} frames -> {dest.name}"
         )

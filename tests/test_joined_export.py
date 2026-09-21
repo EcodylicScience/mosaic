@@ -17,10 +17,12 @@ video -- measured as a staircase stepping two frames at every boundary.
 from __future__ import annotations
 
 import dataclasses
+import subprocess
 from pathlib import Path
 
 import numpy as np
 import pytest
+from mosaic_media import MediaFacts, probe_media
 from mosaic_media.transcode import TranscodeError
 
 from mosaic.core.dataset import Dataset
@@ -135,21 +137,123 @@ def test_a_single_clip_entry_is_a_no_op(tmp_path: Path, requires_ffmpeg: None) -
     assert not root.exists() or not list(root.glob("*.mp4"))
 
 
-def test_clips_that_cannot_be_copied_are_refused_naming_the_remedy(
+def test_clips_that_disagree_on_geometry_are_refused_outright(
     ds: Dataset, tmp_path: Path
 ) -> None:
-    """A copy cannot reconcile two streams, and re-encoding here would hide that.
+    """The one mismatch no flag unlocks, because normalising it would lie.
 
-    The remedy is real and already exists, so the refusal names it rather than
-    starting a long CPU-bound pass of its own.
+    Making the clips agree would mean rescaling or rotating one, and every
+    coordinate a tracker reported for those frames would then be in a different
+    space from the rest of the session.
     """
     resolved = ds.resolve_media("", "sess")
     paths = list(resolved.paths)
     facts = list(resolved.facts)
     wider = dataclasses.replace(facts[1], width=facts[1].width * 2)
 
-    with pytest.raises(TranscodeError, match="transcode"):
+    with pytest.raises(TranscodeError, match="frame geometry"):
         _ = write_joined_export(paths, [facts[0], wider], tmp_path / "j.mp4")
+
+    with pytest.raises(TranscodeError, match="frame geometry"):
+        _ = write_joined_export(
+            paths, [facts[0], wider], tmp_path / "j.mp4", reencode=True
+        )
+
+
+def _as_h264(source: Path, dest: Path) -> "MediaFacts":
+    """The same frames in another codec, so a clip set is genuinely mixed."""
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-i",
+            str(source),
+            "-c:v",
+            "libx264",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-fps_mode",
+            "passthrough",
+            str(dest),
+        ],
+        check=True,
+    )
+    return probe_media(dest)
+
+
+def test_a_mixed_clip_set_is_refused_by_default_naming_both_remedies(
+    ds: Dataset, tmp_path: Path
+) -> None:
+    """A copy cannot reconcile two streams, and re-encoding is opted into.
+
+    This is the ESI corpus: `transcode` gives a defective clip an analysis
+    derivative and leaves its clean siblings alone, so the entry resolves to a
+    mix no routing change can make uniform.
+    """
+    resolved = ds.resolve_media("", "sess")
+    paths = list(resolved.paths)
+    facts = list(resolved.facts)
+    other = tmp_path / "b_h264.mp4"
+    mixed_facts = [facts[0], _as_h264(paths[1], other)]
+    mixed_paths = [paths[0], other]
+
+    with pytest.raises(TranscodeError) as excinfo:
+        _ = write_joined_export(mixed_paths, mixed_facts, tmp_path / "j.mp4")
+    assert "transcode" in str(excinfo.value)
+    assert "reencode=true" in str(excinfo.value)
+
+
+def test_reencode_normalises_the_odd_clip_and_joins_every_frame(
+    ds: Dataset, tmp_path: Path
+) -> None:
+    """The opt-in path, and it must still hold every frame in order."""
+    resolved = ds.resolve_media("", "sess")
+    paths = list(resolved.paths)
+    facts = list(resolved.facts)
+    other = tmp_path / "b_h264.mp4"
+    mixed_facts = [facts[0], _as_h264(paths[1], other)]
+    dest = tmp_path / "j.mp4"
+
+    written = write_joined_export([paths[0], other], mixed_facts, dest, reencode=True)
+
+    assert written == 2 * CLIP_FRAMES
+    assert int(probe_media(dest).frame_count) == 2 * CLIP_FRAMES
+    assert not list(tmp_path.glob("*.normalised*")), "the temp clip is swept"
+
+
+def test_the_majority_profile_is_normalised_to_not_from(tmp_path: Path) -> None:
+    """One derivative among sixteen originals must cost one re-encode, not sixteen."""
+    from mosaic.core.pipeline.joined_export import _outliers
+    from tests.test_media_timeline import _facts
+
+    av1 = dataclasses.replace(_facts(), codec_name="av1", pixel_format="yuv420p")
+    h264 = dataclasses.replace(_facts(), codec_name="h264", pixel_format="yuv420p")
+    majority, odd = _outliers([h264] * 16 + [av1])
+
+    assert majority == ("h264", "yuv420p")
+    assert odd == [16], "the single AV1 clip is the one re-encoded"
+
+
+def test_a_codec_mosaic_declares_no_encoder_for_is_refused_by_name(
+    ds: Dataset, tmp_path: Path
+) -> None:
+    resolved = ds.resolve_media("", "sess")
+    paths = list(resolved.paths)
+    facts = list(resolved.facts)
+    exotic = dataclasses.replace(facts[0], codec_name="theora")
+    # Two clips claiming theora outvote the real one, so theora is the target.
+    with pytest.raises(TranscodeError, match="no encoder"):
+        _ = write_joined_export(
+            [paths[0], paths[1], paths[0]],
+            [exotic, exotic, facts[1]],
+            tmp_path / "j.mp4",
+            reencode=True,
+        )
 
 
 def test_a_join_that_does_not_line_up_is_refused_and_not_published(

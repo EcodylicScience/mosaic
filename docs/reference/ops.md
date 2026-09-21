@@ -540,7 +540,9 @@ Version `0.1` &middot; `mosaic.core.pipeline.joined_export.JoinedExportOp` &midd
 
 Join one entry's clips into the single video an external tool opens.
 
-No parameters.
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `reencode` | `boolean` | `false` |  | Normalise clips whose stream profile differs from the rest before joining them, instead of refusing. Off by default: it re-encodes, which costs time and a generation of quality, so it is opted into rather than inherited. |
 
 #### `export-store`
 
