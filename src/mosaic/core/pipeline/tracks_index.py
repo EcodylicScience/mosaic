@@ -75,6 +75,7 @@ __all__ = [
     "consumed_composition_for",
     "consumed_roots_for",
     "encode_source_roots",
+    "FrameAxisMismatch",
     "frame_axis_mismatches",
     "resolved_media_frames",
     "legacy_view",
@@ -649,14 +650,27 @@ def read_media_frames(row: "pd.Series[object]") -> int | None:
         return None
 
 
-FrameAxisMismatches = dict[tuple[str, str], tuple[int, int]]
-"""Each disagreeing entry's ``(tracked_frames, media_frames)``."""
+@dataclass(frozen=True, slots=True)
+class FrameAxisMismatch:
+    """One table whose frame axis is not the length of its media's.
+
+    Carries the variant as well as the entry, because an entry legitimately
+    holds several and they need not agree: re-tracking under a new recipe leaves
+    the old table in place, and "which of these is off, and by how much" is the
+    question being asked.
+    """
+
+    run_id: str
+    group: str
+    sequence: str
+    tracked: int
+    media: int
 
 
 def frame_axis_mismatches(
     ds: Dataset, run_id: str | None = None
-) -> FrameAxisMismatches:
-    """Entries whose recorded frame axis is not as long as their media's.
+) -> tuple[FrameAxisMismatch, ...]:
+    """Every recorded table whose frame axis is not as long as its media's.
 
     The comparison the two measurements exist for. A tracker that joins a
     session's clips can number fewer frames than the media holds -- TRex does,
@@ -665,6 +679,14 @@ def frame_axis_mismatches(
     the table is schema-valid, its rows are dense, and every quantity computed
     *inside* it is right.
 
+    **Rows are reported, never resolved between.** This deliberately does not go
+    through :func:`select_variant_rows`, which refuses to choose between two
+    recipes for one entry -- correct when a caller needs *the* table, and exactly
+    wrong here. A dataset re-tracked under a new recipe holds both variants for
+    a while, and that is the dataset most in need of this answer; resolving
+    would raise on it instead. So each row answers for itself and names its
+    variant.
+
     **Both cells must be non-empty to count**, the honest-empty rule
     :func:`drifted_media_entries` follows. A blank on either side is the absence
     of an answer and never evidence of agreement or of disagreement.
@@ -672,26 +694,29 @@ def frame_axis_mismatches(
     ``tracked`` is ``frame_max + 1``, which is how many frames the axis spans
     rather than how many carry rows. The two differ for a tracker that leaves
     gaps, so this reports a *measurement* and not a verdict: a caller deciding
-    what to do about an entry has both numbers and the producer's name.
+    what to do has both numbers, the variant and the producer.
 
     An overshoot is reported too, and in the same shape. A container frame count
     that disagrees with what a tool decoded by a frame or two is mundane --
     :meth:`~mosaic.core.media.timeline.ConcatenatedTimeline.segment_for_frame`
     already tolerates it -- but it is still the two axes disagreeing, and
-    deciding which direction is benign is the caller's to make with the numbers
-    in hand.
+    deciding which direction is benign is the caller's call to make with the
+    numbers in hand.
 
     Args:
         ds: The dataset whose tracks index is read.
-        run_id: One tracks variant, or ``None`` for whichever
-            :func:`select_variant_rows` resolves per entry.
+        run_id: One tracks variant, or ``None`` for every row in the index.
 
     Returns:
-        ``(group, sequence)`` to ``(tracked, media)``, empty when they agree or
-        when neither side was measured.
+        One record per disagreeing table, ordered by variant then entry. Empty
+        when they agree or when neither side was measured.
     """
-    df = select_variant_rows(read_tracks_index(ds), run_id)
-    mismatches: FrameAxisMismatches = {}
+    df = read_tracks_index(ds)
+    if df.empty:
+        return ()
+    if run_id is not None:
+        df = df[df["run_id"].astype(str) == run_id]
+    found: list[FrameAxisMismatch] = []
     for _, series in df.iterrows():
         extent = read_frame_extent(series)
         media = read_media_frames(series)
@@ -699,11 +724,16 @@ def frame_axis_mismatches(
             continue
         tracked = extent[1] + 1
         if tracked != media:
-            mismatches[(str(series["group"]), str(series["sequence"]))] = (
-                tracked,
-                media,
+            found.append(
+                FrameAxisMismatch(
+                    run_id=str(series.get("run_id", "")),
+                    group=str(series["group"]),
+                    sequence=str(series["sequence"]),
+                    tracked=tracked,
+                    media=media,
+                )
             )
-    return mismatches
+    return tuple(sorted(found, key=lambda m: (m.run_id, m.group, m.sequence)))
 
 
 FrameExtents = dict[tuple[str, str], tuple[int, int]]

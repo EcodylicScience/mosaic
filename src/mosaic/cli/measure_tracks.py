@@ -40,7 +40,9 @@ def measure_tracks_command(
     * the **media length** (``media_frames``), read from the media index by the
       same routing a producer resolves the entry through.
 
-    Then it reports the entries where the two disagree. A tracker that joins a
+    Then it reports every table where the two disagree, naming its variant:
+    an entry re-tracked under a new recipe holds the old table too, and each is
+    reported for itself rather than one being resolved to. A tracker that joins a
     session's clips can number fewer frames than the media holds -- TRex does,
     dropping the tail of every clip -- and the result is a table whose ``frame``
     column no longer addresses the video: correct at the start of a sequence and
@@ -71,12 +73,13 @@ def measure_tracks_command(
 
     rows = [
         {
-            "group": group,
-            "sequence": sequence,
-            "tracked_frames": tracked,
-            "media_frames": held,
+            "run_id": m.run_id,
+            "group": m.group,
+            "sequence": m.sequence,
+            "tracked_frames": m.tracked,
+            "media_frames": m.media,
         }
-        for (group, sequence), (tracked, held) in sorted(mismatches.items())
+        for m in mismatches
     ]
     if as_json:
         emit_json(
@@ -97,7 +100,7 @@ def measure_tracks_command(
     for row in rows:
         entry = f"{row['group']}/{row['sequence']}" if row["group"] else row["sequence"]
         typer.echo(
-            f"frame-axis mismatch {entry}: the table numbers "
+            f"frame-axis mismatch {entry} [{row['run_id']}]: the table spans "
             f"{row['tracked_frames']} frames, its media holds "
             f"{row['media_frames']}",
             err=True,

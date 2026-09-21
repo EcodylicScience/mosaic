@@ -1139,7 +1139,9 @@ def test_a_short_joined_conversion_records_both_numbers(
     row = _tracks_row(ds)
     assert read_media_frames(row) == 600
     assert read_frame_extent(row) == (0, 595)
-    assert ds.frame_axis_mismatches() == {("", "sess"): (596, 600)}
+    (found,) = ds.frame_axis_mismatches()
+    assert (found.group, found.sequence) == ("", "sess")
+    assert (found.tracked, found.media) == (596, 600)
 
 
 def test_a_short_joined_conversion_reports_itself_on_the_run_log(
@@ -1189,7 +1191,7 @@ def test_an_analysis_range_run_asks_no_question(ds: Dataset, trex: FakeTrex) -> 
     _ = dr.run_trex(ds, TrexParams(analysis_range=(0, 100)), scope_over(("", "sess")))
 
     assert read_media_frames(_tracks_row(ds)) is None
-    assert ds.frame_axis_mismatches() == {}
+    assert ds.frame_axis_mismatches() == ()
     assert _latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
 
 
@@ -1209,4 +1211,4 @@ def test_a_single_clip_entry_asks_no_question(ds: Dataset, trex: FakeTrex) -> No
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
 
     assert read_media_frames(_tracks_row(ds)) is None
-    assert ds.frame_axis_mismatches() == {}
+    assert ds.frame_axis_mismatches() == ()

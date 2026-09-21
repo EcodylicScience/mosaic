@@ -184,6 +184,7 @@ from .pipeline.tracks_index import (
     adopt_legacy_columns,
     backfill_frame_extents,
     backfill_media_frames,
+    FrameAxisMismatch,
     frame_axis_mismatches,
     consumed_composition_for,
     legacy_view,
@@ -973,12 +974,12 @@ class Dataset:
 
     def frame_axis_mismatches(
         self, run_id: str | None = None
-    ) -> dict[tuple[str, str], tuple[int, int]]:
-        """Entries whose tracks table does not address the length of its media.
+    ) -> "tuple[FrameAxisMismatch, ...]":
+        """Tracks tables that do not address the length of their media.
 
-        ``(group, sequence)`` to ``(tracked_frames, media_frames)``, from what
-        the index already records -- an entry measured on neither side is absent
-        rather than reported as agreeing. See
+        One record per disagreeing table, naming its variant as well as its
+        entry, from what the index already records -- a table measured on
+        neither side is absent rather than reported as agreeing. See
         :func:`~mosaic.core.pipeline.tracks_index.frame_axis_mismatches`.
         """
         return frame_axis_mismatches(self, run_id)

@@ -414,8 +414,8 @@ def _variant_records(
         started, finished_at, finished = _finish_state(frame, run_id)
         drift = drifted_media_entries(ds, run_id)
         mismatched = frozenset(
-            make_entry_key(group, sequence)
-            for group, sequence in frame_axis_mismatches(ds, run_id)
+            make_entry_key(m.group, m.sequence)
+            for m in frame_axis_mismatches(ds, run_id)
         )
         records.append(
             ArtifactRecord[Entry](

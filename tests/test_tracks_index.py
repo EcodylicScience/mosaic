@@ -1203,7 +1203,7 @@ def test_a_row_written_without_a_media_length_records_a_blank(tmp_path: Path) ->
         n_rows=4,
     )
     assert read_media_frames(read_tracks_index(ds).iloc[0]) is None
-    assert frame_axis_mismatches(ds) == {}
+    assert frame_axis_mismatches(ds) == ()
 
 
 def _entry_row(ds: Dataset, sequence: str, *, tracked: int, media: int | None) -> None:
@@ -1226,7 +1226,10 @@ def test_a_mismatch_is_reported_with_both_numbers(tmp_path: Path) -> None:
     ds = _dataset(tmp_path)
     _entry_row(ds, "short", tracked=1782, media=1800)
     _entry_row(ds, "exact", tracked=300, media=300)
-    assert frame_axis_mismatches(ds) == {("g", "short"): (1782, 1800)}
+    (found,) = frame_axis_mismatches(ds)
+    assert (found.group, found.sequence) == ("g", "short")
+    assert (found.tracked, found.media) == (1782, 1800)
+    assert found.run_id == "v1", "the variant is named, not resolved away"
 
 
 def test_an_overshoot_is_reported_too(tmp_path: Path) -> None:
@@ -1239,14 +1242,15 @@ def test_an_overshoot_is_reported_too(tmp_path: Path) -> None:
     """
     ds = _dataset(tmp_path)
     _entry_row(ds, "long", tracked=302, media=300)
-    assert frame_axis_mismatches(ds) == {("g", "long"): (302, 300)}
+    (found,) = frame_axis_mismatches(ds)
+    assert (found.tracked, found.media) == (302, 300)
 
 
 def test_a_mismatch_needs_both_cells(tmp_path: Path) -> None:
     """The honest-empty rule: one measurement cannot disagree with an absent one."""
     ds = _dataset(tmp_path)
     _entry_row(ds, "unmeasured", tracked=10, media=None)
-    assert frame_axis_mismatches(ds) == {}
+    assert frame_axis_mismatches(ds) == ()
 
 
 def test_backfill_media_frames_fills_only_the_rows_that_lack_one(
@@ -1302,4 +1306,60 @@ def test_backfill_media_frames_fills_only_the_rows_that_lack_one(
     # Which is the whole point: the comparison is now answerable for a table
     # that was published before anyone was recording the second number.
     _ = backfill_frame_extents(ds)
-    assert frame_axis_mismatches(ds) == {("", "s1"): (596, 600)}
+    (found,) = frame_axis_mismatches(ds)
+    assert (found.group, found.sequence) == ("", "s1")
+    assert (found.tracked, found.media) == (596, 600)
+
+
+def _variant_row(
+    ds: Dataset, run_id: str, sequence: str, *, tracked: int, media: int
+) -> None:
+    out = ds.get_root("tracks") / run_id / f"g__{sequence}.parquet"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _write_table(out, start=0, n_frames=tracked)
+    write_tracks_row(
+        ds,
+        run_id=run_id,
+        group="g",
+        sequence=sequence,
+        out_path=out,
+        producer="trex",
+        std_format="trex_v2",
+        n_rows=tracked,
+        media_frames=media,
+    )
+
+
+def test_two_variants_of_one_entry_are_both_reported(tmp_path: Path) -> None:
+    """Rows are reported, never resolved between -- and this is why.
+
+    Re-tracking under a new recipe leaves the old table in place, so an entry
+    holds both for a while. That is exactly the dataset most in need of this
+    answer, and going through ``select_variant_rows`` would raise on it instead
+    of answering: it refuses to choose between two recipes for one entry, which
+    is right when a caller needs *the* table and wrong when the question is
+    which tables are wrong.
+    """
+    ds = _dataset(tmp_path)
+    _variant_row(ds, "trex.0.1-old", "s1", tracked=1782, media=1800)
+    _variant_row(ds, "trex.0.2-new", "s1", tracked=1798, media=1800)
+
+    found = frame_axis_mismatches(ds)
+
+    assert [(m.run_id, m.tracked) for m in found] == [
+        ("trex.0.1-old", 1782),
+        ("trex.0.2-new", 1798),
+    ]
+    # And naming one variant answers for that one alone.
+    (only,) = frame_axis_mismatches(ds, "trex.0.2-new")
+    assert only.tracked == 1798
+
+
+def test_select_variant_rows_still_refuses_to_choose(tmp_path: Path) -> None:
+    """The refusal this deliberately routes around is unchanged elsewhere."""
+    ds = _dataset(tmp_path)
+    _variant_row(ds, "trex.0.1-old", "s1", tracked=1782, media=1800)
+    _variant_row(ds, "trex.0.2-new", "s1", tracked=1798, media=1800)
+
+    with pytest.raises(ValueError, match="no defensible default"):
+        _ = select_variant_rows(read_tracks_index(ds))
