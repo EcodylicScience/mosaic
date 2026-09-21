@@ -430,7 +430,9 @@ blank and neither touching a table:
 * the **media length** (``media_frames``), read from the media index by the
   same routing a producer resolves the entry through.
 
-Then it reports the entries where the two disagree. A tracker that joins a
+Then it reports every table where the two disagree, naming its variant:
+an entry re-tracked under a new recipe holds the old table too, and each is
+reported for itself rather than one being resolved to. A tracker that joins a
 session's clips can number fewer frames than the media holds -- TRex does,
 dropping the tail of every clip -- and the result is a table whose ``frame``
 column no longer addresses the video: correct at the start of a sequence and
@@ -728,7 +730,7 @@ $ mosaic media transcode [OPTIONS] {file}
 * `--target <analysis|playback>`: Which derivative to produce: analysis or playback.  [required]
 * `--output <path>`: Output file path, or an existing directory the derivative is written into under the source stem. Required: the CLI knows no dataset layout.  [required]
 * `--profile <chrome-149>`: Playback policy profile.  [default: chrome-149]
-* `--allow-hardware / --no-hardware`: Permit av1_nvenc hardware encoding. Taken only when this machine can actually open that encoder: a build listing it on a device that cannot run it encodes on the CPU instead. Off by default.  [default: no-hardware]
+* `--allow-hardware / --no-hardware`: Permit av1_nvenc hardware encoding; used only when the system ffmpeg offers it. Off by default (permitting enables it only when detected).  [default: no-hardware]
 * `--help`: Show this message and exit.
 
 ## `mosaic models`
