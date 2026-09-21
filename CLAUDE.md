@@ -1271,6 +1271,19 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   list of files" but "this producer covers the whole entry", and all four
   trackers declare it.
 
+  **That count is frames, never timestamps.** `probe_media(...).frame_count` is
+  `len({packet.time for packet in packets})` -- *distinct presentation
+  timestamps* -- which answers "does frame `i` sit at `i / fps`" and not "did
+  every frame survive". The two part company precisely here: joining clips
+  recorded at different rates makes ffmpeg re-time each segment by the previous
+  one's duration, and the rounding puts one frame of the new clip on the last
+  timestamp of the old. Nothing is lost and the count drops anyway. It refused a
+  real 17-clip session (30 / 29.948 / 31 fps) that held all 390,986 frames,
+  reporting 390,984. `_coded_frame_count` counts packets instead. A collided
+  timestamp is **reported, not refused** -- frames stay present and in order,
+  which is the whole promise, and nothing reads the joined file's timing
+  (`retime_joined_frame` takes `time` from the source clips' facts).
+
   The axis is also **measured against the media and reported** rather than merely
   asserted -- `media_frames` beside `frame_min`/`frame_max` on the tracks row, a
   `frame_axis_mismatch` run-log event, an `extra` key on the inventory record, and

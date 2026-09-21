@@ -36,9 +36,19 @@ recorded.
 
 **The count is verified, never assumed.** ``ffmpeg``'s concat demuxer is
 frame-exact for matching streams and silently is not for mismatched ones, so the
-result is decoded and counted against the sum of the clips' own frame counts, and
-a short concatenation is deleted rather than published. That check is the whole
-value of the op: it is the thing TREx does not do.
+result is counted against the sum of the clips' own frame counts, and a short
+concatenation is refused rather than published. That check is the whole value of
+the op: it is the thing TREx does not do.
+
+**Frames are counted, not timestamps** (:func:`_coded_frame_count`). Joining
+clips recorded at different rates leaves a file whose frames are all present and
+in order but whose timestamps are not a clean grid -- ffmpeg re-times each
+segment by the previous one's duration, and the rounding collides at the
+boundary. That is reported and not refused: the promise here is that exported
+frame ``i`` is global frame ``i``, which a collided timestamp does not break, and
+the one consumer reads the file forward from the start. Refusing would block a
+session over a defect in a quantity nothing reads -- ``retime_joined_frame``
+takes ``time`` from the source clips' own facts, never from this file.
 
 **Addressed by what it holds, not by a run.** The filename carries the ordered
 composition digest of the clips it joined -- the same value
@@ -234,6 +244,57 @@ def _outliers(facts: list[MediaFacts]) -> tuple[tuple[str, str], list[int]]:
     return majority, [i for i, p in enumerate(profiles) if p != majority]
 
 
+def _coded_frame_count(path: Path) -> int:
+    """How many coded video frames *path* holds.
+
+    Deliberately **not** ``probe_media(path).frame_count``. That value is the
+    number of *distinct presentation timestamps* -- literally ``len({packet.time
+    for packet in packets})`` -- so two frames sharing a timestamp contribute
+    one. It is the right measure for "does frame ``i`` sit at ``i / fps``", which
+    is what the probe exists to answer, and the wrong one for "did every frame
+    survive the copy".
+
+    The two come apart exactly where this op works. Concatenating clips across a
+    frame-rate change makes ffmpeg re-time each segment by the previous one's
+    duration, and the rounding lands one frame of the new clip on the timestamp
+    of the old clip's last. Nothing is lost and the distinct-timestamp count
+    drops anyway. Measured on a real 17-clip session recorded at 30, 29.948 and
+    31 fps: the join held all 390,986 frames, the probe reported 390,984, and
+    this op refused a complete video and stopped the session being tracked.
+
+    Packets rather than decoded frames, because the count has to be exact over
+    tens of gigabytes: ``-count_packets`` demuxes without decoding, which is
+    minutes where a full decode is hours. One video packet is one coded frame
+    for every codec this op will copy.
+    """
+    out = run_to_completion(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_packets",
+            "-show_entries",
+            "stream=nb_read_packets",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        timeout=_CONCAT_TIMEOUT_SECONDS,
+        action=f"counting the coded frames of {path.name}",
+        error_type=TranscodeError,
+    ).strip()
+    try:
+        return int(out)
+    except ValueError as exc:
+        message = (
+            f"{path.name}: ffprobe reported {out!r} where a frame count was "
+            f"expected, so the join could not be checked against anything."
+        )
+        raise TranscodeError(message) from exc
+
+
 def _normalise_clip(
     source: Path, clip: MediaFacts, profile: tuple[str, str], dest: Path
 ) -> None:
@@ -280,8 +341,8 @@ def _normalise_clip(
         action=f"re-encoding {source.name} to {codec} so it can be joined",
         error_type=TranscodeError,
     )
-    written = int(probe_media(dest).frame_count)
-    expected = int(clip.frame_count)
+    written = _coded_frame_count(dest)
+    expected = _coded_frame_count(source)
     if written != expected:
         dest.unlink(missing_ok=True)
         message = (
@@ -364,6 +425,7 @@ def write_joined_export(
             for p in paths
         )
     )
+    keep_partial = False
     try:
         _ = run_to_completion(
             [
@@ -388,20 +450,42 @@ def write_joined_export(
             action=f"joining {len(paths)} clips into {dest.name}",
             error_type=TranscodeError,
         )
-        written = int(probe_media(partial).frame_count)
+        written = _coded_frame_count(partial)
         if written != expected:
+            # Measured, not guessed. The index's counts and the clips on disk
+            # are different things, and a message that cannot say which one is
+            # short sends the reader to re-probe media that was never wrong.
+            measured = [_coded_frame_count(path) for path in paths]
+            stale = [
+                f"{path.name} holds {held} where the index records {int(clip.frame_count)}"
+                for path, clip, held in zip(paths, facts, measured, strict=True)
+                if held != int(clip.frame_count)
+            ]
+            if stale:
+                detail = (
+                    f"The clips do not hold what the index says they do: "
+                    f"{'; '.join(stale[:3])}{' ...' if len(stale) > 3 else ''}. "
+                    f"Run `mosaic reprobe-media --apply` to re-measure them."
+                )
+            else:
+                detail = (
+                    f"The clips hold exactly what the index records, so the "
+                    f"copy itself lost them. The short join is kept at "
+                    f"{partial.name} for inspection."
+                )
+            keep_partial = not stale
             message = (
-                f"{dest.name}: joined {written} frames from clips reporting "
-                f"{expected}; the join would not line up with the media, which "
-                f"is the one thing it exists to guarantee. The clips may "
-                f"disagree on frame rate or carry stale frame counts -- "
-                f"`mosaic reprobe-media --apply` re-measures them."
+                f"{dest.name}: joined {written} frames from clips holding "
+                f"{sum(measured)} and recorded as {expected}; the join would "
+                f"not line up with the media, which is the one thing it exists "
+                f"to guarantee. {detail}"
             )
             raise TranscodeError(message)
         partial.replace(dest)
         return written
     finally:
-        partial.unlink(missing_ok=True)
+        if not keep_partial:
+            partial.unlink(missing_ok=True)
         listing.unlink(missing_ok=True)
         for temp in normalised:
             temp.unlink(missing_ok=True)
@@ -533,6 +617,21 @@ class JoinedExportOp(Op[JoinedExportParams]):
         ctx.progress.on_phase(
             "export-joined", f"{group}/{sequence}: {written} frames -> {dest.name}"
         )
+        # Free, from a value the probe already computes: fewer distinct
+        # timestamps than frames means the boundaries collided. Every frame is
+        # present and in order, so this is a note and not a refusal -- but it is
+        # a note, because a reader that seeks by time will not find frame i at
+        # i / fps in this file.
+        distinct = int(probe_media(dest).frame_count)
+        if distinct < written:
+            ctx.progress.on_phase(
+                "export-joined",
+                f"{group}/{sequence}: all {written} frames are present and in "
+                f"order, but {written - distinct} of them share a timestamp with "
+                f"a neighbour, because the clips were recorded at more than one "
+                f"frame rate. Reading this file forward is unaffected; seeking "
+                f"it by time is not.",
+            )
         # Reported, because "finished" alone could not tell a joined session
         # from one the op decided needed no join -- which is exactly the
         # ambiguity that hid a recipe-addressing bug behind a clean exit.

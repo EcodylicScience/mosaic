@@ -365,3 +365,62 @@ def test_the_op_reports_that_it_joined_something(ds: Dataset) -> None:
     snapshot = reduce_run_log(max(logs, key=lambda p: p.stat().st_mtime))
     assert snapshot is not None
     assert snapshot["entries_written"] == 1
+
+
+def test_a_join_is_counted_in_frames_not_in_distinct_timestamps(
+    ds: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression that refused a complete 390,986-frame session.
+
+    ``probe_media(...).frame_count`` is the number of *distinct presentation
+    timestamps*, so two frames sharing one contribute a single count. Joining
+    clips recorded at different rates does exactly that at the boundaries --
+    ffmpeg re-times each segment by the previous one's duration and the rounding
+    collides -- while losing nothing. Counting that value made the op refuse a
+    video that held every frame and stop the session being tracked.
+
+    Simulated by making the probe under-report, because a file whose timestamps
+    genuinely collide cannot be built reliably across ffmpeg versions. The test
+    still bites: restore the old measurement and this refuses again.
+    """
+    import mosaic.core.pipeline.joined_export as module
+
+    real = module.probe_media
+
+    def under_reporting(path: Path) -> MediaFacts:
+        facts = real(path)
+        return dataclasses.replace(facts, frame_count=facts.frame_count - 2)
+
+    resolved = ds.resolve_media("", "sess")
+    paths, facts = list(resolved.paths), list(resolved.facts)
+    expected = sum(int(clip.frame_count) for clip in facts)
+    monkeypatch.setattr(module, "probe_media", under_reporting)
+    dest = tmp_path / "j.mp4"
+
+    written = write_joined_export(paths, facts, dest)
+
+    assert written == expected, "every frame is present, so every frame counts"
+    assert dest.exists(), "a complete join must reach the recipe address"
+
+
+def test_a_shortfall_names_the_clip_that_is_wrong(ds: Dataset, tmp_path: Path) -> None:
+    """A refusal that cannot say which side is short sends the reader nowhere.
+
+    The old message offered "the clips may disagree on frame rate or carry stale
+    frame counts" for every failure alike. The clips are on disk and can simply
+    be measured, so the message says whether they hold what the index claims --
+    and when they do, that the copy itself is at fault and where the evidence is.
+    """
+    resolved = ds.resolve_media("", "sess")
+    paths = list(resolved.paths)
+    facts = list(resolved.facts)
+    facts[1] = dataclasses.replace(facts[1], frame_count=facts[1].frame_count + 5)
+    dest = tmp_path / "j.mp4"
+
+    with pytest.raises(TranscodeError) as caught:
+        _ = write_joined_export(paths, facts, dest)
+
+    message = str(caught.value)
+    assert paths[1].name in message, "the message names the clip that disagrees"
+    assert "reprobe-media" in message, "and the command that re-measures it"
+    assert paths[0].name not in message, "and does not accuse the sound clips"
