@@ -37,11 +37,20 @@ An entry's cameras each export separately -- a store per camera, a
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final
 
+import cv2
+import numpy as np
 import pandas as pd
-from mosaic_media import CHROME_149, derive, probe_media
+from mosaic_media import (
+    CHROME_149,
+    SOFTWARE_DECODABLE_CODECS,
+    derive,
+    probe_media,
+)
+from mosaic_media.ffmpeg import run_to_completion
 from mosaic_media.transcode import ANALYSIS_ENCODING, Target, TranscodeError
 
 from mosaic.core.entry import Entry
@@ -52,7 +61,7 @@ from mosaic.core.media.facts_columns import (
     series_facts_or_none,
 )
 from mosaic.core.media.imgstore_io import is_imgstore
-from mosaic.core.media.video_io import FFmpegVideoWriter, open_frame_reader
+from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline._utils import ResolvedScope, hash_params
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.transcode import (
@@ -64,6 +73,14 @@ from mosaic.core.pipeline.transcode import (
 from mosaic.core.params import (
     Declared,
     Params,
+)
+from mosaic.core.pipeline.stream_copy import (
+    coded_frame_count,
+    first_packet_dts,
+    restamp_expression,
+    stream_codec,
+    stream_timescale,
+    write_concat_listing,
 )
 from mosaic.media_probe_config import media_thresholds
 
@@ -80,15 +97,25 @@ no playback consumer, and writing both would make a pruner keep two copies of on
 recipe.
 """
 
-_EXPORT_PRESET: Final = ANALYSIS_ENCODING.cpu_preset
-"""Encoder preset, taken from the analysis transcode's own settings.
+_EXPORT_ENCODER: Final = "libx264"
+"""What encodes a store that cannot be copied.
 
-:class:`mosaic_media.io.FFmpegVideoWriter` encodes AV1, which is exactly what an
-analysis transcode produces, and ``EncodingParameters.quality`` /
-``.cpu_preset`` are that encoder's CRF and preset. So an export is not merely
-*like* an analysis derivative, it is encoded by the same recipe -- which is what
-makes sharing the transcode kind directory and the analysis forward link honest
-rather than a convenient place to put the file.
+H.264 because this file's only purpose is to be opened by an external tool, and
+the decoder that opens it is one mosaic neither installs nor configures. AV1 --
+what this op wrote until an export reached SLEAP and it read zero frames -- has
+no software decoder in libavcodec's own C, so a build without ``libdav1d``
+cannot open it at all. Every libavcodec build decodes H.264.
+
+Named here rather than reached through :class:`mosaic_media.io.FFmpegVideoWriter`
+because that writer encodes AV1 and only AV1, deliberately: it links FFmpeg into
+this process, and libx264 is GPL. An argv is not a link.
+"""
+
+_EXPORT_PRESET: Final = "medium"
+"""x264's own preset, a speed/size trade-off that does not change fidelity.
+
+Not ``ANALYSIS_ENCODING.cpu_preset``, which is a number on SVT-AV1's scale and
+means nothing to this encoder.
 """
 
 _TICKS: Final = 1000
@@ -97,11 +124,25 @@ _TICKS: Final = 1000
 _HEARTBEAT_EVERY: Final = 25
 """Frames between progress heartbeats and cancellation checks."""
 
+_DEFAULT_CRF: Final = 7
+"""The quality an analysis transcode targets, on x264's scale.
 
-_AV1_CRF_DESCRIPTION = (
-    "AV1 constant-rate factor, 0 (lossless) to 63, defaulting to what an "
-    "analysis transcode encodes at. Named for its scale because this writer "
-    "encodes AV1, whose `crf` argument is a deprecated shim in x264's scale."
+mosaic-media maps between the two scales with a constant offset of 7:
+``ANALYSIS_ENCODING.quality`` is 14 on SVT-AV1's, so 7 is the same
+intent expressed for this encoder. Carried over rather than re-chosen,
+so moving off AV1 changes what a tool can open and not how good the
+picture is.
+"""
+
+_COPY_TIMEOUT_SECONDS: Final = 21600.0
+"""Ceiling for a chunk copy. Generous: it is I/O over tens of gigabytes."""
+
+
+_CRF_DESCRIPTION = (
+    "H.264 constant-rate factor, 0 (lossless) to 51. Applies only to a store "
+    "whose chunks cannot be copied out -- a raw, image-directory or Bayer "
+    "store. A store the recorder already wrote as video is stream-copied and "
+    "no quality setting reaches it."
 )
 
 
@@ -119,7 +160,7 @@ class StoreExportParams(Params):
     :meth:`StoreExportOp.target` writes.
     """
 
-    av1_crf: Annotated[int, Declared(_AV1_CRF_DESCRIPTION)] = ANALYSIS_ENCODING.quality
+    crf: Annotated[int, Declared(_CRF_DESCRIPTION)] = _DEFAULT_CRF
 
 
 def export_recipe_hash(params: StoreExportParams) -> str:
@@ -144,6 +185,18 @@ def export_recipe_hash(params: StoreExportParams) -> str:
         },
     }
     return hash_params(fingerprint)
+
+
+def _store_frame_count(store: Path) -> int:
+    """How many frames *store*'s own index records.
+
+    The store's count, not the chunks': it is what every consumer addresses the
+    export by, and what a copy has to reproduce exactly.
+    """
+    from mosaic.core.media.imgstore_native import NativeStore
+
+    with NativeStore(store) as native:
+        return int(native.frame_count)
 
 
 def export_run_id(recipe_hash: str) -> str:
@@ -274,7 +327,7 @@ class StoreExportOp(Op[StoreExportParams]):
     kind = "export-store"
     domain = "media"
     category = "transcode"
-    version = "0.1"
+    version = "0.2"
     # Encoding thousands of full-resolution frames is long and CPU-bound, and
     # nothing here touches a GPU: the writer runs a CPU AV1 encode.
     resource_class = "heavy"
@@ -377,8 +430,22 @@ class StoreExportOp(Op[StoreExportParams]):
                 ctx.heartbeat(done=(index + 1) * _TICKS)
                 continue
 
-            ctx.progress.on_phase("export-store", f"{label}: {store.name}")
-            encoder = write_export(store, dest, row, params.av1_crf, ctx, index)
+            # Copied when the recorder already wrote video, encoded only when it
+            # did not. The choice is made per store and reported, because the two
+            # differ by two orders of magnitude in time and by everything in
+            # fidelity.
+            chunks = copyable_chunks(store)
+            if chunks:
+                ctx.progress.on_phase(
+                    "export-store",
+                    f"{label}: {store.name}, copying {len(chunks)} chunks",
+                )
+                encoder = copy_export(
+                    store, dest, chunks, _store_frame_count(store), ctx, index
+                )
+            else:
+                ctx.progress.on_phase("export-store", f"{label}: {store.name}")
+                encoder = write_export(store, dest, row, params.crf, ctx, index)
 
             facts = probe_media(dest)
             verdict = derive(facts, CHROME_149, media_thresholds())
@@ -403,16 +470,138 @@ class StoreExportOp(Op[StoreExportParams]):
         return run_id
 
 
+def copyable_chunks(store: Path) -> list[Path]:
+    """*store*'s chunk files when they can be copied out verbatim, else empty.
+
+    **A store whose chunks are already video does not need re-encoding, and must
+    not get it.** The recorder wrote H.264; decoding every frame and encoding it
+    again is slower, larger, lossy, and -- while this op encoded AV1 -- produced
+    a file the tools it exists to feed could not open. Measured on a real
+    20,000-frame Motif store: 0.30 s copied against about 140 s re-encoded, with
+    the copy the smaller and the lossless of the two.
+
+    Three conditions, and each rules out a store whose chunks are not what
+    mosaic would read:
+
+    * the chunks are video files at all -- a raw ``npy`` or image-directory
+      store has no stream to copy;
+    * the store applies no colour conversion. A Bayer or YUV store is turned
+      into BGR by ``cv2.cvtColor`` on every read, so its chunks hold different
+      pixels from the ones mosaic serves and a copy would hand a tool something
+      mosaic never sees;
+    * the chunks are in a codec any libavcodec build decodes. A store written
+      in AV1 has to be re-encoded for exactly the reason this op's own output
+      did.
+    """
+    from mosaic.core.media.imgstore_native import NativeStore
+
+    with NativeStore(store) as native:
+        if not native.is_video or native.encoding is not None:
+            return []
+        chunks = native.chunk_paths()
+    if not chunks or stream_codec(chunks[0]) not in SOFTWARE_DECODABLE_CODECS:
+        return []
+    return chunks
+
+
+def copy_export(
+    store: Path,
+    dest: Path,
+    chunks: list[Path],
+    expected: int,
+    ctx: "JobContext",
+    position: int,
+) -> str:
+    """Concatenate *chunks* into *dest* without decoding, and report no encoder.
+
+    Returns ``""``: nothing encoded, which is what the derivative row's
+    ``encoder`` cell already means for a copy remux.
+
+    The timeline is imposed rather than inherited, the same way
+    ``export-joined`` imposes one. A store's chunks agree on tick rate far more
+    often than an entry's clips do, so the restamp is usually a formality here
+    -- but it costs nothing, and it makes the guarantee the same one in both
+    places: exported frame *i* sits at *i* periods, for a tool that seeks.
+    """
+    partial = dest.with_name(f"{dest.stem}.partial{dest.suffix}")
+    listing = dest.with_name(f"{dest.stem}.concat.txt")
+    write_concat_listing(chunks, listing)
+    try:
+        ctx.check_cancel()
+        restamp = restamp_expression(
+            timescale=stream_timescale(chunks[0]),
+            fps=_chunk_frame_rate(chunks[0], store),
+            origin=first_packet_dts(chunks[0]),
+        )
+        _ = run_to_completion(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(listing),
+                "-c",
+                "copy",
+                "-bsf:v",
+                restamp,
+                "-map",
+                "0:v:0",
+                str(partial),
+            ],
+            timeout=_COPY_TIMEOUT_SECONDS,
+            action=f"copying {len(chunks)} chunks of {store.name} into {dest.name}",
+            error_type=TranscodeError,
+        )
+        written = coded_frame_count(partial)
+        if written != expected:
+            message = (
+                f"{store}: copied {written} frames from {len(chunks)} chunks "
+                f"but the store's index records {expected}; the export would "
+                f"not line up with the store, which is the one thing it exists "
+                f"to guarantee."
+            )
+            raise TranscodeError(message)
+        partial.replace(dest)
+    finally:
+        partial.unlink(missing_ok=True)
+        listing.unlink(missing_ok=True)
+    ctx.heartbeat(done=(position + 1) * _TICKS)
+    return ""
+
+
+def _chunk_frame_rate(chunk: Path, store: Path) -> float:
+    """The rate *chunk* was recorded at, for the grid the copy is stamped onto."""
+    rate = probe_media(chunk).fps
+    if rate <= 0:
+        message = (
+            f"{store}: chunk {chunk.name} reports no frame rate, so the export "
+            f"could not be given a uniform timeline."
+        )
+        raise TranscodeError(message)
+    return rate
+
+
 def write_export(
     store: Path,
     dest: Path,
     row: "pd.Series",
-    av1_crf: int,
+    crf: int,
     ctx: "JobContext",
     position: int,
 ) -> str:
     """Decode every frame of *store* in order and encode it into *dest*, and
     report the encoder that wrote it.
+
+    The path for a store there is nothing to copy from:
+    :func:`copyable_chunks` takes every store whose recorder already wrote
+    video, so what reaches here is a raw-array, image-directory or Bayer store,
+    whose frames exist only once mosaic has decoded and converted them.
 
     Writes to a sibling partial file and renames, so an interrupted encode never
     leaves a truncated video at the recipe address -- where the name alone would
@@ -421,6 +610,14 @@ def write_export(
     Frames go out in the reader's order with nothing dropped, duplicated or
     resampled, at the store's own frame rate. That is the property the whole op
     exists for: exported frame *i* is store ``frame_index`` *i*.
+
+    **H.264 through a subprocess, and both halves are deliberate.** The codec,
+    because this file exists to be opened by a tool whose decoder mosaic neither
+    installs nor configures, and AV1 -- which this op used to write -- has no
+    software decoder in libavcodec's own C. The subprocess, because libx264 is
+    GPL and PyAV links FFmpeg into the calling process: naming the encoder in an
+    argv is not linking, which is the same reason ``joined_export`` shells out
+    to normalise a clip.
     """
     if not is_imgstore(store):
         message = f"{store} is not an imgstore directory"
@@ -430,31 +627,71 @@ def write_export(
     # gate at all -- target is the caller's declaration of intent -- and a
     # store's verdict carries nothing to gate on.
     reader = open_frame_reader(store, facts=series_facts_or_none(row), target="raw")
-    # The partial keeps the .mp4 suffix: the writer picks its output format from
-    # the extension, and a bare ".partial" leaves it with nothing to go on.
+    # The partial keeps the .mp4 suffix: ffmpeg picks its output format from the
+    # extension, and a bare ".partial" leaves it with nothing to go on.
     partial = dest.with_name(f"{dest.stem}.partial{dest.suffix}")
     written = 0
     try:
         total = reader.frame_count
-        with FFmpegVideoWriter(
-            partial,
-            width=reader.width,
-            height=reader.height,
-            fps=reader.fps,
-            av1_crf=av1_crf,
-            av1_preset=_EXPORT_PRESET,
-        ) as writer:
-            # Read inside the block: the writer resolves its encoder when it
-            # opens, and the value is what goes in the derivative's index cell.
-            encoder_name = writer.encoder_name
-            for _, frame in reader:
-                writer.write(frame)
-                written += 1
-                if total and written % _HEARTBEAT_EVERY == 0:
-                    ctx.check_cancel()
-                    ctx.heartbeat(
-                        done=position * _TICKS + int(_TICKS * written / total)
-                    )
+        # `with`, so every pipe is closed and the child reaped even when a
+        # cancellation unwinds through the frame loop.
+        with subprocess.Popen(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "bgr24",
+                "-s",
+                f"{reader.width}x{reader.height}",
+                "-r",
+                str(reader.fps),
+                "-i",
+                "-",
+                "-c:v",
+                _EXPORT_ENCODER,
+                "-crf",
+                str(crf),
+                "-preset",
+                _EXPORT_PRESET,
+                "-pix_fmt",
+                ANALYSIS_ENCODING.pixel_format,
+                str(partial),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        ) as process:
+            stream = process.stdin
+            if stream is None:  # pragma: no cover - PIPE always supplies one
+                message = f"{store}: could not open a pipe to the encoder"
+                raise TranscodeError(message)
+            try:
+                for _, frame in reader:
+                    stream.write(_as_bgr(frame).tobytes())
+                    written += 1
+                    if total and written % _HEARTBEAT_EVERY == 0:
+                        ctx.check_cancel()
+                        ctx.heartbeat(
+                            done=position * _TICKS + int(_TICKS * written / total)
+                        )
+            finally:
+                # Closing stdin is what tells the encoder the stream has ended.
+                stream.close()
+            raw = process.stderr.read() if process.stderr is not None else b""
+            errors = raw.decode("utf-8", "replace")
+            code = process.wait()
+        if code != 0:
+            partial.unlink(missing_ok=True)
+            message = (
+                f"{store}: the encoder failed after {written} frames: "
+                f"{errors.strip()[-500:]}"
+            )
+            raise TranscodeError(message)
     finally:
         reader.close()
 
@@ -466,4 +703,16 @@ def write_export(
         )
         raise TranscodeError(message)
     partial.replace(dest)
-    return encoder_name
+    return _EXPORT_ENCODER
+
+
+def _as_bgr(frame: "np.ndarray") -> "np.ndarray":
+    """*frame* as contiguous 3-channel BGR, which is what the pipe is fed.
+
+    A store declaring a 2-D ``imgshape`` reads back grayscale, and the encoder
+    is told ``bgr24`` once for the whole run -- the geometry cannot change
+    partway through a store.
+    """
+    if frame.ndim == 2:
+        return np.ascontiguousarray(cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR))
+    return np.ascontiguousarray(frame)

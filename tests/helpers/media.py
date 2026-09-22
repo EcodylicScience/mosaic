@@ -8,6 +8,7 @@ produces -- so a test built on one measures a shape that cannot occur.
 from __future__ import annotations
 
 import dataclasses
+import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +19,6 @@ import numpy as np
 import pandas as pd
 
 from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
-from mosaic_media.io.writer import FFmpegVideoWriter
 from mosaic_media.transcode import Target
 
 from mosaic.core.dataset import Dataset
@@ -29,6 +29,64 @@ from tests.helpers.environment import require_ffmpeg
 def _shade_for_name(name: str) -> int:
     """The grey level *name* stands for, so two clips named apart look apart."""
     return sum(name.encode()) % 200 + 20
+
+
+def write_h264_mp4(
+    path: Path,
+    *,
+    frames: int = 6,
+    size: tuple[int, int] = (64, 48),
+    shade: int | Literal["from-name"] = 0,
+    fps: float = 30.0,
+) -> None:
+    """A small constant-frame-rate H.264 mp4, written by a subprocess ffmpeg.
+
+    H.264 because that is what source media *is* -- a camera writes it, and a
+    tool mosaic hands a file to can always decode it. A fixture in a codec a
+    reader might not hold would exercise a path that cannot occur for an
+    original, and would trip the gate in
+    :func:`~mosaic.tracking.common.tool_input.refuse_undecodable_codec` for a
+    reason nothing about the test is asking about.
+
+    A subprocess rather than ``FFmpegVideoWriter``, which encodes AV1 and only
+    AV1: PyAV links FFmpeg into this process, so naming a GPL encoder in-process
+    would link libx264 into everything that imports the toolkit. An argv does
+    not link, which is the same reason ``joined_export`` shells out to normalise
+    a clip.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    level = _shade_for_name(path.name) if shade == "from-name" else int(shade)
+    width, height = size
+    frame = np.full((height, width, 3), level, np.uint8).tobytes()
+    _ = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "bgr24",
+            "-s",
+            f"{width}x{height}",
+            "-r",
+            str(fps),
+            "-i",
+            "-",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ],
+        input=frame * frames,
+        check=True,
+        capture_output=True,
+    )
 
 
 def write_mpeg4_mp4(
@@ -100,12 +158,7 @@ def add_media_sequence(
     directory = dataset.get_root("media_raw") / sequence
     directory.mkdir(parents=True, exist_ok=True)
     for name in videos:
-        shade = _shade_for_name(name)
-        with FFmpegVideoWriter(
-            directory / name, width=64, height=48, fps=30.0
-        ) as writer:
-            for _ in range(frames):
-                writer.write(np.full((48, 64, 3), shade, np.uint8))
+        write_h264_mp4(directory / name, frames=frames, shade=_shade_for_name(name))
 
     _ = dataset.write_media_index(
         [

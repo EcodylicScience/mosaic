@@ -344,7 +344,7 @@ Sample representative video frames as PNGs for annotation.
 
 #### `infer-localizer`
 
-Version `0.1` &middot; `mosaic.tracking.ops.infer.InferLocalizerOp`
+Version `0.2` &middot; `mosaic.tracking.ops.infer.InferLocalizerOp`
 
 Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 
@@ -367,7 +367,7 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 
 #### `infer-points`
 
-Version `0.2` &middot; `mosaic.tracking.ops.infer.InferPointsOp`
+Version `0.3` &middot; `mosaic.tracking.ops.infer.InferPointsOp`
 
 Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 
@@ -388,7 +388,7 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 
 #### `infer-pose`
 
-Version `0.2` &middot; `mosaic.tracking.ops.infer.InferPoseOp`
+Version `0.3` &middot; `mosaic.tracking.ops.infer.InferPoseOp`
 
 Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 
@@ -538,7 +538,7 @@ Train a SLEAP model, registering the directory it produces.
 
 #### `export-joined`
 
-Version `0.1` &middot; `mosaic.core.pipeline.joined_export.JoinedExportOp` &middot; resource class `heavy`
+Version `0.2` &middot; `mosaic.core.pipeline.joined_export.JoinedExportOp` &middot; resource class `heavy`
 
 Join one entry's clips into the single video an external tool opens.
 
@@ -548,13 +548,13 @@ Join one entry's clips into the single video an external tool opens.
 
 #### `export-store`
 
-Version `0.1` &middot; `mosaic.core.pipeline.store_export.StoreExportOp` &middot; resource class `heavy`
+Version `0.2` &middot; `mosaic.core.pipeline.store_export.StoreExportOp` &middot; resource class `heavy`
 
 Export one entry's imgstore recordings as plain video and link them.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `av1_crf` | `integer` | `14` |  | AV1 constant-rate factor, 0 (lossless) to 63, defaulting to what an analysis transcode encodes at. Named for its scale because this writer encodes AV1, whose `crf` argument is a deprecated shim in x264's scale. |
+| `crf` | `integer` | `7` |  | H.264 constant-rate factor, 0 (lossless) to 51. Applies only to a store whose chunks cannot be copied out -- a raw, image-directory or Bayer store. A store the recorder already wrote as video is stream-copied and no quality setting reaches it. |
 
 #### `transcode`
 

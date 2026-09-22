@@ -160,8 +160,14 @@ def test_clips_that_disagree_on_geometry_are_refused_outright(
         )
 
 
-def _as_h264(source: Path, dest: Path) -> "MediaFacts":
-    """The same frames in another codec, so a clip set is genuinely mixed."""
+def _as_av1(source: Path, dest: Path) -> "MediaFacts":
+    """The same frames as an AV1 derivative, so a clip set is genuinely mixed.
+
+    This direction and not the other, because it is the one that occurs: the
+    clips are H.264 originals as a camera wrote them, and `transcode` gives one
+    defective sibling an AV1 analysis derivative. That is the ESI corpus, and it
+    is also what made a join need re-encoding at all.
+    """
     subprocess.run(
         [
             "ffmpeg",
@@ -172,9 +178,11 @@ def _as_h264(source: Path, dest: Path) -> "MediaFacts":
             "-i",
             str(source),
             "-c:v",
-            "libx264",
+            "libsvtav1",
             "-crf",
-            "18",
+            "30",
+            "-preset",
+            "8",
             "-pix_fmt",
             "yuv420p",
             "-fps_mode",
@@ -182,6 +190,7 @@ def _as_h264(source: Path, dest: Path) -> "MediaFacts":
             str(dest),
         ],
         check=True,
+        capture_output=True,
     )
     return probe_media(dest)
 
@@ -198,8 +207,8 @@ def test_a_mixed_clip_set_is_refused_by_default_naming_both_remedies(
     resolved = ds.resolve_media("", "sess")
     paths = list(resolved.paths)
     facts = list(resolved.facts)
-    other = tmp_path / "b_h264.mp4"
-    mixed_facts = [facts[0], _as_h264(paths[1], other)]
+    other = tmp_path / "b_av1.mp4"
+    mixed_facts = [facts[0], _as_av1(paths[1], other)]
     mixed_paths = [paths[0], other]
 
     with pytest.raises(TranscodeError) as excinfo:
@@ -215,8 +224,8 @@ def test_reencode_normalises_the_odd_clip_and_joins_every_frame(
     resolved = ds.resolve_media("", "sess")
     paths = list(resolved.paths)
     facts = list(resolved.facts)
-    other = tmp_path / "b_h264.mp4"
-    mixed_facts = [facts[0], _as_h264(paths[1], other)]
+    other = tmp_path / "b_av1.mp4"
+    mixed_facts = [facts[0], _as_av1(paths[1], other)]
     dest = tmp_path / "j.mp4"
 
     written = write_joined_export([paths[0], other], mixed_facts, dest, reencode=True)
@@ -500,16 +509,17 @@ def test_a_normalised_clip_is_written_in_its_neighbours_ticks(
     demuxer then wrote into a 1/15360 track verbatim -- timestamps 62x too
     large. The re-encode has to count in the ticks its neighbours count in.
     """
-    from mosaic.core.pipeline.joined_export import _normalise_clip, _stream_timescale
+    from mosaic.core.pipeline.joined_export import _normalise_clip
+    from mosaic.core.pipeline.stream_copy import stream_timescale
 
     source = tmp_path / "odd.mp4"
     clip = _clip_at_rate(source, fps=30, timescale=953497, frames=30)
-    assert _stream_timescale(source) == 953497, "the fixture carries the odd rate"
+    assert stream_timescale(source) == 953497, "the fixture carries the odd rate"
     dest = tmp_path / "normalised.mp4"
 
     _normalise_clip(source, clip, ("h264", "yuv420p"), dest, timescale=15360)
 
-    assert _stream_timescale(dest) == 15360
+    assert stream_timescale(dest) == 15360
 
 
 def test_a_join_whose_timeline_is_not_uniform_is_refused_and_kept(

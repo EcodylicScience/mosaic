@@ -271,6 +271,36 @@ class NativeStore:
     def format(self) -> str:
         return self._format
 
+    @property
+    def is_video(self) -> bool:
+        """Whether the chunks are video files rather than images or raw arrays."""
+        return self._is_video
+
+    @property
+    def encoding(self) -> str | None:
+        """The colour conversion applied to every frame on read, if any.
+
+        A Bayer or YUV store records sensor data that :meth:`_apply_encoding`
+        turns into BGR with ``cv2.cvtColor``. What the store *holds* and what
+        mosaic *reads* are then different pixels, which is exactly what a caller
+        copying the chunks out has to know.
+        """
+        return self._encoding
+
+    def chunk_paths(self) -> list[Path]:
+        """The store's video chunk files, in frame order.
+
+        Empty for a store whose chunks are not video files. The order is the one
+        :attr:`frame_count` counts in, so concatenating these reproduces the
+        store's own frame sequence.
+        """
+        if not self._is_video:
+            return []
+        return [
+            self._basedir / f"{chunk_id:06d}{self._video_ext}"
+            for chunk_id in sorted({chunk for chunk, _ in self._frame_map})
+        ]
+
     # --- Chunk discovery ---
 
     def _discover_chunks(self, store_class: str) -> list[int]:

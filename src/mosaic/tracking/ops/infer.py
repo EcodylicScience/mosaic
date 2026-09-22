@@ -61,7 +61,10 @@ from mosaic.core.schema import ensure_track_schema
 from mosaic.runlog import now_iso
 from mosaic.tracking.common.entry import open_entry, phase_activity, release_entry
 from mosaic.tracking.common.scope import one_camera_per_entry
-from mosaic.tracking.common.tool_input import resolve_entry_input
+from mosaic.tracking.common.tool_input import (
+    refuse_undecodable_codec,
+    resolve_entry_input,
+)
 from mosaic.tracking.common.ultralytics_env import progress_activity
 from mosaic.tracking.model_refs import observed_model_source, resolve_model
 from mosaic.core.pipeline.writers import write_parquet_atomic
@@ -480,6 +483,11 @@ def _run_inference_op(
             if opens_by_path
             else source
         )
+        if opens_by_path:
+            # Only for an op that hands the path over. The localizer reads the
+            # file in this process with mosaic's own decoder, so what a foreign
+            # stack can open says nothing about it.
+            refuse_undecodable_codec(target, kind=kind, group=group, sequence=sequence)
         # The gate, run here rather than inside the reader, because two of the
         # three ops no longer open the video in this process. The facts must
         # describe the file that will actually be read: for an export that is not

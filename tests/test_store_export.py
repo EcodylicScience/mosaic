@@ -18,22 +18,26 @@ import pytest
 
 pytest.importorskip("imgstore")
 
+from mosaic_media import probe_media  # noqa: E402
 from mosaic_media.transcode import TranscodeError  # noqa: E402
 
 from mosaic.core.dataset import Dataset  # noqa: E402
 from mosaic.core.media.video_io import open_frame_reader  # noqa: E402
 from mosaic.core.pipeline.ops import OpIdentity, ScopeRefused, run_op  # noqa: E402
+from mosaic.core.pipeline.stream_copy import coded_frame_count  # noqa: E402
 from mosaic.core.scope import Scope  # noqa: E402
 from mosaic.core.pipeline.store_export import (  # noqa: E402
     EXPORT_TARGET,
     StoreExportOp,
     StoreExportParams,
+    copyable_chunks,
     export_recipe_hash,
     export_run_id,
 )
 from mosaic.tracking.common.scope import TrackerWorkItem  # noqa: E402
 from mosaic.tracking.common.tool_input import (  # noqa: E402
     StoreExportMissingError,
+    ToolCodecError,
     resolve_tool_input,
 )
 
@@ -67,6 +71,7 @@ def _store_dataset(
     cameras: list[str] | None = None,
     nframes: int = 12,
     chunksize: int = 5,
+    fmt: str = "npy",
 ) -> tuple[Dataset, str, str]:
     """A dataset holding one indexed store per camera, and its (group, sequence).
 
@@ -87,6 +92,7 @@ def _store_dataset(
             parent=search,
             fill=True,
             extra_metadata=extra,
+            fmt=fmt,
         )
     ds.index_media([search])
     row = _originals(ds).iloc[0]
@@ -114,7 +120,7 @@ def _export(
     _ = run_op(
         ds,
         "export-store",
-        StoreExportParams(av1_crf=_LOSSLESS),
+        StoreExportParams(crf=_LOSSLESS),
         scope=selector,
         overwrite=overwrite,
     )
@@ -218,14 +224,19 @@ def test_an_export_records_the_encoder_it_wrote_with(
     make_media_dataset: Callable[[Path], Dataset],
     make_imgstore: MakeStore,
 ) -> None:
-    """An export encodes, so its derivative row names the encoder like any other.
-    The value is read off the writer rather than assumed: nothing else on the row
-    carries it, since codec is measured and reads "av1" whichever encoder ran."""
+    """An export that encodes names its encoder on the derivative row.
+
+    A raw store has no stream to copy, so this one is genuinely encoded -- in
+    H.264, because the file exists to be opened by a decoder mosaic does not
+    own. Nothing else on the row carries the encoder: ``codec`` is a measured
+    fact and reads ``"h264"`` whichever encoder produced it.
+    """
     ds, group, sequence = _store_dataset(tmp_path, make_media_dataset, make_imgstore)
     _export(ds, group, sequence)
 
     derivatives = pd.read_csv(ds.get_root("media") / "index.csv", dtype=str).fillna("")
-    assert derivatives.iloc[0]["encoder"] == "libsvtav1"
+    assert derivatives.iloc[0]["encoder"] == "libx264"
+    assert derivatives.iloc[0]["codec"] == "h264"
 
 
 def test_a_second_export_reuses_the_first(
@@ -354,7 +365,7 @@ def test_two_triples_of_one_entry_export_both_named_cameras(
     _ = run_op(
         ds,
         "export-store",
-        StoreExportParams(av1_crf=_LOSSLESS),
+        StoreExportParams(crf=_LOSSLESS),
         scope=Scope(entries=[(group, sequence, "CAMA"), (group, sequence, "CAMB")]),
     )
 
@@ -439,7 +450,7 @@ def test_the_recipe_ignores_scope_and_tracks_the_encode() -> None:
     assert not declared & {"entry", "entries", "camera", "cameras"}
     base = StoreExportParams()
     assert export_recipe_hash(base) != export_recipe_hash(
-        StoreExportParams(av1_crf=_LOSSLESS)
+        StoreExportParams(crf=_LOSSLESS)
     )
 
 
@@ -644,3 +655,109 @@ def test_a_tool_input_reports_a_link_whose_file_is_gone(
 def test_the_export_target_is_the_analysis_link() -> None:
     """Pinned: the column an export claims is what routing and pruning read."""
     assert EXPORT_TARGET == "analysis"
+
+
+# --- a store the recorder already wrote as video ---------------------------
+
+
+def test_a_video_store_is_copied_and_not_re_encoded(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """The store that made this op worth fixing.
+
+    A Motif store's chunks are already H.264. Decoding every frame and encoding
+    it again is slower, larger, lossy, and -- while this op wrote AV1 -- made a
+    file the tools it exists to feed could not open. Measured on a real
+    20,000-frame store: 0.30 s copied against about 140 s re-encoded.
+
+    ``encoder`` is empty, which is what that column already means for a copy
+    remux: nothing encoded.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, make_imgstore, fmt="avc1/mp4"
+    )
+    _export(ds, group, sequence)
+
+    derivatives = pd.read_csv(ds.get_root("media") / "index.csv", dtype=str).fillna("")
+    assert derivatives.iloc[0]["encoder"] == "", "a copy encodes nothing"
+    assert derivatives.iloc[0]["codec"] == "h264", "the recorder's own stream"
+
+
+def test_a_copied_export_holds_every_frame_on_a_uniform_timeline(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """Frame-exact against the store's own index, and seekable.
+
+    The count comes from the store's ``.npz`` indexes, not from a probe: the
+    export is addressed by store ``frame_index``, so a copy that dropped one
+    would misaddress every frame after it.
+    """
+    frames = 12
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, make_imgstore, fmt="avc1/mp4", nframes=frames
+    )
+    _export(ds, group, sequence)
+
+    measured = probe_media(_exports(ds)[0])
+    assert coded_frame_count(_exports(ds)[0]) == frames
+    assert measured.max_timestamp_gap_frame_periods <= 1.5
+
+
+def test_a_raw_store_is_still_encoded(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """A store with no stream to copy has to be encoded, and says so.
+
+    The npy format holds raw arrays: there are no packets to concatenate, so the
+    fast path cannot apply and the slow one must remain.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, make_imgstore, fmt="npy"
+    )
+    store = next((ds.get_root("media_raw") / "recordings").iterdir())
+
+    assert copyable_chunks(store) == [], "raw arrays are not a stream"
+
+    _export(ds, group, sequence)
+    derivatives = pd.read_csv(ds.get_root("media") / "index.csv", dtype=str).fillna("")
+    assert derivatives.iloc[0]["encoder"] == "libx264"
+
+
+def test_an_export_a_tool_cannot_decode_is_refused_by_name(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The silence this replaces.
+
+    A reader with no decoder for the file returns zero frames and its caller
+    exits 0. SLEAP wrote a `.slp` with no labeled frames, the bridge read a
+    valid empty table, and the run was recorded as a success that produced
+    nothing -- indistinguishable, at every gate mosaic has, from a video with no
+    animals in it.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, make_imgstore, fmt="avc1/mp4"
+    )
+    _export(ds, group, sequence)
+    item = _work_item(ds, group, sequence)
+
+    # The export is h264 and passes; an environment that claims otherwise is how
+    # the refusal is reached without building a file no tool could read.
+    monkeypatch.setattr(
+        "mosaic.tracking.common.tool_input.SOFTWARE_DECODABLE_CODECS", frozenset()
+    )
+    with pytest.raises(ToolCodecError, match="h264"):
+        _ = resolve_tool_input(ds, item, kind="trex")
+
+    monkeypatch.setenv("MOSAIC_ALLOW_TOOL_CODECS", "h264")
+    assert resolve_tool_input(ds, item, kind="trex") == _exports(ds)[0], (
+        "an operator who knows their decoder can say so"
+    )

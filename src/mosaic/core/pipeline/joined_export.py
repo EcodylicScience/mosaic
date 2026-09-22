@@ -40,7 +40,7 @@ result is counted against the sum of the clips' own frame counts, and a short
 concatenation is refused rather than published. That check is the whole value of
 the op: it is the thing TREx does not do.
 
-**Frames are counted, not timestamps** (:func:`_coded_frame_count`), and the
+**Frames are counted, not timestamps** (:func:`~mosaic.core.pipeline.stream_copy.coded_frame_count`), and the
 timeline is then *imposed* rather than inherited. Those are two rules, and the
 second one replaced a mistake.
 
@@ -65,7 +65,7 @@ encoder's own tick rate made TREx read frame 108,324 for every frame between
 1,745 and 216,760: it ran at 2 fps instead of 45 -- about thirty hours for the
 session -- and returned the wrong pixels the whole way.
 
-So the clips are written in one tick rate (:func:`_stream_timescale`,
+So the clips are written in one tick rate (:func:`~mosaic.core.pipeline.stream_copy.stream_timescale`,
 ``-video_track_timescale``), the copy restamps every packet onto a uniform grid
 by its index, and a join whose timestamps still do not step evenly is refused
 before it is published rather than noted after. Frame ``i`` at ``i`` periods is
@@ -97,6 +97,13 @@ from mosaic.core.params import Declared
 from mosaic.core.pipeline._utils import ResolvedScope, hash_params
 from mosaic.core.params import Params
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
+from mosaic.core.pipeline.stream_copy import (
+    coded_frame_count,
+    first_packet_dts,
+    restamp_expression,
+    stream_timescale,
+    write_concat_listing,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -282,57 +289,6 @@ def _outliers(facts: list[MediaFacts]) -> tuple[tuple[str, str], list[int]]:
     return majority, [i for i, p in enumerate(profiles) if p != majority]
 
 
-def _coded_frame_count(path: Path) -> int:
-    """How many coded video frames *path* holds.
-
-    Deliberately **not** ``probe_media(path).frame_count``. That value is the
-    number of *distinct presentation timestamps* -- literally ``len({packet.time
-    for packet in packets})`` -- so two frames sharing a timestamp contribute
-    one. It is the right measure for "does frame ``i`` sit at ``i / fps``", which
-    is what the probe exists to answer, and the wrong one for "did every frame
-    survive the copy".
-
-    The two come apart exactly where this op works. Concatenating clips across a
-    frame-rate change makes ffmpeg re-time each segment by the previous one's
-    duration, and the rounding lands one frame of the new clip on the timestamp
-    of the old clip's last. Nothing is lost and the distinct-timestamp count
-    drops anyway. Measured on a real 17-clip session recorded at 30, 29.948 and
-    31 fps: the join held all 390,986 frames, the probe reported 390,984, and
-    this op refused a complete video and stopped the session being tracked.
-
-    Packets rather than decoded frames, because the count has to be exact over
-    tens of gigabytes: ``-count_packets`` demuxes without decoding, which is
-    minutes where a full decode is hours. One video packet is one coded frame
-    for every codec this op will copy.
-    """
-    out = run_to_completion(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-count_packets",
-            "-show_entries",
-            "stream=nb_read_packets",
-            "-of",
-            "csv=p=0",
-            str(path),
-        ],
-        timeout=_CONCAT_TIMEOUT_SECONDS,
-        action=f"counting the coded frames of {path.name}",
-        error_type=TranscodeError,
-    ).strip()
-    try:
-        return int(out)
-    except ValueError as exc:
-        message = (
-            f"{path.name}: ffprobe reported {out!r} where a frame count was "
-            f"expected, so the join could not be checked against anything."
-        )
-        raise TranscodeError(message) from exc
-
-
 def _joined_frame_rate(facts: list[MediaFacts], dest: Path) -> float:
     """The rate the joined file's uniform timeline is built on.
 
@@ -356,88 +312,6 @@ def _joined_frame_rate(facts: list[MediaFacts], dest: Path) -> float:
         )
         raise TranscodeError(message)
     return rate
-
-
-def _stream_timescale(path: Path) -> int:
-    """The denominator of *path*'s video time base -- its ticks per second.
-
-    Not on :class:`~mosaic_media.MediaFacts`, which models what a stream *shows*
-    and not how it counts. It is needed here because the concat demuxer does not
-    rescale: it writes each input's raw ticks into a track whose timescale comes
-    from the *first* input, so two clips that disagree produce timestamps wrong
-    by the ratio between them. Measured once, from the clip the join is built
-    around.
-    """
-    out = run_to_completion(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=time_base",
-            "-of",
-            "csv=p=0",
-            str(path),
-        ],
-        timeout=_CONCAT_TIMEOUT_SECONDS,
-        action=f"reading the time base of {path.name}",
-        error_type=TranscodeError,
-    ).strip()
-    _, _, denominator = out.partition("/")
-    try:
-        timescale = int(denominator)
-    except ValueError as exc:
-        message = (
-            f"{path.name}: ffprobe reported a time base of {out!r}, which has no "
-            f"tick rate in it, so the join could not be given a uniform timeline."
-        )
-        raise TranscodeError(message) from exc
-    if timescale <= 0:
-        message = (
-            f"{path.name}: ffprobe reported a time base of {out!r}, a tick rate "
-            f"of {timescale}, which cannot carry a timeline."
-        )
-        raise TranscodeError(message)
-    return timescale
-
-
-def _first_packet_dts(path: Path) -> int:
-    """*path*'s first video packet's decode timestamp, in its own ticks.
-
-    Reproduced onto the join so the result starts where a single-clip file
-    would. H.264 with B-frames conventionally opens at a negative DTS -- the
-    reorder delay -- and a join that silently started at zero would shift its
-    whole presentation relative to the clip it was built from.
-
-    ``N/A`` is a real answer for a stream carrying no decode timestamps, and it
-    means the same thing as zero here: there is no offset to preserve.
-    """
-    out = run_to_completion(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-read_intervals",
-            "%+#1",
-            "-show_entries",
-            "packet=dts",
-            "-of",
-            "csv=p=0",
-            str(path),
-        ],
-        timeout=_CONCAT_TIMEOUT_SECONDS,
-        action=f"reading the first packet timestamp of {path.name}",
-        error_type=TranscodeError,
-    ).strip()
-    first = out.splitlines()[0].strip() if out else ""
-    try:
-        return int(first)
-    except ValueError:
-        return 0
 
 
 def _normalise_clip(
@@ -501,8 +375,8 @@ def _normalise_clip(
         action=f"re-encoding {source.name} to {codec} so it can be joined",
         error_type=TranscodeError,
     )
-    written = _coded_frame_count(dest)
-    expected = _coded_frame_count(source)
+    written = coded_frame_count(dest)
+    expected = coded_frame_count(source)
     if written != expected:
         dest.unlink(missing_ok=True)
         message = (
@@ -574,7 +448,7 @@ def write_joined_export(
     # shares. `majority` is non-empty by construction, so this always resolves.
     odd_positions = set(odd)
     reference = next(i for i in range(len(paths)) if i not in odd_positions)
-    timescale = _stream_timescale(paths[reference])
+    timescale = stream_timescale(paths[reference])
     # Normalised beside the partial and swept with it, so an interrupted run
     # leaves no half-encoded clip at a name a later run would trust.
     normalised: list[Path] = []
@@ -583,15 +457,7 @@ def write_joined_export(
         _normalise_clip(paths[i], facts[i], majority, temp, timescale=timescale)
         normalised.append(temp)
         paths = [*paths[:i], temp, *paths[i + 1 :]]
-    # ffmpeg's concat demuxer reads a file of paths. Single quotes are its
-    # quoting, and a literal one is escaped the way its own documentation
-    # specifies; a path holding one is rare and silently wrong without this.
-    listing.write_text(
-        "".join(
-            f"file '{str(p).replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'\n"
-            for p in paths
-        )
-    )
+    write_concat_listing(paths, listing)
     # One uniform grid for the whole join, imposed rather than inherited. The
     # concat demuxer's own arithmetic is what this op exists to distrust: it
     # offsets each segment by the previous one's duration in the *first* clip's
@@ -603,9 +469,11 @@ def write_joined_export(
     # `PTS-DTS` is carried through unchanged, which is what preserves B-frame
     # reordering: the concat demuxer shifts both ends of that difference
     # equally, so the difference itself is the one quantity it cannot corrupt.
-    period = max(1, round(timescale / _joined_frame_rate(facts, dest)))
-    origin = _first_packet_dts(paths[0])
-    restamp = f"setts=dts=N*{period}{origin:+d}:pts=N*{period}{origin:+d}+PTS-DTS"
+    restamp = restamp_expression(
+        timescale=timescale,
+        fps=_joined_frame_rate(facts, dest),
+        origin=first_packet_dts(paths[0]),
+    )
     keep_partial = False
     try:
         _ = run_to_completion(
@@ -633,12 +501,12 @@ def write_joined_export(
             action=f"joining {len(paths)} clips into {dest.name}",
             error_type=TranscodeError,
         )
-        written = _coded_frame_count(partial)
+        written = coded_frame_count(partial)
         if written != expected:
             # Measured, not guessed. The index's counts and the clips on disk
             # are different things, and a message that cannot say which one is
             # short sends the reader to re-probe media that was never wrong.
-            measured = [_coded_frame_count(path) for path in paths]
+            measured = [coded_frame_count(path) for path in paths]
             stale = [
                 f"{path.name} holds {held} where the index records {int(clip.frame_count)}"
                 for path, clip, held in zip(paths, facts, measured, strict=True)
