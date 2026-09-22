@@ -24,7 +24,11 @@ from mosaic_media.io import FFmpegVideoWriter
 from pydantic import Field
 
 from mosaic.core.pipeline._utils import ResolvedScope
-from mosaic.core.pipeline.loading import pose_column_pairs
+from mosaic.core.pose_columns import (
+    configured_pose_pairs,
+    frame_keypoint_centroid,
+    pose_column_pairs,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -501,25 +505,17 @@ class InteractionCropPipeline:
         # --- Centers ---
         mode = p.center_mode
         if mode == "default":
-            x_cols = [
-                f"{p.pose.x_prefix}{i}"
-                for i in range(p.pose.pose_n)
-                if f"{p.pose.x_prefix}{i}" in df_target.columns
-            ]
-            y_cols = [
-                f"{p.pose.y_prefix}{i}"
-                for i in range(p.pose.pose_n)
-                if f"{p.pose.y_prefix}{i}" in df_target.columns
-            ]
-            if x_cols and y_cols:
-                xs = np.column_stack(
-                    [df_target[c].to_numpy(dtype=np.float64) for c in x_cols]
-                )
-                ys = np.column_stack(
-                    [df_target[c].to_numpy(dtype=np.float64) for c in y_cols]
-                )
-                cx = np.nanmean(xs, axis=1)
-                cy = np.nanmean(ys, axis=1)
+            # Paired, not two independently filtered lists: a `poseX3` whose
+            # `poseY3` is missing used to shorten one stack and not the other,
+            # silently averaging keypoint 3's x against keypoint 4's y.
+            pairs = configured_pose_pairs(
+                df_target.columns,
+                x_prefix=p.pose.x_prefix,
+                y_prefix=p.pose.y_prefix,
+                count=p.pose.pose_n,
+            )
+            if pairs:
+                cx, cy = frame_keypoint_centroid(df_target, pairs)
             else:
                 # Centroid-only tracker: crop around the body centre. Legal only
                 # because tracks are pixels; apply() has already refused the

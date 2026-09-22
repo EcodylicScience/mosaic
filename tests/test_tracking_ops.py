@@ -522,12 +522,15 @@ def _fake_pose_backend(monkeypatch) -> None:
             ultralytics_version="8.4.63",
             tracker_names=[],
             model_task="pose",
-            n_keypoints=1,
+            n_keypoints=2,
             model_load_error="",
             installed_tracker_table={},
         )
 
     def fake_run(request, *, work_dir, **_kwargs):
+        # Two keypoints, and deliberately not the same value: the body centre
+        # the bridge derives is their mean, so a test asserting it cannot pass
+        # by the bridge having copied either one.
         table = pd.DataFrame(
             {
                 "frame": range(4),
@@ -535,6 +538,9 @@ def _fake_pose_backend(monkeypatch) -> None:
                 "poseX0": [1.0] * 4,
                 "poseY0": [2.0] * 4,
                 "poseP0": [0.9] * 4,
+                "poseX1": [5.0] * 4,
+                "poseY1": [8.0] * 4,
+                "poseP1": [0.8] * 4,
             }
         )
         published = Path(request.output_parquet)
@@ -573,6 +579,12 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
         assert {"frame", "time", "id", "group", "sequence", "poseX0", "poseY0"} <= set(
             tdf.columns
         )
+        # The body centre `mosaic_v1` requires, derived from the keypoints the
+        # model reported. Neither keypoint's own coordinate, so a bridge that
+        # copied one rather than averaging both would fail here.
+        assert {"X", "Y"} <= set(tdf.columns)
+        assert (tdf["X"] == 3.0).all()  # mean(1.0, 5.0)
+        assert (tdf["Y"] == 5.0).all()  # mean(2.0, 8.0)
 
     # The audit parquet per sequence, under _tracking rather than a root of its
     # own (item 8.7). There is no inference index to assert against any more:
@@ -648,7 +660,7 @@ def test_infer_points_runs_and_bridges(tmp_path, monkeypatch):
     from mosaic.core.pipeline.tracks_index import read_tracks_index
     from mosaic.tracking.ops.infer import infer_run_root
 
-    assert run_id.startswith("infer-points.0.2-"), run_id
+    assert run_id.startswith("infer-points.0.3-"), run_id
     run_root = infer_run_root(ds, "infer-points", run_id)
     for sequence in ("vid1", "vid2"):
         # Published by the runner at the path the request named, and read back
@@ -659,6 +671,16 @@ def test_infer_points_runs_and_bridges(tmp_path, monkeypatch):
     assert set(rows["sequence"]) == {"vid1", "vid2"}
     assert set(rows["producer"]) == {"infer-points"}
     assert set(rows["producer_run_id"]) == {run_id}
+
+    # A point detector already reports the body centre; only its name was
+    # wrong. The bridge renames rather than copies, so the lowercase pair the
+    # raw predictions use does not survive into the standardized table.
+    for _, row in rows.iterrows():
+        tdf = pd.read_parquet(ds.resolve_path(str(row["abs_path"])))
+        assert {"X", "Y"} <= set(tdf.columns)
+        assert not {"x", "y"} & set(tdf.columns)
+        assert sorted(tdf["X"].tolist()) == [1.0, 2.0, 3.0]
+        assert sorted(tdf["Y"].tolist()) == [4.0, 5.0, 6.0]
 
 
 def test_the_predictions_the_runner_published_are_not_rewritten(tmp_path, monkeypatch):

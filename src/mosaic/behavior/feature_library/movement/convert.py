@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from mosaic.core.pipeline.loading import pose_column_pairs
+from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types import COLUMNS
 from mosaic.optional_dependency import require
 

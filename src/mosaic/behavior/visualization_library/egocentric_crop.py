@@ -20,7 +20,11 @@ from mosaic_media import MediaFacts
 from pydantic import Field
 
 from mosaic.core.pipeline._utils import ResolvedScope
-from mosaic.core.pipeline.loading import pose_column_pairs
+from mosaic.core.pose_columns import (
+    configured_pose_pairs,
+    frame_keypoint_centroid,
+    pose_column_pairs,
+)
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     COLUMNS,
@@ -464,19 +468,14 @@ class EgocentricCrop:
         # --- Centers ---
         mode = p.center_mode
         if mode == "default":
-            xs_list, ys_list = [], []
-            for i in range(p.pose.pose_n):
-                xc = f"{p.pose.x_prefix}{i}"
-                yc = f"{p.pose.y_prefix}{i}"
-                if xc in df_target.columns and yc in df_target.columns:
-                    xs_list.append(df_target[xc].to_numpy(dtype=np.float64))
-                    ys_list.append(df_target[yc].to_numpy(dtype=np.float64))
-            if xs_list:
-                xs = np.column_stack(xs_list)
-                ys = np.column_stack(ys_list)
-                with np.errstate(invalid="ignore"):
-                    cx = np.nanmean(xs, axis=1)
-                    cy = np.nanmean(ys, axis=1)
+            pairs = configured_pose_pairs(
+                df_target.columns,
+                x_prefix=p.pose.x_prefix,
+                y_prefix=p.pose.y_prefix,
+                count=p.pose.pose_n,
+            )
+            if pairs:
+                cx, cy = frame_keypoint_centroid(df_target, pairs)
             elif (
                 COLUMNS.x_col in df_target.columns
                 and COLUMNS.y_col in df_target.columns

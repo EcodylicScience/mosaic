@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Optional, Iterable, Any, Tuple
 import cv2
 
-from mosaic.core.pipeline.loading import pose_column_pairs
+from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.user_paths import user_path
 
 from .data_loading import load_tracks_and_labels, load_ground_truth_labels

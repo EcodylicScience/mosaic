@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 
 from mosaic.core.kinematics import angle_from_pca, angle_from_two_points
-from mosaic.core.pipeline.loading import pose_column_pairs
+from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
     EmitsLevel,

@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 
 from mosaic.core.params import Declared
+from mosaic.core.pose_columns import keypoint_centroid
 from mosaic.core.track_converter import (
     EntryHints,
     TrackConverter,
@@ -177,8 +178,7 @@ def _individual_to_trex_df(
     n_lm = x.shape[1]
 
     # Centroid over keypoints (NaN-robust).
-    cx = np.nanmean(x, axis=1) if n_lm else np.full(T, np.nan)
-    cy = np.nanmean(y, axis=1) if n_lm else np.full(T, np.nan)
+    cx, cy = keypoint_centroid(x, y)
 
     data: dict[str, np.ndarray] = {
         "frame": np.arange(T, dtype=int),

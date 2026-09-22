@@ -30,6 +30,10 @@ from mosaic_media import MediaFacts
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.media.read_target import verified_read_facts
 from mosaic.core.pipeline.job import JobContext
+from mosaic.core.pose_columns import (
+    frame_keypoint_centroid,
+    pose_column_pairs,
+)
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.markers import (
     PhaseMarker,
@@ -287,6 +291,48 @@ def infer_run_id(kind: str, version: str, params: Params, model_id: str) -> str:
     )
 
 
+def _name_the_body_centre(df: pd.DataFrame) -> None:
+    """Give *df* the ``X``/``Y`` that ``mosaic_v1`` means by the body centre.
+
+    Modifies *df* in place; it is already the bridge's private copy.
+
+    Every inference producer reports a position and none of them reports it
+    under the schema's name, so all three wrote ``mosaic_v1`` tables that no
+    consumer reading a body centre could use -- the overlay drew nothing,
+    ``nearest-neighbor`` and the social-force chain found no column, and the two
+    crop features fell back to a centre that was not there.
+
+    Two shapes, because two things are being named rather than computed:
+
+    * A **pose** model localizes landmarks and no centre, so the centre is the
+      mean of its keypoints -- the same rule every tracker bridge already
+      applies, and what a midline skeleton's centre is by construction.
+    * A **point** model (POLO) and the **localizer** each report one position per
+      detection already, under the lowercase ``x``/``y`` their raw tables use.
+      That is the body centre; only its name was wrong.
+
+    The renaming lives here rather than in the producers deliberately. The
+    predictions parquet beside each entry is an audit artifact showing what a
+    detector emitted *before* schema coercion, and ``POINT_COLUMNS`` is a wire
+    contract crossing a subprocess boundary -- so coercing at the bridge keeps
+    both honest and needs no protocol change.
+
+    Does nothing when ``X``/``Y`` are already present, and leaves them absent
+    when the table carries neither keypoints nor a lowercase pair, so validation
+    reports the real shortfall rather than a fabricated column.
+    """
+    if {"X", "Y"} <= set(df.columns.astype(str)):
+        return
+    if pose_column_pairs(df.columns.astype(str)):
+        df["X"], df["Y"] = frame_keypoint_centroid(df)
+        return
+    if {"x", "y"} <= set(df.columns.astype(str)):
+        # Renamed, not copied: one position under two names in one table is an
+        # invitation to read the one the schema does not define.
+        df["X"] = df.pop("x").astype(float)
+        df["Y"] = df.pop("y").astype(float)
+
+
 def _bridge_df_to_tracks(
     ds: Dataset,
     df: pd.DataFrame | None,
@@ -319,9 +365,16 @@ def _bridge_df_to_tracks(
         df["id"] = 0
     if "time" not in df.columns:
         df["time"] = df["frame"] if "frame" in df.columns else range(len(df))
+    _name_the_body_centre(df)
     # Declared by the producing root, like every other tracks write path.
     std_format = tracking_output_schema(kind)
-    ensure_track_schema(df, std_format, strict=False, source=f"{group}/{sequence}")
+    # `strict=True` here alone. Every *tracker* write path validates leniently
+    # because a missing required column is merely an incomplete table, and
+    # whether that should still be true is a separate question with a wider
+    # blast radius. But this bridge now derives the one column all three
+    # producers were missing, so it can assert its own work: a report printed
+    # under a "completed" line is how the absence survived in the first place.
+    ensure_track_schema(df, std_format, strict=True, source=f"{group}/{sequence}")
     _ = write_parquet_atomic(df, out_path)
     # source_abs_path was empty here, because the frame is built in memory and
     # there is no raw file. It now points at the prediction directory this run
@@ -592,7 +645,12 @@ class InferPoseOp(Op[PoseInferParams]):
     # version is a visible segment and not a hash term, so nothing is re-derived
     # -- but tables written under 0.1 hold the smaller coordinates and should be
     # re-run.
-    version = "0.2"
+    # 0.3 because this op's output gained a column the schema always required:
+    # tables written before it carry no `X`/`Y`, so nothing that reads a body
+    # centre can use them and they should be re-run. The version is a visible
+    # segment and not a hash term, so a variant directory now holds one table
+    # shape rather than a mix of the two.
+    version = "0.3"
     scope_takes = "any"
     scope_dependent = False
     Params = PoseInferParams
@@ -696,7 +754,12 @@ class InferPointsOp(Op[PointInferParams]):
     category = "infer"
     domain = "tracking"
     # 0.2 for the reason `infer-pose` gives above: the coordinates moved.
-    version = "0.2"
+    # 0.3 because this op's output gained a column the schema always required:
+    # tables written before it carry no `X`/`Y`, so nothing that reads a body
+    # centre can use them and they should be re-run. The version is a visible
+    # segment and not a hash term, so a variant directory now holds one table
+    # shape rather than a mix of the two.
+    version = "0.3"
     scope_takes = "any"
     scope_dependent = False
     Params = PointInferParams
@@ -800,10 +863,11 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
     kind = "infer-localizer"
     category = "infer"
     domain = "tracking"
-    # Unmoved at 0.1, unlike its two siblings: the localizer is mosaic's own
-    # PyTorch, it never resized at decode time, and its coordinates were already
-    # in source pixels.
-    version = "0.1"
+    # Held at 0.1 through its siblings' coordinate move: the localizer is
+    # mosaic's own PyTorch, it never resized at decode time, and its coordinates
+    # were already in source pixels. 0.2 is the body-centre column, which it was
+    # missing exactly as they were.
+    version = "0.2"
     scope_takes = "any"
     scope_dependent = False
     Params = LocalizerInferParams

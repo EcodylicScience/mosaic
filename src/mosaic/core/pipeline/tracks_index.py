@@ -44,7 +44,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
-from mosaic.core.pipeline.loading import pose_column_pairs
+from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types.data_config import COLUMNS
 from mosaic.core.pipeline.writers import read_parquet_table_columns
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index

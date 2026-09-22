@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from mosaic.core.pipeline.loading import pose_column_pairs
+from mosaic.core.pose_columns import pose_column_pairs
 
 from .helpers import (
     color_for_id,

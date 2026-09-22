@@ -8,6 +8,56 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased — every inference table carries a body centre, and three inference identifiers move
+
+**`infer-pose`, `infer-points` and `infer-localizer` re-address: `0.2 → 0.3`,
+`0.2 → 0.3` and `0.1 → 0.2`.** The version is a visible segment and not a hash
+term, so nothing is re-derived and existing runs keep the names they have. But
+**tables written under the older versions carry no `X`/`Y` at all and should be
+re-run**: nothing that reads a body centre can use them, and the bump is what
+keeps a variant directory from holding both shapes under one identifier.
+
+**All three inference ops were writing `mosaic_v1` tables without the two
+columns that schema requires.** Each declares `output_schema="mosaic_v1"`, which
+requires `X`/`Y` and defines them as the individual's body centre; none of them
+wrote the pair. `infer-pose` emitted keypoints and no centre, while
+`infer-points` and `infer-localizer` emitted the centre under the lowercase
+`x`/`y` their raw prediction tables use. The bridge validated with
+`strict=False`, where a missing *required* column is printed rather than raised,
+so the report went out under a line reading `completed` and the table was
+written and indexed. Downstream that is not an incomplete table but a silently
+useless one: the overlay's `centroid_cols` yields `None`, `nearest-neighbor` and
+the social-force chain find no column, and `egocentric-crop` and
+`interaction-crop-pipeline` fall back *to* the centre that is missing.
+
+The bridge now derives it — the mean of the detected keypoints for a pose model,
+which is what every tracker bridge already did and what a midline skeleton's
+centre is by construction; a rename for the two producers that reported the
+position already. The coercion stays at the bridge: the predictions parquet
+beside each entry is an audit artifact showing what a detector emitted *before*
+schema coercion, and the point columns are a wire contract crossing a subprocess
+boundary, so neither had to move. **That one call site now validates with
+`strict=True`**, so the shortfall raises instead of printing; every tracker write
+path is unchanged, and whether a missing required column should refuse there too
+remains a separate question.
+
+**One `keypoint_centroid`, in `mosaic.core.pose_columns`.** It was written out
+longhand in five converters and copied into two visualization features, and the
+copies had drifted. `pose_column_pairs` moves there from
+`core.pipeline.loading` — a converter takes no import from `core.pipeline`, and
+routing four of them through it for two functions would have put the pipeline's
+loading surface on every converter's import path. **No tracks variant moves**:
+the shared rule is the one four of the five converters already applied.
+
+**A CalMS21 conversion no longer loses a frame's body centre to one unlabelled
+landmark.** It averaged with a plain `mean` where the others used `nanmean`, so
+a single NaN landmark made `X`/`Y` NaN for that frame — indistinguishable from a
+genuinely absent animal. Corrected rather than versioned: `nanmean` is what the
+column always meant, and standard CalMS21 keypoints are dense, so no published
+conversion changes. `interaction-crop-pipeline` gains the matching fix on its
+own side, where two independently filtered column lists could average one
+keypoint's x against another's y.
+
 ## Unreleased — the SLEAP and Lightning Pose training ops can be given a device, and a short run
 
 **No run on disk is re-addressed.** `device` is `HASH_EXCLUDE` on both ops, and

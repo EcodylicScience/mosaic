@@ -16,7 +16,7 @@ from mosaic.core.pipeline.types import (
     resolve_order_col,
 )
 from mosaic.core.params import Declared, Params
-from mosaic.core.pipeline.loading import pose_column_pairs
+from mosaic.core.pose_columns import pose_column_pairs
 
 from .registry import register_feature
 

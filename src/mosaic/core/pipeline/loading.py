@@ -113,48 +113,6 @@ def alignment_verdict(column_sets: Sequence[Iterable[str]]) -> AlignmentVerdict:
     return AlignmentVerdict(keys, levels, True, "")
 
 
-def _keypoint_sort_key(suffix: str) -> tuple[int, int, str]:
-    """Order a pose suffix numerically where it is a number, lexically otherwise.
-
-    Keypoint identity is positional: every caller that indexes into the returned
-    list -- ``heading``'s ``front_idx`` / ``rear_idx``, the overlay's skeleton
-    lines -- means "the Nth keypoint the converter emitted". A lexicographic sort
-    breaks that silently from ten keypoints on, ordering ``poseX10`` between
-    ``poseX1`` and ``poseX2``, so a 21-point midline is drawn and measured
-    scrambled with nothing in the output to say so.
-
-    Numeric suffixes sort first and among themselves by value; anything else
-    keeps a stable lexicographic order after them, so a named keypoint set
-    (``poseXhead``) is still ordered deterministically rather than raising.
-    """
-    if suffix.isdigit():
-        return (0, int(suffix), "")
-    return (1, 0, suffix)
-
-
-# TODO: this shares logic with feature_library.params.PoseConfig
-# so pose config, columns etc should also move to pipeline/core
-def pose_column_pairs(columns: Iterable[str]) -> list[tuple[str, str]]:
-    """Extract (poseX*, poseY*) column pairs, ordered by keypoint index.
-
-    Args:
-        columns: Column names to scan.
-
-    Returns:
-        The ``(poseX<k>, poseY<k>)`` pairs whose X and Y are both present, in
-        keypoint order -- numerically for numeric suffixes. A ``poseX`` without
-        its ``poseY`` is skipped rather than half-reported.
-    """
-    column_names = list(columns)
-    present = set(column_names)
-    suffixes = [c[len("poseX") :] for c in column_names if c.startswith("poseX")]
-    return [
-        (f"poseX{suffix}", f"poseY{suffix}")
-        for suffix in sorted(suffixes, key=_keypoint_sort_key)
-        if f"poseY{suffix}" in present
-    ]
-
-
 def load_parquet_dataframe(
     path: Path,
     load_spec: LoadSpec,

@@ -42,6 +42,7 @@ import numpy as np
 import pandas as pd
 
 from mosaic.core.params import Declared
+from mosaic.core.pose_columns import keypoint_centroid
 from mosaic.core.track_converter import (
     EntryHints,
     TrackConverter,
@@ -180,8 +181,7 @@ def _track_to_trex_df(
 
     x = xy[present, :, 0]
     y = xy[present, :, 1]
-    cx = np.nanmean(x, axis=1) if n_nodes else np.full(len(frame_idx), np.nan)
-    cy = np.nanmean(y, axis=1) if n_nodes else np.full(len(frame_idx), np.nan)
+    cx, cy = keypoint_centroid(x, y)
 
     frame_f = frame_idx.astype(float)
 

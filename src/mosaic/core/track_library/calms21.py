@@ -16,6 +16,7 @@ import pandas as pd
 from typing import Annotated
 
 from mosaic.core.helpers import build_compound_name
+from mosaic.core.pose_columns import keypoint_centroid
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
@@ -42,7 +43,9 @@ def _calms21_seq_to_trex_df(
     if use_features:
         # not used in output columns; could be stored elsewhere if needed
         _ = np.asarray(one_seq_dict["features"])  # (T, K)
-    keypoints = np.asarray(one_seq_dict["keypoints"])  # (T, 2, 2, L)
+    # Typed at the read rather than left as an object array: these are
+    # coordinates, and the centroid they feed takes float arrays.
+    keypoints = np.asarray(one_seq_dict["keypoints"], dtype=np.float64)  # (T, 2, 2, L)
     # Guarded on the key, not on the result. ``np.asarray(None)`` is a 0-d object
     # array rather than None, so the old ``scores is not None`` check downstream
     # was always true and a file without scores -- which the schema permits --
@@ -68,9 +71,10 @@ def _calms21_seq_to_trex_df(
         X = keypoints[:, a, 0, :]  # (T, L)
         Y = keypoints[:, a, 1, :]  # (T, L)
 
-        # Centroid over landmarks
-        cx = X.mean(axis=1)  # (T,)
-        cy = Y.mean(axis=1)
+        # Centroid over landmarks, from the one shared rule. This used to be a
+        # plain `.mean`, alone among the converters, so a single NaN landmark
+        # made the whole body centre NaN for that frame.
+        cx, cy = keypoint_centroid(X, Y)  # (T,)
 
         # Build a per-frame DataFrame
         data = {

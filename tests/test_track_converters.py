@@ -246,10 +246,19 @@ def test_trex_npz_declares_that_several_files_are_one_sequence() -> None:
     assert TrexNpzConverter().sequence_from_stem("no_suffix") == "no_suffix"
 
 
-def _write_calms21(path: Path, pairs: dict[str, dict[str, int]]) -> None:
+def _write_calms21(
+    path: Path,
+    pairs: dict[str, dict[str, int]],
+    keypoints: np.ndarray | None = None,
+) -> None:
+    """A CalMS21 ``.npy``: zeroed ``(n, 2, 2, 7)`` keypoints unless given some."""
     payload = {
         group: {
-            seq: {"keypoints": np.zeros((n, 2, 2, 7), dtype=float)}
+            seq: {
+                "keypoints": np.zeros((n, 2, 2, 7), dtype=float)
+                if keypoints is None
+                else keypoints
+            }
             for seq, n in seqs.items()
         }
         for group, seqs in pairs.items()
@@ -289,6 +298,29 @@ def test_a_converter_has_one_spelling_of_fps() -> None:
     """
     assert "fps" in SleapConvertParams.model_fields
     assert "fps_default" not in SleapConvertParams.model_fields
+
+
+def test_calms21_survives_one_missing_landmark(tmp_path: Path) -> None:
+    """A NaN landmark used to make the whole body centre NaN for that frame.
+
+    CalMS21 was the one converter averaging with a plain ``mean`` rather than
+    ``nanmean``, so a single unlabelled landmark erased the animal's position
+    for the frame -- silently, since ``mosaic_v1`` records an absent centre as
+    NaN and a genuinely absent animal looks the same. All five converters now
+    share ``keypoint_centroid``, and this is the behaviour that changed.
+    """
+    keypoints = np.zeros((3, 1, 2, 4), dtype=float)
+    keypoints[:, 0, 0, :] = [0.0, 2.0, 4.0, 6.0]  # x of the four landmarks
+    keypoints[:, 0, 1, :] = [1.0, 3.0, 5.0, 7.0]  # y
+    keypoints[1, 0, :, 3] = np.nan  # one landmark unlabelled, in frame 1 only
+
+    npy = tmp_path / "nan.npy"
+    _write_calms21(npy, {"g": {"s0": 3}}, keypoints)
+
+    table = Calms21Converter().convert(npy, Calms21Params(), EntryHints())
+
+    assert table["X"].tolist() == [3.0, 2.0, 3.0]  # mean(0,2,4,6) / mean(0,2,4)
+    assert table["Y"].tolist() == [4.0, 3.0, 4.0]  # mean(1,3,5,7) / mean(1,3,5)
 
 
 def test_calms21_registers_one_class_per_source_format() -> None:
