@@ -40,15 +40,38 @@ result is counted against the sum of the clips' own frame counts, and a short
 concatenation is refused rather than published. That check is the whole value of
 the op: it is the thing TREx does not do.
 
-**Frames are counted, not timestamps** (:func:`_coded_frame_count`). Joining
-clips recorded at different rates leaves a file whose frames are all present and
-in order but whose timestamps are not a clean grid -- ffmpeg re-times each
-segment by the previous one's duration, and the rounding collides at the
-boundary. That is reported and not refused: the promise here is that exported
-frame ``i`` is global frame ``i``, which a collided timestamp does not break, and
-the one consumer reads the file forward from the start. Refusing would block a
-session over a defect in a quantity nothing reads -- ``retime_joined_frame``
-takes ``time`` from the source clips' own facts, never from this file.
+**Frames are counted, not timestamps** (:func:`_coded_frame_count`), and the
+timeline is then *imposed* rather than inherited. Those are two rules, and the
+second one replaced a mistake.
+
+The count is what proves nothing was lost: ``probe_media`` reports distinct
+presentation timestamps, which undercounts a join across a frame-rate change, so
+packets are counted instead.
+
+The timeline is what makes the file addressable. The concat demuxer does not
+rescale between inputs -- it offsets each segment by the previous one's duration
+expressed in the *first* clip's ticks -- so a clip that counts time differently
+lands at a wildly wrong timestamp and ffmpeg then nudges every following packet
+to keep the stream monotonic. This op used to *note* that and publish anyway, on
+the reasoning that exported frame ``i`` is still global frame ``i`` and that
+nothing reads this file's timing, ``retime_joined_frame`` taking ``time`` from
+the source clips' own facts.
+
+**The second half of that was false.** TREx seeks by timestamp:
+``FFmpegVideoCapture`` maps each packet's PTS back to a frame index and seeks
+backwards whenever it disagrees, and ``video_conversion_range`` addresses the
+file by time. Measured on a 17-clip session, one re-encoded clip carrying its
+encoder's own tick rate made TREx read frame 108,324 for every frame between
+1,745 and 216,760: it ran at 2 fps instead of 45 -- about thirty hours for the
+session -- and returned the wrong pixels the whole way.
+
+So the clips are written in one tick rate (:func:`_stream_timescale`,
+``-video_track_timescale``), the copy restamps every packet onto a uniform grid
+by its index, and a join whose timestamps still do not step evenly is refused
+before it is published rather than noted after. Frame ``i`` at ``i`` periods is
+the promise; it is now enforced, not assumed. What the grid is *not* is a clock:
+a mixed-rate session is labelled at its first clip's rate, and real time per
+frame still comes from the clips' own facts.
 
 **Addressed by what it holds, not by a run.** The filename carries the ordered
 composition digest of the clips it joined -- the same value
@@ -117,6 +140,21 @@ _NORMALISE_CRF: Final = 18
 A joined export is a tool input, addressed by recipe and disposable, not a
 derivative anything keeps. What matters is that it decodes to the same frames in
 the same order; this is high enough that a second generation does not show.
+"""
+
+_MAX_TIMESTAMP_GAP_FRAME_PERIODS: Final = 1.5
+"""How far apart neighbouring timestamps may be before the join is refused.
+
+Not a taste threshold. ``MediaFacts.max_timestamp_gap_frame_periods`` is what
+:class:`mosaic_media.io.VideoReader` uses to decide whether a decoded frame
+arrived suspiciously late, and it *stops checking* once that value reaches 1.5
+(``reader.py``: ``threshold = gap + 0.5``, returning early at ``>= 2.0``). Above
+this number mosaic's own reader has no per-frame protection either, so it is the
+exact point past which a file cannot be vouched for.
+
+Measured on the 17-clip session this check was written for: 106,546.65 on the
+join that made TREx crawl, 1.008 on the restamped one, 1.0000 on a session whose
+clips shared a time base.
 """
 
 _CONCAT_TIMEOUT_SECONDS: Final = 3600.0
@@ -295,8 +333,120 @@ def _coded_frame_count(path: Path) -> int:
         raise TranscodeError(message) from exc
 
 
+def _joined_frame_rate(facts: list[MediaFacts], dest: Path) -> float:
+    """The rate the joined file's uniform timeline is built on.
+
+    The **first** clip's, because the first clip is what the output's tick rate
+    comes from, and a grid has to be expressed in the ticks it is written in.
+
+    A session recorded at several rates therefore gets one label for all of it,
+    and that is deliberate: this file's timing is not authoritative and never
+    was. Real time per frame comes from the source clips' own facts through
+    ``retime_joined_frame``. What the grid has to be is *uniform*, so that frame
+    ``i`` is findable at ``i`` periods by a tool that seeks -- which is the
+    property the clips' real rates cannot provide and the concat demuxer
+    destroys.
+    """
+    rate = facts[0].fps if facts else 0.0
+    if rate <= 0:
+        message = (
+            f"{dest.name}: the first clip reports no frame rate, so the join "
+            f"could not be given a uniform timeline. Run `mosaic reprobe-media "
+            f"--apply` to measure it."
+        )
+        raise TranscodeError(message)
+    return rate
+
+
+def _stream_timescale(path: Path) -> int:
+    """The denominator of *path*'s video time base -- its ticks per second.
+
+    Not on :class:`~mosaic_media.MediaFacts`, which models what a stream *shows*
+    and not how it counts. It is needed here because the concat demuxer does not
+    rescale: it writes each input's raw ticks into a track whose timescale comes
+    from the *first* input, so two clips that disagree produce timestamps wrong
+    by the ratio between them. Measured once, from the clip the join is built
+    around.
+    """
+    out = run_to_completion(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=time_base",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        timeout=_CONCAT_TIMEOUT_SECONDS,
+        action=f"reading the time base of {path.name}",
+        error_type=TranscodeError,
+    ).strip()
+    _, _, denominator = out.partition("/")
+    try:
+        timescale = int(denominator)
+    except ValueError as exc:
+        message = (
+            f"{path.name}: ffprobe reported a time base of {out!r}, which has no "
+            f"tick rate in it, so the join could not be given a uniform timeline."
+        )
+        raise TranscodeError(message) from exc
+    if timescale <= 0:
+        message = (
+            f"{path.name}: ffprobe reported a time base of {out!r}, a tick rate "
+            f"of {timescale}, which cannot carry a timeline."
+        )
+        raise TranscodeError(message)
+    return timescale
+
+
+def _first_packet_dts(path: Path) -> int:
+    """*path*'s first video packet's decode timestamp, in its own ticks.
+
+    Reproduced onto the join so the result starts where a single-clip file
+    would. H.264 with B-frames conventionally opens at a negative DTS -- the
+    reorder delay -- and a join that silently started at zero would shift its
+    whole presentation relative to the clip it was built from.
+
+    ``N/A`` is a real answer for a stream carrying no decode timestamps, and it
+    means the same thing as zero here: there is no offset to preserve.
+    """
+    out = run_to_completion(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-read_intervals",
+            "%+#1",
+            "-show_entries",
+            "packet=dts",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        timeout=_CONCAT_TIMEOUT_SECONDS,
+        action=f"reading the first packet timestamp of {path.name}",
+        error_type=TranscodeError,
+    ).strip()
+    first = out.splitlines()[0].strip() if out else ""
+    try:
+        return int(first)
+    except ValueError:
+        return 0
+
+
 def _normalise_clip(
-    source: Path, clip: MediaFacts, profile: tuple[str, str], dest: Path
+    source: Path,
+    clip: MediaFacts,
+    profile: tuple[str, str],
+    dest: Path,
+    *,
+    timescale: int,
 ) -> None:
     """Re-encode *source* into *profile*, keeping every frame and its order.
 
@@ -305,6 +455,14 @@ def _normalise_clip(
     a mixed-rate session keeps each clip's own count. Verified afterwards
     anyway, because a silent frame drop here would be indistinguishable from the
     concat defect this whole op exists to prevent.
+
+    ``-video_track_timescale`` is the other half, and it is not cosmetic. An
+    encoder picks its own tick rate -- libx264 chose 1/953497 for the clip this
+    argument was added for -- and :func:`write_joined_export` then copies packets
+    into a track whose timescale came from a *different* clip. The concat
+    demuxer does not rescale between them, so the re-encoded clip's timestamps
+    landed 62x too large and every frame after it was addressed wrongly. Writing
+    the clip in its neighbours' ticks means its numbers mean what theirs mean.
     """
     codec, pixel_format = profile
     encoder = _ENCODERS.get(codec)
@@ -335,6 +493,8 @@ def _normalise_clip(
             pixel_format,
             "-fps_mode",
             "passthrough",
+            "-video_track_timescale",
+            str(timescale),
             str(dest),
         ],
         timeout=_CONCAT_TIMEOUT_SECONDS,
@@ -408,12 +568,19 @@ def write_joined_export(
             f"just the odd ones in the majority profile before joining."
         )
         raise TranscodeError(message)
+    # The ticks every clip in this join is written in. Taken from a clip already
+    # in the majority profile, never from an outlier: an outlier is about to be
+    # re-encoded, and an encoder picks a tick rate of its own that no other clip
+    # shares. `majority` is non-empty by construction, so this always resolves.
+    odd_positions = set(odd)
+    reference = next(i for i in range(len(paths)) if i not in odd_positions)
+    timescale = _stream_timescale(paths[reference])
     # Normalised beside the partial and swept with it, so an interrupted run
     # leaves no half-encoded clip at a name a later run would trust.
     normalised: list[Path] = []
     for i in odd:
         temp = dest.with_name(f"{dest.stem}.normalised{i}{dest.suffix}")
-        _normalise_clip(paths[i], facts[i], majority, temp)
+        _normalise_clip(paths[i], facts[i], majority, temp, timescale=timescale)
         normalised.append(temp)
         paths = [*paths[:i], temp, *paths[i + 1 :]]
     # ffmpeg's concat demuxer reads a file of paths. Single quotes are its
@@ -425,6 +592,20 @@ def write_joined_export(
             for p in paths
         )
     )
+    # One uniform grid for the whole join, imposed rather than inherited. The
+    # concat demuxer's own arithmetic is what this op exists to distrust: it
+    # offsets each segment by the previous one's duration in the *first* clip's
+    # ticks, so any clip that counts differently lands at the wrong timestamp
+    # and drags every frame after it along. Restamping by packet index makes
+    # that arithmetic unreachable -- frame `i` is at `i` ticks*period, whatever
+    # the inputs disagreed about.
+    #
+    # `PTS-DTS` is carried through unchanged, which is what preserves B-frame
+    # reordering: the concat demuxer shifts both ends of that difference
+    # equally, so the difference itself is the one quantity it cannot corrupt.
+    period = max(1, round(timescale / _joined_frame_rate(facts, dest)))
+    origin = _first_packet_dts(paths[0])
+    restamp = f"setts=dts=N*{period}{origin:+d}:pts=N*{period}{origin:+d}+PTS-DTS"
     keep_partial = False
     try:
         _ = run_to_completion(
@@ -442,6 +623,8 @@ def write_joined_export(
                 str(listing),
                 "-c",
                 "copy",
+                "-bsf:v",
+                restamp,
                 "-map",
                 "0:v:0",
                 str(partial),
@@ -479,6 +662,31 @@ def write_joined_export(
                 f"{sum(measured)} and recorded as {expected}; the join would "
                 f"not line up with the media, which is the one thing it exists "
                 f"to guarantee. {detail}"
+            )
+            raise TranscodeError(message)
+        # Measured on the partial, before it is published: a join whose timeline
+        # is wrong must not reach the recipe address, where the name alone would
+        # claim it is this clip set joined correctly. This is the probe pass the
+        # op used to spend *after* publishing, moved to where it can still
+        # withhold the file.
+        #
+        # The gap, and deliberately not `frame_count`. That value counts
+        # distinct timestamps, and gating on it is the regression
+        # `_coded_frame_count` exists to document: it refused a complete
+        # 390,986-frame session. The widest step between neighbours answers a
+        # different question -- is this timeline uniform enough to seek -- and
+        # answers it without depending on how the probe counts.
+        gap = probe_media(partial).max_timestamp_gap_frame_periods
+        if gap > _MAX_TIMESTAMP_GAP_FRAME_PERIODS:
+            keep_partial = True
+            message = (
+                f"{dest.name}: neighbouring timestamps in the join step as far "
+                f"as {gap:.2f} frame periods apart, where a uniform timeline "
+                f"steps 1.00. A tool that seeks by timestamp -- TREx does -- "
+                f"lands on the wrong frame past the gap and reads the wrong "
+                f"pixels, and mosaic's own reader stops checking for missing "
+                f"frames above {_MAX_TIMESTAMP_GAP_FRAME_PERIODS}. The join is "
+                f"kept at {partial.name} for inspection."
             )
             raise TranscodeError(message)
         partial.replace(dest)
@@ -527,7 +735,7 @@ class JoinedExportOp(Op[JoinedExportParams]):
     kind = "export-joined"
     domain = "media"
     category = "transcode"
-    version = "0.1"
+    version = "0.2"
     # A stream copy is disk-bound, not CPU-bound, and touches no GPU -- but a
     # session is tens of gigabytes and two of these on one host will contend for
     # the same disk, which is what this class exists to serialize.
@@ -617,21 +825,12 @@ class JoinedExportOp(Op[JoinedExportParams]):
         ctx.progress.on_phase(
             "export-joined", f"{group}/{sequence}: {written} frames -> {dest.name}"
         )
-        # Free, from a value the probe already computes: fewer distinct
-        # timestamps than frames means the boundaries collided. Every frame is
-        # present and in order, so this is a note and not a refusal -- but it is
-        # a note, because a reader that seeks by time will not find frame i at
-        # i / fps in this file.
-        distinct = int(probe_media(dest).frame_count)
-        if distinct < written:
-            ctx.progress.on_phase(
-                "export-joined",
-                f"{group}/{sequence}: all {written} frames are present and in "
-                f"order, but {written - distinct} of them share a timestamp with "
-                f"a neighbour, because the clips were recorded at more than one "
-                f"frame rate. Reading this file forward is unaffected; seeking "
-                f"it by time is not.",
-            )
+        # No timestamp check here any more. It used to live at this point as a
+        # note, on the premise that seeking this file was nobody's business;
+        # TREx seeks it, so the check became a refusal and moved inside
+        # write_joined_export, where it runs on the partial and can still
+        # withhold the file. Checking after `partial.replace(dest)` could only
+        # ever describe a video already published at its recipe address.
         # Reported, because "finished" alone could not tell a joined session
         # from one the op decided needed no join -- which is exactly the
         # ambiguity that hid a recipe-addressing bug behind a clean exit.

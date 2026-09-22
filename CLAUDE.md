@@ -1279,10 +1279,25 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   one's duration, and the rounding puts one frame of the new clip on the last
   timestamp of the old. Nothing is lost and the count drops anyway. It refused a
   real 17-clip session (30 / 29.948 / 31 fps) that held all 390,986 frames,
-  reporting 390,984. `_coded_frame_count` counts packets instead. A collided
-  timestamp is **reported, not refused** -- frames stay present and in order,
-  which is the whole promise, and nothing reads the joined file's timing
-  (`retime_joined_frame` takes `time` from the source clips' facts).
+  reporting 390,984. `_coded_frame_count` counts packets instead.
+
+  **But the timeline is imposed, not inherited, and it is refused when it is
+  wrong.** The concat demuxer offsets each segment by the previous one's
+  duration in the *first* clip's ticks and never rescales, so any clip counting
+  time differently -- a 31 fps sibling, or a re-encode carrying its encoder's
+  own tick rate -- lands at a wrong timestamp and drags every later frame with
+  it. This was once filed as a note on the reasoning that nothing reads this
+  file's timing. **That was false: TREx seeks by timestamp**, mapping each
+  packet's PTS back to a frame index and seeking backwards when they disagree.
+  On a real 17-clip session it read frame 108,324 for every frame between 1,745
+  and 216,760 -- 2 fps instead of 45, about thirty hours, and the wrong pixels
+  throughout. So `_normalise_clip` writes in its neighbours' ticks
+  (`-video_track_timescale`), the copy restamps every packet by index
+  (`-bsf:v setts`), and a join whose `max_timestamp_gap_frame_periods` exceeds
+  1.5 is refused before publishing, keeping the partial. 1.5 is where mosaic's
+  own reader stops checking for missing frames. The grid is not a clock: a
+  mixed-rate session is labelled at its first clip's rate, and real time per
+  frame still comes from the clips' own facts (`retime_joined_frame`).
 
   The axis is also **measured against the media and reported** rather than merely
   asserted -- `media_frames` beside `frame_min`/`frame_max` on the tracks row, a

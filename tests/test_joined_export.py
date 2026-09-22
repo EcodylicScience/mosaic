@@ -424,3 +424,137 @@ def test_a_shortfall_names_the_clip_that_is_wrong(ds: Dataset, tmp_path: Path) -
     assert paths[1].name in message, "the message names the clip that disagrees"
     assert "reprobe-media" in message, "and the command that re-measures it"
     assert paths[0].name not in message, "and does not accuse the sound clips"
+
+
+def _clip_at_rate(dest: Path, *, fps: int, timescale: int, frames: int) -> MediaFacts:
+    """A real clip recorded at *fps* and counting time in *timescale* ticks.
+
+    Both halves matter and they are independent. A session's clips genuinely
+    differ in rate -- 30, 29.948 and 31 fps is a measured example -- and each
+    rate brings its own tick count, which is the quantity the concat demuxer
+    does not reconcile.
+    """
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"testsrc=size=64x48:rate={fps}:duration={frames / fps}",
+            "-c:v",
+            "libx264",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-video_track_timescale",
+            str(timescale),
+            str(dest),
+        ],
+        check=True,
+    )
+    return probe_media(dest)
+
+
+def test_a_mixed_rate_join_gets_a_uniform_timeline(
+    tmp_path: Path, requires_ffmpeg: None
+) -> None:
+    """The defect that made TREx crawl for thirty hours and read wrong pixels.
+
+    Clips recorded at different rates count time in different ticks. The concat
+    demuxer offsets each segment by the previous one's duration in the *first*
+    clip's ticks and does not rescale, so the second clip lands at the wrong
+    timestamp and every frame after it is addressed wrongly. A tool that seeks
+    by timestamp -- TREx does -- then lands on the wrong frame.
+
+    Measured on this fixture before the restamp: neighbouring timestamps stepped
+    4.92 frame periods apart. Nothing was lost, which is exactly why the frame
+    count could not catch it.
+    """
+    a = _clip_at_rate(tmp_path / "a.mp4", fps=30, timescale=15360, frames=120)
+    b = _clip_at_rate(tmp_path / "b.mp4", fps=31, timescale=15872, frames=124)
+    dest = tmp_path / "j.mp4"
+
+    written = write_joined_export(
+        [tmp_path / "a.mp4", tmp_path / "b.mp4"], [a, b], dest
+    )
+
+    measured = probe_media(dest)
+    assert written == 244, "every frame of both clips survives the copy"
+    assert measured.max_timestamp_gap_frame_periods <= 1.5, (
+        "frame i has to be findable at i periods by a tool that seeks"
+    )
+    assert measured.constant_frame_rate, "the imposed grid is uniform"
+
+
+def test_a_normalised_clip_is_written_in_its_neighbours_ticks(
+    tmp_path: Path, requires_ffmpeg: None
+) -> None:
+    """An encoder picks its own tick rate, and the copy will not rescale it.
+
+    libx264 chose 1/953497 for the clip this was found on, which the concat
+    demuxer then wrote into a 1/15360 track verbatim -- timestamps 62x too
+    large. The re-encode has to count in the ticks its neighbours count in.
+    """
+    from mosaic.core.pipeline.joined_export import _normalise_clip, _stream_timescale
+
+    source = tmp_path / "odd.mp4"
+    clip = _clip_at_rate(source, fps=30, timescale=953497, frames=30)
+    assert _stream_timescale(source) == 953497, "the fixture carries the odd rate"
+    dest = tmp_path / "normalised.mp4"
+
+    _normalise_clip(source, clip, ("h264", "yuv420p"), dest, timescale=15360)
+
+    assert _stream_timescale(dest) == 15360
+
+
+def test_a_join_whose_timeline_is_not_uniform_is_refused_and_kept(
+    ds: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Refused before publishing, and the evidence is kept.
+
+    Simulated through the probe, because the restamp makes a genuinely
+    non-uniform join unbuildable -- which is the point. What is asserted is that
+    the measurement is acted on: it was already taken, already carried on
+    ``MediaFacts``, and read by nothing.
+    """
+    import mosaic.core.pipeline.joined_export as module
+
+    real = module.probe_media
+
+    def wide_gap(path: Path) -> MediaFacts:
+        return dataclasses.replace(
+            real(path), max_timestamp_gap_frame_periods=106546.65
+        )
+
+    resolved = ds.resolve_media("", "sess")
+    monkeypatch.setattr(module, "probe_media", wide_gap)
+    dest = tmp_path / "j.mp4"
+
+    with pytest.raises(TranscodeError, match="seeks by timestamp"):
+        _ = write_joined_export(list(resolved.paths), list(resolved.facts), dest)
+
+    assert not dest.exists(), "a join that cannot be seeked must not be published"
+    assert (tmp_path / "j.partial.mp4").is_file(), "the evidence is kept"
+
+
+def test_the_restamped_recipe_addresses_a_different_file(ds: Dataset) -> None:
+    """The fix changes the bytes, so it must change the address.
+
+    A join written by the old recipe is not this one, and reusing it by name
+    would hand a tracker the broken timeline the restamp exists to remove.
+    """
+    from mosaic.core.pipeline._utils import hash_params
+    from mosaic.core.pipeline.joined_export import JoinedExportOp
+
+    params = JoinedExportParams()
+    previous = hash_params(
+        {"op_version": "0.1", "params": params.identity_dump()},
+    )
+
+    assert JoinedExportOp.version == "0.2"
+    assert joined_recipe_hash(params) != previous
