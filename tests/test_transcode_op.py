@@ -899,3 +899,34 @@ def test_two_concurrent_forward_links_both_survive(
         "uuid-a": "transcode/uuid-a.r.analysis.mp4",
         "uuid-b": "transcode/uuid-b.r.analysis.mp4",
     }, f"a concurrent forward link was lost: {linked}"
+
+
+def test_an_unset_encoder_is_not_a_hash_term() -> None:
+    """The seam must not re-mint a corpus just by existing.
+
+    ``EncodingParameters.encoder`` is ``None`` for every recipe on disk, meaning
+    "choose an AV1 encoder, as this always has". Hashing that ``None`` would
+    give every analysis and playback derivative in every dataset a new address,
+    to record a decision nobody made.
+
+    Naming one *must* move the digest, though -- it is a different file.
+    """
+    import dataclasses
+
+    params = TranscodeParams(target="analysis")
+    base = transcode_recipe_hash(
+        params, ANALYSIS_ENCODING, CHROME_149, media_thresholds()
+    )
+    named = transcode_recipe_hash(
+        params,
+        dataclasses.replace(ANALYSIS_ENCODING, encoder="libsvtav1"),
+        CHROME_149,
+        media_thresholds(),
+    )
+
+    assert ANALYSIS_ENCODING.encoder is None, "the shipped default is the seam unset"
+    assert base == "49bf3aa578", (
+        "the analysis recipe address is on disk in every dataset; adding a "
+        "field to EncodingParameters must not move it"
+    )
+    assert named != base, "an encoder that was actually chosen is a different recipe"

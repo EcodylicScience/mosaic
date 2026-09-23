@@ -100,6 +100,24 @@ to be on `$PATH`.
 Installed into a conda environment instead, name it with
 `export MOSAIC_SLEAP_CONDA_ENV=sleap`.
 
+**Give it an OpenCV that can decode AV1.** mosaic's analysis derivatives and
+imgstore exports are AV1, and SLEAP reads video through OpenCV — whose codec
+support is fixed when its wheel is built. The PyPI wheel for Linux carries no
+software AV1 decoder and no hardware accelerator, so it cannot decode AV1 on any
+Linux machine. In a conda environment:
+
+```bash
+conda install -c conda-forge py-opencv
+```
+
+That build links the conda ffmpeg beside it, which carries `libdav1d`, and
+satisfies SLEAP's unpinned `opencv-python` requirement. Without it mosaic refuses
+the run naming the codec — which is the good outcome; the one it replaced was
+SLEAP reading zero frames and exiting 0, recorded as a run that succeeded and
+found nothing. `sleap-io` picks OpenCV whenever it is importable and reads no
+environment variable to say otherwise, so a working PyAV in the same environment
+does not help.
+
 ### Lightning Pose
 
 Lightning Pose brings PyTorch, Lightning and NVIDIA DALI, and its video inference needs
@@ -111,6 +129,14 @@ conda activate litpose
 pip install lightning-pose
 export MOSAIC_LITPOSE_CONDA_ENV=litpose
 ```
+
+**AV1 needs an Ampere or newer GPU here.** Lightning Pose decodes through NVIDIA
+DALI, which decodes on the GPU via NVDEC and has no software fallback. NVDEC
+reads AV1 only at compute capability 8.6 or newer, so on a Pascal or Turing card
+— a GTX 1080 Ti is 6.1 — mosaic's AV1 derivatives cannot be read at all, and no
+package changes that. mosaic refuses such a run naming NVDEC rather than letting
+it return nothing. The remedies are a newer GPU, or feeding Lightning Pose media
+that never needed an analysis transcode.
 
 ### Ultralytics and POLO
 

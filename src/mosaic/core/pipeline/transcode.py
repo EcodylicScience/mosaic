@@ -154,6 +154,25 @@ def relative_to_anchor(path: Path, anchor: Path) -> str:
     return Path(os.path.relpath(path.resolve(), anchor.resolve())).as_posix()
 
 
+def _encoding_terms(encoding: EncodingParameters) -> dict[str, object]:
+    """*encoding* as hash terms, omitting an encoder nobody asked for.
+
+    ``EncodingParameters.encoder`` is a seam: ``None`` means "choose an AV1
+    encoder, as this has always done", which is what every recipe on disk was
+    built under. Hashing that ``None`` would re-mint every analysis and playback
+    derivative in every dataset to record a decision nobody made.
+
+    Only that key, and only when it is unset. A general "drop the None values"
+    filter would be wrong here: ``ANALYSIS_ENCODING.keyframe_interval`` is
+    already ``None`` and has always been hashed as such, so dropping it would
+    move exactly the digest this exists to hold still.
+    """
+    terms: dict[str, object] = dataclasses.asdict(encoding)
+    if terms.get("encoder") is None:
+        del terms["encoder"]
+    return terms
+
+
 def transcode_recipe_hash(
     params: TranscodeParams,
     encoding: EncodingParameters,
@@ -199,7 +218,7 @@ def transcode_recipe_hash(
     fingerprint = {
         "op_version": TranscodeOp.version,
         "params": params.identity_dump(),
-        "encoding": dataclasses.asdict(encoding),
+        "encoding": _encoding_terms(encoding),
         # Sorted here rather than through asdict: json_ready serializes a set to
         # a list WITHOUT sorting, and sort_keys only orders dict keys, so a
         # frozenset hashed through it yields a different digest in every process
