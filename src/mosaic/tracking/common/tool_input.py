@@ -34,6 +34,11 @@ from mosaic_media.transcode import TranscodeError
 from mosaic.core.media.facts_columns import derivative_path_for_target, row_mapping
 from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.pipeline.store_export import EXPORT_TARGET
+from mosaic.core.pipeline.tracking_roots import (
+    CONSERVATIVE_DECODER,
+    TRACKING_ROOTS,
+    ToolDecoder,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -109,8 +114,8 @@ def _stream_codec(path: Path) -> str:
     return out.strip().splitlines()[0].strip().lower() if out.strip() else ""
 
 
-def _allowed_codecs() -> frozenset[str]:
-    """What a tool may be handed, plus whatever the operator has vouched for.
+def _allowed_codecs(decoder: ToolDecoder) -> frozenset[str]:
+    """What *decoder* may be handed: the baseline, its own extras, and the override.
 
     ``MOSAIC_ALLOW_TOOL_CODECS`` is a comma-separated list of extra codec names.
     It exists because the refusal is an inference about a decoder mosaic does
@@ -121,13 +126,22 @@ def _allowed_codecs() -> frozenset[str]:
     """
     extra = os.environ.get(_ALLOW_CODECS_VAR, "")
     named = {part.strip().lower() for part in extra.split(",") if part.strip()}
-    return SOFTWARE_DECODABLE_CODECS | named
+    return SOFTWARE_DECODABLE_CODECS | decoder.also_reads | named
 
 
 def refuse_undecodable_codec(
     path: Path, *, kind: str, group: str, sequence: str
 ) -> None:
-    """Raise unless *path* is in a codec any libavcodec build decodes.
+    """Raise unless *kind*'s decoder can be expected to open *path*.
+
+    **Per tool, because the answer differs per tool.** TREx links its own
+    environment's libavcodec and Ultralytics reads through mosaic-media's PyAV;
+    both carry ``libdav1d`` and read AV1. SLEAP decodes with OpenCV, whose
+    manylinux wheel carries no software AV1 decoder at all, and Lightning Pose
+    decodes through NVDEC, which reads AV1 only on compute capability 8.6 or
+    newer. One global answer would refuse the first two in order to refuse the
+    second two. Each tool's declaration lives on its
+    :class:`~mosaic.core.pipeline.tracking_roots.TrackingRoot`.
 
     **Checked on what is handed over, never on what it was resolved from.** A
     clip that is about to be joined away may be in any codec: the tool never
@@ -139,25 +153,24 @@ def refuse_undecodable_codec(
     empty table, and the run was recorded as a success that produced nothing --
     a result indistinguishable, at every gate mosaic has, from a video with no
     animals in it.
+
+    A kind with no registered root gets the conservative declaration, which
+    assumes nothing beyond the universal baseline.
     """
+    root = TRACKING_ROOTS.get(kind)
+    decoder = root.decoder if root is not None else CONSERVATIVE_DECODER
     codec = _stream_codec(path)
-    allowed = _allowed_codecs()
-    if not codec or codec in allowed:
+    if not codec or codec in _allowed_codecs(decoder):
         return
+    remedy = f"\n    {decoder.remedy}." if decoder.remedy else ""
     message = (
         f"[{kind}] ({group}, {sequence}) resolves to {path.name}, which is "
-        f"{codec}. {kind} decodes with a stack mosaic neither installs nor "
-        f"configures, and {codec} has no decoder in libavcodec's own C -- the "
-        f"manylinux opencv-python wheel, which SLEAP and Lightning Pose read "
-        f"through, carries none for it and no hardware accelerator either. A "
-        f"tool that cannot decode returns zero frames and exits 0, so this "
-        f"would be recorded as a run that succeeded and found nothing.\n"
-        f"    Re-make it in a codec every build decodes:\n"
-        f"    mosaic run -m <manifest> --kind export-store --params "
-        f'\'{{"entry": ["{group}", "{sequence}"]}}\' --overwrite\n'
-        f"    or, for a plain video, `mosaic run --kind transcode`.\n"
-        f"    If this environment's decoder does handle {codec}, set "
-        f"{_ALLOW_CODECS_VAR}={codec} to say so."
+        f"{codec}. {kind} decodes with {decoder.stack}, which cannot be "
+        f"expected to open {codec}. A tool that cannot decode returns zero "
+        f"frames and exits 0, so this would otherwise be recorded as a run "
+        f"that succeeded and found nothing.{remedy}\n"
+        f"    To say this environment does handle it, set "
+        f"{_ALLOW_CODECS_VAR}={codec}."
     )
     raise ToolCodecError(message)
 

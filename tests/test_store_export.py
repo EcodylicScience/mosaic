@@ -120,7 +120,7 @@ def _export(
     _ = run_op(
         ds,
         "export-store",
-        StoreExportParams(crf=_LOSSLESS),
+        StoreExportParams(av1_crf=_LOSSLESS),
         scope=selector,
         overwrite=overwrite,
     )
@@ -226,17 +226,16 @@ def test_an_export_records_the_encoder_it_wrote_with(
 ) -> None:
     """An export that encodes names its encoder on the derivative row.
 
-    A raw store has no stream to copy, so this one is genuinely encoded -- in
-    H.264, because the file exists to be opened by a decoder mosaic does not
-    own. Nothing else on the row carries the encoder: ``codec`` is a measured
-    fact and reads ``"h264"`` whichever encoder produced it.
+    A raw store has no stream to copy, so this one is genuinely encoded. Nothing
+    else on the row carries the encoder: ``codec`` is a measured fact and reads
+    ``"av1"`` whichever encoder produced it.
     """
     ds, group, sequence = _store_dataset(tmp_path, make_media_dataset, make_imgstore)
     _export(ds, group, sequence)
 
     derivatives = pd.read_csv(ds.get_root("media") / "index.csv", dtype=str).fillna("")
-    assert derivatives.iloc[0]["encoder"] == "libx264"
-    assert derivatives.iloc[0]["codec"] == "h264"
+    assert derivatives.iloc[0]["encoder"] == "libsvtav1"
+    assert derivatives.iloc[0]["codec"] == "av1"
 
 
 def test_a_second_export_reuses_the_first(
@@ -365,7 +364,7 @@ def test_two_triples_of_one_entry_export_both_named_cameras(
     _ = run_op(
         ds,
         "export-store",
-        StoreExportParams(crf=_LOSSLESS),
+        StoreExportParams(av1_crf=_LOSSLESS),
         scope=Scope(entries=[(group, sequence, "CAMA"), (group, sequence, "CAMB")]),
     )
 
@@ -450,7 +449,7 @@ def test_the_recipe_ignores_scope_and_tracks_the_encode() -> None:
     assert not declared & {"entry", "entries", "camera", "cameras"}
     base = StoreExportParams()
     assert export_recipe_hash(base) != export_recipe_hash(
-        StoreExportParams(crf=_LOSSLESS)
+        StoreExportParams(av1_crf=_LOSSLESS)
     )
 
 
@@ -726,38 +725,62 @@ def test_a_raw_store_is_still_encoded(
 
     _export(ds, group, sequence)
     derivatives = pd.read_csv(ds.get_root("media") / "index.csv", dtype=str).fillna("")
-    assert derivatives.iloc[0]["encoder"] == "libx264"
+    assert derivatives.iloc[0]["encoder"] == "libsvtav1"
 
 
-def test_an_export_a_tool_cannot_decode_is_refused_by_name(
+def test_a_tool_that_cannot_decode_the_export_is_refused_by_name(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """The silence this replaces, and the false refusal it must not become.
+
+    A raw store has no stream to copy, so its export is encoded -- AV1, which
+    SLEAP's OpenCV holds no decoder for. A reader with no decoder returns zero
+    frames and its caller exits 0, so SLEAP wrote a `.slp` with no labeled
+    frames and mosaic recorded a success that produced nothing.
+
+    The same file is fine for TREx, which links its own libavcodec, and for
+    Ultralytics, which reads through mosaic-media's PyAV. Refusing them in order
+    to refuse SLEAP would block two working tools, which is why the declaration
+    is per tool.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, make_imgstore, fmt="npy"
+    )
+    _export(ds, group, sequence)
+    item = _work_item(ds, group, sequence)
+    assert probe_media(_exports(ds)[0]).codec_name == "av1", "the fixture premise"
+
+    with pytest.raises(ToolCodecError, match="OpenCV"):
+        _ = resolve_tool_input(ds, item, kind="sleap")
+    with pytest.raises(ToolCodecError, match="NVDEC"):
+        _ = resolve_tool_input(ds, item, kind="litpose")
+
+    for reads_av1 in ("trex", "ultralytics", "infer-pose"):
+        assert resolve_tool_input(ds, item, kind=reads_av1) == _exports(ds)[0], (
+            f"{reads_av1} decodes AV1 and must not be refused"
+        )
+
+
+def test_an_operator_can_vouch_for_a_codec_the_declaration_refuses(
     tmp_path: Path,
     make_media_dataset: Callable[[Path], Dataset],
     make_imgstore: MakeStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The silence this replaces.
+    """The refusal is an inference about a decoder mosaic does not own.
 
-    A reader with no decoder for the file returns zero frames and its caller
-    exits 0. SLEAP wrote a `.slp` with no labeled frames, the bridge read a
-    valid empty table, and the run was recorded as a success that produced
-    nothing -- indistinguishable, at every gate mosaic has, from a video with no
-    animals in it.
+    Someone who has put a dav1d-linked OpenCV in their SLEAP environment is
+    right, and should not have to re-encode a corpus to prove it. The variable
+    only ever widens the set, so it cannot turn a working run into a broken one.
     """
     ds, group, sequence = _store_dataset(
-        tmp_path, make_media_dataset, make_imgstore, fmt="avc1/mp4"
+        tmp_path, make_media_dataset, make_imgstore, fmt="npy"
     )
     _export(ds, group, sequence)
     item = _work_item(ds, group, sequence)
 
-    # The export is h264 and passes; an environment that claims otherwise is how
-    # the refusal is reached without building a file no tool could read.
-    monkeypatch.setattr(
-        "mosaic.tracking.common.tool_input.SOFTWARE_DECODABLE_CODECS", frozenset()
-    )
-    with pytest.raises(ToolCodecError, match="h264"):
-        _ = resolve_tool_input(ds, item, kind="trex")
+    monkeypatch.setenv("MOSAIC_ALLOW_TOOL_CODECS", "av1")
 
-    monkeypatch.setenv("MOSAIC_ALLOW_TOOL_CODECS", "h264")
-    assert resolve_tool_input(ds, item, kind="trex") == _exports(ds)[0], (
-        "an operator who knows their decoder can say so"
-    )
+    assert resolve_tool_input(ds, item, kind="sleap") == _exports(ds)[0]

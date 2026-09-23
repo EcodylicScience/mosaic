@@ -554,7 +554,7 @@ Export one entry's imgstore recordings as plain video and link them.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `crf` | `integer` | `7` |  | H.264 constant-rate factor, 0 (lossless) to 51. Applies only to a store whose chunks cannot be copied out -- a raw, image-directory or Bayer store. A store the recorder already wrote as video is stream-copied and no quality setting reaches it. |
+| `av1_crf` | `integer` | `14` |  | AV1 constant-rate factor, 0 (lossless) to 63, defaulting to what an analysis transcode encodes at. Named for its scale because this writer encodes AV1, whose `crf` argument is a deprecated shim in x264's scale. |
 
 #### `transcode`
 

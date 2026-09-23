@@ -29,7 +29,11 @@ import pytest
 from mosaic.core.pipeline.dataset_indexes import reconcilable_index
 from mosaic.core.pipeline.markers import PhaseName
 from mosaic.core.pipeline.ops import OPS
-from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS, TrackingRoot
+from mosaic.core.pipeline.tracking_roots import (
+    CONSERVATIVE_DECODER,
+    TRACKING_ROOTS,
+    TrackingRoot,
+)
 from mosaic.tracking import register_ops
 from mosaic.tracking.common.index import TrackerRunRowBase
 from mosaic.tracking.common.params import TrackerOpParams
@@ -332,3 +336,27 @@ def test_the_recipe_does_not_teach_a_private_resolver() -> None:
     assert "resolve_model_set" in text, (
         "the recipe no longer shows how a tracker resolves its model"
     )
+
+
+@pytest.mark.parametrize("kind", ALL_ROOTS)
+def test_it_declares_what_its_tool_decodes_with(kind: str) -> None:
+    """Every producer says what opens the file mosaic hands it.
+
+    mosaic chooses the codec and does not control the decoder, and the decoders
+    differ in one consequential way: some hold a software AV1 decoder and some
+    hold none, because libavcodec's native ``av1`` decoder is a hardware
+    wrapper. Left undeclared a producer inherits the conservative answer, which
+    refuses AV1 -- safe, but silently wrong for a tool that reads it.
+
+    So a new tracker has to decide rather than default into an answer nobody
+    chose. Deciding "the baseline is right" is fine; it just has to be said, by
+    declaring a stack of its own.
+    """
+    root = TRACKING_ROOTS[kind]
+
+    assert root.decoder is not CONSERVATIVE_DECODER, (
+        f"{kind} does not declare a ToolDecoder. Say what opens its input: the "
+        f"stack that decodes, any codec it reads beyond "
+        f"SOFTWARE_DECODABLE_CODECS, and what an operator can do about a refusal."
+    )
+    assert root.decoder.stack, f"{kind}'s decoder must name what does the decoding"

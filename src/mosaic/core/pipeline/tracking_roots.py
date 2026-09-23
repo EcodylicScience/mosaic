@@ -97,6 +97,53 @@ class TrackingPhase:
 
 
 @dataclass(frozen=True, slots=True)
+class ToolDecoder:
+    """What a tool decodes video with, and what that implies about codecs.
+
+    mosaic chooses the codec of every file it hands to an external tool, and
+    does not control the decoder that opens it. Those decoders differ in one
+    consequential way: some carry a software AV1 decoder and some hold none at
+    all, because libavcodec's *native* ``av1`` decoder is a hardware-accelerator
+    wrapper and the software ones (``libdav1d``, ``libaom-av1``) are external
+    libraries a build may omit.
+
+    That is a property of the tool, not of mosaic, so it is declared per tool
+    here beside the other "what can this producer do" facts rather than decided
+    globally. A global answer would be wrong in both directions at once: it
+    would refuse AV1 for TREx and Ultralytics, which read it, in order to refuse
+    it for SLEAP and Lightning Pose, which do not.
+
+    Attributes:
+        stack: What does the decoding, named in a refusal so the reader knows
+            which component to go and look at.
+        also_reads: Codecs this tool reads *beyond* the universal baseline in
+            ``SOFTWARE_DECODABLE_CODECS``. Empty is the conservative answer and
+            the default.
+        remedy: What an operator can do about a refusal, if anything. Empty when
+            there is nothing to do, which is itself worth saying.
+    """
+
+    stack: str
+    also_reads: frozenset[str] = frozenset()
+    remedy: str = ""
+
+
+CONSERVATIVE_DECODER: Final = ToolDecoder(
+    stack="a decoder mosaic neither installs nor configures",
+    remedy=(
+        "re-make the file in a codec every libavcodec build decodes, or set "
+        "MOSAIC_ALLOW_TOOL_CODECS if this environment does handle it"
+    ),
+)
+"""What a producer that has not declared a decoder is assumed to hold.
+
+Assumes nothing beyond the baseline, so a tracker added without a declaration
+refuses AV1 rather than being trusted with it. `tests/test_tracker_conformance.py`
+turns that silence into a named failure.
+"""
+
+
+@dataclass(frozen=True, slots=True)
 class TrackingRoot:
     """One tool's intermediate root, and what the sweeper needs to know about it.
 
@@ -154,6 +201,7 @@ class TrackingRoot:
     path_columns: tuple[str, ...] = ()
     output_schema: str = "trex_v1"
     joins_sources: bool = False
+    decoder: ToolDecoder = CONSERVATIVE_DECODER
 
     @property
     def phases(self) -> tuple[PhaseName, ...]:
@@ -182,6 +230,15 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         # nothing, so it is not in `outputs`.
         TrackingRoot(
             key="trex",
+            decoder=ToolDecoder(
+                stack="its own environment's libavcodec, which it links directly",
+                also_reads=frozenset({"av1"}),
+                remedy=(
+                    "measured against a conda TREx environment, whose libavcodec "
+                    "links libdav1d; if yours does not, "
+                    "`ffmpeg -decoders | grep dav1d` in that environment says so"
+                ),
+            ),
             retention="tracker",
             output_schema="trex_v2",
             outputs=("*.pv", "*.settings", "*.results", "data/*.npz"),
@@ -209,6 +266,15 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         # would put a stale tracking state where a later run could reach it.
         TrackingRoot(
             key="trex-convert",
+            decoder=ToolDecoder(
+                stack="its own environment's libavcodec, which it links directly",
+                also_reads=frozenset({"av1"}),
+                remedy=(
+                    "measured against a conda TREx environment, whose libavcodec "
+                    "links libdav1d; if yours does not, "
+                    "`ffmpeg -decoders | grep dav1d` in that environment says so"
+                ),
+            ),
             retention="conversion",
             # Inert: nothing bridges from this root, and it is spelled rather
             # than defaulted because the default is the legacy centimetre schema.
@@ -238,6 +304,19 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         # that the existence-gated export then declines to regenerate.
         TrackingRoot(
             key="sleap",
+            decoder=ToolDecoder(
+                stack=(
+                    "OpenCV, whose codec support is fixed when its wheel is "
+                    "built -- the manylinux build carries no software AV1 "
+                    "decoder and no hardware accelerator at all"
+                ),
+                remedy=(
+                    "install a dav1d-linked OpenCV in the SLEAP environment: "
+                    "`conda install -c conda-forge py-opencv`. sleap-io picks "
+                    "OpenCV whenever it is importable and reads no environment "
+                    "variable to say otherwise"
+                ),
+            ),
             retention="tracker",
             output_schema="mosaic_v1",
             outputs=("*.predictions.slp", "*.analysis.h5"),
@@ -252,6 +331,14 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         ),
         TrackingRoot(
             key="litpose",
+            decoder=ToolDecoder(
+                stack="NVIDIA DALI, which decodes on the GPU through NVDEC",
+                remedy=(
+                    "nothing installable: NVDEC decodes AV1 only on compute "
+                    "capability 8.6 or newer, and DALI has no software fallback. "
+                    "On an older GPU this codec cannot be read at all"
+                ),
+            ),
             retention="tracker",
             output_schema="mosaic_v1",
             outputs=("*.predictions.csv",),
@@ -269,6 +356,10 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         # kept out of `outputs`, which is the sweeper's evidence of real output.
         TrackingRoot(
             key="ultralytics",
+            decoder=ToolDecoder(
+                stack="mosaic-media's own PyAV reader, inside the tool's environment",
+                also_reads=frozenset({"av1"}),
+            ),
             retention="tracker",
             output_schema="mosaic_v1",
             outputs=("*.predictions.parquet",),
@@ -300,6 +391,10 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         # in mosaic's own process and exchanges nothing.
         TrackingRoot(
             key="infer-pose",
+            decoder=ToolDecoder(
+                stack="mosaic-media's own PyAV reader, inside the tool's environment",
+                also_reads=frozenset({"av1"}),
+            ),
             retention="inference",
             output_schema="mosaic_v1",
             outputs=("predictions.parquet",),
@@ -316,6 +411,10 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         ),
         TrackingRoot(
             key="infer-points",
+            decoder=ToolDecoder(
+                stack="mosaic-media's own PyAV reader, inside the tool's environment",
+                also_reads=frozenset({"av1"}),
+            ),
             retention="inference",
             output_schema="mosaic_v1",
             outputs=("predictions.parquet",),
@@ -332,6 +431,10 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         ),
         TrackingRoot(
             key="infer-localizer",
+            decoder=ToolDecoder(
+                stack="mosaic-media's own PyAV reader, inside the tool's environment",
+                also_reads=frozenset({"av1"}),
+            ),
             retention="inference",
             output_schema="mosaic_v1",
             outputs=("predictions.parquet",),
