@@ -1,5 +1,6 @@
 Mosaic -- mosaic-behavior
-Copyright (C) Ecodylic Science
+Copyright (C) 2025-2026 Max-Planck-Gesellschaft zur Foerderung der
+Wissenschaften e.V., for the Max Planck Institute of Animal Behavior
 
 Mosaic is free software licensed under the GNU Affero General Public
 License, version 3 or (at your option) any later version. The complete
@@ -15,7 +16,7 @@ HOW COMPONENTS REACH A USER
 ===========================
 
 Everything under src/, scripts/, tests/, docs/ and notebooks/ is the work of
-Ecodylic Science unless a module docstring says otherwise. Mosaic ships no
+the mosaic authors unless a module docstring says otherwise. Mosaic ships no
 trained model weights.
 
   incorporated   Third-party source inside src/, adapted or verbatim. It
@@ -390,7 +391,9 @@ REQUIRED DEPENDENCIES
 
 mosaic-media
   Origin:      https://github.com/EcodylicScience/mosaic-media
-  Copyright:   (C) Ecodylic Science
+  Copyright:   (C) 2026 Max-Planck-Gesellschaft zur Foerderung der
+               Wissenschaften e.V., for the Max Planck Institute of
+               Animal Behavior
   License:     Apache-2.0
   A sibling package by the same authors and a required dependency. Also
   installed into both Ultralytics environments.

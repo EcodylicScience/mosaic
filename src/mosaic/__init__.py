@@ -1,1 +1,1 @@
-"""Mosaic — behavior analysis toolkit by Ecodylic Science."""
+"""Mosaic, a behavior analysis toolkit."""

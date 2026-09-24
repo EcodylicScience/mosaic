@@ -14,7 +14,7 @@ requires-python = ">=3.12"
 # documents in the wheel, and every listed file must exist or the build fails.
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "NOTICE"]
-authors = [{ name = "Ecodylic Science" }]
+authors = [{ name = "Jacob Davidson" }, { name = "Paul Nuehrenberg" }]
 dependencies = [
     "numpy>=1.22",
     "pandas>=1.5",
