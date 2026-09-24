@@ -271,10 +271,31 @@ FFmpeg
   Origin:      https://ffmpeg.org/
   License:     LGPL-2.1-or-later, or GPL if built with GPL-only components
   Driven by:   the system ffprobe binary for media indexing and probing,
-               and the system ffmpeg binary for transcoding. Neither is
-               distributed with mosaic; the user installs them. A
-               redistributor who bundles an ffmpeg build must observe that
-               build's terms, which depend on how it was configured.
+               and the system ffmpeg binary for transcoding. These two
+               programs are not distributed with mosaic; the user installs
+               them. When the joined export re-encodes H.264 or HEVC clips,
+               it asks the system ffmpeg for libx264 or libx265, which are
+               GPL-only encoders from the user's own build.
+  Loaded:      FFmpeg libraries also arrive in a default install, inside
+               two third-party wheels, and are loaded in-process when they
+               are imported: av (PyAV, through mosaic-media[io]) and
+               opencv-python. PyAV's wheels bundle the x264 and x265
+               encoder libraries on every platform, and those are
+               GPL-2.0-or-later. opencv-python's wheel for macOS on Apple
+               silicon bundles an FFmpeg configured as GPL-3.0-or-later.
+               Neither wheel ships those license texts. mosaic does not
+               redistribute either wheel, and its own in-process encoding,
+               through mosaic-media, uses the AV1 encoder libsvtav1 (or
+               av1_nvenc on NVIDIA hardware), never x264 or x265.
+  Optional:    the movement extra installs imageio-ffmpeg, whose ffmpeg
+               executables are GPL builds. The feral extra installs decord
+               on Linux, whose FFmpeg is configured with non-free
+               components and reports itself as "nonfree and
+               unredistributable".
+  Obligation:  a redistributor who bundles any of these builds must
+               observe that build's terms, which depend on how it was
+               configured. mosaic-media's Dockerfile builds an LGPL-only
+               FFmpeg, with PyAV compiled against it, for that case.
 
 
 ULTRALYTICS TRACKER DEFAULTS
@@ -400,13 +421,15 @@ mosaic-media
 
 PyAV
   Origin:      https://github.com/PyAV-Org/PyAV
-  License:     BSD-3-Clause
+  License:     BSD-3-Clause for PyAV's own code. The av wheel also bundles
+               FFmpeg libraries (LGPL-3.0-or-later as built) and the x264
+               and x265 encoders (GPL-2.0-or-later); see FFmpeg above.
   Installed as the av wheel through mosaic-media[io], for in-process frame
   decoding.
 
 The remaining runtime and development dependencies are permissively
-licensed (BSD, MIT, Apache-2.0, PSF), with two exceptions that a default
-install does reach.
+licensed (BSD, MIT, Apache-2.0, PSF), with the exceptions below that a
+default install does reach.
 
 certifi is MPL-2.0, and arrives unconditionally on every platform:
 mosaic-behavior -> tables -> blosc2 -> httpx -> certifi. MPL-2.0 is
@@ -414,12 +437,22 @@ file-level copyleft. It reaches modifications to certifi's own files,
 which mosaic does not make, and not the work that depends on it, so it
 imposes nothing here beyond keeping the notice.
 
-nvidia-nccl-cu12 arrives on Linux only, through xgboost, which declares
-it for GPU support. It publishes no license metadata; NVIDIA's own terms
-apply, and they permit commercial redistribution. The NVIDIA CUDA
-runtime libraries that arrive with GPU builds of PyTorch, under the
-deep-learning and lightning-action extras, are proprietary on the same
-footing.
+NVIDIA components reach a default install through xgboost. On Linux,
+xgboost declares nvidia-nccl-cu12 for GPU support. The license file its
+wheel ships is BSD-3-Clause, although the metadata of the newest releases
+declares NVIDIA proprietary terms. xgboost's own wheels for Linux and
+Windows also contain the NVIDIA CUDA runtime, statically linked, which is
+proprietary and redistributable under the CUDA Toolkit End User License
+Agreement (https://docs.nvidia.com/cuda/eula/). mosaic never runs xgboost
+on the GPU.
+
+The NVIDIA CUDA libraries that arrive with PyTorch on Linux, under the
+deep-learning, feral and lightning-action extras, are proprietary under
+the same EULA; cuDNN and cuSPARSELt fall under NVIDIA's SDK license
+agreement instead, and NVTX is Apache-2.0. NVIDIA DALI and nvImageCodec,
+under the lightning-action extra, also carry proprietary NVIDIA
+components despite their Apache-2.0 labels. mosaic reaches CUDA only
+through PyTorch and redistributes none of it.
 
 The resolved set is recorded in uv.lock, and
 
@@ -427,7 +460,10 @@ The resolved set is recorded in uv.lock, and
 
 regenerates the full inventory from it: per extra and per dependency
 group, the transitive closure with each distribution's license resolved
-from PyPI metadata and flagged when it is not permissive. By default it
-reads mosaic's own lock and the isolated keypoint-MoSeq lock. Pass --lock
-for the Ultralytics and POLO environment locks, which carry the
-AGPL-licensed distributions and are not read by default.
+from PyPI metadata and flagged when it is not permissive. It reads license
+metadata only, so it does not see libraries bundled inside a wheel -- the
+FFmpeg builds in av and opencv-python, or the CUDA runtime in xgboost --
+which are described above instead. By default it reads mosaic's own lock
+and the isolated keypoint-MoSeq lock. Pass --lock for the Ultralytics and
+POLO environment locks, which carry the AGPL-licensed distributions and
+are not read by default.
