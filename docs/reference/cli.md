@@ -31,6 +31,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `reconcile`: Recompute every artifact's identifier and...
 * `reprobe-media`: Re-probe the media files the media index...
 * `prune-media`: Delete transcode derivatives that no...
+* `prune-joined`: Delete joined exports an earlier version...
 * `sweep-tracking`: Delete tracker working directories that...
 * `measure-tracks`: Measure the frame axis of this dataset's...
 * `upgrade-tracks`: Convert this dataset's TRex tables from...
@@ -383,6 +384,32 @@ $ mosaic prune-media [OPTIONS]
 * `--min-age-hours <float>`: Never delete a file modified inside this window. An in-flight encode's working file looks exactly like a stranded one, so this is what keeps a prune from racing a running job.  [default: 24.0]
 * `--relink`: Also repair: point a link at an unreferenced derivative a current recipe would reproduce, and clear a link whose file is gone. Turns the next run's re-encode into a skip.
 * `--include-stray`: Also delete files under the transcode directory that are not derivatives, such as an interrupted encode's working file. Subdirectories and symlinks are never deleted.
+* `--json`: Emit the result as JSON.
+* `--help`: Show this message and exit.
+
+## `mosaic prune-joined`
+
+Delete joined exports an earlier version of export-joined made.
+
+A tracker reads a join only under a recipe the current export-joined writes,
+so after an upgrade that changes it, every existing join is read by nothing
+and re-joining writes the current one beside it. This deletes the old ones.
+A join whose clips no entry resolves to is never deleted, since it may be the
+last copy of the session. Neither is either of two current joins of one
+entry. Dry-run by default.
+
+**Usage**:
+
+```console
+$ mosaic prune-joined [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--apply / --dry-run`: Delete superseded joins. Default is a dry-run report.  [default: dry-run]
+* `--min-age-hours <float>`: Never delete a file modified inside this window. A join being written looks exactly like one left behind, so this is what keeps a prune from racing a running export-joined.  [default: 24.0]
+* `--include-stray`: Also delete files under the joined directory that are not joins, such as the partial a failed join keeps for inspection. Subdirectories and symlinks are never deleted.
 * `--json`: Emit the result as JSON.
 * `--help`: Show this message and exit.
 

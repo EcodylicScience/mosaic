@@ -48,6 +48,7 @@ inventory(ds)
 | `mosaic reconcile` | The identity scheme moved in a mosaic upgrade; re-addresses artifacts |
 | `mosaic sweep-tracking` | Reclaim tracker working directories that are finished and past their window |
 | `mosaic prune-media` | Delete transcode derivatives no forward link reaches |
+| `mosaic prune-joined` | Delete joined exports an earlier `export-joined` version made |
 | `mosaic upgrade-tracks` | Rescale centimeter-era TRex tables to pixels |
 
 `sweep-tracking` is the one that matters for disk: raw tracker output under

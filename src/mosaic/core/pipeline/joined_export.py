@@ -81,6 +81,15 @@ clip addresses a different file, and a file at this path is this clip set joined
 by this recipe. There is no index row and no forward link: nothing routes to a
 joined export, and only a caller that explicitly asks for one
 (:func:`mosaic.tracking.common.tool_input.resolve_tool_inputs`) follows it.
+
+**A consumer reads a join under a current recipe, and never under any other.**
+Current means one this op writes today for some valid parameters
+(:data:`CURRENT_JOINED_PARAMS`), so a ``reencode`` join is as visible as a
+default one. A join named under an older :attr:`JoinedExportOp.version` is
+superseded: the op no longer vouches for it, and the bump from 0.1 to 0.2 is the
+case that shows why -- the 0.1 join held the right frames on a timeline TREx
+could not seek. :func:`joins_of` sorts one clip set's joins into the two, and
+``mosaic prune-joined`` reclaims the superseded ones.
 """
 
 from __future__ import annotations
@@ -110,12 +119,16 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.job import JobContext
 
 __all__ = [
+    "CURRENT_JOINED_PARAMS",
     "JOINED_KIND_DIRECTORY",
     "JoinedExportOp",
     "JoinedExportParams",
+    "current_joined_recipes",
     "joined_export_path",
     "joined_recipe_hash",
     "joined_source_uid",
+    "joins_of",
+    "parse_joined_name",
     "write_joined_export",
 ]
 
@@ -202,10 +215,72 @@ def joined_recipe_hash(params: JoinedExportParams) -> str:
     and for the same reason: the installed ``ffmpeg`` build is deliberately
     absent and :attr:`JoinedExportOp.version` stands in for it. **So the version
     is bumped by hand when an upstream change alters what this writes.**
+
+    A bump retires every join already on disk. Trackers stop reading them
+    (:func:`joins_of`), each entry has to be joined again before its next
+    tracking run, and ``mosaic prune-joined`` reclaims the old files.
     """
     return hash_params(
         {"op_version": JoinedExportOp.version, "params": params.identity_dump()}
     )
+
+
+CURRENT_JOINED_PARAMS: Final[tuple[JoinedExportParams, ...]] = (
+    JoinedExportParams(reencode=False),
+    JoinedExportParams(reencode=True),
+)
+"""Every parameter set the op accepts, spelled out.
+
+Spelled out rather than derived, because the parameter space is enumerable only
+while every field is a flag. A field added to :class:`JoinedExportParams` has to
+be added here as well, or a join made with it is superseded the moment it is
+written; the suite fails on a field this tuple does not cover.
+"""
+
+
+def current_joined_recipes() -> frozenset[str]:
+    """The recipe of every join this op writes today, whatever its parameters."""
+    return frozenset(joined_recipe_hash(params) for params in CURRENT_JOINED_PARAMS)
+
+
+_JOINED_NAME_PARTS: Final = 4
+
+
+def parse_joined_name(name: str) -> tuple[str, str] | None:
+    """Split ``<source_uid>.<recipe>.joined.mp4`` into its two parts, or ``None``.
+
+    Exactly four dot-separated parts. The op's working files fail the parse:
+    ``.joined.partial.mp4``, ``.joined.concat.txt`` and
+    ``.joined.normalised<i>.mp4`` each carry a fifth part.
+    """
+    parts = name.split(".")
+    if len(parts) != _JOINED_NAME_PARTS:
+        return None
+    source_uid, recipe_hash, kind, suffix = parts
+    if not source_uid or not recipe_hash or kind != "joined" or suffix != "mp4":
+        return None
+    return source_uid, recipe_hash
+
+
+def joins_of(media_root: Path, source_uid: str) -> tuple[list[Path], list[Path]]:
+    """Every join of one clip set, as ``(current, superseded)``, each sorted.
+
+    Only files, and only names :func:`parse_joined_name` accepts. The one place
+    that looks a clip set's joins up, shared by the consumer, by the op checking
+    what it is about to add to, and by ``prune-joined``.
+    """
+    root = media_root / JOINED_KIND_DIRECTORY
+    if not source_uid or not root.is_dir():
+        return [], []
+    recipes = current_joined_recipes()
+    current: list[Path] = []
+    superseded: list[Path] = []
+    for path in sorted(root.glob(f"{source_uid}.*.joined.mp4")):
+        parsed = parse_joined_name(path.name)
+        if parsed is None or parsed[0] != source_uid or not path.is_file():
+            continue
+        (current if parsed[1] in recipes else superseded).append(path)
+    return current, superseded
 
 
 def joined_source_uid(facts: "list[MediaFacts] | tuple[MediaFacts, ...]") -> str:
@@ -567,6 +642,52 @@ def write_joined_export(
             temp.unlink(missing_ok=True)
 
 
+def _refuse_a_second_current_join(
+    group: str, sequence: str, dest: Path, current: list[Path]
+) -> None:
+    """Raise if another current join of these clips exists. Checked before any I/O.
+
+    A tracker refuses an entry with two current joins, since choosing between
+    them by name would make what it read depend on which sorts first. Writing
+    the second one would cost minutes of I/O and leave the entry untrackable, so
+    the op refuses up front. The two recipes are both valid, so which one to keep
+    is a person's call and not this op's.
+
+    Two runs of different recipes starting at the same moment can both pass this
+    check. The tracker's own refusal still catches the result.
+    """
+    others = [path for path in current if path != dest]
+    if not others:
+        return
+    message = (
+        f"{group}/{sequence} is already joined under another current recipe: "
+        f"{others[0].name}. A second current join of the same clips would make "
+        f"every tracker refuse the entry. If this recipe is the one wanted, "
+        f"delete {others[0].name} and re-run."
+    )
+    raise TranscodeError(message)
+
+
+def _report_superseded(
+    ctx: "JobContext", group: str, sequence: str, superseded: list[Path]
+) -> None:
+    """Name the joins an earlier version of this op left for these clips.
+
+    Reported and never deleted. Deleting is ``prune-joined``'s job, done
+    explicitly and dry-run first. No tracker reads these files, so leaving them
+    in place blocks nothing; it only costs the disk.
+    """
+    if not superseded:
+        return
+    size = sum(path.stat().st_size for path in superseded if path.is_file())
+    line = (
+        f"{group}/{sequence}: {len(superseded)} join(s) from an earlier "
+        f"export-joined remain ({size} bytes); `mosaic prune-joined --apply` "
+        f"reclaims them"
+    )
+    ctx.progress.on_phase("export-joined", line)
+
+
 def _one_entry(scope: ResolvedScope) -> Entry:
     """The single entry *scope* covers.
 
@@ -595,6 +716,10 @@ class JoinedExportOp(Op[JoinedExportParams]):
     ordered composition of the clips *and* the recipe, so a file at that path is
     this clip set joined this way. ``overwrite`` rewrites it, which is how a file
     left by a build no longer trusted is replaced.
+
+    A second *current* join of the same clips is refused before anything is
+    written, because a tracker refuses an entry that has two. A join left by an
+    earlier version is named in the progress output and left in place.
 
     A single-clip entry is a no-op that reports itself: there is nothing to join,
     and the tool already opens the one file.
@@ -675,8 +800,11 @@ class JoinedExportOp(Op[JoinedExportParams]):
             raise TranscodeError(message)
 
         dest = joined_export_path(ds, source_uid, joined_recipe_hash(params))
+        current, superseded = joins_of(ds.get_root("media"), source_uid)
+        _refuse_a_second_current_join(group, sequence, dest, current)
         if dest.is_file() and not overwrite:
             ctx.progress.on_phase("export-joined", f"{group}/{sequence}: reused")
+            _report_superseded(ctx, group, sequence, superseded)
             ctx.entries_written(1)
             ctx.heartbeat(done=1)
             return run_id
@@ -693,6 +821,7 @@ class JoinedExportOp(Op[JoinedExportParams]):
         ctx.progress.on_phase(
             "export-joined", f"{group}/{sequence}: {written} frames -> {dest.name}"
         )
+        _report_superseded(ctx, group, sequence, superseded)
         # No timestamp check here any more. It used to live at this point as a
         # note, on the premise that seeking this file was nobody's business;
         # TREx seeks it, so the check became a refusal and moved inside

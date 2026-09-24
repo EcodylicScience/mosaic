@@ -1271,6 +1271,14 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   list of files" but "this producer covers the whole entry", and all four
   trackers declare it.
 
+  **A tracker reads a join only under a current recipe.** A join is named
+  `<clip-set digest>.<recipe>.joined.mp4`, and the recipe folds the op version.
+  `joins_of` accepts every recipe `CURRENT_JOINED_PARAMS` produces, so a
+  `reencode` join is found, and never a superseded one: the 0.1 join held the
+  right frames on a timeline TREx could not seek. Two current joins of one clip
+  set are refused, and the op refuses to write the second. After a version bump,
+  re-join and then run `mosaic prune-joined` to reclaim the old files.
+
   **That count is frames, never timestamps.** `probe_media(...).frame_count` is
   `len({packet.time for packet in packets})` -- *distinct presentation
   timestamps* -- which answers "does frame `i` sit at `i / fps`" and not "did

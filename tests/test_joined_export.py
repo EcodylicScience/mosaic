@@ -17,8 +17,10 @@ video -- measured as a staircase stepping two frames at every boundary.
 from __future__ import annotations
 
 import dataclasses
+import shutil
 import subprocess
 from pathlib import Path
+from typing import override
 
 import numpy as np
 import pytest
@@ -27,14 +29,19 @@ from mosaic_media.transcode import TranscodeError
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.video_io import open_frame_reader
+from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.joined_export import (
+    CURRENT_JOINED_PARAMS,
     JoinedExportParams,
+    current_joined_recipes,
     joined_export_path,
     joined_recipe_hash,
     joined_source_uid,
+    parse_joined_name,
     write_joined_export,
 )
 from mosaic.core.pipeline.ops import run_op
+from mosaic.core.pipeline.progress import NullProgressCallback
 from mosaic.core.scope import Scope
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import (
@@ -339,25 +346,135 @@ def test_a_join_built_with_non_default_params_is_still_found(ds: Dataset) -> Non
     assert resolve_tool_inputs(ds, _item(ds), kind="trex") == (built,)
 
 
-def test_two_joins_of_one_clip_set_are_refused_not_chosen_between(
+def _address(ds: Dataset, joined: Path, recipe: str) -> Path:
+    """Where the join of *joined*'s clips lives under *recipe*."""
+    parsed = parse_joined_name(joined.name)
+    assert parsed is not None
+    return joined_export_path(ds, parsed[0], recipe)
+
+
+def _earlier_recipe(params: JoinedExportParams) -> str:
+    """The recipe version 0.1 of the op named its output after."""
+    return hash_params({"op_version": "0.1", "params": params.identity_dump()})
+
+
+def test_two_current_joins_of_one_clip_set_are_refused_not_chosen_between(
     ds: Dataset,
 ) -> None:
     """Different inputs, so picking by sort order would be picking by accident.
 
     The same refusal `select_variant_rows` makes for two recipes of one entry,
     and for the same reason: what a run read must not depend on which filename
-    happens to sort first.
+    happens to sort first. The op refuses to write the second one, so the state
+    is placed by hand, as a race between two runs would leave it.
     """
-    _ = run_op(ds, "export-joined", {}, scope=Scope(entries=[("", "sess")]))
-    _ = run_op(
-        ds,
-        "export-joined",
-        {"reencode": True},
-        scope=Scope(entries=[("", "sess")]),
-    )
+    joined = _join(ds)
+    other = _address(ds, joined, joined_recipe_hash(JoinedExportParams(reencode=True)))
+    _ = shutil.copyfile(joined, other)
 
     with pytest.raises(JoinedExportMissingError, match="different recipes"):
         _ = resolve_tool_inputs(ds, _item(ds), kind="trex")
+
+
+# --- a join an earlier version made is not an answer ----------------------
+#
+# The bump from 0.1 to 0.2 moved every join's address, and the consumer looked
+# joins up by clip set alone. A session joined before the upgrade therefore
+# still handed TREx the 0.1 file, whose timeline it could not seek, and a
+# session joined again held two files and was refused until someone deleted one
+# by hand.
+
+
+def test_a_join_an_earlier_version_made_is_not_handed_to_a_tracker(
+    ds: Dataset,
+) -> None:
+    """Refused as unjoined, naming the old file and how to build the current one."""
+    joined = _join(ds)
+    stale = _address(ds, joined, _earlier_recipe(JoinedExportParams()))
+    _ = joined.rename(stale)
+
+    with pytest.raises(JoinedExportMissingError, match="earlier") as excinfo:
+        _ = resolve_tool_inputs(ds, _item(ds), kind="trex")
+    assert stale.name in str(excinfo.value)
+    assert "export-joined" in str(excinfo.value)
+    assert "prune-joined" in str(excinfo.value)
+
+
+class _Phases(NullProgressCallback):
+    """Every progress line the op emits, in order."""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    @override
+    def on_phase(self, phase: str, message: str) -> None:
+        self.lines.append(message)
+
+
+def test_joining_again_after_a_version_bump_unblocks_tracking(ds: Dataset) -> None:
+    """The current join is read, and the old one is left in place and named."""
+    joined = _join(ds)
+    stale = _address(ds, joined, _earlier_recipe(JoinedExportParams(reencode=True)))
+    _ = joined.rename(stale)
+
+    phases = _Phases()
+    _ = run_op(
+        ds,
+        "export-joined",
+        {},
+        scope=Scope(entries=[("", "sess")]),
+        progress_callback=phases,
+    )
+
+    assert resolve_tool_inputs(ds, _item(ds), kind="trex") == (joined,)
+    assert stale.is_file(), "the op reports a superseded join and never deletes it"
+    assert any("prune-joined" in line for line in phases.lines)
+
+
+def test_the_op_refuses_a_second_current_join_before_writing(ds: Dataset) -> None:
+    """Writing it would cost the copy and leave the entry untrackable."""
+    joined = _join(ds)
+    other = _address(ds, joined, joined_recipe_hash(JoinedExportParams(reencode=True)))
+
+    with pytest.raises(TranscodeError, match="another current recipe"):
+        _ = run_op(
+            ds,
+            "export-joined",
+            {"reencode": True},
+            scope=Scope(entries=[("", "sess")]),
+        )
+
+    assert not other.exists()
+    assert sorted(p.name for p in joined.parent.iterdir()) == [joined.name]
+
+
+def test_every_parameter_is_covered_by_the_current_recipes() -> None:
+    """A field missing from CURRENT_JOINED_PARAMS makes its joins superseded.
+
+    The tuple is spelled out, so a new field has to be added there by hand. This
+    fails until it is.
+    """
+    assert set(JoinedExportParams.model_fields) == {"reencode"}, (
+        "JoinedExportParams gained a field: add its values to CURRENT_JOINED_PARAMS"
+    )
+    assert {params.reencode for params in CURRENT_JOINED_PARAMS} == {False, True}
+    assert len(current_joined_recipes()) == len(CURRENT_JOINED_PARAMS)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("uid.1234567890.joined.mp4", ("uid", "1234567890")),
+        ("uid.1234567890.joined.partial.mp4", None),
+        ("uid.1234567890.joined.concat.txt", None),
+        ("uid.1234567890.joined.normalised3.mp4", None),
+        ("uid.1234567890.analysis.mp4", None),
+        (".1234567890.joined.mp4", None),
+        ("uid..joined.mp4", None),
+    ],
+)
+def test_the_joined_name_parser(name: str, expected: tuple[str, str] | None) -> None:
+    assert parse_joined_name(name) == expected
 
 
 def test_the_op_reports_that_it_joined_something(ds: Dataset) -> None:
@@ -558,13 +675,10 @@ def test_the_restamped_recipe_addresses_a_different_file(ds: Dataset) -> None:
     A join written by the old recipe is not this one, and reusing it by name
     would hand a tracker the broken timeline the restamp exists to remove.
     """
-    from mosaic.core.pipeline._utils import hash_params
     from mosaic.core.pipeline.joined_export import JoinedExportOp
 
     params = JoinedExportParams()
-    previous = hash_params(
-        {"op_version": "0.1", "params": params.identity_dump()},
-    )
 
     assert JoinedExportOp.version == "0.2"
-    assert joined_recipe_hash(params) != previous
+    assert joined_recipe_hash(params) != _earlier_recipe(params)
+    assert _earlier_recipe(params) not in current_joined_recipes()

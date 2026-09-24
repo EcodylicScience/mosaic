@@ -279,25 +279,31 @@ def _joined_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
     the join of *these* clips in *this* order and never for whatever join
     happens to be on disk.
 
-    **The recipe is deliberately not part of the question.** A joined export's
-    filename carries its recipe so that two of them cannot overwrite each other,
-    but a consumer is asking "give me these clips as one video", and every
-    complete join of one clip set answers that: they hold the same frames in the
-    same order, which the op verifies before publishing either. Re-deriving the
-    name from default parameters instead made every non-default join invisible
-    -- a ``reencode`` run wrote one file and the tracker looked for another,
-    then reported the join missing on a session that had just been joined.
+    **Any current recipe answers the question, and a superseded one never
+    does.** A consumer is asking "give me these clips as one video". Every join
+    the current op writes answers that, whatever its parameters, because the op
+    verifies the frames and the timeline before publishing either. Re-deriving
+    the name from default parameters instead made every non-default join
+    invisible: a ``reencode`` run wrote one file and the tracker looked for
+    another, then reported the join missing on a session that had just been
+    joined.
 
-    Two joins of one clip set are refused rather than chosen between, for the
-    reason ``select_variant_rows`` refuses two recipes for one entry: they are
-    different inputs, and picking by sort order would make what a tracker read
-    -- and so what it published -- depend on a filesystem accident.
+    A join named under an earlier op version is not an answer, because the op no
+    longer vouches for it. The 0.1 join held the right frames on a timeline TREx
+    could not seek, and TREx read the wrong pixels from it at 2 fps. So a
+    superseded join is ignored: when a current one exists this one is not read,
+    and when none does the entry is refused as unjoined.
+
+    Two current joins of one clip set are refused rather than chosen between,
+    for the reason ``select_variant_rows`` refuses two recipes for one entry:
+    they are different inputs, and picking by sort order would make what a
+    tracker read -- and so what it published -- depend on a filesystem accident.
 
     Refused rather than built here. Joining is minutes of I/O over tens of
     gigabytes: it belongs to an op with a ledger entry, a claim and a
     cancellation point, not to a path resolution that a planner also calls.
     """
-    from mosaic.core.pipeline.joined_export import JOINED_KIND_DIRECTORY
+    from mosaic.core.pipeline.joined_export import joins_of
 
     source_uid = item.source_uid
     where = (
@@ -313,27 +319,38 @@ def _joined_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
         )
         raise JoinedExportMissingError(message)
 
-    root = ds.get_root("media") / JOINED_KIND_DIRECTORY
-    found = sorted(root.glob(f"{source_uid}.*.joined.mp4")) if root.is_dir() else []
-    if not found:
+    current, superseded = joins_of(ds.get_root("media"), source_uid)
+    if len(current) > 1:
+        listed = "\n".join(f"      {p.name}" for p in current)
         message = (
-            f"[{kind}] ({item.group}, {item.sequence}) is one recording in "
-            f"{item.n_sources} clips. {kind} is handed one video file, and a "
-            f"tool that joins clips itself loses frames at every boundary, so "
-            f"mosaic joins them first. Build it:\n{where}"
-        )
-        raise JoinedExportMissingError(message)
-    if len(found) > 1:
-        listed = "\n".join(f"      {p.name}" for p in found)
-        message = (
-            f"[{kind}] ({item.group}, {item.sequence}) has {len(found)} joins of "
-            f"the same clips, made by different recipes:\n{listed}\n"
+            f"[{kind}] ({item.group}, {item.sequence}) has {len(current)} "
+            f"current joins of the same clips, made by different recipes:\n"
+            f"{listed}\n"
             f"They are different inputs, and choosing between them here would "
-            f"make what this run read depend on which sorts first. Delete the "
-            f"ones you do not want and re-run."
+            f"make what this run read depend on which sorts first. Each is "
+            f"current, so which to keep is your call: delete the rest and "
+            f"re-run."
         )
         raise JoinedExportMissingError(message)
-    return found[0]
+    if current:
+        return current[0]
+    if superseded:
+        listed = "\n".join(f"      {p.name}" for p in superseded)
+        message = (
+            f"[{kind}] ({item.group}, {item.sequence}) was joined by an earlier "
+            f"version of export-joined, which the current version would not "
+            f"write:\n{listed}\n"
+            f"Build the current join:\n{where}\n"
+            f"then `mosaic prune-joined --apply` reclaims the old one."
+        )
+        raise JoinedExportMissingError(message)
+    message = (
+        f"[{kind}] ({item.group}, {item.sequence}) is one recording in "
+        f"{item.n_sources} clips. {kind} is handed one video file, and a "
+        f"tool that joins clips itself loses frames at every boundary, so "
+        f"mosaic joins them first. Build it:\n{where}"
+    )
+    raise JoinedExportMissingError(message)
 
 
 def _registered_export(

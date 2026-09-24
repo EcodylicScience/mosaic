@@ -219,6 +219,7 @@ if TYPE_CHECKING:
     from .pipeline.job import CancelToken
     from .pipeline.progress import ProgressCallback
     from .pipeline.reconcile import ReconcileReport
+    from .media.prune_joined import JoinedPruneReport
     from .pipeline.sweep import SweepClass, SweepReport
 
 
@@ -4184,6 +4185,95 @@ class Dataset:
             relink=relink,
             include_stray=include_stray,
         )
+
+    def prune_joined_exports(
+        self,
+        *,
+        apply: bool,
+        min_age_hours: float = 24.0,
+        include_stray: bool = False,
+        now: "datetime.datetime | None" = None,
+    ) -> "JoinedPruneReport":
+        """Delete the joined exports an earlier version of ``export-joined`` made.
+
+        A tracker reads a join only under a recipe the op writes today, so when
+        the op's version moves, every join on disk is read by nothing and
+        re-joining writes the current one beside it. This removes the old ones.
+        A join of a clip set no entry resolves to, and a second current join of
+        one clip set, are listed and kept. See
+        :mod:`~mosaic.core.media.prune_joined`.
+
+        Dry-run unless *apply*. *min_age_hours* holds back anything modified
+        inside the window. *include_stray* also deletes the op's leftover working
+        files once they are past it.
+
+        Declines, with ``considered=False``, on a dataset with no media root and
+        on one where another root resolves inside the joined kind directory.
+        Unlike :meth:`prune_media` it runs on a single-root dataset, where
+        ``media`` holds the originals and joins can still be written.
+        """
+        from .media.prune_joined import declined_joined_report, prune_joined
+        from .pipeline.joined_export import (
+            JOINED_KIND_DIRECTORY,
+            current_joined_recipes,
+        )
+
+        if not self.has_root("media"):
+            return declined_joined_report("no-media-root")
+        joined_root = (self.get_root("media") / JOINED_KIND_DIRECTORY).resolve()
+        # Roots are free-form strings, so a manifest may legally nest one inside
+        # another. Nested under the kind directory, its files would be walked as
+        # candidates for deletion.
+        others = [self.get_root(key).resolve() for key in self.roots if key != "media"]
+        if any(root == joined_root or joined_root in root.parents for root in others):
+            return declined_joined_report("nested-root")
+
+        clip_sets, unresolved = self._joined_clip_sets()
+        return prune_joined(
+            joined_root,
+            clip_sets=clip_sets,
+            current_recipes=current_joined_recipes(),
+            apply=apply,
+            min_age_hours=min_age_hours,
+            include_stray=include_stray,
+            unresolved=unresolved,
+            now=now,
+        )
+
+    def _joined_clip_sets(self) -> tuple[dict[str, str], list[str]]:
+        """Every clip set a join could hold today, mapped to its entry's label.
+
+        Resolved exactly as ``export-joined`` resolves one entry, through
+        :meth:`resolve_media` with no camera, so the digests match the names the
+        op writes. A multi-camera entry is skipped, since the op cannot join one.
+        An entry that fails to resolve is returned in the second list with its
+        error. Its joins then read as unsourced and are kept, so a failure here
+        can only prevent a deletion.
+        """
+        from .pipeline.joined_export import joined_source_uid
+
+        try:
+            df = self._load_media_index()
+        except FileNotFoundError:
+            return {}, []
+        clip_sets: dict[str, str] = {}
+        unresolved: list[str] = []
+        for (group, sequence), rows in df.groupby(["group", "sequence"], sort=True):
+            group, sequence = str(group), str(sequence)
+            if len({camera for camera in rows["camera"] if camera}) > 1:
+                continue
+            label = f"{group}/{sequence}"
+            try:
+                resolved = self.resolve_media(group, sequence)
+            except (FileNotFoundError, MediaProbeError) as error:
+                unresolved.append(f"{label}: {error}")
+                continue
+            if len(resolved.facts) < 2:
+                continue
+            source_uid = joined_source_uid(list(resolved.facts))
+            if source_uid:
+                clip_sets[source_uid] = label
+        return clip_sets, unresolved
 
     # Identity cells: what a row says it *is*, as opposed to what was measured
     # about the file. A scan re-measures freely and must not re-decide these.

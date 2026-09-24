@@ -325,7 +325,7 @@ def classify_rows(
     return verdicts
 
 
-def _too_young(path: Path, cutoff: datetime) -> bool:
+def modified_after(path: Path, cutoff: datetime) -> bool:
     """Was *path* modified after the age window opened?
 
     An in-flight encode's temp file and a derivative registered a second ago are
@@ -496,7 +496,7 @@ def _decide(
         video_uuid=video_uuid,
         recipe_hash=recipe_hash,
         size_bytes=size,
-        held_for_age=_too_young(path, cutoff),
+        held_for_age=modified_after(path, cutoff),
     )
 
 
@@ -634,7 +634,7 @@ def prune_media(
             for entry in entries
             if entry.verdict == "stray"
             and entry.path.is_file()
-            and not _too_young(entry.path, cutoff)
+            and not modified_after(entry.path, cutoff)
         ]
     drop_positions = {
         entry.row_index
