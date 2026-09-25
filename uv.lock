@@ -2091,7 +2091,7 @@ requires-dist = [
     { name = "mosaic-behavior", extras = ["deep-learning"], marker = "extra == 'pose'" },
     { name = "mosaic-behavior", extras = ["deep-learning", "faiss"], marker = "extra == 'all'" },
     { name = "mosaic-behavior", extras = ["faiss"], marker = "extra == 'gpu'" },
-    { name = "mosaic-media", extras = ["io", "cli"], specifier = ">=0.3.3,<0.4.0" },
+    { name = "mosaic-media", extras = ["io", "cli"], specifier = ">=0.3.4,<0.4.0" },
     { name = "movement", marker = "extra == 'movement'", specifier = ">=0.17" },
     { name = "numba", specifier = ">=0.58" },
     { name = "numpy", specifier = ">=1.22" },
@@ -2145,11 +2145,11 @@ test = [
 
 [[package]]
 name = "mosaic-media"
-version = "0.3.3"
+version = "0.3.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/13/fe/215c4aa9aa15031c18ddb5c7e2bebe5c8b9bf12421608e497c89a76fff8d/mosaic_media-0.3.3.tar.gz", hash = "sha256:02ebe919a9c89adfbb15c8a9ebbd1bfd62a7a3d34343af690a035303ec4f2398", size = 88411, upload-time = "2026-08-20T04:52:07.292Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/0b/9604b3c650117a8b80e1f775050162565952741206e6fe79ea420b539606/mosaic_media-0.3.4.tar.gz", hash = "sha256:24d56ac41ff629d68bed4347ecb84532d577916121bca2943c48331896d08504", size = 90545, upload-time = "2026-09-24T14:49:36.626Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6d/73/02ca8cd25e3bd16184f99051376bb6be18e6510daaa534db69b663ae7335/mosaic_media-0.3.3-py3-none-any.whl", hash = "sha256:26da395b3f1657eab153acc96d836d7840dd5a4ef089698504fffb7426b486c4", size = 97903, upload-time = "2026-08-20T04:52:06.209Z" },
+    { url = "https://files.pythonhosted.org/packages/b8/d1/c206a84281956ead79af4f45b63534e5e2e4f8e356516e6cb220e3f6b68b/mosaic_media-0.3.4-py3-none-any.whl", hash = "sha256:01457d50e96c0af16bb6487eab70fd41ec2cac4f66f9ecb3997be5adb43479a3", size = 100237, upload-time = "2026-09-24T14:49:35.601Z" },
 ]
 
 [package.optional-dependencies]
