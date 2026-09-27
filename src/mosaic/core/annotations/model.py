@@ -73,10 +73,38 @@ class KeypointSchema:
     Attributes:
         names: Keypoint names, in the order coordinates are stored.
         skeleton: Edges as pairs of 0-based indices into *names*.
+        symmetries: Left-right mirror pairs as 0-based indices, each written
+            lower index first. A horizontal flip swaps the two keypoints of a
+            pair, so a trainer that flips images needs them to keep a left ear
+            labelled as a left ear. A keypoint belongs to at most one pair.
     """
 
     names: tuple[str, ...]
     skeleton: tuple[tuple[int, int], ...] = ()
+    symmetries: tuple[tuple[int, int], ...] = ()
+
+    def __post_init__(self) -> None:
+        """Refuse a pair that cannot be a mirror of two keypoints.
+
+        Checked here so the rule holds for every schema, however it was read,
+        and :attr:`flip_idx` is always a permutation.
+        """
+        paired: set[int] = set()
+        for low, high in self.symmetries:
+            if not 0 <= low < high < len(self.names):
+                msg = (
+                    f"symmetry pair {(low, high)} is not two distinct keypoints "
+                    f"of {list(self.names)} written lower index first"
+                )
+                raise ValueError(msg)
+            for index in (low, high):
+                if index in paired:
+                    msg = (
+                        f"keypoint {self.names[index]!r} appears in two symmetry "
+                        "pairs; a keypoint has one mirror"
+                    )
+                    raise ValueError(msg)
+                paired.add(index)
 
     @property
     def num_keypoints(self) -> int:
@@ -87,12 +115,27 @@ class KeypointSchema:
         """``[num_keypoints, 3]``, the shape a YOLO ``data.yaml`` declares."""
         return [self.num_keypoints, 3]
 
+    @property
+    def flip_idx(self) -> list[int]:
+        """Each keypoint's mirror partner, or the keypoint itself when unpaired.
+
+        The permutation Ultralytics reads as ``flip_idx``. Only meaningful when
+        :attr:`symmetries` declares a pair: for a schema without one, this
+        identity would switch flips on and label every left keypoint as it sits
+        on the right.
+        """
+        mirror = list(range(self.num_keypoints))
+        for low, high in self.symmetries:
+            mirror[low], mirror[high] = high, low
+        return mirror
+
     def subset(self, indices: Sequence[int]) -> KeypointSchema:
-        """The schema restricted to *indices*, with the skeleton remapped.
+        """The schema restricted to *indices*, with skeleton and pairs remapped.
 
         Dropping keypoints without remapping would leave edges naming positions
-        that no longer exist, so an edge survives only when both of its endpoints
-        do, and its indices are rewritten to the new positions.
+        that no longer exist, so an edge or a pair survives only when both of its
+        ends do, and its indices are rewritten to the new positions. A pair is
+        rewritten lower index first, because *indices* may reorder keypoints.
         """
         kept = list(indices)
         position = {old: new for new, old in enumerate(kept)}
@@ -101,6 +144,14 @@ class KeypointSchema:
             skeleton=tuple(
                 (position[a], position[b])
                 for a, b in self.skeleton
+                if a in position and b in position
+            ),
+            symmetries=tuple(
+                (
+                    min(position[a], position[b]),
+                    max(position[a], position[b]),
+                )
+                for a, b in self.symmetries
                 if a in position and b in position
             ),
         )

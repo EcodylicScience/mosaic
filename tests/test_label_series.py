@@ -20,15 +20,14 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.annotations.model import (
-    AnnotationFrame,
-    AnnotationObject,
-    AnnotationSet,
-    Keypoint,
-    KeypointSchema,
+from mosaic.core.annotations.pose_annotations import (
+    PoseAnnotationSet,
+    PoseFrame,
+    pose_annotations_payload,
+    read_pose_annotations,
 )
 from mosaic.core.annotations.projection import (
-    keypoint_set_payload,
+    COCO_EXPORT_FILENAME,
     write_keypoint_set_revision,
 )
 from mosaic.core.annotations.readers.coco import read_coco_keypoints
@@ -47,43 +46,29 @@ from mosaic.core.pipeline.label_series_index import (
     LabelSeriesTamperedError,
     read_label_series,
     read_revision_manifest,
+    revision_export,
     write_series_revision,
 )
 from mosaic.core.pipeline.tracks_raw_index import iter_track_files
-from tests.helpers import make_dataset
+from tests.helpers import (
+    make_dataset,
+    pose_frame,
+    pose_object,
+    pose_set,
+    revision_file,
+)
 
-SCHEMA = KeypointSchema(names=("nose", "tail"), skeleton=((0, 1),))
 
-
-def _frame(
-    path: str, x: float, *, video: str = "mouse003", index: int = 7
-) -> AnnotationFrame:
-    obj = AnnotationObject(
-        keypoints=(
-            Keypoint(x=x, y=2.0, visibility=2),
-            Keypoint(x=5.0, y=6.0, visibility=2),
-        ),
-    )
-    return AnnotationFrame(
-        image_path=Path(path),
-        width=64,
-        height=48,
-        objects=(obj,),
-        video=video,
+def _frame(x: float, index: int) -> PoseFrame:
+    return pose_frame(
+        f"media/frames/kmeans/kmeans-d7968c97b0/mouse003/frame_{index:06d}.png",
+        pose_object((x, 2.0), (5.0, 6.0)),
         frame_index=index,
     )
 
 
-def _annotations(ds: Dataset, *xs: float) -> AnnotationSet:
-    frames = tuple(
-        _frame(
-            f"media/frames/kmeans/kmeans-d7968c97b0/mouse003/frame_{i:06d}.png",
-            x,
-            index=i,
-        )
-        for i, x in enumerate(xs)
-    )
-    return AnnotationSet(schema=SCHEMA, frames=frames, image_root=ds.base_dir)
+def _annotations(ds: Dataset, *xs: float) -> PoseAnnotationSet:
+    return pose_set((_frame(x, i) for i, x in enumerate(xs)), image_root=ds.base_dir)
 
 
 def _save(ds: Dataset, *xs: float, key: str = "17-mice") -> int:
@@ -155,9 +140,9 @@ def test_a_reverted_state_is_a_new_revision_with_the_old_digest(tmp_path: Path) 
 def test_the_payload_ignores_the_order_frames_were_collected_in(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path / "52", name="project")
     forward = _annotations(ds, 1.0, 2.0, 3.0)
-    backward = forward.with_frames(tuple(reversed(forward.frames)))
+    backward = pose_set(reversed(forward.frames), image_root=ds.base_dir)
 
-    assert keypoint_set_payload(ds, forward) == keypoint_set_payload(ds, backward)
+    assert pose_annotations_payload(forward) == pose_annotations_payload(backward)
 
 
 def test_a_revision_names_its_images_relative_to_the_dataset(tmp_path: Path) -> None:
@@ -170,16 +155,60 @@ def test_a_revision_names_its_images_relative_to_the_dataset(tmp_path: Path) -> 
     )
 
     document = json.loads(saved.path.read_text())
-    assert document["images"][0]["file_name"].startswith("media/frames/kmeans/")
-    assert document["images"][0]["video"] == "mouse003"
+    assert document["frames"][0]["image"].startswith("media/frames/kmeans/")
+    assert document["frames"][0]["sequence"] == "mouse003"
 
     manifest = read_revision_manifest(saved.path)
     assert manifest.origin == {"dolt_commit": "abc"}
     assert manifest.dataset_uuid == ds.uuid
-    assert (saved.path.parent / manifest.image_root).resolve() == ds.base_dir.resolve()
+    image_root = saved.path.parent / manifest.image_root
+    assert image_root.resolve() == ds.base_dir.resolve()
 
-    reread = read_coco_keypoints(saved.path, saved.path.parent / manifest.image_root)
-    assert reread.frames[0].video == "mouse003" and reread.frames[0].frame_index == 0
+    reread = read_pose_annotations(saved.path, image_root)
+    assert reread.frames[0].sequence == "mouse003"
+    assert reread.frames[0].frame_index == 0
+    assert reread.resolve(reread.frames[0]).parent.is_relative_to(ds.base_dir)
+
+
+def test_every_revision_carries_a_coco_export_of_its_state(tmp_path: Path) -> None:
+    """What another tool reads sits beside what mosaic reads, and says the same."""
+    ds = make_dataset(tmp_path / "52", name="project")
+    saved = write_keypoint_set_revision(
+        ds, set_key="17-mice", annotations=_annotations(ds, 1.0, 2.0), origin={}
+    )
+
+    export = revision_export(saved.path, COCO_EXPORT_FILENAME)
+    image_root = saved.path.parent / read_revision_manifest(saved.path).image_root
+    reread = read_coco_keypoints(export, image_root)
+
+    assert export.parent == saved.path.parent
+    assert [frame.video for frame in reread.frames] == ["mouse003", "mouse003"]
+    assert [frame.frame_index for frame in reread.frames] == [0, 1]
+    assert reread.frames[0].objects[0].keypoints[0].x == 1.0
+
+
+def test_an_export_edited_after_the_fact_is_refused_where_it_is_read(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "52", name="project")
+    saved = write_keypoint_set_revision(
+        ds, set_key="17-mice", annotations=_annotations(ds, 1.0), origin={}
+    )
+    export = saved.path.parent / COCO_EXPORT_FILENAME
+    _ = export.write_text(export.read_text().replace("1.0", "1.25"))
+
+    with pytest.raises(LabelSeriesTamperedError, match="immutable"):
+        _ = revision_export(saved.path, COCO_EXPORT_FILENAME)
+
+
+def test_an_export_the_series_does_not_declare_is_refused(tmp_path: Path) -> None:
+    """Every revision holds the same exports, so a consumer can count on them."""
+    ds = make_dataset(tmp_path / "52", name="project")
+
+    with pytest.raises(ValueError, match="exports"):
+        _ = write_series_revision(
+            ds, series="keypoints", key="k", payload=b"{}", origin={}, n_records=0
+        )
 
 
 def test_two_saves_landing_together_never_share_a_number(tmp_path: Path) -> None:
@@ -316,7 +345,7 @@ def test_a_library_claims_exactly_the_revisions_it_names(tmp_path: Path) -> None
     for x in (1.0, 2.0, 3.0):
         _ = _save(project, x)
 
-    library = _library(tmp_path, project, "rev2/annotations.coco.json")
+    library = _library(tmp_path, project, revision_file(2))
 
     rows = read_label_series(library, "keypoints")
     assert [int(r) for r in rows["revision"]] == [2]
@@ -331,14 +360,14 @@ def test_a_library_claims_exactly_the_revisions_it_names(tmp_path: Path) -> None
 def test_the_series_source_survives_a_manifest_round_trip(tmp_path: Path) -> None:
     project = make_dataset(tmp_path / "52", name="project")
     _ = _save(project, 1.0)
-    library = _library(tmp_path, project, "rev1/annotations.coco.json")
+    library = _library(tmp_path, project, revision_file(1))
     library.set_notes("the library of group 7")
 
     reread = read_manifest(library.manifest_path)
 
     assert reread.manifest_version == 3
     assert reread.sources.labels[0].series == "keypoints"
-    assert reread.sources.labels[0].files == ("rev1/annotations.coco.json",)
+    assert reread.sources.labels[0].files == (revision_file(1),)
     assert reread.notes == "the library of group 7"
 
 
@@ -348,10 +377,10 @@ def test_a_rescan_replaces_what_the_source_claims_and_keeps_the_rest(
     project = make_dataset(tmp_path / "52", name="project")
     for x in (1.0, 2.0):
         _ = _save(project, x)
-    library = _library(tmp_path, project, "rev1/annotations.coco.json")
+    library = _library(tmp_path, project, revision_file(1))
     _ = _save(library, 9.0, key="own-set")
 
-    _ = library.add_source_files("labels", "p52-17", ["rev2/annotations.coco.json"])
+    _ = library.add_source_files("labels", "p52-17", [revision_file(2)])
     _ = library.scan_labels()
 
     rows = read_label_series(library, "keypoints")
@@ -368,13 +397,9 @@ def test_un_importing_a_revision_drops_its_row_from_the_series_index(
     project = make_dataset(tmp_path / "52", name="project")
     for x in (1.0, 2.0):
         _ = _save(project, x)
-    library = _library(
-        tmp_path, project, "rev1/annotations.coco.json", "rev2/annotations.coco.json"
-    )
+    library = _library(tmp_path, project, revision_file(1), revision_file(2))
 
-    removed = library.remove_source_files(
-        "labels", "p52-17", ["rev1/annotations.coco.json"]
-    )
+    removed = library.remove_source_files("labels", "p52-17", [revision_file(1)])
 
     assert removed == 1
     assert [int(r) for r in read_label_series(library, "keypoints")["revision"]] == [2]
@@ -383,13 +408,11 @@ def test_un_importing_a_revision_drops_its_row_from_the_series_index(
 def test_a_revision_edited_after_the_fact_is_refused(tmp_path: Path) -> None:
     project = make_dataset(tmp_path / "52", name="project")
     _ = _save(project, 1.0)
-    payload = (
-        project.get_root("labels_raw") / "keypoints/17-mice/rev1/annotations.coco.json"
-    )
+    payload = project.get_root("labels_raw") / "keypoints/17-mice" / revision_file(1)
     _ = payload.write_text(payload.read_text().replace("1.0", "1.25"))
 
     with pytest.raises(LabelSeriesTamperedError, match="immutable"):
-        _ = _library(tmp_path, project, "rev1/annotations.coco.json")
+        _ = _library(tmp_path, project, revision_file(1))
 
 
 def test_a_series_source_refuses_the_per_sequence_knobs() -> None:
@@ -440,11 +463,9 @@ def test_a_library_sees_a_vanished_project_as_a_row_with_no_file(
 ) -> None:
     project = make_dataset(tmp_path / "52", name="project")
     _ = _save(project, 1.0)
-    library = _library(tmp_path, project, "rev1/annotations.coco.json")
+    library = _library(tmp_path, project, revision_file(1))
 
-    (
-        project.get_root("labels_raw") / "keypoints/17-mice/rev1/annotations.coco.json"
-    ).unlink()
+    (project.get_root("labels_raw") / "keypoints/17-mice" / revision_file(1)).unlink()
 
     record = inventory(library, kinds=["label-series"]).records[0]
     assert record.status != "complete"

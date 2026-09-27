@@ -1,0 +1,228 @@
+{
+  "bbox_policy": {
+    "head_index": null,
+    "length_pad_frac": 0.25,
+    "margin": 0.1,
+    "method": "isotropic",
+    "min_pad_px": 20.0,
+    "pad_frac_of_body": 0.3,
+    "side_pad_frac": 0.35,
+    "tail_index": null
+  },
+  "format": "mosaic-pose-annotations",
+  "frames": [
+    {
+      "frame_index": 1,
+      "height": 48,
+      "image": "frames/a/frame_000001.png",
+      "objects": [
+        {
+          "alias": 12,
+          "bbox": [
+            10.0,
+            10.0,
+            20.0,
+            35.0
+          ],
+          "keypoints": [
+            [
+              20.0,
+              20.0,
+              2
+            ],
+            [
+              15.0,
+              15.0,
+              2
+            ],
+            [
+              25.0,
+              15.0,
+              2
+            ],
+            [
+              20.0,
+              40.0,
+              2
+            ]
+          ],
+          "origin": "human",
+          "pose": 3,
+          "source_ref": null,
+          "track_id": null
+        },
+        {
+          "alias": null,
+          "bbox": null,
+          "keypoints": [
+            [
+              40.0,
+              10.0,
+              2
+            ],
+            [
+              52.0,
+              16.0,
+              2
+            ]
+          ],
+          "origin": "model",
+          "pose": 8,
+          "source_ref": null,
+          "track_id": null
+        }
+      ],
+      "sequence": "mouse003",
+      "usable": true,
+      "width": 64
+    },
+    {
+      "frame_index": 2,
+      "height": 48,
+      "image": "frames/a/frame_000002.png",
+      "objects": [
+        {
+          "alias": 13,
+          "bbox": null,
+          "keypoints": [
+            [
+              20.0,
+              20.0,
+              2
+            ],
+            [
+              15.0,
+              15.0,
+              2
+            ],
+            [
+              25.0,
+              15.0,
+              2
+            ],
+            [
+              20.0,
+              40.0,
+              2
+            ]
+          ],
+          "origin": "human",
+          "pose": 3,
+          "source_ref": null,
+          "track_id": null
+        }
+      ],
+      "sequence": "mouse003",
+      "usable": true,
+      "width": 64
+    },
+    {
+      "frame_index": 3,
+      "height": 48,
+      "image": "frames/a/frame_000003.png",
+      "objects": [],
+      "sequence": "mouse003",
+      "usable": true,
+      "width": 64
+    },
+    {
+      "frame_index": 4,
+      "height": 48,
+      "image": "frames/a/frame_000004.png",
+      "objects": [
+        {
+          "alias": null,
+          "bbox": null,
+          "keypoints": [
+            [
+              30.0,
+              20.0,
+              2
+            ],
+            [
+              25.0,
+              15.0,
+              2
+            ],
+            [
+              35.0,
+              15.0,
+              2
+            ],
+            [
+              30.0,
+              40.0,
+              2
+            ]
+          ],
+          "origin": "human",
+          "pose": 3,
+          "source_ref": null,
+          "track_id": null
+        }
+      ],
+      "sequence": "mouse003",
+      "usable": false,
+      "width": 64
+    }
+  ],
+  "poses": [
+    {
+      "aliases": [
+        {
+          "id": 12,
+          "name": "resident"
+        },
+        {
+          "id": 13,
+          "name": "intruder"
+        }
+      ],
+      "id": 3,
+      "keypoints": [
+        "nose",
+        "left_ear",
+        "right_ear",
+        "tail"
+      ],
+      "name": "mouse",
+      "skeleton": [
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ]
+      ],
+      "symmetries": [
+        [
+          1,
+          2
+        ]
+      ]
+    },
+    {
+      "aliases": [],
+      "id": 8,
+      "keypoints": [
+        "head",
+        "tail"
+      ],
+      "name": "cricket",
+      "skeleton": [
+        [
+          0,
+          1
+        ]
+      ],
+      "symmetries": []
+    }
+  ],
+  "version": 1
+}

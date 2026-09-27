@@ -402,9 +402,10 @@ series in a registry, never inferred from a path**
 | Index | `labels_raw/index.csv`, per sequence | `labels_raw/<series>/index.csv`, per revision |
 | Composition | Enters `sequences.csv` | **Never** enters it |
 
-A series is an editor's committed state projected to disk on every close -- the
-keypoint annotator's now (`keypoints`, unit `set`), the scoring tool's later
-(`behavior`, reserved and unspecified). Hashing rule P1 already said an editor's
+A series is an editor's committed state projected to disk whenever a consumer
+needs a fixed copy -- the keypoint annotator's now (`keypoints`, unit `set`, saved
+at train submit and export), the scoring tool's later (`behavior`, reserved and
+unspecified). Hashing rule P1 already said an editor's
 state is projected into `labels_raw` and that a new kind is a subdirectory, never
 a root. The promoted-correction series in `tracks_raw` is the older cousin and
 follows the *other* rule: there the newest revision supersedes the rest.
@@ -420,6 +421,23 @@ follows the *other* rule: there the newest revision supersedes the rest.
   timestamp (timestamps go in `manifest.json`). A revision whose bytes changed
   afterwards raises `LabelSeriesTamperedError` at scan rather than being
   re-indexed under its new digest, which would rewrite what a model saw.
+- **The payload is mosaic's own format; a standard one is an export beside it.** A
+  keypoints revision holds `annotations.mosaic.json`
+  ([`core/annotations/pose_annotations.py`](src/mosaic/core/annotations/pose_annotations.py)):
+  every frame with its `usable` sign-off, every pose with its aliases and mirror
+  pairs, every object with its drawn box, and the set's box padding. Beside it,
+  `annotations.coco.json` is generated from it for CVAT and other COCO tools:
+  finished frames only, one category per pose, mosaic's extras under the
+  `attributes` convention CVAT reads. A `SeriesSpec` declares both; only the
+  payload is digested and compared, so an export can change without an unchanged
+  state becoming a new revision. An export's digest is checked where it is read
+  (`revision_export`), not at scan.
+- **Training chooses; the saved state never does.** `prepare-training-data`
+  narrows revisions through `narrow_pose_sets`
+  ([`core/annotations/narrow.py`](src/mosaic/core/annotations/narrow.py)): one
+  pose, finished frames only (always, never a flag), classes from aliases
+  (`class_by`). It never drops some of a pose's objects from a kept frame, because
+  an unlabelled animal trains as background.
 - **Numbering happens inside `index_lock` on the series index**, and consults the
   directory as well as the index, so two saves landing together never share a
   number and a revision whose row was lost still occupies its own.
@@ -867,8 +885,9 @@ raw tracks/labels
    ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet
    └─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
 
-an editor's saved state (mosaic-api on annotator close, or a notebook)
+an editor's saved state (mosaic-api at train submit or export, or a notebook)
    └─ write_keypoint_set_revision()  → labels_raw/keypoints/<set>/rev<N>/   (immutable)
+                                        annotations.mosaic.json + annotations.coco.json
 
 in a library dataset, linked from each project by `libraries:`
    ├─ scan_labels() over a series source → labels_raw/keypoints/index.csv (claimed revisions)
@@ -1381,8 +1400,7 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
 - **A label series revision is immutable, and a series never enters a
   composition.** A revision is what a trained model names as what it saw. One
   that could be rewritten, or whose save moved a sequence's composition and so
-  blocked every derivative on each annotator close, defeats the reason the series
-  exists. A changed state is a new `rev<N>`; nothing is replaced.
+  blocked every derivative on each save, defeats the reason the series exists. A changed state is a new `rev<N>`; nothing is replaced.
 - **A model is named by run id, never by where it is.** Across datasets that
   means a `libraries:` link, not a path into another dataset's `models/`. The
   reference string is hashed, so a path would make one model mint a different

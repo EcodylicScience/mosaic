@@ -29,7 +29,7 @@ from mosaic.tracking.model_refs import (
     resolve_model,
 )
 from mosaic.tracking.ops.train import TrainedModelIndexRow, trained_model_index
-from tests.helpers import make_dataset
+from tests.helpers import make_dataset, revision_file
 
 RUN_ID = "train-pose.0.2-abcdef0123"
 KIND = "train-pose"
@@ -252,7 +252,7 @@ def test_a_file_source_survives_a_dump_and_revalidate_round_trip() -> None:
     series = LabelsScanSource(
         id="p52-17",
         path="/data/52/labels_raw/keypoints/17-mice",
-        files=("rev2/annotations.coco.json",),
+        files=(revision_file(2),),
         series="keypoints",
     )
     manifest = DatasetManifest(sources=ScanSources(media=(media,), labels=(series,)))

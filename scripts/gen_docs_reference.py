@@ -217,12 +217,15 @@ def description_text(spec: Mapping[str, JsonValue]) -> str:
     return f"{text} {note}" if text else note
 
 
-def params_table(schema: Mapping[str, JsonValue], depth: int = 0) -> list[str]:
+def params_table(
+    schema: Mapping[str, JsonValue], depth: int = 0, *, noun: str = "Parameter"
+) -> list[str]:
     """The properties table, plus one collapsed table per nested model.
 
     Most feature params carry `$defs`. Inlining them would put dozens of rows
     under a feature that has four of its own, so each nested model gets a
-    `pymdownx.details` block that opens on demand.
+    `pymdownx.details` block that opens on demand. *noun* heads the first
+    column: a file format has fields, not parameters.
     """
     lines: list[str] = []
     properties = schema.get("properties")
@@ -236,7 +239,7 @@ def params_table(schema: Mapping[str, JsonValue], depth: int = 0) -> list[str]:
             set(required_names) if isinstance(required_names, list) else set()
         )
         lines += [
-            "| Parameter | Type | Default | Constraints | Description |",
+            f"| {noun} | Type | Default | Constraints | Description |",
             "| --- | --- | --- | --- | --- |",
         ]
         for name, raw in properties.items():
@@ -254,7 +257,7 @@ def params_table(schema: Mapping[str, JsonValue], depth: int = 0) -> list[str]:
             )
         lines.append("")
     else:
-        lines += ["No parameters.", ""]
+        lines += [f"No {noun.lower()}s.", ""]
 
     # Only the top level expands nested models: a `$defs` block is shared by the
     # whole document, so recursing would repeat every definition at every depth.
@@ -267,7 +270,8 @@ def params_table(schema: Mapping[str, JsonValue], depth: int = 0) -> list[str]:
             lines.append(f'??? note "`{model_name(raw_name)}`"')
             lines.append("")
             lines += [
-                f"    {line}" if line else "" for line in params_table(sub, depth + 1)
+                f"    {line}" if line else ""
+                for line in params_table(sub, depth + 1, noun=noun)
             ]
     return lines
 
@@ -460,6 +464,8 @@ def render_track_formats() -> str:
         lines += [f"| {label} | {escape_cell(value)} |" for label, value in rows]
         lines.append("")
 
+    lines += render_label_series()
+
     lines += [
         "## Label converters",
         "",
@@ -475,6 +481,44 @@ def render_track_formats() -> str:
             f"| `{name}` | `{label_kind}` | {escape_cell(summary_line(cls))} |"
         )
     return "\n".join(lines).rstrip() + "\n"
+
+
+def render_label_series() -> list[str]:
+    """The versioned label series, and the format a keypoints revision is saved in."""
+    from mosaic.core.annotations.pose_annotations import pose_annotations_json_schema
+    from mosaic.core.pipeline.label_series import LABEL_SERIES
+
+    lines = [
+        "## Label series",
+        "",
+        "An editor's saved states, kept as immutable revisions under",
+        "`labels_raw/<series>/<key>/rev<N>/`. A revision holds its payload, which is",
+        "what its identity and every consumer read, and exports generated from the",
+        "payload for other tools.",
+        "",
+        "| Series | One key names | Payload | Format | Exports |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for name in sorted(LABEL_SERIES):
+        spec = LABEL_SERIES[name]
+        exports = ", ".join(f"`{export}`" for export in spec.exports) or "--"
+        lines.append(
+            f"| `{name}` | a {spec.unit} | `{spec.payload_filename}` "
+            f"| `{spec.format}` | {exports} |"
+        )
+    lines += [
+        "",
+        "### `mosaic-pose-annotations`",
+        "",
+        "The saved state of a keypoint annotation set: every frame, finished or not,",
+        "every pose its objects use with their aliases and mirror pairs, and every",
+        "object with the box the annotator drew. JSON, compact, keys sorted.",
+        "Its COCO Keypoints export holds the finished frames, one category per pose,",
+        "and each object's alias, origin and box provenance under `attributes`.",
+        "",
+    ]
+    lines += params_table(pose_annotations_json_schema(), noun="Field")
+    return lines
 
 
 def render_cli() -> str:

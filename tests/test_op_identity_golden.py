@@ -597,14 +597,14 @@ def _prepared_sets() -> tuple[ResolvedSet, ...]:
             set_key="21-rats",
             revision=4,
             digest="bbbbbbbbbbbbbbbb",
-            payload=Path("labels_raw/keypoints/21-rats/rev4/annotations.coco.json"),
+            payload=Path("labels_raw/keypoints/21-rats/rev4/annotations.mosaic.json"),
         ),
         ResolvedSet(
             origin_uuid="uuid-a",
             set_key="17-mice",
             revision=12,
             digest="aaaaaaaaaaaaaaaa",
-            payload=Path("labels_raw/keypoints/17-mice/rev12/annotations.coco.json"),
+            payload=Path("labels_raw/keypoints/17-mice/rev12/annotations.mosaic.json"),
         ),
     )
 

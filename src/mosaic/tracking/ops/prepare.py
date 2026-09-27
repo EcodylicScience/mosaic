@@ -38,6 +38,12 @@ from mosaic.core.annotations.model import (
     AnnotationSet,
     KeypointSchema,
 )
+from mosaic.core.annotations.narrow import AliasRole, narrow_pose_sets
+from mosaic.core.annotations.pose_annotations import (
+    PoseAnnotationSet,
+    read_pose_annotations,
+)
+from mosaic.core.annotations.projection import KEYPOINTS_SERIES
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
 from mosaic.core.pipeline.file_digest import file_digest
@@ -69,7 +75,6 @@ __all__ = [
 ]
 
 PREPARE_KIND: Final = "prepare-training-data"
-KEYPOINTS_SERIES: Final = "keypoints"
 _PREPARE_IDLE_SECONDS: Final = 600.0
 
 PrepareTarget = Literal["yolo-pose", "polo", "sleap", "litpose"]
@@ -127,13 +132,36 @@ class PrepareTrainingDataParams(Params):
     target: Annotated[PrepareTarget, Declared("Which trainer's layout to write.")] = (
         "yolo-pose"
     )
-    bbox: Annotated[
-        BboxPolicy,
+    pose: Annotated[
+        int | str | None,
         Declared(
-            "How an instance's box is derived from its keypoints when the "
-            "annotation carries none of its own."
+            "Which pose to train, by its id or its name. Left unset, every set "
+            "must hold exactly one pose. One dataset has one keypoint layout."
         ),
-    ] = Field(default_factory=BboxPolicy)
+    ] = None
+    class_by: Annotated[
+        AliasRole | None,
+        Declared(
+            "alias makes each alias a class, and refuses an object of the pose "
+            "without one. Unset, the pose is the one class. sleap and litpose "
+            "train one class."
+        ),
+    ] = None
+    track_by: Annotated[
+        AliasRole | None,
+        Declared(
+            "sleap only: alias gives each object its alias as its track, which "
+            "is what a SLEAP identity model learns."
+        ),
+    ] = None
+    bbox: Annotated[
+        BboxPolicy | None,
+        Declared(
+            "How a box the annotator did not draw is derived from its keypoints. "
+            "Unset, each set's own padding: the box the annotator saw. A drawn "
+            "box is used as drawn."
+        ),
+    ] = None
     point_index: Annotated[
         int,
         Field(ge=0),
@@ -240,6 +268,8 @@ def resolve_keypoint_sets(
 
     Raises:
         KeyError: A reference matches several datasets' sets and names none.
+        ValueError: Two references resolve to one set. Two revisions of a set
+            name the same images, so both would be placed under one name.
         IdentityDeferred: A reference matches no indexed revision, or the
             revision it matches is not on disk. Both are states a scan or a save
             can still change, which is what deferring means.
@@ -299,6 +329,17 @@ def resolve_keypoint_sets(
                 f"{ref.set_key!r} ({payload}) is not on disk, and this run's "
                 "identity covers the content of what it reads",
             )
+        named = [
+            item
+            for item in resolved
+            if (item.origin_uuid, item.set_key) == (origins[0], ref.set_key)
+        ]
+        if named:
+            msg = (
+                f"keypoint set {ref.set_key!r} is named twice; one dataset reads one "
+                "revision of a set, because two revisions show the same images"
+            )
+            raise ValueError(msg)
         resolved.append(
             ResolvedSet(
                 origin_uuid=origins[0],
@@ -345,13 +386,16 @@ def prepare_training_data_run_id(
 # --- Building the tree ---------------------------------------------------------
 
 
-def _read_set(item: ResolvedSet) -> AnnotationSet:
-    """One revision as an annotation set, its images anchored where they are."""
-    from mosaic.core.annotations.readers.coco import read_coco_keypoints
-
+def _read_set(item: ResolvedSet) -> PoseAnnotationSet:
+    """One revision's saved state, its images anchored where they are."""
     manifest = read_revision_manifest(item.payload)
     image_root = (item.payload.parent / (manifest.image_root or ".")).resolve()
-    return read_coco_keypoints(item.payload, image_root)
+    return read_pose_annotations(item.payload, image_root)
+
+
+def _set_label(item: ResolvedSet) -> str:
+    """How a set is named in an error: which dataset, which set, which revision."""
+    return f"{item.origin_uuid or 'local'}:{item.set_key}@rev{item.revision}"
 
 
 def _sequence_of(frame: AnnotationFrame) -> str:
@@ -395,7 +439,9 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
     kind = PREPARE_KIND
     category = "convert"
     domain = "tracking"
-    version = "0.1"
+    # 0.2: a revision is the full saved state, narrowed here, and a derived box
+    # is the annotator's padded one rather than a hull read back as drawn.
+    version = "0.2"
     scope_takes = "none"
     scope_dependent = False
     Params = PrepareTrainingDataParams
@@ -469,24 +515,36 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
             if child.name != ".mosaic-inflight.json":
                 shutil.rmtree(child) if child.is_dir() else child.unlink()
 
+        # Narrowed together, in the order the run identifier sorts them, so the
+        # classes and the layout they are checked against do not depend on the
+        # order the sets were named in.
+        ordered_sets = sorted(
+            sets, key=lambda item: (item.origin_uuid, item.set_key, item.digest)
+        )
+        narrowed = narrow_pose_sets(
+            {_set_label(item): _read_set(item) for item in ordered_sets},
+            pose=params.pose,
+            class_by=params.class_by,
+            track_by=params.track_by if params.target == "sleap" else None,
+            bbox=params.bbox,
+        )
+        reference = narrowed[_set_label(ordered_sets[0])]
+        schema, categories = reference.schema, reference.categories
+        class_ids = reference.category_ids()
+        if params.target not in _TREE_TARGETS and len(categories) > 1:
+            msg = (
+                f"{params.target} trains one class, and class_by="
+                f"{params.class_by!r} makes {len(categories)}: {list(categories)}"
+            )
+            raise ValueError(msg)
+
         # One flat list of (frame, image on disk), each carrying the set it came
         # from so its name can say so.
-        schema = None
-        categories: tuple[str, ...] = ()
         owner: dict[int, ResolvedSet] = {}
         gathered: list[tuple[AnnotationFrame, Path]] = []
         missing: list[str] = []
-        for item in sets:
-            annotations = _read_set(item)
-            if schema is None:
-                schema, categories = annotations.schema, annotations.categories
-            elif annotations.schema.names != schema.names:
-                msg = (
-                    f"keypoint set {item.set_key!r} is annotated with keypoints "
-                    f"{list(annotations.schema.names)}, but an earlier set uses "
-                    f"{list(schema.names)}. One model has one skeleton."
-                )
-                raise ValueError(msg)
+        for item in ordered_sets:
+            annotations = narrowed[_set_label(item)]
             for frame in annotations.frames:
                 source = annotations.resolve(frame)
                 if not source.is_file():
@@ -503,8 +561,6 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
                 "dataset missing some of them is not the dataset that was saved."
             )
             raise FileNotFoundError(msg)
-        if schema is None or not gathered:
-            raise ValueError("the named keypoint sets hold no annotated frames")
 
         # Named and grouped once, here, from the frame itself. The group is never
         # read back out of the name: a set key may hold the separator, and a name
@@ -536,9 +592,13 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
             group_key=group_by_name.__getitem__,
         )
 
+        # Every box is explicit by now: narrowing derived the ones the
+        # annotator did not draw, under the policy this run was given.
         def pose_lines(frame: AnnotationFrame) -> list[str]:
             rows = (
-                yolo_pose_line(obj, frame.width, frame.height, policy=params.bbox)
+                yolo_pose_line(
+                    obj, frame.width, frame.height, class_id=class_ids[obj.category]
+                )
                 for obj in frame.objects
             )
             return [row for row in rows if row is not None]
@@ -552,7 +612,9 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
                 if point.visibility == 0:
                     continue
                 x, y = normalize_coords(point.x, point.y, frame.width, frame.height)
-                rows.append(format_polo_label_line(0, params.radius, x, y))
+                rows.append(
+                    format_polo_label_line(class_ids[obj.category], params.radius, x, y)
+                )
             return rows
 
         ordered = sorted(gathered, key=lambda pair: name_of(pair[0], pair[1]))
@@ -578,17 +640,22 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
                 "instance this target can express"
             )
 
-        class_name = categories[0] if categories else "animal"
         if params.target == "yolo-pose":
             _ = make_data_yaml(
                 out,
-                {class_name: 0},
-                kpt_shape=[schema.num_keypoints, 3],
+                class_ids,
+                kpt_shape=schema.kpt_shape,
+                # Only when the pose pairs its keypoints: without pairs,
+                # Ultralytics turns flips off, which is right for them.
+                flip_idx=schema.flip_idx if schema.symmetries else None,
                 portable=True,
             )
         else:
             _ = make_polo_data_yaml(
-                out, [class_name], {0: params.radius}, portable=True
+                out,
+                dict(class_ids),
+                {class_id: params.radius for class_id in class_ids.values()},
+                portable=True,
             )
 
         return _register(

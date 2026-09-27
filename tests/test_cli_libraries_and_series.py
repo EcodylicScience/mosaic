@@ -12,12 +12,13 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from mosaic.cli import app
+from mosaic.core.annotations.projection import COCO_EXPORT_FILENAME
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.label_series_index import (
     read_label_series,
     write_series_revision,
 )
-from tests.helpers import make_dataset
+from tests.helpers import make_dataset, revision_file
 
 runner = CliRunner()
 
@@ -30,6 +31,7 @@ def _project_with_revisions(tmp_path: Path, count: int) -> Dataset:
             series="keypoints",
             key="17-mice",
             payload=json.dumps({"state": number}).encode(),
+            exports={COCO_EXPORT_FILENAME: b"{}"},
             origin={},
             n_records=number,
         )
@@ -105,7 +107,7 @@ def test_a_series_source_is_declared_and_scanned_from_the_cli(tmp_path: Path) ->
         [
             "sources", "add", "-m", manifest, "--kind", "labels", "--id", "p52-17",
             "--path", set_dir, "--series", "keypoints",
-            "--file", "rev2/annotations.coco.json",
+            "--file", revision_file(2),
         ],
     )  # fmt: skip
     assert declared.exit_code == 0, declared.output
@@ -159,7 +161,7 @@ def test_removing_a_series_source_can_drop_its_rows(tmp_path: Path) -> None:
         [
             "sources", "add", "-m", manifest, "--kind", "labels", "--id", "p52-17",
             "--path", set_dir, "--series", "keypoints",
-            "--file", "rev1/annotations.coco.json",
+            "--file", revision_file(1),
         ],
     )  # fmt: skip
     _ = runner.invoke(app, ["scan", "-m", manifest, "--kind", "labels"])

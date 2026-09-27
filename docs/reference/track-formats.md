@@ -140,6 +140,88 @@ Minimal T-Rex-like per-frame, per-id tracks with centroid/pose columns. `group` 
 | Allows | `ANGLE`, `ANGULAR_A`, `ANGULAR_A#centroid`, `ANGULAR_V`, `ANGULAR_V#centroid`, `AX`, `AY`, `SPEED`, `SPEED#centroid`, `SPEED#pcentroid`, `SPEED#wcentroid`, `VX`, `VY`, `X#wcentroid`, `Y#wcentroid` |
 | Forbidden | -- |
 
+## Label series
+
+An editor's saved states, kept as immutable revisions under
+`labels_raw/<series>/<key>/rev<N>/`. A revision holds its payload, which is
+what its identity and every consumer read, and exports generated from the
+payload for other tools.
+
+| Series | One key names | Payload | Format | Exports |
+| --- | --- | --- | --- | --- |
+| `keypoints` | a set | `annotations.mosaic.json` | `mosaic-pose-annotations` | `annotations.coco.json` |
+
+### `mosaic-pose-annotations`
+
+The saved state of a keypoint annotation set: every frame, finished or not,
+every pose its objects use with their aliases and mirror pairs, and every
+object with the box the annotator drew. JSON, compact, keys sorted.
+Its COCO Keypoints export holds the finished frames, one category per pose,
+and each object's alias, origin and box provenance under `attributes`.
+
+| Field | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `format` | `"mosaic-pose-annotations"` | _required_ |  | Always mosaic-pose-annotations. |
+| `version` | `integer` | _required_ |  | The format version the file was written in. This is version 1. |
+| `bbox_policy` | `BboxPolicy` | _required_ |  | How the annotator's tool derived a box the annotator did not draw. |
+| `poses` | list of `PoseRecord` | _required_ |  | Every pose an object uses, ascending by id. |
+| `frames` | list of `FrameRecord` | _required_ |  | Every frame of the set, finished or not, ascending by image. |
+
+??? note "`AliasRecord`"
+
+    | Field | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `id` | `integer` | _required_ |  | The authoring store's id; a rename keeps it. |
+    | `name` | `string` | _required_ |  | What the alias is called when saved. |
+
+??? note "`BboxPolicy`"
+
+    | Field | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `method` | `"tight"` \| `"isotropic"` \| `"oriented"` | `"tight"` |  | Which strategy derives the box from the keypoints when the source supplied none. Known values are tight, isotropic and oriented. |
+    | `margin` | `number` | `0.1` |  | The padding added around the tight hull of valid keypoints, as a fraction of the hull's own size. Used only when method is tight. |
+    | `pad_frac_of_body` | `number` | `0.3` |  | The padding added around the tight hull of valid keypoints, as a fraction of body length. Used when method is isotropic, and as the isotropic fallback for oriented when the head or tail keypoint is invalid, or when the head-tail distance is zero. |
+    | `min_pad_px` | `number` | `20.0` |  | The floor for the padding around the tight hull, for degenerate or overlapping keypoints. Used when method is isotropic, and as the isotropic fallback for oriented when the head or tail keypoint is invalid, or when the head-tail distance is zero. [px] |
+    | `length_pad_frac` | `number` | `0.25` |  | The padding extending the oriented rectangle beyond the head and tail, as a fraction of the head-tail distance. Used only when method is oriented. |
+    | `side_pad_frac` | `number` | `0.35` |  | The padding extending the oriented rectangle across the head-tail axis, as a fraction of the head-tail distance. Used only when method is oriented. |
+    | `head_index` | `integer` \| `None` | `null` |  | The keypoint index of the head. Required when method is oriented. When given together with tail_index for isotropic, body length is the distance between them instead of the tight hull's diagonal. |
+    | `tail_index` | `integer` \| `None` | `null` |  | The keypoint index of the tail. Required when method is oriented. When given together with head_index for isotropic, body length is the distance between them instead of the tight hull's diagonal. |
+
+??? note "`FrameRecord`"
+
+    | Field | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `image` | `string` | _required_ |  | The image, relative to the dataset the set was saved in; absolute when it lies outside it. |
+    | `width` | `integer` | _required_ |  | Image width in pixels. |
+    | `height` | `integer` | _required_ |  | Image height in pixels. |
+    | `usable` | `boolean` | _required_ |  | The annotator's sign-off that the frame is complete. Only a usable frame is trained on or exported. |
+    | `sequence` | `string` \| `None` | `null` |  | The recording the frame came from. |
+    | `frame_index` | `integer` \| `None` | `null` |  | The frame's position in that recording. |
+    | `objects` | list of `ObjectRecord` | _constructed_ |  | The objects, in the order the annotator's tool holds them. |
+
+??? note "`ObjectRecord`"
+
+    | Field | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `pose` | `integer` | _required_ |  | The id of the object's pose. |
+    | `keypoints` | list of tuple of (`number`, `number`, `1` \| `2`) \| `None` | _required_ |  | One entry per keypoint of the pose: [x, y, visibility] in image pixels, where visibility 1 is occluded and 2 visible, or null when the keypoint was not placed. |
+    | `alias` | `integer` \| `None` | `null` |  | The id of the object's alias, or null. |
+    | `origin` | `"human"` \| `"model"` \| `"heuristic"` \| `None` | `null` |  | Who placed it, or null when the source did not say. |
+    | `source_ref` | `string` \| `None` | `null` |  | What produced it when not a person, such as a model run. |
+    | `track_id` | `string` \| `None` | `null` |  | Identity across frames, when the source has one. |
+    | `bbox` | tuple of (`number`, `number`, `number`, `number`) \| `None` | `null` |  | The box the annotator drew, [x, y, width, height] in pixels from the top-left. Null means derived from the keypoints under bbox_policy. |
+
+??? note "`PoseRecord`"
+
+    | Field | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `id` | `integer` | _required_ |  | The authoring store's id; a rename keeps it. |
+    | `name` | `string` | _required_ |  | What the pose is called when saved. |
+    | `keypoints` | list of `string` | _required_ |  | Keypoint names, in the order every object stores its points. |
+    | `skeleton` | list of tuple of (`integer`, `integer`) | _constructed_ |  | Edges as pairs of 0-based keypoint positions, ascending. |
+    | `symmetries` | list of tuple of (`integer`, `integer`) | _constructed_ |  | Left-right mirror pairs as 0-based positions, lower first. What a trainer that flips images swaps. |
+    | `aliases` | list of `AliasRecord` | _constructed_ |  | The aliases this pose declares, by id. |
+
 ## Label converters
 
 Applied by `mosaic convert-labels --kind <label_kind>`.

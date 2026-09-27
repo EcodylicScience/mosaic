@@ -1,21 +1,36 @@
-"""Writing the canonical representation back out as COCO Keypoints.
+"""Writing annotations out as COCO Keypoints, for the tools that read COCO.
 
-The inverse of :mod:`mosaic.core.annotations.readers.coco`, and the reason it
-exists is interchange rather than training. COCO is what other tools read: given
-this, ``sleap-io`` will build a ``.slp``, and several annotation tools will
-import it. A training-dataset *layout* -- the ``<split>/images`` and
-``<split>/labels`` tree a YOLO trainer walks -- is a different thing, belongs to
-whichever trainer wants it, and lives in ``tracking``.
+COCO is what other tools read: CVAT imports it, pycocotools and FiftyOne load it,
+and given it ``sleap-io`` builds a ``.slp``. mosaic's own record of an annotation
+set is :mod:`mosaic.core.annotations.pose_annotations`; this is the export written
+beside every saved revision of one, and the file a person downloads. A training
+dataset *layout* -- the ``<split>/images`` and ``<split>/labels`` tree a YOLO
+trainer walks -- is a different thing and lives in ``tracking``.
 
-**Round-tripping is the contract.** Reading what this writes must give back the
-set that was written, and a test asserts it. That is what makes the pair usable
-as a boundary: mosaic can hand an annotation set to any tool that speaks COCO
-without either side losing the instance axis or the difference between an
-unplaced keypoint and one at the origin.
+**Correct for a reader that knows nothing about mosaic.** Only finished frames are
+written, so every listed image is exhaustively annotated and one with no
+annotations is a true negative, which is what COCO means by it. Every annotation
+carries a ``bbox``: the drawn box, or the one the set's padding derives, which is
+the box the annotator saw.
 
-The one asymmetry is deliberate. COCO has no NaN, so an unplaced keypoint is
-written as ``(0, 0, 0)`` -- the convention every COCO producer uses and the
-reader knows to undo. Nothing else is lossy.
+**Extended only where other tools already look.** Each pose is a category.
+Everything else mosaic knows rides conventions other tools share:
+
+- an annotation's ``attributes`` object -- the extension CVAT writes and reads
+  back, and Datumaro, FiftyOne and sleap-io read -- holds ``alias``, ``alias_id``,
+  ``origin``, ``source_ref`` and ``bbox_source`` (``drawn`` or ``derived``), all
+  scalars, as CVAT's attributes are;
+- a category's ``attributes`` holds ``pose_id``, the pose's stable id. The COCO
+  ids themselves stay 1..N, because common converters compute a class as
+  ``category_id - 1``;
+- an image's ``seq_id`` and ``frame_num`` are the recording and the frame within
+  it, the COCO Camera Traps names for exactly that pair.
+
+Keypoint mirror pairs have no COCO convention and are not written; the formats
+that carry them (``.slp``, a YOLO ``data.yaml``) get them from the saved state.
+
+An unplaced keypoint is written as ``(0, 0, 0)``, the convention every COCO
+producer uses and :mod:`mosaic.core.annotations.readers.coco` undoes.
 """
 
 from __future__ import annotations
@@ -23,9 +38,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mosaic.core.annotations.model import AnnotationObject, AnnotationSet
+from mosaic.core.annotations.bbox import derived_bbox
+from mosaic.core.annotations.model import AnnotationSet, Bbox
+from mosaic.core.annotations.pose_annotations import (
+    Alias,
+    PoseAnnotationSet,
+    PoseDefinition,
+    PoseObject,
+    widen,
+)
+from mosaic.core.json_value import JsonValue
 
-__all__ = ["coco_keypoints_document", "write_coco_keypoints"]
+__all__ = ["coco_keypoints_document", "coco_keypoints_payload", "write_coco_keypoints"]
 
 
 def write_coco_keypoints(
@@ -34,14 +58,15 @@ def write_coco_keypoints(
     *,
     indent: int | None = 2,
 ) -> Path:
-    """Write *annotations* as a COCO Keypoints file.
+    """Write a single-schema set as a COCO Keypoints file.
 
     Image paths are written relative to the set's ``image_root`` when it has
     one, because a COCO file names images relative to a dataset root and an
     absolute path in that field is what makes a dataset unmovable.
 
     Args:
-        annotations: What to write.
+        annotations: What to write. A box the set does not carry is written as
+            the bare hull of the placed keypoints.
         json_path: Where to write it.
         indent: JSON indentation. ``None`` writes it compact.
 
@@ -49,65 +74,92 @@ def write_coco_keypoints(
         The path written.
     """
     json_path = Path(json_path)
-    document = coco_keypoints_document(annotations)
+    document = coco_keypoints_document(widen(annotations))
     json_path.parent.mkdir(parents=True, exist_ok=True)
     _ = json_path.write_text(json.dumps(document, indent=indent))
     return json_path
 
 
-def coco_keypoints_document(annotations: AnnotationSet) -> dict[str, object]:
+def coco_keypoints_payload(annotations: PoseAnnotationSet) -> bytes:
+    """The export of *annotations* as bytes: compact, keys sorted."""
+    document = coco_keypoints_document(annotations)
+    return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def coco_keypoints_document(annotations: PoseAnnotationSet) -> dict[str, JsonValue]:
     """*annotations* as the COCO Keypoints mapping, not yet serialized.
 
-    Separate from :func:`write_coco_keypoints` for a caller that decides the
-    serialization itself. A label series stores the document compact and with
-    sorted keys, because its digest is what says whether a save changed anything
-    and indentation is not a change.
-
-    Ids are assigned by position, so the same frames in the same order always
-    produce the same document.
+    The usable frames only, in the order the set holds them. Ids are assigned by
+    position: categories by ascending pose id, images and annotations in order.
     """
-    category = {
-        "id": 1,
-        "name": annotations.categories[0] if annotations.categories else "animal",
-        "supercategory": "animal",
-        "keypoints": list(annotations.schema.names),
-        # Back to COCO's one-based endpoints, which is what every other
-        # reader of this file expects.
-        "skeleton": [[a + 1, b + 1] for a, b in annotations.schema.skeleton],
-    }
+    poses = sorted(annotations.poses, key=lambda pose: pose.id)
+    category_of = {pose.id: position for position, pose in enumerate(poses, start=1)}
+    aliases = {alias.id: alias for pose in poses for alias in pose.aliases}
 
-    images: list[dict[str, object]] = []
-    records: list[dict[str, object]] = []
-    for image_id, frame in enumerate(annotations.frames, start=1):
-        image: dict[str, object] = {
+    images: list[JsonValue] = []
+    records: list[JsonValue] = []
+    usable = (frame for frame in annotations.frames if frame.usable)
+    for image_id, frame in enumerate(usable, start=1):
+        image: dict[str, JsonValue] = {
             "id": image_id,
             "file_name": frame.image_path.as_posix(),
             "width": frame.width,
             "height": frame.height,
         }
-        # Written only when the frame carries them, so a set that never knew its
-        # recordings produces the file it always did. COCO permits extra keys
-        # and every other reader ignores these.
-        if frame.video:
-            image["video"] = frame.video
+        if frame.sequence:
+            image["seq_id"] = frame.sequence
         if frame.frame_index >= 0:
-            image["frame_index"] = frame.frame_index
+            image["frame_num"] = frame.frame_index
         images.append(image)
         for obj in frame.objects:
-            records.append(_write_object(obj, image_id, len(records) + 1))
+            drawn = obj.bbox is not None
+            box = obj.bbox or derived_bbox(
+                obj.keypoints, frame.width, frame.height, annotations.bbox_policy
+            )
+            records.append(
+                _record(
+                    obj,
+                    box,
+                    drawn=drawn,
+                    alias=None if obj.alias_id is None else aliases[obj.alias_id],
+                    ids=(len(records) + 1, image_id, category_of[obj.pose_id]),
+                )
+            )
 
     return {
         "images": images,
         "annotations": records,
-        "categories": [category],
+        "categories": [
+            _category(pose, category_id)
+            for category_id, pose in enumerate(poses, start=1)
+        ],
     }
 
 
-def _write_object(
-    obj: AnnotationObject, image_id: int, annotation_id: int
-) -> dict[str, object]:
+def _category(pose: PoseDefinition, category_id: int) -> dict[str, JsonValue]:
+    return {
+        "id": category_id,
+        "name": pose.name,
+        "supercategory": "animal",
+        "keypoints": list(pose.schema.names),
+        # COCO's endpoints count from one, which is what every other reader of
+        # this file expects.
+        "skeleton": [[a + 1, b + 1] for a, b in sorted(pose.schema.skeleton)],
+        "attributes": {"pose_id": pose.id},
+    }
+
+
+def _record(
+    obj: PoseObject,
+    box: Bbox,
+    *,
+    drawn: bool,
+    alias: Alias | None,
+    ids: tuple[int, int, int],
+) -> dict[str, JsonValue]:
     """One instance as a COCO annotation record."""
-    flat: list[float] = []
+    annotation_id, image_id, category_id = ids
+    flat: list[JsonValue] = []
     placed = 0
     for point in obj.keypoints:
         if point.visibility == 0:
@@ -115,29 +167,28 @@ def _write_object(
             # reader knows not to believe it.
             flat.extend((0.0, 0.0, 0.0))
             continue
-        flat.extend((point.x, point.y, float(point.visibility)))
+        flat.extend((float(point.x), float(point.y), float(point.visibility)))
         placed += 1
 
-    if obj.bbox is not None:
-        box = [obj.bbox.x, obj.bbox.y, obj.bbox.width, obj.bbox.height]
-    else:
-        xs = [point.x for point in obj.placed_keypoints]
-        ys = [point.y for point in obj.placed_keypoints]
-        box = (
-            [min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)]
-            if xs
-            else [0.0] * 4
-        )
+    attributes: dict[str, JsonValue] = {"bbox_source": "drawn" if drawn else "derived"}
+    if alias is not None:
+        attributes["alias"] = alias.name
+        attributes["alias_id"] = alias.id
+    if obj.origin is not None:
+        attributes["origin"] = obj.origin
+    if obj.source_ref is not None:
+        attributes["source_ref"] = obj.source_ref
 
-    record: dict[str, object] = {
+    record: dict[str, JsonValue] = {
         "id": annotation_id,
         "image_id": image_id,
-        "category_id": 1,
+        "category_id": category_id,
         "iscrowd": 0,
         "num_keypoints": placed,
-        "area": float(box[2] * box[3]),
-        "bbox": box,
+        "area": float(box.width * box.height),
+        "bbox": [float(box.x), float(box.y), float(box.width), float(box.height)],
         "keypoints": flat,
+        "attributes": attributes,
     }
     # Emitted only when there is one. The readers on the other side chain their
     # candidate keys with ``or``, so a falsy value reads the same as an absent

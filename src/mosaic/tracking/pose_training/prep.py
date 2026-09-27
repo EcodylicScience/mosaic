@@ -658,6 +658,7 @@ def make_data_yaml(
     new_class_ids: Mapping[str, int],
     *,
     kpt_shape: list[int] | None = None,
+    flip_idx: Sequence[int] | None = None,
     yaml_name: str = "data.yaml",
     has_test: bool | None = None,
     portable: bool = False,
@@ -678,6 +679,12 @@ def make_data_yaml(
         Mapping from class name -> contiguous integer ID.
     kpt_shape : [num_keypoints, dims], optional
         For pose models, e.g. [27, 3] for 27 keypoints with (x, y, vis).
+    flip_idx : sequence of int, optional
+        Each keypoint's left-right mirror, for pose models whose keypoints have
+        mirror pairs. Ultralytics disables horizontal and vertical flips when a
+        pose ``data.yaml`` declares none, so leaving it out is safe and giving an
+        identity for a pose that has pairs is not: every flipped image would
+        label a left keypoint on the right.
     has_test : bool, optional
         Whether a test split exists.  Auto-detected if None.
     """
@@ -706,6 +713,8 @@ def make_data_yaml(
         data["test"] = "test/images"
     if kpt_shape is not None:
         data["kpt_shape"] = kpt_shape
+    if flip_idx is not None:
+        data["flip_idx"] = list(flip_idx)
 
     out_path = Path(dataset_root) / yaml_name
     with out_path.open("w") as stream:

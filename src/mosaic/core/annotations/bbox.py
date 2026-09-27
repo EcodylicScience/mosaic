@@ -14,19 +14,23 @@ that argument the functions keep the return type their callers expect.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated, Literal
 
 import numpy as np
 from pydantic import Field
 
+from mosaic.core.annotations.model import Bbox, Keypoint
 from mosaic.core.params import Declared, Params
 
 __all__ = [
     "BBoxMethod",
     "BboxPolicy",
+    "derived_bbox",
     "keypoints_to_bbox",
     "keypoints_to_bbox_isotropic",
     "keypoints_to_bbox_oriented",
+    "policy_bbox",
 ]
 
 BBoxMethod = Literal["tight", "isotropic", "oriented"]
@@ -383,3 +387,46 @@ def keypoints_to_bbox(
             },
         )
     raise ValueError(f"Unknown bbox method: {method!r}")
+
+
+def policy_bbox(
+    kps_xy: np.ndarray, img_w: int, img_h: int, policy: BboxPolicy
+) -> tuple[float, float, float, float]:
+    """:func:`keypoints_to_bbox` with every setting taken from *policy*.
+
+    The one place a policy is spelled out as that function's arguments, so a
+    training emitter and the annotation export cannot derive one box two ways.
+    """
+    return keypoints_to_bbox(
+        kps_xy,
+        img_w,
+        img_h,
+        margin=policy.margin,
+        method=policy.method,
+        head_idx=policy.head_index,
+        tail_idx=policy.tail_index,
+        pad_frac_of_body=policy.pad_frac_of_body,
+        min_pad_px=policy.min_pad_px,
+        length_pad_frac=policy.length_pad_frac,
+        side_pad_frac=policy.side_pad_frac,
+    )
+
+
+def derived_bbox(
+    keypoints: Sequence[Keypoint], width: int, height: int, policy: BboxPolicy
+) -> Bbox:
+    """The box *policy* derives from *keypoints*, in image pixels.
+
+    An unplaced keypoint carries ``NaN`` and is ignored. With nothing placed the
+    box is all zeros, which :attr:`Bbox.is_degenerate` reports.
+    """
+    points = np.array(
+        [[point.x, point.y] for point in keypoints], dtype=np.float64
+    ).reshape(-1, 2)
+    cx, cy, w, h = policy_bbox(points, width, height, policy)
+    return Bbox(
+        x=(cx - w / 2.0) * width,
+        y=(cy - h / 2.0) * height,
+        width=w * width,
+        height=h * height,
+    )

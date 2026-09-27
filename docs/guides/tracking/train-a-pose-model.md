@@ -105,8 +105,8 @@ dataset whose job is to hold models.
 ### Save annotations as revisions
 
 Annotations reach a dataset as **revisions** of a keypoint set, under
-`labels_raw/keypoints/<set>/rev1`, `rev2`, and so on. The Mosaic app saves one every
-time the annotator is closed. From Python:
+`labels_raw/keypoints/<set>/rev1`, `rev2`, and so on. The Mosaic app saves one when
+you train from the set or export it. From Python:
 
 ```python
 from mosaic.core.annotations.projection import write_keypoint_set_revision
@@ -118,6 +118,16 @@ saved.revision   # 3
 saved.written    # False if nothing had changed since revision 2
 ```
 
+`annotation_set` is a `PoseAnnotationSet` from
+`mosaic.core.annotations.pose_annotations`: every frame with whether it is finished,
+every pose with its aliases and left-right keypoint pairs, and every object. Save the
+whole set, not just what one model should see; choosing that is the next step's job.
+
+Each revision holds that state as `annotations.mosaic.json`, and beside it a COCO
+Keypoints export, `annotations.coco.json`, that CVAT and other COCO tools open. The
+export holds the finished frames only, one category per pose, and each object's alias
+under `attributes`.
+
 A revision is never rewritten, and saving a state that did not change writes nothing.
 That is what lets a model say exactly which annotations it was trained on.
 
@@ -128,10 +138,10 @@ mosaic init libraries/lab
 
 mosaic sources add -m libraries/lab/dataset.yaml --kind labels --series keypoints \
     --id mice-openfield --path /data/mice/labels_raw/keypoints/openfield \
-    --file rev3/annotations.coco.json
+    --file rev3/annotations.mosaic.json
 mosaic sources add -m libraries/lab/dataset.yaml --kind labels --series keypoints \
     --id rats-arena --path /data/rats/labels_raw/keypoints/arena \
-    --file rev1/annotations.coco.json
+    --file rev1/annotations.mosaic.json
 
 mosaic scan -m libraries/lab/dataset.yaml --kind labels
 ```
@@ -153,6 +163,15 @@ the model. `target` is `yolo-pose`, `polo`, `sleap` or `litpose`. Frames from on
 recording are kept together in one split, which is what makes a validation score
 honest; `"split_by": "frame"` turns that off, and its scores are optimistic.
 
+Only frames marked finished are trained on. A set whose objects use more than one pose
+needs the one to train named, as `"pose": "mouse"`; objects of other poses are then
+background. `"class_by": "alias"` trains each alias as its own class, and refuses a
+set with an object of that pose that has none, since leaving it unlabelled would teach
+the model it is background. A box the annotator did not draw is the padded one the
+annotator saw; `"bbox"` replaces that padding for this run. A pose with left-right
+keypoint pairs trains `yolo-pose` with horizontal flips, swapping each pair; one
+without pairs trains without flips.
+
 Leave `revision` out to take the latest one claimed, or pin it with
 `{"set_key": "openfield", "revision": 3}`. Either way the run is named by what the
 revision contains, so the same annotations always give the same prepared dataset.
@@ -161,7 +180,7 @@ Then hand the trainer the **run id** the preparation returned:
 
 ```bash
 mosaic run -m libraries/lab/dataset.yaml --kind train-pose \
-    --params '{"data": "prepare-training-data.0.1-<digest>", "epochs": 100}'
+    --params '{"data": "prepare-training-data.0.2-<digest>", "epochs": 100}'
 ```
 
 Pass the run id rather than a path to its `data.yaml`. A path is a location, so the

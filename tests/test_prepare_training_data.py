@@ -14,12 +14,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from mosaic.core.annotations.model import (
-    AnnotationFrame,
-    AnnotationObject,
-    AnnotationSet,
-    Keypoint,
-    KeypointSchema,
+from mosaic.core.annotations.bbox import BboxPolicy, derived_bbox
+from mosaic.core.annotations.model import AnnotationSet, KeypointSchema
+from mosaic.core.annotations.pose_annotations import (
+    Alias,
+    PoseAnnotationSet,
+    PoseDefinition,
+    PoseFrame,
+    PoseObject,
 )
 from mosaic.core.annotations.projection import write_keypoint_set_revision
 from mosaic.core.dataset import Dataset
@@ -43,12 +45,39 @@ from mosaic.tracking.ops.train import (
     trained_model_index,
 )
 from mosaic.tracking.training_provenance import training_provenance
-from tests.helpers import make_dataset
+from tests.helpers import (
+    make_dataset,
+    pose_frame,
+    pose_object,
+    pose_set,
+    revision_file,
+)
 
 register_ops()
 
-SCHEMA = KeypointSchema(names=("nose", "tail"), skeleton=((0, 1),))
 KIND = "prepare-training-data"
+
+
+def _image(ds: Dataset, sequence: str, index: int) -> Path:
+    """An extract-shaped frame image on disk, by its path relative to *ds*.
+
+    Every sequence numbers its frames from zero, the way mosaic's frame
+    extraction does, so two sequences share every basename. The bytes name the
+    frame, so two images that should differ do.
+    """
+    relative = Path(
+        f"media/frames/kmeans/kmeans-d7968c97b0/{sequence}/frame_{index:06d}.png"
+    )
+    image = ds.base_dir / relative
+    image.parent.mkdir(parents=True, exist_ok=True)
+    _ = image.write_bytes(f"{ds.name}/{sequence}/{index}".encode())
+    return relative
+
+
+def _save(ds: Dataset, key: str, state: PoseAnnotationSet, commit: str = "c1") -> int:
+    return write_keypoint_set_revision(
+        ds, set_key=key, annotations=state, origin={"dolt_commit": commit}
+    ).revision
 
 
 def _save_set(
@@ -59,38 +88,18 @@ def _save_set(
     shift: float = 0.0,
     commit: str = "c1",
 ) -> int:
-    """Extract-shaped frames for *sequences*, annotated, saved as one revision.
-
-    Every sequence numbers its frames from zero, the way mosaic's frame
-    extraction does, so two sequences share every basename.
-    """
-    frames: list[AnnotationFrame] = []
-    for sequence, count in sequences.items():
-        for index in range(count):
-            relative = Path(
-                f"media/frames/kmeans/kmeans-d7968c97b0/{sequence}/frame_{index:06d}.png"
-            )
-            image = ds.base_dir / relative
-            image.parent.mkdir(parents=True, exist_ok=True)
-            _ = image.write_bytes(f"{ds.name}/{sequence}/{index}".encode())
-            obj = AnnotationObject(
-                keypoints=(
-                    Keypoint(x=10.0 + index + shift, y=12.0, visibility=2),
-                    Keypoint(x=30.0 + index, y=20.0, visibility=2),
-                )
-            )
-            frames.append(
-                AnnotationFrame(
-                    image_path=relative, width=64, height=48, objects=(obj,),
-                    video=sequence, frame_index=index,
-                )
-            )  # fmt: skip
-    annotations = AnnotationSet(
-        schema=SCHEMA, frames=tuple(frames), image_root=ds.base_dir
-    )
-    return write_keypoint_set_revision(
-        ds, set_key=key, annotations=annotations, origin={"dolt_commit": commit}
-    ).revision
+    """One mouse on every frame of *sequences*, all finished, saved as one revision."""
+    frames = [
+        pose_frame(
+            _image(ds, sequence, index),
+            pose_object((10.0 + index + shift, 12.0), (30.0 + index, 20.0)),
+            sequence=sequence,
+            frame_index=index,
+        )
+        for sequence, count in sequences.items()
+        for index in range(count)
+    ]
+    return _save(ds, key, pose_set(frames, image_root=ds.base_dir), commit)
 
 
 def _claim(library: Dataset, project: Dataset, key: str, revision: int) -> None:
@@ -98,7 +107,7 @@ def _claim(library: Dataset, project: Dataset, key: str, revision: int) -> None:
         LabelsScanSource(
             id=f"{project.name}-{key}",
             path=str(project.get_root("labels_raw") / "keypoints" / key),
-            files=(f"rev{revision}/annotations.coco.json",),
+            files=(revision_file(revision),),
             series="keypoints",
         )
     )
@@ -162,6 +171,7 @@ def test_the_tree_is_portable_and_is_a_yolo_pose_dataset(
 
     assert "path" not in declared, "left out, so the trainer roots the tree at the YAML"
     assert declared["kpt_shape"] == [2, 3]
+    assert "flip_idx" not in declared, "no mirror pairs, so flips stay off"
     assert declared["train"] == "train/images" and declared["val"] == "valid/images"
 
 
@@ -232,7 +242,7 @@ def test_a_changed_annotation_state_is_a_new_dataset(
         mice, "17-openfield", {"m01": 4, "m02": 4}, shift=0.5, commit="c2"
     )
     _ = library.add_source_files(
-        "labels", "mice-17-openfield", [f"rev{revision}/annotations.coco.json"]
+        "labels", "mice-17-openfield", [revision_file(revision)]
     )
     _ = library.scan_labels()
 
@@ -268,40 +278,41 @@ def test_a_set_nobody_claimed_defers_with_the_repair(tmp_path: Path) -> None:
     assert "declare a labels source" in refused.value.because
 
 
-def test_two_skeletons_cannot_be_one_model(tmp_path: Path) -> None:
-    library = make_dataset(tmp_path / "libraries" / "7", name="library")
-    _ = _save_set(library, "two-points", {"m01": 2})
-    image = (
-        library.base_dir / "media/frames/kmeans/kmeans-d7968c97b0/m07/frame_000000.png"
+def _one_pose_set(library: Dataset, key: str, pose: PoseDefinition) -> None:
+    """One finished frame of *pose*, saved under *key* in *library*."""
+    points = tuple((float(i), 1.0) for i in range(pose.schema.num_keypoints))
+    frame = pose_frame(
+        _image(library, "m07", 0),
+        pose_object(*points, pose_id=pose.id),
+        sequence="m07",
     )
-    image.parent.mkdir(parents=True)
-    _ = image.write_bytes(b"png")
-    three = AnnotationObject(
-        keypoints=tuple(Keypoint(x=float(i), y=1.0, visibility=2) for i in range(3))
-    )
-    other = AnnotationSet(
-        schema=KeypointSchema(names=("nose", "ear", "tail")),
-        frames=(
-            AnnotationFrame(
-                image_path=image.relative_to(library.base_dir),
-                width=64,
-                height=48,
-                objects=(three,),
-                video="m07",
-                frame_index=0,
-            ),
-        ),
-        image_root=library.base_dir,
-    )
-    _ = write_keypoint_set_revision(
-        library, set_key="three-points", annotations=other, origin={}
+    _ = _save(
+        library, key, pose_set([frame], poses=(pose,), image_root=library.base_dir)
     )
 
-    with pytest.raises(ValueError, match="One model has one skeleton"):
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        KeypointSchema(names=("nose", "ear", "tail")),
+        KeypointSchema(names=("nose", "tail")),
+        KeypointSchema(
+            names=("nose", "tail"), skeleton=((0, 1),), symmetries=((0, 1),)
+        ),
+    ],
+    ids=["keypoints", "skeleton", "symmetry"],
+)
+def test_two_layouts_cannot_be_one_model(
+    tmp_path: Path, schema: KeypointSchema
+) -> None:
+    """Names, edges and mirror pairs all have to agree; each alone differs here."""
+    library = make_dataset(tmp_path / "libraries" / "7", name="library")
+    _ = _save_set(library, "two-points", {"m01": 2})
+    _one_pose_set(library, "other", PoseDefinition(id=3, name="mouse", schema=schema))
+
+    with pytest.raises(ValueError, match="One model has one keypoint layout"):
         _ = run_op(
-            library,
-            KIND,
-            {"sets": [{"set_key": "two-points"}, {"set_key": "three-points"}]},
+            library, KIND, {"sets": [{"set_key": "two-points"}, {"set_key": "other"}]}
         )
 
 
@@ -378,6 +389,182 @@ def test_the_sleap_writer_is_handed_one_set_with_collision_free_images(
     assert seen["root"] == out / "images" == seen["images_dir"]
     assert all((out / "images" / str(name)).is_file() for name in names)
     assert resolve_training_data(library, run_id) == out / "labels.slp"
+
+
+# ---------------------------------------------- choosing from the full saved state
+
+EARS = PoseDefinition(
+    id=5,
+    name="mouse",
+    schema=KeypointSchema(
+        names=("nose", "left_ear", "right_ear"),
+        skeleton=((0, 1), (0, 2)),
+        symmetries=((1, 2),),
+    ),
+    aliases=(Alias(12, "resident"), Alias(13, "intruder")),
+)
+CRICKET = PoseDefinition(
+    id=8,
+    name="cricket",
+    schema=KeypointSchema(names=("head", "tail"), skeleton=((0, 1),)),
+)
+PADDING = BboxPolicy(method="isotropic", pad_frac_of_body=0.3, min_pad_px=4.0)
+
+
+def _ears(x: float, alias: Alias) -> PoseObject:
+    return pose_object(
+        (x, 20.0), (x - 4.0, 16.0), (x + 4.0, 16.0), pose_id=EARS.id, alias_id=alias.id
+    )
+
+
+@pytest.fixture
+def full_state(tmp_path: Path) -> Dataset:
+    """A library holding one set in its whole saved state.
+
+    Two recordings of four frames. Every frame holds a resident and an intruder
+    mouse and a cricket; the last frame of ``m02`` is unfinished and its image
+    was never kept.
+    """
+    library = make_dataset(tmp_path / "libraries" / "7", name="library")
+    resident, intruder = EARS.aliases
+    frames: list[PoseFrame] = []
+    for sequence in ("m01", "m02"):
+        for index in range(4):
+            unfinished = (sequence, index) == ("m02", 3)
+            image = _image(library, sequence, index)
+            if unfinished:
+                (library.base_dir / image).unlink()
+            frames.append(
+                pose_frame(
+                    image,
+                    _ears(10.0 + index, resident),
+                    _ears(40.0, intruder),
+                    pose_object((30.0, 40.0), (36.0, 42.0), pose_id=CRICKET.id),
+                    sequence=sequence,
+                    frame_index=index,
+                    usable=not unfinished,
+                )
+            )
+    state = pose_set(
+        frames, poses=(EARS, CRICKET), image_root=library.base_dir, bbox_policy=PADDING
+    )
+    _ = _save(library, "full", state)
+    return library
+
+
+def _prepare_full(library: Dataset, **overrides: object) -> Path:
+    params: dict[str, object] = {"sets": [{"set_key": "full"}], "pose": "mouse"}
+    params.update(overrides)
+    return model_run_root(library, KIND, run_op(library, KIND, params))
+
+
+def _label(out: Path, sequence: str, index: int) -> list[list[str]]:
+    """The label lines of one frame, however the split placed it."""
+    (found,) = out.rglob(f"labels/*__{sequence}__frame_{index:06d}.txt")
+    return [line.split() for line in found.read_text().splitlines()]
+
+
+def test_only_finished_frames_are_trained_on(full_state: Dataset) -> None:
+    """The unfinished frame is left out, so its missing image is not a failure."""
+    out = _prepare_full(full_state)
+
+    assert len(list(out.rglob("images/*.png"))) == 7
+    assert not list(out.rglob("labels/*__m02__frame_000003.txt"))
+
+
+def test_one_pose_is_trained_and_the_others_are_background(full_state: Dataset) -> None:
+    mice = _prepare_full(full_state)
+    crickets = _prepare_full(full_state, pose="cricket")
+
+    assert len(_label(mice, "m01", 0)) == 2, "both mice, no cricket"
+    assert len(_label(crickets, "m01", 0)) == 1
+    declared = yaml.safe_load((crickets / "data.yaml").read_text())
+    assert declared["names"] == ["cricket"] and declared["kpt_shape"] == [2, 3]
+
+
+def test_a_state_holding_two_poses_needs_one_named(full_state: Dataset) -> None:
+    with pytest.raises(ValueError, match="name the one to train"):
+        _ = _prepare_full(full_state, pose=None)
+
+
+def test_mirror_pairs_become_the_flip_permutation(full_state: Dataset) -> None:
+    declared = yaml.safe_load((_prepare_full(full_state) / "data.yaml").read_text())
+
+    assert declared["flip_idx"] == [0, 2, 1]
+
+
+def test_aliases_become_classes_in_the_labels_and_the_yaml(full_state: Dataset) -> None:
+    out = _prepare_full(full_state, class_by="alias")
+
+    declared = yaml.safe_load((out / "data.yaml").read_text())
+    assert declared["names"] == ["intruder", "resident"]
+    by_x = {round(float(row[1]) * 64): row[0] for row in _label(out, "m01", 0)}
+    assert by_x == {10: "1", 40: "0"}, "the resident at x=10, the intruder at x=40"
+
+
+def test_polo_gives_every_class_its_radius(full_state: Dataset) -> None:
+    out = _prepare_full(full_state, class_by="alias", target="polo", radius=25.0)
+
+    declared = yaml.safe_load((out / "data.yaml").read_text())
+    assert declared["names"] == {0: "intruder", 1: "resident"}
+    assert declared["radii"] == {0: 25.0, 1: 25.0}
+
+
+@pytest.mark.parametrize("target", ["sleap", "litpose"])
+def test_a_one_class_trainer_refuses_classes_by_alias(
+    full_state: Dataset, target: str
+) -> None:
+    with pytest.raises(ValueError, match="trains one class"):
+        _ = _prepare_full(full_state, class_by="alias", target=target)
+
+
+def test_a_derived_box_trains_as_the_annotator_saw_it(full_state: Dataset) -> None:
+    """Unset, the set's own padding applies; a policy given to the run replaces it."""
+    resident = _ears(10.0, EARS.aliases[0])
+    seen = derived_bbox(resident.keypoints, 64, 48, PADDING)
+
+    own = _label(_prepare_full(full_state), "m01", 0)
+    tight = _label(
+        _prepare_full(full_state, bbox={"method": "tight", "margin": 0.0}), "m01", 0
+    )
+
+    widths = sorted(float(row[3]) * 64 for row in own)
+    assert widths[0] == pytest.approx(seen.width, abs=1e-3)
+    assert sorted(float(row[3]) * 64 for row in tight) == pytest.approx([8.0, 8.0])
+
+
+def test_one_set_named_twice_is_refused(
+    world: tuple[Dataset, Dataset, Dataset],
+) -> None:
+    """Two revisions of a set show the same images, which one tree cannot hold."""
+    _mice, _rats, library = world
+    params = PrepareTrainingDataParams.model_validate(
+        {
+            "sets": [
+                {"set_key": "17-openfield"},
+                {"set_key": "17-openfield", "revision": 1},
+            ]
+        }
+    )
+
+    with pytest.raises(ValueError, match="named twice"):
+        _ = OPS[KIND]().plan_identity(library, params, ResolvedScope())
+
+
+def test_how_a_set_is_narrowed_is_part_of_the_dataset_it_names(
+    world: tuple[Dataset, Dataset, Dataset],
+) -> None:
+    _mice, _rats, library = world
+    op = OPS[KIND]()
+
+    def plan(**choice: object) -> str:
+        params = PrepareTrainingDataParams.model_validate(
+            {"sets": [{"set_key": "17-openfield"}], **choice}
+        )
+        return op.plan_identity(library, params, ResolvedScope()).run_id
+
+    names = {plan(), plan(pose="mouse"), plan(class_by="alias"), plan(bbox={})}
+    assert len(names) == 4
 
 
 # ------------------------------------------------------- training on a preparation
@@ -477,9 +664,7 @@ def test_an_archived_project_is_named_as_where_the_chain_stops(
     prepared = _prepare(library)
     model = _train(library, prepared)
 
-    (
-        rats.get_root("labels_raw") / "keypoints/21-arena/rev1/annotations.coco.json"
-    ).unlink()
+    (rats.get_root("labels_raw") / "keypoints/21-arena" / revision_file(1)).unlink()
 
     found = training_provenance(library, "train-pose", model)
     assert "21-arena rev1" in found.stopped_at

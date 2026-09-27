@@ -81,13 +81,15 @@ class _Image(BaseModel):
     file_name: str = ""
     width: int = 0
     height: int = 0
-    # Not part of COCO, and absent from every foreign file, where they read as
-    # the representation's own "unknown". mosaic's writer emits them when a frame
-    # carries them, because a split that keeps one recording's frames together
-    # needs to know which recording a frame came from, and the file name is the
-    # only other place that survives -- a convention, not a fact.
-    video: str = ""
-    frame_index: int = -1
+    # Not part of base COCO: the COCO Camera Traps names for the recording a
+    # frame came from and its position in it. Absent from most foreign files,
+    # where they read as the representation's own "unknown". mosaic's writer
+    # emits them when a frame carries them, because a split that keeps one
+    # recording's frames together needs to know which recording a frame came
+    # from, and the file name is the only other place that survives -- a
+    # convention, not a fact.
+    seq_id: str = ""
+    frame_num: int = -1
 
 
 class _Annotation(BaseModel):
@@ -197,8 +199,8 @@ def read_coco_keypoints(
                 _read_object(annotation, selected, category.name)
                 for annotation in by_image.get(image.id, [])
             ),
-            video=image.video,
-            frame_index=image.frame_index,
+            video=image.seq_id,
+            frame_index=image.frame_num,
         )
         for image in coco.images
     )

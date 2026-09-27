@@ -59,15 +59,11 @@ def _points_conversion(ds: Dataset, params: dict[str, object]) -> list[Path]:
 
 def _keypoint_revision(ds: Dataset, params: dict[str, object]) -> list[Path]:
     """One saved revision of the set ``minimal_op_params`` names."""
-    from mosaic.core.pipeline.label_series_index import write_series_revision
+    from mosaic.core.annotations.projection import write_keypoint_set_revision
+    from tests.helpers import pose_set
 
-    saved = write_series_revision(
-        ds,
-        series="keypoints",
-        key="set-a",
-        payload=b'{"images":[],"annotations":[],"categories":[]}',
-        origin={},
-        n_records=0,
+    saved = write_keypoint_set_revision(
+        ds, set_key="set-a", annotations=pose_set(()), origin={}
     )
     _ = params
     return [saved.path]

@@ -62,7 +62,7 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 
 #### `prepare-training-data`
 
-Version `0.1` &middot; `mosaic.tracking.ops.prepare.PrepareTrainingDataOp`
+Version `0.2` &middot; `mosaic.tracking.ops.prepare.PrepareTrainingDataOp`
 
 Merge revisions of keypoint annotation sets into one training dataset.
 
@@ -70,7 +70,10 @@ Merge revisions of keypoint annotation sets into one training dataset.
 | --- | --- | --- | --- | --- |
 | `sets` | list of `KeypointSetRef` | _required_ | min items `1` | The annotation sets to train on, merged into one dataset. |
 | `target` | `"yolo-pose"` \| `"polo"` \| `"sleap"` \| `"litpose"` | `"yolo-pose"` |  | Which trainer's layout to write. |
-| `bbox` | `BboxPolicy` | _constructed_ |  | How an instance's box is derived from its keypoints when the annotation carries none of its own. |
+| `pose` | `integer` \| `string` \| `None` | `null` |  | Which pose to train, by its id or its name. Left unset, every set must hold exactly one pose. One dataset has one keypoint layout. |
+| `class_by` | `"alias"` \| `None` | `null` |  | alias makes each alias a class, and refuses an object of the pose without one. Unset, the pose is the one class. sleap and litpose train one class. |
+| `track_by` | `"alias"` \| `None` | `null` |  | sleap only: alias gives each object its alias as its track, which is what a SLEAP identity model learns. |
+| `bbox` | `BboxPolicy` \| `None` | `null` |  | How a box the annotator did not draw is derived from its keypoints. Unset, each set's own padding: the box the annotator saw. A drawn box is used as drawn. |
 | `point_index` | `integer` | `0` | >= `0` | polo only: which keypoint of each instance is the point. |
 | `radius` | `number` | `100.0` | > `0` | polo only: the detection radius. [px] |
 | `split` | tuple of (`number`, `number`, `number`) | `[0.8, 0.15, 0.05]` | min items `3`, max items `3` | Train, validation and test fractions. |

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
+from mosaic.core.annotations.projection import KEYPOINTS_SERIES
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.label_series_index import (
@@ -185,7 +186,7 @@ def _consumed(holder: Dataset, cell: str) -> tuple[ConsumedRevision, ...]:
         entries = _CONSUMED.validate_json(cell or "[]")
     except ValidationError:
         return ()
-    indexed = index_records(read_label_series(holder, "keypoints"))
+    indexed = index_records(read_label_series(holder, KEYPOINTS_SERIES))
     found: list[ConsumedRevision] = []
     for entry in entries:
         origin_uuid = entry.origin_uuid

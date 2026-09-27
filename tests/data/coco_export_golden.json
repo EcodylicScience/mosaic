@@ -1,0 +1,172 @@
+{
+  "annotations": [
+    {
+      "area": 700.0,
+      "attributes": {
+        "alias": "resident",
+        "alias_id": 12,
+        "bbox_source": "drawn",
+        "origin": "human"
+      },
+      "bbox": [
+        10.0,
+        10.0,
+        20.0,
+        35.0
+      ],
+      "category_id": 1,
+      "id": 1,
+      "image_id": 1,
+      "iscrowd": 0,
+      "keypoints": [
+        20.0,
+        20.0,
+        2.0,
+        15.0,
+        15.0,
+        2.0,
+        25.0,
+        15.0,
+        2.0,
+        20.0,
+        40.0,
+        2.0
+      ],
+      "num_keypoints": 4
+    },
+    {
+      "area": 1584.0,
+      "attributes": {
+        "bbox_source": "derived",
+        "origin": "model"
+      },
+      "bbox": [
+        20.0,
+        0.0,
+        44.0,
+        36.0
+      ],
+      "category_id": 2,
+      "id": 2,
+      "image_id": 1,
+      "iscrowd": 0,
+      "keypoints": [
+        40.0,
+        10.0,
+        2.0,
+        52.0,
+        16.0,
+        2.0
+      ],
+      "num_keypoints": 2
+    },
+    {
+      "area": 2160.0,
+      "attributes": {
+        "alias": "intruder",
+        "alias_id": 13,
+        "bbox_source": "derived",
+        "origin": "human"
+      },
+      "bbox": [
+        0.0,
+        0.0,
+        45.0,
+        48.0
+      ],
+      "category_id": 1,
+      "id": 3,
+      "image_id": 2,
+      "iscrowd": 0,
+      "keypoints": [
+        20.0,
+        20.0,
+        2.0,
+        15.0,
+        15.0,
+        2.0,
+        25.0,
+        15.0,
+        2.0,
+        20.0,
+        40.0,
+        2.0
+      ],
+      "num_keypoints": 4
+    }
+  ],
+  "categories": [
+    {
+      "attributes": {
+        "pose_id": 3
+      },
+      "id": 1,
+      "keypoints": [
+        "nose",
+        "left_ear",
+        "right_ear",
+        "tail"
+      ],
+      "name": "mouse",
+      "skeleton": [
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          3
+        ],
+        [
+          1,
+          4
+        ]
+      ],
+      "supercategory": "animal"
+    },
+    {
+      "attributes": {
+        "pose_id": 8
+      },
+      "id": 2,
+      "keypoints": [
+        "head",
+        "tail"
+      ],
+      "name": "cricket",
+      "skeleton": [
+        [
+          1,
+          2
+        ]
+      ],
+      "supercategory": "animal"
+    }
+  ],
+  "images": [
+    {
+      "file_name": "frames/a/frame_000001.png",
+      "frame_num": 1,
+      "height": 48,
+      "id": 1,
+      "seq_id": "mouse003",
+      "width": 64
+    },
+    {
+      "file_name": "frames/a/frame_000002.png",
+      "frame_num": 2,
+      "height": 48,
+      "id": 2,
+      "seq_id": "mouse003",
+      "width": 64
+    },
+    {
+      "file_name": "frames/a/frame_000003.png",
+      "frame_num": 3,
+      "height": 48,
+      "id": 3,
+      "seq_id": "mouse003",
+      "width": 64
+    }
+  ]
+}

@@ -64,6 +64,7 @@ __all__ = [
     "payload_digest",
     "read_label_series",
     "read_revision_manifest",
+    "revision_export",
     "row_for_revision_file",
     "series_index_path",
     "series_root",
@@ -223,11 +224,15 @@ class _RevisionManifestFile(BaseModel):
     origin_ref: str = ""
     image_root: str = ""
     origin: dict[str, JsonValue] = Field(default_factory=dict)
+    exports: dict[str, str] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
 class RevisionManifest:
-    """What a revision's ``manifest.json`` records, read back."""
+    """What a revision's ``manifest.json`` records, read back.
+
+    ``exports`` maps each export file the revision holds to its digest.
+    """
 
     series: str
     key: str
@@ -239,6 +244,7 @@ class RevisionManifest:
     origin_ref: str
     image_root: str
     origin: Mapping[str, JsonValue]
+    exports: Mapping[str, str]
 
 
 def ensure_series_root(root: Path, spec: SeriesSpec) -> None:
@@ -332,6 +338,7 @@ def write_series_revision(
     origin: Mapping[str, JsonValue],
     n_records: int,
     origin_ref: str = "",
+    exports: Mapping[str, bytes] | None = None,
 ) -> SeriesRevision:
     """Save *payload* as the next revision of *key*, unless nothing changed.
 
@@ -355,13 +362,17 @@ def write_series_revision(
             in the revision's manifest. Where a database commit belongs.
         n_records: How many records *payload* holds, for the index.
         origin_ref: A short pointer into *origin* for the index row.
+        exports: The bytes of each export the series declares, generated from
+            *payload*. Written into the new revision and never compared: an
+            unchanged payload is an unchanged state, whatever its exports hold.
 
     Returns:
         The revision, and whether this call wrote it.
 
     Raises:
         KeyError: *series* is not declared.
-        ValueError: *key* is empty or not one path component.
+        ValueError: *key* is empty or not one path component, or *exports* does
+            not name exactly the files the series declares.
         LabelSeriesCollisionError: The series directory name is taken.
     """
     spec = series_spec(series)
@@ -369,6 +380,13 @@ def write_series_revision(
         msg = f"{key!r} cannot be a {spec.name} key: it has to name one directory"
         raise ValueError(msg)
     _ = validate_entry_name(key, f"{spec.name} key")
+    exported = dict(exports or {})
+    if sorted(exported) != sorted(spec.exports):
+        msg = (
+            f"the {spec.name} series writes the exports {sorted(spec.exports)} "
+            f"with every revision, and was handed {sorted(exported)}"
+        )
+        raise ValueError(msg)
 
     root = series_root(ds, spec.name)
     ensure_series_root(root, spec)
@@ -401,7 +419,11 @@ def write_series_revision(
         revision_root.mkdir(parents=True, exist_ok=False)
 
         target = revision_root / spec.payload_filename
-        atomic_write(target, lambda tmp: tmp.write_bytes(payload))
+        _write_bytes(target, payload)
+        export_digests: dict[str, JsonValue] = {}
+        for name, content in sorted(exported.items()):
+            _write_bytes(revision_root / name, content)
+            export_digests[name] = payload_digest(content)
         exported_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         document: dict[str, JsonValue] = {
             "series": spec.name,
@@ -420,6 +442,7 @@ def write_series_revision(
             # without being told where this one is.
             "image_root": os.path.relpath(ds.base_dir, revision_root),
             "origin": dict(origin),
+            "exports": export_digests,
         }
         manifest_text = json.dumps(document, indent=2, sort_keys=True) + "\n"
         atomic_write(
@@ -453,6 +476,10 @@ def write_series_revision(
         path=target,
         written=True,
     )
+
+
+def _write_bytes(path: Path, content: bytes) -> None:
+    atomic_write(path, lambda tmp: tmp.write_bytes(content))
 
 
 def _mtime_iso(mtime: float) -> str:
@@ -493,7 +520,38 @@ def read_revision_manifest(payload_path: Path) -> RevisionManifest:
         origin_ref=document.origin_ref,
         image_root=document.image_root,
         origin=document.origin,
+        exports=document.exports,
     )
+
+
+def revision_export(payload_path: Path, filename: str) -> Path:
+    """The export *filename* of the revision whose payload is *payload_path*.
+
+    Its digest is checked here, where it is read, rather than at every scan: a
+    scan spares an unchanged revision any read at all, and an export is read
+    only when it is handed to someone.
+
+    Raises:
+        FileNotFoundError: The revision records no such export, or it is gone.
+        LabelSeriesTamperedError: The export's bytes changed after it was written.
+    """
+    manifest = read_revision_manifest(payload_path)
+    recorded = manifest.exports.get(filename)
+    if recorded is None:
+        msg = (
+            f"revision {manifest.revision} of {manifest.key!r} records no export "
+            f"{filename!r} (it records {sorted(manifest.exports)})"
+        )
+        raise FileNotFoundError(msg)
+    path = payload_path.parent / filename
+    measured = file_digest(path)
+    if measured != recorded:
+        msg = (
+            f"{path} was written with digest {recorded} and now measures "
+            f"{measured}. A revision's files are immutable; restore it."
+        )
+        raise LabelSeriesTamperedError(msg)
+    return path
 
 
 def row_for_revision_file(

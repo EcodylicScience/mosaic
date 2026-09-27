@@ -6,11 +6,11 @@ change moves a composition hash and blocks while derivatives exist.
 
 A **series** follows a different rule, on purpose. It is the committed state of an
 editor -- the keypoint annotator, later the behavior scoring tool -- projected to
-disk every time that editor is closed. Such a state is *versioned*: each save that
-changed something is a new immutable revision, revisions coexist, nothing is ever
-replaced, and a consumer names the revision it read. That is what lets a trained
-model be tied to the exact annotations it saw, and it is why a new revision must
-never block anything: the revision a model consumed is still there.
+disk whenever a consumer needs a fixed copy of it. Such a state is *versioned*:
+each save that changed something is a new immutable revision, revisions coexist,
+nothing is ever replaced, and a consumer names the revision it read. That is what
+lets a trained model be tied to the exact annotations it saw, and it is why a new
+revision must never block anything: the revision a model consumed is still there.
 
 ```
 labels_raw/
@@ -19,9 +19,16 @@ labels_raw/
     .mosaic-series               what marks the directory as a series
     index.csv                    one row per revision
     <key>/rev1/ ... rev<N>/      immutable
-      <payload>                  e.g. annotations.coco.json
-      manifest.json              origin, revision, digest, counts
+      <payload>                  e.g. annotations.mosaic.json: the saved state
+      <export> ...               e.g. annotations.coco.json: generated from it
+      manifest.json              origin, revision, digests, counts
 ```
+
+A revision's identity is its payload: the payload is what is digested, what a
+repeated save is compared on, and what a consumer reads. An *export* is a file
+generated from the payload in another tool's format, written in the same
+revision and never read back by mosaic. Keeping the two apart is what lets an
+export improve without an unchanged state becoming a new revision.
 
 Two rules under one root is a hazard if either is inferred, so **the rule is
 declared here, per series, and never read off a path**. Code that needs to know
@@ -82,14 +89,18 @@ class SeriesSpec:
     Attributes:
         name: The directory under ``labels_raw`` and the value a source declares.
         unit: What a key names. See :data:`SeriesUnit`.
-        payload_filename: The file every revision directory holds.
+        payload_filename: The file every revision directory holds, and the one
+            its identity is taken over.
         format: What that file is, for a reader choosing how to parse it.
+        exports: The files generated from the payload that every revision also
+            holds, for tools that read another format.
     """
 
     name: str
     unit: SeriesUnit
     payload_filename: str
     format: str
+    exports: tuple[str, ...] = ()
 
 
 LABEL_SERIES: Final = MappingProxyType(
@@ -97,8 +108,9 @@ LABEL_SERIES: Final = MappingProxyType(
         "keypoints": SeriesSpec(
             name="keypoints",
             unit="set",
-            payload_filename="annotations.coco.json",
-            format="coco_keypoints",
+            payload_filename="annotations.mosaic.json",
+            format="mosaic-pose-annotations",
+            exports=("annotations.coco.json",),
         ),
     }
 )

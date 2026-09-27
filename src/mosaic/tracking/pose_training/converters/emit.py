@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-from mosaic.core.annotations.bbox import BboxPolicy, keypoints_to_bbox
+from mosaic.core.annotations.bbox import BboxPolicy, policy_bbox
 from mosaic.core.annotations.model import (
     AnnotationFrame,
     AnnotationObject,
@@ -97,19 +97,7 @@ def yolo_pose_line(
         points = np.array(
             [[point.x, point.y] for point in obj.keypoints], dtype=np.float64
         )
-        bbox = keypoints_to_bbox(
-            points,
-            width,
-            height,
-            margin=policy.margin,
-            method=policy.method,
-            head_idx=policy.head_index,
-            tail_idx=policy.tail_index,
-            pad_frac_of_body=policy.pad_frac_of_body,
-            min_pad_px=policy.min_pad_px,
-            length_pad_frac=policy.length_pad_frac,
-            side_pad_frac=policy.side_pad_frac,
-        )
+        bbox = policy_bbox(points, width, height, policy)
 
     if bbox[2] <= 0 or bbox[3] <= 0:
         return None

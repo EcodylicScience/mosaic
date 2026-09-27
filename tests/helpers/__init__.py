@@ -8,6 +8,8 @@ one"; this is the sanctioned one.
 
 What lives where:
 
+- ``annotations`` -- keypoint annotation sets in their saved shape, and the file
+  a revision of one is claimed by.
 - ``datasets`` -- the `Dataset` a test runs against.
 - ``features`` -- the templates and per-sequence frames the global
   fit-then-apply features are tested on.
@@ -31,6 +33,14 @@ there. Their bodies delegate here, so the logic has one home either way.
 
 from __future__ import annotations
 
+from tests.helpers.annotations import (
+    KEYPOINTS_PAYLOAD,
+    MOUSE,
+    pose_frame,
+    pose_object,
+    pose_set,
+    revision_file,
+)
 from tests.helpers.datasets import make_dataset
 from tests.helpers.environment import (
     FFMPEG_TOOLCHAIN,
@@ -76,6 +86,8 @@ from tests.helpers.tracks import (
 
 __all__ = [
     "FFMPEG_TOOLCHAIN",
+    "KEYPOINTS_PAYLOAD",
+    "MOUSE",
     "FakeTrainer",
     "MediaClip",
     "MockDataset",
@@ -99,8 +111,12 @@ __all__ = [
     "module_tree",
     "names_called_by",
     "names_read",
+    "pose_frame",
+    "pose_object",
+    "pose_set",
     "require_ffmpeg",
     "resolved_scope",
+    "revision_file",
     "runs_in_an_external_environment",
     "sandbox_home",
     "scope_over",

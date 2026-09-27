@@ -109,11 +109,13 @@ Deleting a derived or temporary folder costs time, never data.
 
 **`labels_raw/keypoints/` is versioned, and the rest of `labels_raw/` is not.** An
 uploaded label file is the current truth about its sequence: change it, and whatever
-was computed from it is stale. A keypoint annotation set is saved again every time
-the annotator is closed, so each changed save becomes a new folder,
-`<set>/rev1`, `<set>/rev2`, and nothing is ever rewritten. A trained model names the
-revision it read, which is how it stays tied to exactly those annotations. Treat a
-revision folder as read-only: one that was edited afterwards is refused.
+was computed from it is stale. A keypoint annotation set is saved whenever a training
+run or an export needs a fixed copy of it, so each changed save becomes a new folder,
+`<set>/rev1`, `<set>/rev2`, and nothing is ever rewritten. Each folder holds the
+set's full saved state, `annotations.mosaic.json`, and a COCO Keypoints export of it,
+`annotations.coco.json`, for other tools. A trained model names the revision it read,
+which is how it stays tied to exactly those annotations. Treat a revision folder as
+read-only: one that was edited afterwards is refused.
 `labels_raw/behavior/` is reserved for saved behavior scorings, which will work the
 same way.
 
