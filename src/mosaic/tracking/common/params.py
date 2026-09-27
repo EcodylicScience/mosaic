@@ -24,6 +24,18 @@ from mosaic.core.params import (
 
 __all__ = ["PhasedTrackerOpParams", "TrackerOpParams", "refuse_unphased_fields"]
 
+DEVICE_INDEX_NOTE = (
+    " A GPU index counts within the GPUs the run may use: under a queue worker "
+    "pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given."
+)
+"""Appended to every ``device`` description that takes a GPU index.
+
+A queue worker pins its jobs to one GPU by setting ``CUDA_VISIBLE_DEVICES``, and a
+cluster allocation does the same, so the physical card a ``0`` names depends on
+where the run lands. Saying so once, here, keeps the tracking ops from giving six
+accounts of it.
+"""
+
 _CONVERT_TO_TRACKS_DESCRIPTION = (
     "Convert the tool's native output into a standardized tracks table once "
     "tracking finishes, instead of leaving the output where the tool wrote it."

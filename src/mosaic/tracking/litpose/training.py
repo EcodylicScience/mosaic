@@ -20,6 +20,7 @@ Python API and the tests patch the subprocess. The seam is one snippet.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -178,7 +179,9 @@ class LitposeDevicePlacement:
     env_overlay: Mapping[str, str]
 
 
-def litpose_device_placement(device: str) -> LitposeDevicePlacement:
+def litpose_device_placement(
+    device: str, inherited: str | None = None
+) -> LitposeDevicePlacement:
     """Where *device* sends training.
 
     Lightning Pose trains on CUDA and only on CUDA: its Trainer fixes
@@ -187,10 +190,19 @@ def litpose_device_placement(device: str) -> LitposeDevicePlacement:
     accept have nothing to set here, and a request for one is refused rather
     than accepted and quietly ignored.
 
+    Indices count within the devices this process can already see. Where a
+    ``CUDA_VISIBLE_DEVICES`` is *inherited* -- a queue worker pinned to one GPU,
+    a SLURM allocation -- ``0`` means its first entry, not physical GPU 0, so the
+    overlay names the inherited entries rather than replacing them: replacing
+    them would send the run to a card another job holds.
+
     Args:
         device: ``auto``, ``gpu`` or empty to take whatever Lightning Pose
             finds; or a comma-separated list of CUDA indices such as ``0`` or
             ``0,1``.
+        inherited: the ``CUDA_VISIBLE_DEVICES`` of the launching process, or
+            ``None`` where it sets none. Omitted by the submit-time validator,
+            which asks only whether *device* is usable at all.
 
     Returns:
         The assignments and the environment overlay, both empty when *device*
@@ -207,7 +219,7 @@ def litpose_device_placement(device: str) -> LitposeDevicePlacement:
     if parts and all(part.isdigit() for part in parts):
         return LitposeDevicePlacement(
             assignments={"training.num_gpus": len(parts)},
-            env_overlay={_CUDA_VISIBLE_DEVICES: ",".join(parts)},
+            env_overlay={_CUDA_VISIBLE_DEVICES: _visible(parts, inherited)},
         )
     msg = (
         f"unusable device {device!r}: Lightning Pose trains on CUDA, fixing "
@@ -215,6 +227,26 @@ def litpose_device_placement(device: str) -> LitposeDevicePlacement:
         f"comma-separated list of CUDA indices such as '0' or '0,1'."
     )
     raise ValueError(msg)
+
+
+def _visible(indices: list[str], inherited: str | None) -> str:
+    """*indices* as a ``CUDA_VISIBLE_DEVICES`` value, read within *inherited*.
+
+    Raises:
+        ValueError: an index names a device the inherited list does not hold.
+    """
+    if inherited is None:
+        return ",".join(indices)
+    visible = [entry.strip() for entry in inherited.split(",") if entry.strip()]
+    beyond = [index for index in indices if int(index) >= len(visible)]
+    if beyond:
+        msg = (
+            f"device index {', '.join(beyond)} is beyond the {len(visible)} "
+            f"device(s) this process may use (CUDA_VISIBLE_DEVICES="
+            f"{inherited!r}); indices count within that list"
+        )
+        raise ValueError(msg)
+    return ",".join(visible[int(index)] for index in indices)
 
 
 def train_litpose(
@@ -302,7 +334,7 @@ def train_litpose(
     run_root = Path(run_root)
     run_root.mkdir(parents=True, exist_ok=True)
 
-    placement = litpose_device_placement(device)
+    placement = litpose_device_placement(device, os.environ.get(_CUDA_VISIBLE_DEVICES))
     assignments: dict[str, JsonValue] = {
         "model.model_type": model_type,
         "model.backbone": backbone,

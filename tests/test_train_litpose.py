@@ -21,7 +21,10 @@ from mosaic.core.pipeline.ops import run_op
 from mosaic.tracking import register_ops
 from mosaic.tracking.litpose import training as training_module
 from mosaic.tracking.litpose.templates import default_config_path
-from mosaic.tracking.litpose.training import epoch_coupled_assignments
+from mosaic.tracking.litpose.training import (
+    epoch_coupled_assignments,
+    litpose_device_placement,
+)
 from mosaic.tracking.ops.train import trained_model_index
 from mosaic.tracking.ops.train_litpose import TrainLitposeParams
 
@@ -182,6 +185,7 @@ def test_the_device_reaches_the_trainer(
     reach the subprocess through its environment, and a test asserting only on
     argv would pass while the run still landed on GPU 0.
     """
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     ds = make_dataset(tmp_path, save=False)
     _point_at_litpose(tmp_path, monkeypatch)
     launches = _fake_trainer(monkeypatch)
@@ -205,6 +209,7 @@ def test_two_devices_are_counted_as_well_as_named(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The count is what makes ``0,1`` mean two GPUs rather than one."""
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     ds = make_dataset(tmp_path, save=False)
     _point_at_litpose(tmp_path, monkeypatch)
     launches = _fake_trainer(monkeypatch)
@@ -249,6 +254,42 @@ def test_an_auto_device_sets_neither_half(
 
     assert not [arg for arg in launches.argv[0] if arg.startswith("training.num_gpus")]
     assert launches.env[0]["CUDA_VISIBLE_DEVICES"] == "3", "inherited, not replaced"
+
+
+def test_an_index_counts_within_the_devices_a_pinned_worker_was_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A queue worker pinned to GPU 3 hands its job CUDA_VISIBLE_DEVICES=3; the
+    job's ``0`` is that card. Replacing the variable would train on GPU 0, which
+    another job holds."""
+    ds = make_dataset(tmp_path, save=False)
+    _point_at_litpose(tmp_path, monkeypatch)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
+    launches = _fake_trainer(monkeypatch)
+
+    _ = run_op(
+        ds,
+        "train-litpose",
+        {
+            "project": str(_project(tmp_path)),
+            "base_config": str(_base_config(tmp_path)),
+            "device": "0",
+            "max_epochs": 5,
+        },
+    )
+
+    assert launches.env[0]["CUDA_VISIBLE_DEVICES"] == "3"
+
+
+def test_inherited_devices_are_named_in_the_order_asked_for() -> None:
+    placement = litpose_device_placement("1,0", "GPU-aa,GPU-bb")
+    assert placement.env_overlay == {"CUDA_VISIBLE_DEVICES": "GPU-bb,GPU-aa"}
+    assert placement.assignments == {"training.num_gpus": 2}
+
+
+def test_an_index_beyond_the_inherited_devices_is_refused() -> None:
+    with pytest.raises(ValueError, match="beyond the 1 device"):
+        _ = litpose_device_placement("1", "3")
 
 
 @pytest.mark.parametrize("device", ["cpu", "mps", "cuda:0", "0,x"])

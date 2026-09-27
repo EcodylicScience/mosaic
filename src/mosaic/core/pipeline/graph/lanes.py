@@ -1,11 +1,10 @@
 """Which queue a step is offered to, decided from what the step declares.
 
-A **lane is a queue name, not a reservation.** Each maps to a *resource class*
-whose capacity is a semaphore ceiling on a chosen bottleneck, not a pinned
-allocation, and two lanes may share one class deliberately -- training and
-inference share the GPU so a single card is not double-booked. An idle lane
-therefore costs nothing, which is what makes a lane per kind of work reasonable
-rather than wasteful.
+A **lane is a queue name, not a reservation.** The queue maps each lane to a
+*pool* of workers, and two lanes may share one pool deliberately -- training and
+inference share the GPU workers so a single card is not double-booked. An idle
+lane therefore costs nothing, which is what makes a lane per kind of work
+reasonable rather than wasteful.
 
 **This lives in mosaic, and it did not before.** The rule was in mosaic-api,
 derived from mosaic's own op registry, while ``plan_pipeline`` has to put a lane
@@ -30,7 +29,9 @@ __all__ = [
     "DEFAULT_LANE",
     "GPU_INFER_LANE",
     "GPU_TRAIN_LANE",
+    "TRANSCODE_LANE",
     "lane_for",
+    "lane_for_step",
     "resource_class_of",
 ]
 
@@ -42,6 +43,14 @@ GPU_TRAIN_LANE: Final = "gpu-train"
 
 GPU_INFER_LANE: Final = "gpu-infer"
 """Inference and anything else wanting a GPU. Shares the ``gpu`` class with training."""
+
+TRANSCODE_LANE: Final = "transcode"
+"""Media work bound by ffmpeg: transcodes and the joined and store exports.
+
+Apart from ``feature-compute`` because the two want opposite sizing: one well-tuned
+ffmpeg process uses a machine's cores and its disk better than several side by side,
+while CPU features scale with the number of workers running them.
+"""
 
 
 def resource_class_of(declared: Declaration) -> str:
@@ -58,14 +67,42 @@ def resource_class_of(declared: Declaration) -> str:
 def lane_for(declared: Declaration) -> str:
     """Which lane *declared*'s work is offered to.
 
-    GPU work splits by category and everything else does not, which is the whole
-    rule. The split exists so a fair-share pool can weigh a training job against
-    an inference job rather than treating a card as one undifferentiated queue;
-    both still map to the one ``gpu`` resource class, so the card is not
-    double-booked.
+    GPU work splits into training and everything else: an op of category
+    ``train``, or a GPU feature of category ``global`` (which fits a model), is
+    training. The split exists so the queue can weigh a training job against an
+    inference job -- and keep a card for inference when it is configured to --
+    rather than treating the GPUs as one undifferentiated queue. Media work bound
+    by ffmpeg -- the ``transcode`` category, or a declared ``heavy`` class -- has a
+    lane of its own. Everything else is ``feature-compute``.
     """
-    if resource_class_of(declared) != "gpu":
-        return DEFAULT_LANE
-    if declared.produces.kind == "op" and declared.category == "train":
-        return GPU_TRAIN_LANE
-    return GPU_INFER_LANE
+    resource_class = resource_class_of(declared)
+    if resource_class == "gpu":
+        fits = (
+            declared.category == "train"
+            if declared.produces.kind == "op"
+            else declared.category == "global"
+        )
+        return GPU_TRAIN_LANE if fits else GPU_INFER_LANE
+    if declared.category == "transcode" or resource_class == "heavy":
+        return TRANSCODE_LANE
+    return DEFAULT_LANE
+
+
+def lane_for_step(name: str) -> str:
+    """The lane a step named *name* -- a feature slug or an op kind -- is offered to.
+
+    The by-name entry point, for a caller that holds a submitted job rather than a
+    declaration. It reads the declaration catalog, and so pays the feature-library
+    import the planning read paths are kept free of; that import is deferred into
+    the call so nothing that only imports this module pays it.
+
+    Raises:
+        KeyError: no feature or op of that name is registered.
+    """
+    from .resolve import declaration_catalog
+
+    declared = declaration_catalog().get(name)
+    if declared is None:
+        message = f"no feature or op named {name!r} is registered"
+        raise KeyError(message)
+    return lane_for(declared)

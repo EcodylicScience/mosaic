@@ -362,6 +362,8 @@ class KpmsFeature:
     """
 
     category = "global"
+    # keypoint-MoSeq fits in JAX, and is built for a GPU; on CPU a fit takes days.
+    resource_class = "gpu"
     name = "kpms"
     version = "0.1"
     parallelizable = False

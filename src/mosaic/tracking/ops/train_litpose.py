@@ -28,6 +28,7 @@ from mosaic.core.params import (
     Params,
 )
 from mosaic.tracking.common.entry import phase_activity
+from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
 from mosaic.tracking.common.training_progress import epoch_reporter
 from mosaic.tracking.model_refs import (
     observed_model_source,
@@ -108,7 +109,7 @@ _DEVICE_DESCRIPTION = (
     "Which CUDA devices train the model, as a comma-separated list of "
     "indices. auto takes whatever Lightning Pose finds. There is no cpu "
     "setting: Lightning Pose fixes its trainer's accelerator to gpu."
-)
+) + DEVICE_INDEX_NOTE
 
 
 class TrainLitposeParams(Params):

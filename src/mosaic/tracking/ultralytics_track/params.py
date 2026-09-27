@@ -27,7 +27,7 @@ from mosaic.core.params import (
     Declared,
     Probability,
 )
-from mosaic.tracking.common.params import TrackerOpParams
+from mosaic.tracking.common.params import DEVICE_INDEX_NOTE, TrackerOpParams
 from mosaic.tracking.ultralytics_track.run import ModelTask
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
     TRACKER_NAMES,
@@ -122,7 +122,7 @@ _FRAME_STEP_DESCRIPTION = (
 _DEVICE_DESCRIPTION = (
     "Which CUDA device index, or cpu, runs inference. A property of the "
     "machine rather than of the result, so it stays out of identity."
-)
+) + DEVICE_INDEX_NOTE
 
 _PRECISION_DESCRIPTION = (
     "The numeric precision inference runs at. fp16 halves the memory a batch "

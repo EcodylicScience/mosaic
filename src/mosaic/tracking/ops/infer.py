@@ -60,6 +60,7 @@ from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.schema import ensure_track_schema
 from mosaic.runlog import now_iso
 from mosaic.tracking.common.entry import open_entry, phase_activity, release_entry
+from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
 from mosaic.tracking.common.scope import one_camera_per_entry
 from mosaic.tracking.common.tool_input import (
     refuse_undecodable_codec,
@@ -197,7 +198,7 @@ _CONVERT_TO_TRACKS_DESCRIPTION = (
 _DEVICE_DESCRIPTION = (
     "Which accelerator the model runs on, in the tool's own spelling: a GPU "
     "index, or 'cpu'."
-)
+) + DEVICE_INDEX_NOTE
 
 _BATCH_SIZE_DESCRIPTION = "How many frames the model reads in one forward pass."
 

@@ -88,6 +88,23 @@ installed together they overwrite each other's files and leave two vendored
 ffmpeg builds in a single `cv2` -- which crashes the process nondeterministically.
 Nothing here needs a GUI build.
 
+### Older GPUs need torch from another index
+
+The lock resolves torch from PyPI, whose build carries kernels for current GPUs
+only: the CUDA 12.8 and later builds dropped Maxwell and Pascal (sm_50 to sm_61).
+On such a card -- a GTX 1080 Ti, say -- `torch.cuda.is_available()` still answers
+`True`, and the first kernel fails with `no kernel image is available for
+execution on the device`, partway into a run. Keep the lock's version and take its
+build from PyTorch's cu126 index, the newest that still ships them:
+
+```bash
+uv sync --python 3.12
+uv pip install --reinstall --index-url https://download.pytorch.org/whl/cu126 \
+    "torch==<the lock's version>" "torchvision==<the lock's version>"
+```
+
+A later `uv sync` puts PyPI's build back, so repeat the second step after one.
+
 ### Training fetches its base weights the first time
 
 `train-pose`'s default `model` is the bare asset name `yolo11n-pose.pt`, which

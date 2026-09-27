@@ -56,7 +56,9 @@ from .lanes import (
     DEFAULT_LANE,
     GPU_INFER_LANE,
     GPU_TRAIN_LANE,
+    TRANSCODE_LANE,
     lane_for,
+    lane_for_step,
     resource_class_of,
 )
 from .plan import (
@@ -212,6 +214,7 @@ __all__ = [
     "SubmittedRequest",
     "TRACKS_DECLARATION",
     "TRACKS_INPUT",
+    "TRANSCODE_LANE",
     "Verdict",
     "WaitingOnResource",
     "ancestors_of",
@@ -240,6 +243,7 @@ __all__ = [
     "intended_scope",
     "is_stalled",
     "lane_for",
+    "lane_for_step",
     "load_recipe",
     "load_recipe_for_request",
     "load_request",

@@ -140,7 +140,7 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 | `analysis_range` | tuple of (`integer`, `integer`) \| `None` | `null` |  | The first and last frame to analyze. Unset, SLEAP analyzes the whole video. |
 | `sleap_extra_settings` | `object` \| `None` | `null` |  | Additional sleap-nn track options, sent as --key value pairs. A boolean value becomes a bare --key flag when true and is omitted when false, and a None value is skipped. |
 | `batch_size` | `integer` | `4` |  | The inference batch size. |
-| `device` | `string` \| `None` | `null` |  | The device to run inference on: cpu, cuda, mps, a CUDA index such as 0, or cuda:<index>. Unset and auto leave the choice to sleap-nn; a named device fails where it is absent. |
+| `device` | `string` \| `None` | `null` |  | The device to run inference on: cpu, cuda, mps, a CUDA index such as 0, or cuda:<index>. Unset and auto leave the choice to sleap-nn; a named device fails where it is absent. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 
 ??? note "`JsonValue`"
 
@@ -202,7 +202,7 @@ Track scoped videos with a YOLO model, bridging results into ``tracks/``.
 | `start_frame` | `integer` | `0` | >= `0` | The first frame index tracked. It is part of identity for a stronger reason than in the inference ops: a tracker is stateful, so a different starting frame gives different identities rather than a subset of the same ones. |
 | `end_frame` | `integer` \| `None` | `null` |  | The frame index tracking stops before. Unset tracks to the end of the video. |
 | `frame_step` | `integer` | `1` | >= `1` | Track every nth frame. A step above 1 changes what the tracker sees between observations, so it changes the identities as well as the count. |
-| `device` | `string` | `"0"` |  | Which CUDA device index, or cpu, runs inference. A property of the machine rather than of the result, so it stays out of identity. |
+| `device` | `string` | `"0"` |  | Which CUDA device index, or cpu, runs inference. A property of the machine rather than of the result, so it stays out of identity. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `precision` | `"fp32"` \| `"fp16"` | `"fp32"` |  | The numeric precision inference runs at. fp16 halves the memory a batch needs and can move a detection across a threshold. |
 | `batch_size` | `integer` | `8` | >= `1` | How many frames are decoded and handed to the model per forward pass. Tracking still advances one frame at a time within a batch. |
 | `prefetch` | `boolean` | `true` |  | Decode the next batch on a background thread while the current one runs. |
@@ -361,7 +361,7 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 | `end_frame` | `integer` \| `None` | `null` |  | Last frame to predict on, inclusive. Unset runs to the end of the video. |
 | `max_frames` | `integer` \| `None` | `null` |  | Ceiling on how many frames are predicted on per entry. Unset predicts on the whole range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Bridge the predictions into a standardized tracks table once inference finishes, instead of leaving them in the run directory alone. |
-| `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. |
+| `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `batch_size` | `integer` | `8` |  | How many frames the model reads in one forward pass. |
 | `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
 | `num_classes` | `integer` | `4` |  | How many output heatmap channels the localizer network has. Must match the architecture the referenced model was trained with. |
@@ -384,7 +384,7 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 | `end_frame` | `integer` \| `None` | `null` |  | Last frame to predict on, inclusive. Unset runs to the end of the video. |
 | `max_frames` | `integer` \| `None` | `null` |  | Ceiling on how many frames are predicted on per entry. Unset predicts on the whole range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Bridge the predictions into a standardized tracks table once inference finishes, instead of leaving them in the run directory alone. |
-| `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. |
+| `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `batch_size` | `integer` | `8` |  | How many frames the model reads in one forward pass. |
 | `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
 | `dor` | `number` | `0.8` |  | The Distance of Reference threshold POLO evaluated against at training time. **Unwired:** reaches no inference argument, though it still enters the run identifier. |
@@ -405,7 +405,7 @@ Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 | `end_frame` | `integer` \| `None` | `null` |  | Last frame to predict on, inclusive. Unset runs to the end of the video. |
 | `max_frames` | `integer` \| `None` | `null` |  | Ceiling on how many frames are predicted on per entry. Unset predicts on the whole range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Bridge the predictions into a standardized tracks table once inference finishes, instead of leaving them in the run directory alone. |
-| `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. |
+| `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `batch_size` | `integer` | `8` |  | How many frames the model reads in one forward pass. |
 | `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
 
@@ -426,7 +426,7 @@ Train a Lightning Pose model, registering the directory it produces.
 | `backbone` | `string` | `"resnet50_animal_ap10k"` |  | The feature extractor. Defaults to a ResNet-50 pretrained on animal pose rather than ImageNet. |
 | `max_epochs` | `integer` | `300` |  | How long the model trains at most. [epochs] |
 | `litpose_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied last, over model_type, backbone and max_epochs as well as anything else Lightning Pose exposes with no field here. A key set here wins over base_model where they would set the same key. The data-loader worker count is refused here: set num_workers, which leaves the run identity alone. |
-| `device` | `string` | `"auto"` |  | Which CUDA devices train the model, as a comma-separated list of indices. auto takes whatever Lightning Pose finds. There is no cpu setting: Lightning Pose fixes its trainer's accelerator to gpu. |
+| `device` | `string` | `"auto"` |  | Which CUDA devices train the model, as a comma-separated list of indices. auto takes whatever Lightning Pose finds. There is no cpu setting: Lightning Pose fixes its trainer's accelerator to gpu. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `idle_timeout` | `number` | `1800` |  | How long the training subprocess may go without output before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |
 | `num_workers` | `integer` \| `None` | `null` |  | Worker processes loading training data. Throughput only: excluded from the run identity, so changing it never retrains a model. Unset leaves the tool's own default. |
@@ -453,7 +453,7 @@ Train the heatmap localizer, registering the directory it produces.
 | `early_stopping_patience` | `integer` | `20` |  | How long training continues without validation-loss improvement before stopping early. [epochs] |
 | `augment` | `boolean` | `true` |  | Apply the light augmentation preset -- flip and rotation -- during training. False applies none. |
 | `seed` | `integer` | `42` |  | The random seed for the training run. |
-| `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. |
+| `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `batch_size` | `integer` | `128` |  | How many training patches the model reads in one forward pass. |
 
 #### `train-points`
@@ -473,7 +473,7 @@ Train a POLO point-detection model, registering the directory it produces.
 | `resume` | `boolean` | `false` |  | Continue training from this run's own last checkpoint instead of starting from the given weights. |
 | `augmentation` | `string` \| `object` \| `None` | `null` |  | A preset name, or a dict with a preset key to start from one and override, or without one to replace the augmentation set outright. A resumed run applies no augmentation. |
 | `train_overrides` | `object` \| `None` | `null` |  | Extra keyword arguments forwarded verbatim to yolo.train. Keys that would collide with a typed field or with an argument the op supplies are refused. |
-| `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. |
+| `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `batch` | `integer` | `16` |  | How many training images the model reads in one forward pass. |
 | `workers` | `integer` \| `None` | `null` |  | Worker processes loading training data. Throughput only: excluded from the run identity, so changing it never retrains a model. Unset leaves the tool's own default. |
 | `loc` | `number` | `5.0` |  | The localization loss weight, a POLO train keyword. |
@@ -502,7 +502,7 @@ Train a YOLO pose model, registering the directory it produces.
 | `resume` | `boolean` | `false` |  | Continue training from this run's own last checkpoint instead of starting from the given weights. |
 | `augmentation` | `string` \| `object` \| `None` | `null` |  | A preset name, or a dict with a preset key to start from one and override, or without one to replace the augmentation set outright. A resumed run applies no augmentation. |
 | `train_overrides` | `object` \| `None` | `null` |  | Extra keyword arguments forwarded verbatim to yolo.train. Keys that would collide with a typed field or with an argument the op supplies are refused. |
-| `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. |
+| `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `batch` | `integer` | `16` |  | How many training images the model reads in one forward pass. |
 | `workers` | `integer` \| `None` | `null` |  | Worker processes loading training data. Throughput only: excluded from the run identity, so changing it never retrains a model. Unset leaves the tool's own default. |
 
@@ -526,7 +526,7 @@ Train a SLEAP model, registering the directory it produces.
 | `seed` | `integer` | `42` |  | Seeds sleap-nn's initialization. |
 | `validation_fraction` | `number` | `0.1` |  | Fraction of labels held out for validation, when no separate validation file is given. |
 | `sleap_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied over the generated config, for anything sleap-nn exposes with no field here. A key the generated config does not carry is appended for you, so it needs no + prefix; a key written with an explicit + or ~ is passed through as written. A key set here wins over base_model and device where they would set the same key. The data-loader worker count is refused here: set num_workers, which leaves the run identity alone. |
-| `device` | `string` | `"auto"` |  | Which accelerator trains the model. auto leaves the choice to sleap-nn; cpu, gpu and mps each name a family; a comma-separated list of CUDA indices such as 0 or 0,1 names devices within the gpu family. |
+| `device` | `string` | `"auto"` |  | Which accelerator trains the model. auto leaves the choice to sleap-nn; cpu, gpu and mps each name a family; a comma-separated list of CUDA indices such as 0 or 0,1 names devices within the gpu family. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `idle_timeout` | `number` | `1800` |  | How long the training subprocess may go without output before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |
 | `num_workers` | `integer` \| `None` | `null` |  | Worker processes loading training data. Throughput only: excluded from the run identity, so changing it never retrains a model. Unset leaves the tool's own default. Sets both the training and the validation loader. sleap-nn's own caveat: under its default data pipeline, workers above 0 can fail on labels that read frames from video, which does not pickle. |

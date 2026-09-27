@@ -29,6 +29,7 @@ from mosaic.core.params import (
     Params,
 )
 from mosaic.tracking.common.entry import phase_activity
+from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
 from mosaic.tracking.common.training_progress import epoch_reporter
 from mosaic.tracking.model_refs import (
     observed_model_source,
@@ -112,7 +113,7 @@ _DEVICE_DESCRIPTION = (
     "Which accelerator trains the model. auto leaves the choice to sleap-nn; "
     "cpu, gpu and mps each name a family; a comma-separated list of CUDA "
     "indices such as 0 or 0,1 names devices within the gpu family."
-)
+) + DEVICE_INDEX_NOTE
 
 _NUM_WORKERS_DESCRIPTION = LOADER_WORKERS_DESCRIPTION + (
     " Sets both the training and the validation loader. sleap-nn's own "

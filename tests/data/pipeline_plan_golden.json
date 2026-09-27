@@ -16,7 +16,7 @@
   "train/storage_name": "",
   "train/tracks_variant": "",
   "transcode/entries": ":seq_a;:seq_b",
-  "transcode/lane": "feature-compute",
+  "transcode/lane": "transcode",
   "transcode/run_id": "transcode-49bf3aa578",
   "transcode/storage_name": "",
   "transcode/tracks_variant": "",

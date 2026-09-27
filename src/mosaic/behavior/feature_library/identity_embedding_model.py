@@ -152,6 +152,8 @@ class GlobalIdentityEmbedding:
     """
 
     category = "global"
+    # The backbone runs on the best device under `device="auto"`, CUDA first.
+    resource_class = "gpu"
     name: str = "global-identity-embedding"
     version: str = "0.1"
     parallelizable = False

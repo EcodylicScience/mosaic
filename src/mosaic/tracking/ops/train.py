@@ -54,6 +54,7 @@ from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_
 from mosaic.core.pipeline.progress import CompositeProgressCallback
 from mosaic.tracking.common.entry import ClaimRefreshingProgress
 from mosaic.tracking.common.mint import planned_model_id
+from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
 from mosaic.tracking.common.toolenv import ToolEnv, ToolExitError
 from mosaic.tracking.model_refs import (
     ModelShape,
@@ -719,7 +720,9 @@ _TRAIN_OVERRIDES_DESCRIPTION = (
     "are refused."
 )
 
-_DEVICE_DESCRIPTION = "Which accelerator trains the model: a GPU index, or cpu."
+_DEVICE_DESCRIPTION = (
+    "Which accelerator trains the model: a GPU index, or cpu." + DEVICE_INDEX_NOTE
+)
 
 _BATCH_DESCRIPTION = "How many training images the model reads in one forward pass."
 

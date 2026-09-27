@@ -177,6 +177,8 @@ class GlobalIdentityModel:
     """
 
     category = "global"
+    # The backbone runs on the best device under `device="auto"`, CUDA first.
+    resource_class = "gpu"
     name: str = "global-identity-model"
     # 0.3: the network changed outright -- a trained head over a pretrained
     # image backbone, where 0.2 was a CNN trained from scratch. Network numerics

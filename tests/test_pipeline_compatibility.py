@@ -343,20 +343,23 @@ def test_a_mismatched_join_is_refused_with_no_dataset_constructed() -> None:
 
 
 def test_a_lane_is_decided_from_what_a_step_declares() -> None:
-    """GPU work splits by category; everything else takes the default lane.
-
-    The values are pinned against the rule this replaced, which lived in
-    mosaic-api and read the same op registry -- a step must not change lane
-    merely by the rule having moved.
-    """
+    """GPU work splits into fits and the rest, ffmpeg work has its own lane, and
+    everything else takes the default one."""
     from mosaic.core.pipeline.graph import lane_for
 
     catalog = declaration_catalog()
     expected = {
         "speed-angvel": "feature-compute",
-        "transcode": "feature-compute",
+        "prepare-training-data": "feature-compute",
+        "lightning-action": "feature-compute",  # CPU unless its device param says not
+        "transcode": "transcode",
+        "export-joined": "transcode",
+        "export-store": "transcode",
         "train-pose": "gpu-train",
         "train-sleap": "gpu-train",
+        "feral": "gpu-train",
+        "kpms": "gpu-train",
+        "global-identity-model": "gpu-train",
         "infer-pose": "gpu-infer",
         "trex": "gpu-infer",
     }
@@ -364,6 +367,16 @@ def test_a_lane_is_decided_from_what_a_step_declares() -> None:
         declared = catalog.get(name)
         assert declared is not None
         assert lane_for(declared) == lane, name
+
+
+def test_a_submitted_job_finds_its_lane_by_name() -> None:
+    """What a control plane holds is a feature slug or an op kind, not a declaration."""
+    from mosaic.core.pipeline.graph import lane_for_step
+
+    assert lane_for_step("train-pose") == "gpu-train"
+    assert lane_for_step("speed-angvel") == "feature-compute"
+    with pytest.raises(KeyError, match="train-poze"):
+        _ = lane_for_step("train-poze")
 
 
 def test_trex_takes_a_gpu_lane_from_its_own_declaration() -> None:

@@ -23,7 +23,7 @@ from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
 )
-from mosaic.tracking.common.params import TrackerOpParams
+from mosaic.tracking.common.params import DEVICE_INDEX_NOTE, TrackerOpParams
 from mosaic.tracking.sleap.run import (
     SleapCandidatesMethod,
     SleapFeatures,
@@ -99,7 +99,7 @@ _DEVICE_DESCRIPTION = (
     "The device to run inference on: cpu, cuda, mps, a CUDA index such as 0, "
     "or cuda:<index>. Unset and auto leave the choice to sleap-nn; a named "
     "device fails where it is absent."
-)
+) + DEVICE_INDEX_NOTE
 
 
 class SleapParams(TrackerOpParams):

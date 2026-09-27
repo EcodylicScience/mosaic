@@ -495,9 +495,12 @@ class FeralFeature:
     # declared per-frame, which put it in the wrong group everywhere the category
     # is read -- the pipeline diagram's colors and `mosaic features list` -- and
     # disagreed with both the README and CLAUDE.md, which have always called it
-    # a global fit-then-apply feature. The attribute carries no execution
-    # meaning, so this changes what is displayed and nothing about what runs.
+    # a global fit-then-apply feature. Beside the display, the category now
+    # places the run: a GPU feature that fits a model is offered to the queue's
+    # gpu-train lane.
     category = "global"
+    # V-JEPA on CUDA by default (`device="cuda"`), so a run holds a GPU.
+    resource_class = "gpu"
     name = "feral"
     version = "0.2"
     parallelizable = False
