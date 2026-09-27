@@ -383,7 +383,56 @@ def prepare_training_data_run_id(
     )
 
 
+def check_preparation(ds: Dataset, params: PrepareTrainingDataParams) -> None:
+    """Refuse what a ``prepare-training-data`` run would refuse, without writing anything.
+
+    Resolves the revisions and narrows them exactly as a run does, so a caller that
+    queues the preparation, and a training behind it, hears now that the sets hold
+    several poses and none is named, that an object lacks the alias ``class_by`` asks
+    for, or that a one-class trainer is handed several.
+
+    Raises:
+        ValueError: The sets cannot be narrowed to one training dataset.
+        KeyError: A reference matches several datasets' sets and names none.
+        IdentityDeferred: A revision is not indexed here, or not on disk.
+    """
+    _ = _narrowed(params, resolve_keypoint_sets(ds, params.sets))
+
+
 # --- Building the tree ---------------------------------------------------------
+
+
+def _narrowed(
+    params: PrepareTrainingDataParams, sets: tuple[ResolvedSet, ...]
+) -> tuple[list[ResolvedSet], dict[str, AnnotationSet]]:
+    """The sets in identity order, and each narrowed as this preparation reads it.
+
+    Narrowed together, in the order the run identifier sorts them, so the classes and
+    the layout they are checked against do not depend on the order the sets were named
+    in.
+
+    Raises:
+        ValueError: The sets cannot be narrowed to one pose's layout, or a trainer
+            that learns one class is handed several.
+    """
+    ordered_sets = sorted(
+        sets, key=lambda item: (item.origin_uuid, item.set_key, item.digest)
+    )
+    narrowed = narrow_pose_sets(
+        {_set_label(item): _read_set(item) for item in ordered_sets},
+        pose=params.pose,
+        class_by=params.class_by,
+        track_by=params.track_by if params.target == "sleap" else None,
+        bbox=params.bbox,
+    )
+    categories = narrowed[_set_label(ordered_sets[0])].categories
+    if params.target not in _TREE_TARGETS and len(categories) > 1:
+        msg = (
+            f"{params.target} trains one class, and class_by="
+            f"{params.class_by!r} makes {len(categories)}: {list(categories)}"
+        )
+        raise ValueError(msg)
+    return ordered_sets, narrowed
 
 
 def _read_set(item: ResolvedSet) -> PoseAnnotationSet:
@@ -515,28 +564,10 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
             if child.name != ".mosaic-inflight.json":
                 shutil.rmtree(child) if child.is_dir() else child.unlink()
 
-        # Narrowed together, in the order the run identifier sorts them, so the
-        # classes and the layout they are checked against do not depend on the
-        # order the sets were named in.
-        ordered_sets = sorted(
-            sets, key=lambda item: (item.origin_uuid, item.set_key, item.digest)
-        )
-        narrowed = narrow_pose_sets(
-            {_set_label(item): _read_set(item) for item in ordered_sets},
-            pose=params.pose,
-            class_by=params.class_by,
-            track_by=params.track_by if params.target == "sleap" else None,
-            bbox=params.bbox,
-        )
+        ordered_sets, narrowed = _narrowed(params, sets)
         reference = narrowed[_set_label(ordered_sets[0])]
         schema, categories = reference.schema, reference.categories
         class_ids = reference.category_ids()
-        if params.target not in _TREE_TARGETS and len(categories) > 1:
-            msg = (
-                f"{params.target} trains one class, and class_by="
-                f"{params.class_by!r} makes {len(categories)}: {list(categories)}"
-            )
-            raise ValueError(msg)
 
         # One flat list of (frame, image on disk), each carrying the set it came
         # from so its name can say so.

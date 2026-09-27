@@ -37,6 +37,7 @@ from mosaic.tracking.ops._common import (
 )
 from mosaic.tracking.ops.prepare import (
     PrepareTrainingDataParams,
+    check_preparation,
     prepared_dataset_index,
 )
 from mosaic.tracking.ops.train import (
@@ -516,6 +517,31 @@ def test_a_one_class_trainer_refuses_classes_by_alias(
 ) -> None:
     with pytest.raises(ValueError, match="trains one class"):
         _ = _prepare_full(full_state, class_by="alias", target=target)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "refusal"),
+    [
+        ({"pose": None}, "name the one to train"),
+        ({"class_by": "alias", "target": "sleap"}, "trains one class"),
+    ],
+)
+def test_the_check_refuses_what_a_run_would_and_writes_nothing(
+    full_state: Dataset, overrides: dict[str, object], refusal: str
+) -> None:
+    """A caller queueing a preparation hears the refusal before anything is queued."""
+    params: dict[str, object] = {"sets": [{"set_key": "full"}], "pose": "mouse"}
+    params.update(overrides)
+    with pytest.raises(ValueError, match=refusal):
+        check_preparation(full_state, PrepareTrainingDataParams.model_validate(params))
+
+    assert not (full_state.base_dir / "models" / KIND).exists()
+
+
+def test_the_check_passes_what_a_run_accepts(full_state: Dataset) -> None:
+    params = {"sets": [{"set_key": "full"}], "pose": "cricket"}
+
+    check_preparation(full_state, PrepareTrainingDataParams.model_validate(params))
 
 
 def test_a_derived_box_trains_as_the_annotator_saw_it(full_state: Dataset) -> None:
