@@ -453,9 +453,17 @@ def full_state(tmp_path: Path) -> Dataset:
     return library
 
 
+FULL: dict[str, object] = {
+    "sets": [{"set_key": "full"}],
+    "pose": "mouse",
+    # Two recordings are too few to draw whole ones into training and validation.
+    "split_by": "frame",
+}
+"""The full state's preparation, split so that every split of the tree holds frames."""
+
+
 def _prepare_full(library: Dataset, **overrides: object) -> Path:
-    params: dict[str, object] = {"sets": [{"set_key": "full"}], "pose": "mouse"}
-    params.update(overrides)
+    params = {**FULL, **overrides}
     return model_run_root(library, KIND, run_op(library, KIND, params))
 
 
@@ -530,8 +538,7 @@ def test_the_check_refuses_what_a_run_would_and_writes_nothing(
     full_state: Dataset, overrides: dict[str, object], refusal: str
 ) -> None:
     """A caller queueing a preparation hears the refusal before anything is queued."""
-    params: dict[str, object] = {"sets": [{"set_key": "full"}], "pose": "mouse"}
-    params.update(overrides)
+    params = {**FULL, **overrides}
     with pytest.raises(ValueError, match=refusal):
         check_preparation(full_state, PrepareTrainingDataParams.model_validate(params))
 
@@ -539,7 +546,39 @@ def test_the_check_refuses_what_a_run_would_and_writes_nothing(
 
 
 def test_the_check_passes_what_a_run_accepts(full_state: Dataset) -> None:
-    params = {"sets": [{"set_key": "full"}], "pose": "cricket"}
+    params = {**FULL, "pose": "cricket"}
+
+    check_preparation(full_state, PrepareTrainingDataParams.model_validate(params))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "empty"),
+    [
+        ({"split_by": "sequence"}, "validation"),
+        ({"split_by": "sequence", "split": (0.3, 0.3, 0.4)}, "training"),
+    ],
+)
+def test_a_split_leaving_a_tree_without_training_or_validation_images_is_refused(
+    full_state: Dataset, overrides: dict[str, object], empty: str
+) -> None:
+    """Whole recordings are drawn, and two cannot fill three splits.
+
+    The trainer would otherwise fail on the empty directory, after the preparation
+    reported success.
+    """
+    params = PrepareTrainingDataParams.model_validate({**FULL, **overrides})
+
+    with pytest.raises(ValueError, match=f"the {empty} split would be empty"):
+        check_preparation(full_state, params)
+    with pytest.raises(ValueError, match=f"the {empty} split would be empty"):
+        _ = _prepare_full(full_state, **overrides)
+
+
+def test_a_trainer_that_splits_for_itself_takes_one_recording(
+    full_state: Dataset,
+) -> None:
+    """SLEAP and Lightning Pose draw their own validation split from what they are given."""
+    params = {**FULL, "split_by": "sequence", "target": "sleap"}
 
     check_preparation(full_state, PrepareTrainingDataParams.model_validate(params))
 

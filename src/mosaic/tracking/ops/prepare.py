@@ -392,14 +392,72 @@ def check_preparation(ds: Dataset, params: PrepareTrainingDataParams) -> None:
     for, or that a one-class trainer is handed several.
 
     Raises:
-        ValueError: The sets cannot be narrowed to one training dataset.
+        ValueError: The sets cannot be narrowed to one training dataset, or the
+            split would leave a trainer with no training or validation images.
         KeyError: A reference matches several datasets' sets and names none.
         IdentityDeferred: A revision is not indexed here, or not on disk.
     """
-    _ = _narrowed(params, resolve_keypoint_sets(ds, params.sets))
+    ordered_sets, narrowed = _narrowed(params, resolve_keypoint_sets(ds, params.sets))
+    _ = _split(params, ordered_sets, narrowed)
 
 
 # --- Building the tree ---------------------------------------------------------
+
+
+def _split(
+    params: PrepareTrainingDataParams,
+    ordered_sets: list[ResolvedSet],
+    narrowed: dict[str, AnnotationSet],
+) -> tuple[dict[int, str], dict[str, str]]:
+    """Each frame's placed name, keyed by the frame's id, and each name's split.
+
+    Named and grouped once, here, from the frame itself. The group is never read
+    back out of the name: a set key may hold the separator, and a name parsed apart
+    on it would file a frame under the wrong recording. The names are sorted before
+    the seeded shuffle, so neither the order sets were named in nor the order a file
+    lists its frames in reaches the assignment.
+
+    Raises:
+        ValueError: A split tree would hold no training or no validation images.
+            Splitting by sequence draws whole recordings, so the frames of one
+            recording all land in one split.
+    """
+    from mosaic.core.annotations.split import split_filenames
+
+    name_by_frame: dict[int, str] = {}
+    group_by_name: dict[str, str] = {}
+    for item in ordered_sets:
+        for frame in narrowed[_set_label(item)].frames:
+            name = _placed_name(item, frame)
+            sequence = _sequence_of(frame)
+            group = f"{item.origin_uuid}:{sequence}"
+            if params.split_by == "group":
+                group = params.sequence_groups.get(
+                    group, params.sequence_groups.get(sequence, group)
+                )
+            name_by_frame[id(frame)] = name
+            group_by_name[name] = group
+    split_of, n_train, n_valid = split_filenames(
+        sorted(group_by_name),
+        params.split,
+        params.seed,
+        split_by="image" if params.split_by == "frame" else "group",
+        group_key=group_by_name.__getitem__,
+    )
+    if params.target in _TREE_TARGETS and (n_train == 0 or n_valid == 0):
+        empty = "training" if n_train == 0 else "validation"
+        drawn = (
+            f"{len(group_by_name)} frames"
+            if params.split_by == "frame"
+            else f"{len(set(group_by_name.values()))} {params.split_by}(s)"
+        )
+        msg = (
+            f"the {empty} split would be empty: split_by={params.split_by!r} "
+            f"divides {drawn} by {params.split}, too few to fill every split. "
+            "Annotate frames from more recordings, or split by frame."
+        )
+        raise ValueError(msg)
+    return name_by_frame, split_of
 
 
 def _narrowed(
@@ -527,7 +585,6 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
         overwrite: bool,
         ctx: JobContext,
     ) -> str:
-        from mosaic.core.annotations.split import split_filenames
         from mosaic.tracking.pose_training.converters.base import (
             format_polo_label_line,
             normalize_coords,
@@ -593,35 +650,10 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
             )
             raise FileNotFoundError(msg)
 
-        # Named and grouped once, here, from the frame itself. The group is never
-        # read back out of the name: a set key may hold the separator, and a name
-        # parsed apart on it would file a frame under the wrong recording.
-        name_by_frame: dict[int, str] = {}
-        group_by_name: dict[str, str] = {}
-        for frame, _source in gathered:
-            item = owner[id(frame)]
-            name = _placed_name(item, frame)
-            sequence = _sequence_of(frame)
-            group = f"{item.origin_uuid}:{sequence}"
-            if params.split_by == "group":
-                group = params.sequence_groups.get(
-                    group, params.sequence_groups.get(sequence, group)
-                )
-            name_by_frame[id(frame)] = name
-            group_by_name[name] = group
+        name_by_frame, split_of = _split(params, ordered_sets, narrowed)
 
         def name_of(frame: AnnotationFrame, _source: Path) -> str:
             return name_by_frame[id(frame)]
-
-        # Sorted before the seeded shuffle, so neither the order sets were named
-        # in nor the order a file lists its frames in reaches the assignment.
-        split_of, _n_train, _n_valid = split_filenames(
-            sorted(group_by_name),
-            params.split,
-            params.seed,
-            split_by="image" if params.split_by == "frame" else "group",
-            group_key=group_by_name.__getitem__,
-        )
 
         # Every box is explicit by now: narrowing derived the ones the
         # annotator did not draw, under the policy this run was given.
