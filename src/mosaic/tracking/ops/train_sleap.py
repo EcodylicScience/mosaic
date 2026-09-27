@@ -164,7 +164,9 @@ class TrainSleapParams(Params):
         Declared(_NUM_WORKERS_DESCRIPTION),
     ] = None
 
-    @field_validator("device")
+    # A consumer that sets the device itself narrows the field out of the model it
+    # exposes; the check then has nothing to check there, and still runs here.
+    @field_validator("device", check_fields=False)
     @classmethod
     def _device_is_usable(cls, value: str) -> str:
         """Refuse a device sleap-nn cannot be given, at submit time.
