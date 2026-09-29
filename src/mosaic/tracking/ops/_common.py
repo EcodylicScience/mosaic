@@ -271,7 +271,7 @@ def claim_run_root(
         by the next execution along -- which then clears it and starts writing
         into the same directory. Only a caller with lines arriving from its tool
         can refresh it, through
-        :func:`~mosaic.tracking.common.entry.phase_activity`, and it cannot do
+        :func:`~mosaic.core.pipeline.entry_claim.phase_activity`, and it cannot do
         that without the marker. This was minted and dropped on the floor for as
         long as every one-shot op ran in process and had nothing to hang a
         refresh on.

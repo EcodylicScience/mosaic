@@ -790,6 +790,8 @@ src/mosaic/
 │   │   ├── index_csv.py        # generic typed IndexCSV + index_records
 │   │   ├── label_series.py     # the versioned-series registry, layout and marker (no pandas)
 │   │   ├── label_series_index.py  # series index row, revision writer, revision reader
+│   │   ├── entry_claim.py      # per-entry claim: take, keep alive, release
+│   │   ├── consumed_camera.py  # which camera of an entry a tracker reads
 │   │   ├── inventory/          # what a dataset holds: coverage, status, params.json
 │   │   ├── graph/              # a pipeline as a file: recipe, plan, submit, run a step
 │   │   ├── writers.py          # parquet output writing, overlap trimming
@@ -823,7 +825,7 @@ src/mosaic/
     │   ├── toolenv.py          # the MOSAIC_<TOOL>_CONDA_ENV / _BIN location ladder
     │   ├── mint.py             # root, run_id, tracks variant, run_params.json
     │   ├── scope.py            # media scope -> work items (video/camera collapse)
-    │   ├── entry.py            # claim, marker reuse, cascade clearing, adoption
+    │   ├── entry.py            # marker reuse, cascade clearing, adoption
     │   ├── bridge.py           # converted frame -> tracks/<variant>/*.parquet
     │   ├── index.py            # TrackerRunRowBase + the typed run index
     │   ├── params.py           # TrackerOpParams (HASH_EXCLUDE execution knobs; no scope)

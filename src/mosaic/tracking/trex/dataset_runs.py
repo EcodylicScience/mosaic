@@ -57,6 +57,7 @@ from mosaic.tracking.model_refs import (
     resolve_model,
 )
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
+from mosaic.core.pipeline.entry_claim import claim, phase_activity
 from mosaic.core.pipeline.op_identity import (
     op_run_id,
     parse_op_run_id,
@@ -72,9 +73,7 @@ from mosaic.tracking.common.driver import EntryJob, run_tracker
 from mosaic.tracking.common.entry import (
     AdoptEvidence,
     adopt_completed_directory,
-    claim,
     clear_outputs,
-    phase_activity,
     record_phase,
     reusable_marker,
     reusable_output,

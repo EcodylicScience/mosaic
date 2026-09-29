@@ -151,7 +151,7 @@ def epoch_reporter(ctx: JobContext, total_epochs: int) -> Callable[[str], None]:
     Returns:
         A callback for ``run_supervised``'s *on_output*. Liveness is a separate
         question with a separate answer: pass
-        :func:`~mosaic.tracking.common.entry.phase_activity` as *on_activity*.
+        :func:`~mosaic.core.pipeline.entry_claim.phase_activity` as *on_activity*.
     """
     reported = [-1]
 

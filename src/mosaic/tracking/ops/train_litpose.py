@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Literal
 from pydantic import Field, field_validator
 
 from mosaic.core.pipeline.file_digest import file_digest
+from mosaic.core.pipeline.entry_claim import phase_activity
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
@@ -27,7 +28,6 @@ from mosaic.core.params import (
     Declared,
     Params,
 )
-from mosaic.tracking.common.entry import phase_activity
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
 from mosaic.tracking.common.training_progress import epoch_reporter
 from mosaic.tracking.model_refs import (

@@ -1,9 +1,12 @@
-"""Claiming one entry's working directory, and deciding what still holds.
+"""Deciding what one entry's working directory still holds.
 
-The per-entry protocol every tracker follows: take the directory if nobody else
-holds it, decide per phase whether the recorded marker still proves the work,
-clear what is stale, run what is left, record what completed, and release the
-claim whatever happened. Written three times, with the copies already drifting.
+The per-entry protocol every tracker follows: claim the directory, decide per
+phase whether the recorded marker still proves the work, clear what is stale, run
+what is left, record what completed, and release the claim whatever happened.
+Taking, refreshing and releasing the claim is
+:mod:`mosaic.core.pipeline.entry_claim`. The reuse decision, the clearing, the
+recording and the adoption of a pre-marker directory are here, once. They were
+written three times, with the copies already drifting.
 
 **A marker answers "did this phase complete", never "where is its artifact".**
 The two are separate calls here because a phase that completed and produced
@@ -21,29 +24,16 @@ once, forever.
 
 from __future__ import annotations
 
-import os
 import shutil
-import socket
-import sys
-import threading
-import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from mosaic.core.pipeline.markers import (
-    InflightMarker,
     PhaseMarker,
     PhaseName,
-    clear_inflight,
-    inflight_state,
-    new_inflight,
-    try_create_inflight,
-    read_inflight,
     read_phase_marker,
-    refresh_inflight,
-    write_inflight,
     write_phase_marker,
 )
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
@@ -54,221 +44,13 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.job import JobContext
 
 __all__ = [
-    "INFLIGHT_REFRESH_SECONDS",
     "AdoptEvidence",
-    "ClaimRefreshingProgress",
     "adopt_completed_directory",
-    "claim",
     "clear_outputs",
-    "open_entry",
-    "phase_activity",
     "record_phase",
-    "release_entry",
     "reusable_marker",
     "reusable_output",
 ]
-
-INFLIGHT_REFRESH_SECONDS: Final = 15.0
-"""How often the activity callback re-stamps the claim and the heartbeat.
-
-A tool's progress bar can redraw many times a second, so the throttle keeps that
-from becoming a per-line disk write, while staying well inside the run-log
-heartbeat cadence and any plausible idle window.
-"""
-
-
-# --- the claim -------------------------------------------------------------
-
-
-def claim(
-    ctx: JobContext, work_dir: Path, phase: PhaseName | None, idle_seconds: float
-) -> InflightMarker:
-    """Write this execution's in-flight claim on *work_dir*, and return it."""
-    marker = new_inflight(
-        execution_id=ctx.execution_id,
-        host=socket.gethostname(),
-        pid=os.getpid(),
-        phase=phase,
-        idle_seconds=idle_seconds,
-    )
-    write_inflight(work_dir, marker)
-    return marker
-
-
-def phase_activity(
-    ctx: JobContext, work_dir: Path, marker: InflightMarker, idle_seconds: float
-) -> Callable[[str], None]:
-    """The per-output-line liveness callback for a running phase.
-
-    Every line the tool prints is proof the phase is alive. On a throttle it
-    advances the run-log heartbeat, so the queue reaper does not read a live
-    multi-hour subprocess as lost, and re-stamps the in-flight claim, so a
-    concurrent execution does not read the working directory as abandoned. Both
-    are best-effort: a missed refresh only shortens the claim, never aborts the
-    run.
-
-    Pass it as ``run_supervised``'s *on_activity* rather than its *on_output*.
-    What proves a phase alive is that the child spoke at all, and a tool whose
-    progress goes to standard error -- which is where a PyTorch Lightning
-    trainer's may land -- is invisible to the stdout-only callback. Taking both
-    streams also makes the claim outlive exactly the window ``idle_timeout``
-    measures, so the watchdog and the claim agree about when a tool is dead.
-
-    Runs on both subprocess reader threads, hence the lock inside
-    :func:`_throttled_refresh`.
-    """
-    refresh = _throttled_refresh(work_dir, marker, idle_seconds)
-
-    def on_line(_line: str) -> None:
-        if refresh():
-            ctx.heartbeat()
-
-    return on_line
-
-
-def _throttled_refresh(
-    work_dir: Path, marker: InflightMarker, idle_seconds: float
-) -> Callable[[], bool]:
-    """Re-stamp *marker* on :data:`INFLIGHT_REFRESH_SECONDS`, reporting whether it did.
-
-    The throttle is a read-then-write across whatever threads the activity
-    signal arrives on -- two subprocess readers, or a trainer's own -- so the
-    lock is what keeps a burst of lines from becoming a burst of disk writes.
-    Best-effort: a refusal by the filesystem shortens the claim and never aborts
-    the run.
-
-    Returns:
-        Whether this call was the one that acted, so a caller with a second
-        thing to do on the same cadence -- the run-log heartbeat -- can hang it
-        off the same decision.
-    """
-    last_refresh = [0.0]
-    throttle = threading.Lock()
-
-    def refresh() -> bool:
-        now = time.monotonic()
-        with throttle:
-            if now - last_refresh[0] < INFLIGHT_REFRESH_SECONDS:
-                return False
-            last_refresh[0] = now
-        try:
-            _ = refresh_inflight(work_dir, marker, idle_seconds)
-        except OSError:
-            pass
-        return True
-
-    return refresh
-
-
-class ClaimRefreshingProgress:
-    """Keeps a one-shot op's claim alive from an in-process trainer's callbacks.
-
-    :func:`phase_activity` is this guard for a tool mosaic runs as a subprocess:
-    a line arrives, the claim is re-stamped. A trainer running *in* this process
-    prints no line mosaic reads -- it calls a progress callback instead -- so
-    that is where its claim refresh has to hang, and without one its run root is
-    read as abandoned ``idle_seconds`` after it started.
-
-    Every method refreshes, because every one of them is equally proof the
-    trainer is alive, and none reports anything: compose it beside
-    ``ctx.progress`` with
-    :class:`~mosaic.core.pipeline.progress.CompositeProgressCallback` so
-    reporting stays one object's job and the claim another's. The run-log needs
-    no separate heartbeat here -- it advances liveness from the timestamp of
-    whatever event the reporting half wrote.
-    """
-
-    def __init__(
-        self, work_dir: Path, marker: InflightMarker, idle_seconds: float
-    ) -> None:
-        self._refresh = _throttled_refresh(work_dir, marker, idle_seconds)
-
-    def on_epoch_end(
-        self, epoch: int, total_epochs: int, metrics: dict[str, float]
-    ) -> None:
-        _ = self._refresh()
-
-    def on_class_start(
-        self, class_idx: int, total_classes: int, class_name: str
-    ) -> None:
-        _ = self._refresh()
-
-    def on_phase(self, phase: str, message: str) -> None:
-        _ = self._refresh()
-
-    def on_entry_start(self, index: int, total: int, key: str) -> None:
-        _ = self._refresh()
-
-    def on_entry_end(self, index: int, total: int, key: str) -> None:
-        _ = self._refresh()
-
-
-def open_entry(
-    ds: Dataset,
-    ctx: JobContext,
-    run_root: Path,
-    key: str,
-    *,
-    kind: str,
-    overwrite: bool,
-    idle_seconds: float = 0.0,
-) -> tuple[Path, InflightMarker] | None:
-    """Create this entry's working directory and take it, or ``None`` if held.
-
-    Takes it for real, with an exclusive create, before anything else touches the
-    directory. The claim used to be *read* here and written hundreds of lines later
-    inside per-phase code, so two executions could both see a free directory and
-    proceed -- and the reuse-hit path wrote none at all, leaving the entry
-    unprotected for its whole run.
-
-    ``overwrite``'s tree removal happens after the claim succeeds: clearing first
-    would delete a peer's work and the claim saying so. A contended entry is
-    skipped, not raised, so one sequence cannot end a batch. An expired or orphaned
-    claim is stealable -- otherwise a killed run locks its directory forever -- so
-    it is unlinked and the create retried once.
-    """
-    work_dir = run_root / key
-    work_dir.mkdir(parents=True, exist_ok=True)
-    marker = new_inflight(
-        execution_id=ctx.execution_id,
-        host=socket.gethostname(),
-        pid=os.getpid(),
-        phase=None,
-        idle_seconds=idle_seconds,
-    )
-    for attempt in (0, 1):
-        if try_create_inflight(work_dir, marker):
-            break
-        state = inflight_state(
-            read_inflight(work_dir),
-            run_log_base=ds.base_dir,
-            execution_id=ctx.execution_id,
-        )
-        if state == "mine":
-            break
-        if state in {"expired", "orphaned"} and attempt == 0:
-            clear_inflight(work_dir)
-            continue
-        print(
-            f"[{kind}] {key} is held by another execution; skipping it.",
-            file=sys.stderr,
-        )
-        return None
-
-    if overwrite:
-        shutil.rmtree(work_dir)
-        work_dir.mkdir(parents=True, exist_ok=True)
-        _ = try_create_inflight(work_dir, marker)
-    return work_dir, marker
-
-
-def release_entry(work_dir: Path, execution_id: str = "") -> None:
-    """Release *our* claim. Belongs in the caller's ``finally``.
-
-    Ownership-checked: this runs whether or not this execution ever held the
-    directory, so an unchecked unlink deleted a live peer's claim.
-    """
-    clear_inflight(work_dir, execution_id=execution_id)
 
 
 # --- what still holds ------------------------------------------------------

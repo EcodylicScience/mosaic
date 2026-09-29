@@ -26,11 +26,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
+from mosaic.core.pipeline.entry_claim import open_entry, release_entry
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
-from mosaic.tracking.common.entry import open_entry, release_entry
 from mosaic.tracking.common.index import TrackerRunRowBase
 from mosaic.tracking.common.mint import MintedRun
 from mosaic.tracking.common.scope import TrackerWorkItem

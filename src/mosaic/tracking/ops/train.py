@@ -51,8 +51,8 @@ from mosaic.core.params import (
     Params,
 )
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
+from mosaic.core.pipeline.entry_claim import ClaimRefreshingProgress, phase_activity
 from mosaic.core.pipeline.progress import CompositeProgressCallback
-from mosaic.tracking.common.entry import ClaimRefreshingProgress
 from mosaic.tracking.common.mint import planned_model_id
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
 from mosaic.tracking.common.toolenv import ToolEnv, ToolExitError
@@ -629,7 +629,6 @@ def train_through_the_tool[RequestT: TrainRequestBase](
     """
     from mosaic.core.pipeline.subprocess_util import ProcessCancelled
     from mosaic.tracking.common.cooperative_cancel import stop_then_kill
-    from mosaic.tracking.common.entry import phase_activity
     from mosaic.tracking.common.ultralytics_env import (
         probe_environment,
         training_activity,

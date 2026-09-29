@@ -373,9 +373,10 @@ def claim_slot(
 ) -> InflightMarker | None:
     """Take *slot* for this execution, or ``None`` while another holds it.
 
-    The same exclusive-create primitive ``open_entry`` uses, and stealing an
+    The same exclusive-create primitive
+    :func:`~mosaic.core.pipeline.entry_claim.open_entry` uses, and stealing an
     expired or orphaned claim the same way, but without its two other
-    behaviours: nothing is ever removed here (a slot is immutable once
+    behaviors: nothing is ever removed here (a slot is immutable once
     published), and a contended slot is not announced as skipped, because the
     caller waits for it rather than giving up on the entry.
     """

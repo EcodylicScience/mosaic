@@ -56,12 +56,12 @@ from mosaic.core.params import (
     Declared,
     Params,
 )
+from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
+from mosaic.core.pipeline.entry_claim import open_entry, phase_activity, release_entry
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.schema import ensure_track_schema
 from mosaic.runlog import now_iso
-from mosaic.tracking.common.entry import open_entry, phase_activity, release_entry
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
-from mosaic.tracking.common.scope import one_camera_per_entry
 from mosaic.tracking.common.tool_input import (
     refuse_undecodable_codec,
     resolve_entry_input,

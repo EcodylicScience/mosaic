@@ -34,8 +34,8 @@ from typing import TYPE_CHECKING, Final, Literal, TypeAlias
 
 from pydantic import ValidationError
 
+from mosaic.core.pipeline.entry_claim import INFLIGHT_REFRESH_SECONDS
 from mosaic.core.pipeline.subprocess_util import run_supervised
-from mosaic.tracking.common.entry import INFLIGHT_REFRESH_SECONDS
 from mosaic.tracking.common.toolenv import (
     PROBE_DEADLINE_FLOOR_SECONDS,
     ToolEnv,
@@ -402,7 +402,7 @@ def progress_activity(
 
     The runner counts frames per batch and writes them; without this nothing
     reads them, and the position an in-process run used to show disappears with
-    it. *liveness* -- :func:`~mosaic.tracking.common.entry.phase_activity` --
+    it. *liveness* (:func:`~mosaic.core.pipeline.entry_claim.phase_activity`)
     still sees every line, because what proves the phase alive is that the child
     spoke at all.
 

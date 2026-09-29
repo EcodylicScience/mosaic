@@ -32,6 +32,7 @@ import pandas as pd
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.media.read_target import verified_read_facts
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
+from mosaic.core.pipeline.entry_claim import claim, phase_activity
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext
 from mosaic.core.pipeline.markers import clear_phase_marker
@@ -47,9 +48,7 @@ from mosaic.tracking.common.bridge import (
 )
 from mosaic.tracking.common.driver import EntryJob, run_tracker
 from mosaic.tracking.common.entry import (
-    claim,
     clear_outputs,
-    phase_activity,
     record_phase,
     reusable_output,
 )

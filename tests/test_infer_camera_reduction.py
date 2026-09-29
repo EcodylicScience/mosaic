@@ -14,8 +14,8 @@ be reachable only by running an inference job.
 import pytest
 
 from mosaic.core.dataset import ResolvedMedia, ResolvedScopeEntry
+from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
 from mosaic.tracking.common import scope as scope_module
-from mosaic.tracking.common.scope import one_camera_per_entry
 from mosaic.tracking.ops import infer as infer_module
 from tests.helpers import names_called_by
 

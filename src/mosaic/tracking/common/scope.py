@@ -18,7 +18,9 @@ Two collapses happen here, and both are load-bearing rather than tidy-up:
   directory is keyed on ``(group, sequence)`` with no camera, so a multi-camera
   sequence's entries all resolve to one directory. Left as several, the second
   entry would see the first's source, call it a change, recompute over the first's
-  outputs and replace its index row -- on every run, forever.
+  outputs and replace its index row -- on every run, forever. The rule is
+  :func:`~mosaic.core.pipeline.consumed_camera.one_camera_per_entry`, which the
+  ``infer-*`` ops apply as well.
 
 **Joining is refused on geometry and accepted on frame rate.** The two
 disagreements have opposite consequences. Clips that decode to different frame
@@ -40,11 +42,10 @@ from typing import TYPE_CHECKING
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.media.uniformity import geometry_mismatch
 from mosaic.core.pipeline.composition import MediaMember, media_composition
+from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from mosaic_media import MediaFacts
 
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
@@ -53,7 +54,6 @@ __all__ = [
     "JoinedSourceMismatchError",
     "TrackerWorkItem",
     "build_work_items",
-    "one_camera_per_entry",
 ]
 
 
@@ -174,54 +174,6 @@ class TrackerWorkItem:
             for order, clip in enumerate(self.source_facts)
         ]
         return media_composition(members).digest
-
-
-def one_camera_per_entry(
-    kind: str, scope: "Sequence[ResolvedScopeEntry]"
-) -> list["ResolvedScopeEntry"]:
-    """*scope* with a second camera of an entry dropped, and reported.
-
-    ``Dataset.resolve_media_scope`` yields one entry per
-    ``(group, sequence, camera)``. A working directory is keyed on
-    ``(group, sequence)`` with no camera. Two cameras of one sequence therefore
-    resolve to one directory. Left as two items, the second reads the first's source,
-    records that as a change, recomputes over the first's outputs and replaces
-    its index row, on every run. Dropping the second is what stops that, and the
-    line on stderr is what stops it being invisible.
-
-    Per-camera output needs the tracks layer to address a camera, and it does
-    not. ``tracks_table_path`` names one parquet per
-    ``(variant, group, sequence)``, the tracks index holds one row per
-    ``(run_id, group, sequence)``, and no registered track schema declares a
-    ``camera`` column.
-
-    Both the trackers and the ``infer-*`` ops reduce here. The rule was written
-    twice before, inline in each, and only the tracker's half of it ran.
-
-    Args:
-        kind: The op's kind, prefixing each message so it names the tool the
-            user invoked rather than the shared machinery.
-        scope: What ``Dataset.resolve_media_scope`` returned.
-
-    Returns:
-        The entries to work on, in the order they arrived, one per
-        ``(group, sequence)``.
-    """
-    claimed: set[str] = set()
-    kept: list[ResolvedScopeEntry] = []
-    for entry in scope:
-        key = make_entry_key(entry.group, entry.sequence)
-        if key in claimed:
-            print(
-                f"[{kind}] ({entry.group}, {entry.sequence}) camera "
-                f"{entry.camera or '<unnamed>'} shares one output directory "
-                f"with an earlier camera; skipping it.",
-                file=sys.stderr,
-            )
-            continue
-        claimed.add(key)
-        kept.append(entry)
-    return kept
 
 
 def build_work_items(
