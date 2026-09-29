@@ -108,9 +108,9 @@ UNREGISTERED_PARAMS_MODULES: tuple[str, ...] = (
 The label and track converters reach users through the converter CLIs and hash
 through the same ``identity_dump()``. The ``*_template`` modules are the classes
 a person copies to add a converter or a feature, which is where an undescribed
-field propagates from. The media steps are parameter models held in a list by
-the pre-processing op, and each step's fields reach a client as that list's
-items.
+field propagates from. The media steps are parameter models in a list on the
+pre-processing op, and each step's fields are published to a client as that
+list's items.
 """
 
 # The op registry fills on an explicit call rather than on importing the

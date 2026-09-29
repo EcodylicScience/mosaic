@@ -1,15 +1,15 @@
-"""Where a media variant's pixels and frames sit in its entry's source media.
+"""Map a media variant's pixels and frames into its entry's source media.
 
 A media variant is a video re-encoded from an entry's media by pre-processing
 steps: a crop moves its pixels, and a trim or a decimation selects its frames. A
 tracker reads the variant, while its tracks are published in source space, the
-pixel grid and frame axis of the entry media. :class:`Placement` is the map back:
-which source rectangle the variant image is, and which source frames its frames
-are, as a :class:`FrameMap`. Each step derives the placement after it from the
-placement before it, so a chain of steps, or a variant read by another variant,
-still maps back through one placement.
+pixel grid and frame axis of the entry media. :class:`Placement` is the map back.
+It records the source rectangle that the variant image covers, and the source
+frames of its frames as a :class:`FrameMap`. Each step derives the placement after
+it from the placement before it. A chain of steps, or a variant read by another
+variant, therefore still maps back through one placement.
 
-No I/O, and nothing heavier than numpy.
+The module does not perform I/O, and numpy is its heaviest import.
 """
 
 from __future__ import annotations
@@ -30,17 +30,17 @@ __all__ = ["FrameMap", "Placement"]
 
 @dataclass(frozen=True, slots=True)
 class FrameMap:
-    """The source frames a file's frames are: file frame ``i`` is ``start + step * i``.
+    """Map file frame ``i`` to source frame ``start + step * i``.
 
-    The file holds ``count`` frames, ``i`` in ``range(count)``. A trim narrows the
+    The file has ``count`` frames, ``i`` in ``range(count)``. A trim narrows the
     map with :meth:`within` and a decimation thins it with :meth:`every`. Neither
-    leaves the grid it started on, so the map stays three integers however many
-    steps built it.
+    leaves the grid that it started on. The map therefore stays three integers
+    however many steps built it.
 
     Attributes:
         start: The source frame of file frame 0.
         step: The source frames between consecutive file frames.
-        count: How many frames the file holds.
+        count: The number of frames in the file.
     """
 
     start: int
@@ -48,7 +48,7 @@ class FrameMap:
     count: int
 
     def __post_init__(self) -> None:
-        """Refuse a grid that no file could have.
+        """Refuse an impossible grid.
 
         Raises:
             TypeError: If a field is not an integer. A numpy integer is one.
@@ -62,11 +62,11 @@ class FrameMap:
             )
         if self.step < 1:
             raise ValueError(
-                f"a frame map steps by {self.step}; the step is at least 1"
+                f"a frame map steps by {self.step}. The step is at least 1"
             )
         if self.count < 0:
             raise ValueError(
-                f"a frame map holds {self.count} frames; the count is at least 0"
+                f"a frame map has {self.count} frames. The count is at least 0"
             )
 
     @property
@@ -75,71 +75,94 @@ class FrameMap:
         return self.start + self.step * self.count
 
     def source_frames(self, frames: npt.NDArray[np.int64]) -> npt.NDArray[np.int64]:
-        """The source frame of each file frame in *frames*."""
+        """Return the source frame of each file frame in *frames*."""
         return self.start + self.step * frames
 
     def within(self, start: int, stop: int) -> FrameMap:
-        """This map's frames that lie in the source range ``[start, stop)``.
+        """Return this map's frames that lie in the source range ``[start, stop)``.
 
-        This is what a ``trim`` does. A *start* between two kept frames begins at
-        the next kept frame, so a trim after a decimation stays on the decimated
+        A ``trim`` applies this. A *start* between two kept frames begins at the
+        next kept frame. A trim after a decimation therefore stays on the decimated
         grid.
 
-        The range may reach up to :attr:`end`, and the span to :attr:`end`
+        The range may extend to :attr:`end`, and the span to :attr:`end`
         includes the last kept frame's full step. After a decimation it therefore
         runs up to ``step - 1`` source frames past the last kept frame, which may
         lie past the source's last frame.
 
         Raises:
-            ValueError: If *start* is not before *stop*, if the range reaches
-                outside ``[self.start, self.end)``, or if it holds none of this
+            ValueError: If *start* is not before *stop*, if the range extends
+                outside ``[self.start, self.end)``, or if it contains none of this
                 map's frames.
         """
         requested = f"[{start}, {stop})"
         if start >= stop:
             raise ValueError(
-                f"source frames {requested} are an empty range: the start must be "
+                f"source frames {requested} are an empty range. The start must be "
                 f"before the stop. The frame map spans {_span(self)}."
             )
         if start < self.start or stop > self.end:
             raise ValueError(
-                f"source frames {requested} reach outside the frame map, which "
+                f"source frames {requested} extend outside the frame map, which "
                 f"spans {_span(self)}."
             )
         first = _ceil_div(start - self.start, self.step)
         stop_index = _ceil_div(stop - self.start, self.step)
         if stop_index <= first:
             raise ValueError(
-                f"source frames {requested} hold no frame of the frame map, which "
-                f"spans {_span(self)} in steps of {self.step}."
+                f"source frames {requested} do not contain a frame of the frame map, "
+                f"which spans {_span(self)} in steps of {self.step}."
             )
         return FrameMap(self.start + self.step * first, self.step, stop_index - first)
 
-    def every(self, n: int) -> FrameMap:
-        """Every *n*-th frame of this map, starting with its first.
+    def within_segment(self, start: int, stop: int) -> tuple[int, int] | None:
+        """Return the first and last of this map's frames in ``[start, stop)``.
 
-        This is what a ``decimate`` does. A remainder keeps its first frame, so ten
-        frames thinned by three keep four.
+        A reader of one clip of a multi-clip entry calls this. The clip has source
+        frames ``[start, stop)``, and the reader reads this map's frames in it
+        from the first to the last, :attr:`step` frames apart. Unlike with
+        :meth:`within`, the range may contain none of this map's frames or extend
+        past its ends.
+
+        Returns:
+            ``(first, last)`` as source frames, or ``None`` when the range contains
+            no frame of this map.
+        """
+        if self.count == 0:
+            return None
+        low = max(self.start, start)
+        high = min(self.end - self.step, stop - 1)
+        first = self.start + self.step * _ceil_div(low - self.start, self.step)
+        if first > high:
+            return None
+        last = self.start + self.step * ((high - self.start) // self.step)
+        return first, last
+
+    def every(self, n: int) -> FrameMap:
+        """Return every *n*-th frame of this map, starting with its first.
+
+        A ``decimate`` applies this. A remainder keeps its first frame. Ten frames
+        thinned by three keep four.
 
         Raises:
             ValueError: If *n* is below 2, which is not a decimation.
         """
         if n < 2:
             raise ValueError(
-                f"a decimation factor of {n} is not a decimation; the factor is at "
+                f"a decimation factor of {n} is not a decimation. The factor is at "
                 f"least 2"
             )
         return FrameMap(self.start, self.step * n, _ceil_div(self.count, n))
 
     def file_indices(self, upstream: FrameMap) -> tuple[int, int, int]:
-        """Where this map's frames are in a file written under *upstream*.
+        """Locate this map's frames in a file written under *upstream*.
 
         A variant built on another variant reads the upstream file, whose frame
         ``j`` is source frame ``upstream.start + upstream.step * j``. This map's
         frame ``i`` is then the upstream file's frame ``first + stride * i``.
 
         Returns:
-            ``(first, stride, count)``: the upstream file frame holding this map's
+            ``(first, stride, count)``: the upstream file frame with this map's
             first frame, the upstream file frames between consecutive frames of
             this map, and how many frames this map reads.
 
@@ -176,18 +199,18 @@ class FrameMap:
 
 @dataclass(frozen=True, slots=True)
 class Placement:
-    """The map from a variant file to its entry's source media.
+    """Map a variant file to its entry's source media.
 
     The variant image is the source rectangle ``(offset_x, offset_y, width,
     height)``: variant pixel ``(x, y)`` is source pixel
     ``(x + offset_x, y + offset_y)``. Variant frame ``i`` is source frame
-    ``frames.start + frames.step * i``. The source's own size and frame count are
-    stored beside them, so a placement answers whether it is the identity without
-    reading anything else.
+    ``frames.start + frames.step * i``. The source's size and frame count are
+    stored beside them. A placement therefore reports whether it is the identity
+    without reading anything else.
 
-    ``fps`` is the rate the variant file is labeled at, which sets the file's
+    ``fps`` is the rate that the variant file is labeled at, which sets the file's
     timestamp grid. It is not a statement about real time. The identity
-    predicates leave it out, and what a relabeled rate means is decided where
+    predicates leave it out. The meaning of a relabeled rate is decided where
     tracks are mapped back.
 
     Attributes:
@@ -197,9 +220,9 @@ class Placement:
         height: The variant image's height, in pixels.
         source_width: The entry media's frame width, in pixels.
         source_height: The entry media's frame height, in pixels.
-        source_frame_count: How many frames the entry media holds, across all of
-            its clips.
-        frames: The source frames the variant's frames are.
+        source_frame_count: The number of frames in the entry media, across all
+            of its clips.
+        frames: The map from the variant's frames to source frames.
         fps: The variant file's labeled frame rate.
     """
 
@@ -235,11 +258,11 @@ class Placement:
         source = f"{self.source_width}x{self.source_height}"
         if self.offset_x < 0 or self.offset_y < 0:
             raise ValueError(
-                f"the rectangle {rectangle} starts outside the {source} source; "
-                f"offsets are at least 0"
+                f"the rectangle {rectangle} starts outside the {source} source. "
+                f"Offsets are at least 0"
             )
         if self.width < 1 or self.height < 1:
-            raise ValueError(f"the rectangle {rectangle} holds no pixel")
+            raise ValueError(f"the rectangle {rectangle} contains no pixel")
         if (
             self.offset_x + self.width > self.source_width
             or self.offset_y + self.height > self.source_height
@@ -249,8 +272,8 @@ class Placement:
             )
         if self.source_frame_count < 0:
             raise ValueError(
-                f"a source of {self.source_frame_count} frames is not a source; "
-                f"the count is at least 0"
+                f"a source of {self.source_frame_count} frames is not a source. "
+                f"The count is at least 0"
             )
         last = self.frames.start + self.frames.step * (self.frames.count - 1)
         if self.frames.count > 0 and last >= self.source_frame_count:
@@ -260,13 +283,13 @@ class Placement:
             )
         if not (math.isfinite(self.fps) and self.fps > 0):
             raise ValueError(
-                f"a labeled rate of {self.fps} fps is not a frame rate; it must be "
+                f"a labeled rate of {self.fps} fps is not a frame rate. It must be "
                 f"positive and finite"
             )
 
     @classmethod
     def identity(cls, width: int, height: int, frame_count: int, fps: float) -> Self:
-        """The placement of a file that is its own source, labeled at *fps*."""
+        """Return the placement of a file that is itself the source, at *fps*."""
         return cls(
             offset_x=0,
             offset_y=0,
@@ -291,7 +314,7 @@ class Placement:
 
     @property
     def is_frame_identity(self) -> bool:
-        """Whether the variant holds every source frame, in order."""
+        """Whether the variant contains every source frame, in order."""
         return self.frames.is_identity_over(self.source_frame_count)
 
     @property
@@ -300,13 +323,13 @@ class Placement:
         return self.is_spatial_identity and self.is_frame_identity
 
     def to_json(self) -> str:
-        """The placement as canonical JSON: sorted keys and compact separators.
+        """Return the placement as canonical JSON, sorted and compact.
 
-        Equal placements give equal strings, so a stored placement compares as
-        text. Numbers are written as plain ``int`` and ``float``, so a numpy
-        integer or an integral ``fps`` writes the same bytes as the plain value.
-        The constructor has already refused a fractional integer field, so no
-        value is truncated here.
+        Equal placements give equal strings. A stored placement therefore compares
+        as text. Numbers are written as plain ``int`` and ``float``. A numpy
+        integer or an integral ``fps`` therefore writes the same bytes as the plain
+        value. ``operator.index`` does not truncate here, because the constructor
+        has already refused a fractional integer field.
         """
         document: dict[str, JsonValue] = {
             "offset_x": operator.index(self.offset_x),
@@ -332,9 +355,9 @@ class Placement:
         """Read a placement written by :meth:`to_json`, refusing any other shape.
 
         Raises:
-            ValueError: If *text* is not JSON, is not an object holding exactly a
-                placement's fields, holds a field of the wrong type, or describes
-                a placement the constructor refuses.
+            ValueError: If *text* is not JSON, is not an object with exactly a
+                placement's fields, has a field of a disallowed type, or describes
+                a placement that the constructor refuses.
         """
         document = _json_object(json.loads(text), "a placement", _PLACEMENT_FIELDS)
         frames = _json_object(
@@ -382,7 +405,7 @@ def _require_integers(**fields: int) -> None:
     """Raise ``TypeError`` naming the first field that is not an integer.
 
     :func:`operator.index` accepts ``int`` and numpy integers and refuses a float
-    such as ``1.5``, where ``int()`` would truncate it.
+    such as ``1.5``, which ``int()`` truncates.
     """
     for name, value in fields.items():
         try:
@@ -392,28 +415,28 @@ def _require_integers(**fields: int) -> None:
 
 
 def _span(frames: FrameMap) -> str:
-    """The source span a frame map covers, as a half-open range."""
+    """Return the source span that a frame map covers, as a half-open range."""
     return f"[{frames.start}, {frames.end})"
 
 
 def _json_object(
     value: JsonValue, what: str, fields: frozenset[str]
 ) -> dict[str, JsonValue]:
-    """*value* as a JSON object holding exactly *fields*, or raise naming *what*."""
+    """Return *value* as a JSON object with exactly *fields*, or raise naming *what*."""
     if not isinstance(value, dict):
         raise ValueError(f"{what} must be a JSON object, not {type(value).__name__}")
     missing = sorted(fields - value.keys())
     unknown = sorted(value.keys() - fields)
     if missing or unknown:
         raise ValueError(
-            f"{what} must hold exactly the fields {sorted(fields)}; missing "
+            f"{what} must have exactly the fields {sorted(fields)}; missing "
             f"{missing}, unknown {unknown}"
         )
     return value
 
 
 def _json_integer(document: dict[str, JsonValue], key: str) -> int:
-    """The integer at *key*, refusing a boolean, a float or a string."""
+    """Return the integer at *key*, refusing a boolean, a float or a string."""
     value = document[key]
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{key} must be an integer, not {value!r}")
@@ -421,7 +444,7 @@ def _json_integer(document: dict[str, JsonValue], key: str) -> int:
 
 
 def _json_number(document: dict[str, JsonValue], key: str) -> float:
-    """The number at *key* as a float, refusing a boolean or a string."""
+    """Return the number at *key* as a float, refusing a boolean or a string."""
     value = document[key]
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueError(f"{key} must be a number, not {value!r}")

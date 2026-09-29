@@ -212,7 +212,7 @@ def test_the_tracker_bridge_records_the_run_and_a_portable_source(
         [npz],
         tracks_variant="trex.0.1-bbbbbbbbbb",
         producer_run_id="trex.0.1-cccccccccc",
-        media_paths=[video],
+        consumed_media=[video],
         timeline=None,
         # This suite is about provenance, not the frame axis: no timeline means
         # no joined conversion, so there is no second axis to compare against.
@@ -252,7 +252,7 @@ def test_the_tracker_bridge_prefers_the_deepest_root_it_read(tmp_path: Path) -> 
         [npz],
         tracks_variant="trex.0.1-bbbbbbbbbb",
         producer_run_id="trex.0.1-cccccccccc",
-        media_paths=[video],
+        consumed_media=[video],
         timeline=None,
         # This suite is about provenance, not the frame axis: no timeline means
         # no joined conversion, so there is no second axis to compare against.
@@ -299,7 +299,7 @@ def test_the_inference_bridge_points_back_at_its_predictions(tmp_path: Path) -> 
         producer_run_id="infer-points.0.1-bbbbbbbbbb",
         kind="infer-points",
         seq_dir=seq_dir,
-        media_paths=[video],
+        consumed_media=[video],
         model_pt=model,
         overwrite=True,
     )
@@ -352,7 +352,7 @@ def test_a_second_producer_adds_a_row_rather_than_replacing_the_first(
         producer_run_id="infer-points.0.1-bbbbbbbbbb",
         kind="infer-points",
         seq_dir=seq_dir,
-        media_paths=[ds.get_root("media_raw") / "vid1.mp4"],
+        consumed_media=[ds.get_root("media_raw") / "vid1.mp4"],
         model_pt=ds.get_root("models") / "best.pt",
         overwrite=True,
     )
@@ -783,7 +783,7 @@ def test_the_sleap_bridge_records_the_run_and_a_portable_source(
         h5,
         tracks_variant="sleap.1.6-bbbbbbbbbb",
         producer_run_id="sleap.1.6-cccccccccc",
-        media_paths=[video],
+        consumed_media=[video],
         model_checkpoints=[],
         fps=30.0,
         overwrite=True,
@@ -828,7 +828,7 @@ def test_the_litpose_bridge_records_the_run_and_a_portable_source(
         csv,
         tracks_variant="litpose.2.3-bbbbbbbbbb",
         producer_run_id="litpose.2.3-cccccccccc",
-        media_paths=[video],
+        consumed_media=[video],
         model_files=[],
         fps=30.0,
         overwrite=True,

@@ -1,13 +1,14 @@
-"""A recording stand-in for the Ultralytics environment, for the tracker's tests.
+"""Stand in for the Ultralytics environment in the tracker's tests, recording calls.
 
-``run_ultralytics`` reaches Ultralytics through two module-level seams in
-``ultralytics_track/dataset_runs.py``: a probe reporting what an environment holds,
-and a track call writing a predictions parquet. :func:`install_fake_ultralytics`
-replaces both with :class:`FakeUltralytics`, so a test runs the whole tracker
-protocol with no Ultralytics environment, no weights and no GPU.
+``run_ultralytics`` calls Ultralytics through two module-level seams in
+``ultralytics_track/dataset_runs.py``: a probe that reports an environment's
+contents, and a track call that writes a predictions parquet.
+:func:`install_fake_ultralytics` replaces both with :class:`FakeUltralytics`. A
+test therefore runs the whole tracker protocol without an Ultralytics environment,
+weights or a GPU.
 
-The predictions it writes are fixed by :func:`write_ultralytics_predictions`, so a
-test can compute the table the bridge publishes from them.
+The predictions that it writes are fixed by :func:`write_ultralytics_predictions`.
+A test can therefore compute the table that the bridge publishes from them.
 """
 
 from __future__ import annotations
@@ -29,13 +30,13 @@ from mosaic.tracking.ultralytics_track.run import UltralyticsTrackResult
 from mosaic.tracking.ultralytics_track.tracker_defaults import TRACKER_NAMES
 
 ULTRALYTICS_KEYPOINTS: Final = 2
-"""How many keypoints the fake's weights carry."""
+"""The number of keypoints in the fake's weights."""
 
 
 def write_ultralytics_predictions(
     path: Path, *, n_frames: int = 4, n_ids: int = 2
 ) -> None:
-    """A predictions parquet in the shape the runner writes.
+    """Write a predictions parquet in the shape that the runner writes.
 
     Track ``t`` in frame ``f`` has the box ``(10t, 20, 10t + 5, 25)`` and keypoint
     ``k`` at ``(10t + f + k, 20 + k)``.
@@ -56,21 +57,28 @@ def write_ultralytics_predictions(
     table.to_parquet(path, index=False)
 
 
-def ultralytics_probe_response(model_task: str = "pose") -> ProbeResponse:
-    """What a healthy environment reports for the fake's weights.
+def ultralytics_probe_response(
+    model_task: str = "pose",
+    *,
+    has_locate: bool = False,
+    version: str = "8.4.63",
+    n_keypoints: int = ULTRALYTICS_KEYPOINTS,
+) -> ProbeResponse:
+    """Return the report of a healthy environment for the fake's weights.
 
     ``installed_tracker_table`` is empty, so the merge mosaic writes is its own
     resolved table -- exactly the case a fresh Ultralytics with no extra settings
-    produces, and the one that makes the written YAML assertable.
+    produces, and the one that makes the written YAML assertable. A POLO
+    environment defines ``locate``, which *has_locate* reports.
     """
     return ProbeResponse(
         has_ultralytics=True,
         has_lap=True,
-        has_locate=False,
-        ultralytics_version="8.4.63",
+        has_locate=has_locate,
+        ultralytics_version=version,
         tracker_names=list(TRACKER_NAMES),
         model_task=model_task,
-        n_keypoints=ULTRALYTICS_KEYPOINTS,
+        n_keypoints=n_keypoints,
         model_load_error="",
         installed_tracker_table={},
     )

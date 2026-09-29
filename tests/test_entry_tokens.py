@@ -15,7 +15,7 @@ import pytest
 import mosaic.core.helpers as helpers_module
 from mosaic.cli._io import parse_entries
 from mosaic.core.entry import parse_entry_tokens
-from mosaic.core.helpers import make_entry_key
+from mosaic.core.helpers import is_nameless_entry, make_entry_key
 
 _CASES: list[tuple[list[str], list[tuple[str, str]]]] = [
     (["g:seq"], [("g", "seq")]),
@@ -59,6 +59,17 @@ def test_a_bare_token_names_the_key_it_is_stored_under() -> None:
     [(group, sequence)] = parse_entry_tokens(["seq"])
 
     assert make_entry_key(group, sequence) == "seq"
+
+
+@pytest.mark.parametrize(
+    ("group", "sequence", "nameless"),
+    [("", "", True), ("", "  ", True), ("", "seq", False), ("g", "", False)],
+)
+def test_an_entry_is_nameless_exactly_when_its_key_is_empty(
+    group: str, sequence: str, nameless: bool
+) -> None:
+    assert is_nameless_entry(group, sequence) is nameless
+    assert (make_entry_key(group, sequence) == "") is nameless
 
 
 def test_the_parser_lives_beside_the_type_it_produces() -> None:

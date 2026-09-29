@@ -136,8 +136,8 @@ def sleap_settings(params: SleapParams, *, model_id: str) -> dict[str, object]:
 
     The model is carried as its content digest (``model_id``), never a path. When
     tracking is off, the tracker knobs are dropped from identity so retuning them
-    cannot bust a cache they never fed. ``media`` joins only when it names a
-    variant.
+    cannot bust a cache they never fed. ``media`` enters the payload only when it
+    names a variant.
 
     Args:
         params: The run's parameters.
@@ -184,7 +184,7 @@ def _bridge_analysis_h5_to_tracks(
     *,
     tracks_variant: str,
     producer_run_id: str,
-    media_paths: Sequence[Path],
+    consumed_media: Sequence[Path],
     model_checkpoints: Sequence[Path],
     fps: float,
     overwrite: bool,
@@ -194,10 +194,10 @@ def _bridge_analysis_h5_to_tracks(
 
     Uses the registered ``sleap_analysis_h5`` converter with the authoritative
     (group, sequence) known from the media index, so no name is guessed from a
-    filename. *media_paths* are the media files the table derives from, and
-    *mapping* maps a table tracked on a media variant into source space, ``None``
-    otherwise. Returns ``None`` when the conversion failed and nothing was
-    published.
+    filename. *consumed_media* are the media files that the table derives from,
+    and *mapping* maps a table tracked on a media variant into source space, or is
+    ``None``. Returns ``None`` when the conversion failed and did not publish a
+    table.
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
     from mosaic.core.track_library.sleap import SleapConvertParams
@@ -230,7 +230,7 @@ def _bridge_analysis_h5_to_tracks(
         tracks_variant=tracks_variant,
         producer_run_id=producer_run_id,
         source=h5_path.parent,
-        consumed=[h5_path, *media_paths, *model_checkpoints],
+        consumed=[h5_path, *consumed_media, *model_checkpoints],
         mapping=mapping,
     )
 
@@ -463,7 +463,7 @@ def run_sleap(
                 h5_path,
                 tracks_variant=minted.tracks_variant,
                 producer_run_id=minted.run_id,
-                media_paths=item.consumed_media,
+                consumed_media=item.consumed_media,
                 model_checkpoints=list(resolved_models.significant_files),
                 fps=item.fps,
                 overwrite=job.overwrite or recomputed,

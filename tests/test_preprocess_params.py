@@ -1,9 +1,9 @@
-"""The pre-processing op's parameters, and the run identifier they mint.
+"""Test the pre-processing op's parameters and the run identifier that they mint.
 
 A variant's identity is a function of its parameters alone: the steps in order,
 each with its version, the upstream variant, the labeled rate when one is set,
-the codec and the quality the encode resolves to. A permission that does not
-change what is encoded stays out of it.
+the codec and the quality that the encode resolves to. A permission that leaves
+the encoded output unchanged stays out of it.
 """
 
 from __future__ import annotations
@@ -21,10 +21,10 @@ from mosaic.core.media.preprocess import (
     MediaStepSpec,
     TrimStep,
 )
+from mosaic.core.pipeline.preprocess_layout import PREPROCESS_KIND
 from mosaic.core.pipeline.preprocess import (
     AV1_DEFAULT_QUALITY,
     H264_DEFAULT_CRF,
-    PREPROCESS_KIND,
     PREPROCESS_VERSION,
     PreprocessParams,
     VariantCodec,
@@ -47,7 +47,7 @@ def _run_id(steps: list[MediaStepSpec], **fields: object) -> str:
 
 
 def test_an_empty_step_list_is_refused_naming_the_entry_media() -> None:
-    with pytest.raises(ValidationError, match="leave `media` empty"):
+    with pytest.raises(ValidationError, match="Leave `media` empty"):
         _ = PreprocessParams(steps=[])
 
 
@@ -72,7 +72,7 @@ def test_a_negative_quality_is_refused(codec: VariantCodec) -> None:
 
 
 def test_the_schema_publishes_the_lowest_quality() -> None:
-    """Both scales start at 0, so an editor can bound the control from the schema."""
+    """Both scales start at 0. An editor can therefore bound the control from them."""
     quality = PreprocessParams.model_json_schema()["properties"]["quality"]
 
     assert {"type": "integer", "minimum": 0} in quality["anyOf"]
@@ -127,7 +127,7 @@ def test_the_run_id_is_the_op_kind_and_version_over_a_digest() -> None:
 
 
 def test_every_field_identity_keeps_reaches_the_payload() -> None:
-    """The payload is built by hand, so a new field must be added to it."""
+    """The payload is built by hand. A new field must therefore be added to it."""
     params = PreprocessParams(steps=[_CROP], fps=15.0)
 
     assert set(preprocess_identity_payload(params)) == set(params.identity_dump())

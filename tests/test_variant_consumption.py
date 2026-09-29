@@ -1,13 +1,13 @@
-"""Tracking a media variant, and publishing what was found in source space.
+"""Test tracking a media variant and publishing its results in source space.
 
 A tracker or inference op whose ``media`` names a variant hands its tool the
-variant's file for each entry, and maps the table the tool reports back onto the
-entry's own pixels and frames. Every reuse gate compares the file the tool reads,
-so a run over a variant never reuses output made from the entry media, and
-recomputes when the variant file is rewritten. An entry whose variant is missing
-or out of date fails alone.
+variant's file for each entry, and maps the table that the tool reports back onto
+the entry's pixels and frames. Every reuse gate compares the file that the tool
+reads. A run over a variant therefore never reuses output made from the entry
+media, and it recomputes when the variant file is rewritten. An entry whose
+variant is missing or out of date fails alone.
 
-The variants are real: the ``preprocess`` op writes them from flat clips. The
+The variants are real. The ``preprocess`` op writes them from flat clips. The
 trackers and the inference runners are the recording fakes from
 ``tests.helpers``.
 """
@@ -17,6 +17,8 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pytest
 
@@ -25,11 +27,15 @@ import mosaic.tracking.sleap.dataset_runs as sleap_runs
 import mosaic.tracking.trex.dataset_runs as trex_runs
 import mosaic.tracking.ultralytics_track.dataset_runs as ultralytics_runs
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.markers import new_inflight, write_inflight
 from mosaic.core.pipeline.ops import run_op
-from mosaic.core.pipeline.preprocess_index import variant_row
+from mosaic.core.pipeline.preprocess_index import media_variant_rows
 from mosaic.core.pipeline.promotion import promote_correction
 from mosaic.core.pipeline.provenance import reached_by
-from mosaic.core.pipeline.preprocess_layout import media_variant_path
+from mosaic.core.pipeline.preprocess_layout import (
+    media_variant_path,
+    media_variant_recipe_path,
+)
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.pipeline.sequence_index import decode_consumed_roots
 from mosaic.core.pipeline.tracks_index import (
@@ -42,6 +48,7 @@ from mosaic.runlog import reduce_run_log, run_log_path
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import ToolCodecError
 from mosaic.tracking.litpose.params import LitposeParams
+from mosaic.tracking.ops.infer import infer_run_root
 from mosaic.tracking.pose_training.localizer_inference import LocalizerDetection
 from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.trex.conversion_cache import conversion_slot
@@ -53,7 +60,8 @@ from tests.helpers import (
     FakeSleap,
     FakeTrex,
     FakeUltralytics,
-    index_media_sequence,
+    count_index_reads,
+    entry_error_lines,
     install_fake_litpose,
     install_fake_point_inference,
     install_fake_pose_inference,
@@ -62,8 +70,9 @@ from tests.helpers import (
     install_fake_ultralytics,
     make_dataset,
     scope_over,
-    write_h264_mp4,
     write_litpose_model,
+    write_painted_entry,
+    write_sleap_model,
 )
 
 pytestmark = pytest.mark.media
@@ -77,7 +86,7 @@ _STEPS: list[dict[str, object]] = [
     {"step": "trim", "start": 2, "stop": 14},
     {"step": "decimate", "every": 2},
 ]
-"""A 32x24 window at (8, 4), holding source frames 2, 4, ..., 12 at 15 fps."""
+"""A 32x24 window at (8, 4), with source frames 2, 4, ..., 12 at 15 fps."""
 
 _OFFSET_X, _OFFSET_Y = 8, 4
 _FIRST, _STEP = 2, 2
@@ -90,19 +99,26 @@ def _source_frame(variant_frame: int) -> int:
 # --- the dataset --------------------------------------------------------------
 
 
-def _write_entry(ds: Dataset, sequence: str, *, shade: int) -> None:
-    """Write and index *sequence*'s one clip, every frame flat at *shade*."""
-    directory = ds.get_root("media_raw") / sequence
-    write_h264_mp4(
-        directory / "clip0.mp4", frames=_FRAMES, fps=_FPS, size=_SIZE, shade=shade
-    )
-    index_media_sequence(ds, sequence, ["clip0.mp4"])
+_CLIP = [(_FRAMES, _FPS)]
+"""Each entry's one clip, as ``(frames, fps)``."""
+
+
+def _flat(shade: int) -> Callable[[int], npt.NDArray[np.uint8]]:
+    """Return a painter that gives every frame the gray level *shade*."""
+
+    def paint(_frame: int) -> npt.NDArray[np.uint8]:
+        width, height = _SIZE
+        return np.full((height, width, 3), shade, np.uint8)
+
+    return paint
 
 
 def _dataset(tmp_path: Path, sequences: Sequence[str] = ("s",)) -> Dataset:
     ds = make_dataset(tmp_path / "ds")
     for position, sequence in enumerate(sequences):
-        _write_entry(ds, sequence, shade=40 + 30 * position)
+        _ = write_painted_entry(
+            ds, sequence, _CLIP, _flat(40 + 30 * position), size=_SIZE
+        )
     return ds
 
 
@@ -122,14 +138,9 @@ def _variant(
 
 
 def _variant_uuid(ds: Dataset, run_id: str, sequence: str = "s") -> str:
-    row = variant_row(ds, run_id, "", sequence, "")
+    row = media_variant_rows(ds, run_id).get(("", sequence, ""))
     assert row is not None
     return row["video_uuid"]
-
-
-def _error_lines(ds: Dataset, execution_id: str) -> list[str]:
-    log = run_log_path(ds.base_dir, execution_id).read_text()
-    return [line for line in log.splitlines() if '"entry_error"' in line]
 
 
 def _tracks(ds: Dataset, producer: str) -> pd.DataFrame:
@@ -154,10 +165,7 @@ def model(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def sleap_model(tmp_path: Path) -> Path:
-    directory = tmp_path / "sleap_model"
-    directory.mkdir()
-    _ = (directory / "best.ckpt").write_bytes(b"weights")
-    return directory
+    return write_sleap_model(tmp_path / "sleap_model")
 
 
 @pytest.fixture
@@ -232,7 +240,7 @@ def test_ultralytics_tracks_the_variant_and_publishes_in_source_space(
 
     (row,) = [row for _, row in _tracks(ds, "ultralytics").iterrows()]
     table = _table(ds, row)
-    # The fake reports track t in variant frame f with its body centre at
+    # The fake reports track t in variant frame f with its body center at
     # (10t + f + 0.5, 20.5) and its box's left edge at 10t.
     variant_frame = (table["frame"] - _FIRST) // _STEP
     assert sorted(set(table["frame"])) == [_source_frame(f) for f in range(4)]
@@ -261,7 +269,7 @@ def test_ultralytics_reuses_a_variant_run_and_recomputes_a_rewritten_variant(
     assert len(ultralytics.tracked) == 1
 
     before = _variant_uuid(ds, variant)
-    _write_entry(ds, "s", shade=200)
+    _ = write_painted_entry(ds, "s", _CLIP, _flat(200), size=_SIZE)
     assert _variant(ds) == variant
     assert _variant_uuid(ds, variant) != before
 
@@ -282,7 +290,7 @@ def test_a_missing_variant_fails_only_its_entry(
     )
 
     assert ultralytics.tracked == [media_variant_path(ds, variant, "", "s", "")]
-    (line,) = _error_lines(ds, "missing")
+    (line,) = entry_error_lines(ds, "missing")
     assert "MediaVariantMissingError" in line
     assert '"t"' in line
     assert "--kind preprocess" in line
@@ -295,14 +303,14 @@ def test_a_drifted_variant_fails_only_its_entry(
     ds = _dataset(tmp_path, ("s", "t"))
     variant = _variant(ds, ("s", "t"))
     # The entry's media changes after the variant was written from it.
-    _write_entry(ds, "t", shade=200)
+    _ = write_painted_entry(ds, "t", _CLIP, _flat(200), size=_SIZE)
 
     _ = ultralytics_runs.run_ultralytics(
         ds, _ultralytics_params(model, variant), execution_id="drifted"
     )
 
     assert ultralytics.tracked == [media_variant_path(ds, variant, "", "s", "")]
-    (line,) = _error_lines(ds, "drifted")
+    (line,) = entry_error_lines(ds, "drifted")
     assert "MediaVariantDriftedError" in line
     assert variant in line
     assert _tracks(ds, "ultralytics")["sequence"].tolist() == ["s"]
@@ -311,7 +319,7 @@ def test_a_drifted_variant_fails_only_its_entry(
 def test_a_run_whose_every_variant_is_missing_fails_naming_the_variant(
     tmp_path: Path, model: Path, ultralytics: FakeUltralytics
 ) -> None:
-    """No tool ran, so the refusal names the variant and promises no tool output."""
+    """The tool did not run. The refusal names the variant and omits tool output."""
     ds = _dataset(tmp_path)
     missing = "preprocess.0.1-0123456789"
 
@@ -321,11 +329,17 @@ def test_a_run_whose_every_variant_is_missing_fails_naming_the_variant(
         )
 
     message = str(refused.value)
-    expected = f"no entry in scope has a readable file of the media variant {missing}"
+    expected = (
+        f"every entry that it attempted lacks a readable file of the media "
+        f"variant {missing}"
+    )
     assert expected in message
+    assert f"Run the preprocess step that made {missing}" in message
+    assert "--kind preprocess --entries :s --params" in message
+    assert f"{missing} does not record a recipe" in message
     assert "tool output" not in message
     assert ultralytics.tracked == []
-    (line,) = _error_lines(ds, "unread")
+    (line,) = entry_error_lines(ds, "unread")
     assert "MediaVariantMissingError" in line
 
 
@@ -342,7 +356,7 @@ def test_sleap_recomputes_after_the_variant_is_rewritten(
     _ = sleap_runs.run_sleap(ds, params)
     assert sleap.tracked == [media_variant_path(ds, variant, "", "s", "")]
 
-    _write_entry(ds, "s", shade=200)
+    _ = write_painted_entry(ds, "s", _CLIP, _flat(200), size=_SIZE)
     _ = _variant(ds, codec="h264")
     _ = sleap_runs.run_sleap(ds, params)
 
@@ -360,7 +374,7 @@ def test_an_av1_variant_handed_to_sleap_names_the_h264_remedy(
     sleap: FakeSleap,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SLEAP's OpenCV reads no AV1, and a variant can be made in H.264 instead."""
+    """SLEAP's OpenCV cannot read AV1, and a variant can be made in H.264 instead."""
     monkeypatch.delenv("MOSAIC_ALLOW_TOOL_CODECS", raising=False)
     ds = _dataset(tmp_path)
     variant = _variant(ds)
@@ -372,7 +386,9 @@ def test_an_av1_variant_handed_to_sleap_names_the_h264_remedy(
     message = str(refused.value)
     assert "which is av1" in message
     assert "py-opencv" in message
-    assert f'preprocess step that made {variant} with "codec": "h264"' in message
+    assert f'the recipe of {variant} with "codec" set to "h264"' in message
+    recipe = media_variant_recipe_path(ds, variant).absolute()
+    assert f"--entries :s --params @{recipe}" in message
     assert sleap.tracked == []
 
 
@@ -393,7 +409,7 @@ def test_lightning_pose_tracks_the_variant_and_publishes_in_source_space(
     assert litpose.predicted == [media_variant_path(ds, variant, "", "s", "")]
     (row,) = [row for _, row in _tracks(ds, "litpose").iterrows()]
     table = _table(ds, row).sort_values("frame")
-    # The fake predicts one row per variant frame: row f holds variant frame f.
+    # The fake predicts one row per variant frame, and row f is variant frame f.
     (written,) = litpose.written
     assert table["frame"].tolist() == [_source_frame(f) for f in range(len(written))]
     for keypoint in range(written.shape[1]):
@@ -416,10 +432,10 @@ def test_lightning_pose_tracks_the_variant_and_publishes_in_source_space(
 def test_a_trex_variant_run_does_not_reuse_the_entry_conversion(
     tmp_path: Path, trex: FakeTrex
 ) -> None:
-    """A slot is keyed by the file converted, so the variant gets its own.
+    """A slot is keyed by the file converted. The variant gets a separate slot.
 
-    Reusing the entry's conversion would track the uncropped frames and then
-    shift every position by the crop's offset.
+    A reuse of the entry's conversion tracks the uncropped frames and then shifts
+    every position by the crop's offset.
     """
     ds = _dataset(tmp_path)
     variant = _variant(ds)
@@ -452,7 +468,7 @@ def test_a_trex_variant_table_is_mapped_into_source_space(
 
     (row,) = [row for _, row in _tracks(ds, "trex").iterrows()]
     table = _table(ds, row)
-    # The fake exports the body centre at (f, f) in variant frame f.
+    # The fake exports the body center at (f, f) in variant frame f.
     variant_frame = (table["frame"] - _FIRST) // _STEP
     assert sorted(set(table["frame"])) == [_source_frame(f) for f in range(4)]
     assert (table["X"] == variant_frame + _OFFSET_X).all()
@@ -473,7 +489,7 @@ def _install_fake_localizer(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
     """Stand in for the localizer, which runs in this process.
 
     It reports one detection per frame, at ``(1, 4)`` in frame 0 and ``(3, 6)``
-    in frame 1, and records each video it is handed.
+    in frame 1, and records each video that it is handed.
     """
     import mosaic.tracking.pose_training.localizer_inference as localizer
 
@@ -508,7 +524,7 @@ _INFERENCE: dict[
     ],
 ] = {
     # The fake pose runner reports keypoints (1, 2) and (5, 8) in frames 0-3,
-    # whose mean is the body centre.
+    # whose mean is the body center.
     "infer-pose": (
         _pose_videos,
         {(_source_frame(f), 3.0 + _OFFSET_X, 5.0 + _OFFSET_Y) for f in range(4)},
@@ -584,12 +600,27 @@ def test_a_missing_variant_fails_only_its_inference_entry(
     _ = _infer(ds, "infer-points", model, variant, ("s", "t"), execution_id="points")
 
     assert fake.videos == [media_variant_path(ds, variant, "", "s", "")]
-    (line,) = _error_lines(ds, "points")
+    (line,) = entry_error_lines(ds, "points")
     assert "MediaVariantMissingError" in line
     assert _tracks(ds, "infer-points")["sequence"].tolist() == ["s"]
     snapshot = reduce_run_log(run_log_path(ds.base_dir, "points"))
     assert snapshot is not None
     assert (snapshot["entries_written"], snapshot["entries_failed"]) == (1, 1)
+
+
+def test_an_inference_run_reads_the_variant_index_once(
+    tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = install_fake_point_inference(monkeypatch)
+    sequences = ("s", "t", "u")
+    ds = _dataset(tmp_path, sequences)
+    variant = _variant(ds, sequences)
+    reads = count_index_reads(monkeypatch)
+
+    _ = _infer(ds, "infer-points", model, variant, sequences)
+
+    assert len(_tracks(ds, "infer-points")) == len(sequences)
+    assert (reads.media_scopes, reads.variant_indexes) == (1, 1)
 
 
 def test_an_inference_run_with_no_readable_variant_runs_no_model(
@@ -598,17 +629,54 @@ def test_an_inference_run_with_no_readable_variant_runs_no_model(
     fake = install_fake_point_inference(monkeypatch)
     ds = _dataset(tmp_path)
 
-    with pytest.raises(AllEntriesFailed, match="no entry in scope has a readable"):
+    with pytest.raises(
+        AllEntriesFailed, match="every entry that it attempted lacks a readable file"
+    ):
         _ = _infer(ds, "infer-points", model, "preprocess.0.1-0123456789")
 
     assert fake.videos == []
     assert _tracks(ds, "infer-points").empty
 
 
+def test_an_inference_run_whose_readable_entries_are_held_names_the_variant(
+    tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one readable entry is held by another execution, the other unreadable.
+
+    A model did not run for any entry that this run attempted. The refusal
+    therefore names the variant and the command that writes it, as the tracker
+    driver's does.
+    """
+    fake = install_fake_point_inference(monkeypatch)
+    ds = _dataset(tmp_path, ("s", "t"))
+    variant = _variant(ds, ("s",))
+    run_id = _infer(ds, "infer-points", model, variant)
+    held = infer_run_root(ds, "infer-points", run_id) / "s"
+    write_inflight(
+        held,
+        new_inflight(
+            execution_id="someone-else",
+            host="other-host",
+            pid=1,
+            phase=None,
+            idle_seconds=3600.0,
+        ),
+    )
+    ran = len(fake.videos)
+
+    with pytest.raises(AllEntriesFailed) as refused:
+        _ = _infer(ds, "infer-points", model, variant, ("s", "t"))
+
+    message = str(refused.value)
+    assert "every entry that it attempted lacks a readable file" in message
+    assert "--kind preprocess --entries :t --params" in message
+    assert len(fake.videos) == ran
+
+
 def test_an_inference_run_reports_the_entries_it_holds(
     tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Cache hits included, so a re-run reports the coverage a first run did."""
+    """The count includes cache hits, and a re-run reports a first run's coverage."""
     _ = install_fake_point_inference(monkeypatch)
     ds = _dataset(tmp_path, ("s", "t"))
 
@@ -625,7 +693,7 @@ def test_an_inference_run_reports_the_entries_it_holds(
 def test_backfill_leaves_a_variant_table_media_frames_blank(
     tmp_path: Path, model: Path, ultralytics: FakeUltralytics
 ) -> None:
-    """A variant table does not span its source axis, so no length is recorded.
+    """A variant table does not span its source axis, and its length stays blank.
 
     The entry-media table beside it is filled as before.
     """
@@ -657,7 +725,7 @@ def _predictions(ds: Dataset, run_id: str) -> Path:
 def test_promoting_a_correction_of_a_variant_run_is_refused(
     tmp_path: Path, model: Path, ultralytics: FakeUltralytics
 ) -> None:
-    """Its tool output is in the variant's pixels and frames, and would convert as is.
+    """The output is in variant pixels and frames, and promotion converts it unmapped.
 
     A correction of a run over the entry media is not refused.
     """

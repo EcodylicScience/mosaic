@@ -25,7 +25,6 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -58,51 +57,15 @@ from mosaic.tracking.trex.conversion_cache import CONVERT_KIND
 from mosaic.tracking.trex.dataset_runs import trex_index_path
 from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.trex.run import TRexConvertResult
-from tests.helpers import FakeTrex, clean_facts_cells, install_fake_trex, scope_over
+from tests.helpers import (
+    FakeTrex,
+    MediaClip,
+    install_fake_trex,
+    scope_over,
+    write_media_index,
+)
 
 # --- fixtures --------------------------------------------------------------
-
-
-@dataclass
-class MediaEntry:
-    """One row of the synthetic media index."""
-
-    sequence: str
-    filename: str
-    camera: str = ""
-    video_uuid: str = ""
-
-
-def write_media_index(ds: Dataset, entries: list[MediaEntry]) -> None:
-    """Rewrite the media index from *entries*, storing root-relative paths."""
-    media_root = ds.get_root(ds.resolve_media_root())
-    media_root.mkdir(parents=True, exist_ok=True)
-    rows: list[dict[str, object]] = []
-    for entry in entries:
-        video = media_root / entry.filename
-        if not video.exists():
-            _ = video.write_bytes(b"fake")
-        rows.append(
-            {
-                "name": entry.filename,
-                "group": "",
-                "sequence": entry.sequence,
-                "group_safe": "",
-                "sequence_safe": entry.sequence,
-                "camera": entry.camera,
-                "abs_path": ds.relative_to_root(video),
-                "size_bytes": 4,
-                "mtime_iso": "",
-                "width": 640,
-                "height": 480,
-                "fps": 30.0,
-                "codec": "h264",
-                "media_type": "video",
-                "video_order": 0,
-                **clean_facts_cells(video_uuid=entry.video_uuid),
-            }
-        )
-    pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
 
 
 def _joined_export(ds: Dataset, uids: list[str]) -> Path:
@@ -137,7 +100,7 @@ def ds(tmp_path: Path) -> Dataset:
     """A dataset with one sequence, ``vid1``, backed by ``vid1.mp4``."""
     manifest = new_dataset_manifest("t", base_dir=tmp_path)
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
-    write_media_index(dataset, [MediaEntry(sequence="vid1", filename="vid1.mp4")])
+    write_media_index(dataset, [MediaClip(sequence="vid1", filename="vid1.mp4")])
     return dataset
 
 
@@ -390,8 +353,8 @@ def test_a_held_entry_does_not_stop_the_rest_of_the_batch(
     write_media_index(
         ds,
         [
-            MediaEntry(sequence="vid1", filename="vid1.mp4"),
-            MediaEntry(sequence="vid2", filename="vid2.mp4"),
+            MediaClip(sequence="vid1", filename="vid1.mp4"),
+            MediaClip(sequence="vid2", filename="vid2.mp4"),
         ],
     )
     run_id = dr.run_trex(ds, TrexParams(), scope_over(("", "no-such-sequence")))
@@ -464,7 +427,7 @@ def test_an_expired_foreign_claim_is_reclaimed(ds: Dataset, trex: FakeTrex) -> N
 def test_a_changed_source_video_forces_a_recompute(ds: Dataset, trex: FakeTrex) -> None:
     """The identity hashes settings only, so nothing else would notice."""
     run_id = dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
-    write_media_index(ds, [MediaEntry(sequence="vid1", filename="vid2.mp4")])
+    write_media_index(ds, [MediaClip(sequence="vid1", filename="vid2.mp4")])
 
     second = dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
 
@@ -488,7 +451,7 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
         *,
         tracks_variant: str,
         producer_run_id: str,
-        media_paths: Sequence[Path],
+        consumed_media: Sequence[Path],
         timeline: object,
         media_frames: int | None,
         overwrite: bool,
@@ -503,7 +466,7 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
         return BridgeCounts(n_rows=1, n_ids=1)
 
     dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
-    write_media_index(ds, [MediaEntry(sequence="vid1", filename="vid2.mp4")])
+    write_media_index(ds, [MediaClip(sequence="vid1", filename="vid2.mp4")])
 
     monkeypatch.setattr(dr, "_bridge_npz_to_tracks", record_bridge)
     dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
@@ -554,8 +517,8 @@ def test_two_cameras_produce_one_work_item(ds: Dataset, trex: FakeTrex) -> None:
     write_media_index(
         ds,
         [
-            MediaEntry(sequence="vid1", filename="vid1.mp4", camera="cam0"),
-            MediaEntry(sequence="vid1", filename="vid2.mp4", camera="cam1"),
+            MediaClip(sequence="vid1", filename="vid1.mp4", camera="cam0"),
+            MediaClip(sequence="vid1", filename="vid2.mp4", camera="cam1"),
         ],
     )
 
@@ -631,8 +594,8 @@ def test_the_base_itself_is_checked_where_it_is_declared() -> None:
 def test_every_tool_facing_field_reaches_a_phase() -> None:
     """The other half: the phases between them consume all sixteen fields.
 
-    ``media`` is inherited from :class:`MediaInputParams` and names no phase. It
-    selects the file TREx reads rather than a setting sent to it.
+    ``media`` is inherited from :class:`MediaInputParams` and does not name a
+    phase. It selects the file that TREx reads and is not a setting sent to TREx.
     """
     phased = set(phase_fields(TrexParams, "convert")) | set(
         phase_fields(TrexParams, "track")
@@ -673,12 +636,12 @@ def test_a_video_replaced_in_place_forces_a_recompute(
     notices.
     """
     write_media_index(
-        ds, [MediaEntry(sequence="vid1", filename="vid1.mp4", video_uuid="uid-aaa")]
+        ds, [MediaClip(sequence="vid1", filename="vid1.mp4", video_uuid="uid-aaa")]
     )
     run_id = dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
 
     write_media_index(
-        ds, [MediaEntry(sequence="vid1", filename="vid1.mp4", video_uuid="uid-bbb")]
+        ds, [MediaClip(sequence="vid1", filename="vid1.mp4", video_uuid="uid-bbb")]
     )
     second = dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
 
@@ -696,12 +659,12 @@ def test_the_same_video_under_a_new_name_is_not_a_recompute(
     away hours of conversion; the uid says it is the same video.
     """
     write_media_index(
-        ds, [MediaEntry(sequence="vid1", filename="vid1.mp4", video_uuid="uid-aaa")]
+        ds, [MediaClip(sequence="vid1", filename="vid1.mp4", video_uuid="uid-aaa")]
     )
     run_id = dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
 
     write_media_index(
-        ds, [MediaEntry(sequence="vid1", filename="renamed.mp4", video_uuid="uid-aaa")]
+        ds, [MediaClip(sequence="vid1", filename="renamed.mp4", video_uuid="uid-aaa")]
     )
     second = dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
 
@@ -719,7 +682,7 @@ def test_an_absent_uid_still_falls_back_to_the_path(
     remove the guard from exactly those.
     """
     run_id = dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
-    write_media_index(ds, [MediaEntry(sequence="vid1", filename="vid2.mp4")])
+    write_media_index(ds, [MediaClip(sequence="vid1", filename="vid2.mp4")])
 
     second = dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
 
@@ -751,37 +714,21 @@ def _session(
     against. *joined* also writes the joined export a multi-clip entry now
     resolves to; ``False`` leaves it absent, which is what a run must refuse.
     """
-    media_root = ds.get_root(ds.resolve_media_root())
     sizes = widths or {}
-    rows: list[dict[str, object]] = []
-    for order, name in enumerate(names):
-        width = sizes.get(name, 640)
-        video = media_root / name
-        if not video.exists():
-            _ = video.write_bytes(b"fake")
-        rows.append(
-            {
-                "name": name,
-                "group": "",
-                "sequence": "sess",
-                "group_safe": "",
-                "sequence_safe": "sess",
-                "camera": "",
-                "abs_path": ds.relative_to_root(video),
-                "size_bytes": 4,
-                "mtime_iso": "",
-                "width": width,
-                "height": 480,
-                "fps": 30.0,
-                "codec": "h264",
-                "media_type": "video",
-                "video_order": order,
-                **clean_facts_cells(
-                    width=width, video_uuid=f"uid-{name}", frame_count=frame_count
-                ),
-            }
-        )
-    pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
+    write_media_index(
+        ds,
+        [
+            MediaClip(
+                sequence="sess",
+                filename=name,
+                video_order=order,
+                video_uuid=f"uid-{name}",
+                width=sizes.get(name, 640),
+                frame_count=frame_count,
+            )
+            for order, name in enumerate(names)
+        ],
+    )
     if len(names) > 1 and joined:
         _ = _joined_export(ds, [f"uid-{name}" for name in names])
 
@@ -1050,6 +997,38 @@ def test_a_short_joined_conversion_still_publishes_a_usable_table(
     assert snapshot["entries_failed"] == 0
     assert snapshot["entries_written"] == 1
     assert snapshot["status"] == "finished"
+
+
+def test_a_joined_session_reports_the_columns_its_retiming_dropped(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """TREx mints ``timestamp`` from its frame index and one rate.
+
+    The timeline of the clips' measured rates replaces it, and the run-log names
+    it, as it names the columns that a media variant's mapping drops.
+    """
+    import numpy as np
+
+    from mosaic.runlog import run_log_dir
+
+    trex.npz_frames = 600
+    trex.extra_fields = {"timestamp": np.arange(600) / 30.0}
+    _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
+
+    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
+
+    table = pd.read_parquet(ds.resolve_path(str(_tracks_row(ds)["abs_path"])))
+    assert "timestamp" not in table.columns
+    snapshot = _latest_snapshot(ds)
+    assert snapshot["entries_columns_dropped"] == 1
+    assert snapshot["status"] == "finished"
+    logs = sorted(run_log_dir(ds.base_dir).glob("*.jsonl"))
+    latest = max(logs, key=lambda path: path.stat().st_mtime)
+    records = [json.loads(line) for line in latest.read_text().splitlines()]
+    dropped = [
+        record["columns"] for record in records if record["ev"] == "columns_dropped"
+    ]
+    assert dropped == [["timestamp"]]
 
 
 def test_an_analysis_range_run_asks_no_question(ds: Dataset, trex: FakeTrex) -> None:

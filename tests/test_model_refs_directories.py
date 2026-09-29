@@ -25,14 +25,13 @@ from mosaic.tracking.model_refs import (
     spec_for,
 )
 
-from tests.helpers import make_dataset
+from tests.helpers import make_dataset, write_sleap_model
 
 
 def _sleap_model(directory: Path, weights: bytes, head: str = "centroid") -> Path:
-    directory.mkdir(parents=True)
-    (directory / "best.ckpt").write_bytes(weights)
-    (directory / "training_config.yaml").write_text(f"head_configs:\n  {head}: {{}}\n")
-    return directory
+    """Write a SLEAP model whose training config names its *head*."""
+    config = f"head_configs:\n  {head}: {{}}\n"
+    return write_sleap_model(directory, weights, training_config=config)
 
 
 def _litpose_model(
@@ -204,9 +203,7 @@ def test_a_missing_config_is_reported_before_a_missing_checkpoint(
 
 def test_a_sleap_model_needs_no_config(tmp_path: Path) -> None:
     """SLEAP's config is provenance, so its absence is not an error."""
-    model = tmp_path / "sleap"
-    model.mkdir()
-    (model / "best.ckpt").write_bytes(b"w")
+    model = write_sleap_model(tmp_path / "sleap", b"w")
 
     resolved = resolve_model_set(None, [str(model)], "sleap")
     assert resolved.model_type == "", "nothing to read, so nothing claimed"

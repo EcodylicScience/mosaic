@@ -132,9 +132,9 @@ def write_painted_entry(
 ) -> list[Path]:
     """Write and index *sequence*'s clips, each ``(frames, fps)``, in order.
 
-    Frame ``i`` of the entry, counted across all its clips, is ``paint(i)``, so
-    the clips continue one another and a decoded frame tells which entry frame it
-    is. The clips are ``clip0.mp4``, ``clip1.mp4``, ... under
+    Frame ``i`` of the entry, counted across all its clips, is ``paint(i)``. The
+    clips therefore continue one another, and a decoded frame identifies its entry
+    frame. The clips are ``clip0.mp4``, ``clip1.mp4``, ... under
     ``media_raw/<sequence>/``, returned in order.
     """
     directory = dataset.get_root("media_raw") / sequence
@@ -154,7 +154,7 @@ def write_painted_entry(
 
 
 def dot_image(size: tuple[int, int], center: tuple[int, int]) -> npt.NDArray[np.uint8]:
-    """A dark BGR image of *size* holding one bright 3x3 dot centered on *center*.
+    """Return a dark BGR image of *size* with one bright 3x3 dot centered on *center*.
 
     The dot peaks at its center: 255 there, 192 on its four sides and 128 at its
     corners, on a background of 16. The nine pixels of a flat dot tie, and a
@@ -254,8 +254,8 @@ def index_media_sequence(
 ) -> None:
     """Index the *videos* already written under ``media_raw/<sequence>/``, in order.
 
-    The indexing half of :func:`add_media_sequence`, for a test that writes its
-    own clips: at another rate, with painted frames, or replaced after a first
+    It is the indexing half of :func:`add_media_sequence`, for a test that writes
+    its own clips: at another rate, with painted frames, or replaced after a first
     index. A clip replaced since the last index is measured again.
     """
     from mosaic.core.pipeline.media_index import MediaIndexScope

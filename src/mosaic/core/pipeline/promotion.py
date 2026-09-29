@@ -164,8 +164,8 @@ def promote_correction(
         FileNotFoundError: If a file to promote does not exist.
         ValueError: If *derived_from* names a tracker run that read a media
             variant. That run's output is in the variant's pixels and frames,
-            and a promoted file is converted as it is, with no mapping back into
-            the entry media. *force* does not override this.
+            and a promoted file is converted as it is, without a mapping back
+            into the entry media. *force* does not override this.
     """
     from mosaic.core.pipeline.tracks_raw_index import TracksRawIndexScope
 
@@ -182,11 +182,11 @@ def promote_correction(
     if variant:
         message = (
             f"{make_entry_key(group, sequence)}: {derived_from} tracked the media "
-            f"variant {variant}, so its output is in that variant's pixels and "
-            f"frames. A promoted correction is converted as it is, with no "
-            f"mapping back into the entry's media, so its positions and frames "
-            f"would be published on the wrong axes. Correct the output of a run "
-            f"over the entry's own media instead."
+            f"variant {variant}, and its output is in that variant's pixels and "
+            f"frames. A promoted correction is converted as it is, without a "
+            f"mapping back into the entry's media. Its variant pixels and frames "
+            f"are then published as source space. Correct the output of a run "
+            f"over the entry's original media instead."
         )
         raise ValueError(message)
 
@@ -267,12 +267,13 @@ def promote_correction(
 
 
 def _media_variant_read(ds: Dataset, run_id: str) -> str:
-    """The media variant tracker run *run_id* read, or ``""``.
+    """Return the media variant that tracker run *run_id* read, or ``""``.
 
-    Read from the run's rows in its tracker's run index, the ``index.csv`` at
-    the top of that tracker's root, whose ``media`` column records the variant
-    each entry was read from. ``""`` when the run read the entry media, when
-    *run_id* names no tracker's run, and when the index is absent or unreadable.
+    The variant is read from the run's rows in its tracker's run index, the
+    ``index.csv`` at the top of that tracker's root, whose ``media`` column records
+    the variant that each entry was read from. The function returns ``""`` when
+    the run read the entry media, when *run_id* does not name a tracker's run, and
+    when the index is absent or unreadable.
     """
     parsed = parse_op_run_id(run_id)
     if parsed is None or parsed.kind not in TRACKING_ROOTS:

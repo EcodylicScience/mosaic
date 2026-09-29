@@ -35,6 +35,7 @@ from mosaic_media import (
 )
 
 from .helpers import (
+    is_nameless_entry,
     make_entry_key,
     parse_entry_key,
     text_cell,
@@ -173,7 +174,7 @@ from .pipeline.sequence_index import (
     write_sequence_compositions,
 )
 from .pipeline.dataset_indexes import iter_dataset_indexes
-from .pipeline.preprocess_layout import MEDIA_ROOT_KEY, media_variants_root
+from .pipeline.preprocess_layout import media_variant_filter, media_variants_root
 from .pipeline.promotion import correction_revision
 from .pipeline.tracking_roots import (
     TRACKING_ROOT,
@@ -2695,20 +2696,9 @@ class Dataset:
 
         search = [user_path(d) for d in search_dirs]
 
-        # This dataset's own media variants, which a recursive source rooted at
-        # the media root would otherwise index as originals. Compared by
-        # resolved path, never by directory name, so a folder outside the
-        # dataset that is also called `media/preprocess` is still scanned.
-        variants_root = (
-            media_variants_root(self).resolve()
-            if self.has_root(MEDIA_ROOT_KEY)
-            else None
-        )
-
-        def is_media_variant(path: Path) -> bool:
-            return variants_root is not None and path.resolve().is_relative_to(
-                variants_root
-            )
+        # Skip this dataset's media variants. A recursive source rooted at the
+        # media root otherwise indexes them as originals.
+        is_media_variant = media_variant_filter(self)
 
         # Discover imgstore directories first. A store is a directory (not a file
         # with an extension) that contains its own chunk video files -- so we
@@ -2720,8 +2710,8 @@ class Dataset:
                 continue
             candidates = [d, *(d.rglob("*") if recursive else d.glob("*"))]
             for cand in candidates:
-                # A directory test first: resolving a symlink loop raises, and a
-                # loop is never a directory.
+                # The directory test runs first, because resolving a symlink loop
+                # raises and a loop is never a directory.
                 if (
                     not cand.is_dir()
                     or is_under_tracking_root(cand.parts)
@@ -2760,16 +2750,18 @@ class Dataset:
                 if is_under_tracking_root(p.parts):
                     tracking_skipped += 1
                     continue
-                # Nor into this dataset's media variants.
-                if is_media_variant(p):
-                    variants_skipped += 1
-                    continue
                 # Skip files that live inside an imgstore directory (its chunks).
                 if imgstore_dirs and any(
                     sd in p.resolve().parents for sd in imgstore_dirs
                 ):
                     continue
                 if p.suffix.lower() not in exts:
+                    continue
+                # Skip this dataset's media variants. The check follows the
+                # extension filter, and the count therefore names only video
+                # files and excludes the index and claim files beside them.
+                if is_media_variant(p):
+                    variants_skipped += 1
                     continue
                 try:
                     st = p.stat()
@@ -2787,7 +2779,7 @@ class Dataset:
         if variants_skipped:
             print(
                 f"[INFO] skipped {variants_skipped} media variant file(s) under "
-                f"{variants_root}, which are not source media",
+                f"{media_variants_root(self)}, which are not source media",
                 file=sys.stderr,
             )
 
@@ -5206,6 +5198,8 @@ class Dataset:
         self,
         entries: Iterable[Entry] | None,
         index_filename: str = "index.csv",
+        *,
+        errors: dict[Entry, MediaProbeError] | None = None,
     ) -> list[ResolvedScopeEntry]:
         """Enumerate the scoped ``(group, sequence, camera)`` entries with media.
 
@@ -5223,11 +5217,22 @@ class Dataset:
         group and a sequence whose safe name is empty, the returned sequence
         label falls back to the first original file's stem.
 
+        Args:
+            entries: The ``(group, sequence)`` pairs to resolve, or ``None`` for
+                every indexed entry.
+            index_filename: The originals index to read.
+            errors: When given, an entry whose media cannot be routed is
+                recorded here under its ``(group, sequence)`` pair, mapped to the
+                error that resolving it alone raises, and its cameras are not
+                returned. The rest of the scope still resolves from the one
+                read.
+
         Raises:
             FileNotFoundError: If the originals index does not exist.
-            MediaProbeError: If an entry requires a transcode but has no
-                derivative, a derivative's file/facts cannot be found, or a
-                matched row's stored measurement cannot be reconstructed.
+            MediaProbeError: If *errors* is not given and an entry requires a
+                transcode but has no derivative, a derivative's file/facts
+                cannot be found, or a matched row's stored measurement cannot
+                be reconstructed.
         """
         # Media-index resolution is a Dataset concern, so a scoped enumeration lives
         # here as a method (mirroring resolve_media) rather than as a free function in
@@ -5241,21 +5246,33 @@ class Dataset:
         scoped = df[mask]
 
         route_derivatives, derivative_df = self.media_routing_context(index_filename)
-        resolved_entries: list[ResolvedScopeEntry] = []
+        resolved_entries: list[tuple[Entry, ResolvedScopeEntry]] = []
+        failed: dict[Entry, MediaProbeError] = {}
         for (group, sequence, camera), sub in scoped.groupby(
             ["group", "sequence", "camera"]
         ):
             group, sequence, camera = str(group), str(sequence), str(camera)
+            entry = (group, sequence)
+            if entry in failed:
+                continue
             sub = sub.sort_values("video_order")
-            resolved = self._resolve_matched_rows(
-                group, sequence, sub, route_derivatives, derivative_df
-            )
-            if not group and not to_safe_name(sequence):
+            try:
+                resolved = self._resolve_matched_rows(
+                    group, sequence, sub, route_derivatives, derivative_df
+                )
+            except MediaProbeError as exc:
+                if errors is None:
+                    raise
+                failed[entry] = exc
+                continue
+            if is_nameless_entry(group, sequence):
                 sequence = self.resolve_path(str(sub.iloc[0]["abs_path"])).stem
             resolved_entries.append(
-                ResolvedScopeEntry(group, sequence, camera, resolved)
+                (entry, ResolvedScopeEntry(group, sequence, camera, resolved))
             )
-        return resolved_entries
+        if errors is not None:
+            errors.update(failed)
+        return [media for entry, media in resolved_entries if entry not in failed]
 
     def _build_media_sequence_keymap(self) -> dict[str, list[dict[str, str]]]:
         """

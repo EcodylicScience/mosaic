@@ -132,7 +132,7 @@ def litpose_settings(params: LitposeParams, *, model_id: str) -> dict[str, objec
     The model is carried as its content digest (``model_id``), never a path.
     Lightning Pose is pose-only, so there are no tracker knobs; the Hydra
     ``litpose_overrides`` are identity because they change the produced keypoints.
-    ``media`` joins only when it names a variant.
+    ``media`` enters the payload only when it names a variant.
 
     Args:
         params: The run's parameters.
@@ -173,7 +173,7 @@ def _bridge_csv_to_tracks(
     *,
     tracks_variant: str,
     producer_run_id: str,
-    media_paths: Sequence[Path],
+    consumed_media: Sequence[Path],
     model_files: Sequence[Path],
     fps: float,
     overwrite: bool,
@@ -184,9 +184,10 @@ def _bridge_csv_to_tracks(
     Reuses the registered ``deeplabcut`` converter -- Lightning Pose exports the
     same ``(scorer, bodypart, coord)`` layout -- with the authoritative (group,
     sequence) known from the media index, so no name is guessed from a filename.
-    *media_paths* are the media files the table derives from, and *mapping* maps
-    a table tracked on a media variant into source space, ``None`` otherwise.
-    Returns ``None`` when the conversion failed and nothing was published.
+    *consumed_media* are the media files that the table derives from, and
+    *mapping* maps a table tracked on a media variant into source space, or is
+    ``None``. Returns ``None`` when the conversion failed and did not publish a
+    table.
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
     from mosaic.core.track_library.deeplabcut import DlcParams
@@ -215,7 +216,7 @@ def _bridge_csv_to_tracks(
         tracks_variant=tracks_variant,
         producer_run_id=producer_run_id,
         source=csv_path.parent,
-        consumed=[csv_path, *media_paths, *model_files],
+        consumed=[csv_path, *consumed_media, *model_files],
         mapping=mapping,
     )
 
@@ -399,7 +400,7 @@ def run_litpose(
                 csv_out,
                 tracks_variant=minted.tracks_variant,
                 producer_run_id=minted.run_id,
-                media_paths=item.consumed_media,
+                consumed_media=item.consumed_media,
                 model_files=list(resolved_model.significant_files),
                 fps=item.fps,
                 overwrite=job.overwrite or recomputed,

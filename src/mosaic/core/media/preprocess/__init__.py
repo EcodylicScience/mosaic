@@ -1,4 +1,4 @@
-"""Pre-processing media into variants: the steps, and where their output sits.
+"""Define the media pre-processing steps and the placement of their output.
 
 Importing the package registers every built-in step in :data:`MEDIA_STEPS`.
 """

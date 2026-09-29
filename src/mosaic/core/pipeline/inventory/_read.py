@@ -21,9 +21,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from mosaic.core.pipeline.index_csv import index_records
 
-__all__ = ["IndexReader", "IndexStamp", "finish_state", "run_ids"]
+__all__ = ["IndexReader", "IndexStamp"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,25 +114,3 @@ class IndexReader:
             return path.resolve()
         except OSError:
             return path
-
-
-def finish_state(frame: pd.DataFrame, run_id: str) -> tuple[str, str, bool]:
-    """``(started_at, finished_at, finished)`` for one run, from its index rows.
-
-    The first non-empty cell of each, so a run re-entered for more entries reads
-    as finished once any of its rows recorded a finish.
-    """
-    started, finished = "", ""
-    for record in index_records(frame):
-        if str(record.get("run_id", "")) != run_id:
-            continue
-        started = started or str(record.get("started_at", ""))
-        finished = finished or str(record.get("finished_at", ""))
-    return started, finished, bool(finished)
-
-
-def run_ids(frame: pd.DataFrame) -> list[str]:
-    """Every run identifier in an index, sorted. Empty when the index has none."""
-    if frame.empty or "run_id" not in frame.columns:
-        return []
-    return sorted({record.get("run_id", "") for record in index_records(frame)})

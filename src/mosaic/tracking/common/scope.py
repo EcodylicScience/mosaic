@@ -23,12 +23,12 @@ Two collapses happen here, and both are load-bearing rather than tidy-up:
   ``infer-*`` ops apply as well.
 
 **A media variant replaces the source when the item is built.** Every tracker
-checks reuse before it resolves the file it hands its tool, against the item's
-``video_uid`` or ``source_uid``, and both are read from the item's facts. An item
-that named a variant only when the file was resolved would pass those checks on
-the entry media's identity, and reuse output made from the entry media. So a
-variant item carries the variant file and its facts from the start, and an entry
-whose variant is missing or out of date fails alone rather than ending the run.
+checks reuse against the item's ``video_uid`` or ``source_uid`` before it resolves
+the file that it hands its tool, and both are read from the item's facts. A variant
+item therefore contains the variant file and its facts from the start, and every
+reuse check compares the variant's identity instead of the entry media's. An
+entry whose variant is missing or out of date fails alone rather than ending the
+run.
 
 **Joining is refused on geometry and accepted on frame rate.** The two
 disagreements have opposite consequences. Clips that decode to different frame
@@ -57,7 +57,7 @@ from mosaic.core.pipeline.preprocess_index import (
     MediaVariantMissingError,
 )
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
-from mosaic.core.pipeline.variant_source import VariantSource, resolve_variant_source
+from mosaic.core.pipeline.variant_source import VariantLookup, VariantSource
 
 if TYPE_CHECKING:
     from mosaic_media import MediaFacts
@@ -115,8 +115,8 @@ class TrackerWorkItem:
     source_facts: tuple[MediaFacts, ...] = ()
     """The probed facts of each file in ``video_paths``, for a tracker that decodes.
 
-    Read from the media index for the entry media, and from the variant index
-    for a variant.
+    They are read from the media index for the entry media, and from the variant
+    index for a variant.
 
     ``open_frame_reader`` takes them so that a raw stream is read with measured
     values rather than trusted header ones -- a raw ``.h264`` reports a garbage
@@ -125,16 +125,17 @@ class TrackerWorkItem:
     """
 
     camera: str = ""
-    """The camera of the entry this item reads, ``""`` for single-camera media."""
+    """The camera of the entry that this item reads, ``""`` for single-camera media."""
 
     variant: VariantSource | None = None
-    """The media variant this item reads, or ``None`` when it reads the entry media.
+    """The media variant that this item reads, or ``None`` for the entry media.
 
     When set, ``video_paths`` is the variant file and ``source_facts`` its stored
-    facts, so every view derived from them (``video_uid``, ``source_uid``,
-    ``facts``, ``n_sources``) describes the file the tool reads. The reuse gates
-    compare those, so a tracker run over a variant never reuses output made from
-    the entry media, and recomputes when the variant file is rewritten.
+    facts. Every view derived from them (``video_uid``, ``source_uid``,
+    ``facts``, ``n_sources``) therefore describes the file that the tool reads. The
+    reuse gates compare those. A tracker run over a variant therefore never reuses
+    output made from the entry media, and it recomputes when the variant file is
+    rewritten.
     """
 
     def __post_init__(self) -> None:
@@ -214,21 +215,21 @@ class TrackerWorkItem:
 
     @property
     def consumed_media(self) -> tuple[Path, ...]:
-        """Every media file a table from this item derives from.
+        """Every media file that a table from this item derives from.
 
-        The files the tool reads, or for a variant item the variant's
-        :attr:`~mosaic.core.pipeline.variant_source.VariantSource.consumed_paths`.
+        They are the files that the tool reads, or for a variant item the variant's
+        :attr:`~mosaic.core.pipeline.variant_source.VariantSource.consumed_media`.
         """
         if self.variant is not None:
-            return self.variant.consumed_paths
+            return self.variant.consumed_media
         return self.video_paths
 
     @property
     def source_mapping(self) -> SourceMapping | None:
-        """How a table tracked on this item maps into source space, if it must.
+        """The mapping of a table tracked on this item into source space, if needed.
 
-        ``None`` when the item reads the entry media, whose table is already in
-        source space.
+        It is ``None`` when the item reads the entry media, whose table is already
+        in source space.
         """
         return self.variant.mapping() if self.variant is not None else None
 
@@ -238,23 +239,30 @@ class UnresolvedEntry:
     """An entry whose media variant could not be read, and why.
 
     Attributes:
-        key: The entry's ``<group>__<sequence>`` key.
-        error: What resolving the variant raised.
+        group: The entry's group.
+        sequence: The entry's sequence.
+        error: The error that resolving the variant raised.
     """
 
-    key: str
+    group: str
+    sequence: str
     error: MediaVariantMissingError | MediaVariantDriftedError
+
+    @property
+    def key(self) -> str:
+        """The entry's ``<group>__<sequence>`` key."""
+        return make_entry_key(self.group, self.sequence)
 
 
 @dataclass(frozen=True, slots=True)
 class WorkItems:
-    """What a resolved media scope becomes: the items to run, and the entries lost.
+    """The work from a resolved media scope: the items to run, and the entries lost.
 
     Attributes:
         items: One work item per entry, in scope order.
         failures: The entries whose media variant is missing or out of date.
             They fail alone, and the other entries run.
-        media: The media variant the items read, ``""`` for the entry media.
+        media: The media variant that the items read, or ``""`` for the entry media.
     """
 
     items: tuple[TrackerWorkItem, ...]
@@ -279,9 +287,9 @@ def build_work_items(
         kind: The tracker's kind. It selects the tool's ``joins_sources``
             capability and prefixes warnings, so a message names the tool the
             user invoked rather than the shared machinery.
-        media: The media variant each entry is read from, or ``""`` to read the
-            entry media. A variant's file is resolved for the camera each entry
-            keeps.
+        media: The media variant that each entry is read from, or ``""`` to read
+            the entry media. A variant's file is resolved for the camera that each
+            entry keeps.
         fps_default: Frame rate for an entry whose facts carry none. Defaults to
             the dataset's ``fps_default``.
 
@@ -302,14 +310,22 @@ def build_work_items(
 
     # Reduced first. An entry that is dropped is then not also warned about for
     # video count, a warning that would describe work this tracker will not do.
-    for entry in one_camera_per_entry(kind, scope):
+    kept = one_camera_per_entry(kind, scope)
+    variants = (
+        VariantLookup.read(ds, media, [(entry.group, entry.sequence) for entry in kept])
+        if media
+        else None
+    )
+    for entry in kept:
         group, sequence, resolved = entry.group, entry.sequence, entry.resolved
         key = make_entry_key(group, sequence)
-        if media:
+        if variants is not None:
             try:
-                variant = resolve_variant_source(ds, media, entry)
+                variant = variants.resolve(ds, entry)
             except (MediaVariantMissingError, MediaVariantDriftedError) as exc:
-                failures.append(UnresolvedEntry(key=key, error=exc))
+                failures.append(
+                    UnresolvedEntry(group=group, sequence=sequence, error=exc)
+                )
                 continue
             items.append(_variant_item(entry, key, variant))
             continue
@@ -345,10 +361,10 @@ def build_work_items(
 def _variant_item(
     entry: ResolvedScopeEntry, key: str, variant: VariantSource
 ) -> TrackerWorkItem:
-    """The work item reading *variant*'s file for *entry*.
+    """Return the work item that reads *variant*'s file for *entry*.
 
-    One source, the variant file, at the rate the file is labeled at. An entry
-    of several clips is read as one file, so nothing is joined.
+    The item has one source, the variant file, at the rate that the file is
+    labeled at. An entry of several clips is read as one file and is not joined.
     """
     return TrackerWorkItem(
         group=entry.group,

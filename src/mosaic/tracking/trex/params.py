@@ -112,7 +112,7 @@ _TRACK_EXTRA_SETTINGS_DESCRIPTION = (
 # when `media` names a variant. In the TREx source, `analysis_range` is declared
 # in Application/src/tracker/core/default_config.cpp, whose deprecation table
 # rewrites `analysis_stop_after` and `gui_stop_after` into it, and
-# `video_conversion_range`, the range a conversion reads, is declared in
+# `video_conversion_range`, the range that a conversion reads, is declared in
 # Application/src/grabber/misc/default_config.cpp.
 _FRAME_SETTINGS: tuple[str, ...] = (
     "analysis_range",
@@ -134,8 +134,8 @@ class TrexParams(PhasedTrackerOpParams, MediaInputParams):
     so the two hash to different ``run_id`` values and neither reuses the
     other's output.
 
-    ``media`` names no phase. It selects the file TREx reads and never reaches a
-    TREx settings file.
+    ``media`` does not name a phase. It selects the file that TREx reads and is
+    never written to a TREx settings file.
     """
 
     window_fields = ("analysis_range",)

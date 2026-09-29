@@ -551,10 +551,10 @@ def test_an_older_reader_folds_a_log_holding_the_event(tmp_path: Path) -> None:
 
 
 def test_dropped_columns_accumulate_and_leave_the_status_alone(tmp_path: Path) -> None:
-    """Two entries published without the columns their variant made wrong.
+    """Two entries publish without the columns that their variant's mapping dropped.
 
-    Each event is one entry, so the count accumulates like ``entries_failed``.
-    The entries published, so the status does not move.
+    Each event is one entry. The count therefore accumulates like
+    ``entries_failed``. The entries published, and the status does not change.
     """
     eid = new_execution_id()
     path = run_log_path(tmp_path, eid)
@@ -575,7 +575,7 @@ def test_dropped_columns_accumulate_and_leave_the_status_alone(tmp_path: Path) -
 
 
 def test_the_dropped_columns_event_names_each_column(tmp_path: Path) -> None:
-    """The names travel with the event, in the order the table held them."""
+    """The event contains the names, in the table's column order."""
     eid = new_execution_id()
     path = run_log_path(tmp_path, eid)
     log = JsonlRunLog(path, eid)
@@ -598,7 +598,7 @@ def test_the_dropped_columns_event_names_each_column(tmp_path: Path) -> None:
 def test_the_job_context_records_dropped_columns_without_failing_the_entry(
     tmp_path: Path,
 ) -> None:
-    """The seam a bridge calls: a report on the run-log, and no lost entry."""
+    """The seam that a bridge calls records a report and does not lose the entry."""
     ds = make_dataset(tmp_path)
     with job_context(ds, kind="sleap", target="sleap") as ctx:
         ctx.columns_dropped("sess", ("SPEED",))

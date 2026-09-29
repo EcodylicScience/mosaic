@@ -94,11 +94,11 @@ class TrackerRunRowBase(RunIndexRowBase):
     media", which is how every other composition cell here reads.
     """
     media: str = ""
-    """The media variant this entry was read from, ``""`` for the entry media.
+    """The media variant that this entry was read from, or ``""`` for the entry media.
 
     The tool's output under the working directory is in the variant's pixels and
     frames, and only its published table is mapped back into source space. This
-    cell is what says so for a run whose output is read again later.
+    cell records that for a run whose output is read again later.
     """
 
 
@@ -197,8 +197,8 @@ def drifted_media_entries(
     a reuse gate keyed on identity alone serves the old run over pixels from a
     different encode, and reports the work done.
 
-    Compared under :func:`~mosaic.core.pipeline.composition.composition_drift`,
-    so a blank cell on either side is not drift.
+    The comparison uses :func:`~mosaic.core.pipeline.composition.composition_drift`.
+    A blank cell on either side is therefore not drift.
     """
     from mosaic.core.pipeline.index_csv import index_records
     from mosaic.core.pipeline.sequence_index import media_compositions_for

@@ -1,10 +1,10 @@
-"""The media variant index, and where a variant's files sit in a dataset.
+"""Test the media variant index and the location of a variant's files.
 
-A variant's row is what a consumer reads instead of probing the file: the
-placement that maps the file back to its entry's source, the file's probed facts,
-and what the entry's media was when the file was written. The index lives in the
-``preprocess`` kind directory under the media root, a directory every media scan
-steps over, so a variant is never indexed as source media.
+A consumer reads a variant's row instead of probing the file: the placement that
+maps the file back to its entry's source, the file's probed facts, and the
+composition of the entry's media when the file was written. The index is in the
+``preprocess`` kind directory under the media root, which every media scan skips.
+A variant is therefore never indexed as source media.
 """
 
 from __future__ import annotations
@@ -32,15 +32,17 @@ from mosaic.core.pipeline.preprocess_index import (
     MediaVariantRow,
     media_variant_index,
     read_media_variant_index,
-    variant_facts,
-    variant_placement,
-    variant_row,
+    media_variant_facts,
+    media_variant_placement,
+    media_variant_rows,
     write_media_variant_row,
 )
 from mosaic.core.pipeline.preprocess_layout import (
-    PREPROCESS_KIND_DIRECTORY,
+    PREPROCESS_KIND,
+    media_variant_filter,
     media_variant_index_path,
     media_variant_path,
+    media_variant_recipe_path,
     media_variant_run_root,
 )
 
@@ -87,7 +89,7 @@ def _write(
 
 
 def _found(ds: Dataset, sequence: str = "s", camera: str = "") -> dict[str, str]:
-    row = variant_row(ds, _RUN, "g", sequence, camera)
+    row = media_variant_rows(ds, _RUN).get(("g", sequence, camera))
     assert row is not None
     return row
 
@@ -99,7 +101,7 @@ def test_a_variant_file_sits_under_its_run_in_the_media_kind_directory(
     tmp_path: Path,
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
-    run_root = ds.get_root("media") / PREPROCESS_KIND_DIRECTORY / _RUN
+    run_root = ds.get_root("media") / PREPROCESS_KIND / _RUN
 
     assert media_variant_run_root(ds, _RUN) == run_root
     assert media_variant_path(ds, _RUN, "g", "s", "") == run_root / "g__s.mp4"
@@ -107,7 +109,7 @@ def test_a_variant_file_sits_under_its_run_in_the_media_kind_directory(
 
 
 def test_a_named_camera_adds_a_directory_level(tmp_path: Path) -> None:
-    """The rule frame extraction follows, so two cameras never collide."""
+    """Frame extraction follows the same rule, and two cameras never collide."""
     ds = make_dataset(tmp_path / "ds")
 
     path = media_variant_path(ds, _RUN, "g", "s", "cam0")
@@ -127,7 +129,7 @@ def test_an_absent_index_reads_as_the_full_schema(tmp_path: Path) -> None:
     assert frame.empty
     assert list(frame.columns) == columns
     assert set(FACTS_COLUMNS) <= set(columns)
-    assert variant_row(ds, _RUN, "g", "s", "") is None
+    assert media_variant_rows(ds, _RUN) == {}
 
 
 def test_a_rewritten_entry_replaces_its_row_and_leaves_the_others(
@@ -165,7 +167,7 @@ def test_the_path_is_stored_relative_and_resolves_after_a_move(tmp_path: Path) -
     moved = Dataset(manifest_path=tmp_path / "moved" / "dataset.yaml").load()
 
     assert not Path(stored).is_absolute()
-    assert stored == f"media/{PREPROCESS_KIND_DIRECTORY}/{_RUN}/g__s.mp4"
+    assert stored == f"media/{PREPROCESS_KIND}/{_RUN}/g__s.mp4"
     assert moved.resolve_path(_found(moved)["abs_path"]).read_bytes() == b"variant"
 
 
@@ -176,8 +178,8 @@ def test_the_placement_and_the_facts_round_trip(tmp_path: Path) -> None:
 
     row = _found(ds)
 
-    assert variant_placement(row) == _placement()
-    assert variant_facts(row) == facts
+    assert media_variant_placement(row) == _placement()
+    assert media_variant_facts(row) == facts
     assert row["video_uuid"] == "uuid-150"
     assert (row["width"], row["height"], row["codec"]) == ("320", "240", "av1")
     assert row["encoder"] == "libsvtav1"
@@ -194,7 +196,7 @@ def test_an_entry_name_that_is_not_one_path_component_is_refused(
 
 
 def test_a_missing_variant_is_a_missing_file_and_a_drifted_one_a_wrong_value() -> None:
-    """The two failures have different remedies, so they are different classes."""
+    """The two failures have different remedies and are therefore two classes."""
     assert issubclass(MediaVariantMissingError, FileNotFoundError)
     assert issubclass(MediaVariantDriftedError, ValueError)
     assert not issubclass(MediaVariantDriftedError, FileNotFoundError)
@@ -228,7 +230,7 @@ def test_the_index_is_enumerated_under_its_kind(tmp_path: Path) -> None:
 
     found = {i.path: i.root_key for i in iter_dataset_indexes(ds)}
 
-    assert found[media_variant_index_path(ds)] == PREPROCESS_KIND_DIRECTORY
+    assert found[media_variant_index_path(ds)] == PREPROCESS_KIND
     assert found[ds.get_root("media") / "index.csv"] == "media"
 
 
@@ -237,7 +239,7 @@ def test_loading_a_dataset_registers_the_index() -> None:
     probe = (
         "from mosaic.core.dataset import Dataset\n"
         "from mosaic.core.pipeline.dataset_indexes import reconcilable_index\n"
-        f"print(reconcilable_index({PREPROCESS_KIND_DIRECTORY!r}) is not None)"
+        f"print(reconcilable_index({PREPROCESS_KIND!r}) is not None)"
     )
 
     completed = subprocess.run(
@@ -253,14 +255,14 @@ def test_reindex_drops_a_row_whose_file_is_gone(tmp_path: Path) -> None:
     _ = _write(ds, sequence="t")
     media_variant_path(ds, _RUN, "g", "t", "").unlink()
 
-    dropped = ds.reindex(PREPROCESS_KIND_DIRECTORY, dry_run=False)
+    dropped = ds.reindex(PREPROCESS_KIND, dry_run=False)
 
     assert dropped == {str(media_variant_index_path(ds)): 1}
     assert list(read_media_variant_index(ds)["sequence"]) == ["s"]
 
 
 def test_reindex_leaves_the_media_index_alone(tmp_path: Path) -> None:
-    """The derivative index has no ``IndexCSV`` behind it and needs its own pass."""
+    """The derivative index lacks an ``IndexCSV`` and needs a separate pass."""
     ds = make_dataset(tmp_path / "ds")
 
     assert ds.reindex("media", dry_run=False) == {}
@@ -292,17 +294,21 @@ def test_a_media_scan_indexes_no_variant_and_every_user_folder(
     write_cfr_mp4: Callable[..., None],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A dataset whose originals are in ``media/``, scanned recursively from there.
+    """Return a dataset whose originals are in ``media/``, scanned recursively.
 
-    Without the exclusion a variant would be indexed as an original, earning a
-    ``video_uuid`` and a place in its entry's media composition, which would then
-    move and read every variant as drifted.
+    The exclusion keeps a variant out of the originals, so that it does not gain a
+    ``video_uuid`` or a place in its entry's media composition. That composition
+    then stays fixed, and the variants do not read as drifted.
     """
     ds = make_dataset(tmp_path / "ds", roots=["media", "tracks"])
     media = ds.get_root("media")
     write_cfr_mp4(media / "clips" / "seq_a.mp4", frames=6)
-    write_cfr_mp4(media / "lab" / PREPROCESS_KIND_DIRECTORY / "seq_b.mp4", frames=7)
+    write_cfr_mp4(media / "lab" / PREPROCESS_KIND / "seq_b.mp4", frames=7)
     write_cfr_mp4(media_variant_path(ds, _RUN, "", "seq_a", ""), frames=8)
+    # The index and the recipe beside the variant are not video files, and the
+    # count of skipped variant files leaves them out.
+    _ = media_variant_index_path(ds).write_text("run_id\n")
+    _ = media_variant_recipe_path(ds, _RUN).write_text("{}")
     ds.add_scan_source(MediaScanSource(id="media", path="media"))
 
     names = _scanned_names(ds)
@@ -312,17 +318,39 @@ def test_a_media_scan_indexes_no_variant_and_every_user_folder(
     assert "[INFO] skipped 1 media variant file(s)" in capsys.readouterr().err
 
 
+def test_the_variant_filter_matches_this_datasets_variants_directory_only(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds", roots=["media", "tracks"])
+    inside = media_variant_path(ds, _RUN, "", "s", "")
+    inside.parent.mkdir(parents=True)
+    outside = tmp_path / "lab" / "media" / PREPROCESS_KIND / "s.mp4"
+    outside.parent.mkdir(parents=True)
+
+    is_media_variant = media_variant_filter(ds)
+
+    assert is_media_variant(inside)
+    assert not is_media_variant(outside)
+    assert not is_media_variant(ds.get_root("media") / "clips" / "s.mp4")
+
+
+def test_a_dataset_without_a_media_root_filters_nothing(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds", roots=["tracks"])
+
+    assert not media_variant_filter(ds)(tmp_path / "media" / PREPROCESS_KIND / "s.mp4")
+
+
 def test_a_folder_named_media_preprocess_outside_the_dataset_is_scanned(
     tmp_path: Path, write_cfr_mp4: Callable[..., None]
 ) -> None:
-    """Only this dataset's own variants directory is stepped over.
+    """Only this dataset's variants directory is skipped.
 
-    A lab share laid out as ``media/preprocess/`` holds originals, and a source
-    may point anywhere, so matching the directory names would drop every file in
-    it.
+    A lab share laid out as ``media/preprocess/`` contains originals, and a source
+    may point anywhere. A match on directory names drops every file in such a
+    share.
     """
     ds = make_dataset(tmp_path / "ds", roots=["media", "tracks"])
-    outside = tmp_path / "lab" / "media" / PREPROCESS_KIND_DIRECTORY
+    outside = tmp_path / "lab" / "media" / PREPROCESS_KIND
     write_cfr_mp4(outside / "trial.mp4", frames=6)
     ds.add_scan_source(MediaScanSource(id="lab", path=str(outside.parent)))
 

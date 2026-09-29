@@ -1,4 +1,4 @@
-"""Correcting a joined conversion's time, and dropping what one rate spoiled.
+"""Test retiming a joined conversion, and dropping the columns one rate misstates.
 
 TRex converts a session's clips into one ``.pv`` but times all of them at the
 first clip's rate, because ``VideoSource`` reads ``_framerate`` from
@@ -61,7 +61,7 @@ def _export(n: int = 2 * CLIP) -> pd.DataFrame:
 
 class TestTime:
     def test_each_clip_is_timed_at_its_own_rate(self) -> None:
-        out = retime_joined_frame(_export(), concatenated_timeline(SESSION))
+        out = retime_joined_frame(_export(), concatenated_timeline(SESSION)).frame
         # Clip 0 is unchanged; clip 1 runs at 31 fps from where clip 0 ended.
         assert out["time"].iloc[0] == pytest.approx(0.0)
         assert out["time"].iloc[CLIP - 1] == pytest.approx((CLIP - 1) / 30.0)
@@ -71,7 +71,7 @@ class TestTime:
     def test_it_disagrees_with_what_trex_exported(self) -> None:
         """The whole point: TRex's own column is wrong past the first clip."""
         exported = _export()
-        out = retime_joined_frame(exported, concatenated_timeline(SESSION))
+        out = retime_joined_frame(exported, concatenated_timeline(SESSION)).frame
         assert out["time"].iloc[-1] != pytest.approx(exported["time"].iloc[-1])
 
     def test_frame_stays_on_the_axis_the_tracker_numbered(self) -> None:
@@ -93,41 +93,53 @@ class TestTime:
         shortfall is *reported* instead, by the bridge.
         """
         exported = _export()
-        out = retime_joined_frame(exported, concatenated_timeline(SESSION))
+        out = retime_joined_frame(exported, concatenated_timeline(SESSION)).frame
         assert list(out["frame"]) == list(exported["frame"])
 
     def test_frame_rate_becomes_the_rate_in_force(self) -> None:
-        out = retime_joined_frame(_export(), concatenated_timeline(SESSION))
+        out = retime_joined_frame(_export(), concatenated_timeline(SESSION)).frame
         assert set(out["frame_rate"].iloc[:CLIP]) == {30.0}
         assert set(out["frame_rate"].iloc[CLIP:]) == {31.0}
 
     def test_the_synthesised_timestamp_is_dropped_not_recomputed(self) -> None:
         """TRex minted it from the index and one rate; mosaic measured nothing."""
-        out = retime_joined_frame(_export(), concatenated_timeline(SESSION))
+        out = retime_joined_frame(_export(), concatenated_timeline(SESSION)).frame
         assert "timestamp" not in out.columns
 
 
 class TestWhatARateSpoiled:
     def test_per_second_quantities_go(self) -> None:
-        out = retime_joined_frame(_export(), concatenated_timeline(SESSION))
+        out = retime_joined_frame(_export(), concatenated_timeline(SESSION)).frame
         for column in ("SPEED", "SPEED#wcentroid", "ANGULAR_V", "VX"):
             assert column not in out.columns
 
+    def test_what_goes_is_named_in_table_order(self) -> None:
+        """The bridge reports these names on the run-log."""
+        retimed = retime_joined_frame(_export(), concatenated_timeline(SESSION))
+        assert retimed.dropped == (
+            "timestamp",
+            "SPEED",
+            "SPEED#wcentroid",
+            "ANGULAR_V",
+            "VX",
+        )
+
     def test_positions_and_angles_stay(self) -> None:
         """Neither depends on a rate, and X#wcentroid is where X comes from."""
-        out = retime_joined_frame(_export(), concatenated_timeline(SESSION))
+        out = retime_joined_frame(_export(), concatenated_timeline(SESSION)).frame
         for column in ("X", "Y", "X#wcentroid", "ANGLE", "poseX0"):
             assert column in out.columns
 
     def test_a_uniform_session_keeps_everything(self) -> None:
         """Nothing was wrong with it, so nothing is taken away."""
-        out = retime_joined_frame(_export(), concatenated_timeline(UNIFORM))
+        retimed = retime_joined_frame(_export(), concatenated_timeline(UNIFORM))
         for column in ("SPEED", "ANGULAR_V", "VX"):
-            assert column in out.columns
+            assert column in retimed.frame.columns
+        assert retimed.dropped == ("timestamp",)
 
     def test_a_uniform_session_is_still_retimed(self) -> None:
         """Two clips is a concatenation even when one rate indexes both."""
-        out = retime_joined_frame(_export(), concatenated_timeline(UNIFORM))
+        out = retime_joined_frame(_export(), concatenated_timeline(UNIFORM)).frame
         assert out["time"].iloc[-1] == pytest.approx((2 * CLIP - 1) / 30.0)
         assert "timestamp" not in out.columns
 
@@ -137,12 +149,14 @@ class TestOneClip:
         exported = _export(CLIP)
         timeline = concatenated_timeline([clip_facts(fps=30.0, frame_count=CLIP)])
         out = retime_joined_frame(exported, timeline)
-        pd.testing.assert_frame_equal(out, exported)
+        pd.testing.assert_frame_equal(out.frame, exported)
+        assert out.dropped == ()
 
     def test_a_frame_without_the_column_is_returned_as_is(self) -> None:
         frame = pd.DataFrame({"X": [1.0, 2.0]})
         out = retime_joined_frame(frame, concatenated_timeline(SESSION))
-        pd.testing.assert_frame_equal(out, frame)
+        pd.testing.assert_frame_equal(out.frame, frame)
+        assert out.dropped == ()
 
 
 def test_the_facts_helper_is_the_shared_one() -> None:

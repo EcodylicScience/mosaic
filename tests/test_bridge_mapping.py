@@ -1,7 +1,7 @@
-"""Publishing a table tracked on a media variant, through the shared bridge.
+"""Test the shared bridge's publishing of a table tracked on a media variant.
 
 ``publish_tracks_table`` maps a table into its entry's source space when it is
-given a mapping, before the schema is checked, and reports the columns the
+given a mapping, before the schema is checked, and reports the columns that the
 mapping dropped. ``publish_or_record`` turns that report into a run-log event,
 and a table the mapping refuses into a failed entry.
 """
@@ -41,7 +41,7 @@ _ROWS = 4
 
 
 def _crop_and_trim() -> SourceMapping:
-    """A 320x240 crop at (120, 40) of source frames 100 to 199, at 30 fps."""
+    """Return a 320x240 crop at (120, 40) of source frames 100 to 199, at 30 fps."""
     clip = store_facts(
         _WIDTH, _HEIGHT, 30.0, _SOURCE_FRAMES, "h264", _SOURCE_FRAMES / 30.0, "", ""
     )
@@ -55,11 +55,11 @@ def _crop_and_trim() -> SourceMapping:
 
 
 def _variant_table() -> pd.DataFrame:
-    """A table as a tracker reports it on the variant file.
+    """Return a table as a tracker reports it on the variant file.
 
     ``timestamp`` is minted from a frame index and one rate, and
-    ``BORDER_DISTANCE`` measures to the border of the cropped image, so the
-    mapping drops both.
+    ``BORDER_DISTANCE`` measures to the border of the cropped image. The mapping
+    drops both.
     """
     frames = np.arange(_ROWS, dtype=np.int64)
     return pd.DataFrame(
@@ -84,6 +84,7 @@ def _publish(
     table: pd.DataFrame,
     *,
     mapping: SourceMapping | None = None,
+    dropped: tuple[str, ...] = (),
     strict: bool = False,
 ) -> BridgeCounts:
     return publish_tracks_table(
@@ -97,12 +98,13 @@ def _publish(
         source=ds.get_root("tracks"),
         consumed=[],
         mapping=mapping,
+        dropped=dropped,
         strict=strict,
     )
 
 
 def _events(ds: Dataset, execution_id: str) -> list[dict[str, object]]:
-    """The attempt's run-log records, one per line."""
+    """Return the attempt's run-log records, one per line."""
     path = run_log_path(ds.base_dir, execution_id)
     return [json.loads(line) for line in path.read_text().splitlines()]
 
@@ -143,9 +145,9 @@ def test_without_a_mapping_the_table_is_published_unchanged(tmp_path: Path) -> N
 
 
 def test_validation_reads_the_mapped_table(tmp_path: Path) -> None:
-    """The mapping runs first, so the table checked is the one published.
+    """The mapping runs first. The table checked is therefore the one published.
 
-    A table with no ``time`` is refused by strict validation on its own, and
+    A table without ``time`` is refused by strict validation alone, and
     publishes once the mapping retimes it on the source timeline.
     """
     ds = make_dataset(tmp_path)
@@ -162,7 +164,7 @@ def test_validation_reads_the_mapped_table(tmp_path: Path) -> None:
 def test_strict_validation_refuses_a_table_missing_a_required_column(
     tmp_path: Path,
 ) -> None:
-    """Strict refuses before anything is written; lenient publishes and reports."""
+    """Strict validation refuses before any write. Lenient publishes and reports."""
     ds = make_dataset(tmp_path)
     headless = _variant_table().drop(columns=["X"])
 
@@ -199,10 +201,64 @@ def test_dropped_columns_reach_the_run_log(
         for record in _events(ds, ctx.execution_id)
         if record["ev"] == "columns_dropped"
     ] == [("g__s", ["timestamp", "BORDER_DISTANCE"])]
-    reported = capsys.readouterr().err
-    assert "g__s" in reported
-    assert "timestamp" in reported
-    assert "BORDER_DISTANCE" in reported
+    assert capsys.readouterr().err == (
+        f"[{_KIND}] g__s: published without timestamp, BORDER_DISTANCE, which do "
+        "not map onto the source media's pixels, frames or clock.\n"
+    )
+
+
+def test_one_column_a_joined_retime_dropped_is_reported_in_the_singular(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """TREx's retiming of a joined conversion drops ``timestamp`` outside a variant."""
+    ds = make_dataset(tmp_path)
+    table = _variant_table().drop(columns=["timestamp", "BORDER_DISTANCE"])
+
+    with job_context(ds, kind=_KIND, target=_KIND) as ctx:
+        _ = publish_or_record(
+            ctx, "g__s", lambda: _publish(ds, table, dropped=("timestamp",)), kind=_KIND
+        )
+
+    assert capsys.readouterr().err == (
+        f"[{_KIND}] g__s: published without timestamp, which does not map onto the "
+        "source media's pixels, frames or clock.\n"
+    )
+
+
+def test_columns_the_producer_dropped_are_reported_before_the_mappings(
+    tmp_path: Path,
+) -> None:
+    """TREx's retiming of a joined conversion drops columns before publishing."""
+    ds = make_dataset(tmp_path)
+    table = _variant_table()
+
+    with job_context(ds, kind=_KIND, target=_KIND) as ctx:
+        counts = publish_or_record(
+            ctx,
+            "g__s",
+            lambda: _publish(
+                ds, table, mapping=_crop_and_trim(), dropped=("SPEED", "VX")
+            ),
+            kind=_KIND,
+        )
+
+    assert counts is not None
+    assert counts.dropped == ("SPEED", "VX", "timestamp", "BORDER_DISTANCE")
+    assert [
+        record["columns"]
+        for record in _events(ds, ctx.execution_id)
+        if record["ev"] == "columns_dropped"
+    ] == [["SPEED", "VX", "timestamp", "BORDER_DISTANCE"]]
+
+
+def test_columns_the_producer_dropped_are_reported_without_a_mapping(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path)
+
+    counts = _publish(ds, _variant_table(), dropped=("SPEED",))
+
+    assert counts.dropped == ("SPEED",)
 
 
 def test_a_table_that_keeps_every_column_records_no_event(
@@ -222,7 +278,7 @@ def test_a_table_that_keeps_every_column_records_no_event(
 
 
 def test_a_table_the_mapping_refuses_is_a_failed_entry(tmp_path: Path) -> None:
-    """An unclassified numeric column refuses the table, and nothing publishes."""
+    """A table with an unclassified numeric column is refused and does not publish."""
     ds = make_dataset(tmp_path)
     table = _variant_table().assign(mystery=np.ones(_ROWS))
     with job_context(ds, kind=_KIND, target=_KIND) as ctx:

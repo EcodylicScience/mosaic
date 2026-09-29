@@ -1,23 +1,24 @@
-"""The crop features' CLAHE and gray conversion, pinned to the byte.
+"""Pin the crop features' CLAHE and gray conversion to the byte.
 
 ``egocentric-crop`` and ``interaction-crop-pipeline`` equalize a crop with CLAHE
-and convert it to gray. What each computes is pinned here as the SHA-256 digest
-of its output on a fixed synthetic crop. A change to what either computes,
-including a change to code the two share, fails here instead of altering crops
-under an unchanged feature version.
+and convert it to gray. Each feature's output on a fixed synthetic crop is pinned
+here as a SHA-256 digest. A change to either computation, including a change to
+code that the two share, fails here instead of altering crops under an unchanged
+feature version.
 
-CLAHE is pinned twice. With the features' defaults, 25 tiles on this crop hold
-12 pixels each, and OpenCV raises the clip threshold to one count per bin, so
-every clip limit up to about 21 gives the same bytes. With 4 tiles the clip
-limit takes effect, which pins that each feature passes its own clip limit and
-tile grid through.
+CLAHE is pinned twice. With the features' defaults, 25 tiles on this crop contain
+12 pixels each, and OpenCV raises the clip threshold to one count per bin. Every
+clip limit up to about 21 therefore gives the same bytes. With 4 tiles the clip
+limit takes effect, which pins that each feature passes its clip limit and tile
+grid through.
 
 The crops are 8-bit, as decoded video is, and 16-bit, as a raw imgstore of a
 16-bit camera is. Both conversions keep a crop's depth, and CLAHE refuses a
 16-bit color crop because OpenCV converts only an 8-bit or float image to LAB.
 
-The crop is taken around the fixture's center at the fixture's size, unrotated,
-so it is the whole fixture and the digests measure the appearance path alone.
+The crop is taken around the fixture's center at the fixture's size, unrotated.
+It is therefore the whole fixture, and the digests measure the appearance path
+alone.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ _GEOMETRY: dict[str, object] = {
 
 
 def _texture(weights: tuple[int, int, int], modulus: int) -> npt.NDArray[np.int64]:
-    """Values that vary within every CLAHE tile, from a weighted sum of positions."""
+    """Return values that vary within every CLAHE tile, from weighted positions."""
     grid = np.indices((_HEIGHT, _WIDTH), dtype=np.int64)
     rows, columns = grid[0], grid[1]
     column_weight, row_weight, product_weight = weights
@@ -59,7 +60,7 @@ def _texture(weights: tuple[int, int, int], modulus: int) -> npt.NDArray[np.int6
 
 
 def _color_crop() -> Image:
-    """An 8-bit BGR crop whose three channels differ."""
+    """Return an 8-bit BGR crop whose three channels differ."""
     channels = [
         _texture(weights, 256) for weights in ((5, 3, 1), (2, 9, 4), (11, 13, 7))
     ]
@@ -71,7 +72,7 @@ def _gray_crop() -> Image:
 
 
 def _deep_color_crop() -> Image:
-    """A 16-bit BGR crop whose three channels differ."""
+    """Return a 16-bit BGR crop whose three channels differ."""
     channels = [
         _texture(weights, 65536)
         for weights in ((677, 911, 13), (1301, 229, 5), (97, 3001, 29))
@@ -217,7 +218,7 @@ def test_the_crop_around_the_center_is_the_whole_fixture(
 def test_a_crop_feature_equalizes_and_converts_to_the_pinned_bytes(
     feature: str, flags: dict[str, object], fixture: str, digest: str
 ) -> None:
-    """Both features compute the same bytes, so each case has one digest."""
+    """Both features compute the same bytes. Each case therefore has one digest."""
     image = _FIXTURES[fixture]()
 
     result = _FEATURES[feature](flags)(image)

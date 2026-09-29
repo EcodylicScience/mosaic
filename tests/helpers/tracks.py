@@ -1,4 +1,4 @@
-"""Building track tables, tracks variants, and raw tracker exports.
+"""Build track tables, tracks variants, and raw tracker exports.
 
 Every helper here writes what production writes: ``add_tracks_variant`` goes
 through ``write_tracks_row`` rather than a hand-built CSV, and ``write_trex_npz``
@@ -115,7 +115,7 @@ def write_trex_npz(
 
 
 type SleapPreset = Literal["matlab", "standard"]
-"""The two array layouts ``sleap-convert --format analysis`` writes."""
+"""The two array layouts that ``sleap-convert --format analysis`` writes."""
 
 
 def write_sleap_analysis_h5(
@@ -131,14 +131,14 @@ def write_sleap_analysis_h5(
     """Write a SLEAP analysis HDF5 from canonical arrays.
 
     *tracks* is ``(frame, track, node, 2)`` and *scores* is ``(frame, track,
-    node)``. ``matlab`` writes the transposed layout ``sleap-convert`` produces by
-    default and ``standard`` the Python-native one. Both carry a ``dims``
-    attribute, which the converter reads to reorder either. *node_names* and
-    *track_names*, when given, are written as the byte-string datasets
+    node)``. ``matlab`` writes the transposed layout that ``sleap-convert``
+    produces by default and ``standard`` the Python-native one. Both have a
+    ``dims`` attribute, which the converter reads to reorder either. *node_names*
+    and *track_names*, when given, are written as the byte-string datasets that
     ``sleap-convert`` names them in.
     """
-    # Deferred like the converter's own import: most test modules import these
-    # helpers, and few of them open an HDF5 file.
+    # The import is deferred, as the converter's is, because most test modules
+    # import these helpers and few of them open an HDF5 file.
     import h5py
 
     if preset == "matlab":
@@ -176,7 +176,7 @@ def write_dlc_csv(
     values: npt.NDArray[np.float64] | None = None,
     scorer: str = "DLC_model",
 ) -> npt.NDArray[np.float64]:
-    """Write a DeepLabCut CSV, the layout Lightning Pose also writes.
+    """Write a DeepLabCut CSV, the layout that Lightning Pose also writes.
 
     The header rows are ``scorer``, then ``individuals`` for a multi-animal
     export, then ``bodyparts`` and ``coords``. Each row after them is a frame
@@ -186,7 +186,7 @@ def write_dlc_csv(
     Args:
         path: Where to write the file. Missing parent directories are created.
         bodyparts: The bodypart names, in column order.
-        n_frames: How many frames to draw when *values* is not given.
+        n_frames: The number of frames to draw when *values* is not given.
         individuals: The individuals of a multi-animal export. Empty writes a
             single-animal one.
         values: The ``[x, y, likelihood]`` triples to write, shaped ``(frame,

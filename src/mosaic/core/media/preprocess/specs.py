@@ -1,10 +1,10 @@
-"""The union of the built-in steps, discriminated by each step's ``step`` field.
+"""``MediaStepSpec`` is the union of the built-in steps, discriminated by ``step``.
 
-A static union rather than one built from :data:`MEDIA_STEPS`, so a parameter
-model holding a list of steps publishes every step's full schema, which is what
-a pipeline editor draws its step controls from. The set of steps is closed, so a
-step added later edits this union, and a test holds the union and the registry
-to the same names.
+The union names the step classes statically instead of building itself from
+:data:`MEDIA_STEPS`. A parameter model with a list of steps therefore publishes
+every step's full schema, and a pipeline editor builds its step controls from that
+schema. The set of steps is closed. A new step is added to this union as well as
+registered, and a test fails when the union and the registry name different steps.
 """
 
 from __future__ import annotations
@@ -30,4 +30,4 @@ type MediaStepSpec = Annotated[
     | ClaheStep,
     Field(discriminator="step"),
 ]
-"""One step of a list, validated into its own model by its ``step`` name."""
+"""One step of a list, validated into the model that its ``step`` name selects."""

@@ -161,8 +161,8 @@ def ultralytics_settings(
     Scope-free: no dataset, no video, no entry, no output location -- and no
     device, precision or batch size, which change how a run happens rather than
     what it produces. So one value names one variant across every sequence the
-    run covered. ``media`` joins only when it names a variant, which is a run
-    identifier rather than a video.
+    run covered. ``media`` enters the payload only when it names a variant, which
+    is a run identifier rather than a video.
 
     Args:
         params: The run's parameters.
@@ -217,7 +217,7 @@ def _bridge_predictions_to_tracks(
     *,
     tracks_variant: str,
     producer_run_id: str,
-    media_paths: Sequence[Path],
+    consumed_media: Sequence[Path],
     model_files: Sequence[Path],
     fps: float,
     overwrite: bool,
@@ -225,8 +225,9 @@ def _bridge_predictions_to_tracks(
 ) -> BridgeCounts | None:
     """Convert one entry's raw predictions into its standardized table.
 
-    *media_paths* are the media files the table derives from, and *mapping* maps
-    a table tracked on a media variant into source space, ``None`` otherwise.
+    *consumed_media* are the media files that the table derives from, and
+    *mapping* maps a table tracked on a media variant into source space, or is
+    ``None``.
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
     from mosaic.core.track_library.ultralytics_tracks import UltralyticsTracksParams
@@ -261,7 +262,7 @@ def _bridge_predictions_to_tracks(
         tracks_variant=tracks_variant,
         producer_run_id=producer_run_id,
         source=predictions_path.parent,
-        consumed=[predictions_path, *media_paths, *model_files],
+        consumed=[predictions_path, *consumed_media, *model_files],
         mapping=mapping,
     )
 
@@ -554,7 +555,7 @@ def run_ultralytics(
                 out_path,
                 tracks_variant=minted.tracks_variant,
                 producer_run_id=minted.run_id,
-                media_paths=item.consumed_media,
+                consumed_media=item.consumed_media,
                 model_files=list(resolved_model.significant_files),
                 fps=item.fps,
                 overwrite=job.overwrite or recomputed,

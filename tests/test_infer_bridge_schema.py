@@ -137,7 +137,7 @@ def _bridge(tmp_path: Path, kind: str) -> pd.DataFrame:
         producer_run_id=variant,
         kind=kind,
         seq_dir=seq_dir,
-        media_paths=[video],
+        consumed_media=[video],
         model_pt=model,
         overwrite=True,
     )
@@ -212,11 +212,12 @@ def test_a_point_producers_position_is_renamed_not_duplicated(
 
 
 def _spy_on_tracks_rows(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
-    """Record each tracks-index row the bridge writes, in place of writing it.
+    """Record each tracks-index row that the bridge writes, in place of writing it.
 
     The writer is replaced in every module on the inference path that binds it.
-    Each call is bound to the writer's signature with its defaults applied, so an
-    argument passed at its default and one left out record the same value.
+    Each call is bound to the writer's signature with its defaults applied. An
+    argument passed at its default and one left out therefore record the same
+    value.
     """
     signature = inspect.signature(tracks_index.write_tracks_row)
     calls: list[dict[str, object]] = []
@@ -235,10 +236,10 @@ def _spy_on_tracks_rows(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, objec
 def test_a_fixed_frame_publishes_the_pinned_row_and_table(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every argument of the tracks row, and every cell of the table, pinned.
+    """Pin every argument of the tracks row and every cell of the table.
 
-    The frame carries no ``id`` and no ``time``, so both fallbacks run, and two
-    keypoints, so the body center is derived from them.
+    The frame lacks ``id`` and ``time``, and both fallbacks run. It has two
+    keypoints, and the body center is derived from them.
     """
     kind = "infer-pose"
     ds = _dataset(tmp_path, kind)
@@ -269,7 +270,7 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
         producer_run_id="infer-pose.9.9-bbbbbbbbbb",
         kind=kind,
         seq_dir=seq_dir,
-        media_paths=[video],
+        consumed_media=[video],
         model_pt=model,
         overwrite=True,
     )
@@ -338,7 +339,7 @@ def test_a_table_with_no_position_at_all_is_refused(tmp_path: Path) -> None:
             producer_run_id="infer-pose.9.9-aaaaaaaaaa",
             kind="infer-pose",
             seq_dir=seq_dir,
-            media_paths=[video],
+            consumed_media=[video],
             model_pt=model,
             overwrite=True,
         )

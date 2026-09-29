@@ -95,12 +95,13 @@ class RunLogSnapshot(TypedDict):
     in that table and a frame of the video, which is what every consumer reading
     pixels depends on.
 
-    ``entries_columns_dropped`` counts the entries whose table was mapped from a
-    media variant into source space and published without some of its columns:
-    ones the variant made wrong and the mapping cannot correct. It accumulates
-    like ``entries_frame_axis_mismatch`` and, like it, says nothing about the
-    attempt's success. The entry published; the names of what it lost are on the
-    ``columns_dropped`` event.
+    ``entries_columns_dropped`` counts the entries whose table was published
+    without some of its columns: columns that the mapping from a media variant
+    into source space cannot correct, or columns computed against the single
+    frame rate of a joined TREx conversion. It accumulates like
+    ``entries_frame_axis_mismatch`` and, like it, does not bear on the attempt's
+    success. The entry published. The ``columns_dropped`` event names the columns
+    that it lost.
 
     ``tracks_variant`` names the tracks recipes the attempt *read*, comma-joined
     and sorted, empty for a run that reads none. Never what an op *produced* --
@@ -319,17 +320,19 @@ class JsonlRunLog:
         self._emit("frame_axis_mismatch", key=key, tracked=tracked, media=media)
 
     def columns_dropped(self, key: str, columns: Sequence[str]) -> None:
-        """One entry's table was published without *columns*.
+        """Record that one entry's table was published without *columns*.
 
-        Mapping a table from a media variant into source space drops a column
-        the variant made wrong and the table cannot correct: a timestamp minted
-        at the variant's rate, a speed computed against a relabeled rate, a
-        distance to the border of a cropped image. The table is still published,
-        so this is a report and not a failure, and the names travel with the
-        event because they are what a reader needs to know what is missing.
+        Mapping a table from a media variant into source space drops each column
+        that the variant changed and the table cannot recompute: a timestamp
+        minted at the variant's rate, a speed computed against a relabeled rate,
+        a distance to the border of a cropped image. Retiming a joined TREx
+        conversion on its clips' measured rates drops the same kinds of column.
+        The table is still published. The event is therefore a report and not a
+        failure, and it contains the names, because a reader needs them to know
+        the missing columns.
 
-        An ordinary event kind, for the reason :meth:`entry_failed` gives: a
-        reader that predates it folds a log containing it correctly.
+        It is an ordinary event kind, for the reason that :meth:`entry_failed`
+        gives. A reader that predates it folds a log with this event correctly.
         """
         self._emit("columns_dropped", key=key, columns=list(columns))
 

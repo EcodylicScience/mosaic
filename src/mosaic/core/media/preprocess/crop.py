@@ -1,4 +1,4 @@
-"""The ``crop`` step: a source-space rectangle becomes the whole image."""
+"""Define the ``crop`` step, which makes a source-space rectangle the whole image."""
 
 from __future__ import annotations
 
@@ -23,9 +23,9 @@ __all__ = ["MIN_CROP_SIDE", "CropStep"]
 MIN_CROP_SIDE: Final = 4
 """The smallest width or height a crop may have, in pixels.
 
-The AV1 encoder's minimum, established by encoding five frames through
+It is the AV1 encoder's minimum, established by encoding five frames through
 mosaic-media's ``FFmpegVideoWriter`` (``libsvtav1``, SVT-AV1 4.2.0) at sizes from
-2 to 1024 pixels a side, each in its own process, and decoding them back. Every
+2 to 1024 pixels a side, each in a separate process, and decoding them back. Every
 size with both sides at least 4 wrote and read back all five frames. A side of 2
 failed: ``2x2`` raised ``Cannot allocate memory`` from ``avcodec_receive_packet``,
 and ``8x2`` and ``16x2`` crashed the process. The H.264 fallback's ``libx264``
@@ -49,8 +49,8 @@ class CropStep(MediaStep):
     """Cut the image down to a rectangle given in source coordinates.
 
     The rectangle must lie wholly inside the current image, which after an
-    earlier crop is that crop's rectangle. Clamping it instead would change the
-    geometry without recording the change.
+    earlier crop is that crop's rectangle. The step refuses a rectangle outside it.
+    Clamping changes the geometry without recording the change.
     """
 
     name: ClassVar[str] = "crop"
@@ -71,17 +71,17 @@ class CropStep(MediaStep):
     @field_validator("width", "height")
     @classmethod
     def _refuse_an_odd_side(cls, value: int, info: ValidationInfo) -> int:
-        """Refuse an odd side, which yuv420p's half-resolution chroma cannot hold."""
+        """Refuse an odd side, which yuv420p's half-resolution chroma cannot encode."""
         if value % 2:
             raise ValueError(
-                f"a crop {info.field_name} of {value} is odd; the variant is "
-                f"encoded as yuv420p, which stores color at half resolution, so "
-                f"both sides must be even"
+                f"a crop {info.field_name} of {value} is odd. The variant is "
+                f"encoded as yuv420p, which stores color at half resolution. "
+                f"Both sides must be even"
             )
         return value
 
     def place(self, placement: Placement) -> Placement:
-        """The placement of the rectangle, with the frames and rate unchanged.
+        """Return the placement of the rectangle, with the frames and rate unchanged.
 
         Raises:
             ValueError: If the rectangle is not wholly inside the current image.

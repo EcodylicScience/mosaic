@@ -51,7 +51,7 @@ from ..inventory.model import (
     classify,
 )
 from ..ops import IdentityDeferred, OpIdentity, check_scope_takes
-from ..preprocess import PREPROCESS_KIND
+from ..preprocess_layout import PREPROCESS_KIND
 from ..resolve import resolve_references
 from ..run import resolve_feature_identity
 from .digest import recipe_digest
@@ -715,8 +715,8 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
     which is not always the op's own run: what follows a tracker is its
     ``tracks/`` variant, and what follows a training op is its model. Transcode
     has no run-addressed artifact at all -- its derivatives are named by recipe
-    and source -- so it is looked up per target. A media variant is its own run,
-    one file per entry.
+    and source -- so it is looked up per target. A media variant is a separate
+    run with one file per entry.
 
     ``None`` is honest rather than a gap: an op whose output nothing inventories
     reads as having no coverage answer, where reporting zero would say it had
@@ -775,8 +775,8 @@ def coverage_against(
     zero of ninety.
 
     A media variant is keyed by entry and camera, and an entry is covered when
-    the camera the variant was made from holds a row and a file. The op writes
-    only an entry's consumed camera, so the camera is dropped here. A camera
+    the camera that the variant was made from has a row and a file. The op writes
+    only an entry's consumed camera. The camera is therefore dropped here. A camera
     that stops being the consumed one changes the entry's media composition,
     and the variant then reports that entry as drifted when both compositions
     are known.

@@ -8,9 +8,8 @@ and the inference->tracks bridge -- is exercised without any real models.
 
 from __future__ import annotations
 
-import dataclasses
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -18,7 +17,6 @@ import pytest
 from mosaic_media import (
     CHROME_149,
     DEFAULT_THRESHOLDS,
-    MediaFacts,
     MediaProbeError,
     derive,
 )
@@ -51,82 +49,18 @@ from tests.helpers import (
     make_dataset,
     scope_over,
     write_litpose_model,
+    write_media_index,
+    write_sleap_model,
 )
 
 
 # --- fixtures --------------------------------------------------------------
 
 
-def _clean_media_facts(
-    *, width: int, height: int, fps: float, frame_count: int, codec: str
-) -> MediaFacts:
-    """An analysis-clean :class:`MediaFacts` for a synthetic media-index row.
-
-    No probe runs over the fixture's placeholder video bytes, so this reuses
-    :func:`store_facts`'s hand-built shape (declared values matching the
-    measured ones, empty identity fields) and overrides only the three fields
-    where a plain mp4 differs from an imgstore: a real container and pixel
-    format, and a moov atom at the start rather than store_facts's "no such
-    concept" ``None``.
-    """
-    facts = store_facts(
-        width=width,
-        height=height,
-        fps=fps,
-        frame_count=frame_count,
-        codec=codec,
-        duration=frame_count / fps,
-        video_uuid="",
-        identity_scheme="",
-    )
-    return dataclasses.replace(
-        facts,
-        container="mov,mp4,m4a,3gp,3g2,mj2",
-        pixel_format="yuv420p",
-        moov_at_start=True,
-    )
-
-
-def _clean_facts_cells(
-    *, width: int, height: int, fps: float, frame_count: int, codec: str
-) -> dict[str, object]:
-    """Flat + JSON facts cells describing one clean, analysis-fit media row."""
-    facts = _clean_media_facts(
-        width=width, height=height, fps=fps, frame_count=frame_count, codec=codec
-    )
-    return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
-
-
-def _make_dataset(tmp_path: Path, seqs=("vid1", "vid2")) -> Dataset:
+def _make_dataset(tmp_path: Path, seqs: Sequence[str] = ("vid1", "vid2")) -> Dataset:
+    """Return a dataset that indexes one clean stub video per sequence in *seqs*."""
     ds = make_dataset(tmp_path)
-    media_root = ds.get_root(ds.resolve_media_root())
-    media_root.mkdir(parents=True, exist_ok=True)
-    rows = []
-    for s in seqs:
-        vp = media_root / f"{s}.mp4"
-        vp.write_bytes(b"fake")
-        rows.append(
-            {
-                "name": s,
-                "group": "",
-                "sequence": s,
-                "group_safe": "",
-                "sequence_safe": s,
-                "abs_path": str(vp),
-                "size_bytes": 4,
-                "mtime_iso": "",
-                "width": 640,
-                "height": 480,
-                "fps": 30.0,
-                "codec": "h264",
-                "media_type": "video",
-                "video_order": 0,
-                **_clean_facts_cells(
-                    width=640, height=480, fps=30.0, frame_count=100, codec="h264"
-                ),
-            }
-        )
-    pd.DataFrame(rows).to_csv(media_root / "index.csv", index=False)
+    write_media_index(ds, list(seqs))
     return ds
 
 
@@ -629,10 +563,11 @@ def test_infer_points_runs_and_bridges(tmp_path, monkeypatch):
 def _positionless_predictions_for(
     monkeypatch: pytest.MonkeyPatch, sequences: set[str]
 ) -> None:
-    """Make the fake POLO runner report no position for *sequences*.
+    """Make the fake POLO runner omit positions for *sequences*.
 
-    Such a table cannot be published: the bridge has no body center to name, so
-    strict validation refuses it. Every other sequence gets the fake's own table.
+    Such a table cannot be published. The bridge lacks a body center to name, and
+    strict validation refuses it. Every other sequence gets the fake's default
+    table.
     """
     import mosaic.tracking.pose_training.ultralytics_infer as infer_run
 
@@ -660,8 +595,8 @@ def test_a_failed_inference_bridge_loses_only_its_entry(
 ) -> None:
     """The refusal is recorded on the attempt, and the next entry still publishes.
 
-    The refused entry keeps its predictions for diagnosis and gets no completion
-    marker, because its output never reached ``tracks/``.
+    The refused entry keeps its predictions for diagnosis and does not get a
+    completion marker, because its output never reached ``tracks/``.
     """
     from mosaic.core.pipeline.markers import read_phase_marker
     from mosaic.core.pipeline.tracks_index import read_tracks_index
@@ -686,7 +621,7 @@ def test_a_failed_inference_bridge_loses_only_its_entry(
 def test_an_inference_run_that_publishes_nothing_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Losing every entry's table is a failed run, not a finished one."""
+    """A run that loses every entry's table fails instead of finishing."""
     ds = _make_dataset(tmp_path)
     _positionless_predictions_for(monkeypatch, {"vid1", "vid2"})
     model = tmp_path / "polo.pt"
@@ -863,14 +798,6 @@ def test_trex_params_exclude_throughput_from_run_id():
 # --- sleap op (registered; run_id parity with the standalone run_sleap) -----
 
 
-def _fake_sleap_model(root: Path, name: str = "model") -> Path:
-    """A minimal SLEAP model directory with a checkpoint, for identity tests."""
-    model_dir = root / name
-    model_dir.mkdir(parents=True, exist_ok=True)
-    (model_dir / "best.ckpt").write_bytes(b"weights")
-    return model_dir
-
-
 def test_sleap_registered_as_gpu_convert_op():
     assert "sleap" in OPS
     d = describe_op("sleap")
@@ -890,7 +817,7 @@ def test_sleap_op_run_id_matches_standalone_run_sleap(tmp_path):
     from mosaic.tracking.sleap.params import SleapParams
 
     ds = _make_dataset(tmp_path)
-    model = _fake_sleap_model(tmp_path)
+    model = write_sleap_model(tmp_path / "model")
     absent = ("", "nonexistent")
     direct = run_sleap(ds, SleapParams(model_paths=[str(model)]), scope_over(absent))
     via_op = run_op(
@@ -934,14 +861,9 @@ def test_sleap_model_identity_is_content_not_path(tmp_path):
     # not the path they sat at."
     from mosaic.tracking.model_refs import resolve_model_set
 
-    a = tmp_path / "a" / "model"
-    b = tmp_path / "b" / "model"
-    for d in (a, b):
-        d.mkdir(parents=True)
-        (d / "best.ckpt").write_bytes(b"same-weights")
-    c = tmp_path / "c" / "model"
-    c.mkdir(parents=True)
-    (c / "best.ckpt").write_bytes(b"other-weights")
+    a = write_sleap_model(tmp_path / "a" / "model", b"same-weights")
+    b = write_sleap_model(tmp_path / "b" / "model", b"same-weights")
+    c = write_sleap_model(tmp_path / "c" / "model", b"other-weights")
 
     id_a = resolve_model_set(None, [str(a)], "sleap").model_id
     id_b = resolve_model_set(None, [str(b)], "sleap").model_id
@@ -955,12 +877,8 @@ def test_sleap_model_order_is_significant(tmp_path):
     # is not interchangeable, so it must reach identity.
     from mosaic.tracking.model_refs import resolve_model_set
 
-    d1 = tmp_path / "centroid"
-    d2 = tmp_path / "instance"
-    d1.mkdir()
-    d2.mkdir()
-    (d1 / "best.ckpt").write_bytes(b"centroid")
-    (d2 / "best.ckpt").write_bytes(b"instance")
+    d1 = write_sleap_model(tmp_path / "centroid", b"centroid")
+    d2 = write_sleap_model(tmp_path / "instance", b"instance")
     forward = resolve_model_set(None, [str(d1), str(d2)], "sleap").model_id
     reverse = resolve_model_set(None, [str(d2), str(d1)], "sleap").model_id
     assert forward != reverse

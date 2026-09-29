@@ -14,12 +14,14 @@ that has not been created yet. Roots resolve through ``get_root`` rather than ou
 of ``ds.roots`` directly, because a stored root is relative to the dataset and
 ``Path(root)`` would resolve it against the process working directory instead.
 
-**Two shapes, and the distinction is not cosmetic.** Some roots hold one
+**Four shapes, and the distinction is not cosmetic.** Some roots hold one
 ``index.csv`` at the top (``tracks``, ``media``, a tracker root); some hold one
 per subdirectory (``features/<name>/``, ``labels/<kind>/``, ``frames/<method>/``).
-``features`` and ``labels`` are both -- they carry a root-level index *and*
-per-child ones -- which is why this is a table of (root, shape) pairs rather than
-a list of roots.
+``labels_raw`` also has one per label series. One kind directory under the media
+root, ``media/preprocess/``, contains the media variants' index.
+``features`` and ``labels`` are both of the first two -- they carry a root-level
+index *and* per-child ones -- which is why this is a table of (root, shape) pairs
+rather than a list of roots.
 
 **And one answer to "what does a root hold".** :func:`root_subdirectories` is
 that answer, with :func:`feature_storages` and :func:`label_kinds` as its two
@@ -44,7 +46,7 @@ import pandas as pd
 from mosaic.core.pipeline.label_series import LABEL_SERIES, SERIES_MARKER
 from mosaic.core.pipeline.preprocess_layout import (
     MEDIA_ROOT_KEY,
-    PREPROCESS_KIND_DIRECTORY,
+    PREPROCESS_KIND,
 )
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.scope import Scope
@@ -65,7 +67,7 @@ __all__ = [
 ]
 
 IndexShape = Literal["root", "per_subdir", "label_series", "media_kind"]
-"""Where an index sits: at a root, in each child, in each series, or in a media kind.
+"""An index's location: at a root, in each child, in each series, or in a media kind.
 
 ``label_series`` is ``labels_raw``'s second shape. ``per_subdir`` would be wrong
 for it: that root's children are mostly uploaded entry folders, which hold no
@@ -73,9 +75,9 @@ index, so every one of them would be offered to every pass as an absent file.
 A series directory is recognized by its marker instead.
 
 ``media_kind`` is one ``index.csv`` in a kind directory under the media root,
-the kind named by the table's key. The key is not a root, and it is what the
-passes look an index's opener and path columns up by: registering the media
-root's own key would hand ``media/index.csv`` to the variant index's opener.
+the kind named by the table's key. The key is not a root. The passes look an
+index's opener and path columns up by the key. Registering the index under the
+media root's key instead hands ``media/index.csv`` to the variant index's opener.
 """
 
 
@@ -84,11 +86,11 @@ class DatasetIndex:
     """One index file, and enough about it to rewrite or reconcile it.
 
     Attributes:
-        root_key: The root holding the index, or for a ``media_kind`` index the
+        root_key: The root that contains the index, or for a ``media_kind`` index the
             kind directory's name. The passes find the index's opener and path
             columns under it.
         path: The index file, which may not exist yet.
-        path_columns: The columns besides ``abs_path`` that hold a path.
+        path_columns: The columns besides ``abs_path`` that contain a path.
     """
 
     root_key: str
@@ -116,7 +118,7 @@ _ROOT_SHAPES: Final[tuple[tuple[str, IndexShape], ...]] = (
     ("labels_raw", "label_series"),
     ("media", "root"),
     # The media variants' index, in their kind directory under the media root.
-    (PREPROCESS_KIND_DIRECTORY, "media_kind"),
+    (PREPROCESS_KIND, "media_kind"),
     ("tracks", "root"),
     # ``per_subdir``, not ``root``: every model index is ``models/<kind>/index.csv``
     # -- one per training kind, plus ``models/convert-points/`` for a converted

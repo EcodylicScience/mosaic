@@ -44,8 +44,8 @@ Scale, offset and gamma-correct every pixel value through one lookup table.
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `step` | `"adjust"` | `"adjust"` |  | The step's name, which selects this step in a list of steps. |
-| `brightness` | `number` | `0.0` | >= `-255.0`, <= `255.0` | The level added to every scaled pixel value, from -255 to 255. Zero adds nothing. |
-| `contrast` | `number` | `1.0` | > `0.0` | The factor every pixel value is scaled by before the brightness is added. One leaves the contrast unchanged. |
+| `brightness` | `number` | `0.0` | >= `-255.0`, <= `255.0` | The level added to every scaled pixel value, from -255 to 255. Zero leaves the values unchanged. |
+| `contrast` | `number` | `1.0` | > `0.0` | The factor that every pixel value is scaled by before the brightness is added. One leaves the contrast unchanged. |
 | `gamma` | `number` | `1.0` | > `0.0` | The gamma applied after brightness and contrast, as 255 * (v / 255) ** (1 / gamma). Above one brightens the mid-tones, and one leaves them unchanged. |
 
 ## `clahe`
@@ -58,7 +58,7 @@ Equalize contrast locally, tile by tile, with a limit on the contrast gained.
 | --- | --- | --- | --- | --- |
 | `step` | `"clahe"` | `"clahe"` |  | The step's name, which selects this step in a list of steps. |
 | `clip_limit` | `number` | `2.0` | > `0.0` | The contrast limit of the equalization. Higher equalizes harder and amplifies more noise. |
-| `tile_grid_size` | `integer` | `8` | >= `1` | The tiles along each side of the image, each equalized on its own histogram. |
+| `tile_grid_size` | `integer` | `8` | >= `1` | The number of tiles along each side of the image. Each tile is equalized on a histogram of its pixels alone. |
 
 ## `crop`
 
@@ -104,7 +104,7 @@ Fill the pixels on one side of a polygon with black.
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `step` | `"mask"` | `"mask"` |  | The step's name, which selects this step in a list of steps. |
-| `polygon` | list of tuple of (`integer`, `integer`) | _required_ | min items `3` | The polygon's vertices as (x, y) source coordinates, at least three. It may reach outside the image, but not lie wholly outside it. [px] |
+| `polygon` | list of tuple of (`integer`, `integer`) | _required_ | min items `3` | The polygon's vertices as (x, y) source coordinates, at least three. It may extend outside the image but may not lie wholly outside it. [px] |
 | `keep` | `boolean` | `true` |  | Keep the pixels inside the polygon and black out the rest. False blacks out the inside instead. |
 
 ## `trim`
@@ -117,4 +117,4 @@ Keep the frames from ``start`` up to, not including, ``stop``.
 | --- | --- | --- | --- | --- |
 | `step` | `"trim"` | `"trim"` |  | The step's name, which selects this step in a list of steps. |
 | `start` | `integer` | _required_ | >= `0` | The first source frame of the range kept. |
-| `stop` | `integer` | _required_ |  | The source frame the kept range stops before. |
+| `stop` | `integer` | _required_ |  | The source frame that the kept range stops before. |

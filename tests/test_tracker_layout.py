@@ -40,6 +40,7 @@ from tests.helpers import (
     install_fake_trex,
     write_litpose_model,
     write_media_index,
+    write_sleap_model,
     write_trex_npz,
 )
 
@@ -216,11 +217,9 @@ def test_litpose_leaves_this_shape(
 
 @pytest.fixture
 def sleap_model(tmp_path: Path) -> Path:
-    model_dir = tmp_path / "sleap_model"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    (model_dir / "best.ckpt").write_bytes(b"weights")
-    (model_dir / "training_config.yaml").write_text("head: single_instance\n")
-    return model_dir
+    return write_sleap_model(
+        tmp_path / "sleap_model", training_config="head: single_instance\n"
+    )
 
 
 @pytest.fixture

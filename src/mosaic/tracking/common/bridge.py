@@ -72,9 +72,11 @@ class BridgeCounts:
     zero -- a reused table makes no measurement, and a producer that does not
     join a session's clips has no second axis to compare against.
 
-    ``dropped`` names the columns a mapping from a media variant removed before
-    the table was published, in the order the tool's table held them. Empty when
-    no mapping ran or it removed nothing.
+    ``dropped`` names the columns removed before the table was published because
+    they do not map onto the source media's pixels, frames or clock: those that
+    the producer's retiming removed, then those that a mapping from a media
+    variant removed, each in the table's column order. It is empty when the table
+    kept every column.
     """
 
     n_rows: int
@@ -174,6 +176,7 @@ def publish_tracks_table(
     consumed: Sequence[Path],
     media_frames: int | None = None,
     mapping: SourceMapping | None = None,
+    dropped: Sequence[str] = (),
     strict: bool = False,
 ) -> BridgeCounts:
     """Write one converted frame as this variant's table for one entry.
@@ -205,29 +208,32 @@ def publish_tracks_table(
             :attr:`~mosaic.core.pipeline.tracking_roots.TrackingRoot.joins_sources`
             marks the ones whose tool is handed a whole session, and those are
             the ones where the two axes can come apart.
-        mapping: Where the media variant the tool read sits in the entry's
-            media. When given, *df* is mapped into source space before anything
-            else, so the table validated, written and counted is the mapped one.
+        mapping: The placement in the entry's media of the media variant that
+            the tool read. When given, *df* is mapped into source space first.
+            The table validated, written and counted is therefore the mapped one.
             ``None`` publishes *df* as it is.
-        strict: Raise when the table lacks a column its schema requires, rather
-            than printing the report and publishing it.
+        dropped: The columns that the producer removed from *df* before passing
+            it on, such as those that TREx's retiming of a joined conversion
+            drops. They are reported with the ones that the mapping drops.
+        strict: Raise when the table lacks a column that its schema requires,
+            rather than printing the report and publishing it.
 
     Returns:
-        What the published table holds, and the columns the mapping dropped.
+        Counts of the published table, and every column dropped from it.
 
     Raises:
-        UnclassifiedColumnError: If *mapping* is given and the table holds a
-            numeric column the mapping cannot classify.
-        ValueError: If *mapping* is given and a frame column holds a value that
-            is not a whole frame number.
-        ForbiddenTrackColumnError: If the table holds a column its schema
+        UnclassifiedColumnError: If *mapping* is given and the table has a
+            numeric column that the mapping cannot classify.
+        ValueError: If *mapping* is given and a frame column contains a value
+            that is not a whole frame number.
+        ForbiddenTrackColumnError: If the table has a column that its schema
             forbids, whatever *strict* says.
         TrackSchemaError: If *strict* and the table lacks a required column.
     """
-    dropped: tuple[str, ...] = ()
+    removed = tuple(dropped)
     if mapping is not None:
         mapped = to_source_space(df, mapping)
-        df, dropped = mapped.frame, mapped.dropped
+        df, removed = mapped.frame, (*removed, *mapped.dropped)
     out_path = tracks_table_path(ds, tracks_variant, make_entry_key(group, sequence))
     std_format = tracking_output_schema(kind)
     ensure_track_schema(df, std_format, strict=strict, source=f"{group}/{sequence}")
@@ -254,7 +260,7 @@ def publish_tracks_table(
         records_media=True,
     )
     return replace(
-        counts, frame_span=frame_span(df), media_frames=media_frames, dropped=dropped
+        counts, frame_span=frame_span(df), media_frames=media_frames, dropped=removed
     )
 
 
@@ -304,10 +310,11 @@ def publish_or_record(
     clears the whole working tree. A defect that spoils registration would then
     cost the analyses that never depended on registration.
 
-    **Columns a mapping dropped are reported the same way.** A table mapped from
-    a media variant into source space publishes without the columns the variant
-    made wrong. The entry succeeded, and the names go to the run-log as a
-    ``columns_dropped`` event and to stderr.
+    **Dropped columns are reported the same way.** A table mapped from a media
+    variant into source space publishes without the columns that the mapping
+    cannot correct, and a joined TREx conversion without the columns computed
+    against its single frame rate. The entry succeeded, and the names go to the
+    run-log as a ``columns_dropped`` event and to stderr.
 
     Args:
         ctx: The attempt's Job Contract, which owns the run-log.
@@ -348,11 +355,12 @@ def publish_or_record(
         )
     if counts is not None and counts.dropped:
         ctx.columns_dropped(key, counts.dropped)
-        # The event and the line, as for a frame-axis mismatch above.
+        # Emit the event and the line, as for a frame-axis mismatch above.
+        verb = "does" if len(counts.dropped) == 1 else "do"
         print(
             f"[{kind}] {key}: published without {', '.join(counts.dropped)}, "
-            f"which the media variant this entry was tracked on made wrong and "
-            f"which cannot be mapped back to the source media.",
+            f"which {verb} not map onto the source media's pixels, frames or "
+            f"clock.",
             file=sys.stderr,
         )
     return counts

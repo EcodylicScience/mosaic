@@ -162,10 +162,10 @@ def infer_variant_payload(
     ``infer_run_id`` term for term and for the same reason: leaving the model out
     would let two detectors share one identifier.
 
-    *media* is the media variant the predictions were made on, and empty when
-    they were made on the entry's original media. Omitted from the payload
-    entirely when empty, so every variant minted before variants existed keeps
-    the identifier it has.
+    *media* is the media variant that the predictions were made on, and empty
+    when they were made on the entry's original media. The term is omitted from
+    the payload when empty. Every tracks variant minted before media variants
+    existed therefore keeps its identifier.
 
     *model_id* is what **names** the model, never where it sits: a training run
     identity, or the weights' content digest when there is no run to name them
@@ -281,7 +281,7 @@ class VariantSidecar(BaseModel):
 
 
 def read_variant_sidecar(path: Path) -> VariantSidecar | None:
-    """The variant sidecar at *path*, or ``None`` when it is absent or unreadable."""
+    """Return the variant sidecar at *path*, or ``None`` when absent or unreadable."""
     if not path.exists():
         return None
     try:
@@ -291,12 +291,12 @@ def read_variant_sidecar(path: Path) -> VariantSidecar | None:
 
 
 def tracks_variant_media(tracks_root: Path, run_id: str) -> str:
-    """The media variant tracks variant *run_id*'s tables were made from, or ``""``.
+    """Return the media variant that tracks variant *run_id* was made from, or ``""``.
 
-    Read from the payload :func:`write_tracks_variant` recorded, where a tracker's
-    or an inference op's ``media`` term sits when it names a variant. ``""`` for
-    a variant made from the entry media, and for one whose sidecar is absent or
-    unreadable.
+    The value is read from the payload that :func:`write_tracks_variant` recorded,
+    which contains a tracker's or an inference op's ``media`` term when it names a
+    variant. The function returns ``""`` for a variant made from the entry media,
+    and for one whose sidecar is absent or unreadable.
     """
     sidecar = read_variant_sidecar(
         tracks_variant_root(tracks_root, run_id) / "params.json"

@@ -1,4 +1,4 @@
-"""Transcode coverage, the kind with no run directory to look in, and variants.
+"""Test transcode coverage, the kind without a run directory, and variant coverage.
 
 The case a single coverage signature gets wrong, and gets wrong in the worst
 direction: asked for a run directory that was never supposed to exist, a
@@ -249,7 +249,7 @@ def _set_media_composition(ds: Dataset, *sequences: str) -> None:
 def test_a_finished_variant_holding_every_entry_it_names_reads_complete(
     tmp_path: Path,
 ) -> None:
-    """Keyed by entry and camera, as a frame run is."""
+    """A variant is keyed by entry and camera, as a frame run is."""
     ds = make_dataset(tmp_path / "ds")
     _ = add_media_variant(ds, _VARIANT, "s1")
     _ = add_media_variant(ds, _VARIANT, "s2", camera="cam0")
@@ -271,8 +271,8 @@ def test_a_variant_still_writing_reads_partial_until_it_finishes(
 ) -> None:
     """A file ahead of its row is a run in progress, and damage once it finished.
 
-    The op renames a file into place and then writes its row, so between the two
-    the file is there and a consumer, which reads the row, cannot use it yet.
+    The op renames a file into place and then writes its row. Between the two, the
+    file exists and a consumer, which reads the row, cannot use it yet.
     """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, ["s1", "s2"])
@@ -334,11 +334,11 @@ def test_a_variant_of_media_that_moved_reads_complete_but_drifted(
 def test_the_work_directory_and_a_partial_file_are_not_variant_files(
     tmp_path: Path,
 ) -> None:
-    """An entry's claim and its encode in flight sit in the run directory too.
+    """An entry's claim and its encode in progress are in the run directory too.
 
-    Both are under the entry's work directory, where neither is the variant
-    file of the entry it belongs to, so neither is a file ahead of its row, and
-    a finished run holding them reads complete rather than damaged.
+    Both are under the entry's work directory and away from the entry's variant
+    path. A finished run that contains them therefore reads complete rather than
+    damaged.
     """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, ["s1", "s2", "s3"])
@@ -376,7 +376,7 @@ def test_every_variant_run_in_the_index_is_one_record(tmp_path: Path) -> None:
 
 
 def _record_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Record each read of the media index and of the compositions a scan makes."""
+    """Record each read of the media index and of the compositions that a scan makes."""
     calls: list[str] = []
 
     def media_index(path: Path) -> list[dict[str, str]]:
@@ -397,7 +397,7 @@ def _record_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 def test_a_scan_reads_the_media_index_and_the_compositions_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every variant is looked up against the same two reads, not its own."""
+    """Every variant is looked up against the same two shared reads."""
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, ["s1"])
     _ = add_media_variant(ds, _VARIANT, "s1")
@@ -442,7 +442,7 @@ def test_a_selector_narrows_a_variant_to_the_entries_it_names(
 
 
 def test_a_dataset_with_no_media_root_reports_no_variant(tmp_path: Path) -> None:
-    """Variants sit under the media root, so a dataset without one holds none."""
+    """Variants are stored under the media root. A dataset without one reports none."""
     ds = make_dataset(tmp_path / "ds")
     ds.roots["media"] = ""
 

@@ -291,11 +291,13 @@ named roots:
 - `media/`        — transcode derivatives + their own `index.csv`, one row per
                   derivative, reached through `media_routing_context`
 - `media/frames/` — extracted PNGs for annotation (root key `frames`)
-- `media/preprocess/<run_id>/`: media variants written by the `preprocess` op,
-                  one re-encoded file per entry (and camera) under the variant's
-                  run id, with one typed `index.csv` for every variant beside the
-                  run directories. Media scans skip this directory by resolved
-                  path, beside the `_tracking` exclusion
+- `media/preprocess/<run_id>/`: media variants written by the `preprocess` op.
+                  Each variant has one re-encoded file per entry (and camera)
+                  and the recipe that made it, `recipe.json`, which
+                  `mosaic run --params @<path>` reads back. One typed
+                  `index.csv` beside the run directories records every variant.
+                  Media scans skip this directory by resolved path, as they skip
+                  `_tracking`
 - `tracks_raw/`   — user-uploaded raw tracks + `index.csv`
 - `labels_raw/`   — user-uploaded raw labels + `index.csv`, and beside them the
                   **versioned label series** (`keypoints/`, with `behavior/`
@@ -566,9 +568,9 @@ mosaic uses decorator-based registries; new functionality almost always means
 
 The media-step set is closed. `MediaStepSpec` (`core/media/preprocess/specs.py`)
 is a static discriminated union of the built-in steps, which publishes each
-step's full schema in any parameter model with a list of steps. A new step edits
-the union beside registering, and `test_the_union_and_the_registry_name_the_same_steps`
-fails when the two disagree.
+step's full schema in any parameter model with a list of steps. A new step is
+added to the union as well as registered, and
+`test_the_union_and_the_registry_name_the_same_steps` fails when the two disagree.
 
 **`register_label_converter` is called, never decorated.**
 `behavior/label_library/__init__.py` imports each converter module and then calls it
@@ -637,10 +639,10 @@ reporting *attempts*) and `mosaic features list` (the registry) each do not.
 
 - **Coverage is which keys exist, never a flag**, and the key type differs by
   kind: `(group, sequence)` for a feature run or tracks variant,
-  `(group, sequence, camera)` for a frame run (the cameras of one recording
-  share an entry), the run id for a trained model or a prepared dataset, the
-  revision for a label series, and a media row's
-  `video_uuid` for a transcode. **Transcode has no run-addressed directory at
+  `(group, sequence, camera)` for a frame run or a media variant (the cameras of
+  one recording share an entry), the run id for a trained model or a prepared
+  dataset, the revision for a label series, and a media row's `video_uuid` for a
+  transcode. **Transcode has no run-addressed directory at
   all**, so a single `coverage(storage, run_id)` signature makes an
   already-clean corpus read as permanently incomplete forever.
 - **Status is derived, never stored**: `absent` / `partial` / `complete` /
@@ -803,11 +805,11 @@ src/mosaic/
 │   │   ├── label_series.py     # the versioned-series registry, layout and marker (no pandas)
 │   │   ├── label_series_index.py  # series index row, revision writer, revision reader
 │   │   ├── entry_claim.py      # per-entry claim: take, keep alive, release
-│   │   ├── consumed_camera.py  # which camera of an entry a tracker reads
+│   │   ├── consumed_camera.py  # the camera of an entry that a tracker reads
 │   │   ├── preprocess.py       # the preprocess op: media steps -> one variant file per entry
 │   │   ├── preprocess_layout.py  # the media/preprocess/ layout and the media-scan exclusion
 │   │   ├── preprocess_index.py # MediaVariantRow, its one writer and reader, missing/drifted errors
-│   │   ├── variant_source.py   # an entry's variant row resolved for a consumer, drift refused
+│   │   ├── variant_source.py   # a variant's rows read once per scope, each entry resolved, drift refused
 │   │   ├── media_input.py      # MediaInputParams: the `media` parameter, frame windows refused
 │   │   ├── placement.py        # to_source_space: a variant's table mapped back to source space
 │   │   ├── inventory/          # what a dataset holds: coverage, status, params.json
@@ -884,9 +886,10 @@ who registers one of their own first.
 
 `core.media` takes no import
 from `behavior` or `tracking`. It is not a dependency-free leaf: it reads verdict
-thresholds from the root-level `media_probe_config`, and `reprobe.py`
+thresholds from the root-level `media_probe_config`, `reprobe.py`
 additionally reaches `core.helpers`, `core.stored_paths` and
-`core.pipeline.media_index`. Frame *sampling/extraction*
+`core.pipeline.media_index`, and the media steps under `preprocess/` import
+`core.params` and `core.json_value`. Frame *sampling/extraction*
 (`tracking/frame_extraction/`, exposed as `mosaic.tracking.extract_frames(ds, …)`)
 is a tracking-domain concern — it reads `media/frames` via `ds.get_root("frames")`
 (downward) and is **not** a `Dataset` method; `core` has no frame-extraction code.
@@ -917,7 +920,8 @@ in a library dataset, linked from each project by `libraries:`
    ├─ prepare-training-data   → models/prepare-training-data/<run_id>/  (images copied)
    └─ train-*  (data = that run id)     → models/<kind>/<run_id>/ + training.json
 
-run_trex / run_sleap / run_litpose / infer-*   (media= a media variant's run_id, or empty)
+run_trex / run_sleap / run_litpose / run_ultralytics / infer-*
+                             (media= a media variant's run_id, or empty)
    ├─ (working)              → _tracking/<tool>/<run_id>/<group>__<seq>/
    └─ (bridged)              → tracks/<variant>/<group>__<seq>.parquet
                                  (a media variant's table mapped back to source space)
@@ -981,7 +985,10 @@ the same rule: the first pair is the table's own frame axis, measured from the
 parquet, and the third is the length of the **media axis** that table's frames are
 supposed to address, *passed* by the producer because only it knows what it
 resolved. Blank means unknown on all three, and
-`frame_axis_mismatches()` refuses to compare unless both sides are filled.
+`frame_axis_mismatches()` refuses to compare unless both sides are filled. A table
+tracked on a media variant records a blank `media_frames`, and
+`backfill_media_frames` leaves it blank, because a trimmed or decimated variant's
+table does not span its source axis.
 
 Three invariants worth knowing:
 
@@ -1018,10 +1025,11 @@ this scheme keeps the identifiers it already has.
 
 A `group` or `sequence` may not contain `/`, `\\` or NUL. mosaic itself survives a
 slash — `to_safe_name` percent-encodes it — but an entry name doubles as a
-directory name in mosaic-api, where it does not. Validated at the six write
+directory name in mosaic-api, where it does not. Validated at the seven write
 boundaries (`EntryHints`, `Dataset.set_display_name`, `build_tracks_raw_row`,
-`promote_correction`, `write_tracks_row`, `write_labels_row`) and at no
-read path, so an index that already holds one keeps resolving. Join levels with
+`promote_correction`, `write_tracks_row`, `write_labels_row`,
+`write_media_variant_row`) and at no read path, so an index that already holds
+one keeps resolving. Join levels with
 `__`, which `parse_hierarchy` reads by default.
 
 ### Op and variant run identifiers
@@ -1356,7 +1364,8 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   The axis is also **measured against the media and reported** rather than merely
   asserted -- `media_frames` beside `frame_min`/`frame_max` on the tracks row, a
   `frame_axis_mismatch` run-log event, an `extra` key on the inventory record, and
-  `mosaic measure-tracks` for tables published before the cell existed. Recorded,
+  `mosaic measure-tracks` for tables published before the cell existed, except a
+  table tracked on a media variant, whose cell stays blank. Recorded,
   never refused: the condition is deterministic and a table cannot be re-bridged
   without re-tracking, so raising would fail the same entry forever and cost the
   analyses that never depended on registration.
@@ -1366,18 +1375,18 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   table. A converter that writes a scaled column, or puts a landmark other than
   the body centre in `X`, reintroduces a difference that reads as a plausible
   number and is recorded nowhere.
-- **A variant is consumed by name, and its tracks are published in source space.**
-  A tracker or inference op reads a media variant only when its `media` parameter
-  names the variant's run id, and that run id enters the consumer's identity.
-  `publish_tracks_table` maps the table back through the variant's recorded
+- **A media variant is consumed by name, and its tracks are published in source
+  space.** A tracker or inference op reads a media variant only when its `media`
+  parameter names the variant's run id, and that run id enters the consumer's
+  identity. `publish_tracks_table` maps the table back through the variant's recorded
   placement (`to_source_space` in
   [`core/pipeline/placement.py`](src/mosaic/core/pipeline/placement.py)) before
   the table is validated and written. Every reader of `tracks/` therefore reads
-  source pixels and source frames, whatever crop or trim the tracker saw. When
-  each consumer shifts crop coordinates itself, one that omits the offset writes
-  plausible positions on the wrong pixel grid, and its output looks like any
-  other. A frame window on the consumer is refused beside `media`
-  (`MediaInputParams`), because it would count variant frames.
+  source pixels and source frames, whatever crop or trim the tracker saw.
+  Consumers do not shift crop coordinates themselves. A consumer therefore cannot
+  omit the offset and publish plausible positions on the variant's pixel grid. A
+  frame window on the consumer is refused beside `media` (`MediaInputParams`),
+  because the tool counts it in variant frames.
 - **A tracker reports; a feature derives.** `mosaic_v1` *forbids* `VX`, `VY`,
   `SPEED`, `ANGLE` and the rest, so a converter cannot compute one and present it
   as a measurement. Heading is the sharpest case: the principal-component fit the

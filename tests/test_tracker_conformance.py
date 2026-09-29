@@ -28,6 +28,7 @@ import pytest
 
 from mosaic.core.pipeline.dataset_indexes import reconcilable_index
 from mosaic.core.pipeline.markers import PhaseName
+from mosaic.core.pipeline.media_input import MediaInputParams
 from mosaic.core.pipeline.ops import OPS
 from mosaic.core.pipeline.tracking_roots import (
     CONSERVATIVE_DECODER,
@@ -110,6 +111,24 @@ def test_it_is_a_registered_op(kind: str) -> None:
 def test_its_params_share_the_scope_and_execution_contract(kind: str) -> None:
     """Scope and the throughput knobs are the same question for every tracker."""
     assert issubclass(OPS[kind].Params, TrackerOpParams)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    sorted(
+        key
+        for key, root in TRACKING_ROOTS.items()
+        if root.retention in {"tracker", "inference"}
+    ),
+)
+def test_its_params_take_the_media_parameter(kind: str) -> None:
+    """Every op that hands a tool an entry's media can hand it a media variant.
+
+    ``media`` and the refusal of a frame window beside it come from
+    ``MediaInputParams``. An op without it cannot read a variant, and a recipe
+    that names one for that op fails validation.
+    """
+    assert issubclass(OPS[kind].Params, MediaInputParams)
 
 
 @pytest.mark.parametrize("kind", TRACKERS)

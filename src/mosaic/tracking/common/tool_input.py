@@ -40,6 +40,7 @@ from mosaic.core.pipeline.tracking_roots import (
     TRACKING_ROOTS,
     ToolDecoder,
 )
+from mosaic.core.pipeline.variant_source import preprocess_command
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -121,7 +122,13 @@ def _allowed_codecs(decoder: ToolDecoder) -> frozenset[str]:
 
 
 def refuse_undecodable_codec(
-    path: Path, *, kind: str, group: str, sequence: str, variant: str = ""
+    ds: "Dataset",
+    path: Path,
+    *,
+    kind: str,
+    group: str,
+    sequence: str,
+    variant: str = "",
 ) -> None:
     """Raise unless *kind*'s decoder can be expected to open *path*.
 
@@ -148,9 +155,9 @@ def refuse_undecodable_codec(
     A kind with no registered root gets the conservative declaration, which
     assumes nothing beyond the universal baseline.
 
-    *variant* names the media variant *path* is the file of, when it is one. A
-    variant's codec is chosen when it is made, so the refusal then also names
-    making the variant again in H.264.
+    *variant* names the media variant that *path* is the file of, when it is one.
+    A variant's codec is chosen when it is made. The refusal then also names making
+    the variant again in H.264, from the recipe that *ds* recorded for it.
     """
     root = TRACKING_ROOTS.get(kind)
     decoder = root.decoder if root is not None else CONSERVATIVE_DECODER
@@ -159,9 +166,11 @@ def refuse_undecodable_codec(
         return
     remedy = f"\n    {decoder.remedy}." if decoder.remedy else ""
     remake = (
-        f"\n    Or make the media variant in a codec {kind} reads: re-run the "
-        f'preprocess step that made {variant} with "codec": "h264", and name '
-        f"the variant it writes in media."
+        f"\n    Or make the media variant in a codec that {kind} reads. Run the "
+        f'recipe of {variant} with "codec" set to "h264" in a copy of it, and name '
+        f"the variant that it writes in media. The recipe of {variant} is run "
+        f"with:\n"
+        f"{preprocess_command(ds, variant, [(group, sequence)])}"
         if variant
         else ""
     )
@@ -198,9 +207,9 @@ def resolve_tool_inputs(
     A single-clip entry is unchanged, and is the overwhelming majority: it
     resolves to its one file with nothing built and nothing required.
 
-    An item reading a media variant resolves to the variant file. It is a plain
-    video mosaic wrote, one file for the whole entry, so neither an export nor a
-    join applies to it.
+    An item that reads a media variant resolves to the variant file. It is a plain
+    video that mosaic wrote, one file for the whole entry. An export and a join
+    therefore do not apply to it.
 
     Args:
         ds: The dataset, read for the media index and the ``media`` root.
@@ -229,6 +238,7 @@ def resolve_tool_inputs(
         handed = clips if len(clips) < 2 else (_joined_input(ds, item, kind=kind),)
     for target in handed:
         refuse_undecodable_codec(
+            ds,
             target,
             kind=kind,
             group=item.group,
@@ -259,7 +269,7 @@ def resolve_entry_input(
     directly. Those two names are all a work item ever supplied here.
 
     The store row is found by path rather than by camera, because the path
-    alone identifies which store of a multi-camera sequence this is.
+    alone identifies the store within a multi-camera sequence.
     """
     if not is_imgstore(source):
         return source

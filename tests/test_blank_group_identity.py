@@ -27,7 +27,8 @@ from mosaic.core.pipeline.tracks_index import read_tracks_index
 
 from tests.helpers import make_dataset, write_dlc_csv, write_trex_npz
 
-# The DeepLabCut fixture's bodyparts: a single-animal format neither merges nor expands.
+# The DeepLabCut fixture's bodyparts, which a single-animal format neither merges
+# nor expands.
 _BODYPARTS = ["snout", "midbody", "tailtip"]
 # Only the two roots a conversion touches: raw rows in, standardized tables out.
 _ROOTS = ("tracks_raw", "tracks")

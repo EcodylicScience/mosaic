@@ -242,7 +242,7 @@ def labels_raw_composition(members: Sequence[SourceMember]) -> SequenceCompositi
 
 
 def compositions_disagree(recorded: str, current: str) -> bool:
-    """Whether a recorded composition and the current one name different contents.
+    """Return whether a recorded and a current composition name different contents.
 
     A blank on either side is unknown, and unknown is not drift. A blank recorded
     cell is a row written before its composition column existed, and a blank
@@ -255,11 +255,11 @@ def compositions_disagree(recorded: str, current: str) -> bool:
 def composition_drift(
     recorded: Mapping[tuple[str, str], str], current: Mapping[tuple[str, str], str]
 ) -> tuple[tuple[str, str], ...]:
-    """The entries whose recorded composition disagrees with the current one.
+    """Return the entries whose recorded composition disagrees with the current one.
 
     Each entry of *recorded* is compared with its cell in *current* under
-    :func:`compositions_disagree`, so a blank on either side, or an entry
-    *current* does not name, is not drift.
+    :func:`compositions_disagree`. A blank on either side, or an entry that
+    *current* does not name, is therefore not drift.
 
     Returns:
         The drifted entries, sorted.

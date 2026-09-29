@@ -50,7 +50,7 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it. The variant's trim and decimate steps set the range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
@@ -121,7 +121,7 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it. The variant's trim and decimate steps set the range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
@@ -149,7 +149,7 @@ Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it. The variant's trim and decimate steps set the range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
@@ -178,7 +178,7 @@ Track scoped videos with a YOLO model, bridging results into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it. The variant's trim and decimate steps set the range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
@@ -355,7 +355,7 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it. The variant's trim and decimate steps set the range. |
 | `model` | `string` | _required_ |  | The weights to predict with, as a path or as the run identifier of the training run that produced them. |
 | `conf_threshold` | `number` | `0.25` |  | Minimum detection confidence a prediction must reach to be written. |
 | `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
@@ -379,7 +379,7 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it. The variant's trim and decimate steps set the range. |
 | `model` | `string` | _required_ |  | The weights to predict with, as a path or as the run identifier of the training run that produced them. |
 | `conf_threshold` | `number` | `0.25` |  | Minimum detection confidence a prediction must reach to be written. |
 | `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
@@ -401,7 +401,7 @@ Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it. The variant's trim and decimate steps set the range. |
 | `model` | `string` | _required_ |  | The weights to predict with, as a path or as the run identifier of the training run that produced them. |
 | `conf_threshold` | `number` | `0.25` |  | Minimum detection confidence a prediction must reach to be written. |
 | `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
@@ -536,20 +536,20 @@ Write one media variant file per scoped entry.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `steps` | list of (`CropStep` \| `MaskStep` \| `TrimStep` \| `DecimateStep` \| `GrayscaleStep` \| `AdjustStep` \| `ClaheStep`) | _required_ |  | The steps applied to each frame, in order. Every position and frame number a step names is in the entry media's pixels and frames, wherever the step sits in the list. |
-| `media` | `string` | `""` |  | The run identifier of a variant to read in place of the entry media, so these steps apply after that variant's. Empty reads the entry media. |
-| `fps` | `number` \| `None` | `null` |  | The frame rate the output file is labeled at, which sets its frames' timestamps and so what a tool with per-second thresholds reads. Unset, it is the rate the kept frames were recorded at: the first clip's rate divided by the decimation. Under any other label the tracker's per-second columns are wrong, and they are dropped when its table is mapped back. [fps] |
+| `steps` | list of (`CropStep` \| `MaskStep` \| `TrimStep` \| `DecimateStep` \| `GrayscaleStep` \| `AdjustStep` \| `ClaheStep`) | _required_ |  | The steps applied to each frame, in order. Every position and frame number that a step names is in the entry media's pixels and frames, whatever the step's position in the list. |
+| `media` | `string` | `""` |  | The run identifier of a variant to read in place of the entry media. These steps then apply after that variant's. Empty reads the entry media. |
+| `fps` | `number` \| `None` | `null` |  | The frame rate that the output file is labeled at, which sets its frames' timestamps and therefore the time base of a tool's per-second thresholds. Unset, it is the rate that the kept frames were recorded at: the first clip's rate divided by the decimation. Under any other label the tracker's per-second columns are scaled by the label instead of the recording rate, and they are dropped when its table is mapped back. [fps] |
 | `codec` | `"av1"` \| `"h264"` | `"av1"` |  | The output codec. 'h264' is a fallback for a decoder that cannot read AV1, such as Lightning Pose on a GPU below compute capability 8.6, and needs an ffmpeg built with libx264. |
-| `quality` | `integer` \| `None` | `null` |  | The encoder's constant rate factor, on the chosen codec's own scale, where lower is better: SVT-AV1 CRF from 0 to 63 for 'av1', x264 CRF from 0 to 51 for 'h264'. Unset uses mosaic's default, 14 for AV1 and 16 for H.264. |
-| `allow_hardware` | `boolean` | `false` |  | Permit the av1_nvenc hardware encoder where the machine offers a usable one. The encode falls back to the CPU encoder where it does not, and an 'h264' variant always encodes on the CPU. A permission rather than a setting, so it does not change the variant's run identifier. |
+| `quality` | `integer` \| `None` | `null` |  | The encoder's constant rate factor, on the chosen codec's scale, where lower is better: SVT-AV1 CRF from 0 to 63 for 'av1', x264 CRF from 0 to 51 for 'h264'. Unset uses mosaic's default, 14 for AV1 and 16 for H.264. |
+| `allow_hardware` | `boolean` | `false` |  | Permit the av1_nvenc hardware encoder where the machine offers a usable one. The encode falls back to the CPU encoder where it does not, and an 'h264' variant always encodes on the CPU. As a permission, it leaves the variant's run identifier unchanged. |
 
 ??? note "`AdjustStep`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `step` | `"adjust"` | `"adjust"` |  | The step's name, which selects this step in a list of steps. |
-    | `brightness` | `number` | `0.0` | >= `-255.0`, <= `255.0` | The level added to every scaled pixel value, from -255 to 255. Zero adds nothing. |
-    | `contrast` | `number` | `1.0` | > `0.0` | The factor every pixel value is scaled by before the brightness is added. One leaves the contrast unchanged. |
+    | `brightness` | `number` | `0.0` | >= `-255.0`, <= `255.0` | The level added to every scaled pixel value, from -255 to 255. Zero leaves the values unchanged. |
+    | `contrast` | `number` | `1.0` | > `0.0` | The factor that every pixel value is scaled by before the brightness is added. One leaves the contrast unchanged. |
     | `gamma` | `number` | `1.0` | > `0.0` | The gamma applied after brightness and contrast, as 255 * (v / 255) ** (1 / gamma). Above one brightens the mid-tones, and one leaves them unchanged. |
 
 ??? note "`ClaheStep`"
@@ -558,7 +558,7 @@ Write one media variant file per scoped entry.
     | --- | --- | --- | --- | --- |
     | `step` | `"clahe"` | `"clahe"` |  | The step's name, which selects this step in a list of steps. |
     | `clip_limit` | `number` | `2.0` | > `0.0` | The contrast limit of the equalization. Higher equalizes harder and amplifies more noise. |
-    | `tile_grid_size` | `integer` | `8` | >= `1` | The tiles along each side of the image, each equalized on its own histogram. |
+    | `tile_grid_size` | `integer` | `8` | >= `1` | The number of tiles along each side of the image. Each tile is equalized on a histogram of its pixels alone. |
 
 ??? note "`CropStep`"
 
@@ -588,7 +588,7 @@ Write one media variant file per scoped entry.
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `step` | `"mask"` | `"mask"` |  | The step's name, which selects this step in a list of steps. |
-    | `polygon` | list of tuple of (`integer`, `integer`) | _required_ | min items `3` | The polygon's vertices as (x, y) source coordinates, at least three. It may reach outside the image, but not lie wholly outside it. [px] |
+    | `polygon` | list of tuple of (`integer`, `integer`) | _required_ | min items `3` | The polygon's vertices as (x, y) source coordinates, at least three. It may extend outside the image but may not lie wholly outside it. [px] |
     | `keep` | `boolean` | `true` |  | Keep the pixels inside the polygon and black out the rest. False blacks out the inside instead. |
 
 ??? note "`TrimStep`"
@@ -597,7 +597,7 @@ Write one media variant file per scoped entry.
     | --- | --- | --- | --- | --- |
     | `step` | `"trim"` | `"trim"` |  | The step's name, which selects this step in a list of steps. |
     | `start` | `integer` | _required_ | >= `0` | The first source frame of the range kept. |
-    | `stop` | `integer` | _required_ |  | The source frame the kept range stops before. |
+    | `stop` | `integer` | _required_ |  | The source frame that the kept range stops before. |
 
 ### transcode
 

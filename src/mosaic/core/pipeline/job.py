@@ -198,9 +198,9 @@ class JobContext:
     def columns_dropped(self, key: str, columns: Sequence[str]) -> None:
         """Record that one entry's table was published without *columns*.
 
-        A report like :meth:`frame_axis_mismatch`: the entry published, so
-        nothing is appended to ``failed_keys`` and no status moves. Silent
-        without a run-log.
+        It is a report like :meth:`frame_axis_mismatch`. The entry published. The
+        call does not append the entry to ``failed_keys`` or change a status.
+        Without a run-log it is a no-op.
         """
         if self.run_log is not None:
             self.run_log.columns_dropped(key, columns)

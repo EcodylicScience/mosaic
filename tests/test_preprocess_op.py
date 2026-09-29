@@ -1,16 +1,17 @@
-"""The ``preprocess`` op: one entry's media in, one encoded variant file out.
+"""Test the ``preprocess`` op, which turns one entry's media into one variant file.
 
 Each entry's clips are read one at a time, or the upstream variant's file when
 ``media`` names one, the steps are applied to every selected frame, and the
 frames are encoded to a partial file that is counted before it is published. The
-row beside it records where the file sits in its entry's source, so a consumer
-never probes it again. Every refusal a recipe earns is raised before any entry
-is decoded.
+row beside it records the file's placement in its entry's source. A consumer
+therefore never probes the file again. Every refusal of a recipe is raised before
+any entry is decoded.
 """
 
 from __future__ import annotations
 
 import json
+import shlex
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -20,14 +21,18 @@ import pytest
 from mosaic_media import probe_media
 from mosaic_media.hwaccel import encoder_available
 from mosaic_media.transcode import TranscodeError
+from typer.testing import CliRunner
 
+from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.preprocess import FrameMap, Placement
 from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline import preprocess
 from mosaic.core.pipeline.graph.lanes import TRANSCODE_LANE, lane_for_step
+from mosaic.core.pipeline.identity_scheme import read_identity_scheme
 from mosaic.core.pipeline.job import CancelToken, Cancelled
 from mosaic.core.pipeline.markers import new_inflight, read_inflight, write_inflight
+from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.preprocess import (
     H264PipeWriter,
@@ -38,25 +43,32 @@ from mosaic.core.pipeline.preprocess import (
     preprocess_identity,
 )
 from mosaic.core.pipeline.preprocess_index import (
-    media_variant_row,
-    variant_facts,
-    variant_placement,
-    variant_row,
+    MediaVariantDriftedError,
+    MediaVariantMissingError,
+    build_media_variant_row,
+    media_variant_facts,
+    media_variant_placement,
+    media_variant_rows,
     write_media_variant_row,
 )
 from mosaic.core.pipeline.preprocess_layout import (
     media_variant_path,
+    media_variant_recipe_path,
     media_variant_run_root,
     media_variant_work_root,
     media_variants_root,
 )
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.pipeline.tracks_index import media_composition_for
+from mosaic.core.pipeline.variant_source import VariantLookup
 from mosaic.core.scope import Scope
 from mosaic.runlog import reduce_run_log, run_log_path
 
 from tests.helpers import (
+    IndexReads,
     MediaClip,
+    count_index_reads,
+    entry_error_lines,
     make_dataset,
     write_media_index,
     write_painted_entry,
@@ -85,19 +97,19 @@ _GRAYSCALE: Step = {"step": "grayscale"}
 
 
 _LEVEL_TOLERANCE = 5
-"""How far a decoded flat frame may sit from the level it was painted with.
+"""The largest distance of a decoded flat frame from the level it was painted with.
 
 Two encodes, the source's and the variant's, move a flat frame by up to about 4
-levels. Painted levels are 12 apart, so a frame within this tolerance of its
-level is that frame and not a neighbor.
+levels. Painted levels are 12 apart. A frame within this tolerance of its level
+is therefore that frame and not a neighbor.
 """
 
 
 def _level(frame: int, base: int) -> int:
-    """The gray level source frame *frame* of an entry is painted with.
+    """Return the gray level that source frame *frame* of an entry is painted with.
 
-    Eighteen levels 12 apart, repeating every 18 frames, so any two frames closer
-    together than that are told apart after decoding.
+    There are eighteen levels 12 apart, repeating every 18 frames. Any two frames
+    closer together than that are therefore told apart after decoding.
     """
     return 16 + (base + 12 * frame) % 216
 
@@ -112,7 +124,7 @@ def _entry(
     """Write and index *sequence*'s clips, each ``(frames, fps)``, in order.
 
     Every frame is flat at :func:`_level` of its frame number across the whole
-    entry, so the clips continue one another.
+    entry. The clips therefore continue one another.
     """
     width, height = _SIZE
 
@@ -150,20 +162,37 @@ def _run(
 
 
 def _row(ds: Dataset, run_id: str, sequence: str = "s") -> dict[str, str]:
-    row = variant_row(ds, run_id, "", sequence, "")
+    row = media_variant_rows(ds, run_id).get(("", sequence, ""))
     assert row is not None, f"no row for {sequence} under {run_id}"
     return row
 
 
+def _forget_composition(ds: Dataset, run_id: str, sequence: str = "s") -> None:
+    """Record *sequence*'s variant row again with a blank media composition."""
+    row = _row(ds, run_id, sequence)
+    write_media_variant_row(
+        ds,
+        build_media_variant_row(
+            ds,
+            path=media_variant_path(ds, run_id, "", sequence, ""),
+            run_id=run_id,
+            group="",
+            sequence=sequence,
+            camera="",
+            upstream="",
+            upstream_video_uuid="",
+            placement=media_variant_placement(row),
+            facts=media_variant_facts(row),
+            encoder=row["encoder"],
+            consumed_media_composition="",
+        ),
+    )
+
+
 def _means(path: Path) -> list[float]:
-    """The mean level of each frame of *path*, decoded for analysis."""
+    """Return the mean level of each frame of *path*, decoded for analysis."""
     with open_frame_reader(path, target="analysis") as reader:
         return [float(np.mean(frame)) for _, frame in reader]
-
-
-def _error_lines(ds: Dataset, execution_id: str) -> list[str]:
-    log = run_log_path(ds.base_dir, execution_id).read_text()
-    return [line for line in log.splitlines() if '"entry_error"' in line]
 
 
 def _entries_written(ds: Dataset, execution_id: str) -> int:
@@ -173,18 +202,18 @@ def _entries_written(ds: Dataset, execution_id: str) -> int:
 
 
 def _variant_files(ds: Dataset) -> list[Path]:
-    """Every ``.mp4`` under the variants root, work directories included."""
+    """Return every ``.mp4`` under the variants root, work directories included."""
     root = media_variants_root(ds)
     return sorted(root.rglob("*.mp4")) if root.exists() else []
 
 
 def _partial(ds: Dataset, run_id: str, sequence: str) -> Path:
-    """Where the op encodes *sequence*'s variant before publishing it."""
+    """Return the path where the op encodes *sequence*'s variant before publishing."""
     return media_variant_work_root(ds, run_id) / sequence / f"{sequence}.partial.mp4"
 
 
 class _WriterSpy:
-    """Counts the variant writers the op opens, and may wrap each one."""
+    """Counts the variant writers that the op opens, and may wrap each one."""
 
     def __init__(
         self,
@@ -207,7 +236,7 @@ class _WriterSpy:
 
 
 class _DroppingWriter:
-    """Writes every frame but the first, while claiming to have written them all."""
+    """Writes every frame but the first, and reports all of them as written."""
 
     def __init__(self, inner: VariantWriter) -> None:
         self._inner = inner
@@ -247,7 +276,7 @@ def test_a_single_clip_crop_is_the_cropped_size_count_and_codec(
     assert (facts.width, facts.height, facts.codec_name) == (32, 24, "av1")
     assert facts.frame_count == 20
     row = _row(ds, run_id)
-    placement = variant_placement(row)
+    placement = media_variant_placement(row)
     assert placement.fps == pytest.approx(30.0)
     assert placement == Placement(
         offset_x=8,
@@ -260,7 +289,7 @@ def test_a_single_clip_crop_is_the_cropped_size_count_and_codec(
         frames=FrameMap(0, 1, 20),
         fps=placement.fps,
     )
-    assert int(row["frame_count"]) == variant_placement(row).frames.count
+    assert int(row["frame_count"]) == media_variant_placement(row).frames.count
     assert row["encoder"] == "libsvtav1"
     assert row["upstream"] == ""
     assert row["upstream_video_uuid"] == ""
@@ -286,8 +315,8 @@ def test_trim_and_decimate_across_clips_keep_the_mapped_source_frames(
     for position, (mean, source) in enumerate(zip(means, kept, strict=True)):
         assert mean == pytest.approx(_level(source, 0), abs=_LEVEL_TOLERANCE), position
     row = _row(ds, run_id)
-    assert variant_placement(row).frames == FrameMap(7, 3, 15)
-    assert variant_placement(row).fps == pytest.approx(10.0)
+    assert media_variant_placement(row).frames == FrameMap(7, 3, 15)
+    assert media_variant_placement(row).fps == pytest.approx(10.0)
 
 
 @pytest.mark.media
@@ -295,10 +324,11 @@ def test_trim_and_decimate_across_clips_keep_the_mapped_source_frames(
 def test_a_mixed_rate_entry_is_labeled_at_the_first_clips_rate_or_at_fps(
     tmp_path: Path, fps: float | None, labeled: float
 ) -> None:
-    """Clips at 30 and 31 fps, read one at a time, on one uniform grid.
+    """Clips at 30 and 31 fps are read one at a time onto one uniform grid.
 
-    Three hundred frames each, because rate uniformity is judged on the drift
-    accumulated over a clip: 30 beside 31 fps reads as uniform over ten frames.
+    Each clip has three hundred frames, because rate uniformity is judged on the
+    drift accumulated over a clip. Over ten frames, 30 beside 31 fps reads as
+    uniform.
     """
     ds = make_dataset(tmp_path / "ds")
     _entry(ds, "s", [(300, 30.0), (300, 31.0)])
@@ -308,7 +338,7 @@ def test_a_mixed_rate_entry_is_labeled_at_the_first_clips_rate_or_at_fps(
     facts = probe_media(path)
     assert facts.fps == pytest.approx(labeled)
     assert facts.frame_count == 30
-    assert variant_placement(_row(ds, run_id)).fps == pytest.approx(labeled)
+    assert media_variant_placement(_row(ds, run_id)).fps == pytest.approx(labeled)
     means = _means(path)
     assert means[0] == pytest.approx(_level(290, 0), abs=_LEVEL_TOLERANCE)
     assert means[10] == pytest.approx(_level(300, 0), abs=_LEVEL_TOLERANCE)
@@ -351,7 +381,7 @@ def test_a_chained_variant_composes_its_placement(tmp_path: Path) -> None:
     run_id = _run(ds, [_crop(16, 12, 24, 16), _decimate(2)], media=upstream)
 
     row = _row(ds, run_id)
-    placement = variant_placement(row)
+    placement = media_variant_placement(row)
     assert placement.fps == pytest.approx(15.0)
     assert placement == Placement(
         offset_x=16,
@@ -367,7 +397,8 @@ def test_a_chained_variant_composes_its_placement(tmp_path: Path) -> None:
     assert row["upstream"] == upstream
     assert row["upstream_video_uuid"] == _row(ds, upstream)["video_uuid"]
     # Source frames 2, 4, ..., 16 are the upstream file's frames 0, 2, ..., 14.
-    # Compared with that file rather than the painted levels, one encode apart.
+    # The test compares with that file rather than the painted levels, which are
+    # one encode further away.
     means = _means(media_variant_path(ds, run_id, "", "s", ""))
     upstream_means = _means(media_variant_path(ds, upstream, "", "s", ""))
     assert means == pytest.approx(upstream_means[0:16:2], abs=_LEVEL_TOLERANCE)
@@ -384,8 +415,8 @@ def test_a_chained_variant_is_encoded_again_when_its_upstream_is_rewritten(
     run_id = _run(ds, downstream, media=upstream)
     before = _row(ds, upstream)["video_uuid"]
 
-    # The same recipe written again with other bytes, as another machine's
-    # encoder would write it.
+    # The same recipe is written again with other bytes, as another machine's
+    # encoder writes it.
     with monkeypatch.context() as patched:
         _ = _WriterSpy(
             patched, params_for=lambda p: p.model_copy(update={"quality": 40})
@@ -418,7 +449,7 @@ def test_a_chained_variant_over_a_drifted_upstream_fails_the_entry(
     with pytest.raises(AllEntriesFailed):
         _ = _run(ds, [_crop(16, 12, 24, 16)], media=upstream, execution_id="drift")
 
-    (line,) = _error_lines(ds, "drift")
+    (line,) = entry_error_lines(ds, "drift")
     assert "MediaVariantDriftedError" in line
     assert upstream in line
 
@@ -435,10 +466,11 @@ def test_a_chained_variant_over_a_drifted_upstream_fails_the_entry(
 def test_a_chained_recipe_the_upstream_cannot_hold_is_refused_for_the_run(
     tmp_path: Path, steps: list[Step], named: str
 ) -> None:
-    """Refused before any entry is encoded, not recorded as a failed entry.
+    """The recipe is refused before any entry is encoded, not as a failed entry.
 
     ``plan_identity`` does not check a chained recipe, whose upstream may not be
-    written yet when a graph plans, so this refusal is raised by ``run`` alone.
+    written yet when a graph plans. This refusal is therefore raised by ``run``
+    alone.
     """
     ds = make_dataset(tmp_path / "ds")
     _entry(ds, "s", [(20, 30.0)])
@@ -467,7 +499,7 @@ def test_a_chained_variant_without_its_upstream_row_fails_the_entry(
             execution_id="missing",
         )
 
-    (line,) = _error_lines(three_entry_dataset, "missing")
+    (line,) = entry_error_lines(three_entry_dataset, "missing")
     assert "MediaVariantMissingError" in line
     assert upstream in line
 
@@ -519,29 +551,82 @@ def test_a_blank_recorded_composition_is_not_drift(
     ds = make_dataset(tmp_path / "ds")
     _entry(ds, "s", [(12, 30.0)])
     run_id = _run(ds, [_GRAYSCALE])
-    row = _row(ds, run_id)
-    write_media_variant_row(
-        ds,
-        media_variant_row(
-            ds,
-            path=media_variant_path(ds, run_id, "", "s", ""),
-            run_id=run_id,
-            group="",
-            sequence="s",
-            camera="",
-            upstream="",
-            upstream_video_uuid="",
-            placement=variant_placement(row),
-            facts=variant_facts(row),
-            encoder=row["encoder"],
-            consumed_media_composition="",
-        ),
-    )
+    _forget_composition(ds, run_id)
     spy = _WriterSpy(monkeypatch)
 
     _ = _run(ds, [_GRAYSCALE])
 
     assert spy.opened == []
+
+
+@pytest.mark.media
+def test_a_placement_that_no_longer_fits_is_encoded_again_and_then_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The entry now has 20 frames where its variant was made from 12.
+
+    Its recorded composition is blank. Only the placement then shows that the
+    file is out of date. A consumer refuses the file until a plain run of the same
+    recipe writes it again.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    _entry(ds, "s", [(12, 30.0)])
+    run_id = _run(ds, [_GRAYSCALE])
+    _forget_composition(ds, run_id)
+    _entry(ds, "s", [(20, 30.0)])
+    (entry,) = ds.resolve_media_scope(None)
+    with pytest.raises(MediaVariantDriftedError):
+        _ = VariantLookup.read(ds, run_id, [("", "s")]).resolve(ds, entry)
+    spy = _WriterSpy(monkeypatch)
+
+    _ = _run(ds, [_GRAYSCALE])
+
+    assert len(spy.opened) == 1
+    source = VariantLookup.read(ds, run_id, [("", "s")]).resolve(ds, entry)
+    assert source.placement.frames.count == 20
+    assert source.facts.frame_count == 20
+
+
+@pytest.mark.media
+def test_a_run_records_its_recipe_and_identity_scheme(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    _entry(ds, "s", [(12, 30.0)])
+    given: dict[str, object] = {
+        "steps": [_crop(8, 8, 32, 24), _GRAYSCALE],
+        "fps": 12.5,
+        "quality": 20,
+    }
+
+    run_id = run_op(ds, _KIND, given, scope=Scope(entries=[("", "s")]))
+
+    recorded = json.loads(media_variant_recipe_path(ds, run_id).read_text())
+    assert recorded == PreprocessParams.model_validate(given).model_dump(mode="json")
+    run_root = media_variant_run_root(ds, run_id)
+    assert read_identity_scheme(run_root) == OP_IDENTITY_SCHEME
+
+
+@pytest.mark.media
+def test_the_printed_rewrite_command_runs_the_recorded_recipe(tmp_path: Path) -> None:
+    """A consumer's remedy for a missing file, run as printed, writes it again."""
+    ds = make_dataset(tmp_path / "ds")
+    _entry(ds, "s", [(12, 30.0)])
+    run_id = _run(ds, [_crop(8, 8, 32, 24), _decimate(2)], fps=12.5)
+    dest = media_variant_path(ds, run_id, "", "s", "")
+    dest.unlink()
+    (entry,) = ds.resolve_media_scope(None)
+    with pytest.raises(MediaVariantMissingError) as missing:
+        _ = VariantLookup.read(ds, run_id, [("", "s")]).resolve(ds, entry)
+    (line,) = [text for text in str(missing.value).splitlines() if "mosaic run" in text]
+    manifest = str(ds.manifest_path)
+    argv = [manifest if word == "<manifest>" else word for word in shlex.split(line)]
+    assert argv[:2] == ["mosaic", "run"]
+
+    result = CliRunner().invoke(app, argv[1:])
+
+    assert result.exit_code == 0, result.output
+    assert run_id in result.output
+    assert dest.is_file()
+    assert _row(ds, run_id)["frame_count"] == "6"
 
 
 @pytest.mark.media
@@ -576,8 +661,8 @@ def test_a_short_encode_is_refused_and_its_partial_kept(
     path = media_variant_path(ds, run_id, "", "s", "")
     assert not path.exists()
     assert _variant_files(ds) == [_partial(ds, run_id, "s")]
-    assert variant_row(ds, run_id, "", "s", "") is None
-    (line,) = _error_lines(ds, "short")
+    assert ("", "s", "") not in media_variant_rows(ds, run_id)
+    (line,) = entry_error_lines(ds, "short")
     assert "11" in line
     assert "12" in line
 
@@ -587,7 +672,7 @@ def test_an_encode_never_writes_where_another_entry_publishes(tmp_path: Path) ->
     """Entry ``a`` encoding again leaves entry ``a.partial``'s variant file alone.
 
     The partial is written inside the entry's work directory. Beside the
-    destination it was ``a.partial.mp4``, the file ``a.partial`` publishes, and
+    destination it was ``a.partial.mp4``, the file that ``a.partial`` publishes, and
     renaming it into ``a.mp4`` took that file away.
     """
     ds = make_dataset(tmp_path / "ds")
@@ -618,7 +703,7 @@ def test_one_failing_entry_does_not_stop_the_others(tmp_path: Path) -> None:
 
     assert media_variant_path(ds, run_id, "", "fine", "").is_file()
     assert not media_variant_path(ds, run_id, "", "broken", "").exists()
-    (line,) = _error_lines(ds, "mixed")
+    (line,) = entry_error_lines(ds, "mixed")
     assert '"broken"' in line
     assert _entries_written(ds, "mixed") == 1
 
@@ -652,8 +737,8 @@ def test_a_cancel_during_an_encode_stops_the_run_and_leaves_nothing(
 ) -> None:
     """The encode heartbeats and checks for a cancel between frames.
 
-    The partial is removed, no row is written, the entry's claim is released and
-    the next entry is not started.
+    The partial is removed, the row is not written, the entry's claim is
+    released, and the next entry is not started.
     """
     ds = make_dataset(tmp_path / "ds")
     _entry(ds, "s", [(12, 30.0)])
@@ -674,7 +759,7 @@ def test_a_cancel_during_an_encode_stops_the_run_and_leaves_nothing(
     run_id = preprocess_identity(_params([_GRAYSCALE])).run_id
     assert len(spy.opened) == 1
     assert _variant_files(ds) == []
-    assert variant_row(ds, run_id, "", "s", "") is None
+    assert ("", "s", "") not in media_variant_rows(ds, run_id)
     assert read_inflight(media_variant_work_root(ds, run_id) / "s") is None
     events = [
         json.loads(line)["ev"]
@@ -733,7 +818,7 @@ _REFUSALS: dict[str, tuple[MediaClip, list[Step], str]] = {
     "an empty frame map": (
         MediaClip(filename="b.mp4", group="B", sequence="one", frame_count=0),
         [_GRAYSCALE],
-        "no frame",
+        "do not select a frame",
     ),
 }
 
@@ -742,7 +827,7 @@ _REFUSALS: dict[str, tuple[MediaClip, list[Step], str]] = {
 def test_a_refused_recipe_is_refused_before_any_entry_is_written(
     tmp_path: Path, case: str
 ) -> None:
-    """The first entry is valid and sorts first; nothing of it is written either."""
+    """The first entry is valid and sorts first, and its files are not written."""
     clip, steps, named = _REFUSALS[case]
     ds = make_dataset(tmp_path / "ds")
     write_media_index(
@@ -803,6 +888,136 @@ def test_plan_identity_passes_over_an_entry_awaiting_a_transcode(
     identity = PreprocessOp().plan_identity(ds, params, scope)
 
     assert identity == preprocess_identity(params)
+
+
+def test_plan_identity_resolves_its_scope_in_one_read(
+    three_entry_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scope = three_entry_dataset.resolve_scope(Scope(groups=["A", "B"]))
+    reads = count_index_reads(monkeypatch)
+
+    _ = PreprocessOp().plan_identity(
+        three_entry_dataset, _params([_crop(0, 0, 32, 24)]), scope
+    )
+
+    assert reads.media_scopes == 1
+
+
+def test_an_entry_awaiting_a_transcode_costs_planning_no_read_of_its_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(filename="a.mp4", sequence="a", rotation=90),
+            MediaClip(filename="b.mp4", sequence="b"),
+            MediaClip(filename="c.mp4", sequence="c"),
+        ],
+    )
+    scope = ds.resolve_scope(Scope(entries=[("", "a"), ("", "b"), ("", "c")]))
+    reads = count_index_reads(monkeypatch)
+
+    _ = PreprocessOp().plan_identity(ds, _params([_crop(0, 0, 32, 24)]), scope)
+
+    assert reads.media_scopes == 1
+
+
+def test_planning_without_a_media_index_reads_for_it_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    params = _params([_crop(0, 0, 32, 24)])
+    scope = ds.resolve_scope(Scope(entries=[("", "a"), ("", "b"), ("", "c")]))
+    reads = count_index_reads(monkeypatch)
+
+    identity = PreprocessOp().plan_identity(ds, params, scope)
+
+    assert identity == preprocess_identity(params)
+    assert reads.media_scopes == 1
+
+
+def test_an_entry_awaiting_a_transcode_leaves_the_others_checked(
+    tmp_path: Path,
+) -> None:
+    """One entry's refusal to resolve does not end the check of the rest.
+
+    The scope's one read records the rotated original's refusal against that
+    entry alone. The rotated one is passed over, and the other is refused for a
+    crop outside its frame.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(filename="a.mp4", sequence="a", rotation=90),
+            MediaClip(filename="b.mp4", sequence="b", width=64, height=48),
+        ],
+    )
+    scope = ds.resolve_scope(Scope(entries=[("", "a"), ("", "b")]))
+
+    with pytest.raises(PreprocessRefused, match="variant of b"):
+        _ = PreprocessOp().plan_identity(ds, _params([_crop(600, 0, 100, 100)]), scope)
+
+
+def test_an_entry_with_no_name_is_checked_under_its_first_files_stem(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(filename="clip.mp4", sequence=""),
+            MediaClip(filename="b.mp4", sequence="b", width=64, height=48),
+        ],
+    )
+    scope = ds.resolve_scope(Scope(entries=[("", ""), ("", "b")]))
+
+    with pytest.raises(PreprocessRefused, match="variant of clip"):
+        _ = PreprocessOp().plan_identity(ds, _params([_crop(600, 0, 100, 100)]), scope)
+
+
+def test_a_skipped_camera_is_reported_once_by_a_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Planning does not print the line, and the run prints it once.
+
+    The stub files cannot be decoded. The run's one entry therefore fails.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(filename=f"{camera}.mp4", sequence="s", camera=camera)
+            for camera in ("left", "right")
+        ],
+    )
+    scope = ds.resolve_scope(Scope(entries=[("", "s")]))
+
+    _ = PreprocessOp().plan_identity(ds, _params([_GRAYSCALE]), scope)
+    assert "skipping it" not in capsys.readouterr().err
+
+    with pytest.raises(AllEntriesFailed):
+        _ = _run(ds, [_GRAYSCALE])
+    assert capsys.readouterr().err.count("skipping it") == 1
+
+
+@pytest.mark.media
+def test_a_run_reads_each_index_once_for_its_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A chained re-run reads the upstream's rows and its own, once each."""
+    ds = make_dataset(tmp_path / "ds")
+    sequences = ("s", "t", "u")
+    for sequence in sequences:
+        _entry(ds, sequence, [(6, 30.0)])
+    upstream = _run(ds, [_crop(8, 8, 32, 24)], sequences)
+    _ = _run(ds, [_GRAYSCALE], sequences, media=upstream)
+    reads = count_index_reads(monkeypatch)
+
+    _ = _run(ds, [_GRAYSCALE], sequences, media=upstream)
+
+    assert reads == IndexReads(media_scopes=1, variant_indexes=2, compositions=1)
 
 
 # --- H.264 ------------------------------------------------------------------

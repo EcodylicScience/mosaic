@@ -1,4 +1,8 @@
-"""Row selection and verdict-based routing in :meth:`Dataset.resolve_media`."""
+"""Row selection and verdict-based routing in :meth:`Dataset.resolve_media`.
+
+The tests also cover the per-entry failures that
+:meth:`Dataset.resolve_media_scope` records.
+"""
 
 from __future__ import annotations
 
@@ -10,11 +14,12 @@ import pandas as pd
 import pytest
 from mosaic_media import MediaProbeError, probe_media
 
-from mosaic.core.dataset import AmbiguousMediaMatchError
+from mosaic.core.dataset import AmbiguousMediaMatchError, Dataset
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
 
-from tests.helpers import make_dataset, write_mpeg4_mp4
+from tests.helpers import MediaClip, make_dataset, write_media_index, write_mpeg4_mp4
 
 # Routing is the choice between an original and its derivative, so both roots are
 # declared: ``resolve_media_root`` lands on ``media_raw`` and the derivative index
@@ -569,3 +574,52 @@ def test_a_multi_camera_sequence_reached_by_the_fallback_still_refuses(
 
     resolved = ds.resolve_media("g", "REC", camera="cam1")
     assert [p.resolve() for p in resolved.paths] == [right.resolve()]
+
+
+def _scope_awaiting_transcodes(tmp_path: Path) -> Dataset:
+    """Build three entries that differ in their transcode state.
+
+    One awaits a transcode, one is clean, and one has a camera of each.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(filename="a.mp4", sequence="a", rotation=90),
+            MediaClip(filename="b.mp4", sequence="b"),
+            MediaClip(filename="left.mp4", sequence="c", camera="left"),
+            MediaClip(filename="right.mp4", sequence="c", camera="right", rotation=90),
+        ],
+    )
+    return ds
+
+
+def test_a_scope_records_each_entry_it_cannot_route_and_resolves_the_rest(
+    tmp_path: Path,
+):
+    """An entry fails whole, with the error that resolving it alone raises.
+
+    Entry ``c``'s left camera routes, but resolving ``c`` alone raises for its
+    right camera. Both cameras are therefore left out.
+    """
+    ds = _scope_awaiting_transcodes(tmp_path)
+    errors: dict[Entry, MediaProbeError] = {}
+
+    scope = ds.resolve_media_scope(None, errors=errors)
+
+    assert [(e.group, e.sequence, e.camera) for e in scope] == [("", "b", "")]
+    assert sorted(errors) == [("", "a"), ("", "c")]
+    for entry, error in errors.items():
+        with pytest.raises(MediaProbeError) as alone:
+            _ = ds.resolve_media_scope([entry])
+        assert str(error) == str(alone.value)
+        assert "requires an analysis transcode" in str(error)
+
+
+def test_a_scope_with_no_error_record_raises_for_an_entry_it_cannot_route(
+    tmp_path: Path,
+):
+    ds = _scope_awaiting_transcodes(tmp_path)
+
+    with pytest.raises(MediaProbeError, match="requires an analysis transcode"):
+        _ = ds.resolve_media_scope([("", "a"), ("", "b")])

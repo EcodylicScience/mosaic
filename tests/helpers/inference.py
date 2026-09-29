@@ -1,10 +1,10 @@
-"""Recording stand-ins for the environments ``infer-pose`` and ``infer-points`` run in.
+"""Stand in for the environments that ``infer-pose`` and ``infer-points`` run in.
 
-Both ops spawn a runner in an Ultralytics environment, so what a test stands in
-for is the environment probe and the tool call, two module-level seams. The
-installers here replace both. The fake runner writes a fixed predictions table
-at the path the request names, because the op reads it back to bridge it,
-exactly as the runner would have written it.
+Both ops spawn a runner in an Ultralytics environment. A test therefore stands in
+for the environment probe and the tool call, two module-level seams. The
+installers here replace both. The fake runner writes a fixed predictions table,
+in the runner's layout, at the path that the request names, because the op reads
+it back to bridge it.
 """
 
 from __future__ import annotations
@@ -22,13 +22,15 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
 )
 from mosaic.tracking.pose_training.ultralytics_infer import InferenceOutcome
 
+from tests.helpers.ultralytics import ultralytics_probe_response
+
 
 def pose_predictions() -> pd.DataFrame:
-    """Four frames of one animal with two keypoints, as a pose runner writes them.
+    """Return four frames of one animal with two keypoints, as a pose runner does.
 
-    The two keypoints deliberately hold different values: the body centre the
-    bridge derives is their mean, ``(3, 5)``, so a test asserting it cannot pass
-    by the bridge having copied either one.
+    The two keypoints have different values. The body center that the bridge
+    derives is their mean, ``(3, 5)``. A test that asserts it therefore cannot
+    pass by the bridge copying either keypoint.
     """
     return pd.DataFrame(
         {
@@ -45,7 +47,7 @@ def pose_predictions() -> pd.DataFrame:
 
 
 def point_predictions() -> pd.DataFrame:
-    """Three detections over two frames, as a POLO point runner writes them."""
+    """Return three detections over two frames, as a POLO point runner writes them."""
     return pd.DataFrame(
         {
             "frame": [0, 0, 1],
@@ -61,7 +63,7 @@ def point_predictions() -> pd.DataFrame:
 
 @dataclass
 class FakeInference:
-    """A runner that writes *table* for every video, recording each one."""
+    """Return a runner that writes *table* for every video, recording each one."""
 
     table: pd.DataFrame
     videos: list[Path] = field(default_factory=list)
@@ -84,22 +86,6 @@ class FakeInference:
         )
 
 
-def _probe(
-    *, has_locate: bool, version: str, task: str, n_keypoints: int
-) -> ProbeResponse:
-    return ProbeResponse(
-        has_ultralytics=True,
-        has_lap=True,
-        has_locate=has_locate,
-        ultralytics_version=version,
-        tracker_names=[],
-        model_task=task,
-        n_keypoints=n_keypoints,
-        model_load_error="",
-        installed_tracker_table={},
-    )
-
-
 def install_fake_pose_inference(
     monkeypatch: pytest.MonkeyPatch, table: pd.DataFrame | None = None
 ) -> FakeInference:
@@ -113,7 +99,7 @@ def install_fake_pose_inference(
     fake = FakeInference(pose_predictions() if table is None else table)
 
     def probe(_model_path: str, **_kwargs: object) -> ProbeResponse:
-        return _probe(has_locate=False, version="8.4.63", task="pose", n_keypoints=2)
+        return ultralytics_probe_response("pose", n_keypoints=2)
 
     monkeypatch.setattr(tool_env, "probe_environment", probe)
     monkeypatch.setattr(infer_run, "run_pose_inference_tool", fake.run)
@@ -133,7 +119,9 @@ def install_fake_point_inference(
     fake = FakeInference(point_predictions() if table is None else table)
 
     def probe(_model_path: str, **_kwargs: object) -> ProbeResponse:
-        return _probe(has_locate=True, version="8.4.84", task="locate", n_keypoints=1)
+        return ultralytics_probe_response(
+            "locate", has_locate=True, version="8.4.84", n_keypoints=1
+        )
 
     monkeypatch.setattr(tool_env, "probe_environment", probe)
     monkeypatch.setattr(infer_run, "run_point_inference_tool", fake.run)

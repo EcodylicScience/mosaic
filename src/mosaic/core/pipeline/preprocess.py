@@ -1,4 +1,4 @@
-"""The pre-processing op, its parameters, and the run identifier they mint.
+"""Define the pre-processing op, its parameters, and the run identifier they mint.
 
 A media variant is named ``preprocess.<version>-<digest>``, where the digest is
 taken over :func:`preprocess_identity_payload`: each step with its version, in
@@ -8,20 +8,21 @@ parameters alone, and a variant chained after another names it through
 ``media``.
 
 :class:`PreprocessOp` writes one variant file per scoped entry. It reads the
-entry media of the camera a tracker reads, one clip at a time, or the upstream
-variant's file when ``media`` names one. It applies the steps to every selected
-frame and encodes the frames to a partial file, which is counted before it is
-renamed into place. The row written beside the variants records where the file
-sits in its entry's source, the file's probed facts and what the entry's media
-was, so a consumer reads the row instead of probing the file.
+entry media of the camera that a tracker reads, one clip at a time, or the
+upstream variant's file when ``media`` names one. It applies the steps to every
+selected frame and encodes the frames to a partial file, which is counted before
+it is renamed into place. The row written beside the variants records the file's
+placement in its entry's source, the file's probed facts and the composition of
+the entry's media. A consumer therefore reads the row instead of probing the file.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import subprocess
+import sys
 import tempfile
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -39,21 +40,17 @@ from mosaic_media.hwaccel import encoder_available
 from mosaic_media.transcode import TranscodeError
 from pydantic import Field, TypeAdapter, field_validator, model_validator
 
-from mosaic.core.entry import Entry
-from mosaic.core.helpers import make_entry_key
+from mosaic.core.entry import CameraEntry, Entry
+from mosaic.core.helpers import is_nameless_entry, make_entry_key
 from mosaic.core.json_value import JsonValue
 from mosaic.core.media.preprocess.crop import MIN_CROP_SIDE
 from mosaic.core.media.preprocess.geometry import FrameMap, Placement
 from mosaic.core.media.preprocess.registry import Frame, FrameFn, MediaStep
 from mosaic.core.media.preprocess.specs import MediaStepSpec
-from mosaic.core.media.timeline import (
-    ConcatenatedTimeline,
-    TimelineSegment,
-    concatenated_timeline,
-)
+from mosaic.core.media.timeline import ConcatenatedTimeline, concatenated_timeline
 from mosaic.core.media.video_io import FFmpegVideoWriter, open_frame_reader
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
-from mosaic.core.pipeline._utils import ResolvedScope
+from mosaic.core.pipeline._utils import ResolvedScope, atomic_write
 from mosaic.core.pipeline.composition import compositions_disagree
 from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
 from mosaic.core.pipeline.entry_claim import (
@@ -61,25 +58,28 @@ from mosaic.core.pipeline.entry_claim import (
     release_entry,
     throttled_refresh,
 )
+from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.job import Cancelled
-from mosaic.core.pipeline.op_identity import op_run_id
+from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.preprocess_index import (
     media_variant_index,
-    media_variant_row,
-    variant_row,
+    build_media_variant_row,
+    media_variant_rows,
     write_media_variant_row,
 )
 from mosaic.core.pipeline.preprocess_layout import (
+    PREPROCESS_KIND,
     media_variant_index_path,
     media_variant_path,
+    media_variant_recipe_path,
     media_variant_run_root,
     media_variant_work_root,
 )
 from mosaic.core.pipeline.run import AllEntriesFailed
+from mosaic.core.pipeline.sequence_index import media_compositions_for
 from mosaic.core.pipeline.stream_copy import coded_frame_count
-from mosaic.core.pipeline.tracks_index import media_composition_for
-from mosaic.core.pipeline.variant_source import VariantSource, resolve_variant_source
+from mosaic.core.pipeline.variant_source import VariantLookup, VariantSource
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
@@ -88,7 +88,6 @@ if TYPE_CHECKING:
 __all__ = [
     "AV1_DEFAULT_QUALITY",
     "H264_DEFAULT_CRF",
-    "PREPROCESS_KIND",
     "PREPROCESS_VERSION",
     "H264PipeWriter",
     "PreprocessOp",
@@ -102,26 +101,23 @@ __all__ = [
     "resolved_quality",
 ]
 
-PREPROCESS_KIND: Final = "preprocess"
-"""The op kind, which leads every variant's run identifier."""
-
 PREPROCESS_VERSION: Final = "0.1"
 """The op version, the visible segment of every variant's run identifier."""
 
-# Equal to mosaic-media's ANALYSIS_ENCODING.quality, the rate an analysis
-# transcode encodes at. Held here rather than read from there because the
-# resolved quality enters the run identifier, which must not move when the
+# Equal to mosaic-media's ANALYSIS_ENCODING.quality, the rate that an analysis
+# transcode encodes at. It is copied here rather than read from there, because
+# the resolved quality enters the run identifier, which must stay fixed when the
 # installed mosaic-media changes its default.
 AV1_DEFAULT_QUALITY: Final = 14
-"""The SVT-AV1 CRF an ``av1`` variant is encoded at when ``quality`` is unset."""
+"""The SVT-AV1 CRF that an ``av1`` variant is encoded at when ``quality`` is unset."""
 
 # Provisional, until the rate at which Lightning Pose's detections on an H.264
 # variant match its detections on the source is measured.
 H264_DEFAULT_CRF: Final = 16
-"""The x264 CRF an ``h264`` variant is encoded at when ``quality`` is unset."""
+"""The x264 CRF that an ``h264`` variant is encoded at when ``quality`` is unset."""
 
 type VariantCodec = Literal["av1", "h264"]
-"""The codecs a variant can be encoded in."""
+"""The codecs that a variant can be encoded in."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,25 +136,26 @@ _QUALITY_SCALES: Final[dict[VariantCodec, _QualityScale]] = {
 """Each codec's quality scale, which starts at 0 on both."""
 
 _JSON_OBJECT: Final = TypeAdapter(dict[str, JsonValue])
-"""Reads a step's identity dump as JSON, so a polygon's tuples become lists."""
+"""The adapter that reads a step's identity dump as JSON, turning tuples into lists."""
 
 _STEPS_DESCRIPTION = (
-    "The steps applied to each frame, in order. Every position and frame number a "
-    "step names is in the entry media's pixels and frames, wherever the step sits "
-    "in the list."
+    "The steps applied to each frame, in order. Every position and frame number "
+    "that a step names is in the entry media's pixels and frames, whatever the "
+    "step's position in the list."
 )
 
 _MEDIA_DESCRIPTION = (
-    "The run identifier of a variant to read in place of the entry media, so "
-    "these steps apply after that variant's. Empty reads the entry media."
+    "The run identifier of a variant to read in place of the entry media. These "
+    "steps then apply after that variant's. Empty reads the entry media."
 )
 
 _FPS_DESCRIPTION = (
-    "The frame rate the output file is labeled at, which sets its frames' "
-    "timestamps and so what a tool with per-second thresholds reads. Unset, it is "
-    "the rate the kept frames were recorded at: the first clip's rate divided by "
-    "the decimation. Under any other label the tracker's per-second columns are "
-    "wrong, and they are dropped when its table is mapped back."
+    "The frame rate that the output file is labeled at, which sets its frames' "
+    "timestamps and therefore the time base of a tool's per-second thresholds. "
+    "Unset, it is the rate that the kept frames were recorded at: the first clip's "
+    "rate divided by the decimation. Under any other label the tracker's "
+    "per-second columns are scaled by the label instead of the recording rate, and "
+    "they are dropped when its table is mapped back."
 )
 
 _CODEC_DESCRIPTION = (
@@ -168,7 +165,7 @@ _CODEC_DESCRIPTION = (
 )
 
 _QUALITY_DESCRIPTION = (
-    "The encoder's constant rate factor, on the chosen codec's own scale, where "
+    "The encoder's constant rate factor, on the chosen codec's scale, where "
     f"lower is better: SVT-AV1 CRF from 0 to {_QUALITY_SCALES['av1'].maximum} for "
     f"'av1', x264 CRF from 0 to {_QUALITY_SCALES['h264'].maximum} for 'h264'. "
     f"Unset uses mosaic's default, {AV1_DEFAULT_QUALITY} for AV1 and "
@@ -178,22 +175,23 @@ _QUALITY_DESCRIPTION = (
 _ALLOW_HARDWARE_DESCRIPTION = (
     "Permit the av1_nvenc hardware encoder where the machine offers a usable one. "
     "The encode falls back to the CPU encoder where it does not, and an 'h264' "
-    "variant always encodes on the CPU. A permission rather than a setting, so it "
-    "does not change the variant's run identifier."
+    "variant always encodes on the CPU. As a permission, it leaves the variant's "
+    "run identifier unchanged."
 )
 
 
 class PreprocessParams(Params):
-    """How one media variant is made from the entry media or another variant.
+    """Declare the settings that make one media variant from its source.
 
-    The settings alone. Which entries a run covers is an argument to the run,
-    and the run identifier is these settings, so covering more entries writes
-    more files under the same identifier.
+    The source is the entry media or another variant. The run's entries are an
+    argument to the run and are not part of these settings. The run identifier is
+    these settings. Covering more entries therefore writes more files under the
+    same identifier.
     """
 
     steps: Annotated[list[MediaStepSpec], Declared(_STEPS_DESCRIPTION)]
-    # Not checked for the shape of a run identifier here: a recipe validates its
-    # steps with a placeholder standing for a reference to another step.
+    # The shape of a run identifier is not checked here, because a recipe validates
+    # its steps with a placeholder that stands for a reference to another step.
     media: Annotated[str, Declared(_MEDIA_DESCRIPTION)] = ""
     fps: Annotated[
         float | None,
@@ -212,18 +210,18 @@ class PreprocessParams(Params):
         if not steps:
             message = (
                 "a variant needs at least one step. The step-less variant is the "
-                "entry media itself: leave `media` empty on the consumer instead"
+                "entry media itself. Leave `media` empty on the consumer instead"
             )
             raise ValueError(message)
         return steps
 
     @model_validator(mode="after")
     def _refuse_a_quality_off_the_scale(self) -> Self:
-        # The lower bound is the field's own, and 0 on every scale.
+        # The field declares the lower bound, which is 0 on every scale.
         scale = _QUALITY_SCALES[self.codec]
         if self.quality is not None and self.quality > scale.maximum:
             message = (
-                f"quality {self.quality} is off the {self.codec} scale: "
+                f"quality {self.quality} is off the {self.codec} scale. "
                 f"{scale.name} runs from 0 to {scale.maximum}"
             )
             raise ValueError(message)
@@ -231,26 +229,26 @@ class PreprocessParams(Params):
 
 
 def resolved_quality(params: PreprocessParams) -> int:
-    """The quality *params* encodes at: its own, or the codec's default."""
+    """Return the quality that *params* encodes at, or else the codec's default."""
     if params.quality is not None:
         return params.quality
     return _QUALITY_SCALES[params.codec].default
 
 
 def _step_terms(step: MediaStep) -> dict[str, JsonValue]:
-    """*step* as identity terms: its parameters, name and version."""
-    # The dump already holds the ``step`` discriminator, which equals the name.
+    """Return *step* as identity terms: its parameters, name and version."""
+    # The dump already contains the ``step`` discriminator, which equals the name.
     terms = _JSON_OBJECT.validate_python(step.identity_dump())
     return {**terms, "step": step.name, "version": step.version}
 
 
 def preprocess_identity_payload(params: PreprocessParams) -> dict[str, JsonValue]:
-    """Everything a variant's run identifier is a digest of.
+    """Return the payload that a variant's run identifier digests.
 
     The steps keep their order, since a crop then a mask and a mask then a crop
-    are different recipes. ``quality`` is the resolved value, so leaving it unset
-    and naming the default are one variant. ``fps`` enters only when it is set,
-    and ``allow_hardware`` never does.
+    are different recipes. ``quality`` is the resolved value. Leaving it unset and
+    naming the default are therefore one variant. ``fps`` enters only when it is
+    set, and ``allow_hardware`` never does.
     """
     payload: dict[str, JsonValue] = {
         "steps": [_step_terms(step) for step in params.steps],
@@ -264,7 +262,7 @@ def preprocess_identity_payload(params: PreprocessParams) -> dict[str, JsonValue
 
 
 def preprocess_identity(params: PreprocessParams) -> OpIdentity:
-    """The run identifier of the variant *params* describes."""
+    """Return the run identifier of the variant that *params* describes."""
     payload = preprocess_identity_payload(params)
     return OpIdentity(run_id=op_run_id(PREPROCESS_KIND, PREPROCESS_VERSION, payload))
 
@@ -281,20 +279,20 @@ encode runs.
 """
 
 _H264_FINISH_TIMEOUT_SECONDS: Final = 3600.0
-"""How long ffmpeg may take to finish an H.264 variant once its input is closed."""
+"""The time that ffmpeg may take to finish an H.264 variant after its input closes."""
 
 
 class PreprocessRefused(ValueError):
-    """A recipe the op cannot apply to one of its entries.
+    """The op cannot apply the recipe to one of its entries.
 
-    Raised for the whole run, before any entry is decoded: a crop or mask outside
-    an entry's frame, steps that select no frame, or a frame size the encoder
-    cannot hold. The message names the entry.
+    It is raised for the whole run, before any entry is decoded, for a crop or
+    mask outside an entry's frame, steps that do not select a frame, or a frame
+    size that the encoder cannot encode. The message names the entry.
     """
 
 
 class VariantWriter(Protocol):
-    """What the op encodes a variant's frames through.
+    """Define the writer that the op encodes a variant's frames through.
 
     ``FFmpegVideoWriter`` writes AV1 in this process, and :class:`H264PipeWriter`
     writes H.264 through an ffmpeg subprocess.
@@ -310,23 +308,23 @@ class VariantWriter(Protocol):
 
     @property
     def frames_written(self) -> int:
-        """How many frames :meth:`write` has taken."""
+        """The number of frames that :meth:`write` has taken."""
         ...
 
     @property
     def encoder_name(self) -> str:
-        """The encoder the file is written with, recorded on the variant's row."""
+        """The encoder that the file is written with, recorded on the variant's row."""
         ...
 
 
 class H264PipeWriter:
     """Write BGR frames to an H.264 mp4 by piping them to an ffmpeg subprocess.
 
-    libx264 runs in its own process, so no GPL encoder is linked into this one.
-    The file is yuv420p, the pixel format an AV1 variant has too. ffmpeg's error
-    output goes to a temporary file rather than a pipe, so a chatty encoder never
-    blocks on a pipe nobody drains, and it is named in the error when ffmpeg
-    fails.
+    libx264 runs in a separate process. A GPL encoder is therefore not linked into
+    this one. The file is yuv420p, the pixel format that an AV1 variant has too.
+    ffmpeg's error output goes to a temporary file instead of a pipe. A verbose
+    encoder therefore does not block on an undrained pipe, and the output is quoted
+    in the error when ffmpeg fails.
     """
 
     def __init__(
@@ -378,7 +376,7 @@ class H264PipeWriter:
 
     @property
     def frames_written(self) -> int:
-        """How many frames :meth:`write` has handed to ffmpeg."""
+        """The number of frames that :meth:`write` has passed to ffmpeg."""
         return self._frames_written
 
     @property
@@ -419,7 +417,7 @@ class H264PipeWriter:
 
         Raises:
             TranscodeError: If ffmpeg exits with an error or does not finish in
-                time. The message carries ffmpeg's own error output.
+                time. The message contains ffmpeg's error output.
         """
         if self._closed:
             return
@@ -445,7 +443,7 @@ class H264PipeWriter:
         self._stderr.close()
 
     def _failure(self) -> str:
-        """The failure message, carrying what ffmpeg wrote to its error output."""
+        """Return the failure message, with ffmpeg's error output."""
         _ = self._stderr.seek(0)
         detail = self._stderr.read().decode(errors="replace")
         self._stderr.close()
@@ -455,10 +453,10 @@ class H264PipeWriter:
 def open_variant_writer(
     params: PreprocessParams, path: Path, width: int, height: int, fps: float
 ) -> VariantWriter:
-    """The writer that encodes a *width* x *height* variant to *path* at *fps*.
+    """Return the writer that encodes a *width* x *height* variant to *path* at *fps*.
 
-    The codec and quality are *params*'s own. ``allow_hardware`` reaches only the
-    AV1 writer, which falls back to the CPU encoder where the hardware one is not
+    *params* sets the codec and quality. ``allow_hardware`` applies only to the AV1
+    writer, which falls back to the CPU encoder where the hardware one is not
     usable.
     """
     quality = resolved_quality(params)
@@ -473,7 +471,7 @@ def _require_libx264() -> None:
     """Refuse an H.264 variant when ffmpeg cannot encode H.264.
 
     Raises:
-        TranscodeError: If there is no ffmpeg on ``PATH``, or it lists no
+        TranscodeError: If ffmpeg is not on ``PATH``, or does not list
             ``libx264``.
     """
     if encoder_available("libx264"):
@@ -481,7 +479,7 @@ def _require_libx264() -> None:
     message = (
         "an 'h264' variant is written with libx264, and the ffmpeg on PATH is "
         "missing or built without it. H.264 is only needed for a decoder that "
-        "cannot read AV1: use the default 'av1' codec, or install an ffmpeg that "
+        "cannot read AV1. Use the default 'av1' codec, or install an ffmpeg that "
         "includes libx264."
     )
     raise TranscodeError(message)
@@ -498,7 +496,7 @@ class _EntryMedia:
 
 @dataclass(frozen=True, slots=True)
 class _EntryPlan:
-    """Everything the run knows about one entry before decoding it."""
+    """The run's plan for one entry, fixed before the entry is decoded."""
 
     group: str
     sequence: str
@@ -512,32 +510,84 @@ class _EntryPlan:
     def key(self) -> str:
         return make_entry_key(self.group, self.sequence)
 
+    @property
+    def camera_entry(self) -> CameraEntry:
+        return (self.group, self.sequence, self.camera)
 
-def _consumed_media(ds: Dataset, entry: Entry) -> ResolvedScopeEntry:
-    """The media of *entry*'s consumed camera, the one a tracker reads.
 
-    Raises:
-        FileNotFoundError: If no media is indexed for *entry*, or there is no
-            media index at all.
-        MediaProbeError: If the entry's media needs a transcode that has not run.
+type _ConsumedMedia = ResolvedScopeEntry | FileNotFoundError | MediaProbeError
+"""An entry's consumed media, or the error that explains its absence."""
+
+
+def _consumed_media(
+    ds: Dataset, entries: Sequence[Entry], *, report_skipped: bool
+) -> dict[Entry, _ConsumedMedia]:
+    """Return the media of each entry's consumed camera, the one that a tracker reads.
+
+    One read of the media index resolves every entry. An entry whose media needs
+    a transcode that has not run fails alone. Without a media index every entry
+    fails with the one error that the read raised. An entry with neither group
+    nor sequence resolves under its first file's stem, a name that the scope's
+    read cannot key back to the entry. Each such entry is therefore read
+    separately.
+
+    Args:
+        ds: The dataset.
+        entries: The entries, each keyed in the result.
+        report_skipped: Print a line for each camera dropped beside the one
+            read. The run's identity check passes ``False``. A run therefore
+            prints each line once.
+
+    Returns:
+        Per entry, its media, or the ``FileNotFoundError`` or
+        ``MediaProbeError`` that resolving it raised.
     """
-    # A multi-camera entry's skipped-camera line prints twice in a run whose
-    # `media` is empty, once from `plan_identity` and once from `_plan_entry`:
-    # the cost of `run` minting its identifier through `plan_identity`.
-    resolved = one_camera_per_entry(PREPROCESS_KIND, ds.resolve_media_scope([entry]))
-    if not resolved:
-        group, sequence = entry
-        message = f"{make_entry_key(group, sequence)}: no media is indexed for it"
-        raise FileNotFoundError(message)
-    return resolved[0]
+    failed: dict[Entry, MediaProbeError] = {}
+
+    def consumed_cameras(scoped: Sequence[Entry]) -> list[ResolvedScopeEntry]:
+        return one_camera_per_entry(
+            PREPROCESS_KIND,
+            ds.resolve_media_scope(scoped, errors=failed),
+            report_skipped=report_skipped,
+        )
+
+    nameless = [
+        (group, sequence)
+        for group, sequence in entries
+        if is_nameless_entry(group, sequence)
+    ]
+    try:
+        kept = {
+            (media.group, media.sequence): media
+            for media in consumed_cameras(
+                [entry for entry in entries if entry not in nameless]
+            )
+        }
+        for entry in nameless:
+            cameras = consumed_cameras([entry])
+            if cameras:
+                kept[entry] = cameras[0]
+    except FileNotFoundError as exc:
+        return {entry: exc for entry in entries}
+    consumed: dict[Entry, _ConsumedMedia] = {}
+    for entry in entries:
+        media = kept.get(entry)
+        if media is not None:
+            consumed[entry] = media
+        elif entry in failed:
+            consumed[entry] = failed[entry]
+        else:
+            message = f"{make_entry_key(*entry)}: no media is indexed for it"
+            consumed[entry] = FileNotFoundError(message)
+    return consumed
 
 
 def _entry_media(key: str, media: ResolvedScopeEntry) -> tuple[_EntryMedia, Placement]:
-    """*media*'s clips on one frame axis, and the identity placement over them.
+    """Return *media*'s clips on one frame axis, and the identity placement.
 
     Raises:
-        MediaProbeError: If the clips differ in frame size, or one has no frame
-            rate, so the entry cannot be read as one source.
+        MediaProbeError: If the clips differ in frame size, or one lacks a frame
+            rate. Either prevents reading the entry as one source.
     """
     # Local: `uniformity` imports this package through `media_index`, and this
     # module is imported by the package's `__init__`.
@@ -567,15 +617,15 @@ def _entry_media(key: str, media: ResolvedScopeEntry) -> tuple[_EntryMedia, Plac
 def _place(
     key: str, params: PreprocessParams, start: Placement, first_clip_fps: float
 ) -> Placement:
-    """The placement after every step, labeled at the variant's rate.
+    """Return the placement after every step, labeled at the variant's rate.
 
-    The rate is *params*'s ``fps`` when set, and otherwise the rate the kept
+    The rate is *params*'s ``fps`` when set, and otherwise the rate that the kept
     frames were recorded at: the first clip's rate divided by the frame map's
     step.
 
     Raises:
-        PreprocessRefused: If a step does not fit the entry, the steps select no
-            frame, or the final frame size cannot be encoded.
+        PreprocessRefused: If a step does not fit the entry, the steps do not
+            select a frame, or the final frame size cannot be encoded.
     """
     placement = start
     try:
@@ -586,8 +636,8 @@ def _place(
         raise PreprocessRefused(message) from exc
     if placement.frames.count == 0:
         message = (
-            f"preprocess cannot make a variant of {key}: the steps select no frame "
-            f"of its {start.source_frame_count}-frame media"
+            f"preprocess cannot make a variant of {key}: the steps do not select a "
+            f"frame of its {start.source_frame_count}-frame media"
         )
         raise PreprocessRefused(message)
     width, height = placement.width, placement.height
@@ -605,22 +655,38 @@ def _place(
     return dataclasses.replace(placement, fps=labeled)
 
 
-def _plan_entry(ds: Dataset, params: PreprocessParams, entry: Entry) -> _EntryPlan:
-    """Resolve and check one entry, reading no frame.
+def _plan_entry(
+    ds: Dataset,
+    params: PreprocessParams,
+    media: _ConsumedMedia,
+    compositions: Mapping[Entry, str],
+    upstream: VariantLookup | None,
+) -> _EntryPlan:
+    """Check one entry against the recipe without reading a frame.
+
+    Args:
+        ds: The dataset.
+        params: The recipe.
+        media: The entry's consumed media, or the error that explains its
+            absence.
+        compositions: The current media composition of each entry in scope.
+        upstream: The variant that ``params.media`` names, read for every entry
+            in scope, or ``None`` when the recipe reads the entry media.
 
     Raises:
         PreprocessRefused: If the recipe does not fit the entry.
-        FileNotFoundError: If the entry has no media, or the upstream variant
-            has no file for it.
+        FileNotFoundError: If the entry lacks media, or the upstream variant
+            lacks a file for it.
         MediaProbeError: If the entry's media cannot be read as one source.
         MediaVariantDriftedError: If the upstream variant is out of date.
     """
-    media = _consumed_media(ds, entry)
+    if isinstance(media, (FileNotFoundError, MediaProbeError)):
+        raise media
     key = make_entry_key(media.group, media.sequence)
-    composition = media_composition_for(ds, media.group, media.sequence)
+    composition = compositions.get((media.group, media.sequence), "")
     source: _EntryMedia | VariantSource
-    if params.media:
-        source = resolve_variant_source(ds, params.media, media)
+    if upstream is not None:
+        source = upstream.resolve(ds, media)
         start = source.placement
     else:
         source, start = _entry_media(key, media)
@@ -642,36 +708,18 @@ def _plan_entry(ds: Dataset, params: PreprocessParams, entry: Entry) -> _EntryPl
     )
 
 
-def _ceil_div(numerator: int, denominator: int) -> int:
-    return -(-numerator // denominator)
-
-
-def _clip_window(frames: FrameMap, segment: TimelineSegment) -> tuple[int, int] | None:
-    """The first and last frame of *segment* the map selects, clip-local, or None."""
-    if frames.count == 0:
-        return None
-    last_selected = frames.start + frames.step * (frames.count - 1)
-    low = max(frames.start, segment.start_frame)
-    high = min(last_selected, segment.end_frame - 1)
-    first = frames.start + frames.step * _ceil_div(low - frames.start, frames.step)
-    if first > high:
-        return None
-    last = frames.start + frames.step * ((high - frames.start) // frames.step)
-    return first - segment.start_frame, last - segment.start_frame
-
-
 def _clip_frames(
     path: Path, facts: MediaFacts, first: int, last: int, step: int
 ) -> Iterator[Frame]:
-    """Frames ``first, first + step, ..., last`` of one clip, in order.
+    """Yield frames ``first, first + step, ..., last`` of one clip, in order.
 
     A clip is entered at *first* by seeking, which positions the reader through
-    the clip's packet index. A raw elementary stream carries no timestamps and so
-    has no packet index, and ``VideoReader`` refuses to seek one rather than
-    decode from a wrong position. Such a clip is read from its start, and the
-    frames before *first* are discarded. Its analysis verdict asks for a
-    transcode, so today an entry resolves to the derivative instead and this
-    path is not reached.
+    the clip's packet index. A raw elementary stream lacks timestamps and
+    therefore a packet index. ``VideoReader`` refuses to seek one, because a seek
+    without an index decodes from an unverified position. Such a clip is read from
+    its start, and the frames before *first* are discarded. Its analysis verdict
+    requires a transcode. An entry therefore resolves to the derivative instead,
+    and this path is currently not reached.
     """
     seekable = facts.timing_source != "absent"
     start, stride = (first, step) if seekable else (0, 1)
@@ -689,20 +737,27 @@ def _clip_frames(
 
 
 def _entry_frames(source: _EntryMedia, frames: FrameMap) -> Iterator[Frame]:
-    """The frames *frames* selects from an entry's clips, clip by clip.
+    """Yield the frames that *frames* selects from an entry's clips, clip by clip.
 
-    A clip holding no selected frame is not opened.
+    A clip without a selected frame is not opened.
     """
     for segment, path, facts in zip(
         source.timeline.segments, source.paths, source.facts, strict=True
     ):
-        window = _clip_window(frames, segment)
+        window = frames.within_segment(segment.start_frame, segment.end_frame)
         if window is not None:
-            yield from _clip_frames(path, facts, window[0], window[1], frames.step)
+            first, last = window
+            yield from _clip_frames(
+                path,
+                facts,
+                first - segment.start_frame,
+                last - segment.start_frame,
+                frames.step,
+            )
 
 
 def _upstream_frames(source: VariantSource, frames: FrameMap) -> Iterator[Frame]:
-    """The frames *frames* selects from the upstream variant's file."""
+    """Yield the frames that *frames* selects from the upstream variant's file."""
     first, stride, count = frames.file_indices(source.placement.frames)
     with open_frame_reader(
         source.path,
@@ -717,14 +772,14 @@ def _upstream_frames(source: VariantSource, frames: FrameMap) -> Iterator[Frame]
 
 
 def _source_frames(plan: _EntryPlan) -> Iterator[Frame]:
-    """The frames of *plan*'s entry its final frame map selects, before any step."""
+    """Return the frames of *plan*'s entry that its final frame map selects."""
     if isinstance(plan.source, VariantSource):
         return _upstream_frames(plan.source, plan.final.frames)
     return _entry_frames(plan.source, plan.final.frames)
 
 
 def _bind(steps: Sequence[MediaStep], start: Placement) -> list[FrameFn]:
-    """Each step's per-frame function, bound at the placement before it."""
+    """Return each step's per-frame function, bound at the placement before it."""
     functions: list[FrameFn] = []
     placement = start
     for step in steps:
@@ -734,7 +789,7 @@ def _bind(steps: Sequence[MediaStep], start: Placement) -> list[FrameFn]:
 
 
 def _render(frame: Frame, functions: Sequence[FrameFn]) -> Frame:
-    """*frame* through every step, as the contiguous BGR image an encoder takes."""
+    """Pass *frame* through every step, into the contiguous BGR image for an encoder."""
     for function in functions:
         frame = function(frame)
     if frame.ndim == 2:
@@ -742,18 +797,20 @@ def _render(frame: Frame, functions: Sequence[FrameFn]) -> Frame:
     return np.ascontiguousarray(frame)
 
 
-def _reusable(ds: Dataset, run_id: str, plan: _EntryPlan, dest: Path) -> bool:
-    """Whether the entry's file and row are current, so the entry is not encoded.
+def _reusable(row: Mapping[str, str] | None, plan: _EntryPlan) -> bool:
+    """Return whether *row* records the entry's file as current.
 
-    A blank composition on either side is unknown, and unknown is not drift. A
-    chained variant is current only while its upstream file is the one it read.
+    A current file is not encoded again. A blank composition on either side is
+    unknown, and unknown is not drift. The recorded placement is therefore compared
+    as well. An entry whose media now has other frames or another frame size places
+    the steps elsewhere, and its file is written again. A chained variant is
+    current only while its upstream file is the one that it read.
     """
-    if not dest.is_file():
-        return False
-    row = variant_row(ds, run_id, plan.group, plan.sequence, plan.camera)
     if row is None:
         return False
     if compositions_disagree(row["consumed_media_composition"], plan.composition):
+        return False
+    if row["placement"] != plan.final.to_json():
         return False
     if isinstance(plan.source, VariantSource):
         return row["upstream_video_uuid"] == plan.source.facts.video_uuid
@@ -771,16 +828,16 @@ def _write_variant(
 ) -> None:
     """Encode one entry's variant, count it, publish it and record its row.
 
-    The frames go to a partial file in the entry's claimed working directory
-    *work_dir*, never beside the destination, where it could sit at the path of
-    another entry's variant file. A partial whose coded frame count, or probed
-    frame count, is not the placement's count is kept for inspection and
-    refused. Otherwise it is renamed into place and its row written: a row is
-    the claim that the file exists.
+    The frames are written to a partial file in the entry's claimed working
+    directory *work_dir* and not beside the destination, where the partial's name
+    can collide with another entry's variant file. A partial whose coded frame
+    count, or probed frame count, is not the placement's count is kept for
+    inspection and refused. Otherwise it is renamed into place, and then its row
+    is written, because a row asserts that the file exists.
 
     Raises:
-        TranscodeError: If the encode holds another number of frames than the
-            steps select.
+        TranscodeError: If the encoded file has a different number of frames from
+            the number that the steps select.
     """
     dest = media_variant_path(ds, run_id, plan.group, plan.sequence, plan.camera)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -805,8 +862,8 @@ def _write_variant(
         if coded != expected:
             keep_partial = True
             message = (
-                f"{plan.key}: the encode holds {coded} frames where the steps "
-                f"select {expected}, so it is not published. It is kept at "
+                f"{plan.key}: the encode has {coded} frames where the steps "
+                f"select {expected}. It is not published, and it is kept at "
                 f"{partial} for inspection."
             )
             raise TranscodeError(message)
@@ -814,9 +871,9 @@ def _write_variant(
         if facts.frame_count != expected:
             keep_partial = True
             message = (
-                f"{plan.key}: the encode holds {expected} frames but its timestamps "
-                f"place only {facts.frame_count}, so a reader seeking by time would "
-                f"miss frames. It is kept at {partial} for inspection."
+                f"{plan.key}: the encode has {expected} frames but its timestamps "
+                f"place only {facts.frame_count}, and a reader that seeks by time "
+                f"misses frames. It is kept at {partial} for inspection."
             )
             raise TranscodeError(message)
         _ = partial.replace(dest)
@@ -828,7 +885,7 @@ def _write_variant(
     )
     write_media_variant_row(
         ds,
-        media_variant_row(
+        build_media_variant_row(
             ds,
             path=dest,
             run_id=run_id,
@@ -850,15 +907,36 @@ def _write_variant(
     )
 
 
+def _record_recipe(ds: Dataset, params: PreprocessParams, run_id: str) -> None:
+    """Mark variant *run_id*'s directory with its identity scheme and save its recipe.
+
+    The recipe is *params* in the form that ``mosaic run --params`` reads. The
+    command that rewrites an entry's variant therefore names this file. The save
+    is best-effort. The run identifier already fixes the recipe, and a failure to
+    write the readable copy does not fail an otherwise successful run.
+    """
+    run_root = media_variant_run_root(ds, run_id)
+    run_root.mkdir(parents=True, exist_ok=True)
+    write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
+    path = media_variant_recipe_path(ds, run_id)
+    recipe = params.model_dump_json(indent=2) + "\n"
+    try:
+        atomic_write(path, lambda target: target.write_text(recipe))
+    except OSError as exc:
+        print(f"[{PREPROCESS_KIND}] failed to save {path}: {exc}", file=sys.stderr)
+
+
 @register_op
 class PreprocessOp(Op[PreprocessParams]):
     """Write one media variant file per scoped entry.
 
-    Every refusal the recipe earns is raised before any entry is decoded. An
-    entry whose media or upstream file cannot be read fails alone, and the rest
-    carry on. An entry is reused while its file and row exist, its media is the
-    media the file was written from, and, for a chained variant, the upstream
-    file is the one it read. ``overwrite`` encodes every entry in scope again.
+    Every refusal of the recipe is raised before any entry is decoded. An entry
+    whose media or upstream file cannot be read fails alone, and the rest
+    continue. An entry is reused while its file and row exist, its media is the
+    media that the file was written from, the steps place it where its row
+    records, and, for a chained variant, the upstream file is the one that it
+    read. ``overwrite`` encodes every entry in scope again. The run saves its
+    parameters in the variant's directory, as the recipe that a remedy names.
     """
 
     kind = PREPROCESS_KIND
@@ -873,7 +951,7 @@ class PreprocessOp(Op[PreprocessParams]):
     Params = PreprocessParams
 
     def target(self, params: PreprocessParams, scope: ResolvedScope) -> str:
-        """The entry when there is one, and otherwise how many there are."""
+        """Return the entry when there is one, and otherwise the entry count."""
         entries = sorted(scope.entries)
         if len(entries) == 1:
             group, sequence = entries[0]
@@ -888,26 +966,29 @@ class PreprocessOp(Op[PreprocessParams]):
         *,
         require_data: bool = True,
     ) -> OpIdentity:
-        """The variant's run identifier, after checking the recipe where it can.
+        """Return the variant's run identifier, after checking the recipe if possible.
 
         The identifier is :func:`preprocess_identity`, a function of the
         parameters alone. When ``media`` is empty, the recipe is checked against
-        each scoped entry whose media resolves, reading no frame, and a recipe
-        that does not fit one is refused here as ``run`` would refuse it. An
-        entry whose media needs a transcode not yet run, and a chained variant
-        whose upstream is not yet written, are not checked: a graph that runs
+        each scoped entry whose media resolves, without reading a frame. A recipe
+        that does not fit one is refused here, as ``run`` refuses it. An entry
+        whose media needs a transcode not yet run, and a chained variant whose
+        upstream is not yet written, are not checked, because a graph that runs
         that transcode or that upstream first must still plan.
 
         Raises:
             PreprocessRefused: If the recipe does not fit a checked entry.
         """
         if not params.media:
-            for entry in sorted(scope.entries):
+            entries = sorted(scope.entries)
+            consumed = _consumed_media(ds, entries, report_skipped=False)
+            for media in consumed.values():
+                if isinstance(media, (FileNotFoundError, MediaProbeError)):
+                    continue
+                key = make_entry_key(media.group, media.sequence)
                 try:
-                    media = _consumed_media(ds, entry)
-                    key = make_entry_key(media.group, media.sequence)
                     _, start = _entry_media(key, media)
-                except (FileNotFoundError, MediaProbeError):
+                except MediaProbeError:
                     continue
                 _ = _place(key, params, start, media.resolved.facts[0].fps)
         return preprocess_identity(params)
@@ -920,6 +1001,8 @@ class PreprocessOp(Op[PreprocessParams]):
         overwrite: bool,
         ctx: JobContext,
     ) -> str:
+        # `plan_identity` resolves the scope without reporting a skipped
+        # camera. The resolution below therefore reports each one once.
         run_id = self.plan_identity(ds, params, scope).run_id
         ctx.set_run_id(run_id)
         entries = sorted(scope.entries)
@@ -927,19 +1010,43 @@ class PreprocessOp(Op[PreprocessParams]):
         if params.codec == "h264":
             _require_libx264()
 
-        # Every entry is resolved and checked before any is decoded, so a recipe
-        # that does not fit one entry is refused before a file is written.
+        # Every entry is resolved and checked before any is decoded. A recipe that
+        # does not fit one entry is therefore refused before a file is written. The
+        # media index, the compositions and the upstream variant's rows are each
+        # read once for the whole scope.
+        consumed = _consumed_media(ds, entries, report_skipped=True)
+        resolved = [
+            (media.group, media.sequence)
+            for media in consumed.values()
+            if not isinstance(media, (FileNotFoundError, MediaProbeError))
+        ]
+        compositions = media_compositions_for(ds, resolved)
+        upstream = (
+            VariantLookup(
+                run_id=params.media,
+                rows=media_variant_rows(ds, params.media),
+                compositions=compositions,
+            )
+            if params.media
+            else None
+        )
         plans: list[_EntryPlan] = []
         failed = 0
         for group, sequence in entries:
             try:
-                plans.append(_plan_entry(ds, params, (group, sequence)))
+                plans.append(
+                    _plan_entry(
+                        ds, params, consumed[(group, sequence)], compositions, upstream
+                    )
+                )
             except PreprocessRefused:
                 raise
             except Exception as exc:
                 ctx.entry_failed(make_entry_key(group, sequence), exc)
                 failed += 1
 
+        _record_recipe(ds, params, run_id)
+        rows = media_variant_rows(ds, run_id)
         work_root = media_variant_work_root(ds, run_id)
         written = 0
         reused = 0
@@ -964,7 +1071,16 @@ class PreprocessOp(Op[PreprocessParams]):
                     dest = media_variant_path(
                         ds, run_id, plan.group, plan.sequence, plan.camera
                     )
-                    if not overwrite and _reusable(ds, run_id, plan, dest):
+                    reusable = False
+                    if not overwrite and dest.is_file():
+                        reusable = _reusable(rows.get(plan.camera_entry), plan)
+                        if not reusable:
+                            # Read again, since another execution may have
+                            # written the entry after the rows were read. Only
+                            # an entry about to be encoded reads them again.
+                            rows = media_variant_rows(ds, run_id)
+                            reusable = _reusable(rows.get(plan.camera_entry), plan)
+                    if reusable:
                         reused += 1
                         ctx.progress.on_phase(PREPROCESS_KIND, f"{plan.key}: reused")
                     else:
@@ -985,8 +1101,8 @@ class PreprocessOp(Op[PreprocessParams]):
                     failed += 1
                 finally:
                     release_entry(work_dir, ctx.execution_id)
-                # Cache hits included, so a resumed run and a fresh one report
-                # the same coverage.
+                # The count includes cache hits. A resumed run and a fresh one
+                # therefore report the same coverage.
                 ctx.entries_written(written)
             ctx.progress.on_entry_end(position + 1, len(plans), plan.key)
             ctx.heartbeat(done=len(entries) - len(plans) + position + 1)
@@ -999,8 +1115,8 @@ class PreprocessOp(Op[PreprocessParams]):
         if attempted and failed == attempted:
             message = (
                 f"[{PREPROCESS_KIND}] every one of {attempted} attempted entries "
-                f"failed, so {run_id} wrote no variant file. The per-entry errors "
-                f"are in this attempt's run-log."
+                f"failed, and {run_id} did not write a variant file. The per-entry "
+                f"errors are in this attempt's run-log."
             )
             raise AllEntriesFailed(message)
         held_note = f", {held} held by another execution" if held else ""

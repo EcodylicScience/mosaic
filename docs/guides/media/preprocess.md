@@ -9,7 +9,7 @@ reads tracks of the original.
 Reasons to pre-process:
 
 - `crop` to the arena or the tank. The tracker then sees one tank of a multi-tank
-  recording and none of the room around it.
+  recording without the room around it.
 - `mask` a polygon to black out a neighboring tank, a reflection or a timestamp.
 - `trim` to the part of the recording you analyze, and `decimate` to fewer frames per
   second.
@@ -63,13 +63,15 @@ frame, and its width and height must be even. A recipe that does not fit an entr
 refused before any video is written. [Media steps](../../reference/media-steps.md)
 lists every step and its parameters.
 
-`preprocess` refuses to run without a scope, because an unscoped run would re-encode
-every entry in the dataset. Name entries, or whole groups with
+`preprocess` refuses to run without a scope, because an unscoped run covers every
+entry in the dataset. Name entries, or whole groups with
 `Scope(groups=["day1"])` or `--groups day1`.
 
 The run id names the recipe. Running the same recipe again reuses the entries already
-written and encodes only the missing ones. Changing a step, `codec`, `quality` or
+written and still current, and encodes the rest. Changing a step, `codec`, `quality` or
 `fps` gives a new variant beside the old one, under `media/preprocess/<run_id>/`.
+Each run saves its recipe there as `recipe.json`, which `--params @<path>` reads
+back.
 
 A variant reads imgstore recordings and multi-clip entries directly. It needs no
 `export-store` or `export-joined` run first, and the tracker reads the one variant
@@ -123,8 +125,8 @@ Set `media` to the variant's run id on `trex`, `sleap`, `litpose`, `ultralytics`
     ```
 
 The variant is part of the tracker's run id. Two variants of one entry therefore
-track as two runs. An entry the variant does not cover fails with a message naming the
-`preprocess` command that writes it, and the other entries run.
+track as two runs. An entry that the variant does not cover fails with a message naming
+the `preprocess` command that writes it, and the other entries run.
 
 ### In a recipe
 
@@ -152,18 +154,22 @@ A tracker or inference step names a variant with `"media": {"step": "<id>"}`:
 
 The reference is replaced by the variant's run id when the recipe is planned. It
 also orders the tracker after the `preprocess` step without an `after` list.
+A recipe covers every entry of the dataset unless its submission is narrowed. Its
+`preprocess` step then re-encodes every entry. Narrow it with `--entry` on
+`mosaic pipeline`.
 A `media` reference must name a `preprocess` step. `media` on a `preprocess` step
 takes the same reference, to chain two variants.
 [Chain steps into a recipe](../pipelines/chain-steps.md) covers recipes in general.
 
-## Tracks come back in the original video
+## Tracks in original coordinates
 
 A tracker run on a variant reports positions in the variant's pixels and frames. mosaic
 maps them back when it publishes the table: positions are shifted by the crop's
 offset, frame numbers are mapped back through `trim` and `decimate`, and `time` is
 recomputed from the original recording. Overlays, egocentric crops, `scale-to-cm` and
-a feature's `frame_start` and `frame_end` therefore work on these tracks as on tracks
-of the original video, and tracks from two variants of one entry line up.
+the `filter_start_frame` and `filter_end_frame` of `run_feature` therefore work on
+these tracks as on tracks of the original video, and tracks from two variants of one
+entry line up.
 
 An `infer-*` table from a variant that trims, decimates, sets `fps` or covers an
 entry of several clips records `time` in seconds. An `infer-*` table from the
@@ -174,36 +180,40 @@ A column that describes the variant image itself, such as TREx's distance to the
 image border, cannot be mapped back. It is dropped, and the run-log records the
 dropped columns for each entry.
 
-## Frame ranges belong in the variant
+A numeric column that mosaic cannot classify is refused rather than dropped, because
+it may contain a variant pixel or frame. The entry fails with `UnclassifiedColumnError`,
+which names the column, and the other entries publish. Such a column usually comes
+from a field added to TREx's `output_fields` in `track_extra_settings`. Remove that
+field, or leave `media` empty to track the original recording.
+
+## Frame ranges in the variant
 
 A frame window set on a tracker or an inference op cannot be combined with `media`.
-The variant is already cut to its range, and a second window would count variant
-frames. These settings are refused when `media` is set:
+The variant is already cut to its range, and the tool counts a second window in
+variant frames. These settings are refused when `media` is set:
 
 | Op | Setting refused with `media` |
 | --- | --- |
 | `infer-pose`, `infer-points`, `infer-localizer` | `start_frame`, `end_frame`, `frame_step`, `max_frames` |
 | `ultralytics` | `start_frame`, `end_frame`, `frame_step` |
-| `trex` | `analysis_range` |
-| `trex` | `analysis_range`, `analysis_stop_after`, `gui_stop_after` or `video_conversion_range` in `convert_extra_settings` or `track_extra_settings` |
-| `sleap` | `analysis_range` |
-| `sleap` | `frames` in `sleap_extra_settings` |
+| `trex` | `analysis_range`; in `convert_extra_settings` or `track_extra_settings`: `analysis_range`, `analysis_stop_after`, `gui_stop_after`, `video_conversion_range` |
+| `sleap` | `analysis_range`; in `sleap_extra_settings`: `frames` |
 
 The refusal comes before any work starts:
 
 ```text
 infer-pose: `start_frame` cannot be combined with `media`. `media` names
-preprocess.0.1-0e4c6091ef, which is derived media: a video already cut to its own
+preprocess.0.1-0e4c6091ef, which is derived media: a video already cut to its
 frame range. Put the range in that variant with a `trim` or `decimate` step, or
 leave `media` empty to read the original recording from `media_raw` with this frame
 range.
 ```
 
-Put the range in the variant with `trim` and `decimate`. A feature's `frame_start`
-and `frame_end` are not affected. They select frames of the published tracks, which
-are numbered in original frames.
+Put the range in the variant with `trim` and `decimate`. The `filter_start_frame` and
+`filter_end_frame` of `run_feature` are not affected. They select frames of the
+published tracks, which are numbered in original frames.
 
-## Tracker settings apply to the variant
+## Tracker settings on a variant
 
 Every other tracker setting applies to the video the tracker reads:
 
@@ -223,7 +233,7 @@ pixels wide then gives `"cm_per_pixel": 0.015625`.
 
 ## Frame rate
 
-`fps` sets the frame rate the variant file is labeled at. Unset, it is the first
+`fps` sets the frame rate that the variant file is labeled at. Unset, it is the first
 clip's rate divided by the decimation. A 30 fps recording decimated by 2 is labeled
 15 fps, and a tracker's settings in seconds keep their meaning. Set `fps` only for a
 tool that needs a particular rate. Under any other label, a tracker's per-second
@@ -254,12 +264,37 @@ because their decoders often cannot read it. To track a variant with either tool
 `quality` sets the encoder's constant rate factor, where lower is better. Unset, it is
 14 for AV1 and 16 for H.264.
 
-## When the recording changes
+## Changes to the recording
 
-A variant records which media it was made from. If an entry's recordings change after
-its variant was written, a tracker refuses that entry and names the `preprocess`
-command that rewrites it. Run the same `preprocess` again. It rewrites the entries
-whose media changed and reuses the rest.
+A variant records the media that it was made from and the placement of its frames
+in that media. If an entry's recordings change after its variant was written, a tracker
+refuses that entry and prints the `preprocess` command that rewrites it:
+
+```text
+mosaic run -m <manifest> --kind preprocess --entries day1:trial01 --params @/data/ds/media/preprocess/preprocess.0.1-0e4c6091ef/recipe.json
+```
+
+The command runs the same recipe again, read from the variant's `recipe.json`. It
+rewrites the entries whose media changed, or whose frames no longer fit the steps,
+and reuses the rest. The command does not need `overwrite`. If the variant's
+directory lacks a `recipe.json`, the command asks for the recipe instead.
+
+A variant records the original recordings that it was made from. A new transcode leaves
+those recordings unchanged and is not detected. After transcoding an entry again,
+run its `preprocess` command with `--overwrite` to rewrite the variant.
+
+## Deleting a variant
+
+A variant is one directory, `media/preprocess/<run_id>/`. Delete it, then drop its
+rows from the variant index:
+
+```bash
+mosaic reindex -m dataset.yaml --root preprocess --apply
+```
+
+`mosaic prune-media` reclaims transcode derivatives and leaves variants alone. A
+tracker run that read a deleted variant keeps its published tracks, and running it
+again refuses each entry until the variant is made again.
 
 ## Reference
 

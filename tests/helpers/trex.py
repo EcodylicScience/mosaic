@@ -1,9 +1,9 @@
-"""A recording stand-in for TREx, for the tests of the TREx tracker.
+"""Stand in for TREx in the tests of the TREx tracker, recording each call.
 
-``run_trex`` reaches TREx through two module-level seams in
+``run_trex`` calls TREx through two module-level seams in
 ``trex/dataset_runs.py``, one per phase. :func:`install_fake_trex` replaces both
-with a :class:`FakeTrex`, so a test runs the whole tracker protocol with no TREx
-binary: identity, markers, reuse, the conversion cache and the bridge.
+with a :class:`FakeTrex`. A test therefore runs the whole tracker protocol without
+a TREx binary: identity, markers, reuse, the conversion cache and the bridge.
 """
 
 from __future__ import annotations
@@ -34,33 +34,33 @@ class FakeTrex:
     npz_frames: int = 4
     """How many frames each per-individual export carries.
 
-    Four by default, which is what the TREx marker and reuse tests need and
-    were written against. A test about the *frame axis* sets it: a value short
-    of the media's total is what TREx's joined conversion produces when it drops
-    the tail of each clip, and is the only way to reach that path without a real
+    It is four by default, the count that the TREx marker and reuse tests were
+    written against. A test of the frame axis sets it. A value short of the
+    media's total is the output of TREx's joined conversion when it drops the tail
+    of each clip, and it is the only way to exercise that path without a real
     tool.
     """
     extra_fields: Mapping[str, npt.NDArray[np.generic]] = field(
         default_factory=dict[str, npt.NDArray[np.generic]]
     )
-    """Fields each export carries beyond the ones TREx always writes.
+    """Fields in each export beyond those that TREx always writes.
 
-    What a user adds to TREx's ``output_fields``. Each array holds one value per
+    A user adds them to TREx's ``output_fields``. Each array has one value per
     frame.
     """
     write_settings: bool = True
     """Whether a conversion writes its ``.settings`` file, as TREx always does."""
     pv_beside_the_video: bool = False
     on_convert: Callable[[Path], None] | None = None
-    """Called with the output directory once a conversion's files are written.
+    """A hook, called with the output directory once a conversion's files are written.
 
     A hook that raises stands for a conversion that died after writing them.
     """
     sources: list[list[Path]] = field(default_factory=list)
     """Every conversion's *whole* source list, so a joined run is inspectable.
 
-    ``converted`` keeps recording one path per call, the first source, which
-    is what a single-video assertion reads.
+    ``converted`` keeps recording one path per call, the first source, the path
+    that a single-video assertion reads.
     """
 
     def convert(
@@ -123,10 +123,11 @@ class FakeTrex:
         data_dir.mkdir(parents=True, exist_ok=True)
         npz_paths: list[Path] = []
         for i in range(self.npz_per_track):
-            # A real, convertible export rather than a stub. The tests using
-            # this fake are about markers and reuse rather than conversion, but
-            # a stub made every bridge fail, which is recorded as a lost entry.
-            # Writing what TREx writes keeps them on the real publish path.
+            # The fake writes a convertible export instead of a stub. The tests
+            # that use this fake are about markers and reuse and not conversion,
+            # but a stub made every bridge fail, which is recorded as a lost
+            # entry. An export in TREx's format keeps them on the real publish
+            # path.
             n = self.npz_frames
             fields: dict[str, npt.NDArray[np.generic]] = {
                 "frame": np.arange(n),

@@ -542,11 +542,11 @@ def test_a_media_reference_to_a_preprocess_step_validates() -> None:
 
 @pytest.mark.parametrize("writer", ["transcode", "export-joined", "trex"])
 def test_a_media_reference_must_name_a_preprocess_step(writer: str) -> None:
-    """Only a preprocess run id names a variant a consumer can read.
+    """Only a preprocess run id names a variant that a consumer can read.
 
-    A transcode writes media too, and its run id addresses nothing a ``media``
-    field could resolve, so the reference is refused at the step and field that
-    hold it.
+    A transcode writes media too, but its run id does not address a file that a
+    ``media`` field can resolve. The reference is therefore refused at the step
+    and field that contain it.
     """
     problem = _at(
         {

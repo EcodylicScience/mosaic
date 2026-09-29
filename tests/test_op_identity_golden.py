@@ -148,11 +148,11 @@ def _media_op_params(kind: str, /, **values: object) -> MediaInputParams:
 
 
 MEDIA_VARIANT = "preprocess.0.1-aaaaaaaaaa"
-"""The media variant every ``*-media`` case reads.
+"""The media variant that every ``*-media`` case reads.
 
-``media`` is ``HASH_EXCLUDE``, so an ``OpCase`` digest over ``identity_dump()``
-cannot see it. Each consumer folds it in where it mints, and those minters are
-what the function cases below call.
+``media`` is ``HASH_EXCLUDE``, and an ``OpCase`` digest over ``identity_dump()``
+omits it. Each consumer folds it in where it mints, and the function cases below
+call those minters.
 """
 
 
@@ -680,13 +680,17 @@ def _infer_run_id() -> str:
     )
 
 
-def _infer_run_id_on_media(kind: str, model_id: str) -> Callable[[], str]:
-    """The identifier inference op *kind* mints over a media variant."""
+def _infer_run_id_on_media(kind: str, version: str, model_id: str) -> Callable[[], str]:
+    """Return the identifier that inference op *kind* at *version* mints over a variant.
+
+    *version* is a literal, as in :func:`_infer_run_id`. Bumping an op's version
+    therefore cannot change the digest that this pins.
+    """
 
     def mint() -> str:
         return infer_run_id(
             kind,
-            OPS[kind].version,
+            version,
             _media_op_params(kind, model="m.pt", media=MEDIA_VARIANT),
             model_id,
         )
@@ -835,9 +839,9 @@ def _ultralytics_tracker_defaults() -> str:
     )
 
 
-# The media variant identifier, minted by the function the op plans with. Each
-# case names its steps with explicit values so a changed step default moves
-# nothing here for a reason unrelated to the payload.
+# The media variant identifier is minted by the function that the op plans with.
+# Each case names its steps with explicit values, so that a changed step default
+# does not change a digest here for a reason unrelated to the payload.
 _PREPROCESS_CROP = CropStep(x=120, y=40, width=320, height=240)
 _PREPROCESS_TRIM = TrimStep(start=100, stop=400)
 _PREPROCESS_CLAHE = ClaheStep(clip_limit=2.0, tile_grid_size=8)
@@ -917,13 +921,13 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
         MEDIA_VARIANT
     ),
     "infer-pose/run-id-media": _infer_run_id_on_media(
-        "infer-pose", "train-pose.0.1-aaaaaaaaaa"
+        "infer-pose", "0.3", "train-pose.0.1-aaaaaaaaaa"
     ),
     "infer-points/run-id-media": _infer_run_id_on_media(
-        "infer-points", "train-points.0.1-aaaaaaaaaa"
+        "infer-points", "0.3", "train-points.0.1-aaaaaaaaaa"
     ),
     "infer-localizer/run-id-media": _infer_run_id_on_media(
-        "infer-localizer", "train-localizer.0.1-aaaaaaaaaa"
+        "infer-localizer", "0.2", "train-localizer.0.1-aaaaaaaaaa"
     ),
 }
 

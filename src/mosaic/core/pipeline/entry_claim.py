@@ -1,13 +1,13 @@
-"""Claiming one entry's working directory, and keeping the claim alive.
+"""Claim one entry's working directory, and keep the claim alive.
 
 A stage that writes into a per-entry directory takes it with an exclusive create
 before touching anything, re-stamps the claim while its work runs, and releases the
 claim in a ``finally`` whatever happened. The trackers and the ``infer-*`` ops
 follow this lifecycle. It lives in ``core`` because ``core`` may not import
 ``tracking``, and a stage in ``core`` that works per entry needs the same claim.
-The refresh callbacks also keep a one-shot op's run-root claim alive: a training
-op hangs :func:`phase_activity` on its tool's output, or
-:class:`ClaimRefreshingProgress` on an in-process trainer's callbacks.
+The refresh callbacks also keep a one-shot op's run-root claim alive. A training
+op attaches :func:`phase_activity` to its tool's output, or
+:class:`ClaimRefreshingProgress` to an in-process trainer's callbacks.
 
 The markers, and the rule deciding whether a claim is live, expired or orphaned,
 are in :mod:`mosaic.core.pipeline.markers`. This module is the lifecycle built on

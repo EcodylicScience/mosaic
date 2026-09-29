@@ -20,7 +20,12 @@ from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.sleap.dataset_runs import sleap_index_path, sleap_run_root
 from mosaic.tracking.sleap.params import SleapParams
 
-from tests.helpers import FakeSleap, install_fake_sleap, write_media_index
+from tests.helpers import (
+    FakeSleap,
+    install_fake_sleap,
+    write_media_index,
+    write_sleap_model,
+)
 
 
 # --- fixtures --------------------------------------------------------------
@@ -36,10 +41,7 @@ def ds(tmp_path: Path) -> Dataset:
 
 @pytest.fixture
 def model(tmp_path: Path) -> Path:
-    model_dir = tmp_path / "sleap_model"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    (model_dir / "best.ckpt").write_bytes(b"weights")
-    return model_dir
+    return write_sleap_model(tmp_path / "sleap_model")
 
 
 @pytest.fixture
@@ -205,12 +207,8 @@ def test_every_tracking_setting_reaches_the_tool(
 def test_different_weights_are_a_different_run(
     ds: Dataset, tmp_path: Path, sleap: FakeSleap
 ) -> None:
-    m1 = tmp_path / "m1"
-    m2 = tmp_path / "m2"
-    m1.mkdir()
-    m2.mkdir()
-    (m1 / "best.ckpt").write_bytes(b"weights-A")
-    (m2 / "best.ckpt").write_bytes(b"weights-B")
+    m1 = write_sleap_model(tmp_path / "m1", b"weights-A")
+    m2 = write_sleap_model(tmp_path / "m2", b"weights-B")
 
     a = dr.run_sleap(ds, SleapParams(model_paths=[str(m1)]))
     b = dr.run_sleap(ds, SleapParams(model_paths=[str(m2)]))

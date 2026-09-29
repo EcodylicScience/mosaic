@@ -1,15 +1,14 @@
-"""The ``media`` parameter on the seven consumers of media, and what it refuses.
+"""Test the ``media`` parameter on the seven consumers of media, and its refusal.
 
 A consumer that names a media variant reads a video already cut to the variant's
-own frame range. Every frame number a user types is a source frame, so a frame
-window set on the consumer as well would count in the variant's frames instead.
-One validator on :class:`MediaInputParams` refuses the combination, for the typed
-window fields and for the same settings passed through a tool's extra-settings
-dictionary.
+frame range. Every frame number that a user types is a source frame, while the
+tool applies a consumer's frame window to the variant's frames. One validator on
+:class:`MediaInputParams` refuses the combination, for the typed window fields and
+for the same settings passed through a tool's extra-settings dictionary.
 
-These tests hold each op to the windows it declares, pin the refusal's wording,
-show that a recipe step combining the two is refused before anything runs, and
-show that ``media`` moves an identity only when it is set.
+These tests check each op against the windows that it declares, pin the refusal's
+wording, show that a recipe step combining the two is refused before any step
+runs, and show that ``media`` changes an identity only when it is set.
 """
 
 from __future__ import annotations
@@ -46,11 +45,11 @@ CONSUMERS: dict[str, dict[str, JsonValue]] = {
     "infer-points": {"model": "train-points.0.1-aaaaaaaaaa"},
     "infer-localizer": {"model": "train-localizer.0.1-aaaaaaaaaa"},
 }
-"""Each op taking ``media``, with the params it needs to validate.
+"""Each op with a ``media`` parameter, and the params that it needs to validate.
 
-The models are named by training run identifiers, so an identity plans on an
-empty dataset: a run identifier is its own model identity, and no weights are
-read to find it.
+The models are named by training run identifiers. An identity therefore plans on
+an empty dataset, because a run identifier serves as the model identity and the
+planner does not read weights to find it.
 """
 
 _INFER_WINDOW: dict[str, JsonValue] = {
@@ -112,7 +111,7 @@ SETTING_VALUES: dict[str, JsonValue] = {
     "video_conversion_range": [10, 200],
     "frames": "10-200",
 }
-"""A value of the shape each tool setting takes."""
+"""A value of the shape that each tool setting takes."""
 
 WINDOW_CASES = [
     pytest.param(kind, field, value, id=f"{kind}-{field}")
@@ -133,17 +132,17 @@ SETTINGS_FIELD_CASES = [
     for settings_field in fields
 ]
 
-SPEC_REFUSAL = (
+EXPECTED_REFUSAL = (
     "infer-pose: `start_frame` cannot be combined with `media`. `media` names "
     "preprocess.0.1-3f2a9c01d4, which is derived media: a video already cut to "
-    "its own frame range. Put the range in that variant with a `trim` or "
+    "its frame range. Put the range in that variant with a `trim` or "
     "`decimate` step, or leave `media` empty to read the original recording from "
     "`media_raw` with this frame range."
 )
 
 
 def _params_type(kind: str) -> type[MediaInputParams]:
-    """The registered params model of *kind*, which must take ``media``."""
+    """Return the registered params model of *kind*, which must take ``media``."""
     declared = OPS[kind].Params
     assert issubclass(declared, MediaInputParams)
     return declared
@@ -155,7 +154,7 @@ def _params(kind: str, **values: JsonValue) -> MediaInputParams:
 
 
 def _refusal(kind: str, **values: JsonValue) -> str:
-    """The one validation message *values* are refused with."""
+    """Return the one validation message that *values* are refused with."""
     with pytest.raises(ValidationError) as raised:
         _ = _params(kind, **values)
     errors = raised.value.errors()
@@ -163,11 +162,11 @@ def _refusal(kind: str, **values: JsonValue) -> str:
     return errors[0]["msg"].removeprefix("Value error, ")
 
 
-# --- which ops take media, and what each declares -----------------------------
+# --- the ops that take media, and their declarations --------------------------
 
 
 def test_the_seven_consumers_of_media_take_the_parameter() -> None:
-    """The trackers and the inference ops, and no other op."""
+    """Only the trackers and the inference ops take ``media``."""
     taking = {
         kind for kind, op in OPS.items() if issubclass(op.Params, MediaInputParams)
     }
@@ -177,13 +176,13 @@ def test_the_seven_consumers_of_media_take_the_parameter() -> None:
 
 @pytest.mark.parametrize("kind", sorted(CONSUMERS))
 def test_a_refusal_names_the_op_that_refused(kind: str) -> None:
-    """Each params model names its own op, never the empty kind of a base."""
+    """Each params model names its op kind instead of the base's empty kind."""
     assert _params_type(kind).op_kind == OPS[kind].kind
 
 
 @pytest.mark.parametrize("kind", sorted(CONSUMERS))
 def test_each_consumer_declares_every_window_it_takes(kind: str) -> None:
-    """A window field left out of the declaration would pass unrefused."""
+    """Each op declares every window field, because an undeclared one is not refused."""
     declared = _params_type(kind)
 
     assert set(declared.window_fields) == set(WINDOWS[kind])
@@ -198,8 +197,8 @@ def test_each_consumer_declares_every_window_it_takes(kind: str) -> None:
 
 
 def test_the_refusal_says_what_derived_media_is_and_where_the_range_goes() -> None:
-    """The message names the variant, why it refuses, and both ways out."""
-    assert _refusal("infer-pose", media=VARIANT, start_frame=10) == SPEC_REFUSAL
+    """The message names the variant, the reason for the refusal, and both remedies."""
+    assert _refusal("infer-pose", media=VARIANT, start_frame=10) == EXPECTED_REFUSAL
 
 
 @pytest.mark.parametrize(("kind", "field", "value"), WINDOW_CASES)
@@ -228,7 +227,7 @@ def test_the_same_window_without_media_is_kept(
 def test_media_with_every_window_restated_at_its_default_is_accepted(
     kind: str,
 ) -> None:
-    """A field counts as set when it differs from its default, not when named."""
+    """A named field counts as set only when it differs from its default."""
     params = _params(kind, media=VARIANT, **WINDOW_DEFAULTS[kind])
 
     assert params.media == VARIANT
@@ -246,7 +245,7 @@ def test_every_window_set_is_named_in_one_refusal() -> None:
 def test_a_frame_setting_passed_through_is_refused_on_derived_media(
     kind: str, settings_field: str, key: str
 ) -> None:
-    """The same range, sent to the tool around the typed field."""
+    """The same range is refused when sent to the tool around the typed field."""
     settings: dict[str, JsonValue] = {key: SETTING_VALUES[key]}
     message = _refusal(kind, media=VARIANT, **{settings_field: settings})
 
@@ -255,6 +254,17 @@ def test_a_frame_setting_passed_through_is_refused_on_derived_media(
     )
     assert "derived media" in message
     assert "`media_raw`" in message
+
+
+@pytest.mark.parametrize(("kind", "settings_field", "key"), EXTRA_SETTINGS_CASES)
+def test_a_frame_setting_left_null_is_accepted_beside_media(
+    kind: str, settings_field: str, key: str
+) -> None:
+    """A null leaves the frames unselected, like a field restated at its default."""
+    settings: dict[str, JsonValue] = {key: None}
+    params = _params(kind, media=VARIANT, **{settings_field: settings})
+
+    assert params.media == VARIANT
 
 
 @pytest.mark.parametrize(("kind", "settings_field", "key"), EXTRA_SETTINGS_CASES)
@@ -288,13 +298,13 @@ def test_other_settings_pass_through_beside_media(
 def test_media_reaches_identity_only_when_set(
     kind: str, media: str, terms: dict[str, str]
 ) -> None:
-    """Empty adds no term, so every identifier minted before ``media`` stays."""
+    """An empty ``media`` does not add a term, and older identifiers stay unchanged."""
     assert media_identity_terms(_params(kind, media=media)) == terms
 
 
 @pytest.mark.parametrize("kind", sorted(CONSUMERS))
 def test_media_is_left_out_of_the_hashed_params(kind: str) -> None:
-    """``identity_dump`` holds no ``media`` key, set or not."""
+    """``identity_dump`` omits the ``media`` key, set or not."""
     assert "media" not in _params(kind, media=VARIANT).identity_dump()
 
 
@@ -302,7 +312,7 @@ def test_media_is_left_out_of_the_hashed_params(kind: str) -> None:
 def test_setting_media_moves_the_run_and_its_tracks_variant(
     kind: str, tmp_path: Path
 ) -> None:
-    """Planned through the op, which is what both the graph and a run ask."""
+    """The identity is planned through the op, as both the graph and a run plan it."""
     dataset = make_dataset(tmp_path / "planned")
     op = OPS[kind]
 
@@ -330,7 +340,7 @@ _PREPROCESS_STEP: dict[str, JsonValue] = {
 
 
 def _recipe(kind: str, params: dict[str, JsonValue]) -> Recipe:
-    """A preprocess step, and a *kind* step run with *params*."""
+    """Return a recipe of a preprocess step and a *kind* step run with *params*."""
     consumer: dict[str, JsonValue] = {
         "id": "consume",
         "type": "op",
@@ -362,7 +372,7 @@ def test_a_recipe_step_combining_a_window_with_media_is_refused(
 def test_a_recipe_refusal_never_names_the_stand_in_identifier(
     kind: str, field: str, value: JsonValue
 ) -> None:
-    """A step reference is checked with a stand-in, which is no variant's name."""
+    """A step reference is checked with a stand-in, which is not a variant's name."""
     recipe = _recipe(kind, {"media": {"step": "prep"}, field: value})
 
     (problem,) = check_recipe(recipe)

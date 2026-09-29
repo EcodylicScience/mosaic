@@ -1,11 +1,11 @@
-"""Mapping a table read from a media variant back into its entry's source space.
+"""Test mapping a table read from a media variant back into its source space.
 
 A tracker run on a variant reports positions in the variant's pixels and frames
 in the variant's frame axis. ``to_source_space`` shifts the positions by the
 variant's offset, maps each frame through its frame map, retimes the table on
-the source timeline, and drops the columns whose values the variant made wrong.
-The tests build a table in source space, derive what a tracker would report on
-the variant by hand, and check the mapping recovers the source table.
+the source timeline, and drops the columns that the mapping cannot correct. The
+tests build a table in source space, derive a tracker's report on the variant by
+hand, and check that the mapping recovers the source table.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ def _mapping(
     *,
     fps: float = 30.0,
 ) -> SourceMapping:
-    """The mapping of a variant built by *steps*, labeled at *fps*."""
+    """Return the mapping of a variant built by *steps*, labeled at *fps*."""
     placement = Placement.identity(_WIDTH, _HEIGHT, timeline.total_frames, 30.0)
     for step in steps:
         placement = step.place(placement)
@@ -92,7 +92,7 @@ def _mapping(
 
 
 def _source_table(frame_count: int) -> pd.DataFrame:
-    """A table in source space: one individual on every source frame."""
+    """Return a table in source space: one individual on every source frame."""
     frames = np.arange(frame_count, dtype=np.int64)
     x = 100.0 + 0.5 * frames
     x[7] = np.nan
@@ -118,7 +118,7 @@ def _source_table(frame_count: int) -> pd.DataFrame:
 
 
 def _as_tracked_on(source: pd.DataFrame, mapping: SourceMapping) -> pd.DataFrame:
-    """What a tracker reports on the variant: the hand-built inverse of map-back."""
+    """Return a tracker's report on the variant, the hand-built inverse of map-back."""
     placement = mapping.placement
     kept = placement.frames.start + placement.frames.step * np.arange(
         placement.frames.count, dtype=np.int64
@@ -177,7 +177,7 @@ def test_a_position_keeps_its_nan() -> None:
 
 
 def test_a_frame_past_the_variant_is_still_mapped() -> None:
-    """The tool's own frame count is not checked here; the frame map is applied."""
+    """The frame map is applied without a check of the tool's frame count."""
     mapping = _mapping(
         _ONE_CLIP, [TrimStep(start=100, stop=400), DecimateStep(every=3)]
     )
@@ -196,7 +196,7 @@ def test_a_frame_past_the_variant_is_still_mapped() -> None:
 
 
 def test_a_whole_number_frame_stored_as_a_float_is_mapped() -> None:
-    """TRex writes frame numbers as floats; a whole one is a frame number."""
+    """TRex writes frame numbers as floats, and a whole one is a frame number."""
     mapping = _mapping(_ONE_CLIP, [TrimStep(start=100, stop=400)])
     tracked = pd.DataFrame({"frame": [0.0, 1.0, 2.0], "X": [1.0, 2.0, 3.0]})
 
@@ -217,7 +217,7 @@ def test_a_whole_number_frame_stored_as_a_float_is_mapped() -> None:
 def test_a_frame_that_is_not_a_whole_number_refuses_the_table(
     name: str, values: list[float], count: int
 ) -> None:
-    """Casting would turn NaN or 0.5 into a plausible source frame."""
+    """NaN and 0.5 are refused, because casting turns each into a plausible frame."""
     mapping = _mapping(_ONE_CLIP, [TrimStep(start=100, stop=400)])
     tracked = pd.DataFrame({"frame": [0, 1, 2], "X": [1.0, 2.0, 3.0]})
     tracked[name] = values
@@ -230,7 +230,7 @@ def test_a_frame_that_is_not_a_whole_number_refuses_the_table(
 
 
 def _rate_table(frames: npt.NDArray[np.int64], fps: float) -> pd.DataFrame:
-    """A table timed as a tool times it: its own frame index over one rate."""
+    """Return a table timed as a tool times it, by frame index over one rate."""
     return pd.DataFrame(
         {
             "frame": frames,
@@ -257,7 +257,7 @@ def test_a_trim_of_a_two_rate_timeline_is_timed_by_each_clip() -> None:
 
 
 def test_a_crop_of_a_two_rate_timeline_is_retimed() -> None:
-    """The frame map is the identity; the timeline's second clip is not at 30."""
+    """The frame map is the identity, and the timeline's second clip is not at 30."""
     mapping = _mapping(_TWO_RATES, [CropStep(x=120, y=40, width=320, height=240)])
     tracked = _rate_table(np.arange(2 * _CLIP, dtype=np.int64), 30.0)
 
@@ -333,7 +333,7 @@ def test_a_decimation_labeled_at_its_true_rate_keeps_the_rate_dependent_columns(
 
 
 def test_every_per_second_trex_field_is_rate_dependent() -> None:
-    """TRex's own output annotations give each of these in cm/s or cm/s2."""
+    """TRex's output annotations give each of these in cm/s or cm/s2."""
     assert RATE_DEPENDENT_BASES == {
         "VX",
         "VY",
@@ -462,7 +462,7 @@ _POSE_NAMES = ("poseX0", "poseY0", "poseP0", "poseX12", "poseY12", "poseP12")
 
 
 def test_every_pixel_prefix_trex_knows_names_a_pose_column() -> None:
-    """TRex emits poseX and poseY columns; other producers add poseP."""
+    """TRex emits poseX and poseY columns, and other producers add poseP."""
     assert all(
         any(name.startswith(prefix) for name in _POSE_NAMES)
         for prefix in PIXEL_PREFIXES
@@ -549,7 +549,7 @@ def test_every_deeplabcut_and_lightning_pose_column_is_classified(
 
 
 def _bridged(table: pd.DataFrame) -> pd.DataFrame:
-    """*table* with the columns the inference bridge adds before publishing."""
+    """Return *table* with the columns that the inference bridge adds to it."""
     named = table.rename(columns={"x": "X", "y": "Y"})
     named["group"] = "g"
     named["sequence"] = "s"

@@ -1,9 +1,9 @@
-"""The media pre-processing steps: how each moves the placement and the pixels.
+"""Test each media pre-processing step's effect on the placement and the pixels.
 
 Every spatial parameter is a source-space pixel and every frame parameter a
-source-space frame number, so the tests place each step after the placement a
-real recipe would hand it (an identity, or an earlier crop) and read the pixels
-back from a frame whose values record their own coordinates.
+source-space frame number. The tests therefore place each step after a placement
+that a recipe produces (an identity, or an earlier crop), and read the pixels back
+from a frame whose values record their coordinates.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ _SOURCE = Placement.identity(64, 48, 100, 30.0)
 
 
 def _coordinate_frame(width: int = 64, height: int = 48) -> Frame:
-    """A BGR frame whose blue channel holds each pixel's x and green its y."""
+    """Return a BGR frame whose blue channel contains each pixel's x and green its y."""
     grid = np.indices((height, width))
     frame = np.zeros((height, width, 3), dtype=np.uint8)
     frame[..., 0] = grid[1]
@@ -55,7 +55,7 @@ def _coordinate_frame(width: int = 64, height: int = 48) -> Frame:
 
 
 def _textured_frame(width: int = 64, height: int = 48) -> Frame:
-    """A BGR frame with enough variation for an equalization to change it."""
+    """Return a BGR frame with enough variation for an equalization to change it."""
     generator = np.random.default_rng(20260928)
     return generator.integers(0, 256, (height, width, 3), dtype=np.uint8)
 
@@ -87,7 +87,7 @@ def test_a_crop_slices_a_color_and_a_gray_frame() -> None:
 
 
 def test_a_second_crop_is_given_in_source_coordinates() -> None:
-    """The second rectangle names source pixels, not pixels of the first crop."""
+    """The second rectangle names source pixels instead of the first crop's pixels."""
     first = CropStep(x=8, y=4, width=32, height=24)
     second = CropStep(x=12, y=10, width=8, height=6)
     after_first = first.place(_SOURCE)
@@ -133,7 +133,7 @@ def test_a_crop_outside_the_image_is_refused_naming_both_rectangles() -> None:
 
 
 def test_a_crop_outside_an_earlier_crop_is_refused() -> None:
-    """Inside the source is not enough: the current image is the earlier crop."""
+    """A rectangle inside the source but outside the earlier crop is refused."""
     after_first = CropStep(x=8, y=4, width=32, height=24).place(_SOURCE)
 
     with pytest.raises(ValueError, match=r"\(8, 4, 32, 24\)"):
@@ -142,7 +142,7 @@ def test_a_crop_outside_an_earlier_crop_is_refused() -> None:
 
 @pytest.mark.media
 def test_a_crop_at_the_minimum_size_encodes(tmp_path: Path) -> None:
-    """The minimum was measured against SVT-AV1; this keeps it measured."""
+    """The minimum was measured against SVT-AV1, and this test measures it again."""
     side = MIN_CROP_SIDE
     path = tmp_path / "minimum.mp4"
     writer = FFmpegVideoWriter(path, side, side, fps=30.0)
@@ -214,12 +214,12 @@ def test_a_mask_partly_outside_the_image_is_drawn_clipped() -> None:
 def test_a_mask_wholly_outside_the_image_is_refused() -> None:
     after_crop = CropStep(x=8, y=4, width=8, height=8).place(_SOURCE)
 
-    with pytest.raises(ValueError, match="covers no pixel"):
+    with pytest.raises(ValueError, match="does not cover a pixel"):
         _ = MaskStep(polygon=_SQUARE).place(after_crop)
 
 
 def _circle(cx: int, cy: int, radius: int, vertices: int = 64) -> list[tuple[int, int]]:
-    """A polygon approximating a circle, its vertices rounded to whole pixels."""
+    """Return a polygon that approximates a circle, with vertices on whole pixels."""
     angles = np.linspace(0.0, 2.0 * np.pi, vertices, endpoint=False)
     return [
         (round(cx + radius * np.cos(angle)), round(cy + radius * np.sin(angle)))
@@ -228,11 +228,11 @@ def _circle(cx: int, cy: int, radius: int, vertices: int = 64) -> list[tuple[int
 
 
 def test_a_mask_whose_bounding_box_alone_meets_the_image_is_refused() -> None:
-    """A circle's bounding box covers the crop in its corner; the circle does not."""
+    """A circle's bounding box covers the crop in its corner. The circle does not."""
     source = Placement.identity(640, 480, 10, 30.0)
     after_crop = CropStep(x=120, y=40, width=32, height=32).place(source)
 
-    with pytest.raises(ValueError, match="covers no pixel") as refusal:
+    with pytest.raises(ValueError, match="does not cover a pixel") as refusal:
         _ = MaskStep(polygon=_circle(320, 240, 200)).place(after_crop)
 
     assert "x 120..520 and y 40..440" in str(refusal.value)
@@ -240,11 +240,11 @@ def test_a_mask_whose_bounding_box_alone_meets_the_image_is_refused() -> None:
 
 
 def test_a_thin_band_past_the_image_corner_is_refused() -> None:
-    """The band's bounding box covers the whole image, and the band no pixel of it."""
+    """The band's bounding box covers the whole image. The band misses every pixel."""
     placement = Placement.identity(8, 8, 10, 30.0)
     band = MaskStep(polygon=[(21, -1), (22, -1), (-1, 22), (-1, 21)])
 
-    with pytest.raises(ValueError, match="covers no pixel") as refusal:
+    with pytest.raises(ValueError, match="does not cover a pixel") as refusal:
         _ = band.place(placement)
 
     assert "x -1..22 and y -1..22" in str(refusal.value)
@@ -288,7 +288,7 @@ def test_a_trim_refuses_a_stop_past_the_source() -> None:
 
 
 def test_a_trim_refuses_the_decimated_span_past_the_source() -> None:
-    """A decimated span can reach past the last source frame; a trim may not."""
+    """A decimated span can extend past the last source frame, and a trim may not."""
     source = Placement.identity(64, 48, 99, 30.0)
     decimated = DecimateStep(every=4).place(source)
     assert decimated.frames.end == 100
@@ -362,9 +362,10 @@ def test_adjust_with_its_defaults_changes_nothing() -> None:
 def test_adjust_maps_a_level_through_the_formula(
     step: AdjustStep, level: int, expected: int
 ) -> None:
-    """``clip(c * v + b, 0, 255)``, then ``255 * (v / 255) ** (1 / gamma)``.
+    """Each level becomes ``clip(c * v + b, 0, 255)``, then the gamma curve.
 
-    The result is rounded half to even, so 1.5 and 2.5 both become 2.
+    The gamma curve is ``255 * (v / 255) ** (1 / gamma)``. The result is rounded
+    half to even. 1.5 and 2.5 therefore both become 2.
     """
     adjust = step.bind(_SOURCE)
 
@@ -490,7 +491,7 @@ def test_the_base_step_names_the_class_that_did_not_define_its_methods() -> None
 
 
 def _union_members() -> list[type[MediaStep]]:
-    """The model classes the ``MediaStepSpec`` union holds."""
+    """The model classes that the ``MediaStepSpec`` union contains."""
     annotated = MediaStepSpec.__value__
     union = typing.get_args(annotated)[0]
     return [

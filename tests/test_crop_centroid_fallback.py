@@ -2,7 +2,7 @@
 
 ``egocentric-crop`` averaged ``poseX0..poseX{pose_n-1}`` and took each column
 only if present, so a table with no keypoints contributed nothing, every centre
-came out NaN, and ``extract_egocentric_crop`` turned each non-finite centre into
+came out NaN, and ``extract_egocentric_crop`` turned each non-finite center into
 a solid ``background_color`` rectangle. Nothing warned: the run reported success,
 the parquet and the crop files were written, and every crop was a blank frame.
 

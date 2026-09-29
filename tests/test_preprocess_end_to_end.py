@@ -1,9 +1,9 @@
-"""A media variant tracked by its pixels, and read back in its entry's frames.
+"""Test a media variant tracked by its pixels and read back in its entry's frames.
 
 A two-clip entry shows one bright dot moving along a known path. The
 ``preprocess`` op crops, trims and decimates it into a variant, and
 ``infer-localizer`` runs over the variant with a locator in place of a trained
-model: the locator decodes the file it is handed and reports each frame's
+model. The locator decodes the file that it is handed and reports each frame's
 brightest pixel. Every coordinate in the published table is therefore read from
 the variant's pixels, and must come back as the dot's path in the entry's own
 frames and pixels. A feature's frame range over that table counts in the same
@@ -44,10 +44,11 @@ _FPS = 30.0
 
 
 def _dot(frame: int) -> tuple[int, int]:
-    """Where the dot is centered in source frame *frame*, as ``(x, y)``.
+    """Return the dot's center in source frame *frame*, as ``(x, y)``.
 
-    It moves one column right per frame and wraps every 60 frames, and one row
-    down every fourth frame, so no two frames of the entry share a position.
+    The dot moves one column right per frame and wraps every 60 frames, and one
+    row down every fourth frame. Every frame of the entry therefore has a distinct
+    position.
     """
     return 10 + frame % 60, 20 + (frame // 4) % 30
 
@@ -58,21 +59,22 @@ _STEPS: list[dict[str, object]] = [
     {"step": "trim", "start": 7, "stop": 110},
     {"step": "decimate", "every": 3},
 ]
-"""A 72x44 window at (6, 14) holding the path, every third frame from 7 to 109.
+"""A 72x44 window at (6, 14) with the path, every third frame from 7 to 109.
 
 The kept frames step over the boundary between the two clips, from 58 to 61.
 """
 
 _KEPT = list(range(7, 110, 3))
-"""The source frames the variant holds, in order."""
+"""The source frames in the variant, in order."""
 
 
 @dataclass
 class _BrightestPixel:
-    """A locator in place of the localizer's model: each frame's brightest pixel.
+    """Stand in for the localizer's model by locating each frame's brightest pixel.
 
-    It decodes the video it is handed, as the localizer does, and records each
-    path, so a test can tell which file the reported coordinates were read from.
+    It decodes the video that it is handed, as the localizer does, and records
+    each path. A test can then identify the file that the reported coordinates
+    were read from.
     """
 
     videos: list[Path] = field(default_factory=list)
@@ -95,7 +97,7 @@ class _BrightestPixel:
 def _brightest_pixels(
     path: Path, facts: MediaFacts | None = None
 ) -> list[tuple[int, int]]:
-    """The ``(x, y)`` of the brightest pixel of each frame of *path*."""
+    """Return the ``(x, y)`` of the brightest pixel of each frame of *path*."""
     found: list[tuple[int, int]] = []
     with open_frame_reader(path, facts=facts, target="analysis") as reader:
         for _, frame in reader:
@@ -124,8 +126,8 @@ def tracked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Tracked:
         lambda frame: dot_image(_SIZE, _dot(frame)),
         size=_SIZE,
     )
-    # The source encode keeps the dot's brightest pixel on its path, so any
-    # departure from the path below comes from the variant or its mapping.
+    # The source encode keeps the dot's brightest pixel on its path. Any departure
+    # from the path below therefore comes from the variant or its mapping.
     decoded = [position for clip in clips for position in _brightest_pixels(clip)]
     assert decoded == [_dot(frame) for frame in range(2 * _CLIP_FRAMES)]
 
@@ -153,7 +155,8 @@ def test_the_published_table_is_the_dot_path_in_source_frames_and_pixels(
 ) -> None:
     ds, variant = tracked.ds, tracked.variant
     assert tracked.locator.videos == [media_variant_path(ds, variant, "", "s", "")]
-    # In the variant's own pixels the dot sits up and left by the crop offset.
+    # In the variant's pixels the dot is up and left of its source position by
+    # the crop offset.
     assert _brightest_pixels(tracked.locator.videos[0]) == [
         (x - _CROP_X, y - _CROP_Y) for x, y in map(_dot, _KEPT)
     ]
@@ -167,10 +170,9 @@ def test_the_published_table_is_the_dot_path_in_source_frames_and_pixels(
 
 
 def test_a_feature_frame_range_selects_source_frames(tracked: _Tracked) -> None:
-    """``[40, 80)`` names source frames, which the variant holds from 40 to 79.
+    """``[40, 80)`` names source frames, which the variant contains from 40 to 79.
 
-    Counted in the variant's frames, the range would lie past its 35 frames and
-    select nothing.
+    Counted in the variant's frames, the range lies past its 35 frames.
     """
     ds = tracked.ds
 
@@ -184,7 +186,7 @@ def test_a_feature_frame_range_selects_source_frames(tracked: _Tracked) -> None:
     selected = [frame for frame in _KEPT if 40 <= frame < 80]
     assert table["frame"].tolist() == selected
     # Each row's velocity is the dot's move since the row before, in source
-    # pixels per second of source time. The first row has no row before it.
+    # pixels per second of source time. The first row lacks a predecessor.
     assert math.isnan(table["vx"].iloc[0]) and math.isnan(table["vy"].iloc[0])
     seconds = 3 / _FPS
     for axis, column in enumerate(("vx", "vy")):

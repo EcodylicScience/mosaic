@@ -1,10 +1,10 @@
-"""Where a media variant's pixels and frames sit in its entry's source media.
+"""Test the placement of a media variant's pixels and frames in its source media.
 
-A variant's tracks are mapped back to source space through its placement, so a
-wrong frame map or offset publishes a table whose frames and positions name the
-wrong moment and the wrong pixel. Each test builds the maps the pre-processing
-steps build (``trim`` is ``within``, ``decimate`` is ``every``) and checks the
-source frames and file indices they answer with.
+A variant's tracks are mapped back to source space through its placement. An
+incorrect frame map or offset therefore publishes a table whose frames and
+positions name another moment and another pixel. Each test builds the maps that
+the pre-processing steps build (``trim`` is ``within``, ``decimate`` is ``every``)
+and checks the source frames and file indices that they return.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def test_a_frame_map_refuses_an_impossible_grid(
 
 @pytest.mark.parametrize("field", ["start", "step", "count"])
 def test_a_frame_map_refuses_a_fractional_field(field: str) -> None:
-    """A float would be truncated where a placement is written, not refused."""
+    """A float is refused here instead of truncated where a placement is written."""
     with pytest.raises(TypeError, match=field):
         _ = dataclasses.replace(FrameMap(0, 1, 10), **{field: 1.5})
 
@@ -76,7 +76,7 @@ def test_within_refuses_a_start_before_a_trimmed_map() -> None:
 
 
 def test_within_refuses_a_range_selecting_no_frame() -> None:
-    with pytest.raises(ValueError, match="no frame"):
+    with pytest.raises(ValueError, match="do not contain a frame"):
         _ = FrameMap(0, 10, 10).within(1, 5)
 
 
@@ -101,7 +101,7 @@ def test_every_refuses_a_factor_below_two(n: int) -> None:
 
 
 def test_within_after_every_begins_at_the_next_kept_frame() -> None:
-    """A ``trim`` after a ``decimate`` starts on the grid, not at its own start."""
+    """A ``trim`` after a ``decimate`` starts on the decimated grid, off its start."""
     decimated = FrameMap(0, 1, 100).every(4)
 
     trimmed = decimated.within(5, 30)
@@ -115,6 +115,51 @@ def test_within_after_every_begins_at_the_next_kept_frame() -> None:
         24,
         28,
     ]
+
+
+@pytest.mark.parametrize(
+    ("frames", "start", "stop", "expected"),
+    [
+        (FrameMap(0, 1, 30), 10, 20, (10, 19)),
+        (FrameMap(2, 3, 10), 0, 10, (2, 8)),
+        (FrameMap(2, 3, 10), 10, 20, (11, 17)),
+        (FrameMap(2, 3, 10), 20, 40, (20, 29)),
+        (FrameMap(2, 3, 10), 9, 11, None),
+        (FrameMap(2, 3, 10), 30, 40, None),
+        (FrameMap(5, 1, 10), 0, 5, None),
+        (FrameMap(0, 1, 0), 0, 10, None),
+    ],
+    ids=[
+        "every-frame",
+        "first-segment",
+        "middle-segment",
+        "past-the-map-end",
+        "between-two-kept-frames",
+        "after-the-map",
+        "before-the-map",
+        "empty-map",
+    ],
+)
+def test_within_segment_names_the_first_and_last_kept_frame(
+    frames: FrameMap, start: int, stop: int, expected: tuple[int, int] | None
+) -> None:
+    """A clip's range is clipped to the map and need not contain any of its frames."""
+    assert frames.within_segment(start, stop) == expected
+
+
+def test_within_segment_covers_every_frame_once_across_segments() -> None:
+    """The test spans three clips of 10, 7 and 13 frames, trimmed and decimated."""
+    frames = FrameMap(0, 1, 30).within(4, 27).every(4)
+    bounds = [(0, 10), (10, 17), (17, 30)]
+
+    read: list[int] = []
+    for start, stop in bounds:
+        window = frames.within_segment(start, stop)
+        if window is not None:
+            read.extend(range(window[0], window[1] + 1, frames.step))
+
+    expected = frames.source_frames(np.arange(frames.count, dtype=np.int64))
+    assert read == expected.tolist()
 
 
 def test_file_indices_read_a_chained_map_from_its_upstream_file() -> None:
@@ -243,7 +288,7 @@ def test_a_placement_refuses_geometry_outside_its_source(
     ],
 )
 def test_a_placement_refuses_a_fractional_field(field: str) -> None:
-    """A float would be truncated where the placement is written, not refused."""
+    """A float is refused here instead of truncated where the placement is written."""
     with pytest.raises(TypeError, match=field):
         _ = dataclasses.replace(_placement(), **{field: 0.5})
 
@@ -284,7 +329,7 @@ def test_a_frame_selection_is_not_a_frame_identity(frames: FrameMap) -> None:
 
 
 def test_a_relabeled_rate_leaves_the_identity_alone() -> None:
-    """What a relabeled rate means is decided by map-back, not here."""
+    """Map-back decides the meaning of a relabeled rate, and the identity ignores it."""
     assert _placement(fps=15.0).is_identity
 
 
@@ -297,7 +342,7 @@ def test_json_round_trips() -> None:
 
 
 def test_json_is_canonical() -> None:
-    """Sorted keys and compact separators, whatever order the fields were given."""
+    """The JSON has sorted keys and compact separators, whatever the field order."""
     one = Placement(
         offset_x=10,
         offset_y=20,
@@ -338,14 +383,14 @@ def test_json_is_canonical() -> None:
 
 
 def _edited(key: str, value: object) -> str:
-    """A valid placement's JSON with one field set to *value*."""
+    """Return a valid placement's JSON with one field set to *value*."""
     document: dict[str, object] = json.loads(_placement().to_json())
     document[key] = value
     return json.dumps(document)
 
 
 def _without(key: str) -> str:
-    """A valid placement's JSON with one field removed."""
+    """Return a valid placement's JSON with one field removed."""
     document: dict[str, object] = json.loads(_placement().to_json())
     del document[key]
     return json.dumps(document)

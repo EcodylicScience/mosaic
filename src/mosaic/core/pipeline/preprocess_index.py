@@ -1,18 +1,18 @@
-"""The media variant index: one row per variant file, read instead of the file.
+"""Record one row per media variant file, which a consumer reads instead of the file.
 
-``media/preprocess/index.csv`` records, per variant, entry and camera, what a
-consumer would otherwise have to measure or cannot measure at all:
+``media/preprocess/index.csv`` records, per variant, entry and camera, the facts
+that a consumer must otherwise measure or cannot measure at all:
 
-- the placement mapping the file's pixels and frames back to the entry's source,
-  composed through every upstream variant, so map-back reads one row;
-- the file's probed facts, stored the way the media index stores them, so a
-  reader is given them rather than probing the file again;
-- what the entry's media was when the file was written, compared against the
-  current composition to tell a current variant from a drifted one.
+- the placement that maps the file's pixels and frames back to the entry's
+  source, composed through every upstream variant. Map-back reads this one row.
+- the file's probed facts, stored the way the media index stores them. A reader
+  is given them and does not probe the file again.
+- the composition of the entry's media when the file was written, compared
+  against the current composition to tell a current variant from a drifted one.
 
-One writer, :func:`write_media_variant_row`, and one reader,
-:func:`read_media_variant_index`. Where the files and the index sit is
-:mod:`mosaic.core.pipeline.preprocess_layout`'s to say.
+:func:`write_media_variant_row` is the one writer and
+:func:`read_media_variant_index` the one reader.
+:mod:`mosaic.core.pipeline.preprocess_layout` places the files and the index.
 """
 
 from __future__ import annotations
@@ -38,41 +38,43 @@ from mosaic.core.pipeline.index_csv import (
     project_to_schema,
 )
 from mosaic.core.pipeline.preprocess_layout import (
-    PREPROCESS_KIND_DIRECTORY,
+    PREPROCESS_KIND,
     media_variant_index_path,
 )
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.entry import CameraEntry
 
 __all__ = [
     "MediaVariantDriftedError",
     "MediaVariantMissingError",
     "MediaVariantRow",
+    "build_media_variant_row",
+    "media_variant_facts",
     "media_variant_index",
-    "media_variant_row",
+    "media_variant_placement",
+    "media_variant_rows",
     "read_media_variant_index",
-    "variant_facts",
-    "variant_placement",
-    "variant_row",
     "write_media_variant_row",
 ]
 
 
 class MediaVariantMissingError(FileNotFoundError):
-    """An entry has no file of the variant a step asked to read.
+    """An entry lacks a file of the variant that a step asked to read.
 
-    A ``FileNotFoundError`` like the missing-export errors a tracker raises,
-    because the remedy is the same kind: run the op that writes the file.
+    It is a ``FileNotFoundError`` like the missing-export errors that a tracker
+    raises, because the remedy is of the same kind: run the op that writes the
+    file.
     """
 
 
 class MediaVariantDriftedError(ValueError):
-    """An entry's variant file depicts media the entry no longer holds.
+    """An entry's variant file depicts media that the entry no longer has.
 
-    The file exists and reads, so this is not a missing file. It is a recorded
-    value that disagrees with the current one, and the remedy differs: rewrite
-    the variant, rather than write one that was never there.
+    The file exists and is readable, and the error is not a missing file. It is a
+    recorded value that disagrees with the current one, and its remedy is to
+    rewrite the variant instead of writing a missing one.
     """
 
 
@@ -88,20 +90,23 @@ class MediaVariantRow(RunIndexRowBase):
     Attributes:
         group: The entry's group.
         sequence: The entry's sequence.
-        camera: The camera of the entry the variant was made from, or ``""``.
-        upstream: The variant this one was made from, or ``""`` when it was made
-            from the entry media.
+        camera: The camera of the entry that the variant was made from, or
+            ``""``.
+        upstream: The variant that this one was made from, or ``""`` when it was
+            made from the entry media.
         upstream_video_uuid: The upstream file's ``video_uuid`` when it was read,
             or ``""``.
         placement: The file's placement in the entry's source, as the canonical
-            JSON :meth:`~mosaic.core.media.preprocess.geometry.Placement.to_json`
+            JSON that
+            :meth:`~mosaic.core.media.preprocess.geometry.Placement.to_json`
             writes.
         width: The file's coded width.
         height: The file's coded height.
         fps: The file's frame rate.
         codec: The file's codec.
         consumed_media_composition: The entry's media composition when the file
-            was written. Compared, never hashed: blank means not establishable.
+            was written. It is compared and not hashed. Blank means not
+            establishable.
     """
 
     group: str
@@ -134,12 +139,12 @@ _COLUMNS: Final = tuple(field.name for field in dataclasses.fields(MediaVariantR
 
 
 def _adopt(frame: pd.DataFrame) -> pd.DataFrame:
-    """*frame* projected onto the current columns, for an index written earlier."""
+    """Project *frame* onto the current columns, for an index written earlier."""
     return project_to_schema(frame, _COLUMNS)
 
 
 def media_variant_index(path: Path) -> IndexCSV[MediaVariantRow]:
-    """The variant index at *path*, one row per variant, entry and camera."""
+    """Return the variant index at *path*, one row per variant, entry and camera."""
     return IndexCSV(
         path,
         MediaVariantRow,
@@ -148,7 +153,7 @@ def media_variant_index(path: Path) -> IndexCSV[MediaVariantRow]:
     )
 
 
-def media_variant_row(
+def build_media_variant_row(
     ds: Dataset,
     *,
     path: Path,
@@ -163,11 +168,12 @@ def media_variant_row(
     encoder: str,
     consumed_media_composition: str,
 ) -> MediaVariantRow:
-    """The row recording variant file *path*, built from its probed *facts*.
+    """Return the row that records variant file *path*, built from its *facts*.
 
-    The facts columns come from the builder the media index uses, so a consumer
-    rebuilds *facts* from the row with :func:`variant_facts`. Keyword-only
-    throughout: several arguments are strings a transposition would not catch.
+    The facts columns come from the builder that the media index uses. A consumer
+    therefore rebuilds *facts* from the row with :func:`media_variant_facts`.
+    Every argument is keyword-only, because several are strings, and a type check
+    does not catch two transposed strings.
     """
     probe = row_from_facts(facts)
     return MediaVariantRow(
@@ -202,8 +208,9 @@ def media_variant_row(
 def write_media_variant_row(ds: Dataset, row: MediaVariantRow) -> None:
     """Record *row*, replacing the row of the same variant, entry and camera.
 
-    Under the index lock, so two entries finishing at once both land. Call it
-    after the file is in place: a row is the claim that the file exists.
+    The write takes the index lock. Two entries that finish at once are therefore
+    both recorded. Call it after the file is in place, because a row asserts that
+    the file exists.
 
     Raises:
         ValueError: If the entry's group or sequence is not one path component.
@@ -214,41 +221,39 @@ def write_media_variant_row(ds: Dataset, row: MediaVariantRow) -> None:
 
 
 def read_media_variant_index(ds: Dataset) -> pd.DataFrame:
-    """Every variant row of *ds*, in the current columns.
+    """Return every variant row of *ds*, in the current columns.
 
-    An absent index reads as an empty one carrying every column. Never writes, so
-    reading an index written before a column existed leaves it as it is.
+    An absent index reads as an empty one with every column. The read does not
+    write. An index written before a column existed therefore stays as it is.
     """
     path = media_variant_index_path(ds)
     frame = media_variant_index(path).read() if path.exists() else pd.DataFrame()
     return project_to_schema(frame, _COLUMNS)
 
 
-def variant_row(
-    ds: Dataset, run_id: str, group: str, sequence: str, camera: str
-) -> dict[str, str] | None:
-    """The row of variant *run_id* for one entry and camera, or ``None``."""
-    for record in index_records(read_media_variant_index(ds)):
-        if (
-            record["run_id"] == run_id
-            and record["group"] == group
-            and record["sequence"] == sequence
-            and record["camera"] == camera
-        ):
-            return record
-    return None
+def media_variant_rows(ds: Dataset, run_id: str) -> dict[CameraEntry, dict[str, str]]:
+    """Return every row of variant *run_id*, keyed by entry and camera, in one read.
+
+    A caller that looks up many entries reads the index here once, rather than
+    once per entry.
+    """
+    frame = read_media_variant_index(ds)
+    return {
+        (record["group"], record["sequence"], record["camera"]): record
+        for record in index_records(frame[frame["run_id"] == run_id])
+    }
 
 
-def variant_placement(row: Mapping[str, str]) -> Placement:
-    """Where the file of *row* sits in its entry's source."""
+def media_variant_placement(row: Mapping[str, str]) -> Placement:
+    """Return the placement of the file of *row* in its entry's source."""
     return Placement.from_json(row["placement"])
 
 
-def variant_facts(row: Mapping[str, str]) -> MediaFacts:
-    """The probed facts of the file of *row*, rebuilt without probing it."""
+def media_variant_facts(row: Mapping[str, str]) -> MediaFacts:
+    """Return the probed facts of the file of *row*, rebuilt without probing it."""
     return row_to_facts(row)
 
 
-# Registered so the dataset-wide passes see the index: reindex drops a row whose
+# The dataset-wide passes read every registered index. Reindex drops a row whose
 # file is gone, and the portability passes rewrite its paths.
-register_reconcilable_index(PREPROCESS_KIND_DIRECTORY, media_variant_index)
+register_reconcilable_index(PREPROCESS_KIND, media_variant_index)

@@ -1,6 +1,6 @@
-"""Deciding what one entry's working directory still holds.
+"""Decide which completed phases in one entry's working directory are still valid.
 
-The per-entry protocol every tracker follows: claim the directory, decide per
+The per-entry protocol that every tracker follows: claim the directory, decide per
 phase whether the recorded marker still proves the work, clear what is stale, run
 what is left, record what completed, and release the claim whatever happened.
 Taking, refreshing and releasing the claim is

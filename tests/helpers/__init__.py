@@ -15,14 +15,15 @@ What lives where:
   fit-then-apply features are tested on.
 - ``tracks`` -- track tables, tracks variants, raw TREx, SLEAP and DeepLabCut
   exports.
-- ``trex``, ``sleap``, ``litpose`` and ``ultralytics`` hold recording
-  stand-ins for the tools those trackers run, installed over each tracker's own
-  seams, and
-  ``inference`` the same for the environments of ``infer-pose`` and
+- ``trex``, ``sleap``, ``litpose`` and ``ultralytics`` contain recording
+  stand-ins for the tools that those trackers run, installed over each tracker's
+  seams, and ``inference`` the same for the environments of ``infer-pose`` and
   ``infer-points``.
 - ``media`` -- media files, media-index rows, transcode derivatives.
-- ``variants`` -- media variant files and their index rows.
+- ``variants`` -- media variant files and their index rows, and a count of the
+  index reads a variant's consumers make.
 - ``ops`` -- the smallest params dict that validates for each registered op.
+- ``runlog`` -- an attempt's recorded run-log events.
 - ``scope`` -- a resolved scope over named entries, for the ops and drivers
   that take their coverage as an argument.
 - ``environment`` -- what the surrounding machine provides: the ffmpeg
@@ -79,6 +80,7 @@ from tests.helpers.media import (
 )
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.ops import minimal_op_params
+from tests.helpers.runlog import entry_error_lines
 from tests.helpers.scope import resolved_scope, scope_over
 from tests.helpers.source_scan import (
     functions_named,
@@ -109,7 +111,7 @@ from tests.helpers.litpose import (
     install_fake_litpose,
     write_litpose_model,
 )
-from tests.helpers.sleap import FakeSleap, install_fake_sleap
+from tests.helpers.sleap import FakeSleap, install_fake_sleap, write_sleap_model
 from tests.helpers.trex import FakeTrex, install_fake_trex
 from tests.helpers.ultralytics import (
     ULTRALYTICS_KEYPOINTS,
@@ -118,7 +120,12 @@ from tests.helpers.ultralytics import (
     ultralytics_probe_response,
     write_ultralytics_predictions,
 )
-from tests.helpers.variants import add_media_variant, finish_media_variant
+from tests.helpers.variants import (
+    IndexReads,
+    add_media_variant,
+    count_index_reads,
+    finish_media_variant,
+)
 
 __all__ = [
     "FFMPEG_TOOLCHAIN",
@@ -131,6 +138,7 @@ __all__ = [
     "FakeTrainer",
     "FakeTrex",
     "FakeUltralytics",
+    "IndexReads",
     "MediaClip",
     "MockDataset",
     "add_media_sequence",
@@ -142,8 +150,10 @@ __all__ = [
     "healthy_probe",
     "clean_facts_cells",
     "clip_facts",
+    "count_index_reads",
     "dot_image",
     "dotted_values",
+    "entry_error_lines",
     "finish_media_variant",
     "functions_named",
     "index_media_sequence",
@@ -185,6 +195,7 @@ __all__ = [
     "write_mpeg4_mp4",
     "write_painted_entry",
     "write_sleap_analysis_h5",
+    "write_sleap_model",
     "write_templates",
     "write_trex_npz",
     "write_ultralytics_predictions",

@@ -55,6 +55,7 @@ from tests.helpers import (
     make_dataset,
     scope_over,
     write_media_index,
+    write_sleap_model,
 )
 
 type Document = dict[str, object]
@@ -285,8 +286,8 @@ def test_fewer_entries_than_intended_gives_a_different_identity(
 def fake_trex(monkeypatch: pytest.MonkeyPatch) -> FakeTrex:
     """TREx's two phases, replaced by fakes that write what TREx writes.
 
-    The tool never runs, and what it leaves behind is real enough to convert, so
-    the bridge that publishes into ``tracks/`` is exercised rather than stubbed.
+    The tool never runs, and its output is convertible. The bridge that publishes
+    into ``tracks/`` is therefore exercised rather than stubbed.
     """
     return install_fake_trex(monkeypatch)
 
@@ -369,7 +370,7 @@ def test_a_feature_below_a_tracker_resolves_to_what_it_then_records(
 
 @pytest.fixture
 def with_media(tmp_path: Path) -> Dataset:
-    """Two indexed videos of 640x480, and nothing computed from them."""
+    """Return a dataset whose only content is two indexed 640x480 videos."""
     dataset = make_dataset(tmp_path / "media")
     write_media_index(dataset, ["vid1", "vid2"], uids={"vid1": "u1", "vid2": "u2"})
     return dataset
@@ -377,11 +378,8 @@ def with_media(tmp_path: Path) -> Dataset:
 
 @pytest.fixture
 def sleap_model(tmp_path: Path) -> Path:
-    """A model directory on disk, so a SLEAP step's identity can be read."""
-    model = tmp_path / "sleap-model"
-    model.mkdir()
-    _ = (model / "best.ckpt").write_bytes(b"weights")
-    return model
+    """Write a model directory to disk, so that a SLEAP step's identity can be read."""
+    return write_sleap_model(tmp_path / "sleap-model")
 
 
 def _crop(width: int = 320) -> Document:
@@ -389,7 +387,7 @@ def _crop(width: int = 320) -> Document:
 
 
 def _variant_then_sleap(model: Path, width: int = 320) -> Recipe:
-    """A variant and a tracker that reads it, joined by the ``media`` reference."""
+    """Return a recipe of a variant and a tracker that reads it via ``media``."""
     return Recipe.model_validate(
         {
             "steps": [
@@ -411,7 +409,7 @@ def _variant_then_sleap(model: Path, width: int = 320) -> Recipe:
 
 
 def _variant_id(steps: list[Document], media: str = "") -> str:
-    """What a variant of *steps* over *media* is called, minted by the op."""
+    """Return the run id of a variant of *steps* over *media*, minted by the op."""
     params = PreprocessParams.model_validate({"steps": steps, "media": media})
     return preprocess_identity(params).run_id
 
@@ -442,12 +440,13 @@ def test_a_changed_crop_moves_the_variant_and_the_tracker_below_it(
 
 
 _BOTH_VIDEOS = Scope(entries=[("", "vid1"), ("", "vid2")])
-"""Named rather than left to the planner, which plans a graph writing no tracks
-over the tracks universe, and these datasets have no tracks yet."""
+"""The scope is named instead of left to the planner. The planner plans a graph
+without a tracks writer over the tracks universe, and these datasets do not have
+tracks yet."""
 
 
 def test_a_variant_after_a_transcode_plans(with_media: Dataset) -> None:
-    """The transcode is ordering only, so the variant's identity is its params."""
+    """The transcode is ordering only, and the variant's identity is its params."""
     plan = plan_pipeline(
         with_media,
         scope=_BOTH_VIDEOS,
@@ -478,7 +477,7 @@ def test_a_variant_after_a_transcode_plans(with_media: Dataset) -> None:
 
 
 def test_a_variant_after_another_variant_names_it(with_media: Dataset) -> None:
-    """A chained variant's identity carries its upstream's, before either exists."""
+    """A chained variant's identity includes its upstream's, before either exists."""
     plan = plan_pipeline(
         with_media,
         scope=_BOTH_VIDEOS,

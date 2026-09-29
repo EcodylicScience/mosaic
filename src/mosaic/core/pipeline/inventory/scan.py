@@ -39,7 +39,8 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from mosaic.core.scope import Scope
 
-from ._read import IndexReader, finish_state, run_ids
+from ._read import IndexReader
+from ._runs import finish_state, run_ids
 from .contributors import inventory_contributor, registered_inventory_kinds
 from .label_series import label_series_records
 from .media import media_derivative_record, media_variant_records
@@ -523,8 +524,8 @@ def inventory(
                 records.append(media_derivative_record(ds, media_target, asked, reader))
             continue
         if kind == "media-variant":
-            # Keyed by entry and camera, so it cannot share the entry-keyed
-            # builder table below.
+            # Media-variant records are keyed by entry and camera. They therefore
+            # cannot share the entry-keyed builder table below.
             records.extend(media_variant_records(ds, asked, reader))
             continue
         if kind == "label-series":

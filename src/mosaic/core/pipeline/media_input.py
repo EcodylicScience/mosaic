@@ -1,14 +1,14 @@
-"""The ``media`` parameter every consumer of media shares, and what it refuses.
+"""Declare the ``media`` parameter that every consumer of media shares.
 
 A tracker or an inference op reads an entry's original recording from
 ``media_raw`` unless ``media`` names a media variant, the run identifier of a
 ``preprocess`` run. Then it reads that derived video instead, and its tracks are
 mapped back into the entry's own pixels and frames.
 
-A variant is already cut to its own frame range by its ``trim`` and ``decimate``
-steps, while every frame number a user types on a consumer is a source frame. A
-frame window set on the consumer as well would count in the variant's frames, so
-:class:`MediaInputParams` refuses the combination.
+A variant is already cut to a frame range by its ``trim`` and ``decimate`` steps,
+while every frame number that a user types on a consumer is a source frame. A tool
+applies a consumer's frame window to the frames that it reads, which for a variant
+are variant frames. :class:`MediaInputParams` therefore refuses the combination.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from pydantic import model_validator
 from mosaic.core.json_value import JsonValue
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
 from mosaic.core.pipeline.op_identity import parse_op_run_id
-from mosaic.core.pipeline.preprocess import PREPROCESS_KIND
+from mosaic.core.pipeline.preprocess_layout import PREPROCESS_KIND
 
 __all__ = ["MediaInputParams", "media_identity_terms"]
 
@@ -28,27 +28,27 @@ _MEDIA_DESCRIPTION = (
     "The run id of a preprocess media variant to read in place of the entry's "
     "original media. The tool reads that derived video, and its tracks are "
     "published in the entry's own pixels and frames. Empty reads the original "
-    "recording from media_raw. A frame window cannot be combined with it: the "
+    "recording from media_raw. A frame window cannot be combined with it. The "
     "variant's trim and decimate steps set the range."
 )
 
 
 class MediaInputParams(Params):
-    """Mixed into the parameters of every op that reads an entry's media.
+    """Declare ``media`` for every op that reads an entry's media, as a mixin.
 
-    ``media`` is ``HASH_EXCLUDE``, so ``identity_dump()`` never holds it, and each
-    consumer adds :func:`media_identity_terms` to the payload it mints from. The
-    term is absent when ``media`` is empty, so every identifier minted before the
-    field existed is unchanged.
+    ``media`` is ``HASH_EXCLUDE``, and ``identity_dump()`` omits it. Each consumer
+    adds :func:`media_identity_terms` to the payload that it mints from. The term
+    is absent when ``media`` is empty. Every identifier minted before the field
+    existed is therefore unchanged.
 
     A subclass declares the fields and tool settings that select frames, and the
-    op kind a refusal names.
+    op kind that a refusal names.
     """
 
     media: Annotated[str, HASH_EXCLUDE, Declared(_MEDIA_DESCRIPTION)] = ""
 
     window_fields: ClassVar[tuple[str, ...]] = ()
-    """The fields that select which frames the op reads."""
+    """The fields that select the frames that the op reads."""
 
     extra_settings_window_keys: ClassVar[dict[str, tuple[str, ...]]] = {}
     """Per pass-through settings field, the tool settings that select frames."""
@@ -60,13 +60,14 @@ class MediaInputParams(Params):
     def _refuse_a_frame_window_on_derived_media(self) -> Self:
         """Refuse a frame window when ``media`` names a variant.
 
-        A field counts as set when it differs from its default, so restating a
-        default is not refused. A settings key counts as set when it is present.
+        A field counts as set when it differs from its default. Restating a
+        default is therefore not refused. A settings key counts as set when its
+        value is not null, which the tools read as the setting left unset.
 
         The refusal names the variant only when ``media`` is a preprocess run
-        identifier. A recipe step referring to another step's variant is checked
-        with a stand-in identifier, which names no variant, so the refusal then
-        describes what ``media`` names instead.
+        identifier. A recipe step that refers to another step's variant is checked
+        with a stand-in identifier in place of a preprocess run id. The refusal
+        then describes ``media`` as the output of a preprocess step.
         """
         if not self.media:
             return self
@@ -82,7 +83,9 @@ class MediaInputParams(Params):
             if not isinstance(settings, dict):
                 continue
             offending.extend(
-                f"`{key}` in `{settings_field}`" for key in keys if key in settings
+                f"`{key}` in `{settings_field}`"
+                for key in keys
+                if settings.get(key) is not None
             )
         if not offending:
             return self
@@ -94,7 +97,7 @@ class MediaInputParams(Params):
         )
         refused = (
             f"{self.op_kind}: {', '.join(offending)} cannot be combined with "
-            f"`media`. `media` names {named}: a video already cut to its own frame "
+            f"`media`. `media` names {named}: a video already cut to its frame "
             f"range. Put the range in that variant with a `trim` or `decimate` "
             f"step, or leave `media` empty to read the original recording from "
             f"`media_raw` with this frame range."
@@ -103,7 +106,7 @@ class MediaInputParams(Params):
 
 
 def media_identity_terms(params: MediaInputParams) -> dict[str, str]:
-    """The identity term ``media`` contributes: ``{"media": ...}``, or nothing.
+    """Return the identity term that ``media`` contributes to a consumer's run id.
 
     Args:
         params: A consumer's parameters.

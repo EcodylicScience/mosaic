@@ -1,11 +1,11 @@
-"""A recording stand-in for Lightning Pose, for the tests of its tracker.
+"""Stand in for Lightning Pose in the tests of its tracker, recording each call.
 
-``run_litpose`` reaches Lightning Pose through one module-level seam in
+``run_litpose`` calls Lightning Pose through one module-level seam in
 ``litpose/dataset_runs.py``, its one inference phase. :func:`install_fake_litpose`
 replaces it with a :class:`FakeLitpose`, whose prediction writes a small
-DeepLabCut CSV, the layout Lightning Pose exports, so a test runs the whole
-tracker protocol with no model and no GPU. :func:`write_litpose_model` writes the
-model directory a run resolves.
+DeepLabCut CSV, the layout that Lightning Pose exports. A test therefore runs the
+whole tracker protocol without a model or a GPU. :func:`write_litpose_model`
+writes the model directory that a run resolves.
 """
 
 from __future__ import annotations
@@ -22,19 +22,20 @@ from mosaic.tracking.litpose.run import LitposePredictResult
 from tests.helpers.tracks import write_dlc_csv
 
 _BODYPARTS: tuple[str, ...] = ("nose", "tail")
-"""The keypoints :func:`write_litpose_model` names and :class:`FakeLitpose` reports."""
+"""The keypoints that the model of :func:`write_litpose_model` names."""
 
 
 @dataclass
 class FakeLitpose:
-    """Recording stand-in for the Lightning Pose inference phase."""
+    """Stand in for the Lightning Pose inference phase, recording each call."""
 
     predicted: list[Path] = field(default_factory=list)
     frames: int = 6
     written: list[npt.NDArray[np.float64]] = field(default_factory=list)
-    """What each prediction wrote, in call order.
+    """The values that each prediction wrote, in call order.
 
-    Each holds the ``[x, y, likelihood]`` values, shaped ``(frame, bodypart, 3)``.
+    Each entry contains the ``[x, y, likelihood]`` values, shaped
+    ``(frame, bodypart, 3)``.
     """
 
     def predict(
@@ -64,10 +65,10 @@ def install_fake_litpose(
 def write_litpose_model(model_dir: Path, *, weights: bytes = b"weights") -> Path:
     """Write a minimal Lightning Pose model directory, and return it.
 
-    The directory holds a ``config.yaml`` naming the two keypoints
-    :class:`FakeLitpose` reports, and one checkpoint holding *weights*. The
-    model's identity is a digest of both, so two directories written with the
-    same *weights* are one model.
+    The directory contains a ``config.yaml`` naming the two keypoints of
+    :class:`FakeLitpose`, and one checkpoint with *weights*. The model's identity
+    is a digest of both. Two directories written with the same *weights* are
+    therefore one model.
     """
     checkpoint = model_dir / "tb_logs" / "m" / "version_0" / "checkpoints" / "best.ckpt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)

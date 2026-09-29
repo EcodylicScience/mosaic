@@ -61,8 +61,8 @@ from mosaic.core.pipeline.preprocess_index import (
 )
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.pipeline.variant_source import (
-    no_readable_variant_message,
-    resolve_variant_source,
+    VariantLookup,
+    unreadable_variant_refusal,
 )
 from mosaic.runlog import now_iso
 from mosaic.tracking.common.bridge import (
@@ -82,6 +82,7 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
+    from mosaic.core.entry import Entry
     from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.placement import SourceMapping
 
@@ -231,7 +232,7 @@ class _InferParamsBase(MediaInputParams):
     """What every inference op predicts with.
 
     The settings alone. Which entries a run covers and whether it recomputes
-    are arguments to the run. Each subclass names its own op for a refusal.
+    are arguments to the run. Each subclass names its op kind for a refusal.
 
     ``convert_to_tracks`` reaches ``identity_dump()`` where the same knob on
     :class:`~mosaic.tracking.common.params.TrackerOpParams` is ``HASH_EXCLUDE``.
@@ -308,13 +309,13 @@ def infer_run_id(
 ) -> str:
     """Mint an inference run identifier.
 
-    Minted from the payload the run's tracks variant is minted from, so the two
-    identifiers coincide.
+    It is minted from the payload that the run's tracks variant is minted from.
+    The two identifiers therefore coincide.
 
     Args:
         kind: The op kind, e.g. ``"infer-points"``.
         version: The op's declared version -- a visible segment, not hashed.
-        params: Op params; ``identity_dump()`` and ``media`` enter the digest.
+        params: Op params. ``identity_dump()`` and ``media`` enter the digest.
         model_id: The training run that produced the weights, or a digest of
             the weights path when they were given as a bare path. The model is
             what determined the predictions, so leaving it out would let two
@@ -379,37 +380,38 @@ def _bridge_df_to_tracks(
     producer_run_id: str,
     kind: str,
     seq_dir: Path,
-    media_paths: Sequence[Path],
+    consumed_media: Sequence[Path],
     model_pt: Path,
     overwrite: bool,
     mapping: SourceMapping | None = None,
 ) -> BridgeCounts | None:
     """Publish an inference DataFrame as a standardized ``tracks/`` parquet.
 
-    Names the columns the schema requires, then publishes through the bridge
-    every tracker shares. ``tracks_variant`` names the directory as well as the
-    row, so two models (or two parameter sets) never target one path.
+    Names the columns that the schema requires, then publishes through the bridge
+    that every tracker shares. ``tracks_variant`` names the directory as well as the
+    row. Two models (or two parameter sets) therefore never target one path.
 
     Args:
         ds: The dataset.
         df: The predictions, as the model's runner reported them.
         group: The entry's group, which may be empty.
         sequence: The entry's sequence.
-        tracks_variant: The tracks variant the table belongs to.
+        tracks_variant: The tracks variant that the table belongs to.
         producer_run_id: The inference run that produced the predictions.
         kind: The inference op, recorded as the row's ``producer``.
-        seq_dir: The entry's working directory, which holds the predictions.
-        media_paths: The media files the table derives from: the video the
-            model read and, for a media variant, the entry media it was made
-            from.
-        model_pt: The weights the model loaded.
-        overwrite: Replace a table this variant already holds for the entry.
-        mapping: Where the media variant the model read sits in the entry's
-            media, or ``None`` when it read the entry media itself.
+        seq_dir: The entry's working directory, which contains the predictions.
+        consumed_media: The media files that the table derives from: the video
+            that the model read and, for a media variant, the entry media that it
+            was made from.
+        model_pt: The weights that the model loaded.
+        overwrite: Replace the table that this variant already has for the
+            entry.
+        mapping: The placement in the entry's media of the media variant that
+            the model read, or ``None`` when it read the entry media itself.
 
     Returns:
-        What the published table holds, or ``None`` when there was nothing to
-        publish or the table exists and *overwrite* is false.
+        Counts of the published table, or ``None`` when the predictions are empty
+        or the table exists and *overwrite* is false.
     """
     if df is None or df.empty:
         return None
@@ -437,7 +439,7 @@ def _bridge_df_to_tracks(
         # The prediction directory this run wrote: the row-level pointer from a
         # tracks table back to the predictions that produced it.
         source=seq_dir,
-        consumed=[*media_paths, model_pt],
+        consumed=[*consumed_media, model_pt],
         mapping=mapping,
         # Strict here alone. Every *tracker* write path validates leniently,
         # because a missing required column is merely an incomplete table, and
@@ -479,15 +481,16 @@ def infer_identity(
 
 @dataclass(frozen=True, slots=True)
 class _InferenceEntry:
-    """One entry to predict on: the file the model reads, and how to publish it.
+    """One entry to predict on, with the file that the model reads and its mapping.
 
     Attributes:
         group: The entry's group.
         sequence: The entry's sequence.
-        video_path: The file the model reads.
+        video_path: The file that the model reads.
         facts: *video_path*'s facts, gated for analysis.
-        media_paths: The media files a table from this entry derives from.
-        mapping: Where a media variant's file sits in the entry media, or
+        consumed_media: The media files that a table from this entry derives
+            from.
+        mapping: The placement of a media variant's file in the entry media, or
             ``None`` when the model reads the entry media.
     """
 
@@ -495,7 +498,7 @@ class _InferenceEntry:
     sequence: str
     video_path: Path
     facts: MediaFacts
-    media_paths: tuple[Path, ...]
+    consumed_media: tuple[Path, ...]
     mapping: SourceMapping | None
 
     @property
@@ -508,17 +511,17 @@ def _inference_entry(
     entry: ResolvedScopeEntry,
     *,
     kind: str,
-    media: str,
+    variants: VariantLookup | None,
     opens_by_path: bool,
 ) -> _InferenceEntry:
-    """What the model reads for *entry*: its media, or the variant *media* names.
+    """Return the file that the model reads for *entry*: its media, or a variant's.
 
-    A variant is a plain video mosaic wrote, so it is never an imgstore to
+    A variant is a plain video that mosaic wrote. It is never an imgstore to
     export, and its index row's stored facts describe it without a probe.
+    *variants* is ``None`` when the run reads the entry media.
 
     Raises:
-        MediaVariantMissingError: If *media* names a variant with no file for
-            the entry.
+        MediaVariantMissingError: If the variant lacks a file for the entry.
         MediaVariantDriftedError: If the entry's media changed after the
             variant's file was written.
         ToolCodecError: If the op hands its model's runner a file whose codec
@@ -526,10 +529,11 @@ def _inference_entry(
     """
     group, sequence, resolved = entry.group, entry.sequence, entry.resolved
     mapping: SourceMapping | None = None
-    if media:
-        variant = resolve_variant_source(ds, media, entry)
+    media = variants.run_id if variants is not None else ""
+    if variants is not None:
+        variant = variants.resolve(ds, entry)
         target, stored = variant.path, variant.facts
-        media_paths = variant.consumed_paths
+        consumed_media = variant.consumed_media
         mapping = variant.mapping()
     else:
         # The op reads the first path. A required-but-unlinked entry already
@@ -546,13 +550,13 @@ def _inference_entry(
         # The facts must describe the file that will be read: for an export
         # that is not the file the index measured, so it is probed on its own.
         stored = resolved.facts[0] if target == source else None
-        media_paths = (target,)
+        consumed_media = (target,)
     if opens_by_path:
         # Only for an op that hands the path over. The localizer reads the
         # file in this process with mosaic's own decoder, so what a foreign
         # stack can open says nothing about it.
         refuse_undecodable_codec(
-            target, kind=kind, group=group, sequence=sequence, variant=media
+            ds, target, kind=kind, group=group, sequence=sequence, variant=media
         )
     # The gate, run here rather than inside the reader, because two of the
     # three ops no longer open the video in this process.
@@ -562,7 +566,7 @@ def _inference_entry(
         sequence=sequence,
         video_path=target,
         facts=facts,
-        media_paths=media_paths,
+        consumed_media=consumed_media,
         mapping=mapping,
     )
 
@@ -612,31 +616,42 @@ def _run_inference_op(
         return run_id
 
     work: list[_InferenceEntry] = []
-    # Entries whose variant could not be read. Each is recorded as failed here,
-    # and counts as attempted and lost below.
-    unresolved: set[str] = set()
-    for entry in one_camera_per_entry(kind, media_scope):
+    # Entries whose variant could not be read, by key. Each is recorded as
+    # failed here, and counts as attempted and lost below.
+    unresolved: dict[str, Entry] = {}
+    kept = one_camera_per_entry(kind, media_scope)
+    variants = (
+        VariantLookup.read(
+            ds, params.media, [(entry.group, entry.sequence) for entry in kept]
+        )
+        if params.media
+        else None
+    )
+    for entry in kept:
         try:
             work.append(
                 _inference_entry(
                     ds,
                     entry,
                     kind=kind,
-                    media=params.media,
+                    variants=variants,
                     opens_by_path=opens_by_path,
                 )
             )
         except (MediaVariantMissingError, MediaVariantDriftedError) as exc:
             key = make_entry_key(entry.group, entry.sequence)
             ctx.entry_failed(key, exc)
-            unresolved.add(key)
+            unresolved[key] = (entry.group, entry.sequence)
 
-    # Every entry lost before any model ran: the variant the run names is not
-    # readable for any of them, so nothing is probed and no variant recorded.
-    if unresolved and not work:
-        raise AllEntriesFailed(
-            no_readable_variant_message(kind, params.media, run_id, unresolved)
+    # When every entry is lost before a model runs, the variant that the run
+    # names is unreadable for all of them. The run then raises before it probes
+    # a file or records a variant.
+    if not work and (
+        unreadable := unreadable_variant_refusal(
+            ds, kind, params.media, run_id, lost=set(unresolved), unresolved=unresolved
         )
+    ):
+        raise AllEntriesFailed(unreadable)
 
     # Preflight after the scope and before anything is written. Two orderings
     # matter here. It follows the scope because resolving media is local and
@@ -673,7 +688,7 @@ def _run_inference_op(
     write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
     done = 0
-    # Entries this run opened or could not read a variant for, and those whose
+    # Entries that this run opened or could not read a variant for, and those whose
     # predictions it could not publish. An entry held by another execution was
     # never this run's to lose.
     attempted: set[str] = set(unresolved)
@@ -687,7 +702,7 @@ def _run_inference_op(
 
             # A claim, not a cache. Inference still re-infers unconditionally -- the
             # completion marker below records that output is whole, and nothing gates
-            # on it, because turning this into a cache is a behaviour change with its
+            # on it, because turning this into a cache is a behavior change with its
             # own failure mode (a silently skipped re-run over a corrected video). What
             # the claim prevents is two executions writing one ``predictions.parquet``
             # at once. Through ``open_entry`` rather than a fifth inline copy of it, so
@@ -752,7 +767,7 @@ def _run_inference_op(
                             producer_run_id=run_id,
                             kind=kind,
                             seq_dir=seq_dir,
-                            media_paths=item.media_paths,
+                            consumed_media=item.consumed_media,
                             model_pt=model.path,
                             overwrite=overwrite,
                             mapping=item.mapping,
@@ -793,21 +808,26 @@ def _run_inference_op(
             ctx.heartbeat(i + 1)
 
     finally:
-        # Attempted-minus-lost, the count the tracker driver reports, and in a
-        # `finally` for its reason: a run stopped partway has still published
-        # what it finished, and a count written after the context closes is
-        # dropped.
+        # Report attempted-minus-lost, the count that the tracker driver reports,
+        # from a `finally` for the driver's reason. A run stopped partway has
+        # still published the entries that it finished, and a count written after
+        # the context closes is dropped.
         if params.convert_to_tracks:
             ctx.entries_written(len(attempted) - len(lost))
 
-    # Losing every entry means the run published nothing, which is a failed run
-    # and not a finished one.
+    # A run that loses every entry did not publish a table, and it is a failed
+    # run instead of a finished one. When the model did not run for any lost
+    # entry, because the rest were held by another execution, the refusal cannot
+    # point at predictions.
     if attempted and lost == attempted:
-        message = (
+        unreadable = unreadable_variant_refusal(
+            ds, kind, params.media, run_id, lost=lost, unresolved=unresolved
+        )
+        message = unreadable or (
             f"[{kind}] every one of {len(attempted)} attempted entries failed to "
-            f"publish, so run_id={run_id} produced no tracks: "
-            f"{', '.join(sorted(lost))}. The predictions are kept under "
-            f"{run_root}. The per-entry errors are in this attempt's run-log."
+            f"publish: {', '.join(sorted(lost))}. run_id={run_id} did not produce "
+            f"tracks. The predictions are kept under {run_root}. The per-entry "
+            f"errors are in this attempt's run-log."
         )
         raise AllEntriesFailed(message)
     print(f"[{kind}] completed run_id={run_id} ({done}/{len(work)}) -> {run_root}")

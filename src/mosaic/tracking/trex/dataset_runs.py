@@ -251,11 +251,12 @@ def trex_settings(
     leaves TREx to decide. The key is kept rather than dropped, so the payload's
     shape does not depend on what was set.
 
-    **``media`` joins only when set**, as the media variant TREx reads. It names
-    no phase, so :func:`phase_settings` never sends it to TREx.
+    ``media`` enters the payload only when set, as the media variant that TREx
+    reads. It does not name a phase. :func:`phase_settings` therefore never sends
+    it to TREx.
 
     Args:
-        params: The run's parameters. The phase-declaring fields reach the
+        params: The run's parameters. The phase-declaring fields enter the
             payload, and ``media`` when it names a variant. The execution knobs
             are excluded from identity and stay out of it.
         detect_model_id: The detection model's identity, or ``None``.
@@ -297,7 +298,7 @@ def _bridge_npz_to_tracks(
     *,
     tracks_variant: str,
     producer_run_id: str,
-    media_paths: Sequence[Path],
+    consumed_media: Sequence[Path],
     timeline: ConcatenatedTimeline | None,
     media_frames: int | None,
     overwrite: bool,
@@ -324,9 +325,10 @@ def _bridge_npz_to_tracks(
     answerable is a property of the *run* (an ``analysis_range`` covers less on
     purpose) and the caller is what knows.
 
-    *media_paths* are the media files the table derives from. *mapping* maps a
-    table tracked on a media variant into source space, retiming it on the
-    entry's own timeline, so a caller passing one passes no *timeline*.
+    *consumed_media* are the media files that the table derives from. *mapping*
+    maps a table tracked on a media variant into source space and retimes it on
+    the entry's timeline. A caller that passes *mapping* therefore does not pass
+    *timeline*.
 
     Returns ``None`` when there was nothing to convert or the conversion failed.
     """
@@ -375,8 +377,10 @@ def _bridge_npz_to_tracks(
         return None
 
     merged = merge_on_column_union(frames)
+    retimed: tuple[str, ...] = ()
     if timeline is not None:
-        merged = retime_joined_frame(merged, timeline)
+        joined = retime_joined_frame(merged, timeline)
+        merged, retimed = joined.frame, joined.dropped
 
     return publish_tracks_table(
         ds,
@@ -387,9 +391,10 @@ def _bridge_npz_to_tracks(
         tracks_variant=tracks_variant,
         producer_run_id=producer_run_id,
         source=npz_paths[0].parent,
-        consumed=[npz_paths[0], *media_paths],
+        consumed=[npz_paths[0], *consumed_media],
         media_frames=media_frames,
         mapping=mapping,
+        dropped=retimed,
     )
 
 
@@ -754,6 +759,8 @@ def run_trex(
     # The routed facts are still read, for a different job: they are what the
     # concatenated timeline is built from, and TREx cannot supply that -- it
     # takes one frame rate from the first clip and never checks the others.
+    # When `media` names a variant, TREx is given the variant file instead, and
+    # the routed facts time the table when it is mapped back to the entry.
     scope_entries = scope.op_entries if scope is not None else None
     media_scope = ds.resolve_media_scope(scope_entries)
     if not media_scope:
@@ -775,7 +782,7 @@ def run_trex(
         # rates -- TREx takes one rate from the first clip and never checks the
         # others. `None` when the facts are absent, which leaves the export as
         # it is rather than guessing at a timeline, and for a media variant,
-        # whose table the bridge maps back and retimes on the entry's own clips.
+        # whose table the bridge maps back and retimes on the entry's clips.
         timeline = (
             concatenated_timeline(item.source_facts)
             if item.source_facts and item.variant is None
@@ -1064,7 +1071,7 @@ def run_trex(
                     npz_paths,
                     tracks_variant=minted.tracks_variant,
                     producer_run_id=minted.run_id,
-                    media_paths=item.consumed_media,
+                    consumed_media=item.consumed_media,
                     timeline=timeline,
                     # What the tracker was pointed at, for the runs where the
                     # question has an answer worth recording.

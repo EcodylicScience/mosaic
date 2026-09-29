@@ -106,12 +106,22 @@ def make_entry_key(group: str, sequence: str) -> str:
     return f"{safe_group + '__' if safe_group else ''}{safe_seq}"
 
 
-def entry_camera_path(root: Path, group: str, sequence: str, camera: str) -> Path:
-    """Where one camera of an entry sits under *root*.
+def is_nameless_entry(group: str, sequence: str) -> bool:
+    """Return whether an entry's key is empty.
 
-    ``<root>/<entry_key>`` for single-camera media, and ``<root>/<entry_key>/<camera>``
-    when *camera* names one, so the cameras of one recording never collide. A
-    caller writing a file adds its suffix to the returned path.
+    The group is empty and the sequence is empty once stripped. A media scope
+    names such an entry by its first file's stem instead.
+    """
+    return not group and not to_safe_name(sequence)
+
+
+def entry_camera_path(root: Path, group: str, sequence: str, camera: str) -> Path:
+    """Return the path of one camera of an entry under *root*.
+
+    The path is ``<root>/<entry_key>`` for single-camera media, and
+    ``<root>/<entry_key>/<camera>`` when *camera* names one. The cameras of one
+    recording therefore do not collide. A caller that writes a file adds its suffix
+    to the returned path.
     """
     entry = root / make_entry_key(group, sequence)
     return entry / camera if camera else entry

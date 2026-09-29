@@ -1,4 +1,4 @@
-"""The gray conversion and the CLAHE the appearance steps and the crop features apply.
+"""Convert images to gray and equalize them with CLAHE.
 
 The ``grayscale`` and ``clahe`` steps, ``egocentric-crop`` and
 ``interaction-crop-pipeline`` all convert and equalize through these functions.
@@ -17,10 +17,10 @@ __all__ = ["apply_clahe", "make_clahe", "to_gray"]
 
 
 def make_clahe(clip_limit: float, tile_grid_size: int) -> cv2.CLAHE:
-    """A CLAHE over a square ``tile_grid_size`` grid, clipped at *clip_limit*.
+    """Build a CLAHE over a square ``tile_grid_size`` grid, clipped at *clip_limit*.
 
-    Building one initializes a lookup table per tile, so a caller builds it once
-    and applies it to every frame.
+    Building one initializes a lookup table per tile. Build it once and apply it to
+    every frame.
     """
     return cv2.createCLAHE(
         clipLimit=clip_limit, tileGridSize=(tile_grid_size, tile_grid_size)
@@ -30,9 +30,9 @@ def make_clahe(clip_limit: float, tile_grid_size: int) -> cv2.CLAHE:
 def apply_clahe[D: (np.uint8, np.uint16)](
     image: npt.NDArray[D], clahe: cv2.CLAHE
 ) -> npt.NDArray[D]:
-    """*image* with *clahe* applied: directly to a gray image, to L of LAB for BGR.
+    """Apply *clahe* to a gray *image* directly, and to L of LAB for a BGR one.
 
-    A color image is equalized on lightness alone, so its hues are kept.
+    A color image is equalized on lightness alone. Its hues are kept.
 
     Raises:
         cv2.error: If *image* is a 16-bit color image. OpenCV converts only an
@@ -46,7 +46,7 @@ def apply_clahe[D: (np.uint8, np.uint16)](
 
 
 def to_gray[D: (np.uint8, np.uint16)](image: npt.NDArray[D]) -> npt.NDArray[D]:
-    """*image* as a gray ``H x W`` image. A gray image is returned as it is."""
+    """Return *image* as a gray ``H x W`` image. A gray image is returned as it is."""
     if image.ndim == 2:
         return image
     return np.asarray(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), dtype=image.dtype)

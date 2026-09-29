@@ -35,7 +35,7 @@ from mosaic.core.pipeline.preprocess_index import (
 )
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
-from mosaic.core.pipeline.variant_source import no_readable_variant_message
+from mosaic.core.pipeline.variant_source import unreadable_variant_refusal
 from mosaic.tracking.common.index import TrackerRunRowBase
 from mosaic.tracking.common.mint import MintedRun
 from mosaic.tracking.common.scope import TrackerWorkItem, UnresolvedEntry, WorkItems
@@ -92,10 +92,11 @@ def run_tracker(
         minted: What :func:`~mosaic.tracking.common.mint.mint_tracker_run`
             returned. Minted by the caller, because an unresolvable model must
             abort before any of it is written.
-        work_items: What :func:`~mosaic.tracking.common.scope.build_work_items`
-            returned: one item per entry, and the entries whose media variant
-            could not be read. Each of those is recorded as a failed entry
-            before the first item runs, and counts as lost.
+        work_items: The return value of
+            :func:`~mosaic.tracking.common.scope.build_work_items`: one item per
+            entry, and the entries whose media variant could not be read. Each
+            of those is recorded as a failed entry before the first item runs,
+            and counts as lost.
         index: This tracker's run index, already ensured.
         run_entry: The tool-specific work for one entry, returning the row
             that records it -- or ``None`` for an entry worth no row. ``None`` is
@@ -111,7 +112,7 @@ def run_tracker(
     items = work_items.items
     rows: list[RowT] = []
     skipped: list[str] = []
-    # Entries this run opened, and those whose variant it could not read. Not
+    # Entries that this run opened, and those whose variant it could not read. Not
     # every item: one held by another execution was never this run's to lose,
     # and counting it would let a contended run declare itself a total failure.
     attempted: set[str] = {failure.key for failure in work_items.failures}
@@ -210,17 +211,23 @@ def run_tracker(
         # finished directories rather than recomputing them.
         #
         # When every lost entry is one whose media variant could not be read,
-        # no tool ran and there is no output to adopt, so the message says that
-        # instead.
+        # the tool did not run and did not write output to adopt. The message
+        # then says that instead.
         if attempted and lost == attempted:
-            if lost <= {failure.key for failure in work_items.failures}:
-                raise AllEntriesFailed(
-                    no_readable_variant_message(
-                        kind, work_items.media, minted.run_id, lost
-                    )
-                )
+            unreadable = unreadable_variant_refusal(
+                ds,
+                kind,
+                work_items.media,
+                minted.run_id,
+                lost=lost,
+                unresolved={
+                    failure.key: (failure.group, failure.sequence)
+                    for failure in work_items.failures
+                },
+            )
             raise AllEntriesFailed(
-                f"[{kind}] every one of {len(attempted)} attempted entries failed "
+                unreadable
+                or f"[{kind}] every one of {len(attempted)} attempted entries failed "
                 f"to publish, so run_id={minted.run_id} produced no tracks: "
                 f"{', '.join(sorted(lost))}. The tool output is kept under "
                 f"{minted.run_root}, so fixing the cause and re-running will "

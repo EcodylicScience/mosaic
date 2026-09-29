@@ -291,11 +291,11 @@ def test_declarations_are_read_off_what_a_class_declares() -> None:
 
 
 def test_the_media_domain_ops_are_the_ones_that_write_media() -> None:
-    """Read off each op's declared domain, so a new media op needs no name list.
+    """The answer is read off each op's declared domain, without a name list.
 
     The three media ops that wrote media before a variant existed keep their
-    answer, and ``preprocess``, which declares the media domain with a category
-    of its own, writes media as well.
+    answer, and ``preprocess``, which declares the media domain under a separate
+    category, writes media as well.
     """
     catalog = declaration_catalog()
 

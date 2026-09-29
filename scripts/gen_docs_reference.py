@@ -1,8 +1,8 @@
 """Regenerate `docs/reference/` from the registries the running code holds.
 
-Five pages, five authorities, and not one hand-written line in any of them:
-`FEATURES`, `OPS`, `MEDIA_STEPS`, the two converter registries beside
-`TRACK_SCHEMAS`, and the Typer app behind the `mosaic` console script. Each is
+Five pages are generated whole from five authorities: `FEATURES`, `OPS`,
+`MEDIA_STEPS`, the two converter registries beside `TRACK_SCHEMAS`, and the Typer
+app behind the `mosaic` console script. Each is
 already the authority at run time, and the CLI's discovery commands read these
 same registries. A reference page derived from anything else is a second answer,
 and second answers drift.
@@ -145,11 +145,11 @@ def model_name(raw: str) -> str:
 
 
 def is_model(spec: Mapping[str, JsonValue]) -> bool:
-    """Whether a `$defs` entry is a model with fields.
+    """Return whether a `$defs` entry is a model with fields.
 
     pydantic also writes a `$defs` entry for a named type alias: a `Literal`
     alias, a discriminated union of models, or the recursive `JsonValue`. Such
-    an entry declares no `properties`. It is a type, and the type column writes
+    an entry does not declare `properties`. It is a type, and the type column writes
     it out wherever a field uses it.
     """
     return isinstance(spec.get("properties"), dict)
@@ -167,7 +167,7 @@ def type_text(
     what a tagged union emits, and its branches are the models a client picks
     between. A `$ref` names a nested model whose own table follows in a
     collapsed block. A `$ref` to a type alias in *aliases* is replaced by the
-    type the alias names. *expanding* names the aliases already being written
+    type that the alias names. *expanding* names the aliases already being written
     out, and a recursive alias met inside itself is written as its name.
     """
     ref = spec.get("$ref")
@@ -264,9 +264,9 @@ def params_table(
     under a feature that has four of its own, so each nested model gets a
     `pymdownx.details` block that opens on demand. A type alias among the
     `$defs` is written into the type column instead (see `is_model`). *noun*
-    heads the first column: a file format has fields, not parameters.
-    *aliases* is passed down from the top level, whose `$defs` contain every
-    alias a nested model can name.
+    heads the first column, because a file format has fields instead of
+    parameters. *aliases* is passed down from the top level, whose `$defs`
+    contain every alias that a nested model can name.
     """
     nested = schema.get("$defs")
     if aliases is None:
@@ -373,14 +373,14 @@ def render_features() -> str:
 
 
 def and_list(items: list[str]) -> str:
-    """*items* joined as prose: `a`, `a and b`, `a, b and c`."""
+    """Join *items* as prose: `a`, `a and b`, `a, b and c`."""
     if len(items) < 2:
         return "".join(items)
     return f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 def unlisted_ops_note() -> list[str]:
-    """The note naming every op `mosaic tracking list` leaves out, or nothing.
+    """Return the note naming each op that `mosaic tracking list` omits, or no lines.
 
     The command lists `list_ops(domain=LISTED_OP_DOMAIN)`, and the set is
     computed from the same call with the constant imported from the command's

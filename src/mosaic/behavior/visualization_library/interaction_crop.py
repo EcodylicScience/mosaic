@@ -199,8 +199,8 @@ class InteractionCropPipeline:
     def _clahe(self) -> cv2.CLAHE:
         """The CLAHE for this instance's params, built on first use and then reused.
 
-        Building one initializes a lookup table per tile, so it is built once per
-        instance rather than once per frame or segment.
+        Building one initializes a lookup table per tile. It is therefore built
+        once per instance rather than once per frame or segment.
         """
         return make_clahe(
             self.params.clahe_clip_limit, self.params.clahe_tile_grid_size
@@ -571,7 +571,7 @@ class InteractionCropPipeline:
         center: tuple[float, float],
         angle: float,
     ) -> np.ndarray:
-        """The crop of *frame* around *center*, post-processed as the params ask.
+        """Return the crop of *frame* around *center*, post-processed per the params.
 
         Args:
             frame: The source frame, ``H x W x C`` or ``H x W``.

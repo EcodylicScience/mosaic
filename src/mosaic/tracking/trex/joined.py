@@ -34,8 +34,8 @@ not in fact report.
 
 A uniform-rate session keeps all of it: nothing was wrong with it.
 
-The rule itself, and the list of per-second fields it drops
-(``RATE_DEPENDENT_BASES``), live in :mod:`mosaic.core.pipeline.placement`, whose
+The rule itself, and the list of per-second fields that it drops
+(``RATE_DEPENDENT_BASES``), are defined in :mod:`mosaic.core.pipeline.placement`, whose
 :func:`~mosaic.core.pipeline.placement.retime` also times a table tracked on a
 media variant. This module applies it to a joined conversion.
 
@@ -66,7 +66,7 @@ import numpy as np
 import pandas as pd
 
 from mosaic.core.media.timeline import ConcatenatedTimeline
-from mosaic.core.pipeline.placement import retime
+from mosaic.core.pipeline.placement import MappedTable, retime
 from mosaic.core.track_library.helpers import column_array, column_names
 
 __all__ = ["retime_joined_frame"]
@@ -74,7 +74,7 @@ __all__ = ["retime_joined_frame"]
 
 def retime_joined_frame(
     df: pd.DataFrame, timeline: ConcatenatedTimeline
-) -> pd.DataFrame:
+) -> MappedTable:
     """Put *df* on *timeline*'s time axis, dropping what a single rate spoiled.
 
     A no-op for a single-segment timeline: there was one clip, one rate, and
@@ -85,7 +85,8 @@ def retime_joined_frame(
         timeline: The concatenation the conversion was built from.
 
     Returns:
-        A new frame. ``frame`` is untouched.
+        A new frame, and the names of the columns dropped from it, which the
+        bridge reports on the run-log. ``frame`` is untouched.
 
         **Not because it is right.** It is left on the axis TRex numbered
         because mosaic holds no map from that axis to the media's, and inventing
@@ -104,6 +105,6 @@ def retime_joined_frame(
         The loss itself is reported by the bridge, not corrected here.
     """
     if len(timeline.segments) < 2 or "frame" not in column_names(df):
-        return df
+        return MappedTable(df, ())
     frames = column_array(df, "frame").astype(np.int64, copy=False)
-    return retime(df, timeline, frames).frame
+    return retime(df, timeline, frames)

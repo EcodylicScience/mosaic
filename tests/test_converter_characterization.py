@@ -210,7 +210,7 @@ def _write_cvat(path: Path) -> None:
 
 
 def _lightning_pose_values() -> npt.NDArray[np.float64]:
-    """The ``[x, y, likelihood]`` of each keypoint on each frame."""
+    """Return the ``[x, y, likelihood]`` of each keypoint on each frame."""
     values = np.empty((len(_FRAMES), len(_KEYPOINTS), 3))
     for order, _ in enumerate(_FRAMES):
         x, y = _points_for(order)

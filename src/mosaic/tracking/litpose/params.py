@@ -41,7 +41,7 @@ _PRECISION_DESCRIPTION = "The forward-pass precision: fp32, fp16, or bf16."
 class LitposeParams(TrackerOpParams, MediaInputParams):
     """Parameters for the ``litpose`` tracking op and for ``run_litpose``.
 
-    Lightning Pose predicts on every frame and exposes no frame window.
+    Lightning Pose predicts on every frame and does not expose a frame window.
     """
 
     op_kind = LITPOSE_KIND
