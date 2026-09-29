@@ -37,6 +37,8 @@ from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.trex.params import TrexParams
 
+from tests.helpers import write_dlc_csv, write_sleap_analysis_h5
+
 # Marker fields this file does not own. Masked rather than dropped, so a field
 # that stops being written is still a visible diff. The first group differs
 # between two identical runs; ``params_hash`` is stable but is identity, and
@@ -160,26 +162,6 @@ def snapshot(ds: Dataset, kind: str, run_id: str) -> dict[str, object]:
 # --- Lightning Pose --------------------------------------------------------
 
 
-def _write_dlc_csv(path: Path, *, n: int = 6) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rng = np.random.default_rng(0)
-    scorer = ["scorer"]
-    bodyparts = ["bodyparts"]
-    coords = ["coords"]
-    for bodypart in ("nose", "tail"):
-        scorer += ["heatmap_tracker"] * 3
-        bodyparts += [bodypart] * 3
-        coords += ["x", "y", "likelihood"]
-    lines = [",".join(scorer), ",".join(bodyparts), ",".join(coords)]
-    for i in range(n):
-        row = [str(i)]
-        for _bodypart in ("nose", "tail"):
-            x, y = rng.uniform(0, 100, 2)
-            row += [f"{x:.6f}", f"{y:.6f}", f"{rng.uniform(0.5, 1.0):.6f}"]
-        lines.append(",".join(row))
-    path.write_text("\n".join(lines))
-
-
 @dataclass
 class _FakeLitpose:
     predicted: list[Path] = field(default_factory=list)
@@ -188,7 +170,9 @@ class _FakeLitpose:
         from mosaic.tracking.litpose.run import LitposePredictResult
 
         self.predicted.append(Path(video_path))
-        _write_dlc_csv(Path(out_csv))
+        _ = write_dlc_csv(
+            Path(out_csv), ("nose", "tail"), n_frames=6, scorer="heatmap_tracker"
+        )
         return LitposePredictResult(csv_path=Path(out_csv), stdout="", stderr="")
 
 
@@ -291,22 +275,6 @@ def test_litpose_leaves_this_shape(
 # --- SLEAP -----------------------------------------------------------------
 
 
-def _write_analysis_h5(path: Path, *, n_frames: int = 6) -> None:
-    import h5py
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rng = np.random.default_rng(0)
-    # matlab layout: (track, xy, node, frame)
-    tracks = rng.uniform(0, 100, (1, 2, 2, n_frames))
-    with h5py.File(path, "w") as handle:
-        dataset = handle.create_dataset("tracks", data=tracks)
-        dataset.attrs["dims"] = json.dumps(["track", "xy", "node", "frame"])
-        handle.create_dataset(
-            "node_names", data=np.array([b"nose", b"tail"], dtype="S")
-        )
-        handle.create_dataset("track_names", data=np.array([b"track_0"], dtype="S"))
-
-
 @dataclass
 class _FakeSleap:
     tracked: list[Path] = field(default_factory=list)
@@ -324,7 +292,12 @@ class _FakeSleap:
         from mosaic.tracking.sleap.run import SleapConvertResult
 
         self.converted.append(Path(slp_path))
-        _write_analysis_h5(Path(output_h5))
+        write_sleap_analysis_h5(
+            Path(output_h5),
+            np.random.default_rng(0).uniform(0, 100, (6, 1, 2, 2)),
+            node_names=("nose", "tail"),
+            track_names=("track_0",),
+        )
         return SleapConvertResult(
             analysis_h5_path=Path(output_h5), stdout="", stderr=""
         )

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Final
 
 import pandas as pd
 
+from mosaic.core.pipeline.composition import compositions_disagree
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 
@@ -309,7 +310,7 @@ def drifted_entries(
     drifted: list[tuple[str, str]] = []
     for entry, (roots, was) in sorted(recorded.items()):
         now = encode_entry_composition(current.get(entry, {}), roots)
-        if was and now and was != now:
+        if compositions_disagree(was, now):
             drifted.append(entry)
     return tuple(drifted)
 

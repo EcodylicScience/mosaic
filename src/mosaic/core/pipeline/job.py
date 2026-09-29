@@ -195,6 +195,16 @@ class JobContext:
         if self.run_log is not None:
             self.run_log.frame_axis_mismatch(key, tracked=tracked, media=media)
 
+    def columns_dropped(self, key: str, columns: Sequence[str]) -> None:
+        """Record that one entry's table was published without *columns*.
+
+        A report like :meth:`frame_axis_mismatch`: the entry published, so
+        nothing is appended to ``failed_keys`` and no status moves. Silent
+        without a run-log.
+        """
+        if self.run_log is not None:
+            self.run_log.columns_dropped(key, columns)
+
     def entries_written(self, count: int) -> None:
         """Record how many entries this attempt leaves holding an output row.
 

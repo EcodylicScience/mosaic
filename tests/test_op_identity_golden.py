@@ -70,7 +70,9 @@ from mosaic.core.pipeline.labels_identity import (
     label_converter_op,
     labels_run_id,
 )
+from mosaic.core.media.preprocess import ClaheStep, CropStep, TrimStep
 from mosaic.core.pipeline.ops import OPS
+from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.transcode import (
     TranscodeParams,
     transcode_recipe_hash,
@@ -787,6 +789,42 @@ def _ultralytics_tracker_defaults() -> str:
     )
 
 
+# The media variant identifier, minted by the function the op plans with. Each
+# case names its steps with explicit values so a changed step default moves
+# nothing here for a reason unrelated to the payload.
+_PREPROCESS_CROP = CropStep(x=120, y=40, width=320, height=240)
+_PREPROCESS_TRIM = TrimStep(start=100, stop=400)
+_PREPROCESS_CLAHE = ClaheStep(clip_limit=2.0, tile_grid_size=8)
+
+
+def _preprocess_one_step() -> str:
+    return preprocess_identity(PreprocessParams(steps=[_PREPROCESS_CROP])).run_id
+
+
+def _preprocess_three_steps() -> str:
+    params = PreprocessParams(
+        steps=[_PREPROCESS_CROP, _PREPROCESS_TRIM, _PREPROCESS_CLAHE]
+    )
+    return preprocess_identity(params).run_id
+
+
+def _preprocess_upstream() -> str:
+    params = PreprocessParams(
+        steps=[_PREPROCESS_CLAHE], media="preprocess.0.1-aaaaaaaaaa"
+    )
+    return preprocess_identity(params).run_id
+
+
+def _preprocess_labeled_rate() -> str:
+    params = PreprocessParams(steps=[_PREPROCESS_CROP], fps=15.0)
+    return preprocess_identity(params).run_id
+
+
+def _preprocess_h264() -> str:
+    params = PreprocessParams(steps=[_PREPROCESS_CROP], codec="h264")
+    return preprocess_identity(params).run_id
+
+
 FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "frames/run-id": _frames_run_id,
     "frames/run-id-revision-1": _frames_run_id_revised,
@@ -820,6 +858,11 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "prepare-training-data/run-id-revisions-named": (
         _prepare_run_id_with_revisions_named
     ),
+    "preprocess/one-step": _preprocess_one_step,
+    "preprocess/three-steps": _preprocess_three_steps,
+    "preprocess/upstream": _preprocess_upstream,
+    "preprocess/labeled-rate": _preprocess_labeled_rate,
+    "preprocess/h264": _preprocess_h264,
 }
 
 
@@ -869,6 +912,7 @@ def test_every_family_is_covered() -> None:
         "train-litpose",
         "convert-points",
         "prepare-training-data",
+        "preprocess",
         "resample-tracks",
         "infer-pose",
         "infer-points",

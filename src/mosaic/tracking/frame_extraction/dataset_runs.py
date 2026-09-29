@@ -14,7 +14,7 @@ from mosaic_media import MediaFacts
 from pydantic import Field, ValidationInfo, field_validator
 
 from mosaic.core.entry import Entry
-from mosaic.core.helpers import make_entry_key
+from mosaic.core.helpers import entry_camera_path, make_entry_key
 from mosaic.core.pipeline._utils import ResolvedScope, hash_params, json_ready
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
 from mosaic.core.pipeline.inventory._read import IndexReader
@@ -900,8 +900,7 @@ def _run_extract_frames(
         facts = () if joined is not None else tuple(resolved.facts)
         # A multi-camera recording writes each camera into its own subdir so the
         # cameras never collide; single-camera media keeps the flat layout.
-        key = make_entry_key(group, sequence)
-        seq_dir = run_root / key / camera if camera else run_root / key
+        seq_dir = entry_camera_path(run_root, group, sequence, camera)
         specs.append(
             _ExtractSpec(
                 group=group,

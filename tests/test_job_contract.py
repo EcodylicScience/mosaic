@@ -37,7 +37,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.params import Params
-from tests.helpers import MockDataset
+from tests.helpers import MockDataset, make_dataset
 
 
 # --- Minimal mock dataset + feature (mirrors tests/test_run_feature.py) ---
@@ -384,6 +384,7 @@ def test_a_log_predating_the_new_events_folds_to_their_zero_defaults(tmp_path: P
     assert snap["entries_written"] == 0
     assert snap["cache_hit"] is False
     assert snap["tracks_variant"] == ""
+    assert snap["entries_columns_dropped"] == 0
     # and the fields that did exist are untouched by the new branches
     assert snap["status"] == "finished"
     assert int(snap["progress_total"]) == 9
@@ -544,3 +545,67 @@ def test_an_older_reader_folds_a_log_holding_the_event(tmp_path: Path) -> None:
     assert snap is not None
     assert snap["status"] == "finished"
     assert snap["entries_frame_axis_mismatch"] == 0
+
+
+# --- a dropped column is a report, never a status ---------------------------
+
+
+def test_dropped_columns_accumulate_and_leave_the_status_alone(tmp_path: Path) -> None:
+    """Two entries published without the columns their variant made wrong.
+
+    Each event is one entry, so the count accumulates like ``entries_failed``.
+    The entries published, so the status does not move.
+    """
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    log = JsonlRunLog(path, eid)
+    log.started(kind="sleap", target="sleap", owner="me", host="h", pid=1)
+    log.columns_dropped("a", ["SPEED", "BORDER_DISTANCE"])
+    log.columns_dropped("b", ["timestamp"])
+    log.entries_written(2)
+    log.finished()
+    log.close()
+
+    snap = reduce_run_log(path)
+    assert snap is not None
+    assert snap["entries_columns_dropped"] == 2
+    assert snap["entries_failed"] == 0
+    assert snap["entries_written"] == 2
+    assert snap["status"] == "finished"
+
+
+def test_the_dropped_columns_event_names_each_column(tmp_path: Path) -> None:
+    """The names travel with the event, in the order the table held them."""
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    log = JsonlRunLog(path, eid)
+    log.started(kind="sleap", target="sleap", owner="me", host="h", pid=1)
+    log.columns_dropped("sess", ("SPEED", "BORDER_DISTANCE"))
+    log.close()
+
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    events = [record for record in records if record.get("ev") == "columns_dropped"]
+    assert events == [
+        {
+            "t": events[0]["t"],
+            "ev": "columns_dropped",
+            "key": "sess",
+            "columns": ["SPEED", "BORDER_DISTANCE"],
+        }
+    ]
+
+
+def test_the_job_context_records_dropped_columns_without_failing_the_entry(
+    tmp_path: Path,
+) -> None:
+    """The seam a bridge calls: a report on the run-log, and no lost entry."""
+    ds = make_dataset(tmp_path)
+    with job_context(ds, kind="sleap", target="sleap") as ctx:
+        ctx.columns_dropped("sess", ("SPEED",))
+
+    snap = read_run(run_log_dir(ds.base_dir), ctx.execution_id)
+    assert snap is not None
+    assert snap["entries_columns_dropped"] == 1
+    assert snap["entries_failed"] == 0
+    assert ctx.failed_keys == []
+    assert snap["status"] == "finished"

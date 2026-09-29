@@ -95,6 +95,13 @@ class RunLogSnapshot(TypedDict):
     in that table and a frame of the video, which is what every consumer reading
     pixels depends on.
 
+    ``entries_columns_dropped`` counts the entries whose table was mapped from a
+    media variant into source space and published without some of its columns:
+    ones the variant made wrong and the mapping cannot correct. It accumulates
+    like ``entries_frame_axis_mismatch`` and, like it, says nothing about the
+    attempt's success. The entry published; the names of what it lost are on the
+    ``columns_dropped`` event.
+
     ``tracks_variant`` names the tracks recipes the attempt *read*, comma-joined
     and sorted, empty for a run that reads none. Never what an op *produced* --
     those are different relations and one key cannot hold both, which is what
@@ -123,6 +130,7 @@ class RunLogSnapshot(TypedDict):
     entries_failed: int
     entries_written: int
     entries_frame_axis_mismatch: int
+    entries_columns_dropped: int
     cache_hit: bool
     tracks_variant: str
 
@@ -310,6 +318,21 @@ class JsonlRunLog:
         """
         self._emit("frame_axis_mismatch", key=key, tracked=tracked, media=media)
 
+    def columns_dropped(self, key: str, columns: Sequence[str]) -> None:
+        """One entry's table was published without *columns*.
+
+        Mapping a table from a media variant into source space drops a column
+        the variant made wrong and the table cannot correct: a timestamp minted
+        at the variant's rate, a speed computed against a relabeled rate, a
+        distance to the border of a cropped image. The table is still published,
+        so this is a report and not a failure, and the names travel with the
+        event because they are what a reader needs to know what is missing.
+
+        An ordinary event kind, for the reason :meth:`entry_failed` gives: a
+        reader that predates it folds a log containing it correctly.
+        """
+        self._emit("columns_dropped", key=key, columns=list(columns))
+
     def entries_written(self, count: int) -> None:
         """How many entries this attempt leaves holding a valid output row.
 
@@ -470,6 +493,7 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         "entries_failed": 0,
         "entries_written": 0,
         "entries_frame_axis_mismatch": 0,
+        "entries_columns_dropped": 0,
         "cache_hit": False,
         "tracks_variant": "",
     }
@@ -506,6 +530,8 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
             snap["entries_failed"] += 1
         elif ev == "frame_axis_mismatch":
             snap["entries_frame_axis_mismatch"] += 1
+        elif ev == "columns_dropped":
+            snap["entries_columns_dropped"] += 1
         elif ev == "entries_written":
             snap["entries_written"] = rec.get(
                 "entries_written", snap["entries_written"]

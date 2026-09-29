@@ -16,35 +16,6 @@ from tests.helpers import write_dlc_csv
 _BODYPARTS = ["snout", "midbody", "tailtip"]
 
 
-def _write_multi_animal_csv(path: Path, n_frames: int = 15) -> int:
-    """Write a 2-individual maDLC CSV (scorer/individuals/bodyparts/coords)."""
-    individuals = ["fish0", "fish1"]
-    rng = np.random.default_rng(1)
-    vals = rng.uniform(0, 100, size=(n_frames, len(individuals), len(_BODYPARTS), 3))
-
-    rows: list[list[str]] = [
-        ["scorer"],
-        ["individuals"],
-        ["bodyparts"],
-        ["coords"],
-    ]
-    for ind in individuals:
-        for bp in _BODYPARTS:
-            rows[0] += ["DLC_model"] * 3
-            rows[1] += [ind] * 3
-            rows[2] += [bp] * 3
-            rows[3] += ["x", "y", "likelihood"]
-    lines = [",".join(r) for r in rows]
-    for i in range(n_frames):
-        row = [str(i)]
-        for a in range(len(individuals)):
-            for b in range(len(_BODYPARTS)):
-                row += [f"{vals[i, a, b, c]:.6f}" for c in range(3)]
-        lines.append(",".join(row))
-    path.write_text("\n".join(lines))
-    return len(individuals)
-
-
 def test_load_dlc_single_animal(tmp_path: Path) -> None:
     csv = tmp_path / "single.csv"
     vals = write_dlc_csv(csv, _BODYPARTS, n_frames=20)
@@ -92,10 +63,11 @@ def test_dlc_converter_single_animal_schema(tmp_path: Path) -> None:
 
 def test_dlc_converter_multi_animal(tmp_path: Path) -> None:
     csv = tmp_path / "multi.csv"
-    n = _write_multi_animal_csv(csv, n_frames=15)
+    individuals = ("fish0", "fish1")
+    _ = write_dlc_csv(csv, _BODYPARTS, n_frames=15, individuals=individuals)
+    n = len(individuals)
 
-    individuals = load_dlc(csv)
-    assert len(individuals) == n
+    assert len(load_dlc(csv)) == n
 
     df = DlcConverter().convert(
         csv, DlcParams(fps=30.0), EntryHints(group="g", sequence="rec")

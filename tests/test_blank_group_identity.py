@@ -25,30 +25,12 @@ import mosaic.core.track_library  # noqa: F401  -- registers the converters
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 
-from tests.helpers import make_dataset, write_trex_npz
+from tests.helpers import make_dataset, write_dlc_csv, write_trex_npz
 
+# The DeepLabCut fixture's bodyparts: a single-animal format neither merges nor expands.
 _BODYPARTS = ["snout", "midbody", "tailtip"]
 # Only the two roots a conversion touches: raw rows in, standardized tables out.
 _ROOTS = ("tracks_raw", "tracks")
-
-
-def _dlc_csv(path: Path, n_frames: int = 6) -> None:
-    """A single-animal DeepLabCut CSV -- a format that neither merges nor expands."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    scorer = ["scorer"]
-    bodyparts = ["bodyparts"]
-    coords = ["coords"]
-    for part in _BODYPARTS:
-        scorer += ["DLC_model"] * 3
-        bodyparts += [part] * 3
-        coords += ["x", "y", "likelihood"]
-    lines = [",".join(scorer), ",".join(bodyparts), ",".join(coords)]
-    for frame in range(n_frames):
-        row = [str(frame)]
-        for part in range(len(_BODYPARTS)):
-            row += [f"{frame + part}.0", f"{frame - part}.0", "0.9"]
-        lines.append(",".join(row))
-    path.write_text("\n".join(lines))
 
 
 def _trex_npz(path: Path, *, individual: int, n: int = 5) -> None:
@@ -89,7 +71,7 @@ def test_a_blank_group_never_reaches_a_filename(tmp_path: Path) -> None:
     the group cell a second time and spelled it ``"nan"``.
     """
     ds = make_dataset((tmp_path / "ds").resolve(), roots=_ROOTS)
-    _dlc_csv(ds.base_dir / "raw" / "myseq.csv")
+    _ = write_dlc_csv(ds.base_dir / "raw" / "myseq.csv", _BODYPARTS, n_frames=6)
 
     ds.index_tracks_raw(
         [ds.base_dir / "raw"], patterns=["*.csv"], src_format="deeplabcut"
@@ -184,7 +166,7 @@ def test_a_file_holding_several_sequences_does_not_borrow_a_blank_group(
 def test_an_unhashed_source_records_no_checksum(tmp_path: Path) -> None:
     """``md5`` is the same empty column, and reached the index the same way."""
     ds = make_dataset((tmp_path / "ds").resolve(), roots=_ROOTS)
-    _dlc_csv(ds.base_dir / "raw" / "myseq.csv")
+    _ = write_dlc_csv(ds.base_dir / "raw" / "myseq.csv", _BODYPARTS, n_frames=6)
 
     ds.index_tracks_raw(
         [ds.base_dir / "raw"],

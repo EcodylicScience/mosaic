@@ -25,7 +25,7 @@ from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracks_index import read_tracks_index, tracks_index_path
 from mosaic.core.scope import Scope
 
-from tests.helpers import write_trex_npz
+from tests.helpers import write_dlc_csv, write_sleap_analysis_h5, write_trex_npz
 
 
 def _dataset(base: Path) -> Dataset:
@@ -302,7 +302,8 @@ def test_the_inference_bridge_points_back_at_its_predictions(tmp_path: Path) -> 
         overwrite=True,
     )
 
-    assert written == 5
+    assert written is not None
+    assert written.n_rows == 5
     row = _one_row(ds)
     assert str(row["producer"]) == "infer-points"
     assert str(row["run_id"]) == "infer-points.0.1-bbbbbbbbbb"
@@ -759,22 +760,6 @@ def test_one_entry_registering_a_key_twice_still_matches(tmp_path: Path) -> None
 # --- writer 5: the SLEAP bridge --------------------------------------------
 
 
-def _sleap_analysis_h5(path: Path, *, n: int = 6) -> None:
-    """A tiny matlab-layout SLEAP analysis HDF5: 1 track, 1 node, *n* frames."""
-    import json as _json
-
-    import h5py
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rng = np.random.default_rng(0)
-    # canonical (frame, track, node, xy) -> matlab (track, xy, node, frame)
-    tracks = rng.random((n, 1, 1, 2))
-    arr = np.transpose(tracks, (1, 3, 2, 0))
-    with h5py.File(str(path), "w") as f:
-        d = f.create_dataset("tracks", data=arr)
-        d.attrs["dims"] = _json.dumps(["track", "xy", "node", "frame"])
-
-
 def test_the_sleap_bridge_records_the_run_and_a_portable_source(
     tmp_path: Path,
 ) -> None:
@@ -784,7 +769,7 @@ def test_the_sleap_bridge_records_the_run_and_a_portable_source(
     ds = _dataset(tmp_path)
     seq_dir = ds.get_root("sleap") / "sleap.1.6-aaaaaaaaaa" / "vid1"
     h5 = seq_dir / "vid1.analysis.h5"
-    _sleap_analysis_h5(h5)
+    write_sleap_analysis_h5(h5, np.random.default_rng(0).random((6, 1, 1, 2)))
     video = ds.get_root("media_raw") / "vid1.mp4"
     video.parent.mkdir(parents=True, exist_ok=True)
     video.write_bytes(b"v")
@@ -819,21 +804,6 @@ def test_the_sleap_bridge_records_the_run_and_a_portable_source(
 # --- writer 6: the Lightning Pose bridge -----------------------------------
 
 
-def _litpose_csv(path: Path, *, n: int = 6) -> None:
-    """A tiny single-animal DeepLabCut / Lightning Pose CSV: 1 bodypart, *n* frames."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rng = np.random.default_rng(0)
-    lines = [
-        "scorer,heatmap_tracker,heatmap_tracker,heatmap_tracker",
-        "bodyparts,nose,nose,nose",
-        "coords,x,y,likelihood",
-    ]
-    for i in range(n):
-        x, y = rng.uniform(0, 100, 2)
-        lines.append(f"{i},{x:.6f},{y:.6f},0.9")
-    path.write_text("\n".join(lines))
-
-
 def test_the_litpose_bridge_records_the_run_and_a_portable_source(
     tmp_path: Path,
 ) -> None:
@@ -843,7 +813,7 @@ def test_the_litpose_bridge_records_the_run_and_a_portable_source(
     ds = _dataset(tmp_path)
     seq_dir = ds.get_root("litpose") / "litpose.2.3-aaaaaaaaaa" / "vid1"
     csv = seq_dir / "vid1.predictions.csv"
-    _litpose_csv(csv)
+    _ = write_dlc_csv(csv, ["nose"], n_frames=6, scorer="heatmap_tracker")
     video = ds.get_root("media_raw") / "vid1.mp4"
     video.parent.mkdir(parents=True, exist_ok=True)
     video.write_bytes(b"v")

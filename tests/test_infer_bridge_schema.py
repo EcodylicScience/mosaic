@@ -23,19 +23,23 @@ renames a column fails this rather than drifting past it.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline import tracks_index
 from mosaic.core.pipeline.tracking_roots import tracking_output_schema
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.schema import ensure_track_schema
+from mosaic.tracking.common import bridge as bridge_module
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     POINT_COLUMNS,
     pose_columns,
 )
+from mosaic.tracking.ops import infer as infer_module
 from mosaic.tracking.ops.infer import _bridge_df_to_tracks
 from mosaic.tracking.pose_training.localizer_inference import (
     localizer_detections_to_dataframe,
@@ -137,7 +141,8 @@ def _bridge(tmp_path: Path, kind: str) -> pd.DataFrame:
         model_pt=model,
         overwrite=True,
     )
-    assert written == _N_ROWS
+    assert written is not None
+    assert written.n_rows == _N_ROWS
 
     rows = read_tracks_index(ds)
     assert len(rows) == 1
@@ -204,6 +209,105 @@ def test_a_point_producers_position_is_renamed_not_duplicated(
     assert not {"x", "y"} & set(table.columns)
     assert table["X"].tolist() == [1.0, 2.0, 3.0, 4.0]
     assert table["Y"].tolist() == [5.0, 6.0, 7.0, 8.0]
+
+
+def _spy_on_tracks_rows(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """Record each tracks-index row the bridge writes, in place of writing it.
+
+    The writer is replaced in every module on the inference path that binds it.
+    Each call is bound to the writer's signature with its defaults applied, so an
+    argument passed at its default and one left out record the same value.
+    """
+    signature = inspect.signature(tracks_index.write_tracks_row)
+    calls: list[dict[str, object]] = []
+
+    def spy(*args: object, **kwargs: object) -> None:
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        calls.append(dict(bound.arguments))
+
+    for module in (infer_module, bridge_module):
+        if "write_tracks_row" in vars(module):
+            monkeypatch.setattr(module, "write_tracks_row", spy)
+    return calls
+
+
+def test_a_fixed_frame_publishes_the_pinned_row_and_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every argument of the tracks row, and every cell of the table, pinned.
+
+    The frame carries no ``id`` and no ``time``, so both fallbacks run, and two
+    keypoints, so the body center is derived from them.
+    """
+    kind = "infer-pose"
+    ds = _dataset(tmp_path, kind)
+    seq_dir = ds.get_root(kind) / "run" / "g__s"
+    seq_dir.mkdir(parents=True, exist_ok=True)
+    video = ds.get_root("media_raw") / "s.mp4"
+    video.write_bytes(b"v")
+    model = ds.get_root("models") / kind / "best.pt"
+    model.parent.mkdir(parents=True, exist_ok=True)
+    model.write_bytes(b"w")
+    rows = _spy_on_tracks_rows(monkeypatch)
+    variant = "infer-pose.9.9-aaaaaaaaaa"
+    keypoints = {
+        "poseX0": [1.0, 2.0, 3.0],
+        "poseY0": [10.0, 20.0, 30.0],
+        "poseP0": [0.9, 0.8, 0.7],
+        "poseX1": [5.0, 6.0, 7.0],
+        "poseY1": [14.0, 24.0, 34.0],
+        "poseP1": [0.6, 0.5, 0.4],
+    }
+
+    _ = _bridge_df_to_tracks(
+        ds,
+        pd.DataFrame({"frame": [0, 1, 2], **keypoints}),
+        "g",
+        "s",
+        tracks_variant=variant,
+        producer_run_id="infer-pose.9.9-bbbbbbbbbb",
+        kind=kind,
+        seq_dir=seq_dir,
+        video_path=video,
+        model_pt=model,
+        overwrite=True,
+    )
+
+    out_path = ds.get_root("tracks") / variant / "g__s.parquet"
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.pop("ds") is ds
+    assert row == {
+        "run_id": variant,
+        "group": "g",
+        "sequence": "s",
+        "out_path": out_path,
+        "producer": kind,
+        "std_format": "mosaic_v1",
+        "n_rows": 3,
+        "producer_run_id": "infer-pose.9.9-bbbbbbbbbb",
+        "source": seq_dir,
+        "source_md5": "",
+        "consumed_source_roots": ("media_raw", "models"),
+        "records_media": True,
+        "media_frames": None,
+    }
+    pd.testing.assert_frame_equal(
+        pd.read_parquet(out_path),
+        pd.DataFrame(
+            {
+                "frame": [0, 1, 2],
+                **keypoints,
+                "group": ["g"] * 3,
+                "sequence": ["s"] * 3,
+                "id": [0, 0, 0],
+                "time": [0, 1, 2],
+                "X": [3.0, 4.0, 5.0],
+                "Y": [12.0, 22.0, 32.0],
+            }
+        ),
+    )
 
 
 def test_a_table_with_no_position_at_all_is_refused(tmp_path: Path) -> None:

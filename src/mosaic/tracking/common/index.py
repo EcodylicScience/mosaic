@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Final, TypeVar
 import pandas as pd
 
 from mosaic.core.entry import Entry
+from mosaic.core.pipeline.composition import compositions_disagree
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, project_to_schema
 from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
 from mosaic.core.pipeline.inventory.model import ArtifactRecord, InventoryScope
@@ -230,7 +231,7 @@ def drifted_media_entries(
         sorted(
             entry
             for entry, was in recorded.items()
-            if was and current.get(entry, "") and was != current[entry]
+            if compositions_disagree(was, current.get(entry, ""))
         )
     )
 

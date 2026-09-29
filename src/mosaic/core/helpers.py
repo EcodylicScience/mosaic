@@ -106,6 +106,17 @@ def make_entry_key(group: str, sequence: str) -> str:
     return f"{safe_group + '__' if safe_group else ''}{safe_seq}"
 
 
+def entry_camera_path(root: Path, group: str, sequence: str, camera: str) -> Path:
+    """Where one camera of an entry sits under *root*.
+
+    ``<root>/<entry_key>`` for single-camera media, and ``<root>/<entry_key>/<camera>``
+    when *camera* names one, so the cameras of one recording never collide. A
+    caller writing a file adds its suffix to the returned path.
+    """
+    entry = root / make_entry_key(group, sequence)
+    return entry / camera if camera else entry
+
+
 def parse_entry_key(key: str) -> tuple[str, str]:
     """``make_entry_key``'s inverse: ``(group, sequence)`` from a composite key.
 

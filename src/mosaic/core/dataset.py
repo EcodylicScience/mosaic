@@ -173,6 +173,7 @@ from .pipeline.sequence_index import (
     write_sequence_compositions,
 )
 from .pipeline.dataset_indexes import iter_dataset_indexes
+from .pipeline.preprocess_layout import MEDIA_ROOT_KEY, media_variants_root
 from .pipeline.promotion import correction_revision
 from .pipeline.tracking_roots import (
     TRACKING_ROOT,
@@ -2694,6 +2695,21 @@ class Dataset:
 
         search = [user_path(d) for d in search_dirs]
 
+        # This dataset's own media variants, which a recursive source rooted at
+        # the media root would otherwise index as originals. Compared by
+        # resolved path, never by directory name, so a folder outside the
+        # dataset that is also called `media/preprocess` is still scanned.
+        variants_root = (
+            media_variants_root(self).resolve()
+            if self.has_root(MEDIA_ROOT_KEY)
+            else None
+        )
+
+        def is_media_variant(path: Path) -> bool:
+            return variants_root is not None and path.resolve().is_relative_to(
+                variants_root
+            )
+
         # Discover imgstore directories first. A store is a directory (not a file
         # with an extension) that contains its own chunk video files -- so we
         # must (a) emit one entry per store and (b) exclude those internal chunks
@@ -2704,9 +2720,15 @@ class Dataset:
                 continue
             candidates = [d, *(d.rglob("*") if recursive else d.glob("*"))]
             for cand in candidates:
-                if is_under_tracking_root(cand.parts):
+                # A directory test first: resolving a symlink loop raises, and a
+                # loop is never a directory.
+                if (
+                    not cand.is_dir()
+                    or is_under_tracking_root(cand.parts)
+                    or is_media_variant(cand)
+                ):
                     continue
-                if cand.is_dir() and is_imgstore(cand):
+                if is_imgstore(cand):
                     imgstore_dirs.add(cand.resolve())
 
         # Serial glob: collect (path, stat) probe_candidates only. Probing
@@ -2714,6 +2736,7 @@ class Dataset:
         # thread pool so many-file search dirs index in parallel.
         probe_candidates: list[tuple[Path, os.stat_result]] = []
         tracking_skipped = 0
+        variants_skipped = 0
         for d in search:
             if not d.exists():
                 print(f"[WARN] search dir missing: {d}", file=sys.stderr)
@@ -2737,6 +2760,10 @@ class Dataset:
                 if is_under_tracking_root(p.parts):
                     tracking_skipped += 1
                     continue
+                # Nor into this dataset's media variants.
+                if is_media_variant(p):
+                    variants_skipped += 1
+                    continue
                 # Skip files that live inside an imgstore directory (its chunks).
                 if imgstore_dirs and any(
                     sd in p.resolve().parents for sd in imgstore_dirs
@@ -2755,6 +2782,12 @@ class Dataset:
             print(
                 f"[INFO] skipped {tracking_skipped} generated file(s) under "
                 f"{TRACKING_ROOT}/ -- tracker output is not source media",
+                file=sys.stderr,
+            )
+        if variants_skipped:
+            print(
+                f"[INFO] skipped {variants_skipped} media variant file(s) under "
+                f"{variants_root}, which are not source media",
                 file=sys.stderr,
             )
 

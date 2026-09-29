@@ -24,8 +24,12 @@ from .run import load_values
 
 # Explicit re-exports: importing each module is what registers its media op.
 from . import joined_export as joined_export
+from . import preprocess as preprocess
 from . import store_export as store_export
 from . import transcode as transcode
+
+# Importing it registers the media variant index with the dataset-wide passes.
+from . import preprocess_index as preprocess_index
 from .types import (
     Feature,
     Inputs,

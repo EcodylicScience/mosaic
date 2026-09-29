@@ -42,6 +42,10 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol
 import pandas as pd
 
 from mosaic.core.pipeline.label_series import LABEL_SERIES, SERIES_MARKER
+from mosaic.core.pipeline.preprocess_layout import (
+    MEDIA_ROOT_KEY,
+    PREPROCESS_KIND_DIRECTORY,
+)
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.scope import Scope
 
@@ -60,19 +64,32 @@ __all__ = [
     "root_subdirectories",
 ]
 
-IndexShape = Literal["root", "per_subdir", "label_series"]
-"""Whether a root holds one ``index.csv``, one per child directory, or one per series.
+IndexShape = Literal["root", "per_subdir", "label_series", "media_kind"]
+"""Where an index sits: at a root, in each child, in each series, or in a media kind.
 
 ``label_series`` is ``labels_raw``'s second shape. ``per_subdir`` would be wrong
 for it: that root's children are mostly uploaded entry folders, which hold no
 index, so every one of them would be offered to every pass as an absent file.
 A series directory is recognized by its marker instead.
+
+``media_kind`` is one ``index.csv`` in a kind directory under the media root,
+the kind named by the table's key. The key is not a root, and it is what the
+passes look an index's opener and path columns up by: registering the media
+root's own key would hand ``media/index.csv`` to the variant index's opener.
 """
 
 
 @dataclass(frozen=True, slots=True)
 class DatasetIndex:
-    """One index file, and enough about it to rewrite or reconcile it."""
+    """One index file, and enough about it to rewrite or reconcile it.
+
+    Attributes:
+        root_key: The root holding the index, or for a ``media_kind`` index the
+            kind directory's name. The passes find the index's opener and path
+            columns under it.
+        path: The index file, which may not exist yet.
+        path_columns: The columns besides ``abs_path`` that hold a path.
+    """
 
     root_key: str
     path: Path
@@ -98,6 +115,8 @@ _ROOT_SHAPES: Final[tuple[tuple[str, IndexShape], ...]] = (
     # datasets -- would be invisible to the portability passes.
     ("labels_raw", "label_series"),
     ("media", "root"),
+    # The media variants' index, in their kind directory under the media root.
+    (PREPROCESS_KIND_DIRECTORY, "media_kind"),
     ("tracks", "root"),
     # ``per_subdir``, not ``root``: every model index is ``models/<kind>/index.csv``
     # -- one per training kind, plus ``models/convert-points/`` for a converted
@@ -187,12 +206,16 @@ def iter_dataset_indexes(
     lookup = path_columns or {}
     found: list[DatasetIndex] = []
     for key, shape in _ROOT_SHAPES:
-        if not ds.has_root(key):
+        root_key = MEDIA_ROOT_KEY if shape == "media_kind" else key
+        if not ds.has_root(root_key):
             continue
-        root = ds.get_root(key)
+        root = ds.get_root(root_key)
         if not root.exists():
             continue
         columns = tuple(lookup.get(key, ()))
+        if shape == "media_kind":
+            found.append(DatasetIndex(key, root / key / "index.csv", columns))
+            continue
         if shape == "root":
             found.append(DatasetIndex(key, root / "index.csv", columns))
             continue

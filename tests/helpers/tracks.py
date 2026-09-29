@@ -125,13 +125,17 @@ def write_sleap_analysis_h5(
     *,
     preset: SleapPreset = "matlab",
     with_dims: bool = True,
+    node_names: Sequence[str] = (),
+    track_names: Sequence[str] = (),
 ) -> None:
     """Write a SLEAP analysis HDF5 from canonical arrays.
 
     *tracks* is ``(frame, track, node, 2)`` and *scores* is ``(frame, track,
     node)``. ``matlab`` writes the transposed layout ``sleap-convert`` produces by
     default and ``standard`` the Python-native one. Both carry a ``dims``
-    attribute, which the converter reads to reorder either.
+    attribute, which the converter reads to reorder either. *node_names* and
+    *track_names*, when given, are written as the byte-string datasets
+    ``sleap-convert`` names them in.
     """
     # Deferred like the converter's own import: most test modules import these
     # helpers, and few of them open an HDF5 file.
@@ -148,6 +152,7 @@ def write_sleap_analysis_h5(
         score_array = scores
         score_dims = ["frame", "track", "node"]
 
+    path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(str(path), "w") as handle:
         handle["tracks"] = track_array
         if with_dims:
@@ -156,43 +161,64 @@ def write_sleap_analysis_h5(
             handle["point_scores"] = score_array
             if with_dims:
                 handle["point_scores"].attrs["dims"] = json.dumps(score_dims)
+        if node_names:
+            handle["node_names"] = np.array([n.encode() for n in node_names], "S")
+        if track_names:
+            handle["track_names"] = np.array([n.encode() for n in track_names], "S")
 
 
 def write_dlc_csv(
-    path: Path, bodyparts: Sequence[str], *, n_frames: int = 20
+    path: Path,
+    bodyparts: Sequence[str],
+    *,
+    n_frames: int = 20,
+    individuals: Sequence[str] = (),
+    values: npt.NDArray[np.float64] | None = None,
+    scorer: str = "DLC_model",
 ) -> npt.NDArray[np.float64]:
-    """Write a single-animal DeepLabCut CSV, the layout Lightning Pose also writes.
+    """Write a DeepLabCut CSV, the layout Lightning Pose also writes.
 
-    The header rows are ``scorer``, ``bodyparts`` and ``coords``, and each row
-    after them is a frame index followed by ``x``, ``y`` and ``likelihood`` per
-    bodypart.
+    The header rows are ``scorer``, then ``individuals`` for a multi-animal
+    export, then ``bodyparts`` and ``coords``. Each row after them is a frame
+    index followed by ``x``, ``y`` and ``likelihood`` for each bodypart of each
+    individual.
+
+    Args:
+        path: Where to write the file. Missing parent directories are created.
+        bodyparts: The bodypart names, in column order.
+        n_frames: How many frames to draw when *values* is not given.
+        individuals: The individuals of a multi-animal export. Empty writes a
+            single-animal one.
+        values: The ``[x, y, likelihood]`` triples to write, shaped ``(frame,
+            bodypart, 3)``, or ``(frame, individual, bodypart, 3)`` for a
+            multi-animal export. Unset, they are drawn from a fixed seed: each
+            position in 0 to 100 and each likelihood in 0.5 to 1.
+        scorer: The model named in the first header row. Lightning Pose names
+            ``heatmap_tracker``.
 
     Returns:
-        The ``(n_frames, len(bodyparts), 3)`` array of ``[x, y, likelihood]``
-        written, drawn from a fixed seed.
+        The values written.
     """
-    rng = np.random.default_rng(0)
-    values = rng.uniform(0, 100, size=(n_frames, len(bodyparts), 3))
-    values[:, :, 2] = rng.uniform(0.5, 1.0, size=(n_frames, len(bodyparts)))
+    shape = (n_frames, *((len(individuals),) if individuals else ()), len(bodyparts))
+    if values is None:
+        rng = np.random.default_rng(0)
+        values = rng.uniform(0, 100, size=(*shape, 3))
+        values[..., 2] = rng.uniform(0.5, 1.0, size=shape)
 
-    header_scorer = ["scorer"]
-    header_bodyparts = ["bodyparts"]
-    header_coords = ["coords"]
-    for bodypart in bodyparts:
-        header_scorer += ["DLC_model"] * 3
-        header_bodyparts += [bodypart] * 3
-        header_coords += ["x", "y", "likelihood"]
+    headers = [["scorer"], ["individuals"], ["bodyparts"], ["coords"]]
+    for individual in individuals or ("",):
+        for bodypart in bodyparts:
+            headers[0] += [scorer] * 3
+            headers[1] += [individual] * 3
+            headers[2] += [bodypart] * 3
+            headers[3] += ["x", "y", "likelihood"]
+    if not individuals:
+        del headers[1]
 
-    lines = [
-        ",".join(header_scorer),
-        ",".join(header_bodyparts),
-        ",".join(header_coords),
-    ]
-    for index in range(n_frames):
-        row = [str(index)]
-        for bodypart in range(len(bodyparts)):
-            row += [f"{values[index, bodypart, coord]:.6f}" for coord in range(3)]
-        lines.append(",".join(row))
+    lines = [",".join(header) for header in headers]
+    for index, frame in enumerate(values):
+        lines.append(",".join([str(index), *(f"{value:.6f}" for value in frame.flat)]))
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines))
     return values
 

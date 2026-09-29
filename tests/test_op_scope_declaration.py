@@ -215,6 +215,7 @@ GATED_OPS = frozenset(
         "infer-pose",
         "litpose",
         "prepare-training-data",
+        "preprocess",
         "sleap",
         "train-litpose",
         "train-localizer",
@@ -230,7 +231,7 @@ GATED_OPS = frozenset(
 
 Every op declaring independence, less the one
 :data:`OPS_THE_FIXTURE_CANNOT_FEED` names. The payload gate runs over all
-nineteen and needs no population.
+twenty and needs no population.
 """
 
 
@@ -299,9 +300,9 @@ regression names which one came back.
 class TestNoScopeReachesTheHashedPayload:
     """What a run covers and whether it recomputes never name the run.
 
-    The direct leak, over **every** registered op rather than the sixteen the
+    The direct leak, over **every** registered op rather than the eighteen the
     dataset gate below covers. Every op now takes both as arguments and declares no
-    such field, and that is why this passes for all eighteen. It
+    such field, and that is why this passes for all twenty. It
     stays as the gate an op reintroducing one meets. The field would be
     ``HASH_EXCLUDE`` or the payload would name it, and a payload naming either
     gives one computation two names as soon as a caller narrows it.
@@ -325,15 +326,15 @@ class TestADeclaredIndependenceHoldsAgainstTheDataset:
     has that shape. Its scope filters the tracks index and the surviving variant
     enters every identifier, while its params payload holds no scope at all.
 
-    Partial today, and prospective rather than additive. Seventeen ops declare
-    independence, sixteen of them are gated here, and this dataset lets three
-    answer: ``extract-frames`` and ``trex``, both pure functions of their
-    params, and ``transcode``, whose identity is its recipe and which reads
-    the dataset only for refusals that answer the same way for every entry
-    set. The other twelve defer, each deferral recorded as a skip stating the
-    reason the op gave: a training op has no data.yaml here, an inference op
-    no weights. It proves nothing the payload check does not, and it grows as
-    the fixture gains those artifacts.
+    Partial today, and prospective rather than additive. Nineteen ops declare
+    independence, eighteen of them are gated here, and this dataset lets five
+    answer: ``extract-frames``, ``trex`` and ``export-joined``, pure functions of
+    their params, and ``transcode`` and ``preprocess``, whose identity is their
+    recipe and which read the dataset only for refusals that answer the same way
+    for every entry set. The other thirteen defer, each deferral recorded as a
+    skip stating the reason the op gave: a training op has no data.yaml here, an
+    inference op no weights. It proves nothing the payload check does not, and it
+    grows as the fixture gains those artifacts.
 
     Whole :class:`OpIdentity` values are compared. ``run_id`` alone leaves a
     ``tracks_variant`` free to move with the scope, which mints one variant
@@ -439,7 +440,7 @@ class TestPublished:
         """A client draws its controls from these fields, and a coverage is not one.
 
         Which entries a run covers is an argument to the run. No op params
-        model declares a coverage under any spelling the eighteen have used,
+        model declares a coverage under any spelling the twenty have used,
         and the published schema is generated from these fields.
         """
         declaring = {
@@ -453,7 +454,7 @@ class TestPublished:
         Two attempts differing only in whether they redo the work are one
         recipe. Every op takes the decision as the ``overwrite`` argument
         :meth:`~mosaic.core.pipeline.ops.Op.run` receives, whose name and
-        position :class:`TestOpInterface` pins for all eighteen.
+        position :class:`TestOpInterface` pins for all twenty.
 
         That a body reads it is measured per op, in both directions, wherever
         an op has a reuse gate: the five training ops and ``convert-points`` in

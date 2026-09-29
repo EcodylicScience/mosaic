@@ -40,17 +40,12 @@ from mosaic.core.pipeline.markers import (
     write_phase_marker,
 )
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
-from mosaic.core.pipeline.tracking_roots import (
-    tracking_output_schema,
-    tracking_root_default,
-)
+from mosaic.core.pipeline.tracking_roots import tracking_root_default
 from mosaic.core.pipeline.tracks_identity import (
     infer_variant_payload,
     tracks_run_id,
-    tracks_variant_root,
     write_tracks_variant,
 )
-from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
@@ -59,8 +54,14 @@ from mosaic.core.params import (
 from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
 from mosaic.core.pipeline.entry_claim import open_entry, phase_activity, release_entry
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
-from mosaic.core.schema import ensure_track_schema
+from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.runlog import now_iso
+from mosaic.tracking.common.bridge import (
+    BridgeCounts,
+    publish_or_record,
+    publish_tracks_table,
+    tracks_table_path,
+)
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
 from mosaic.tracking.common.tool_input import (
     refuse_undecodable_codec,
@@ -73,6 +74,7 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline._utils import ResolvedScope
+    from mosaic.core.pipeline.placement import SourceMapping
 
 
 # --- Where inference output lands ----------------------------------------
@@ -350,18 +352,40 @@ def _bridge_df_to_tracks(
     video_path: Path,
     model_pt: Path,
     overwrite: bool,
-) -> int:
-    """Write an inference DataFrame as a standardized ``tracks/`` parquet.
+    mapping: SourceMapping | None = None,
+) -> BridgeCounts | None:
+    """Publish an inference DataFrame as a standardized ``tracks/`` parquet.
 
-    ``tracks_variant`` names the directory as well as the row, so two models (or
-    two parameter sets) no longer target one path.
+    Names the columns the schema requires, then publishes through the bridge
+    every tracker shares. ``tracks_variant`` names the directory as well as the
+    row, so two models (or two parameter sets) never target one path.
+
+    Args:
+        ds: The dataset.
+        df: The predictions, as the model's runner reported them.
+        group: The entry's group, which may be empty.
+        sequence: The entry's sequence.
+        tracks_variant: The tracks variant the table belongs to.
+        producer_run_id: The inference run that produced the predictions.
+        kind: The inference op, recorded as the row's ``producer``.
+        seq_dir: The entry's working directory, which holds the predictions.
+        video_path: The video the model read.
+        model_pt: The weights the model loaded.
+        overwrite: Replace a table this variant already holds for the entry.
+        mapping: Where the media variant the model read sits in the entry's
+            media, or ``None`` when it read the entry media itself.
+
+    Returns:
+        What the published table holds, or ``None`` when there was nothing to
+        publish or the table exists and *overwrite* is false.
     """
     if df is None or df.empty:
-        return 0
-    variant_root = tracks_variant_root(ds.get_root("tracks"), tracks_variant)
-    out_path = variant_root / f"{make_entry_key(group, sequence)}.parquet"
-    if out_path.exists() and not overwrite:
-        return 0
+        return None
+    if (
+        tracks_table_path(ds, tracks_variant, make_entry_key(group, sequence)).exists()
+        and not overwrite
+    ):
+        return None
     df = df.copy()
     df["group"] = group
     df["sequence"] = sequence
@@ -370,38 +394,27 @@ def _bridge_df_to_tracks(
     if "time" not in df.columns:
         df["time"] = df["frame"] if "frame" in df.columns else range(len(df))
     _name_the_body_centre(df)
-    # Declared by the producing root, like every other tracks write path.
-    std_format = tracking_output_schema(kind)
-    # `strict=True` here alone. Every *tracker* write path validates leniently
-    # because a missing required column is merely an incomplete table, and
-    # whether that should still be true is a separate question with a wider
-    # blast radius. But this bridge now derives the one column all three
-    # producers were missing, so it can assert its own work: a report printed
-    # under a "completed" line is how the absence survived in the first place.
-    ensure_track_schema(df, std_format, strict=True, source=f"{group}/{sequence}")
-    _ = write_parquet_atomic(df, out_path)
-    # source_abs_path was empty here, because the frame is built in memory and
-    # there is no raw file. It now points at the prediction directory this run
-    # wrote -- the row-level pointer from a tracks table back to the predictions
-    # that produced it, which is what item 8.7 needs to retire that root.
-    write_tracks_row(
+    return publish_tracks_table(
         ds,
-        run_id=tracks_variant,
+        df,
+        kind=kind,
         group=group,
         sequence=sequence,
-        out_path=out_path,
-        producer=kind,
-        std_format=std_format,
-        n_rows=int(len(df)),
+        tracks_variant=tracks_variant,
         producer_run_id=producer_run_id,
+        # The prediction directory this run wrote: the row-level pointer from a
+        # tracks table back to the predictions that produced it.
         source=seq_dir,
-        consumed_source_roots=consumed_roots_for(ds, [video_path, model_pt]),
-        # A bridge opens the entry's media, so its row records what that
-        # media was. The variant identity has no term for the pixels, so
-        # this cell is the only thing that notices a re-transcode.
-        records_media=True,
+        consumed=[video_path, model_pt],
+        mapping=mapping,
+        # Strict here alone. Every *tracker* write path validates leniently,
+        # because a missing required column is merely an incomplete table, and
+        # whether that should still be true is a separate question with a wider
+        # blast radius. This bridge derives the one column all three producers
+        # were missing, so it can assert its own work: a report printed under a
+        # "completed" line is how the absence survived in the first place.
+        strict=True,
     )
-    return int(len(df))
 
 
 def infer_identity(
@@ -533,6 +546,10 @@ def _run_inference_op(
     write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
     done = 0
+    # Entries this run opened, and those whose predictions it could not publish.
+    # An entry held by another execution was never this run's to lose.
+    attempted: set[str] = set()
+    lost: set[str] = set()
     for i, (group, sequence, video_path, facts) in enumerate(work):
         ctx.check_cancel()
         key = make_entry_key(group, sequence)
@@ -560,6 +577,7 @@ def _run_inference_op(
             ctx.progress.on_entry_end(i + 1, len(work), key)
             continue
         seq_dir, held = opened
+        attempted.add(key)
         try:
             outcome = per_video(
                 VideoInput(
@@ -590,39 +608,51 @@ def _run_inference_op(
 
             if params.convert_to_tracks and df is not None and not df.empty:
                 ctx.progress.on_phase("bridge", key)
-                _ = _bridge_df_to_tracks(
-                    ds,
-                    df,
-                    group,
-                    sequence,
-                    tracks_variant=tracks_variant,
-                    producer_run_id=run_id,
+                # A table that cannot be published fails this entry on the
+                # attempt's run-log, and the next entry still runs.
+                failures = len(ctx.failed_keys)
+                _ = publish_or_record(
+                    ctx,
+                    key,
+                    lambda: _bridge_df_to_tracks(
+                        ds,
+                        df,
+                        group,
+                        sequence,
+                        tracks_variant=tracks_variant,
+                        producer_run_id=run_id,
+                        kind=kind,
+                        seq_dir=seq_dir,
+                        video_path=video_path,
+                        model_pt=model.path,
+                        overwrite=overwrite,
+                    ),
                     kind=kind,
-                    seq_dir=seq_dir,
-                    video_path=video_path,
-                    model_pt=model.path,
-                    overwrite=overwrite,
                 )
+                if len(ctx.failed_keys) > failures:
+                    lost.add(key)
 
             # Written after the bridge, not after the parquet. A directory whose
             # output has not reached ``tracks/`` is not finished, and the sweeper
             # reads this marker to decide what may be reclaimed -- so marking it
-            # complete a moment early is how an unbridged run gets deleted.
-            write_phase_marker(
-                seq_dir,
-                PhaseMarker(
-                    phase="infer",
-                    run_id=run_id,
-                    execution_id=ctx.execution_id,
-                    completed_at=now_iso(),
-                    source=str(ds.relative_to_root(video_path)),
-                    source_uid=facts.video_uuid,
-                    recorded_output=str(ds.relative_to_root(pred_path))
-                    if pred_path.exists()
-                    else "",
-                ),
-            )
-            done += 1
+            # complete a moment early is how an unbridged run gets deleted. An
+            # entry whose bridge failed gets none, and keeps its predictions.
+            if key not in lost:
+                write_phase_marker(
+                    seq_dir,
+                    PhaseMarker(
+                        phase="infer",
+                        run_id=run_id,
+                        execution_id=ctx.execution_id,
+                        completed_at=now_iso(),
+                        source=str(ds.relative_to_root(video_path)),
+                        source_uid=facts.video_uuid,
+                        recorded_output=str(ds.relative_to_root(pred_path))
+                        if pred_path.exists()
+                        else "",
+                    ),
+                )
+                done += 1
         finally:
             # Released whatever happened, including a cancel: a claim outliving
             # its process is what makes the next run read a dead directory as
@@ -632,6 +662,16 @@ def _run_inference_op(
         ctx.progress.on_entry_end(i + 1, len(work), key)
         ctx.heartbeat(i + 1)
 
+    # Losing every entry means the run published nothing, which is a failed run
+    # and not a finished one.
+    if attempted and lost == attempted:
+        message = (
+            f"[{kind}] every one of {len(attempted)} attempted entries failed to "
+            f"publish, so run_id={run_id} produced no tracks: "
+            f"{', '.join(sorted(lost))}. The predictions are kept under "
+            f"{run_root}. The per-entry errors are in this attempt's run-log."
+        )
+        raise AllEntriesFailed(message)
     print(f"[{kind}] completed run_id={run_id} ({done}/{len(work)}) -> {run_root}")
     return run_id
 

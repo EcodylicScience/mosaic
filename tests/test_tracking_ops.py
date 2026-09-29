@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -26,7 +27,11 @@ from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline.job import CancelToken, Cancelled
 from mosaic.core.pipeline.ops import OPS, describe_op, list_ops, run_op
-from mosaic.tracking.external.runner.ultralytics_protocol import ProbeResponse
+from mosaic.core.pipeline.run import AllEntriesFailed
+from mosaic.tracking.external.runner.ultralytics_protocol import (
+    InferPointsRequest,
+    ProbeResponse,
+)
 from mosaic.tracking.pose_training.ultralytics_infer import InferenceOutcome
 from mosaic.core.pipeline.run_log import (
     read_run,
@@ -709,6 +714,79 @@ def test_infer_points_runs_and_bridges(tmp_path, monkeypatch):
         assert not {"x", "y"} & set(tdf.columns)
         assert sorted(tdf["X"].tolist()) == [1.0, 2.0, 3.0]
         assert sorted(tdf["Y"].tolist()) == [4.0, 5.0, 6.0]
+
+
+def _positionless_predictions_for(
+    monkeypatch: pytest.MonkeyPatch, sequences: set[str]
+) -> None:
+    """Make the fake POLO runner report no position for *sequences*.
+
+    Such a table cannot be published: the bridge has no body center to name, so
+    strict validation refuses it. Every other sequence gets the fake's own table.
+    """
+    import mosaic.tracking.pose_training.ultralytics_infer as infer_run
+
+    _fake_points_backend(monkeypatch)
+    whole: Callable[..., InferenceOutcome] = infer_run.run_point_inference_tool
+
+    def fake_run(
+        request: InferPointsRequest, *, work_dir: Path, **kwargs: object
+    ) -> InferenceOutcome:
+        if Path(request.video_path).stem not in sequences:
+            return whole(request, work_dir=work_dir, **kwargs)
+        table = pd.DataFrame({"frame": [0, 1], "confidence": [0.9, 0.8]})
+        published = Path(request.output_parquet)
+        published.parent.mkdir(parents=True, exist_ok=True)
+        table.to_parquet(published, index=False)
+        return InferenceOutcome(
+            predictions_path=published, n_frames=2, n_rows=len(table)
+        )
+
+    monkeypatch.setattr(infer_run, "run_point_inference_tool", fake_run)
+
+
+def test_a_failed_inference_bridge_loses_only_its_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal is recorded on the attempt, and the next entry still publishes.
+
+    The refused entry keeps its predictions for diagnosis and gets no completion
+    marker, because its output never reached ``tracks/``.
+    """
+    from mosaic.core.pipeline.markers import read_phase_marker
+    from mosaic.core.pipeline.tracks_index import read_tracks_index
+    from mosaic.tracking.ops.infer import infer_run_root
+
+    ds = _make_dataset(tmp_path)
+    _positionless_predictions_for(monkeypatch, {"vid1"})
+    model = tmp_path / "polo.pt"
+    model.write_bytes(b"w")
+
+    run_id = run_op(ds, "infer-points", {"model": str(model)})
+
+    runs = read_runs(_run_dir(ds), kind="infer-points")
+    assert [(run["status"], run["entries_failed"]) for run in runs] == [("finished", 1)]
+    assert set(read_tracks_index(ds)["sequence"]) == {"vid2"}
+    run_root = infer_run_root(ds, "infer-points", run_id)
+    assert (run_root / "vid1" / "predictions.parquet").exists()
+    assert read_phase_marker(run_root / "vid1", "infer") is None
+    assert read_phase_marker(run_root / "vid2", "infer") is not None
+
+
+def test_an_inference_run_that_publishes_nothing_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Losing every entry's table is a failed run, not a finished one."""
+    ds = _make_dataset(tmp_path)
+    _positionless_predictions_for(monkeypatch, {"vid1", "vid2"})
+    model = tmp_path / "polo.pt"
+    model.write_bytes(b"w")
+
+    with pytest.raises(AllEntriesFailed, match="vid1, vid2"):
+        _ = run_op(ds, "infer-points", {"model": str(model)})
+
+    runs = read_runs(_run_dir(ds), kind="infer-points")
+    assert [(run["status"], run["entries_failed"]) for run in runs] == [("failed", 2)]
 
 
 def test_the_predictions_the_runner_published_are_not_rewritten(tmp_path, monkeypatch):

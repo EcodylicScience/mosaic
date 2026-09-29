@@ -51,6 +51,7 @@ __all__ = [
     "MediaMember",
     "SequenceComposition",
     "SourceMember",
+    "compositions_disagree",
     "labels_raw_composition",
     "media_composition",
     "media_composition_payload",
@@ -237,3 +238,14 @@ def labels_raw_composition(members: Sequence[SourceMember]) -> SequenceCompositi
         len(members),
         all(member.digest for member in members),
     )
+
+
+def compositions_disagree(recorded: str, current: str) -> bool:
+    """Whether a recorded composition and the current one name different contents.
+
+    A blank on either side is unknown, and unknown is not drift. A blank recorded
+    cell is a row written before its composition column existed, and a blank
+    current one is a projection that cannot be established now. Only two known
+    values that differ disagree.
+    """
+    return bool(recorded) and bool(current) and recorded != current

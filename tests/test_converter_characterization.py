@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from mosaic.tracking.pose_training.converters.coco_keypoints import (
@@ -60,6 +61,8 @@ from mosaic.tracking.pose_training.converters.cvat_points import (
 from mosaic.tracking.pose_training.converters.lightning_pose import (
     convert_lightning_pose,
 )
+
+from tests.helpers import write_dlc_csv
 
 GOLDEN_PATH = Path(__file__).parent / "data" / "converter_characterization.json"
 
@@ -206,32 +209,17 @@ def _write_cvat(path: Path) -> None:
     path.write_text("\n".join(parts) + "\n")
 
 
-def _write_lightning_pose_csv(path: Path) -> None:
-    scorer = "heatmap_tracker"
-    header_scorer = ["scorer"] + [scorer] * (len(_KEYPOINTS) * 3)
-    header_bodypart = ["bodyparts"]
-    header_coord = ["coords"]
-    for name in _KEYPOINTS:
-        header_bodypart.extend([name] * 3)
-        header_coord.extend(["x", "y", "likelihood"])
-
-    rows = [",".join(header_scorer), ",".join(header_bodypart), ",".join(header_coord)]
+def _lightning_pose_values() -> npt.NDArray[np.float64]:
+    """The ``[x, y, likelihood]`` of each keypoint on each frame."""
+    values = np.empty((len(_FRAMES), len(_KEYPOINTS), 3))
     for order, _ in enumerate(_FRAMES):
         x, y = _points_for(order)
-        cells: list[str] = [str(order)]
-        for offset, name in enumerate(_KEYPOINTS):
+        for offset, _name in enumerate(_KEYPOINTS):
             # The last keypoint of every third frame falls below the default
             # 0.5 confidence threshold, exercising the vis=0 branch.
             likelihood = 0.2 if (offset == 2 and order % 3 == 0) else 0.9
-            cells.extend(
-                [
-                    f"{x + offset * 9.0:.2f}",
-                    f"{y + offset * 5.0:.2f}",
-                    f"{likelihood:.2f}",
-                ]
-            )
-        rows.append(",".join(cells))
-    path.write_text("\n".join(rows) + "\n")
+            values[order, offset] = (x + offset * 9.0, y + offset * 5.0, likelihood)
+    return values
 
 
 def _extracted_frame_records(images_dir: Path) -> list[dict[str, Any]]:
@@ -405,7 +393,9 @@ def sources(tmp_path: Path) -> dict[str, Any]:
     cvat = tmp_path / "annotations.xml"
     _write_cvat(cvat)
     lp_csv = tmp_path / "predictions.csv"
-    _write_lightning_pose_csv(lp_csv)
+    _ = write_dlc_csv(
+        lp_csv, _KEYPOINTS, values=_lightning_pose_values(), scorer="heatmap_tracker"
+    )
     return {
         "images": images_dir,
         "coco": coco,

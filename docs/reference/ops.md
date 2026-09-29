@@ -3,7 +3,7 @@
 
 # Ops
 
-19 ops are registered. An op is the unit `mosaic run --kind <kind>`
+20 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
@@ -545,6 +545,87 @@ Train a SLEAP model, registering the directory it produces.
     No parameters.
 
 ## Media
+
+### preprocess
+
+#### `preprocess`
+
+Version `0.1` &middot; `mosaic.core.pipeline.preprocess.PreprocessOp` &middot; resource class `heavy`
+
+Write one media variant file per scoped entry.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `steps` | list of `MediaStepSpec` | _required_ |  | The steps applied to each frame, in order. Every position and frame number a step names is in the entry media's pixels and frames, wherever the step sits in the list. |
+| `media` | `string` | `""` |  | The run identifier of a variant to read in place of the entry media, so these steps apply after that variant's. Empty reads the entry media. |
+| `fps` | `number` \| `None` | `null` |  | The frame rate the output file is labeled at, which sets its frames' timestamps and so what a tool with per-second thresholds reads. Unset, it is the rate the kept frames were recorded at: the first clip's rate divided by the decimation. Under any other label the tracker's per-second columns are wrong, and they are dropped when its table is mapped back. [fps] |
+| `codec` | `VariantCodec` | `"av1"` |  | The output codec. 'h264' is a fallback for a decoder that cannot read AV1, such as Lightning Pose on a GPU below compute capability 8.6, and needs an ffmpeg built with libx264. |
+| `quality` | `integer` \| `None` | `null` |  | The encoder's constant rate factor, on the chosen codec's own scale, where lower is better: SVT-AV1 CRF from 0 to 63 for 'av1', x264 CRF from 0 to 51 for 'h264'. Unset uses mosaic's default, 14 for AV1 and 16 for H.264. |
+| `allow_hardware` | `boolean` | `false` |  | Permit the av1_nvenc hardware encoder where the machine offers a usable one. The encode falls back to the CPU encoder where it does not, and an 'h264' variant always encodes on the CPU. A permission rather than a setting, so it does not change the variant's run identifier. |
+
+??? note "`AdjustStep`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `step` | `"adjust"` | `"adjust"` |  | The step's name, which selects this step in a list of steps. |
+    | `brightness` | `number` | `0.0` | >= `-255.0`, <= `255.0` | The level added to every scaled pixel value, from -255 to 255. Zero adds nothing. |
+    | `contrast` | `number` | `1.0` | > `0.0` | The factor every pixel value is scaled by before the brightness is added. One leaves the contrast unchanged. |
+    | `gamma` | `number` | `1.0` | > `0.0` | The gamma applied after brightness and contrast, as 255 * (v / 255) ** (1 / gamma). Above one brightens the mid-tones, and one leaves them unchanged. |
+
+??? note "`ClaheStep`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `step` | `"clahe"` | `"clahe"` |  | The step's name, which selects this step in a list of steps. |
+    | `clip_limit` | `number` | `2.0` | > `0.0` | The contrast limit of the equalization. Higher equalizes harder and amplifies more noise. |
+    | `tile_grid_size` | `integer` | `8` | >= `1` | The tiles along each side of the image, each equalized on its own histogram. |
+
+??? note "`CropStep`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `step` | `"crop"` | `"crop"` |  | The step's name, which selects this step in a list of steps. |
+    | `x` | `integer` | _required_ | >= `0` | The source column of the rectangle's left edge. [px] |
+    | `y` | `integer` | _required_ | >= `0` | The source row of the rectangle's top edge. [px] |
+    | `width` | `integer` | _required_ | >= `4` | The rectangle's width. Even, because the variant is encoded as yuv420p, and at least the AV1 encoder's minimum. [px] |
+    | `height` | `integer` | _required_ | >= `4` | The rectangle's height. Even, because the variant is encoded as yuv420p, and at least the AV1 encoder's minimum. [px] |
+
+??? note "`DecimateStep`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `step` | `"decimate"` | `"decimate"` |  | The step's name, which selects this step in a list of steps. |
+    | `every` | `integer` | _required_ | >= `2` | Keep one frame in this many, starting with the first. |
+
+??? note "`GrayscaleStep`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `step` | `"grayscale"` | `"grayscale"` |  | The step's name, which selects this step in a list of steps. |
+
+??? note "`MaskStep`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `step` | `"mask"` | `"mask"` |  | The step's name, which selects this step in a list of steps. |
+    | `polygon` | list of tuple of (`integer`, `integer`) | _required_ | min items `3` | The polygon's vertices as (x, y) source coordinates, at least three. It may reach outside the image, but not lie wholly outside it. [px] |
+    | `keep` | `boolean` | `true` |  | Keep the pixels inside the polygon and black out the rest. False blacks out the inside instead. |
+
+??? note "`MediaStepSpec`"
+
+    No parameters.
+
+??? note "`TrimStep`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `step` | `"trim"` | `"trim"` |  | The step's name, which selects this step in a list of steps. |
+    | `start` | `integer` | _required_ | >= `0` | The first source frame of the range kept. |
+    | `stop` | `integer` | _required_ |  | The source frame the kept range stops before. |
+
+??? note "`VariantCodec`"
+
+    No parameters.
 
 ### transcode
 

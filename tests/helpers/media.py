@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import dataclasses
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import cv2
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 
 from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
@@ -39,12 +40,18 @@ def write_h264_mp4(
     shade: int | Literal["from-name"] = 0,
     fps: float = 30.0,
     levels: Sequence[int] | None = None,
+    paint: Callable[[int], npt.NDArray[np.uint8]] | None = None,
 ) -> None:
     """A small constant-frame-rate H.264 mp4, written by a subprocess ffmpeg.
 
-    *levels*, when given, is each frame's grey level in order and replaces
-    *frames* and *shade*: a clip whose frames encode their index is what lets a
-    test tell which frame a reader returned, not only which clip.
+    Every frame is the flat *shade*, unless one of two options is given:
+
+    - *levels* is each frame's grey level in order, and replaces *frames* and
+      *shade*. A clip whose frames encode their index lets a test tell which
+      frame a reader returned, not only which clip.
+    - *paint* makes frame ``i`` the BGR image ``paint(i)`` of *size*.
+
+    Giving both raises ``ValueError``.
 
     H.264 because that is what source media *is* -- a camera writes it, and a
     tool mosaic hands a file to can always decode it. A fixture in a codec a
@@ -62,10 +69,28 @@ def write_h264_mp4(
     path.parent.mkdir(parents=True, exist_ok=True)
     level = _shade_for_name(path.name) if shade == "from-name" else int(shade)
     width, height = size
-    per_frame = [level] * frames if levels is None else list(levels)
-    payload = b"".join(
-        np.full((height, width, 3), value, np.uint8).tobytes() for value in per_frame
-    )
+    if levels is not None:
+        if paint is not None:
+            message = "give write_h264_mp4 levels or paint, not both"
+            raise ValueError(message)
+        per_frame = list(levels)
+        frames = len(per_frame)
+
+        def paint_level(index: int) -> npt.NDArray[np.uint8]:
+            return np.full((height, width, 3), per_frame[index], np.uint8)
+
+        paint = paint_level
+    if paint is None:
+        payload = np.full((height, width, 3), level, np.uint8).tobytes() * frames
+    else:
+        painted = [paint(i) for i in range(frames)]
+        wrong = [
+            i for i, image in enumerate(painted) if image.shape != (height, width, 3)
+        ]
+        if wrong:
+            message = f"paint({wrong[0]}) is not a {width}x{height} BGR image"
+            raise ValueError(message)
+        payload = b"".join(image.tobytes() for image in painted)
     _ = subprocess.run(
         [
             "ffmpeg",
@@ -159,15 +184,27 @@ def add_media_sequence(
     that follows shells out, so without ffmpeg this produced a bare
     ``FileNotFoundError`` in the three suites that call it directly.
     """
-    from mosaic.core.pipeline.media_index import MediaIndexScope
-
     require_ffmpeg()
 
     directory = dataset.get_root("media_raw") / sequence
     directory.mkdir(parents=True, exist_ok=True)
     for name in videos:
         write_h264_mp4(directory / name, frames=frames, shade=_shade_for_name(name))
+    index_media_sequence(dataset, sequence, videos)
 
+
+def index_media_sequence(
+    dataset: Dataset, sequence: str, videos: Sequence[str]
+) -> None:
+    """Index the *videos* already written under ``media_raw/<sequence>/``, in order.
+
+    The indexing half of :func:`add_media_sequence`, for a test that writes its
+    own clips: at another rate, with painted frames, or replaced after a first
+    index. A clip replaced since the last index is measured again.
+    """
+    from mosaic.core.pipeline.media_index import MediaIndexScope
+
+    directory = dataset.get_root("media_raw") / sequence
     _ = dataset.write_media_index(
         [
             MediaIndexScope(

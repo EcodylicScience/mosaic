@@ -13,7 +13,6 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -25,34 +24,12 @@ from mosaic.tracking.litpose.dataset_runs import litpose_index_path, litpose_run
 from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.litpose.run import LitposePredictResult
 
-from tests.helpers import write_media_index
+from tests.helpers import write_dlc_csv, write_media_index
 
 _BODYPARTS = ("nose", "tail")
 
 
 # --- fixtures --------------------------------------------------------------
-
-
-def _write_dlc_csv(path: Path, *, n: int = 6) -> None:
-    """Write a single-animal DeepLabCut / Lightning Pose CSV (scorer/bodyparts/coords)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rng = np.random.default_rng(0)
-    header_scorer = ["scorer"]
-    header_bp = ["bodyparts"]
-    header_coord = ["coords"]
-    for bp in _BODYPARTS:
-        header_scorer += ["heatmap_tracker"] * 3
-        header_bp += [bp] * 3
-        header_coord += ["x", "y", "likelihood"]
-    lines = [",".join(header_scorer), ",".join(header_bp), ",".join(header_coord)]
-    for i in range(n):
-        row = [str(i)]
-        for _bp in _BODYPARTS:
-            x, y = rng.uniform(0, 100, 2)
-            lk = rng.uniform(0.5, 1.0)
-            row += [f"{x:.6f}", f"{y:.6f}", f"{lk:.6f}"]
-        lines.append(",".join(row))
-    path.write_text("\n".join(lines))
 
 
 @pytest.fixture
@@ -91,7 +68,9 @@ class FakeLitpose:
     ) -> LitposePredictResult:
         self.predicted.append(Path(video_path))
         out = Path(out_csv)
-        _write_dlc_csv(out, n=self.frames)
+        _ = write_dlc_csv(
+            out, _BODYPARTS, n_frames=self.frames, scorer="heatmap_tracker"
+        )
         return LitposePredictResult(csv_path=out, stdout="", stderr="")
 
 

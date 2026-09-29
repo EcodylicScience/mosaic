@@ -9,7 +9,6 @@ the analysis-h5 -> tracks bridge, and the two index writers -- with no models.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,10 +24,7 @@ from mosaic.tracking.sleap.dataset_runs import sleap_index_path, sleap_run_root
 from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.sleap.run import SleapConvertResult, SleapTrackResult
 
-from tests.helpers import write_media_index
-
-# The bridge reads the analysis HDF5 with h5py (a [recommended] extra); skip the
-# whole module when it is absent rather than fail a minimal install.
+from tests.helpers import write_media_index, write_sleap_analysis_h5
 
 
 # --- fixtures --------------------------------------------------------------
@@ -48,18 +44,6 @@ def model(tmp_path: Path) -> Path:
     model_dir.mkdir(parents=True, exist_ok=True)
     (model_dir / "best.ckpt").write_bytes(b"weights")
     return model_dir
-
-
-def _write_analysis_h5(path: Path, *, n: int = 6) -> None:
-    """A matlab-layout analysis HDF5: 1 track, 1 node, *n* frames."""
-    import h5py
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tracks = np.random.default_rng(0).random((n, 1, 1, 2))
-    arr = np.transpose(tracks, (1, 3, 2, 0))  # -> (track, xy, node, frame)
-    with h5py.File(str(path), "w") as f:
-        d = f.create_dataset("tracks", data=arr)
-        d.attrs["dims"] = json.dumps(["track", "xy", "node", "frame"])
 
 
 @dataclass
@@ -86,7 +70,8 @@ class FakeSleap:
     ) -> SleapConvertResult:
         self.converted.append(Path(slp_path))
         out = Path(output_h5)
-        _write_analysis_h5(out, n=self.frames)
+        tracks = np.random.default_rng(0).random((self.frames, 1, 1, 2))
+        write_sleap_analysis_h5(out, tracks)
         return SleapConvertResult(analysis_h5_path=out, stdout="", stderr="")
 
 
