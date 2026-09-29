@@ -47,9 +47,9 @@ CONSUMERS: dict[str, dict[str, JsonValue]] = {
 }
 """Each op with a ``media`` parameter, and the params that it needs to validate.
 
-The models are named by training run identifiers. An identity therefore plans on
-an empty dataset, because a run identifier serves as the model identity and the
-planner does not read weights to find it.
+The models are named by training run identifiers. An identity plans on an empty dataset,
+because a run identifier serves as the model identity and the planner does not read
+weights to find it.
 """
 
 _INFER_WINDOW: dict[str, JsonValue] = {
@@ -260,7 +260,7 @@ def test_a_frame_setting_passed_through_is_refused_on_derived_media(
 def test_a_frame_setting_left_null_is_accepted_beside_media(
     kind: str, settings_field: str, key: str
 ) -> None:
-    """A null leaves the frames unselected, like a field restated at its default."""
+    """A null does not set a frame window, like a field restated at its default."""
     settings: dict[str, JsonValue] = {key: None}
     params = _params(kind, media=VARIANT, **{settings_field: settings})
 

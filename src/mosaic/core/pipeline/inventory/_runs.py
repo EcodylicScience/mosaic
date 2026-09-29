@@ -1,8 +1,8 @@
-"""Read an index's runs from its rows, and whether each run finished.
+"""Read an index's runs and each run's finish state from its rows.
 
 Every run index records a run's rows with ``run_id``, ``started_at`` and
-``finished_at``. The feature scan and the media-variant records therefore read
-both facts here, the same way.
+``finished_at``. The feature scan and the media-variant records read both facts
+here, the same way.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ def finish_state(frame: pd.DataFrame, run_id: str) -> tuple[str, str, bool]:
     """Return ``(started_at, finished_at, finished)`` for one run, from its rows.
 
     Each value is the first non-empty cell of its column. A run re-entered for more
-    entries therefore reads as finished once any of its rows recorded a finish.
+    entries reads as finished once any of its rows recorded a finish.
     """
     started, finished = "", ""
     for record in index_records(frame):

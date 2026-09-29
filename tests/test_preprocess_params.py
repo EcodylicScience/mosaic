@@ -72,7 +72,7 @@ def test_a_negative_quality_is_refused(codec: VariantCodec) -> None:
 
 
 def test_the_schema_publishes_the_lowest_quality() -> None:
-    """Both scales start at 0. An editor can therefore bound the control from them."""
+    """Both scales start at 0, and an editor can bound the control from them."""
     quality = PreprocessParams.model_json_schema()["properties"]["quality"]
 
     assert {"type": "integer", "minimum": 0} in quality["anyOf"]
@@ -127,7 +127,7 @@ def test_the_run_id_is_the_op_kind_and_version_over_a_digest() -> None:
 
 
 def test_every_field_identity_keeps_reaches_the_payload() -> None:
-    """The payload is built by hand. A new field must therefore be added to it."""
+    """The payload is built by hand, and a new field must be added to it."""
     params = PreprocessParams(steps=[_CROP], fps=15.0)
 
     assert set(preprocess_identity_payload(params)) == set(params.identity_dump())

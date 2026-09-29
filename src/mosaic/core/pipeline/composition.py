@@ -259,7 +259,7 @@ def composition_drift(
 
     Each entry of *recorded* is compared with its cell in *current* under
     :func:`compositions_disagree`. A blank on either side, or an entry that
-    *current* does not name, is therefore not drift.
+    *current* does not name, is not drift.
 
     Returns:
         The drifted entries, sorted.

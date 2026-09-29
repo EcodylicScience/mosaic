@@ -553,8 +553,8 @@ def test_an_older_reader_folds_a_log_holding_the_event(tmp_path: Path) -> None:
 def test_dropped_columns_accumulate_and_leave_the_status_alone(tmp_path: Path) -> None:
     """Two entries publish without the columns that their variant's mapping dropped.
 
-    Each event is one entry. The count therefore accumulates like
-    ``entries_failed``. The entries published, and the status does not change.
+    Each event is one entry, and the count accumulates like ``entries_failed``. The
+    entries published, and the status does not change.
     """
     eid = new_execution_id()
     path = run_log_path(tmp_path, eid)

@@ -4,8 +4,8 @@ A step's fields are its parameters, and a ``step`` field that contains its name 
 the discriminator that tells one step's JSON from another's. Two methods define the
 step's effect, both given the placement before it: :meth:`MediaStep.place` returns
 the placement after it, and :meth:`MediaStep.bind` builds the function that the
-step applies to each frame. A validated list of steps is therefore a list of step
-objects, and :data:`MEDIA_STEPS` maps a step's name to its model class.
+step applies to each frame. A validated list of steps is a list of step objects,
+and :data:`MEDIA_STEPS` maps a step's name to its model class.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ type FrameFn = Callable[[Frame], Frame]
 
 
 class MediaStep(Params):
-    """Serve as the base of every media pre-processing step.
+    """Define the interface that every media pre-processing step implements.
 
     A subclass declares a ``step: Literal["<name>"]`` field defaulting to its
     name, and the four class variables below. Its other fields are the step's
@@ -60,8 +60,8 @@ class MediaStep(Params):
     appearance: ClassVar[bool]
     """Whether the step changes every pixel by one rule, independent of position.
 
-    ``mask`` is therefore not an appearance step: whether it blacks out a pixel
-    depends on where the pixel is.
+    ``mask`` is not an appearance step, because its effect on a pixel depends on the
+    pixel's position.
     """
 
     def place(self, placement: Placement) -> Placement:
@@ -73,10 +73,10 @@ class MediaStep(Params):
         raise NotImplementedError(f"{type(self).__name__} does not define place()")
 
     def bind(self, placement: Placement) -> FrameFn:
-        """Return the per-frame function for this step at *placement*, the one before.
+        """Return this step's per-frame function, given *placement*, the one before it.
 
-        ``bind`` is called once per entry. A subclass computes here each value that
-        the function needs and that stays constant from frame to frame.
+        ``bind`` is called once per entry. A subclass computes here the function's
+        values that stay constant from frame to frame.
 
         Raises:
             NotImplementedError: Always, on the base. Every step overrides it.
@@ -92,8 +92,8 @@ def register_media_step[StepT: type[MediaStep]](cls: StepT) -> StepT:
     """Register *cls* under its ``name``, as a class decorator.
 
     Raises:
-        ValueError: If *cls* declares no non-empty ``name``, or another class is
-            already registered under it.
+        ValueError: If *cls* does not declare a non-empty ``name``, or another
+            class is already registered under it.
         TypeError: If *cls* omits ``version``, ``moves_pixels`` or ``appearance``.
     """
     name: object = getattr(cls, "name", "")
@@ -101,13 +101,13 @@ def register_media_step[StepT: type[MediaStep]](cls: StepT) -> StepT:
         raise ValueError(f"{cls.__name__} must declare a non-empty 'name'")
     for declaration in ("version", "moves_pixels", "appearance"):
         if not hasattr(cls, declaration):
-            raise TypeError(f"{cls.__name__} declares no {declaration!r}")
+            raise TypeError(f"{cls.__name__} does not declare {declaration!r}")
     held = MEDIA_STEPS.get(name)
     if held is not None:
         raise ValueError(
             f"{cls.__module__}.{cls.__qualname__} cannot register as the media "
-            f"step {name!r}: {held.__module__}.{held.__qualname__} is registered "
-            f"under it"
+            f"step {name!r}, because {held.__module__}.{held.__qualname__} is "
+            f"registered under it"
         )
     MEDIA_STEPS[name] = cls
     return cls

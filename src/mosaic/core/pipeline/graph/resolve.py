@@ -359,8 +359,8 @@ def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
     the tracking-roots registry -- the table a producer must appear in to *bridge
     from a tracker run root*, which is what every tracks producer did until one
     arrived that reads a tracks table and writes another. ``writes_media`` comes
-    from the op's declared domain. A media op of a new category therefore writes
-    media without an entry here. Both come from declarations instead of name lists.
+    from the op's declared domain. A media op of a new category writes media
+    without an entry here. Both come from declarations instead of name lists.
 
     ``reads_media`` stays tied to the registry rather than following
     ``writes_tracks``: it is true because bridging into tracks means opening the

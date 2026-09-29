@@ -65,8 +65,8 @@ def write_h264_mp4(
 
     Giving both raises ``ValueError``.
 
-    *lossless* writes RGB H.264 with libx264rgb at quantizer 0 and converts no
-    pixel format. Each frame then decodes to the exact BGR values written. The
+    *lossless* writes RGB H.264 with libx264rgb at quantizer 0 and does not convert
+    the pixel format. Each frame then decodes to the BGR values that were written. The
     default is yuv420p at CRF 18, the format of a camera's file.
 
     H.264 because that is what source media *is* -- a camera writes it, and a
@@ -143,10 +143,10 @@ def write_painted_entry(
 ) -> list[Path]:
     """Write and index *sequence*'s clips, each ``(frames, fps)``, in order.
 
-    Frame ``i`` of the entry, counted across all its clips, is ``paint(i)``. The
-    clips therefore continue one another, and a decoded frame identifies its entry
-    frame. The clips are ``clip0.mp4``, ``clip1.mp4``, ... under
-    ``media_raw/<sequence>/``, returned in order.
+    Frame ``i`` of the entry, counted across all its clips, is ``paint(i)``. The clips
+    continue one another, and a decoded frame identifies its entry frame. The clips are
+    ``clip0.mp4``, ``clip1.mp4``, ... under ``media_raw/<sequence>/``, returned in
+    order.
     """
     directory = dataset.get_root("media_raw") / sequence
     paths: list[Path] = []

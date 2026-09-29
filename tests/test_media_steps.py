@@ -365,7 +365,7 @@ def test_adjust_maps_a_level_through_the_formula(
     """Each level becomes ``clip(c * v + b, 0, 255)``, then the gamma curve.
 
     The gamma curve is ``255 * (v / 255) ** (1 / gamma)``. The result is rounded
-    half to even. 1.5 and 2.5 therefore both become 2.
+    half to even, and 1.5 and 2.5 both become 2.
     """
     adjust = step.bind(_SOURCE)
 

@@ -2757,9 +2757,9 @@ class Dataset:
                     continue
                 if p.suffix.lower() not in exts:
                     continue
-                # Skip this dataset's media variants. The check follows the
-                # extension filter, and the count therefore names only video
-                # files and excludes the index and claim files beside them.
+                # Skip this dataset's media variants. The extension filter above
+                # has already excluded the index and claim files beside them, and
+                # the count names only video files.
                 if is_media_variant(p):
                     variants_skipped += 1
                     continue

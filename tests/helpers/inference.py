@@ -1,8 +1,8 @@
 """Stand in for the environments that ``infer-pose`` and ``infer-points`` run in.
 
-Both ops spawn a runner in an Ultralytics environment. A test therefore stands in
-for the environment probe and the tool call, two module-level seams. The
-installers here replace both. The fake runner writes a predictions table, in the
+Both ops spawn a runner in an Ultralytics environment. A test stands in for the
+environment probe and the tool call, two module-level seams, and the installers
+here replace both. The fake runner writes a predictions table, in the
 runner's layout, at the path that the request names, because the op reads it back
 to bridge it. The table is fixed unless a test passes a function of the video.
 """
@@ -27,11 +27,11 @@ from tests.helpers.ultralytics import ultralytics_probe_response
 
 
 def pose_predictions() -> pd.DataFrame:
-    """Return four frames of one animal with two keypoints, as a pose runner does.
+    """Return four frames of one animal with two keypoints, in a pose runner's layout.
 
     The two keypoints have different values. The body center that the bridge
-    derives is their mean, ``(3, 5)``. A test that asserts it therefore cannot
-    pass by the bridge copying either keypoint.
+    derives is their mean, ``(3, 5)``. A test that asserts it cannot pass by the
+    bridge copying either keypoint.
     """
     return pd.DataFrame(
         {
@@ -68,7 +68,9 @@ type PredictionsFor = Callable[[Path], pd.DataFrame]
 
 @dataclass
 class FakeInference:
-    """Return a runner that writes ``predictions(video)`` for every video it is handed.
+    """Stand in for the runner, and record every video that it is handed.
+
+    The runner writes ``predictions(video)`` for each video.
 
     Attributes:
         predictions: The table for each video, as a function of the video's path.

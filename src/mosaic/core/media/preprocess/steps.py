@@ -1,8 +1,8 @@
 """Define the appearance steps: ``grayscale``, ``adjust`` and ``clahe``.
 
 Each changes every pixel by one rule that is independent of the pixel's position.
-Each keeps every pixel in place and every frame, and therefore returns its
-placement unchanged.
+Each keeps pixel positions and frames as they are, and returns its placement
+unchanged.
 """
 
 from __future__ import annotations

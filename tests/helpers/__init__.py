@@ -19,8 +19,8 @@ What lives where:
   stand-ins for the tools that those trackers run, installed over each tracker's
   seams, and ``inference`` the same for the environments of ``infer-pose`` and
   ``infer-points``.
-- ``decode_probe`` contains a fake ``python`` for a tool environment, which
-  answers the decode probe that the codec check runs there.
+- ``decode_probe`` contains a fake ``python`` for a tool environment, which stands
+  in for the interpreter that runs the codec check's decode probe.
 - ``media`` -- media files, media-index rows, transcode derivatives.
 - ``variants`` -- media variant files and their index rows, and a count of the
   index reads a variant's consumers make.

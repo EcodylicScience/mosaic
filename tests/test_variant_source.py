@@ -1,12 +1,10 @@
 """Test resolving the media variant file that an entry is read from.
 
-A variant's row records the entry's media composition when the file was
-written, and a consumer refuses the row when the entry's composition has changed
-since. A blank composition on either side is unknown rather than drift. The
-placement is therefore the last check, and it must still map into the frames
-that the entry has.
-Each refusal prints the command that rewrites the variant from its recorded
-recipe.
+A variant's row records the entry's media composition when the file was written, and a
+consumer refuses the row when the entry's composition has changed since. A blank
+composition on either side is unknown rather than drift. The placement is therefore the
+last check, and it must still map into the frames that the entry has. Each refusal
+prints the command that rewrites the variant from its recorded recipe.
 """
 
 from __future__ import annotations
@@ -44,8 +42,8 @@ def test_a_placement_that_no_longer_fits_the_entry_is_drift_naming_a_rewrite(
 
     Its current composition is then unknown and does not compare as drifted. The
     variant's 12-frame placement cannot map into the 20 frames that the entry has
-    now. The preprocess op compares the recorded placement too. A plain run of the
-    same recipe therefore rewrites the file.
+    now. The preprocess op compares the recorded placement too, and a plain run of
+    the same recipe rewrites the file.
     """
     ds = make_dataset(tmp_path / "ds")
     _ = add_media_variant(ds, _VARIANT, "s", composition="a-composition")
@@ -61,7 +59,7 @@ def test_a_placement_that_no_longer_fits_the_entry_is_drift_naming_a_rewrite(
 
 
 def test_the_rewrite_command_names_the_recorded_recipe(tmp_path: Path) -> None:
-    """``@file`` is read from the working directory. The path is therefore absolute."""
+    """The path is absolute, because ``@file`` is read from the working directory."""
     ds = make_dataset(tmp_path / "ds")
     recipe = media_variant_recipe_path(ds, _VARIANT)
     recipe.parent.mkdir(parents=True)

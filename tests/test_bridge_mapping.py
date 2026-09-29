@@ -145,7 +145,7 @@ def test_without_a_mapping_the_table_is_published_unchanged(tmp_path: Path) -> N
 
 
 def test_validation_reads_the_mapped_table(tmp_path: Path) -> None:
-    """The mapping runs first. The table checked is therefore the one published.
+    """The mapping runs first, and the table checked is the one published.
 
     A table without ``time`` is refused by strict validation alone, and
     publishes once the mapping retimes it on the source timeline.

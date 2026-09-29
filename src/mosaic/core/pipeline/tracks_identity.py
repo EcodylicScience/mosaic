@@ -165,7 +165,7 @@ def infer_variant_payload(
     *media* is the media variant that the predictions were made on, and empty
     when they were made on the entry's original media. The term is omitted from
     the payload when empty. Every tracks variant minted before media variants
-    existed therefore keeps its identifier.
+    existed keeps its identifier.
 
     *model_id* is what **names** the model, never where it sits: a training run
     identity, or the weights' content digest when there is no run to name them

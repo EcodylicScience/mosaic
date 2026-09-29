@@ -1,8 +1,8 @@
 """Test the placement of a media variant's pixels and frames in its source media.
 
 A variant's tracks are mapped back to source space through its placement. An
-incorrect frame map or offset therefore publishes a table whose frames and
-positions name another moment and another pixel. Each test builds the maps that
+incorrect frame map or offset publishes a table whose frames and positions name
+another moment and another pixel. Each test builds the maps that
 the pre-processing steps build (``trim`` is ``within``, ``decimate`` is ``every``)
 and checks the source frames and file indices that they return.
 """

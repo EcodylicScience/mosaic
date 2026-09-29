@@ -1,4 +1,4 @@
-"""Test retiming a joined conversion, and dropping the columns one rate misstates.
+"""Test retiming a joined conversion, and dropping the columns that one rate misstates.
 
 TRex converts a session's clips into one ``.pv`` but times all of them at the
 first clip's rate, because ``VideoSource`` reads ``_framerate`` from

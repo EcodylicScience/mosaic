@@ -737,12 +737,12 @@ def test_a_tool_that_cannot_decode_the_export_is_refused_by_name(
 ) -> None:
     """Refuse the export for a tool whose environment fails to decode it.
 
-    A raw store has no stream to copy, and its export is encoded in AV1. SLEAP and
-    Lightning Pose do not declare AV1, and each is tested in its environment
-    first. The environments here fail the test, as an OpenCV without dav1d and
-    the video reader of DALI 2.3 do. A reader without a decoder returns
-    zero frames and exits 0, and SLEAP then wrote a `.slp` with no labeled
-    frames, recorded as a success.
+    A raw store does not contain a stream to copy, and its export is encoded in
+    AV1. SLEAP and Lightning Pose do not declare AV1, and each is tested in its
+    environment first. The environments here fail the test, as an OpenCV without
+    dav1d and the video reader of DALI 2.3 do. A reader without a decoder returns
+    zero frames and exits 0, and SLEAP would write a `.slp` without a labeled frame,
+    recorded as a success.
 
     TREx and Ultralytics declare AV1 and are handed the file untested.
     """

@@ -159,8 +159,8 @@ class VideoPredictions:
     writes the parquet itself, atomically, so re-writing it here would copy a
     whole table to the path it already occupies.
 
-    ``frame`` without a row is a result, from a video in which the model detected
-    nothing, and its empty table is published.
+    ``frame`` without a row is a result, from a video in which the model did not
+    detect anything, and its empty table is published.
     """
 
     frame: pd.DataFrame
@@ -311,8 +311,8 @@ def infer_run_id(
 ) -> str:
     """Mint an inference run identifier.
 
-    It is minted from the payload that the run's tracks variant is minted from.
-    The two identifiers therefore coincide.
+    It is minted from the payload that the run's tracks variant is minted from, and
+    the two identifiers coincide.
 
     Args:
         kind: The op kind, e.g. ``"infer-points"``.
@@ -390,20 +390,19 @@ def _bridge_df_to_tracks(
 
     Names the columns that the schema requires, then publishes through the bridge
     that every tracker shares. ``tracks_variant`` names the directory as well as the
-    row. Two models (or two parameter sets) therefore never target one path.
+    row, and two models (or two parameter sets) never write to one path.
 
-    The table replaces the one that the variant already has for the entry. An
-    inference run predicts on every entry, and the file that the model reads can
-    change under one run id, as when a media variant is written again or the
-    entry is transcoded again. The table therefore always comes from the
-    predictions just made.
+    The table replaces the one that the variant already has for the entry, and
+    always comes from the predictions just made. An inference run predicts on every
+    entry, and the file that the model reads can change under one run id, as when a
+    media variant is written again or the entry is transcoded again.
 
-    Predictions without a row are the result for a video in which the model
-    detected nothing. They publish an empty table, which replaces an earlier one
-    as any other table does. The Ultralytics runner writes such predictions with
-    its full column set, and the localizer's builder returns its columns without
-    a row. The bridge then names the same columns that it names for predictions
-    with rows, and the empty table satisfies the schema.
+    Predictions without a row are the result for a video in which the model did not
+    detect anything. They are published as an empty table, which replaces an earlier one
+    as any other table does. The Ultralytics runner writes such predictions with its
+    full column set, and the localizer's builder returns its columns without a row. The
+    bridge then names the same columns that it names for predictions with rows, and the
+    empty table satisfies the schema.
 
     Args:
         ds: The dataset.
@@ -601,7 +600,7 @@ def _run_inference_op(
 
     An inference op predicts on every entry on every run, and publishes each
     entry's table when ``convert_to_tracks`` is set. The ``overwrite`` argument
-    that each op's ``run`` receives therefore changes nothing for it.
+    that each op's ``run`` receives does not affect an inference op.
     """
     if not ds.has_root(kind):
         ds.set_root(kind, tracking_root_default(kind))
@@ -708,14 +707,14 @@ def _run_inference_op(
             ctx.progress.on_entry_start(i, len(work), key)
             ctx.progress.on_phase("infer", key)
 
-            # A claim, not a cache. Inference predicts on every entry and publishes
-            # its table again on every run. The completion marker below records that
-            # output is whole, and nothing gates on it, because turning this into a
-            # cache is a behavior change with its own failure mode (a skipped re-run
-            # over a corrected video). What the claim prevents is two executions
-            # writing one ``predictions.parquet`` at once. ``open_entry`` takes it
-            # with the exclusive create and the ownership-checked release that every
-            # tracker gets, rather than a fifth inline copy of them.
+            # The claim keeps two executions from writing one ``predictions.parquet``
+            # at once. It is not a cache. Inference predicts on every entry and
+            # publishes its table again on every run. The completion marker below
+            # records that output is whole, and a run does not read it to skip an
+            # entry, because a cache would be a behavior change with its own failure
+            # mode (a skipped re-run over a corrected video). ``open_entry`` takes
+            # the claim with the exclusive create and the ownership-checked release
+            # that every tracker gets.
             opened = open_entry(
                 ds,
                 ctx,
@@ -750,7 +749,8 @@ def _run_inference_op(
                         cancel_check=ctx.cancel_token.is_cancelled,
                     )
                 )
-                # A runner that writes no predictions file raises, and the run fails.
+                # A runner that does not write a predictions file raises, and the
+                # run fails.
                 df = outcome.frame
                 pred_path = outcome.published_path or seq_dir / _PREDICTIONS_NAME
                 # Written here only when the caller did not publish it. An op that ran
@@ -833,9 +833,9 @@ def _run_inference_op(
         )
         message = unreadable or (
             f"[{kind}] every one of {len(attempted)} attempted entries failed to "
-            f"publish: {', '.join(sorted(lost))}. run_id={run_id} did not produce "
-            f"tracks. The predictions are kept under {run_root}. The per-entry "
-            f"errors are in this attempt's run-log."
+            f"publish: {', '.join(sorted(lost))}. The run run_id={run_id} did not "
+            f"produce tracks. Its predictions are kept under {run_root}. The "
+            f"per-entry errors are in this attempt's run-log."
         )
         raise AllEntriesFailed(message)
     print(f"[{kind}] completed run_id={run_id} ({done}/{len(work)}) -> {run_root}")

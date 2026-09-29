@@ -252,8 +252,8 @@ def trex_settings(
     shape does not depend on what was set.
 
     ``media`` enters the payload only when set, as the media variant that TREx
-    reads. It does not name a phase. :func:`phase_settings` therefore never sends
-    it to TREx.
+    reads. It does not name a phase, and :func:`phase_settings` never sends it to
+    TREx.
 
     Args:
         params: The run's parameters. The phase-declaring fields enter the
@@ -327,8 +327,7 @@ def _bridge_npz_to_tracks(
 
     *consumed_media* are the media files that the table derives from. *mapping*
     maps a table tracked on a media variant into source space and retimes it on
-    the entry's timeline. A caller that passes *mapping* therefore does not pass
-    *timeline*.
+    the entry's timeline. A caller that passes *mapping* does not pass *timeline*.
 
     Returns ``None`` when there was nothing to convert or the conversion failed.
     """

@@ -123,9 +123,9 @@ _NO_DETECTIONS = {
     "infer-points": lambda: _point_predictions().iloc[0:0],
     "infer-localizer": lambda: localizer_detections_to_dataframe([[], []]),
 }
-"""Each producer's predictions for a video in which the model detects nothing.
+"""Each producer's predictions for a video without a detection.
 
-The runner writes its full column set with no rows. The localizer's frames come
+The runner writes its full column set without a row. The localizer's frames come
 from its real builder, given two frames without a detection.
 """
 
@@ -195,9 +195,9 @@ def test_the_bridged_table_satisfies_the_schema_the_root_declares(
 def test_predictions_without_a_row_publish_an_empty_table(
     tmp_path: Path, kind: str
 ) -> None:
-    """A video in which the model detects nothing has a result, and it is published.
+    """A video without a detection has a result, and it is published.
 
-    The table holds every column that the schema requires and no rows.
+    The table is empty and contains every column that the schema requires.
     """
     written, table = _publish(tmp_path, kind, _NO_DETECTIONS[kind]())
 
@@ -276,8 +276,7 @@ def _spy_on_tracks_rows(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, objec
 
     The writer is replaced in every module on the inference path that binds it.
     Each call is bound to the writer's signature with its defaults applied. An
-    argument passed at its default and one left out therefore record the same
-    value.
+    argument passed at its default and one left out record the same value.
     """
     signature = inspect.signature(tracks_index.write_tracks_row)
     calls: list[dict[str, object]] = []

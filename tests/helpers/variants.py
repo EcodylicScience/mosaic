@@ -1,9 +1,9 @@
 """Write media variant files and their index rows, as the ``preprocess`` op does.
 
-A consumer of a variant's row reads its path, its placement and its compositions,
-and does not read its pixels. The file here is therefore a placeholder. The row is
-built by the index's builder from facts that a test can state, and a test that is
-not about encoding does not run the encoder.
+A consumer of a variant's row reads its path, its placement and its compositions, and
+does not read its pixels. The file here is a placeholder. The row is built by the
+index's builder from facts that a test can state, and a test that is not about encoding
+does not run the encoder.
 
 A consumer reads the originals index, the variant index and the recorded
 compositions once per call over its whole scope. :func:`count_index_reads`

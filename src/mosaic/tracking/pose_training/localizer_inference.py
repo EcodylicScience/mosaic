@@ -322,8 +322,8 @@ def localizer_detections_to_dataframe(
     -------
     DataFrame
         The columns of :data:`POINT_COLUMNS`, typed by :data:`POINT_DTYPES`,
-        whether or not any frame holds a detection. Frames without a detection
-        therefore give a table without a row that still names every column.
+        whether or not any frame contains a detection. Frames without a detection
+        give an empty table that still names every column.
     """
     rows: list[dict[str, float | int | str]] = []
     for frame_idx, detections in enumerate(results):

@@ -63,9 +63,9 @@ frame, and its width and height must be even. A recipe that does not fit an entr
 refused before any video is written. [Media steps](../../reference/media-steps.md)
 lists every step and its parameters.
 
-`preprocess` refuses to run without a scope, because an unscoped run covers every
-entry in the dataset. Name entries, or whole groups with
-`Scope(groups=["day1"])` or `--groups day1`.
+`preprocess` refuses to run without a scope, because an unscoped run re-encodes every
+entry in the dataset. Name entries, or whole groups with `Scope(groups=["day1"])` or
+`--groups day1`.
 
 The run id names the recipe. Running the same recipe again reuses the entries already
 written and still current, and encodes the rest. Changing a step, `codec`, `quality` or
@@ -124,9 +124,9 @@ Set `media` to the variant's run id on `trex`, `sleap`, `litpose`, `ultralytics`
         --set media=preprocess.0.1-0e4c6091ef
     ```
 
-The variant is part of the tracker's run id. Two variants of one entry therefore
-track as two runs. An entry that the variant does not cover fails with a message naming
-the `preprocess` command that writes it, and the other entries run.
+The variant is part of the tracker's run id. Two variants of one entry track as two
+runs. An entry that the variant does not cover fails with a message naming the
+`preprocess` command that writes it, and the other entries run.
 
 ### In a recipe
 
@@ -152,24 +152,23 @@ A tracker or inference step names a variant with `"media": {"step": "<id>"}`:
 }
 ```
 
-The reference is replaced by the variant's run id when the recipe is planned. It
-also orders the tracker after the `preprocess` step without an `after` list.
-A recipe covers every entry of the dataset unless its submission is narrowed. Its
-`preprocess` step then re-encodes every entry. Narrow it with `--entry` on
-`mosaic pipeline`.
-A `media` reference must name a `preprocess` step. `media` on a `preprocess` step
-takes the same reference, to chain two variants.
+The reference is replaced by the variant's run id when the recipe is planned. It also
+orders the tracker after the `preprocess` step without an `after` list. A recipe covers
+every entry of the dataset unless its submission is narrowed. Its `preprocess` step
+then re-encodes every entry. Narrow it with `--entry` on `mosaic pipeline`. A `media`
+reference must name a `preprocess` step. `media` on a `preprocess` step takes the same
+reference, to chain two variants.
+
 [Chain steps into a recipe](../pipelines/chain-steps.md) covers recipes in general.
 
 ## Tracks in original coordinates
 
 A tracker run on a variant reports positions in the variant's pixels and frames. mosaic
-maps them back when it publishes the table: positions are shifted by the crop's
-offset, frame numbers are mapped back through `trim` and `decimate`, and `time` is
-recomputed from the original recording. Overlays, egocentric crops, `scale-to-cm` and
-the `filter_start_frame` and `filter_end_frame` of `run_feature` therefore work on
-these tracks as on tracks of the original video, and tracks from two variants of one
-entry line up.
+maps them back when it publishes the table: positions are shifted by the crop's offset,
+frame numbers are mapped back through `trim` and `decimate`, and `time` is recomputed
+from the original recording. Overlays, egocentric crops, `scale-to-cm` and the
+`filter_start_frame` and `filter_end_frame` of `run_feature` work on these tracks as on
+tracks of the original video, and tracks from two variants of one entry line up.
 
 An `infer-*` table from a variant that trims, decimates, sets `fps` or covers an
 entry of several clips records `time` in seconds. An `infer-*` table from the
@@ -180,11 +179,11 @@ A column that describes the variant image itself, such as TREx's distance to the
 image border, cannot be mapped back. It is dropped, and the run-log records the
 dropped columns for each entry.
 
-A numeric column that mosaic cannot classify is refused rather than dropped, because
-it may contain a variant pixel or frame. The entry fails with `UnclassifiedColumnError`,
-which names the column, and the other entries publish. Such a column usually comes
-from a field added to TREx's `output_fields` in `track_extra_settings`. Remove that
-field, or leave `media` empty to track the original recording.
+A numeric column that mosaic cannot classify is refused rather than dropped, because it
+may contain a variant pixel or frame. The entry fails with `UnclassifiedColumnError`,
+which names the column, and the other entries publish. Such a column usually comes from
+a field added to TREx's `output_fields` in `track_extra_settings`. Remove that field,
+or leave `media` empty to track the original recording.
 
 ## Frame ranges in the variant
 
@@ -215,7 +214,7 @@ published tracks, which are numbered in original frames.
 
 ## Tracker settings on a variant
 
-Every other tracker setting applies to the video the tracker reads:
+Every other tracker setting applies to the video that the tracker reads:
 
 - A setting counted in frames counts variant frames. After `decimate` with
   `every: 2`, a SLEAP `tracking_window_size` of 5 spans 10 frames of the original.
@@ -225,11 +224,11 @@ Every other tracker setting applies to the video the tracker reads:
   [Frame rate](#frame-rate).
 
 When `cm_per_pixel` is unset, TREx derives it as `meta_real_width / video_width`. A
-crop narrows the video. That changes the factor, and with it every TREx threshold
-given in centimeters, such as `track_max_speed`. When tracking a cropped variant with
-TREx, set `cm_per_pixel` to `meta_real_width` divided by the original video's width
-in pixels. TREx takes `meta_real_width` as 30 when none was set. A recording 1920
-pixels wide then gives `"cm_per_pixel": 0.015625`.
+crop narrows the video. That changes the factor, and with it every TREx threshold given
+in centimeters, such as `track_max_speed`. When tracking a cropped variant with TREx,
+set `cm_per_pixel` to `meta_real_width` divided by the original video's width in
+pixels. TREx takes `meta_real_width` as 30 when it is unset. A recording 1920 pixels
+wide then gives `"cm_per_pixel": 0.015625`.
 
 ## Frame rate
 
@@ -250,12 +249,12 @@ own rate. TREx's per-second columns are dropped for such an entry.
 Choose the codec when you make the variant. The tracker checks it when it runs, after
 the encode.
 
-Variants are AV1 by default. TREx, Ultralytics and the `infer-*` ops read AV1 with no
-setting. SLEAP and Lightning Pose read AV1 only in some environments. SLEAP decodes AV1
-with conda-forge's OpenCV installed in its environment, as
-[Installation](../../installation.md#sleap) describes. Lightning Pose reads video through
-DALI's `fn.readers.video`, which in DALI 2.3 does not handle AV1 on any GPU. Make a
-variant for Lightning Pose with `"codec": "h264"`.
+Variants are AV1 by default. TREx, Ultralytics and the `infer-*` ops read AV1 without
+extra configuration. SLEAP and Lightning Pose read AV1 only in some environments. SLEAP
+decodes AV1 with conda-forge's OpenCV installed in its environment, as
+[Installation](../../installation.md#sleap) describes. Lightning Pose reads video
+through DALI's `fn.readers.video`, which in DALI 2.3 does not handle AV1 on any GPU.
+Make a variant for Lightning Pose with `"codec": "h264"`.
 
 Before SLEAP or Lightning Pose is handed an AV1 file, mosaic decodes one frame of it in
 the tool's environment, with the reader that the tool uses. The test runs once per
@@ -287,9 +286,9 @@ rewrites the entries whose media changed, or whose frames no longer fit the step
 and reuses the rest. The command does not need `overwrite`. If the variant's
 directory lacks a `recipe.json`, the command asks for the recipe instead.
 
-A variant records the original recordings that it was made from. A new transcode leaves
-those recordings unchanged and is not detected. After transcoding an entry again,
-run its `preprocess` command with `--overwrite` to rewrite the variant.
+The media that a variant records are the original recordings. A new transcode leaves
+them unchanged and is not detected. After transcoding an entry again, run its
+`preprocess` command with `--overwrite` to rewrite the variant.
 
 Then run the tracker or inference op again with the same settings. A tracker tracks
 each rewritten entry again and reuses the rest. An inference op predicts on every entry

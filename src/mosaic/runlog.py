@@ -327,9 +327,9 @@ class JsonlRunLog:
         minted at the variant's rate, a speed computed against a relabeled rate,
         a distance to the border of a cropped image. Retiming a joined TREx
         conversion on its clips' measured rates drops the same kinds of column.
-        The table is still published. The event is therefore a report and not a
-        failure, and it contains the names, because a reader needs them to know
-        the missing columns.
+        The table is still published, and the event reports the loss without
+        failing the entry. It contains the names, because a reader needs them to
+        know the missing columns.
 
         It is an ordinary event kind, for the reason that :meth:`entry_failed`
         gives. A reader that predates it folds a log with this event correctly.

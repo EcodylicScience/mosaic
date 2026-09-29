@@ -684,7 +684,7 @@ def _infer_run_id_on_media(kind: str, version: str, model_id: str) -> Callable[[
     """Return the identifier that inference op *kind* at *version* mints over a variant.
 
     *version* is a literal, as in :func:`_infer_run_id`. Bumping an op's version
-    therefore cannot change the digest that this pins.
+    cannot change the digest that this pins.
     """
 
     def mint() -> str:

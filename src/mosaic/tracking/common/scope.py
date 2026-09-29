@@ -132,9 +132,9 @@ class TrackerWorkItem:
 
     When set, ``video_paths`` is the variant file and ``source_facts`` its stored
     facts. Every view derived from them (``video_uid``, ``source_uid``,
-    ``facts``, ``n_sources``) therefore describes the file that the tool reads. The
-    reuse gates compare those. A tracker run over a variant therefore never reuses
-    output made from the entry media, and it recomputes when the variant file is
+    ``facts``, ``n_sources``) describes the file that the tool reads, and the reuse
+    gates compare those. A tracker run over a variant therefore never reuses output
+    made from the entry media, and it recomputes when the variant file is
     rewritten.
     """
 

@@ -117,14 +117,15 @@ packages that the environment's history pins, such as `ffmpeg`, add `--update-al
 to the `conda install`.
 
 That build links the conda ffmpeg beside it, which carries `libdav1d`, and
-satisfies SLEAP's unpinned `opencv-python` requirement. Before SLEAP is handed an AV1
-file, mosaic reads one frame of it with `sleap-io` in the SLEAP environment, once per
-run. SLEAP is handed the file when the frame decodes. When it does not, the run is
-refused with the reader's error. Without the refusal, SLEAP read zero frames and
-exited 0, and the run was recorded as a success with an empty result.
+satisfies SLEAP's unpinned `opencv-python` requirement. SLEAP without an AV1
+decoder reads zero frames and exits 0, and without the refusal its run would be
+recorded as a success with an empty result. Before SLEAP is handed
+an AV1 file, mosaic reads one frame of it with `sleap-io` in the SLEAP
+environment, once per run. SLEAP is handed the file when the frame decodes. When
+it does not, the run is refused with the reader's error.
 `MOSAIC_ALLOW_TOOL_CODECS=av1` skips the test. `sleap-io` picks OpenCV whenever it
-is importable and reads no environment variable to say otherwise, so a working PyAV
-in the same environment does not help.
+is importable and does not read an environment variable to choose otherwise. A
+working PyAV in the same environment does not help.
 
 ### Lightning Pose
 
@@ -138,17 +139,17 @@ pip install lightning-pose
 export MOSAIC_LITPOSE_CONDA_ENV=litpose
 ```
 
-**Hand it H.264, not AV1.** Lightning Pose reads video through NVIDIA DALI's
+**Hand it H.264 video.** Lightning Pose reads video through NVIDIA DALI's
 `fn.readers.video`, which decodes on the GPU. In DALI 2.3 that reader does not
 handle AV1 on any GPU. On an RTX 4000 Ada it fails with "Unhandled codec 225", in
 Lightning Pose and in mosaic's test alike. mosaic's analysis derivatives and
-imgstore exports are AV1. Before Lightning Pose is handed an AV1 file, mosaic reads
-one frame of it with the same reader, in the Lightning Pose environment, once per
-run. The file is handed over when the frame decodes, and the same test allows AV1
-under a DALI release whose reader handles it. When the frame does not decode, the
-run is refused with DALI's error rather than returning nothing. The remedies are
-an H.264 [media variant](guides/media/preprocess.md#codec), made with
-`"codec": "h264"`, and media that never needed an analysis transcode.
+imgstore exports are AV1. Before Lightning Pose is handed an AV1 file, mosaic
+reads one frame of it with the same reader, in the Lightning Pose environment,
+once per run. The file is handed over when the frame decodes, and the same test
+allows AV1 under a DALI release whose reader handles it. When the frame does not
+decode, the run is refused with DALI's error. The remedies are an H.264 [media
+variant](guides/media/preprocess.md#codec), made with `"codec": "h264"`, and media
+that never needed an analysis transcode.
 
 ### Ultralytics and POLO
 

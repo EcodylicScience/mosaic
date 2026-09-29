@@ -120,8 +120,8 @@ def entry_camera_path(root: Path, group: str, sequence: str, camera: str) -> Pat
 
     The path is ``<root>/<entry_key>`` for single-camera media, and
     ``<root>/<entry_key>/<camera>`` when *camera* names one. The cameras of one
-    recording therefore do not collide. A caller that writes a file adds its suffix
-    to the returned path.
+    recording do not collide. A caller that writes a file adds its suffix to the
+    returned path.
     """
     entry = root / make_entry_key(group, sequence)
     return entry / camera if camera else entry

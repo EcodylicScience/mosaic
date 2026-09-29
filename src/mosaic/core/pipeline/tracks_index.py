@@ -830,8 +830,8 @@ def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> pd.DataFrame
 
     A row whose tracks variant was made from a media variant is left blank, as
     its producer left it. The tool read one file, and a trimmed or decimated
-    variant's table does not span its source axis. Compared against the source
-    length, every such run reports a mismatch.
+    variant's table does not span its source axis. A blank cell keeps such a run
+    out of the frame-axis comparison.
 
     Locked for the whole read-measure-write, and a dry run holds the lock too,
     for the reasons :func:`backfill_frame_extents` gives.
@@ -1016,8 +1016,8 @@ def drifted_media_entries(ds: Dataset, run_id: str) -> tuple[tuple[str, str], ..
     identifier exactly where it was -- and a reuse gate keyed on identity alone
     serves the old tables over a different encode and reports the work done.
 
-    The comparison uses :func:`~mosaic.core.pipeline.composition.composition_drift`.
-    A blank cell on either side is therefore not drift.
+    The comparison uses :func:`~mosaic.core.pipeline.composition.composition_drift`,
+    under which a blank cell on either side is not drift.
     """
     from mosaic.core.pipeline.sequence_index import media_compositions_for
 

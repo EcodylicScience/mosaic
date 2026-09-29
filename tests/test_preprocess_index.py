@@ -4,7 +4,7 @@ A consumer reads a variant's row instead of probing the file: the placement that
 maps the file back to its entry's source, the file's probed facts, and the
 composition of the entry's media when the file was written. The index is in the
 ``preprocess`` kind directory under the media root, which every media scan skips.
-A variant is therefore never indexed as source media.
+A variant is never indexed as source media.
 """
 
 from __future__ import annotations
@@ -196,7 +196,7 @@ def test_an_entry_name_that_is_not_one_path_component_is_refused(
 
 
 def test_a_missing_variant_is_a_missing_file_and_a_drifted_one_a_wrong_value() -> None:
-    """The two failures have different remedies and are therefore two classes."""
+    """The two failures are two classes, because they have different remedies."""
     assert issubclass(MediaVariantMissingError, FileNotFoundError)
     assert issubclass(MediaVariantDriftedError, ValueError)
     assert not issubclass(MediaVariantDriftedError, FileNotFoundError)
@@ -294,7 +294,7 @@ def test_a_media_scan_indexes_no_variant_and_every_user_folder(
     write_cfr_mp4: Callable[..., None],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Return a dataset whose originals are in ``media/``, scanned recursively.
+    """A recursive media scan over a dataset whose originals are in ``media/``.
 
     The exclusion keeps a variant out of the originals, so that it does not gain a
     ``video_uuid`` or a place in its entry's media composition. That composition

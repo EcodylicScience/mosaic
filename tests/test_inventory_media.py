@@ -337,8 +337,7 @@ def test_the_work_directory_and_a_partial_file_are_not_variant_files(
     """An entry's claim and its encode in progress are in the run directory too.
 
     Both are under the entry's work directory and away from the entry's variant
-    path. A finished run that contains them therefore reads complete rather than
-    damaged.
+    path. A finished run that contains them reads complete rather than damaged.
     """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, ["s1", "s2", "s3"])

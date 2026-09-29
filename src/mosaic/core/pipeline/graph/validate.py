@@ -427,8 +427,8 @@ def _media_reference_problems(step: Step, walk: _Walk) -> list[Problem]:
 
     Every media op writes media, and only a ``preprocess`` run id names a variant
     that a consumer can read. A transcode's derivatives are routed by verdict and
-    named by recipe. Its run id in ``media`` names a variant without rows, and
-    every entry fails once the step runs.
+    named by recipe. The validator refuses a transcode's run id in ``media``, which
+    names a variant without rows.
     """
     reference = params_step_refs(step.params).get(_MEDIA_FIELD)
     if reference is None:

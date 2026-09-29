@@ -113,8 +113,8 @@ three estimators, each computed against the one labeled rate.
 
 The list does not reuse the converter's ``DERIVED_COLUMNS``. That set also
 contains ``ANGLE`` and the ``#wcentroid`` positions, which are an angle and a
-coordinate. Neither depends on a rate. ``X``/``Y`` are read from
-``X#wcentroid``, and dropping it drops the body center.
+coordinate. Neither depends on a rate, and ``X``/``Y`` are read from
+``X#wcentroid``, which the mapping shifts and keeps.
 """
 
 EXTENT_DEPENDENT_BASES: Final[frozenset[str]] = frozenset(
@@ -232,8 +232,8 @@ class SourceMapping:
         """The rate that the file's frames were recorded at, or ``None`` if it varies.
 
         On a timeline whose clips share one rate, consecutive file frames are
-        ``frames.step`` source frames apart. The true rate is therefore that rate
-        divided by the step.
+        ``frames.step`` source frames apart. The true rate is that rate divided by
+        the step.
         """
         if not self.timeline.uniform_rate:
             return None
@@ -356,7 +356,7 @@ def to_source_space(df: pd.DataFrame, mapping: SourceMapping) -> MappedTable:
 
     Returns:
         The mapped table and the names of the columns that it dropped, in table
-        order. An identity mapping returns *df* itself and drops no column.
+        order. An identity mapping returns *df* itself and does not drop a column.
 
     Raises:
         UnclassifiedColumnError: If a numeric column is not classified. Every
@@ -431,7 +431,7 @@ def _frame_numbers(frame: pd.DataFrame, name: str) -> npt.NDArray[np.int64]:
 
     A tracker may store frame numbers as floats, and TRex pads a short array with
     NaN. Casting turns NaN or 0.5 into a plausible frame number. This function
-    therefore refuses a table with any value that is not a finite whole number.
+    refuses a table with any value that is not a finite whole number.
 
     Raises:
         ValueError: If the column contains a NaN, an infinity or a fractional value.

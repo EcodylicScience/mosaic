@@ -209,8 +209,8 @@ def publish_tracks_table(
             marks the ones whose tool is handed a whole session, and those are
             the ones where the two axes can come apart.
         mapping: The placement in the entry's media of the media variant that
-            the tool read. When given, *df* is mapped into source space first.
-            The table validated, written and counted is therefore the mapped one.
+            the tool read. When given, *df* is mapped into source space first,
+            and the table validated, written and counted is the mapped one.
             ``None`` publishes *df* as it is.
         dropped: The columns that the producer removed from *df* before passing
             it on, such as those that TREx's retiming of a joined conversion

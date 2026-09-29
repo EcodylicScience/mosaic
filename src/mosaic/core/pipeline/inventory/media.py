@@ -81,8 +81,8 @@ def _media_index_path(ds: Dataset, reader: IndexReader) -> Path | None:
 
     ``resolve_media_root`` falls back to ``"media"`` when ``media_raw`` is unset,
     and returns that name whether or not ``media`` is set either. A tracks-only
-    dataset, which declares both roots and fills neither, therefore names a root
-    that ``get_root`` refuses. Such a dataset cannot be short of media, and it
+    dataset, which declares both roots and fills neither, names a root that
+    ``get_root`` refuses. Such a dataset cannot be short of media, and it
     reads as having none instead of raising out of a read.
     """
     root_key = ds.resolve_media_root()
@@ -200,18 +200,17 @@ def media_variant_records(
 
     The function returns one record per variant that the index names. A variant
     covers the entries that its rows name and the variant files found beside them.
-    A variant is legitimately made for a subset. Measured against the dataset's
-    whole universe, a finished variant reads as short.
+    A variant is legitimately made for a subset, and a finished variant for a subset
+    reads as complete.
 
-    An entry is covered when it has both a row and a file. The op renames a file
-    into place and then writes its row, and a consumer reads the row. A file ahead
-    of its row is therefore not yet usable. On a run still writing that is
-    progress and reads as partial, and on a finished run it is damage. A file is
-    looked for where
-    :func:`~mosaic.core.pipeline.preprocess_layout.media_variant_path` puts one,
-    for every entry and camera that the run's rows or the media index name. An
-    entry's claim and its encode in progress are under ``.work/``, outside every
-    path that ``media_variant_path`` returns.
+    An entry is covered when it has both a row and a file. The op renames a file into
+    place and then writes its row, and a consumer reads the row. A file ahead of its row
+    is not yet usable. On a run still writing that is progress and reads as partial, and
+    on a finished run it is damage. A file is looked for where
+    :func:`~mosaic.core.pipeline.preprocess_layout.media_variant_path` puts one, for
+    every entry and camera that the run's rows or the media index name. An entry's claim
+    and its encode in progress are under ``.work/``, outside every path that
+    ``media_variant_path`` returns.
 
     A row whose recorded media composition differs from the entry's current one
     is drift, under the rule that a blank on either side is not.

@@ -545,8 +545,8 @@ def test_a_media_reference_must_name_a_preprocess_step(writer: str) -> None:
     """Only a preprocess run id names a variant that a consumer can read.
 
     A transcode writes media too, but its run id does not address a file that a
-    ``media`` field can resolve. The reference is therefore refused at the step
-    and field that contain it.
+    ``media`` field can resolve. The reference is refused at the step and field
+    that contain it.
     """
     problem = _at(
         {

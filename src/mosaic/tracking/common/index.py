@@ -197,8 +197,8 @@ def drifted_media_entries(
     a reuse gate keyed on identity alone serves the old run over pixels from a
     different encode, and reports the work done.
 
-    The comparison uses :func:`~mosaic.core.pipeline.composition.composition_drift`.
-    A blank cell on either side is therefore not drift.
+    The comparison uses :func:`~mosaic.core.pipeline.composition.composition_drift`,
+    under which a blank cell on either side is not drift.
     """
     from mosaic.core.pipeline.index_csv import index_records
     from mosaic.core.pipeline.sequence_index import media_compositions_for

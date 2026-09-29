@@ -184,9 +184,9 @@ def promote_correction(
             f"{make_entry_key(group, sequence)}: {derived_from} tracked the media "
             f"variant {variant}, and its output is in that variant's pixels and "
             f"frames. A promoted correction is converted as it is, without a "
-            f"mapping back into the entry's media. Its variant pixels and frames "
-            f"are then published as source space. Correct the output of a run "
-            f"over the entry's original media instead."
+            f"mapping back into the entry's media, and its variant pixels and "
+            f"frames would be recorded as source pixels and frames. Correct the "
+            f"output of a run over the entry's original media instead."
         )
         raise ValueError(message)
 

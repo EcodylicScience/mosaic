@@ -39,7 +39,7 @@ class MediaInputParams(Params):
     ``media`` is ``HASH_EXCLUDE``, and ``identity_dump()`` omits it. Each consumer
     adds :func:`media_identity_terms` to the payload that it mints from. The term
     is absent when ``media`` is empty. Every identifier minted before the field
-    existed is therefore unchanged.
+    existed is unchanged.
 
     A subclass declares the fields and tool settings that select frames, and the
     op kind that a refusal names.
@@ -61,8 +61,8 @@ class MediaInputParams(Params):
         """Refuse a frame window when ``media`` names a variant.
 
         A field counts as set when it differs from its default. Restating a
-        default is therefore not refused. A settings key counts as set when its
-        value is not null, which the tools read as the setting left unset.
+        default is not refused. A settings key counts as set when its value is not
+        null. The tools read null as the setting left unset.
 
         The refusal names the variant only when ``media`` is a preprocess run
         identifier. A recipe step that refers to another step's variant is checked

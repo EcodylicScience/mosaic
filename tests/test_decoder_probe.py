@@ -1,10 +1,10 @@
-"""Test the decode probe that a tool's environment answers before it is handed a file.
+"""Test the decode probe that runs in a tool's environment before the tool reads a file.
 
 SLEAP and Lightning Pose are handed a file in a codec outside their declarations
 only after a program run by the interpreter of the tool's environment decodes a
 frame of it. The environments here are fakes. Each is a ``python`` shell script
-that the tool's location ladder finds. It records its arguments and answers with a
-chosen exit code. The probe programs themselves run against fake ``sleap_io`` and
+that the tool's location ladder finds. It records its arguments and exits with a
+chosen code. The probe programs themselves run against fake ``sleap_io`` and
 ``nvidia.dali`` modules, and against a real SLEAP environment where one resolves.
 """
 
@@ -53,7 +53,7 @@ from tests.helpers import (
 WriteVideo = Callable[..., None]
 
 _SLEAP_FAILURE = "sleap_io could not read frame 0: IndexError: Failed to read frame 0"
-"""What the SLEAP probe prints when OpenCV cannot decode the file."""
+"""The output of the SLEAP probe when OpenCV cannot decode the file."""
 
 
 def _av1_dataset(
@@ -106,8 +106,8 @@ def test_a_file_that_the_environment_cannot_decode_is_refused_with_its_output(
 ) -> None:
     """The refusal quotes the probe and names the remedy and the setting.
 
-    A second file of the codec is refused from the answer that the first probe
-    gave, without a second run.
+    A second file of the codec is refused on the first probe's result, without a
+    second run.
     """
     ds = _av1_dataset(tmp_path, write_cfr_mp4, ("s", "t"))
     python = install_fake_tool_python(
@@ -292,7 +292,7 @@ def test_a_tool_without_a_probe_is_never_probed(
     write_cfr_mp4: WriteVideo,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Its declaration answers, for a codec it lists and for one it does not."""
+    """The declaration alone decides a listed codec and an unlisted one."""
     ds = _av1_dataset(tmp_path, write_cfr_mp4)
     python = install_fake_tool_python(monkeypatch, SLEAP_ENV, tmp_path / "bin")
     probe = DecodeProbe(SLEAP_ENV)
@@ -334,7 +334,7 @@ def test_a_tool_without_a_probe_is_never_probed(
 def test_two_entries_of_one_sleap_run_probe_once(
     tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A run remembers the answer, and the next run asks again."""
+    """A run keeps the result, and the next run tests again."""
     ds = _av1_dataset(tmp_path, write_cfr_mp4, ("a", "b"))
     python = install_fake_tool_python(monkeypatch, SLEAP_ENV, tmp_path / "bin")
     sleap = install_fake_sleap(monkeypatch)
@@ -509,7 +509,7 @@ def load_video(filename):
 def test_the_sleap_program_exits_zero_only_for_a_decoded_frame(
     frame: str, exit_code: int, said: str, tmp_path: Path
 ) -> None:
-    """Each way a frame can fail to arrive exits 1 with the reader's message."""
+    """Each way that reading a frame can fail exits 1 with the reader's message."""
     fakes = tmp_path / "fakes"
     (fakes / "sleap_io").mkdir(parents=True)
     _ = (fakes / "sleap_io" / "__init__.py").write_text(_FAKE_SLEAP_IO)
@@ -647,7 +647,7 @@ _DALI_REASON = (
 def test_a_dali_refusal_ends_with_the_reason_and_not_the_stacktrace(
     tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """DALI appends a native stacktrace, which would fill the tail of the output."""
+    """DALI appends a native stacktrace, and the refusal quotes the reason alone."""
     ds = _av1_dataset(tmp_path, write_cfr_mp4)
     frames = "\n".join(
         f"[frame {index}]: /opt/dali/lib/libdali_operators.so(+0x{index:06x})"
@@ -685,11 +685,11 @@ def test_a_dali_refusal_ends_with_the_reason_and_not_the_stacktrace(
 def test_the_sleap_program_reads_real_files_in_a_sleap_environment(
     tmp_path: Path, write_cfr_mp4: WriteVideo
 ) -> None:
-    """A SLEAP environment reads H.264, and answers AV1 with one of two messages.
+    """A SLEAP environment reads H.264, and reports AV1 with one of two messages.
 
-    Whether the environment decodes AV1 depends on the OpenCV installed there,
-    which is why the probe exists. The program reports either answer with its own
-    message. Skipped where no SLEAP environment resolves.
+    The OpenCV installed in the environment decides whether it decodes AV1, and the
+    probe tests that OpenCV. The program prints a message for either result. The
+    test is skipped where a SLEAP environment does not resolve.
     """
     try:
         interpreter = tool_invocation(SLEAP_ENV, executable="python")

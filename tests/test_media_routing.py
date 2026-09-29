@@ -600,7 +600,7 @@ def test_a_scope_records_each_entry_it_cannot_route_and_resolves_the_rest(
     """An entry fails whole, with the error that resolving it alone raises.
 
     Entry ``c``'s left camera routes, but resolving ``c`` alone raises for its
-    right camera. Both cameras are therefore left out.
+    right camera. Both cameras are left out.
     """
     ds = _scope_awaiting_transcodes(tmp_path)
     errors: dict[Entry, MediaProbeError] = {}

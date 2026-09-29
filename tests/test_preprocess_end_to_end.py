@@ -1,13 +1,12 @@
 """Test a media variant tracked by its pixels and read back in its entry's frames.
 
-A two-clip entry shows one bright dot moving along a known path. The
-``preprocess`` op crops, trims and decimates it into a variant, and
-``infer-localizer`` runs over the variant with a locator in place of a trained
-model. The locator decodes the file that it is handed and reports each frame's
-brightest pixel. Every coordinate in the published table is therefore read from
-the variant's pixels, and must come back as the dot's path in the entry's own
-frames and pixels. A feature's frame range over that table counts in the same
-source frames.
+A two-clip entry shows one bright dot moving along a known path. The ``preprocess`` op
+crops, trims and decimates it into a variant, and ``infer-localizer`` runs over the
+variant with a locator in place of a trained model. The locator decodes the file that it
+is handed and reports each frame's brightest pixel. Every coordinate in the published
+table is read from the variant's pixels, and must come back as the dot's path in the
+entry's own frames and pixels. A feature's frame range over that table counts in the
+same source frames.
 """
 
 from __future__ import annotations
@@ -47,8 +46,7 @@ def _dot(frame: int) -> tuple[int, int]:
     """Return the dot's center in source frame *frame*, as ``(x, y)``.
 
     The dot moves one column right per frame and wraps every 60 frames, and one
-    row down every fourth frame. Every frame of the entry therefore has a distinct
-    position.
+    row down every fourth frame. Every frame of the entry has a distinct position.
     """
     return 10 + frame % 60, 20 + (frame // 4) % 30
 
@@ -127,7 +125,7 @@ def tracked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Tracked:
         size=_SIZE,
     )
     # The source encode keeps the dot's brightest pixel on its path. Any departure
-    # from the path below therefore comes from the variant or its mapping.
+    # from the path below comes from the variant or its mapping.
     decoded = [position for clip in clips for position in _brightest_pixels(clip)]
     assert decoded == [_dot(frame) for frame in range(2 * _CLIP_FRAMES)]
 
@@ -172,7 +170,8 @@ def test_the_published_table_is_the_dot_path_in_source_frames_and_pixels(
 def test_a_feature_frame_range_selects_source_frames(tracked: _Tracked) -> None:
     """``[40, 80)`` names source frames, which the variant contains from 40 to 79.
 
-    Counted in the variant's frames, the range lies past its 35 frames.
+    Counted in the variant's frames, the range would lie past its 35 frames and
+    would not select a frame.
     """
     ds = tracked.ds
 

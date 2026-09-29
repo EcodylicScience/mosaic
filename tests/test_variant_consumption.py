@@ -450,8 +450,8 @@ def test_a_trex_variant_run_does_not_reuse_the_entry_conversion(
 ) -> None:
     """A slot is keyed by the file converted. The variant gets a separate slot.
 
-    A reuse of the entry's conversion tracks the uncropped frames and then shifts
-    every position by the crop's offset.
+    A reuse of the entry's conversion would track the uncropped frames and then
+    shift every position by the crop's offset.
     """
     ds = _dataset(tmp_path)
     variant = _variant(ds)
@@ -664,9 +664,8 @@ def test_an_inference_run_whose_readable_entries_are_held_names_the_variant(
 ) -> None:
     """The one readable entry is held by another execution, the other unreadable.
 
-    A model did not run for any entry that this run attempted. The refusal
-    therefore names the variant and the command that writes it, as the tracker
-    driver's does.
+    A model did not run for any entry that this run attempted. The refusal names
+    the variant and the command that writes it, as the tracker driver's does.
     """
     fake = install_fake_point_inference(monkeypatch)
     ds = _dataset(tmp_path, ("s", "t"))
@@ -729,7 +728,8 @@ def _is_bright(video: Path) -> bool:
 def _dark_pose(video: Path) -> pd.DataFrame:
     """Return :func:`_shaded_pose`, without a row when *video* is bright.
 
-    The fake model then detects nothing in the entry once it is painted bright.
+    The fake model then does not detect anything in the entry once it is painted
+    bright.
     """
     table = _shaded_pose(video)
     return table.iloc[0:0] if _is_bright(video) else table
@@ -799,7 +799,7 @@ _BLIND_WHEN_BRIGHT: dict[str, Callable[[pytest.MonkeyPatch], object]] = {
         monkeypatch, blind=_is_bright
     ),
 }
-"""Install a fake model of each kind that detects nothing in a bright video.
+"""Install a fake model of each kind that does not detect anything in a bright video.
 
 The pose runner writes its predictions itself. The op writes the localizer's.
 """
@@ -850,10 +850,10 @@ def test_an_inference_rerun_that_detects_nothing_publishes_an_empty_table(
 def test_an_inference_rerun_on_unchanged_media_republishes_the_same_table(
     tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch, on_variant: bool
 ) -> None:
-    """The re-run writes the table again, with the same contents, and loses nothing.
+    """The re-run writes the table again, with the same contents, and keeps the entry.
 
-    The atomic write replaces the file. A new inode at the table's path therefore
-    shows that the re-run published it.
+    The atomic write replaces the file, and a new inode at the table's path shows
+    that the re-run published it.
     """
     _ = install_fake_pose_inference(monkeypatch, _shaded_pose)
     ds = _dataset(tmp_path)

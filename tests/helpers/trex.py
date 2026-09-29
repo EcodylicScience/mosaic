@@ -2,8 +2,8 @@
 
 ``run_trex`` calls TREx through two module-level seams in
 ``trex/dataset_runs.py``, one per phase. :func:`install_fake_trex` replaces both
-with a :class:`FakeTrex`. A test therefore runs the whole tracker protocol without
-a TREx binary: identity, markers, reuse, the conversion cache and the bridge.
+with a :class:`FakeTrex`. A test runs the whole tracker protocol without a TREx
+binary: identity, markers, reuse, the conversion cache and the bridge.
 """
 
 from __future__ import annotations

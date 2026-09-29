@@ -287,7 +287,7 @@ def fake_trex(monkeypatch: pytest.MonkeyPatch) -> FakeTrex:
     """TREx's two phases, replaced by fakes that write what TREx writes.
 
     The tool never runs, and its output is convertible. The bridge that publishes
-    into ``tracks/`` is therefore exercised rather than stubbed.
+    into ``tracks/`` is exercised rather than stubbed.
     """
     return install_fake_trex(monkeypatch)
 

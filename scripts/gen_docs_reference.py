@@ -1,11 +1,10 @@
 """Regenerate `docs/reference/` from the registries the running code holds.
 
 Five pages are generated whole from five authorities: `FEATURES`, `OPS`,
-`MEDIA_STEPS`, the two converter registries beside `TRACK_SCHEMAS`, and the Typer
-app behind the `mosaic` console script. Each is
-already the authority at run time, and the CLI's discovery commands read these
-same registries. A reference page derived from anything else is a second answer,
-and second answers drift.
+`MEDIA_STEPS`, the two converter registries beside `TRACK_SCHEMAS`, and the Typer app
+behind the `mosaic` console script. Each is already the authority at run time, and
+the CLI's discovery commands read these same registries. A reference page derived
+from anything else is a second answer, and second answers drift.
 
 They had drifted. Three hand-maintained feature lists disagreed with each other
 and all three with the registry: the site's landing page said "~30", the feature
@@ -380,12 +379,11 @@ def and_list(items: list[str]) -> str:
 
 
 def unlisted_ops_note() -> list[str]:
-    """Return the note naming each op that `mosaic tracking list` omits, or no lines.
+    """Return a note naming each op that `mosaic tracking list` omits, if it omits any.
 
     The command lists `list_ops(domain=LISTED_OP_DOMAIN)`, and the set is
     computed from the same call with the constant imported from the command's
-    module. The count and the names therefore follow the registry as ops are
-    added.
+    module. The count and the names follow the registry as ops are added.
     """
     from mosaic.cli.tracking.list import LISTED_OP_DOMAIN
     from mosaic.core.pipeline.ops import OPS, list_ops

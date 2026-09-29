@@ -4,8 +4,8 @@
 ``sleap/dataset_runs.py``: ``sleap-nn track`` and ``sleap-convert``.
 :func:`install_fake_sleap` replaces both with a :class:`FakeSleap`, whose
 inference writes a ``.slp`` and whose export writes a small, converter-readable
-analysis ``.h5``. A test therefore runs the whole tracker protocol without a
-model. :func:`write_sleap_model` writes the model directory that a run names.
+analysis ``.h5``. A test runs the whole tracker protocol without a model.
+:func:`write_sleap_model` writes the model directory that a run names.
 """
 
 from __future__ import annotations
@@ -67,11 +67,10 @@ def write_sleap_model(
 ) -> Path:
     """Write a SLEAP model directory at *directory*, and return it.
 
-    The directory contains ``best.ckpt`` with *weights*, whose digest is the
-    model's identity. Two directories with the same *weights* are therefore one
-    model. A ``training_config.yaml`` with *training_config* is written beside it
-    when one is given. SLEAP's config is provenance, and a model does not need
-    one.
+    The directory contains ``best.ckpt`` with *weights*, whose digest is the model's
+    identity. Two directories with the same *weights* are one model. A
+    ``training_config.yaml`` with *training_config* is written beside it when one is
+    given. SLEAP's config is provenance, and a model does not need one.
     """
     directory.mkdir(parents=True, exist_ok=True)
     _ = (directory / "best.ckpt").write_bytes(weights)

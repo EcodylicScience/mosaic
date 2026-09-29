@@ -2,7 +2,7 @@
 
 ``trim`` keeps a source range and ``decimate`` thins the frames. Neither changes a
 pixel. Each changes only the placement's frame map, and the writer reads only the
-frames that the map selects. Both therefore bind the identity function.
+frames that the map selects. Both bind the identity function.
 """
 
 from __future__ import annotations
@@ -107,5 +107,8 @@ class DecimateStep(MediaStep):
         return dataclasses.replace(placement, frames=placement.frames.every(self.every))
 
     def bind(self, placement: Placement) -> FrameFn:
-        """Return the identity function. A decimation selects frames, unchanged."""
+        """Return the identity function.
+
+        A decimation selects frames without changing them.
+        """
         return _unchanged

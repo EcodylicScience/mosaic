@@ -296,8 +296,8 @@ named roots:
                   and the recipe that made it, `recipe.json`, which
                   `mosaic run --params @<path>` reads back. One typed
                   `index.csv` beside the run directories records every variant.
-                  Media scans skip this directory by resolved path, as they skip
-                  `_tracking`
+                  Media scans skip this directory by resolved path, and
+                  `_tracking` by path component
 - `tracks_raw/`   — user-uploaded raw tracks + `index.csv`
 - `labels_raw/`   — user-uploaded raw labels + `index.csv`, and beside them the
                   **versioned label series** (`keypoints/`, with `behavior/`
@@ -1381,15 +1381,15 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   identity. `publish_tracks_table` maps the table back through the variant's recorded
   placement (`to_source_space` in
   [`core/pipeline/placement.py`](src/mosaic/core/pipeline/placement.py)) before
-  the table is validated and written. Every reader of `tracks/` therefore reads
-  source pixels and source frames, whatever crop or trim the tracker saw.
-  Consumers do not shift crop coordinates themselves. A consumer therefore cannot
-  omit the offset and publish plausible positions on the variant's pixel grid. A
-  frame window on the consumer is refused beside `media` (`MediaInputParams`),
-  because the tool counts it in variant frames.
+  the table is validated and written. Every reader of `tracks/` reads source
+  pixels and source frames, whatever crop or trim the tracker saw. Consumers do
+  not shift crop coordinates themselves. A consumer therefore cannot omit the
+  offset and publish plausible positions on the variant's pixel grid that read
+  like any other output. A frame window on the consumer is refused beside `media`
+  (`MediaInputParams`), because the tool counts it in variant frames.
 - **A tool is handed only a file that it decodes.** A tool without a decoder for a
-  file reads zero frames and exits 0, and its run records an empty result as a
-  success. `refuse_undecodable_codec`
+  file reads zero frames and exits 0, and without the refusal its run would record
+  an empty result as a success. `refuse_undecodable_codec`
   ([`tracking/common/tool_input.py`](src/mosaic/tracking/common/tool_input.py))
   allows a codec in the baseline, in the tool's `ToolDecoder.also_reads`
   (`core/pipeline/tracking_roots.py`) or in `MOSAIC_ALLOW_TOOL_CODECS`. Any other
@@ -1398,8 +1398,8 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   Lightning Pose (DALI's `fn.readers.video` on the GPU) declare one, and AV1 stays
   the default codec for them. DALI 2.3's reader does not handle AV1 on any GPU
   ("Unhandled codec 225"), and a variant for Lightning Pose is made with
-  `codec: "h264"`. Each run creates one `DecodeProbe` from the placement
-  that it resolved and asks it once per interpreter and codec. A result is not
+  `codec: "h264"`. Each run creates one `DecodeProbe` from the placement that it
+  resolved, and the probe runs once per interpreter and codec. A result is not
   kept between runs, and a rebuilt environment is tested again.
   `tests/test_decoder_probe.py` tests both outcomes.
 - **A tracker reports; a feature derives.** `mosaic_v1` *forbids* `VX`, `VY`,

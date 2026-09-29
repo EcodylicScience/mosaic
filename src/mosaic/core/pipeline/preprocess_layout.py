@@ -3,12 +3,12 @@
 Every variant is stored in one kind directory under the media root,
 ``media/preprocess/``: a run directory per variant, with one file per entry and
 camera and the recipe that the variant was made from, and one index beside the
-run directories. The media root is organized by artifact kind. The variants
-directory is therefore a sibling of ``transcode/`` and ``frames/``.
+run directories. The media root is organized by artifact kind, and the variants
+directory is a sibling of ``transcode/`` and ``frames/``.
 
-A variant is generated media, and a recursive media scan over the media root
-filters on extension alone and matches a variant's file. A media scan therefore
-skips the dataset's variants directory, through the predicate that
+A variant is generated media, and the extension filter of a recursive scan over
+the media root accepts a variant's file as an original. A media scan skips the
+dataset's variants directory, through the predicate that
 :func:`media_variant_filter` builds. The predicate compares resolved paths against
 :func:`media_variants_root` and does not match a directory name, because a scan
 source may point outside the dataset at a folder that happens to be called
@@ -58,8 +58,8 @@ def media_variant_filter(ds: Dataset) -> Callable[[Path], bool]:
     """Return a predicate that is true for a path inside *ds*'s variants directory.
 
     The directory is resolved once, here, and each path is resolved when tested. A
-    symlink into the directory is therefore caught, and a folder of the same name
-    elsewhere is not. A dataset without a media root cannot contain a variant, and
+    symlink into the directory is caught, and a folder of the same name elsewhere
+    is not. A dataset without a media root cannot contain a variant, and
     its predicate is false for every path.
     """
     if not ds.has_root(MEDIA_ROOT_KEY):
@@ -81,9 +81,9 @@ def media_variant_recipe_path(ds: Dataset, run_id: str) -> Path:
     """Return the path of the recipe that variant *run_id* was made from.
 
     The file is in the form that ``mosaic run --params`` reads. Every run writes
-    its validated parameters here. The command that rewrites an entry's variant can
-    therefore name the recipe instead of asking for it. The file contains only the
-    op's parameters, and mosaic modules do not read it.
+    its validated parameters here, and the command that rewrites an entry's variant
+    names the recipe instead of asking for it. The file contains only the op's
+    parameters, and mosaic reads it only when a command names it with ``--params``.
     """
     return media_variant_run_root(ds, run_id) / "recipe.json"
 
@@ -92,10 +92,10 @@ def media_variant_work_root(ds: Dataset, run_id: str) -> Path:
     """Return the directory with one claim directory per entry of variant *run_id*.
 
     An entry's claim directory is ``<work_root>/<entry_key>``, keyed on the entry
-    alone. A run encodes one camera per entry, the camera that a tracker reads. The
-    entry key therefore keeps every claim apart. The claim directory also contains
-    the entry's encode in progress. A partial file is therefore never among the
-    variant files.
+    alone. A run encodes one camera per entry, the camera that a tracker reads, and
+    the entry key keeps every claim apart. The claim directory also contains the
+    entry's encode in progress, and a partial file is never among the variant
+    files.
     """
     return media_variant_run_root(ds, run_id) / _WORK_DIRECTORY
 

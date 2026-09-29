@@ -4,11 +4,11 @@
 ``ultralytics_track/dataset_runs.py``: a probe that reports an environment's
 contents, and a track call that writes a predictions parquet.
 :func:`install_fake_ultralytics` replaces both with :class:`FakeUltralytics`. A
-test therefore runs the whole tracker protocol without an Ultralytics environment,
-weights or a GPU.
+test runs the whole tracker protocol without an Ultralytics environment, weights or
+a GPU.
 
-The predictions that it writes are fixed by :func:`write_ultralytics_predictions`.
-A test can therefore compute the table that the bridge publishes from them.
+The predictions that it writes are fixed by :func:`write_ultralytics_predictions`,
+and a test can compute the table that the bridge publishes from them.
 """
 
 from __future__ import annotations

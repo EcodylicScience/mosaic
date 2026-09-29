@@ -17,8 +17,7 @@ The crops are 8-bit, as decoded video is, and 16-bit, as a raw imgstore of a
 16-bit color crop because OpenCV converts only an 8-bit or float image to LAB.
 
 The crop is taken around the fixture's center at the fixture's size, unrotated.
-It is therefore the whole fixture, and the digests measure the appearance path
-alone.
+It is the whole fixture, and the digests measure the appearance path alone.
 """
 
 from __future__ import annotations
@@ -218,7 +217,7 @@ def test_the_crop_around_the_center_is_the_whole_fixture(
 def test_a_crop_feature_equalizes_and_converts_to_the_pinned_bytes(
     feature: str, flags: dict[str, object], fixture: str, digest: str
 ) -> None:
-    """Both features compute the same bytes. Each case therefore has one digest."""
+    """Both features compute the same bytes, and each case has one digest."""
     image = _FIXTURES[fixture]()
 
     result = _FEATURES[feature](flags)(image)

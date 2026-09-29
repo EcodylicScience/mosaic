@@ -1,12 +1,12 @@
-"""Stand in for a tool environment's interpreter, to answer a decode probe.
+"""Stand in for a tool environment's interpreter in the tests of the decode probe.
 
 A tracker that declares a decode probe runs it through the ``python`` of the tool's
 environment, found by the tool's location ladder.
 :func:`install_fake_tool_python` writes a ``python`` shell script into a temporary
 directory and points the tool's ``MOSAIC_<TOOL>_BIN`` at that directory. The script
-records the arguments of each run and answers with the exit code and output that the
-test chose. A test therefore drives every outcome of the probe on a machine without
-any of the tools.
+records the arguments of each run. It prints the output and exits with the code that
+the test chose. A test drives every outcome of the probe on a machine without any of
+the tools.
 """
 
 from __future__ import annotations
@@ -23,11 +23,11 @@ from mosaic.tracking.common.toolenv import ToolEnv
 
 @dataclass(frozen=True, slots=True)
 class FakeToolPython:
-    """The records of a fake tool interpreter, read back after a run.
+    """Name the files of a fake tool interpreter, which a test reads back after a run.
 
     Attributes:
         directory: The directory that contains the ``python`` script.
-        log: One line per run of the script, holding its first and third
+        log: One line per run of the script, containing its first and third
             arguments separated by a tab.
         program: The second argument of the latest run, which is the program
             passed with ``-c``.
@@ -79,7 +79,7 @@ def install_fake_tool_python(
         directory: Where the script and its records are written.
         exit_code: The exit status of every run.
         output: The text written to standard error by every run.
-        seconds: How long each run sleeps before it answers.
+        seconds: How long each run sleeps before it prints its output.
         startable: False leaves the ``python`` script unwritten. The
             interpreter then cannot start.
         imports: A directory of stand-in modules. The script then runs its

@@ -776,10 +776,9 @@ def coverage_against(
 
     A media variant is keyed by entry and camera, and an entry is covered when
     the camera that the variant was made from has a row and a file. The op writes
-    only an entry's consumed camera. The camera is therefore dropped here. A camera
-    that stops being the consumed one changes the entry's media composition,
-    and the variant then reports that entry as drifted when both compositions
-    are known.
+    only an entry's consumed camera, and the camera is dropped here. A camera that
+    stops being the consumed one changes the entry's media composition, and the
+    variant then reports that entry as drifted when both compositions are known.
     """
     record = inv.record(ref) if ref is not None else None
     if record is None:

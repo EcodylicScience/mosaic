@@ -7,7 +7,7 @@ pixel grid and frame axis of the entry media. :class:`Placement` is the map back
 It records the source rectangle that the variant image covers, and the source
 frames of its frames as a :class:`FrameMap`. Each step derives the placement after
 it from the placement before it. A chain of steps, or a variant read by another
-variant, therefore still maps back through one placement.
+variant, still maps back through one placement.
 
 The module does not perform I/O, and numpy is its heaviest import.
 """
@@ -34,8 +34,8 @@ class FrameMap:
 
     The file has ``count`` frames, ``i`` in ``range(count)``. A trim narrows the
     map with :meth:`within` and a decimation thins it with :meth:`every`. Neither
-    leaves the grid that it started on. The map therefore stays three integers
-    however many steps built it.
+    leaves the grid that it started on. The map stays three integers however many
+    steps built it.
 
     Attributes:
         start: The source frame of file frame 0.
@@ -82,13 +82,12 @@ class FrameMap:
         """Return this map's frames that lie in the source range ``[start, stop)``.
 
         A ``trim`` applies this. A *start* between two kept frames begins at the
-        next kept frame. A trim after a decimation therefore stays on the decimated
-        grid.
+        next kept frame. A trim after a decimation stays on the decimated grid.
 
         The range may extend to :attr:`end`, and the span to :attr:`end`
-        includes the last kept frame's full step. After a decimation it therefore
-        runs up to ``step - 1`` source frames past the last kept frame, which may
-        lie past the source's last frame.
+        includes the last kept frame's full step. After a decimation it runs up to
+        ``step - 1`` source frames past the last kept frame, which may lie past the
+        source's last frame.
 
         Raises:
             ValueError: If *start* is not before *stop*, if the range extends
@@ -205,8 +204,8 @@ class Placement:
     height)``: variant pixel ``(x, y)`` is source pixel
     ``(x + offset_x, y + offset_y)``. Variant frame ``i`` is source frame
     ``frames.start + frames.step * i``. The source's size and frame count are
-    stored beside them. A placement therefore reports whether it is the identity
-    without reading anything else.
+    stored beside them. A placement reports whether it is the identity without
+    reading anything else.
 
     ``fps`` is the rate that the variant file is labeled at, which sets the file's
     timestamp grid. It is not a statement about real time. The identity
@@ -262,7 +261,7 @@ class Placement:
                 f"Offsets are at least 0"
             )
         if self.width < 1 or self.height < 1:
-            raise ValueError(f"the rectangle {rectangle} contains no pixel")
+            raise ValueError(f"the rectangle {rectangle} does not cover a pixel")
         if (
             self.offset_x + self.width > self.source_width
             or self.offset_y + self.height > self.source_height
@@ -289,7 +288,7 @@ class Placement:
 
     @classmethod
     def identity(cls, width: int, height: int, frame_count: int, fps: float) -> Self:
-        """Return the placement of a file that is itself the source, at *fps*."""
+        """Return the identity placement of a source file, labeled at *fps*."""
         return cls(
             offset_x=0,
             offset_y=0,
@@ -323,13 +322,13 @@ class Placement:
         return self.is_spatial_identity and self.is_frame_identity
 
     def to_json(self) -> str:
-        """Return the placement as canonical JSON, sorted and compact.
+        """Return the placement as canonical JSON: sorted keys, compact separators.
 
-        Equal placements give equal strings. A stored placement therefore compares
-        as text. Numbers are written as plain ``int`` and ``float``. A numpy
-        integer or an integral ``fps`` therefore writes the same bytes as the plain
-        value. ``operator.index`` does not truncate here, because the constructor
-        has already refused a fractional integer field.
+        Equal placements give equal strings, and a stored placement compares as
+        text. Numbers are written as plain ``int`` and ``float``. A numpy integer or
+        an integral ``fps`` writes the same bytes as the plain value. No value is
+        truncated here, because the constructor has already refused a fractional
+        integer field.
         """
         document: dict[str, JsonValue] = {
             "offset_x": operator.index(self.offset_x),

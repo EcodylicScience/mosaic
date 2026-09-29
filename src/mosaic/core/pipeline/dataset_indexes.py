@@ -76,8 +76,8 @@ A series directory is recognized by its marker instead.
 
 ``media_kind`` is one ``index.csv`` in a kind directory under the media root,
 the kind named by the table's key. The key is not a root. The passes look an
-index's opener and path columns up by the key. Registering the index under the
-media root's key instead hands ``media/index.csv`` to the variant index's opener.
+index's opener and path columns up by the key. A key equal to the media root's
+would make the passes open ``media/index.csv`` with the variant index's opener.
 """
 
 

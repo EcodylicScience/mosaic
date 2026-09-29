@@ -98,7 +98,7 @@ class TrackingPhase:
 
 @dataclass(frozen=True, slots=True)
 class ToolDecoder:
-    """Declare the decoder that a tool reads video with, and the codecs it reads.
+    """Declare the decoder that a tool reads video with, and the codecs that it reads.
 
     mosaic chooses the codec of every file that it hands to an external tool, and
     does not control the decoder that opens the file. Some of those decoders
@@ -106,10 +106,11 @@ class ToolDecoder:
     decoder wraps a hardware accelerator, and the software decoders
     (``libdav1d``, ``libaom-av1``) are external libraries that a build may omit.
 
-    Each tool declares its answer here, beside the other facts about each
-    producer. TREx and Ultralytics declare AV1. SLEAP reads AV1 when the OpenCV in
-    its environment links dav1d. Lightning Pose reads AV1 when the installed
-    DALI's ``fn.readers.video`` handles it, and DALI 2.3 does not on any GPU.
+    Each tool declares here the codecs that it reads, beside the other facts
+    about each producer. TREx and Ultralytics declare AV1. SLEAP reads AV1 when
+    the OpenCV in its environment links dav1d. Lightning Pose reads AV1 when the
+    installed DALI's ``fn.readers.video`` handles it, and DALI 2.3 does not on
+    any GPU.
     Those two declare a probe, which tests the environment that a run uses.
 
     Attributes:
@@ -124,8 +125,8 @@ class ToolDecoder:
             outside the declared set is handed to the tool only after the probe
             decodes it. Empty means the tool is not tested, and the declared set
             decides.
-        remedy: What an operator can do about a refusal. Empty when there is
-            nothing to do.
+        remedy: What an operator can do about a refusal. Empty when the refusal
+            cannot be remedied.
     """
 
     stack: str
@@ -200,7 +201,7 @@ print("DALI read one frame")
 
 The pipeline runs on the GPU. Its reader takes the arguments of Lightning Pose's
 prediction reader (``fn.readers.video`` in ``lightning_pose/data/dali.py``) that
-bear on decoding: ``device="gpu"``, ``normalized=False``, a float ``dtype``,
+affect decoding: ``device="gpu"``, ``normalized=False``, a float ``dtype``,
 ``file_list_include_preceding_frame=True`` and ``skip_vfr_check=True``. It reads
 a sequence of one frame, and leaves out the batching, shuffling and padding
 arguments. DALI 2.3's reader raises "Unhandled codec 225" for AV1 on every GPU.

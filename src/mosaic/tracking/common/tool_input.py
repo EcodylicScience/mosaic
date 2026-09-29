@@ -143,12 +143,12 @@ def _allowed_codecs(decoder: ToolDecoder) -> frozenset[str]:
 
 @dataclass(frozen=True, slots=True)
 class ProbeVerdict:
-    """Record the answer of one decode probe in a tool's environment.
+    """Record the result of one decode probe in a tool's environment.
 
     Attributes:
         decoded: True when the probe exited 0.
         tested: The file that the probe was run on. A later file in the same
-            codec is answered from this one.
+            codec reuses this result.
         environment: The interpreter's argv, joined by spaces.
         output: The probe's captured output, or the reason that it did not run,
             indented for a message.
@@ -161,7 +161,7 @@ class ProbeVerdict:
 
 
 class DecodeProbe:
-    """Test a tool's environment for a codec once per run, and remember the answer.
+    """Test a tool's environment for a codec once per run, and keep the result.
 
     A run creates one for its tool, from the placement that the run resolved, and
     passes it to the check of every entry. Each pair of interpreter argv and codec
@@ -194,8 +194,8 @@ class DecodeProbe:
 
         The first call for an interpreter and a codec runs *program* on *path*.
         When the program decodes the file, one line on standard error names the
-        tool, the codec and the environment. Later calls return the remembered
-        answer. A cancelled probe is not remembered.
+        tool, the codec and the environment. Later calls return the kept result.
+        A cancelled probe is not kept.
 
         Args:
             program: The probe that the tool's decoder declares.
@@ -206,12 +206,12 @@ class DecodeProbe:
                 when it returns True.
 
         Returns:
-            The answer, from this call's probe or from an earlier one.
+            The result, from this call's probe or from an earlier one.
 
         Raises:
             ToolNotFoundError: The subclass that the tool declares, when its
                 environment cannot be located. The tool's run raises the same.
-            ProcessCancelled: When *cancel_check* fires during the probe.
+            ProcessCancelled: When *cancel_check* returns True during the probe.
         """
         interpreter = tuple(tool_invocation(self.env, executable="python"))
         remembered = self._verdicts.get((interpreter, codec))
@@ -243,11 +243,11 @@ def _run_decode_probe(
     timeout: float,
     cancel_check: Callable[[], bool] | None,
 ) -> ProbeVerdict:
-    """Run *program* on *path* with *interpreter*, and return its answer.
+    """Run *program* on *path* with *interpreter*, and return the result.
 
-    A timeout or an interpreter that does not start is an answer that the file
-    was not decoded. Its output then states the reason. A cancel raises
-    ``ProcessCancelled`` and gives no answer.
+    A timeout, or an interpreter that does not start, counts as a failure to
+    decode, and the result's output states the reason. A cancel raises
+    ``ProcessCancelled`` instead of returning a result.
     """
     environment = " ".join(interpreter)
     try:
@@ -304,9 +304,8 @@ def refuse_undecodable_codec(
     The check reads the file that the tool opens. A clip that is joined into one
     file for the tool may be in any codec, because the tool does not open it.
 
-    A tool without a decoder for a file reads zero frames and exits 0, and its run
-    records an empty result as a success. The refusal stops the run before that
-    result is recorded.
+    A tool without a decoder for a file reads zero frames and exits 0. The refusal
+    stops the run before it records that empty result as a success.
 
     A kind without a registered root gets the conservative declaration, which
     lists only the baseline.
@@ -327,7 +326,7 @@ def refuse_undecodable_codec(
 
     Raises:
         ToolCodecError: If the codec is refused.
-        ProcessCancelled: When *cancel_check* fires during a probe.
+        ProcessCancelled: When *cancel_check* returns True during a probe.
     """
     root = TRACKING_ROOTS.get(kind)
     decoder = root.decoder if root is not None else CONSERVATIVE_DECODER
@@ -346,8 +345,8 @@ def refuse_undecodable_codec(
     if verdict is None:
         finding = (
             f", and its declaration does not list {codec}. A tool without a "
-            f"decoder for a file reads zero frames and exits 0, and its run "
-            f"records an empty result as a success."
+            f"decoder for a file reads zero frames and exits 0, and without this "
+            f"refusal its run would record an empty result as a success."
         )
         setting = f"To declare that this environment decodes {codec}, set"
     else:
@@ -408,8 +407,8 @@ def resolve_tool_inputs(
     resolves to its one file with nothing built and nothing required.
 
     An item that reads a media variant resolves to the variant file. It is a plain
-    video that mosaic wrote, one file for the whole entry. An export and a join
-    therefore do not apply to it.
+    video that mosaic wrote, one file for the whole entry. An export and a join do
+    not apply to it.
 
     Args:
         ds: The dataset, read for the media index and the ``media`` root.

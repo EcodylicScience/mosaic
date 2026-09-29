@@ -524,8 +524,8 @@ def inventory(
                 records.append(media_derivative_record(ds, media_target, asked, reader))
             continue
         if kind == "media-variant":
-            # Media-variant records are keyed by entry and camera. They therefore
-            # cannot share the entry-keyed builder table below.
+            # Media-variant records are keyed by entry and camera, and cannot
+            # share the entry-keyed builder table below.
             records.extend(media_variant_records(ds, asked, reader))
             continue
         if kind == "label-series":

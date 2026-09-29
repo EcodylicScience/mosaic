@@ -14,8 +14,7 @@ file is gone, and when the entry's media is no longer the media that the file wa
 written from.
 
 The trackers, the inference ops and a chained ``preprocess`` run all resolve an
-entry's variant here. The three therefore apply one rule for a missing or drifted
-variant.
+entry's variant here, and apply one rule for a missing or drifted variant.
 """
 
 from __future__ import annotations
@@ -112,15 +111,15 @@ def unreadable_variant_refusal(
 ) -> str | None:
     """Return the refusal for a run of *kind* that lost every entry it attempted.
 
-    A refusal is returned when every lost entry is one whose file of *media* could
-    not be read. The tool did not run for any of them and did not write output.
-    The refusal names the variant and the command that writes it. The function
-    returns ``None`` when the run did not lose an entry, and when a tool ran for
-    some lost entry. The caller's refusal then locates that entry's tool output.
-    An entry held by another execution was not attempted and is in neither set.
+    A refusal is returned when every lost entry is one whose file of *media* could not
+    be read. The tool did not run for any of them and did not write output to keep. The
+    refusal names the variant and the command that writes it. The function returns
+    ``None`` when the run did not lose an entry, and when a tool ran for some lost
+    entry. The caller's refusal then locates that entry's tool output. An entry held by
+    another execution was not attempted and is in neither set.
 
-    The tracker driver and the inference ops both call this function. The two
-    therefore refuse the same runs in the same words.
+    The tracker driver and the inference ops both call this function, and refuse
+    the same runs in the same words.
 
     Args:
         ds: The dataset, whose record of *media*'s recipe the command names.
@@ -169,10 +168,10 @@ def preprocess_command(ds: Dataset, run_id: str, entries: Iterable[Entry]) -> st
 class VariantLookup:
     """One variant's index rows and its entries' current media compositions.
 
-    Resolving the variant for an entry reads these besides the entry itself. A
-    caller that resolves it for many entries reads both once, with :meth:`read`,
-    and resolves each entry against them. The variant index and the sequence
-    projection are therefore read once for the scope instead of once per entry.
+    Resolving the variant for an entry reads the variant index and the sequence
+    projection besides the entry itself. A caller that resolves it for many entries
+    reads both once for the scope, with :meth:`read`, and resolves each entry
+    against them.
 
     Attributes:
         run_id: The variant, as a ``media`` parameter names it.

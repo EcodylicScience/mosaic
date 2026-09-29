@@ -446,15 +446,15 @@ POINT_DTYPES: Final[Mapping[str, str]] = {
 }
 """The type of each point predictions column, in :data:`POINT_COLUMNS` order.
 
-``class_name`` holds strings in an ``object`` column. The runner and mosaic's
-localizer both cast their tables to these types. A table from either producer
-therefore has the same pandas types whether or not it holds a row.
+``class_name`` contains strings in an ``object`` column. The runner and mosaic's
+localizer both cast their tables to these types, and a table from either producer
+has the same pandas types whether or not it contains a row.
 
 Parquet stores an empty ``object`` column with the ``null`` type, and a full one
 as ``string``. A single read over several files, such as ``pd.read_parquet`` of
 a directory, takes its schema from the first file. When that file is an empty
-table, the read fails on the ``class_name`` of a full one. Each file reads on its
-own, and the frames concatenate.
+table, the read fails on the ``class_name`` of a full one. A reader reads each
+file separately and concatenates the frames.
 """
 
 

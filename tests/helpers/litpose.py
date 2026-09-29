@@ -3,8 +3,8 @@
 ``run_litpose`` calls Lightning Pose through one module-level seam in
 ``litpose/dataset_runs.py``, its one inference phase. :func:`install_fake_litpose`
 replaces it with a :class:`FakeLitpose`, whose prediction writes a small
-DeepLabCut CSV, the layout that Lightning Pose exports. A test therefore runs the
-whole tracker protocol without a model or a GPU. :func:`write_litpose_model`
+DeepLabCut CSV, the layout that Lightning Pose exports. A test runs the whole
+tracker protocol without a model or a GPU. :func:`write_litpose_model`
 writes the model directory that a run resolves.
 """
 
@@ -22,7 +22,10 @@ from mosaic.tracking.litpose.run import LitposePredictResult
 from tests.helpers.tracks import write_dlc_csv
 
 _BODYPARTS: tuple[str, ...] = ("nose", "tail")
-"""The keypoints that the model of :func:`write_litpose_model` names."""
+"""The keypoints that :class:`FakeLitpose` reports.
+
+The model directory of :func:`write_litpose_model` names them too.
+"""
 
 
 @dataclass
@@ -67,8 +70,8 @@ def write_litpose_model(model_dir: Path, *, weights: bytes = b"weights") -> Path
 
     The directory contains a ``config.yaml`` naming the two keypoints of
     :class:`FakeLitpose`, and one checkpoint with *weights*. The model's identity
-    is a digest of both. Two directories written with the same *weights* are
-    therefore one model.
+    is a digest of both. Two directories written with the same *weights* are one
+    model.
     """
     checkpoint = model_dir / "tb_logs" / "m" / "version_0" / "checkpoints" / "best.ckpt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)

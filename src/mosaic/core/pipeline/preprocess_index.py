@@ -12,7 +12,8 @@ that a consumer must otherwise measure or cannot measure at all:
 
 :func:`write_media_variant_row` is the one writer and
 :func:`read_media_variant_index` the one reader.
-:mod:`mosaic.core.pipeline.preprocess_layout` places the files and the index.
+:mod:`mosaic.core.pipeline.preprocess_layout` names the paths of the files and the
+index.
 """
 
 from __future__ import annotations
@@ -171,7 +172,7 @@ def build_media_variant_row(
     """Return the row that records variant file *path*, built from its *facts*.
 
     The facts columns come from the builder that the media index uses. A consumer
-    therefore rebuilds *facts* from the row with :func:`media_variant_facts`.
+    rebuilds *facts* from the row with :func:`media_variant_facts`.
     Every argument is keyword-only, because several are strings, and a type check
     does not catch two transposed strings.
     """
@@ -208,9 +209,9 @@ def build_media_variant_row(
 def write_media_variant_row(ds: Dataset, row: MediaVariantRow) -> None:
     """Record *row*, replacing the row of the same variant, entry and camera.
 
-    The write takes the index lock. Two entries that finish at once are therefore
-    both recorded. Call it after the file is in place, because a row asserts that
-    the file exists.
+    The write takes the index lock, and two entries that finish at once are both
+    recorded. Call it after the file is in place, because a row asserts that the
+    file exists.
 
     Raises:
         ValueError: If the entry's group or sequence is not one path component.
@@ -224,7 +225,7 @@ def read_media_variant_index(ds: Dataset) -> pd.DataFrame:
     """Return every variant row of *ds*, in the current columns.
 
     An absent index reads as an empty one with every column. The read does not
-    write. An index written before a column existed therefore stays as it is.
+    write, and an index written before a column existed stays as it is.
     """
     path = media_variant_index_path(ds)
     frame = media_variant_index(path).read() if path.exists() else pd.DataFrame()

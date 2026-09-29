@@ -3,8 +3,8 @@
 Each entry's clips are read one at a time, or the upstream variant's file when
 ``media`` names one, the steps are applied to every selected frame, and the
 frames are encoded to a partial file that is counted before it is published. The
-row beside it records the file's placement in its entry's source. A consumer
-therefore never probes the file again. Every refusal of a recipe is raised before
+row beside it records the file's placement in its entry's source, and a consumer
+never probes the file again. Every refusal of a recipe is raised before
 any entry is decoded.
 """
 
@@ -103,7 +103,7 @@ _LEVEL_TOLERANCE = 5
 
 Two encodes, the source's and the variant's, move a flat frame by up to about 4
 levels. Painted levels are 12 apart. A frame within this tolerance of its level
-is therefore that frame and not a neighbor.
+is that frame and not a neighbor.
 """
 
 
@@ -111,7 +111,7 @@ def _level(frame: int, base: int) -> int:
     """Return the gray level that source frame *frame* of an entry is painted with.
 
     There are eighteen levels 12 apart, repeating every 18 frames. Any two frames
-    closer together than that are therefore told apart after decoding.
+    closer together than that are told apart after decoding.
     """
     return 16 + (base + 12 * frame) % 216
 
@@ -126,7 +126,7 @@ def _entry(
     """Write and index *sequence*'s clips, each ``(frames, fps)``, in order.
 
     Every frame is flat at :func:`_level` of its frame number across the whole
-    entry. The clips therefore continue one another.
+    entry. The clips continue one another.
     """
     width, height = _SIZE
 
@@ -471,8 +471,7 @@ def test_a_chained_recipe_the_upstream_cannot_hold_is_refused_for_the_run(
     """The recipe is refused before any entry is encoded, not as a failed entry.
 
     ``plan_identity`` does not check a chained recipe, whose upstream may not be
-    written yet when a graph plans. This refusal is therefore raised by ``run``
-    alone.
+    written yet when a graph plans. This refusal is raised by ``run`` alone.
     """
     ds = make_dataset(tmp_path / "ds")
     _entry(ds, "s", [(20, 30.0)])
@@ -984,7 +983,7 @@ def test_a_skipped_camera_is_reported_once_by_a_run(
 ) -> None:
     """Planning does not print the line, and the run prints it once.
 
-    The stub files cannot be decoded. The run's one entry therefore fails.
+    The stub files cannot be decoded, and the run's one entry fails.
     """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(
