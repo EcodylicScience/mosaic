@@ -159,9 +159,9 @@ _FPS_DESCRIPTION = (
 )
 
 _CODEC_DESCRIPTION = (
-    "The output codec. 'h264' is a fallback for a decoder that cannot read AV1, "
-    "such as Lightning Pose on a GPU below compute capability 8.6, and needs an "
-    "ffmpeg built with libx264."
+    "The output codec. 'h264' is a fallback for a decoder without AV1 support, "
+    "such as the DALI 2.3 video reader in Lightning Pose. It needs an ffmpeg built "
+    "with libx264."
 )
 
 _QUALITY_DESCRIPTION = (
@@ -322,6 +322,8 @@ class H264PipeWriter:
 
     libx264 runs in a separate process. A GPL encoder is therefore not linked into
     this one. The file is yuv420p, the pixel format that an AV1 variant has too.
+    ffmpeg converts the BGR frames with swscale's ``accurate_rnd`` rounding. Its
+    default rounding darkens each channel by up to 3 gray levels per encode.
     ffmpeg's error output goes to a temporary file instead of a pipe. A verbose
     encoder therefore does not block on an undrained pipe, and the output is quoted
     in the error when ffmpeg fails.
@@ -352,6 +354,8 @@ class H264PipeWriter:
             f"{rate.numerator}/{rate.denominator}",
             "-i",
             "-",
+            "-sws_flags",
+            "accurate_rnd",
             "-c:v",
             "libx264",
             "-crf",

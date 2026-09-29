@@ -32,6 +32,17 @@ def _shade_for_name(name: str) -> int:
     return sum(name.encode()) % 200 + 20
 
 
+_CAMERA_ARGS: tuple[str, ...] = ("-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p")
+_LOSSLESS_RGB_ARGS: tuple[str, ...] = (
+    "-c:v",
+    "libx264rgb",
+    "-qp",
+    "0",
+    "-pix_fmt",
+    "bgr24",
+)
+
+
 def write_h264_mp4(
     path: Path,
     *,
@@ -41,6 +52,7 @@ def write_h264_mp4(
     fps: float = 30.0,
     levels: Sequence[int] | None = None,
     paint: Callable[[int], npt.NDArray[np.uint8]] | None = None,
+    lossless: bool = False,
 ) -> None:
     """A small constant-frame-rate H.264 mp4, written by a subprocess ffmpeg.
 
@@ -52,6 +64,10 @@ def write_h264_mp4(
     - *paint* makes frame ``i`` the BGR image ``paint(i)`` of *size*.
 
     Giving both raises ``ValueError``.
+
+    *lossless* writes RGB H.264 with libx264rgb at quantizer 0 and converts no
+    pixel format. Each frame then decodes to the exact BGR values written. The
+    default is yuv420p at CRF 18, the format of a camera's file.
 
     H.264 because that is what source media *is* -- a camera writes it, and a
     tool mosaic hands a file to can always decode it. A fixture in a codec a
@@ -108,12 +124,7 @@ def write_h264_mp4(
             str(fps),
             "-i",
             "-",
-            "-c:v",
-            "libx264",
-            "-crf",
-            "18",
-            "-pix_fmt",
-            "yuv420p",
+            *(_LOSSLESS_RGB_ARGS if lossless else _CAMERA_ARGS),
             str(path),
         ],
         input=payload,

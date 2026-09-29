@@ -19,11 +19,20 @@ in an environment of its own and opens a path like every other tool, and trackin
 a store now costs an ``export-store`` run and a copy of the pixels first. Pose and
 point *inference* pay the same cost for the same reason. The heatmap localizer
 does not: it is mosaic's own PyTorch and still reads a store natively.
+
+:func:`refuse_undecodable_codec` checks the codec of each file handed over. A tool
+that declares a decode probe is tested in its environment by a
+:class:`DecodeProbe`, which runs the probe program there once per run.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+import textwrap
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -35,18 +44,27 @@ from mosaic.core.media.facts_columns import derivative_path_for_target, row_mapp
 from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.pipeline.joined_export import current_join
 from mosaic.core.pipeline.store_export import EXPORT_TARGET
+from mosaic.core.pipeline.subprocess_util import run_supervised
 from mosaic.core.pipeline.tracking_roots import (
     CONSERVATIVE_DECODER,
     TRACKING_ROOTS,
     ToolDecoder,
 )
 from mosaic.core.pipeline.variant_source import preprocess_command
+from mosaic.tracking.common.toolenv import (
+    ToolEnv,
+    captured_output,
+    subprocess_env,
+    tool_invocation,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.tracking.common.scope import TrackerWorkItem
 
 __all__ = [
+    "DecodeProbe",
+    "ProbeVerdict",
     "StoreExportMissingError",
     "ToolCodecError",
     "refuse_undecodable_codec",
@@ -57,6 +75,8 @@ __all__ = [
 
 _ALLOW_CODECS_VAR: Final = "MOSAIC_ALLOW_TOOL_CODECS"
 _CODEC_PROBE_TIMEOUT_SECONDS: Final = 120.0
+_DECODE_PROBE_TIMEOUT_SECONDS: Final = 300.0
+"""How long one decode probe may run. DALI's start on a GPU takes most of it."""
 
 
 class StoreExportMissingError(FileNotFoundError):
@@ -121,6 +141,132 @@ def _allowed_codecs(decoder: ToolDecoder) -> frozenset[str]:
     return SOFTWARE_DECODABLE_CODECS | decoder.also_reads | named
 
 
+@dataclass(frozen=True, slots=True)
+class ProbeVerdict:
+    """Record the answer of one decode probe in a tool's environment.
+
+    Attributes:
+        decoded: True when the probe exited 0.
+        tested: The file that the probe was run on. A later file in the same
+            codec is answered from this one.
+        environment: The interpreter's argv, joined by spaces.
+        output: The probe's captured output, or the reason that it did not run,
+            indented for a message.
+    """
+
+    decoded: bool
+    tested: Path
+    environment: str
+    output: str
+
+
+class DecodeProbe:
+    """Test a tool's environment for a codec once per run, and remember the answer.
+
+    A run creates one for its tool, from the placement that the run resolved, and
+    passes it to the check of every entry. Each pair of interpreter argv and codec
+    is tested once. A new run tests again, because an environment can be rebuilt
+    between runs.
+
+    Args:
+        env: The tool's placement, as :meth:`ToolEnv.placed` returns it.
+        timeout: The seconds that one probe may run. The default allows for
+            DALI's start on a GPU.
+    """
+
+    def __init__(
+        self, env: ToolEnv, *, timeout: float = _DECODE_PROBE_TIMEOUT_SECONDS
+    ) -> None:
+        self.env: ToolEnv = env
+        self.timeout: float = timeout
+        self._verdicts: dict[tuple[tuple[str, ...], str], ProbeVerdict] = {}
+
+    def verdict(
+        self,
+        program: str,
+        path: Path,
+        codec: str,
+        *,
+        kind: str,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> ProbeVerdict:
+        """Return whether the environment decodes *codec*, tested on *path* once.
+
+        The first call for an interpreter and a codec runs *program* on *path*.
+        When the program decodes the file, one line on standard error names the
+        tool, the codec and the environment. Later calls return the remembered
+        answer. A cancelled probe is not remembered.
+
+        Args:
+            program: The probe that the tool's decoder declares.
+            path: The file that the tool is about to open.
+            codec: The codec of *path*.
+            kind: The tool's op kind, named in the line printed.
+            cancel_check: Polled while the probe runs. The probe is stopped
+                when it returns True.
+
+        Returns:
+            The answer, from this call's probe or from an earlier one.
+
+        Raises:
+            ToolNotFoundError: The subclass that the tool declares, when its
+                environment cannot be located. The tool's run raises the same.
+            ProcessCancelled: When *cancel_check* fires during the probe.
+        """
+        interpreter = tuple(tool_invocation(self.env, executable="python"))
+        remembered = self._verdicts.get((interpreter, codec))
+        if remembered is not None:
+            return remembered
+        verdict = _run_decode_probe(
+            interpreter,
+            program,
+            path,
+            timeout=self.timeout,
+            cancel_check=cancel_check,
+        )
+        self._verdicts[(interpreter, codec)] = verdict
+        if verdict.decoded:
+            print(
+                f"[{kind}] A test in the environment of {kind} decoded {codec} "
+                f"from {path.name}, and {kind} is handed {codec} files for the "
+                f"rest of this run. Environment: {verdict.environment}",
+                file=sys.stderr,
+            )
+        return verdict
+
+
+def _run_decode_probe(
+    interpreter: tuple[str, ...],
+    program: str,
+    path: Path,
+    *,
+    timeout: float,
+    cancel_check: Callable[[], bool] | None,
+) -> ProbeVerdict:
+    """Run *program* on *path* with *interpreter*, and return its answer.
+
+    A timeout or an interpreter that does not start is an answer that the file
+    was not decoded. Its output then states the reason. A cancel raises
+    ``ProcessCancelled`` and gives no answer.
+    """
+    environment = " ".join(interpreter)
+    try:
+        stdout, stderr, returncode = run_supervised(
+            [*interpreter, "-c", program, str(path)],
+            env=subprocess_env(),
+            cancel_check=cancel_check,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        reason = f"  The test did not finish within {timeout:g} seconds."
+        return ProbeVerdict(False, path, environment, reason)
+    except OSError as error:
+        reason = f"  The interpreter did not start: {error}"
+        return ProbeVerdict(False, path, environment, reason)
+    output = captured_output(stdout, stderr)
+    return ProbeVerdict(returncode == 0, path, environment, output)
+
+
 def refuse_undecodable_codec(
     ds: "Dataset",
     path: Path,
@@ -129,41 +275,88 @@ def refuse_undecodable_codec(
     group: str,
     sequence: str,
     variant: str = "",
+    decode_probe: DecodeProbe | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> None:
-    """Raise unless *kind*'s decoder can be expected to open *path*.
+    """Raise unless *kind*'s tool decodes *path*, by declaration or by test.
 
-    **Per tool, because the answer differs per tool.** TREx links its own
-    environment's libavcodec and Ultralytics reads through mosaic-media's PyAV;
-    both carry ``libdav1d`` and read AV1. SLEAP decodes with OpenCV, whose
-    manylinux wheel carries no software AV1 decoder at all, and Lightning Pose
-    decodes through NVDEC, which reads AV1 only on compute capability 8.6 or
-    newer. One global answer would refuse the first two in order to refuse the
-    second two. Each tool's declaration lives on its
-    :class:`~mosaic.core.pipeline.tracking_roots.TrackingRoot`.
+    Each tool declares its decoder on its
+    :class:`~mosaic.core.pipeline.tracking_roots.TrackingRoot`, because the answer
+    differs per tool. TREx links the libavcodec of its environment, and
+    Ultralytics reads through mosaic-media's PyAV. Both declare AV1. SLEAP reads
+    through OpenCV, and the Linux OpenCV wheel from PyPI does not decode AV1.
+    Lightning Pose reads through DALI's ``fn.readers.video``, which in DALI 2.3
+    does not handle AV1 on any GPU.
 
-    **Checked on what is handed over, never on what it was resolved from.** A
-    clip that is about to be joined away may be in any codec: the tool never
-    opens it. Refusing there would block a run that would have worked.
+    A codec is allowed when it is in the baseline, in the tool's ``also_reads``,
+    or in ``MOSAIC_ALLOW_TOOL_CODECS``. Otherwise a tool that declares a probe is
+    tested in its environment through *decode_probe*. Exit 0 allows the codec. A
+    non-zero exit, a timeout or an interpreter that does not start raises with the
+    probe's output. A tool without a probe, and a caller without *decode_probe*,
+    are refused by the declaration.
 
-    The failure this prevents is silent, which is why it is worth a probe. A
-    reader with no decoder for the file returns zero frames and its caller exits
-    0, so SLEAP wrote a `.slp` with no labeled frames, the bridge read a valid
-    empty table, and the run was recorded as a success that produced nothing --
-    a result indistinguishable, at every gate mosaic has, from a video with no
-    animals in it.
+    The check reads the file that the tool opens. A clip that is joined into one
+    file for the tool may be in any codec, because the tool does not open it.
 
-    A kind with no registered root gets the conservative declaration, which
-    assumes nothing beyond the universal baseline.
+    A tool without a decoder for a file reads zero frames and exits 0, and its run
+    records an empty result as a success. The refusal stops the run before that
+    result is recorded.
 
-    *variant* names the media variant that *path* is the file of, when it is one.
-    A variant's codec is chosen when it is made. The refusal then also names making
-    the variant again in H.264, from the recipe that *ds* recorded for it.
+    A kind without a registered root gets the conservative declaration, which
+    lists only the baseline.
+
+    Args:
+        ds: The dataset, read for the recipe of *variant*.
+        path: The file that the tool opens.
+        kind: The tool's op kind, which selects its declaration.
+        group: The entry's group, named in a refusal.
+        sequence: The entry's sequence, named in a refusal.
+        variant: The run id of the media variant that *path* is the file of, or
+            empty. A refusal of a variant also names making the variant again in
+            H.264 from the recipe that *ds* recorded for it.
+        decode_probe: The probe of the tool's environment, created by the run
+            from the placement that it resolved. ``None`` for a caller without
+            one.
+        cancel_check: The run's cancel check, polled while a probe runs.
+
+    Raises:
+        ToolCodecError: If the codec is refused.
+        ProcessCancelled: When *cancel_check* fires during a probe.
     """
     root = TRACKING_ROOTS.get(kind)
     decoder = root.decoder if root is not None else CONSERVATIVE_DECODER
     codec = _stream_codec(path)
     if not codec or codec in _allowed_codecs(decoder):
         return
+    verdict = (
+        decode_probe.verdict(
+            decoder.probe, path, codec, kind=kind, cancel_check=cancel_check
+        )
+        if decoder.probe and decode_probe is not None
+        else None
+    )
+    if verdict is not None and verdict.decoded:
+        return
+    if verdict is None:
+        finding = (
+            f", and its declaration does not list {codec}. A tool without a "
+            f"decoder for a file reads zero frames and exits 0, and its run "
+            f"records an empty result as a success."
+        )
+        setting = f"To declare that this environment decodes {codec}, set"
+    else:
+        tested = (
+            path.name
+            if verdict.tested == path
+            else f"{verdict.tested} earlier in this run"
+        )
+        finding = (
+            f". A test in the environment of {kind} did not decode {codec} in "
+            f"{tested}:\n"
+            f"    Environment: {verdict.environment}\n"
+            f"{textwrap.indent(verdict.output, '  ')}"
+        )
+        setting = "To skip the test, set"
     remedy = f"\n    {decoder.remedy}." if decoder.remedy else ""
     remake = (
         f"\n    Or make the media variant in a codec that {kind} reads. Run the "
@@ -176,18 +369,19 @@ def refuse_undecodable_codec(
     )
     message = (
         f"[{kind}] ({group}, {sequence}) resolves to {path.name}, which is "
-        f"{codec}. {kind} decodes with {decoder.stack}, which cannot be "
-        f"expected to open {codec}. A tool that cannot decode returns zero "
-        f"frames and exits 0, so this would otherwise be recorded as a run "
-        f"that succeeded and found nothing.{remedy}{remake}\n"
-        f"    To say this environment does handle it, set "
-        f"{_ALLOW_CODECS_VAR}={codec}."
+        f"{codec}. {kind} decodes with {decoder.stack}{finding}{remedy}{remake}\n"
+        f"    {setting} {_ALLOW_CODECS_VAR}={codec}."
     )
     raise ToolCodecError(message)
 
 
 def resolve_tool_inputs(
-    ds: "Dataset", item: "TrackerWorkItem", *, kind: str
+    ds: "Dataset",
+    item: "TrackerWorkItem",
+    *,
+    kind: str,
+    decode_probe: DecodeProbe | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[Path, ...]:
     """Every path *kind*'s external tool should open for *item*, in order.
 
@@ -215,6 +409,9 @@ def resolve_tool_inputs(
         ds: The dataset, read for the media index and the ``media`` root.
         item: The work item whose source paths are being resolved.
         kind: The tracker's kind, so a failure names the tool the user invoked.
+        decode_probe: The probe of the tool's environment, for a tool that
+            declares one. See :func:`refuse_undecodable_codec`.
+        cancel_check: The run's cancel check, polled while a probe runs.
 
     Raises:
         StoreExportMissingError: If a source is a store with no export
@@ -244,18 +441,29 @@ def resolve_tool_inputs(
             group=item.group,
             sequence=item.sequence,
             variant=item.media,
+            decode_probe=decode_probe,
+            cancel_check=cancel_check,
         )
     return handed
 
 
-def resolve_tool_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
+def resolve_tool_input(
+    ds: "Dataset",
+    item: "TrackerWorkItem",
+    *,
+    kind: str,
+    decode_probe: DecodeProbe | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> Path:
     """The path *kind*'s external tool should open for *item*'s first clip.
 
     The single-source view of :func:`resolve_tool_inputs`, for the trackers that
     read one video file. One rule, two views -- a second implementation is how
     the two would come to disagree about what a store resolves to.
     """
-    return resolve_tool_inputs(ds, item, kind=kind)[0]
+    return resolve_tool_inputs(
+        ds, item, kind=kind, decode_probe=decode_probe, cancel_check=cancel_check
+    )[0]
 
 
 def resolve_entry_input(

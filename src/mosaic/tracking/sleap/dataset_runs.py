@@ -73,7 +73,7 @@ from mosaic.tracking.common.index import (
 )
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
-from mosaic.tracking.common.tool_input import resolve_tool_input
+from mosaic.tracking.common.tool_input import DecodeProbe, resolve_tool_input
 from mosaic.tracking.model_refs import observed_model_source, resolve_model_set
 from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.sleap.version import (
@@ -82,7 +82,7 @@ from mosaic.tracking.sleap.version import (
     TRAIN_SLEAP_KIND,
 )
 
-from .run import run_sleap_convert, run_sleap_track
+from .run import SLEAP_ENV, run_sleap_convert, run_sleap_track
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -316,6 +316,11 @@ def run_sleap(
     # sleap-nn track takes a frame selection as one "start-end" token.
     analysis_range = params.analysis_range
     frames_arg = f"{analysis_range[0]}-{analysis_range[1]}" if analysis_range else None
+    # One probe for the run, in the environment that the run places SLEAP in. It
+    # tests a codec outside SLEAP's declaration once per run.
+    decode_probe = DecodeProbe(
+        SLEAP_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin)
+    )
 
     def track_one(job: EntryJob) -> SleapIndexRow | None:
         """One entry: the gated inference phase, the ensured export, the bridge."""
@@ -352,7 +357,13 @@ def run_sleap(
             # than before the reuse gate: an entry already tracked needs no
             # export, and demanding one would fail a re-run over finished work.
             track_result = run_sleap_track(
-                resolve_tool_input(job.ds, item, kind=SLEAP_KIND),
+                resolve_tool_input(
+                    job.ds,
+                    item,
+                    kind=SLEAP_KIND,
+                    decode_probe=decode_probe,
+                    cancel_check=seq_ctx.cancel_token.is_cancelled,
+                ),
                 slp_path,
                 model_paths=resolved_models.paths,
                 tracking=params.tracking,

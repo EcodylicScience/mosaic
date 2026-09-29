@@ -98,33 +98,39 @@ class TrackingPhase:
 
 @dataclass(frozen=True, slots=True)
 class ToolDecoder:
-    """What a tool decodes video with, and what that implies about codecs.
+    """Declare the decoder that a tool reads video with, and the codecs it reads.
 
-    mosaic chooses the codec of every file it hands to an external tool, and
-    does not control the decoder that opens it. Those decoders differ in one
-    consequential way: some carry a software AV1 decoder and some hold none at
-    all, because libavcodec's *native* ``av1`` decoder is a hardware-accelerator
-    wrapper and the software ones (``libdav1d``, ``libaom-av1``) are external
-    libraries a build may omit.
+    mosaic chooses the codec of every file that it hands to an external tool, and
+    does not control the decoder that opens the file. Some of those decoders
+    include a software AV1 decoder and some do not. libavcodec's native ``av1``
+    decoder wraps a hardware accelerator, and the software decoders
+    (``libdav1d``, ``libaom-av1``) are external libraries that a build may omit.
 
-    That is a property of the tool, not of mosaic, so it is declared per tool
-    here beside the other "what can this producer do" facts rather than decided
-    globally. A global answer would be wrong in both directions at once: it
-    would refuse AV1 for TREx and Ultralytics, which read it, in order to refuse
-    it for SLEAP and Lightning Pose, which do not.
+    Each tool declares its answer here, beside the other facts about each
+    producer. TREx and Ultralytics declare AV1. SLEAP reads AV1 when the OpenCV in
+    its environment links dav1d. Lightning Pose reads AV1 when the installed
+    DALI's ``fn.readers.video`` handles it, and DALI 2.3 does not on any GPU.
+    Those two declare a probe, which tests the environment that a run uses.
 
     Attributes:
-        stack: What does the decoding, named in a refusal so the reader knows
-            which component to go and look at.
-        also_reads: Codecs this tool reads *beyond* the universal baseline in
+        stack: The component that decodes, named in a refusal.
+        also_reads: Codecs that this tool reads beyond the baseline in
             ``SOFTWARE_DECODABLE_CODECS``. Empty is the conservative answer and
             the default.
-        remedy: What an operator can do about a refusal, if anything. Empty when
-            there is nothing to do, which is itself worth saying.
+        probe: A Python program that the interpreter of the tool's environment
+            runs with a file's path as its only argument. It decodes one frame
+            with the reader that the tool uses and exits 0. When it cannot, it
+            prints the reader's error and exits non-zero. A file in a codec
+            outside the declared set is handed to the tool only after the probe
+            decodes it. Empty means the tool is not tested, and the declared set
+            decides.
+        remedy: What an operator can do about a refusal. Empty when there is
+            nothing to do.
     """
 
     stack: str
     also_reads: frozenset[str] = frozenset()
+    probe: str = ""
     remedy: str = ""
 
 
@@ -140,6 +146,67 @@ CONSERVATIVE_DECODER: Final = ToolDecoder(
 Assumes nothing beyond the baseline, so a tracker added without a declaration
 refuses AV1 rather than being trusted with it. `tests/test_tracker_conformance.py`
 turns that silence into a named failure.
+"""
+
+
+_SLEAP_DECODE_PROBE: Final = """\
+import sys
+
+try:
+    import numpy as np
+    import sleap_io as sio
+
+    frame = sio.load_video(sys.argv[1])[0]
+except Exception as exc:
+    sys.exit(f"sleap_io could not read frame 0: {type(exc).__name__}: {exc}")
+if not isinstance(frame, np.ndarray) or frame.size == 0:
+    sys.exit(f"sleap_io read frame 0 as {frame!r:.200}")
+print(f"sleap_io read frame 0 with shape {frame.shape}")
+"""
+"""SLEAP's decode probe, which reads frame 0 with ``sleap_io.load_video``.
+
+``sleap-nn track`` reads video through sleap-io, and sleap-io reads through OpenCV
+whenever OpenCV is importable. When OpenCV cannot decode the codec, sleap-io
+raises, and the probe exits 1 with its message.
+"""
+
+_LITPOSE_DECODE_PROBE: Final = """\
+import sys
+
+try:
+    from nvidia.dali import fn, pipeline_def, types
+
+    @pipeline_def(batch_size=1, num_threads=1, device_id=0)
+    def read_one_frame():
+        return fn.readers.video(
+            device="gpu",
+            filenames=[sys.argv[1]],
+            sequence_length=1,
+            normalized=False,
+            dtype=types.DALIDataType.FLOAT,
+            file_list_include_preceding_frame=True,
+            skip_vfr_check=True,
+        )
+
+    pipe = read_one_frame()
+    pipe.build()
+    pipe.run()
+except Exception as exc:
+    reason = str(exc).split("Stacktrace (", 1)[0].rstrip()
+    sys.exit(f"DALI could not read a frame: {type(exc).__name__}: {reason}")
+print("DALI read one frame")
+"""
+"""Lightning Pose's decode probe, which reads one frame through a DALI pipeline.
+
+The pipeline runs on the GPU. Its reader takes the arguments of Lightning Pose's
+prediction reader (``fn.readers.video`` in ``lightning_pose/data/dali.py``) that
+bear on decoding: ``device="gpu"``, ``normalized=False``, a float ``dtype``,
+``file_list_include_preceding_frame=True`` and ``skip_vfr_check=True``. It reads
+a sequence of one frame, and leaves out the batching, shuffling and padding
+arguments. DALI 2.3's reader raises "Unhandled codec 225" for AV1 on every GPU.
+
+DALI appends a native stacktrace to its error. The probe prints the error without
+it, and its output ends with the reason.
 """
 
 
@@ -305,16 +372,16 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         TrackingRoot(
             key="sleap",
             decoder=ToolDecoder(
-                stack=(
-                    "OpenCV, whose codec support is fixed when its wheel is "
-                    "built -- the manylinux build carries no software AV1 "
-                    "decoder and no hardware accelerator at all"
-                ),
+                stack="sleap-io, which reads video through OpenCV",
+                probe=_SLEAP_DECODE_PROBE,
                 remedy=(
-                    "install a dav1d-linked OpenCV in the SLEAP environment: "
-                    "`conda install -c conda-forge py-opencv`. sleap-io picks "
-                    "OpenCV whenever it is importable and reads no environment "
-                    "variable to say otherwise"
+                    "In the SLEAP environment, run `pip uninstall -y "
+                    "opencv-python opencv-python-headless`, then `conda install "
+                    "-c conda-forge py-opencv`, and add `--update-all` when the "
+                    "solve fails on packages that the environment pins. The "
+                    "Linux OpenCV wheel from PyPI does not decode AV1, and "
+                    "sleap-io reads video through OpenCV whenever OpenCV is "
+                    "importable"
                 ),
             ),
             retention="tracker",
@@ -332,11 +399,13 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         TrackingRoot(
             key="litpose",
             decoder=ToolDecoder(
-                stack="NVIDIA DALI, which decodes on the GPU through NVDEC",
+                stack="NVIDIA DALI's fn.readers.video, which decodes on the GPU",
+                probe=_LITPOSE_DECODE_PROBE,
                 remedy=(
-                    "nothing installable: NVDEC decodes AV1 only on compute "
-                    "capability 8.6 or newer, and DALI has no software fallback. "
-                    "On an older GPU this codec cannot be read at all"
+                    "Hand Lightning Pose an H.264 file, such as a media variant "
+                    'made with "codec": "h264". The fn.readers.video of DALI 2.3 '
+                    'does not handle AV1 on any GPU, and fails with "Unhandled '
+                    'codec 225"'
                 ),
             ),
             retention="tracker",

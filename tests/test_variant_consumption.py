@@ -51,6 +51,7 @@ from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.ops.infer import infer_run_root
 from mosaic.tracking.pose_training.localizer_inference import LocalizerDetection
 from mosaic.tracking.sleap.params import SleapParams
+from mosaic.tracking.sleap.run import SLEAP_ENV
 from mosaic.tracking.trex.conversion_cache import conversion_slot
 from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
@@ -66,6 +67,7 @@ from tests.helpers import (
     install_fake_point_inference,
     install_fake_pose_inference,
     install_fake_sleap,
+    install_fake_tool_python,
     install_fake_trex,
     install_fake_ultralytics,
     make_dataset,
@@ -374,8 +376,11 @@ def test_an_av1_variant_handed_to_sleap_names_the_h264_remedy(
     sleap: FakeSleap,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SLEAP's OpenCV cannot read AV1, and a variant can be made in H.264 instead."""
-    monkeypatch.delenv("MOSAIC_ALLOW_TOOL_CODECS", raising=False)
+    """SLEAP's environment fails to decode the AV1 variant, which H.264 replaces."""
+    failure = "sleap_io could not read frame 0: IndexError: Failed to read frame 0"
+    python = install_fake_tool_python(
+        monkeypatch, SLEAP_ENV, tmp_path / "bin", exit_code=1, output=failure
+    )
     ds = _dataset(tmp_path)
     variant = _variant(ds)
 
@@ -385,10 +390,13 @@ def test_an_av1_variant_handed_to_sleap_names_the_h264_remedy(
 
     message = str(refused.value)
     assert "which is av1" in message
+    assert failure in message
     assert "py-opencv" in message
     assert f'the recipe of {variant} with "codec" set to "h264"' in message
     recipe = media_variant_recipe_path(ds, variant).absolute()
     assert f"--entries :s --params @{recipe}" in message
+    variant_file = str(media_variant_path(ds, variant, "", "s", ""))
+    assert python.calls() == [("-c", variant_file)]
     assert sleap.tracked == []
 
 

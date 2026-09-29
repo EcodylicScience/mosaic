@@ -36,6 +36,7 @@ from mosaic.core.pipeline.store_export import (  # noqa: E402
 )
 from mosaic.tracking.common.scope import TrackerWorkItem  # noqa: E402
 from mosaic.tracking.common.tool_input import (  # noqa: E402
+    DecodeProbe,
     StoreExportMissingError,
     ToolCodecError,
     resolve_tool_input,
@@ -732,30 +733,55 @@ def test_a_tool_that_cannot_decode_the_export_is_refused_by_name(
     tmp_path: Path,
     make_media_dataset: Callable[[Path], Dataset],
     make_imgstore: MakeStore,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The silence this replaces, and the false refusal it must not become.
+    """Refuse the export for a tool whose environment fails to decode it.
 
-    A raw store has no stream to copy, so its export is encoded -- AV1, which
-    SLEAP's OpenCV holds no decoder for. A reader with no decoder returns zero
-    frames and its caller exits 0, so SLEAP wrote a `.slp` with no labeled
-    frames and mosaic recorded a success that produced nothing.
+    A raw store has no stream to copy, and its export is encoded in AV1. SLEAP and
+    Lightning Pose do not declare AV1, and each is tested in its environment
+    first. The environments here fail the test, as an OpenCV without dav1d and
+    the video reader of DALI 2.3 do. A reader without a decoder returns
+    zero frames and exits 0, and SLEAP then wrote a `.slp` with no labeled
+    frames, recorded as a success.
 
-    The same file is fine for TREx, which links its own libavcodec, and for
-    Ultralytics, which reads through mosaic-media's PyAV. Refusing them in order
-    to refuse SLEAP would block two working tools, which is why the declaration
-    is per tool.
+    TREx and Ultralytics declare AV1 and are handed the file untested.
     """
+    from mosaic.tracking.litpose.run import LITPOSE_ENV
+    from mosaic.tracking.sleap.run import SLEAP_ENV
+
+    from tests.helpers import install_fake_tool_python
+
     ds, group, sequence = _store_dataset(
         tmp_path, make_media_dataset, make_imgstore, fmt="npy"
     )
     _export(ds, group, sequence)
     item = _work_item(ds, group, sequence)
     assert probe_media(_exports(ds)[0]).codec_name == "av1", "the fixture premise"
+    sleap_failure = "sleap_io could not read frame 0: IndexError: Failed to read"
+    litpose_failure = "DALI could not read a frame: RuntimeError: Unhandled codec 225"
+    sleap_python = install_fake_tool_python(
+        monkeypatch, SLEAP_ENV, tmp_path / "sleap", exit_code=1, output=sleap_failure
+    )
+    litpose_python = install_fake_tool_python(
+        monkeypatch,
+        LITPOSE_ENV,
+        tmp_path / "litpose",
+        exit_code=1,
+        output=litpose_failure,
+    )
 
-    with pytest.raises(ToolCodecError, match="OpenCV"):
-        _ = resolve_tool_input(ds, item, kind="sleap")
-    with pytest.raises(ToolCodecError, match="NVDEC"):
-        _ = resolve_tool_input(ds, item, kind="litpose")
+    with pytest.raises(ToolCodecError, match="OpenCV") as sleap_refused:
+        _ = resolve_tool_input(
+            ds, item, kind="sleap", decode_probe=DecodeProbe(SLEAP_ENV)
+        )
+    assert sleap_failure in str(sleap_refused.value)
+    with pytest.raises(ToolCodecError, match="fn.readers.video") as litpose_refused:
+        _ = resolve_tool_input(
+            ds, item, kind="litpose", decode_probe=DecodeProbe(LITPOSE_ENV)
+        )
+    assert litpose_failure in str(litpose_refused.value)
+    handed = str(_exports(ds)[0])
+    assert sleap_python.calls() == litpose_python.calls() == [("-c", handed)]
 
     for reads_av1 in ("trex", "ultralytics", "infer-pose"):
         assert resolve_tool_input(ds, item, kind=reads_av1) == _exports(ds)[0], (

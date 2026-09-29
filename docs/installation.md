@@ -107,18 +107,24 @@ software AV1 decoder and no hardware accelerator, so it cannot decode AV1 on any
 Linux machine. In a conda environment:
 
 ```bash
+pip uninstall -y opencv-python opencv-python-headless
 conda install -c conda-forge py-opencv
 ```
 
+Remove the pip wheels first. conda does not remove them, and a wheel left
+installed provides a second `cv2` beside conda's build. If the solve fails on
+packages that the environment's history pins, such as `ffmpeg`, add `--update-all`
+to the `conda install`.
+
 That build links the conda ffmpeg beside it, which carries `libdav1d`, and
-satisfies SLEAP's unpinned `opencv-python` requirement. mosaic does not inspect the
-SLEAP environment, and it refuses to hand SLEAP an AV1 file until
-`MOSAIC_ALLOW_TOOL_CODECS=av1` declares that the environment decodes it. Set the
-variable once the install above is done. The refusal names the codec. Without the
-refusal, SLEAP read zero frames and exited 0, and the run was recorded as a
-success with an empty result. `sleap-io` picks OpenCV whenever it is importable and reads no
-environment variable to say otherwise, so a working PyAV in the same environment
-does not help.
+satisfies SLEAP's unpinned `opencv-python` requirement. Before SLEAP is handed an AV1
+file, mosaic reads one frame of it with `sleap-io` in the SLEAP environment, once per
+run. SLEAP is handed the file when the frame decodes. When it does not, the run is
+refused with the reader's error. Without the refusal, SLEAP read zero frames and
+exited 0, and the run was recorded as a success with an empty result.
+`MOSAIC_ALLOW_TOOL_CODECS=av1` skips the test. `sleap-io` picks OpenCV whenever it
+is importable and reads no environment variable to say otherwise, so a working PyAV
+in the same environment does not help.
 
 ### Lightning Pose
 
@@ -132,16 +138,17 @@ pip install lightning-pose
 export MOSAIC_LITPOSE_CONDA_ENV=litpose
 ```
 
-**AV1 needs an Ampere or newer GPU here.** Lightning Pose decodes through NVIDIA
-DALI, which decodes on the GPU via NVDEC and has no software fallback. NVDEC
-reads AV1 only at compute capability 8.6 or newer, so on a Pascal or Turing card
-— a GTX 1080 Ti is 6.1 — mosaic's AV1 derivatives cannot be read at all, and no
-package changes that. mosaic refuses such a run naming NVDEC rather than letting
-it return nothing. It refuses AV1 on any card until `MOSAIC_ALLOW_TOOL_CODECS=av1`
-is set, because it cannot detect the GPU that a run uses. Set the variable on a card
-of compute capability 8.6 or newer. Otherwise the remedies are a newer GPU, media
-that never needed an analysis transcode, or an H.264
-[media variant](guides/media/preprocess.md#codec).
+**Hand it H.264, not AV1.** Lightning Pose reads video through NVIDIA DALI's
+`fn.readers.video`, which decodes on the GPU. In DALI 2.3 that reader does not
+handle AV1 on any GPU. On an RTX 4000 Ada it fails with "Unhandled codec 225", in
+Lightning Pose and in mosaic's test alike. mosaic's analysis derivatives and
+imgstore exports are AV1. Before Lightning Pose is handed an AV1 file, mosaic reads
+one frame of it with the same reader, in the Lightning Pose environment, once per
+run. The file is handed over when the frame decodes, and the same test allows AV1
+under a DALI release whose reader handles it. When the frame does not decode, the
+run is refused with DALI's error rather than returning nothing. The remedies are
+an H.264 [media variant](guides/media/preprocess.md#codec), made with
+`"codec": "h264"`, and media that never needed an analysis transcode.
 
 ### Ultralytics and POLO
 

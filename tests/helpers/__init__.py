@@ -19,6 +19,8 @@ What lives where:
   stand-ins for the tools that those trackers run, installed over each tracker's
   seams, and ``inference`` the same for the environments of ``infer-pose`` and
   ``infer-points``.
+- ``decode_probe`` contains a fake ``python`` for a tool environment, which
+  answers the decode probe that the codec check runs there.
 - ``media`` -- media files, media-index rows, transcode derivatives.
 - ``variants`` -- media variant files and their index rows, and a count of the
   index reads a variant's consumers make.
@@ -50,6 +52,7 @@ from tests.helpers.annotations import (
     revision_file,
 )
 from tests.helpers.datasets import make_dataset
+from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
 from tests.helpers.environment import (
     FFMPEG_TOOLCHAIN,
     assert_no_literal_tilde,
@@ -137,6 +140,7 @@ __all__ = [
     "FakeSleap",
     "FakeTrainer",
     "FakeTrex",
+    "FakeToolPython",
     "FakeUltralytics",
     "IndexReads",
     "MediaClip",
@@ -162,6 +166,7 @@ __all__ = [
     "install_fake_point_inference",
     "install_fake_pose_inference",
     "install_fake_sleap",
+    "install_fake_tool_python",
     "install_fake_trex",
     "install_fake_ultralytics",
     "is_section",

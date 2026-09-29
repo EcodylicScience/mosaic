@@ -1387,6 +1387,21 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   omit the offset and publish plausible positions on the variant's pixel grid. A
   frame window on the consumer is refused beside `media` (`MediaInputParams`),
   because the tool counts it in variant frames.
+- **A tool is handed only a file that it decodes.** A tool without a decoder for a
+  file reads zero frames and exits 0, and its run records an empty result as a
+  success. `refuse_undecodable_codec`
+  ([`tracking/common/tool_input.py`](src/mosaic/tracking/common/tool_input.py))
+  allows a codec in the baseline, in the tool's `ToolDecoder.also_reads`
+  (`core/pipeline/tracking_roots.py`) or in `MOSAIC_ALLOW_TOOL_CODECS`. Any other
+  codec is refused, unless the tool declares a `probe` and the probe decodes a
+  frame of the file in the tool's environment. SLEAP (`sleap_io.load_video`) and
+  Lightning Pose (DALI's `fn.readers.video` on the GPU) declare one, and AV1 stays
+  the default codec for them. DALI 2.3's reader does not handle AV1 on any GPU
+  ("Unhandled codec 225"), and a variant for Lightning Pose is made with
+  `codec: "h264"`. Each run creates one `DecodeProbe` from the placement
+  that it resolved and asks it once per interpreter and codec. A result is not
+  kept between runs, and a rebuilt environment is tested again.
+  `tests/test_decoder_probe.py` tests both outcomes.
 - **A tracker reports; a feature derives.** `mosaic_v1` *forbids* `VX`, `VY`,
   `SPEED`, `ANGLE` and the rest, so a converter cannot compute one and present it
   as a measurement. Heading is the sharpest case: the principal-component fit the

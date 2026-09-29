@@ -69,7 +69,9 @@ from tests.helpers import (
     MediaClip,
     count_index_reads,
     entry_error_lines,
+    index_media_sequence,
     make_dataset,
+    write_h264_mp4,
     write_media_index,
     write_painted_entry,
 )
@@ -1036,6 +1038,40 @@ def test_an_h264_variant_is_written_by_libx264(tmp_path: Path) -> None:
     assert (facts.codec_name, facts.pixel_format) == ("h264", "yuv420p")
     assert (facts.width, facts.height, facts.frame_count) == (32, 24, 12)
     assert _row(ds, run_id)["encoder"] == "libx264"
+
+
+def _decoded(path: Path) -> npt.NDArray[np.float64]:
+    """Return every frame of *path*, decoded for analysis, as one float array."""
+    with open_frame_reader(path, target="analysis") as reader:
+        return np.stack([np.asarray(frame, np.float64) for _, frame in reader])
+
+
+@pytest.mark.media
+def test_an_h264_variant_keeps_the_colors_of_its_source(tmp_path: Path) -> None:
+    """Each channel of the variant is within 1.5 levels of the source, on average.
+
+    ffmpeg converts the BGR frames to yuv420p before libx264 encodes them. With
+    swscale's default rounding the conversion darkens every channel, blue by 3
+    levels for this color. The source is lossless RGB, and its frames decode to
+    the painted color.
+    """
+    if not (encoder_available("libx264") and encoder_available("libx264rgb")):
+        pytest.skip("the ffmpeg on PATH has no libx264")
+    ds = make_dataset(tmp_path / "ds")
+    width, height = _SIZE
+    painted = np.full((6, height, width, 3), (60, 120, 200), np.uint8)
+    clip = ds.get_root("media_raw") / "s" / "clip0.mp4"
+    write_h264_mp4(
+        clip, frames=6, size=_SIZE, paint=lambda frame: painted[frame], lossless=True
+    )
+    index_media_sequence(ds, "s", [clip.name])
+
+    run_id = _run(ds, [_trim(0, 6)], codec="h264")
+
+    assert np.array_equal(_decoded(clip), painted), "the lossless source premise"
+    variant = _decoded(media_variant_path(ds, run_id, "", "s", ""))
+    error = np.mean(variant - painted, axis=(0, 1, 2))
+    assert np.all(np.abs(error) <= 1.5), f"mean error per B, G, R channel: {error}"
 
 
 def test_an_h264_variant_is_refused_by_name_without_libx264(

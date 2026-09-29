@@ -69,7 +69,7 @@ from mosaic.tracking.common.index import (
 )
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
-from mosaic.tracking.common.tool_input import resolve_tool_input
+from mosaic.tracking.common.tool_input import DecodeProbe, resolve_tool_input
 from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.litpose.version import (
     LITPOSE_KIND,
@@ -78,7 +78,7 @@ from mosaic.tracking.litpose.version import (
 )
 from mosaic.tracking.model_refs import observed_model_source, resolve_model_set
 
-from .run import run_litpose_predict
+from .run import LITPOSE_ENV, run_litpose_predict
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -297,6 +297,11 @@ def run_litpose(
     if not media_scope:
         print("[run_litpose] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
+    # One probe for the run, in the environment that the run places Lightning Pose
+    # in. It tests a codec outside the declaration once per run.
+    decode_probe = DecodeProbe(
+        LITPOSE_ENV.placed(conda_env=litpose_conda_env, bin_path=litpose_bin)
+    )
 
     def predict_one(job: EntryJob) -> LitposeIndexRow | None:
         """One entry: the gated inference phase, then the bridge."""
@@ -326,7 +331,13 @@ def run_litpose(
             # needs no export, and demanding one would fail a re-run over
             # finished work.
             predict_result = run_litpose_predict(
-                resolve_tool_input(job.ds, item, kind=LITPOSE_KIND),
+                resolve_tool_input(
+                    job.ds,
+                    item,
+                    kind=LITPOSE_KIND,
+                    decode_probe=decode_probe,
+                    cancel_check=seq_ctx.cancel_token.is_cancelled,
+                ),
                 csv_path,
                 model_dir=resolved_model.path,
                 precision=params.precision,
