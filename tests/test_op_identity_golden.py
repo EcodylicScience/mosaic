@@ -697,6 +697,20 @@ def _frames_run_id_revised() -> str:
     return frames_run_id("uniform", ExtractFramesParams(n_frames=100, revision=1))
 
 
+def _frames_run_id_list() -> str:
+    """A ``list`` run is named by its frames, through the same minter."""
+    params = ExtractFramesParams.model_validate(
+        {
+            "method": "list",
+            "frames": [
+                {"sequence": "seq_b", "indices": [40, 7]},
+                {"group": "g", "sequence": "seq_a", "indices": [0, 1745, 3487]},
+            ],
+        }
+    )
+    return frames_run_id(params.method, params)
+
+
 def _ultralytics_settings_case() -> dict[str, object]:
     """The one settings dict both Ultralytics golden cases are built from.
 
@@ -776,6 +790,7 @@ def _ultralytics_tracker_defaults() -> str:
 FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "frames/run-id": _frames_run_id,
     "frames/run-id-revision-1": _frames_run_id_revised,
+    "frames/run-id-list": _frames_run_id_list,
     "transcode/recipe-hash": _recipe_hash,
     "transcode/run-id": _run_id,
     "tracks/convert-variant": _convert_variant,

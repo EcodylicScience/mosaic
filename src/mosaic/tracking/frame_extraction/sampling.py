@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
+
+ExtractionMethod = Literal["uniform", "kmeans", "list"]
+"""How the frames to keep are chosen: evenly spaced, by k-means clustering, or
+named by the caller."""
 
 
 def _ordered_unique(values: np.ndarray) -> np.ndarray:

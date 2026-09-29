@@ -38,8 +38,13 @@ def write_h264_mp4(
     size: tuple[int, int] = (64, 48),
     shade: int | Literal["from-name"] = 0,
     fps: float = 30.0,
+    levels: Sequence[int] | None = None,
 ) -> None:
     """A small constant-frame-rate H.264 mp4, written by a subprocess ffmpeg.
+
+    *levels*, when given, is each frame's grey level in order and replaces
+    *frames* and *shade*: a clip whose frames encode their index is what lets a
+    test tell which frame a reader returned, not only which clip.
 
     H.264 because that is what source media *is* -- a camera writes it, and a
     tool mosaic hands a file to can always decode it. A fixture in a codec a
@@ -57,7 +62,10 @@ def write_h264_mp4(
     path.parent.mkdir(parents=True, exist_ok=True)
     level = _shade_for_name(path.name) if shade == "from-name" else int(shade)
     width, height = size
-    frame = np.full((height, width, 3), level, np.uint8).tobytes()
+    per_frame = [level] * frames if levels is None else list(levels)
+    payload = b"".join(
+        np.full((height, width, 3), value, np.uint8).tobytes() for value in per_frame
+    )
     _ = subprocess.run(
         [
             "ffmpeg",
@@ -83,7 +91,7 @@ def write_h264_mp4(
             "yuv420p",
             str(path),
         ],
-        input=frame * frames,
+        input=payload,
         check=True,
         capture_output=True,
     )

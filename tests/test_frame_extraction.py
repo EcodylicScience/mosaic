@@ -403,6 +403,8 @@ def _spec(*, seq_dir, overwrite: bool):
         params_hash="aaaaaaaaaa",
         n_frames=1,
         method="uniform",
+        frame_indices=None,
+        n_media_frames=0,
         start_frame=None,
         end_frame=None,
         candidate_step=1,

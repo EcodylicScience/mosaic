@@ -63,6 +63,7 @@ from tests.helpers.media import (
     add_transcode_derivative,
     clean_facts_cells,
     clip_facts,
+    write_h264_mp4,
     write_media_index,
     write_mpeg4_mp4,
 )
@@ -124,6 +125,7 @@ __all__ = [
     "scope_over",
     "source_tree",
     "track_sequences",
+    "write_h264_mp4",
     "write_media_index",
     "write_mpeg4_mp4",
     "write_templates",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -11,7 +11,9 @@ from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 import pandas as pd
 from mosaic_media import MediaFacts
+from pydantic import Field, ValidationInfo, field_validator
 
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import ResolvedScope, hash_params, json_ready
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
@@ -28,19 +30,26 @@ from mosaic.core.pipeline.sequence_index import (
     media_compositions_for,
 )
 from mosaic.core.pipeline.job import CancelToken, Cancelled, JobContext
+from mosaic.core.pipeline.joined_export import (
+    JoinedExportMissingError,
+    join_to_read,
+    missing_joins,
+)
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op, run_op
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
+    DeclaredModel,
     Params,
 )
 from mosaic.core.scope import Scope
 
 from .extraction import extract_frames as _extract_frames
 from .extraction import extract_frames_multi as _extract_frames_multi
+from .sampling import ExtractionMethod
 
 if TYPE_CHECKING:
-    from mosaic.core.dataset import Dataset
+    from mosaic.core.dataset import Dataset, ResolvedScopeEntry
     from mosaic.core.pipeline.progress import ProgressCallback
 
 
@@ -136,28 +145,46 @@ def frames_index(path: Path) -> IndexCSV[FramesIndexRow]:
 # --- Frame extraction op (registered under the Job Contract) ---
 
 
-ExtractionMethod = Literal["uniform", "kmeans"]
-"""How the frames to keep are chosen: evenly spaced, or by k-means clustering."""
-
 ParallelMode = Literal["thread", "process"]
 """Which executor runs the per-camera work."""
 
-_N_FRAMES_DESCRIPTION = "How many frames to write per camera."
+_N_FRAMES_DESCRIPTION = (
+    "How many frames to write per camera. Required by 'uniform' and 'kmeans', "
+    "and refused by 'list', whose listed frames are what is written."
+)
 
 _METHOD_DESCRIPTION = (
     "How the frames are chosen: 'uniform' spaces them evenly over the "
     "candidate range, 'kmeans' clusters the candidates by pixel content and "
-    "keeps one frame per cluster."
+    "keeps one frame per cluster, and 'list' writes exactly the frames "
+    "listed in frames."
+)
+
+_FRAMES_DESCRIPTION = (
+    "The frames to write under 'list', one item per entry, and refused by the "
+    "other methods. The list chooses the entries: a run covers every listed "
+    "entry, narrowed by its scope. Each item's frames apply to every camera of "
+    "the entry."
+)
+
+_ENTRY_GROUP_DESCRIPTION = "The entry's group; empty for a dataset with none."
+
+_ENTRY_SEQUENCE_DESCRIPTION = "The entry's sequence."
+
+_ENTRY_INDICES_DESCRIPTION = (
+    "Frame indices on the entry's media axis: 0 is its first frame, and a "
+    "recording in several clips counts across them in order, as its tracks' "
+    "frame column does. Order and repeats do not matter."
 )
 
 _START_FRAME_DESCRIPTION = (
     "First frame of the range frames are chosen from, inclusive. Unset starts "
-    "at the beginning of the video."
+    "at the beginning of the video. Refused by 'list'."
 )
 
 _END_FRAME_DESCRIPTION = (
     "Last frame of the range frames are chosen from, inclusive. Unset runs to "
-    "the end of the video."
+    "the end of the video. Refused by 'list'."
 )
 
 _CANDIDATE_STEP_DESCRIPTION = (
@@ -216,6 +243,63 @@ _PARALLEL_WORKERS_DESCRIPTION = (
 )
 
 
+class EntryFrames(DeclaredModel):
+    """The frames one entry contributes to a ``list`` extraction."""
+
+    group: Annotated[str, Declared(_ENTRY_GROUP_DESCRIPTION)] = ""
+    sequence: Annotated[str, Field(min_length=1), Declared(_ENTRY_SEQUENCE_DESCRIPTION)]
+    indices: Annotated[
+        tuple[Annotated[int, Field(ge=0)], ...],
+        Field(min_length=1),
+        Declared(_ENTRY_INDICES_DESCRIPTION),
+    ]
+
+    @property
+    def entry(self) -> Entry:
+        """The ``(group, sequence)`` pair this item names."""
+        return (self.group, self.sequence)
+
+
+def _validated_method(info: ValidationInfo) -> ExtractionMethod | None:
+    """The method a field validator runs under, or ``None`` when it was refused.
+
+    ``info.data`` holds the fields validated so far, which is why ``method`` is
+    declared first. A refused method is absent from it, and that refusal is
+    reported alone rather than beside a second one it caused.
+    """
+    method: object = info.data.get("method")
+    if not isinstance(method, str):
+        return None
+    match method:
+        case "uniform" | "kmeans" | "list":
+            return method
+        case _:
+            return None
+
+
+def _normalised_frames(items: tuple[EntryFrames, ...]) -> tuple[EntryFrames, ...]:
+    """*items* sorted by entry, each entry's indices sorted and de-duplicated.
+
+    The identifier is hashed from this form, so the same frames listed in
+    another order, or with an index repeated, name the same run. An entry named
+    twice is refused rather than merged: two items for one entry is a list built
+    wrong, and merging would hide which of them was meant.
+    """
+    by_entry: dict[Entry, tuple[int, ...]] = {}
+    for item in items:
+        if item.entry in by_entry:
+            message = (
+                f"frames names ({item.group}, {item.sequence}) twice. List each "
+                f"entry once, with all of its frames."
+            )
+            raise ValueError(message)
+        by_entry[item.entry] = tuple(sorted(set(item.indices)))
+    return tuple(
+        EntryFrames(group=group, sequence=sequence, indices=indices)
+        for (group, sequence), indices in sorted(by_entry.items())
+    )
+
+
 class ExtractFramesParams(Params):
     """Typed parameters for the ``extract-frames`` tracking op.
 
@@ -224,15 +308,27 @@ class ExtractFramesParams(Params):
     rather than what comes out. One set of settings therefore shares a run_id
     and adds per-sequence subdirectories under it.
 
-    ``revision`` is ``HASH_EXCLUDE`` and still names the run. Only a non-zero
-    value enters the payload. A second selection under identical settings
-    therefore gets its own identifier while every identifier already on disk
-    is reproduced. What a run covers and whether it recomputes are arguments
-    to the run, not fields here.
+    ``revision`` and ``frames`` are ``HASH_EXCLUDE`` and still name the run.
+    Each enters the payload only when set (:func:`frames_identity_payload`), so
+    every identifier already on disk is reproduced. What a run covers and
+    whether it recomputes are arguments to the run, not fields here.
+
+    ``method`` is declared first because the validators below read it. Each
+    validator is declared with ``check_fields=False``, so a consumer can remove
+    the field it checks from a subclass and supply the value itself, as
+    mosaic-api does for the fields it owns.
     """
 
-    n_frames: Annotated[int, Declared(_N_FRAMES_DESCRIPTION)]
     method: Annotated[ExtractionMethod, Declared(_METHOD_DESCRIPTION)] = "uniform"
+    n_frames: Annotated[
+        int | None, Field(validate_default=True), Declared(_N_FRAMES_DESCRIPTION)
+    ] = None
+    frames: Annotated[
+        tuple[EntryFrames, ...] | None,
+        Field(validate_default=True),
+        HASH_EXCLUDE,
+        Declared(_FRAMES_DESCRIPTION),
+    ] = None
     start_frame: Annotated[int | None, Declared(_START_FRAME_DESCRIPTION)] = None
     end_frame: Annotated[int | None, Declared(_END_FRAME_DESCRIPTION)] = None
     candidate_step: Annotated[int, Declared(_CANDIDATE_STEP_DESCRIPTION)] = 1
@@ -257,6 +353,67 @@ class ExtractFramesParams(Params):
     parallel_mode: Annotated[
         ParallelMode, HASH_EXCLUDE, Declared(_PARALLEL_MODE_DESCRIPTION)
     ] = "thread"
+
+    @field_validator("n_frames", check_fields=False)
+    @classmethod
+    def _n_frames_agrees_with_method(
+        cls, value: int | None, info: ValidationInfo
+    ) -> int | None:
+        """Required by the sampling methods, refused by ``list``."""
+        method = _validated_method(info)
+        if method == "list" and value is not None:
+            message = (
+                "n_frames is not read under method 'list', whose listed frames "
+                "are what is written. Leave it unset."
+            )
+            raise ValueError(message)
+        if method is not None and method != "list" and value is None:
+            message = (
+                f"method {method!r} needs n_frames, how many frames to write "
+                f"per camera."
+            )
+            raise ValueError(message)
+        return value
+
+    @field_validator("frames", check_fields=False)
+    @classmethod
+    def _frames_agree_with_method(
+        cls, value: tuple[EntryFrames, ...] | None, info: ValidationInfo
+    ) -> tuple[EntryFrames, ...] | None:
+        """Required by ``list`` and refused by the others; normalised when given."""
+        method = _validated_method(info)
+        if method is None:
+            return value
+        if method != "list":
+            if value is not None:
+                message = (
+                    f"frames is read only under method 'list', and method "
+                    f"{method!r} chooses its own frames. Set method to 'list', "
+                    f"or leave frames unset."
+                )
+                raise ValueError(message)
+            return value
+        if not value:
+            message = (
+                "method 'list' needs frames: each entry to extract, with the "
+                "frame indices to write for it."
+            )
+            raise ValueError(message)
+        return _normalised_frames(value)
+
+    @field_validator("start_frame", "end_frame", check_fields=False)
+    @classmethod
+    def _no_range_under_list(
+        cls, value: int | None, info: ValidationInfo
+    ) -> int | None:
+        """A range is a sampling window; listed frames are written where they fall."""
+        if value is not None and _validated_method(info) == "list":
+            message = (
+                f"{info.field_name} is not read under method 'list', whose "
+                f"listed frames are written wherever they fall. Leave it unset."
+            )
+            raise ValueError(message)
+        return value
 
 
 def _source_identity_maps(
@@ -319,8 +476,10 @@ class _ExtractSpec:
     seq_dir: Path
     run_id: str
     params_hash: str
-    n_frames: int
+    n_frames: int | None
     method: str
+    frame_indices: tuple[int, ...] | None
+    n_media_frames: int
     start_frame: int | None
     end_frame: int | None
     candidate_step: int
@@ -364,6 +523,7 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
     )
     try:
         if len(spec.video_paths) == 1:
+            # No facts for a join, which has no index row: the reader probes it.
             result = _extract_frames(
                 video_path=spec.video_paths[0],
                 n_frames=spec.n_frames,
@@ -375,7 +535,8 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
                 random_state=spec.random_state,
                 run_id=spec.run_id,
                 output_dir=seq_dir,
-                facts=spec.facts[0],
+                facts=spec.facts[0] if spec.facts else None,
+                frame_indices=spec.frame_indices,
                 **kmeans_kw,
             )
         else:
@@ -391,6 +552,7 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
                 run_id=spec.run_id,
                 output_dir=seq_dir,
                 facts=list(spec.facts),
+                frame_indices=spec.frame_indices,
                 **kmeans_kw,
             )
     except Exception as exc:
@@ -519,6 +681,133 @@ def _refuse_to_overwrite(specs: Sequence[_ExtractSpec]) -> None:
     raise AnnotatedFramesWouldBeDestroyed(message)
 
 
+class ListedFramesRefused(ValueError):
+    """A ``list`` extraction names frames or entries the run cannot write."""
+
+
+_SHOWN_PER_CAMERA: Final = 5
+"""How many out-of-range indices a refusal names per camera."""
+
+
+def _refuse_out_of_range(specs: Sequence[_ExtractSpec]) -> None:
+    """Refuse listed indices past the end of a camera's media, naming them all.
+
+    Checked against the clips' summed frame counts, which is the length the
+    reader indexes and the length ``export-joined`` verifies a join against.
+    Raised before any worker starts, for the reason :func:`_refuse_to_overwrite`
+    gives: a worker's failure is reported per camera and the run continues, so a
+    wrong index would otherwise leave that camera with no frames and no refusal.
+    """
+    problems: list[str] = []
+    for spec in specs:
+        if spec.frame_indices is None:
+            continue
+        past = [index for index in spec.frame_indices if index >= spec.n_media_frames]
+        if not past:
+            continue
+        shown = ", ".join(str(index) for index in past[:_SHOWN_PER_CAMERA])
+        rest = len(past) - _SHOWN_PER_CAMERA
+        more = f" and {rest} more" if rest > 0 else ""
+        problems.append(
+            f"{_spec_label(spec)} has {spec.n_media_frames} frames (0 to "
+            f"{spec.n_media_frames - 1}); listed {shown}{more} fall past its end"
+        )
+    if not problems:
+        return
+    listed = "\n  ".join(problems)
+    message = (
+        f"{len(problems)} camera(s) list frames their media does not hold:\n"
+        f"  {listed}\n"
+        f"Indices count from 0 across a recording's clips in order, as its "
+        f"tracks' frame column does."
+    )
+    raise ListedFramesRefused(message)
+
+
+def _refuse_unjoined(ds: Dataset, media_scope: Sequence[ResolvedScopeEntry]) -> None:
+    """Refuse every camera whose clips need a join that cannot be read.
+
+    ``MultiVideoReader`` refuses clips whose frame rates disagree, and stays
+    strict; such a recording is read through its ``export-joined`` file.
+    Building one is minutes of I/O and belongs to that op, so a missing join is
+    refused here, every camera at once, before any worker starts.
+    """
+    missing = missing_joins(ds, media_scope, asker="extract-frames")
+    if not missing:
+        return
+    reasons = "\n".join(join.reason for join in missing)
+    message = (
+        f"{len(missing)} camera(s) have clips at different frame rates and no "
+        f"join to read them through:\n{reasons}"
+    )
+    raise JoinedExportMissingError(message)
+
+
+def _listed_entries(
+    listed: Mapping[Entry, tuple[int, ...]], scoped: list[Entry] | None
+) -> tuple[list[Entry], int]:
+    """The entries a ``list`` run extracts, and how many scoped entries it skips.
+
+    The list chooses the entries and the scope can only narrow them. An unset
+    scope covers every listed entry; a scope naming some entries covers those it
+    shares with the list, and one sharing none is refused rather than run over
+    nothing, because the two were built for different entries. A scope that
+    names no entry at all is the empty scope every method treats the same way.
+    """
+    if scoped is None:
+        return sorted(listed), 0
+    kept = sorted(set(scoped) & set(listed))
+    if scoped and not kept:
+        named = ", ".join(f"({group}, {sequence})" for group, sequence in scoped)
+        message = (
+            f"The scope names {named}, and frames lists none of them. The list "
+            f"chooses the entries and the scope can only narrow it."
+        )
+        raise ListedFramesRefused(message)
+    return kept, len(set(scoped) - set(listed))
+
+
+def _refuse_listed_without_media(
+    entries: Sequence[Entry], media_scope: Sequence[ResolvedScopeEntry]
+) -> None:
+    """Refuse listed entries the dataset has no media for, naming each one."""
+    resolved = {(entry.group, entry.sequence) for entry in media_scope}
+    absent = [entry for entry in entries if entry not in resolved]
+    if not absent:
+        return
+    named = ", ".join(f"({group}, {sequence})" for group, sequence in absent)
+    message = (
+        f"frames lists {named}, which this dataset holds no media for. Check "
+        f"the group and sequence names against the media index."
+    )
+    raise ListedFramesRefused(message)
+
+
+def frames_identity_payload(params: ExtractFramesParams) -> dict[str, object]:
+    """What an extraction identifier is hashed from, and what ``run_params.json`` holds.
+
+    ``identity_dump()``, plus the two ``HASH_EXCLUDE`` terms that name a run
+    when they are set: ``_revision`` when non-zero, and ``_frames`` under
+    ``list``. Each is added only when set, the omit-when-absent rule
+    ``compute_run_id`` applies to ``_tracks`` and ``_scope_entries``, because
+    ``json.dumps(sort_keys=True)`` digests an absent key differently from a key
+    whose value is empty. So a run of either sampling method at revision 0
+    hashes exactly what it always did.
+
+    ``_frames`` is the list as the params validator normalised it -- entries in
+    order, each entry's indices sorted and unique -- so the same frames listed
+    another way name the same run.
+    """
+    payload = params.identity_dump()
+    if params.revision:
+        payload["_revision"] = int(params.revision)
+    if params.frames is not None:
+        payload["_frames"] = [
+            [item.group, item.sequence, list(item.indices)] for item in params.frames
+        ]
+    return payload
+
+
 def frames_run_id(method: ExtractionMethod, params: ExtractFramesParams) -> str:
     """Mint an extraction run identifier. **Frozen -- do not change this.**
 
@@ -539,19 +828,15 @@ def frames_run_id(method: ExtractionMethod, params: ExtractFramesParams) -> str:
     ``ExtractFramesOp.version`` stays declared -- ``list_ops`` and ``describe_op``
     read it -- but it is provenance here, not identity.
 
-    **``revision`` is the one term that may enter, and only when it is set.**
-    It is ``HASH_EXCLUDE``, so ``identity_dump()`` never carries it, and it is
-    added to the payload here only when non-zero -- the omit-when-absent rule
-    ``compute_run_id`` already applies to ``_tracks`` and ``_scope_entries``,
-    and for the identical reason: ``json.dumps(sort_keys=True)`` digests an
-    absent key differently from a key whose value is empty. So revision 0
-    reproduces every identifier on every dataset in existence, byte for byte,
-    and the golden corpus proves it rather than this docstring asserting it.
+    **``revision`` and ``frames`` are the two terms that may enter, and only
+    when set** (:func:`frames_identity_payload`). Both are ``HASH_EXCLUDE``, so
+    ``identity_dump()`` never carries them, and each is added only when set. So
+    revision 0 of either sampling method reproduces every identifier on every
+    dataset in existence, byte for byte, and the golden corpus proves it rather
+    than this docstring asserting it. A ``list`` run is named by its frames,
+    which is a new identifier and moves none.
     """
-    payload = params.identity_dump()
-    if params.revision:
-        payload["_revision"] = int(params.revision)
-    return f"{method}-{hash_params(payload)}"
+    return f"{method}-{hash_params(frames_identity_payload(params))}"
 
 
 def _run_extract_frames(
@@ -566,25 +851,25 @@ def _run_extract_frames(
     # Through the op's plan_identity, so this run is named in one place.
     run_id = ExtractFramesOp().plan_identity(ds, p, scope).run_id
     ctx.set_run_id(run_id)
-
     run_root = frames_run_root(ds, p.method, run_id)
-    run_root.mkdir(parents=True, exist_ok=True)
-    try:
-        (run_root / "run_params.json").write_text(
-            json.dumps(json_ready(p.identity_dump()), indent=2)
-        )
-    except Exception as exc:
-        print(
-            f"[extract_frames:{p.method}] failed to save run_params.json: {exc}",
-            file=sys.stderr,
-        )
 
-    media_scope = ds.resolve_media_scope(scope.op_entries)
+    listed = (
+        None if p.frames is None else {item.entry: item.indices for item in p.frames}
+    )
+    skipped = 0
+    entries = scope.op_entries
+    if listed is not None:
+        entries, skipped = _listed_entries(listed, entries)
+
+    media_scope = ds.resolve_media_scope(entries)
+    if listed is not None and entries is not None:
+        _refuse_listed_without_media(entries, media_scope)
     if not media_scope:
         print(
             "[extract_frames] No media entries match the given scope.", file=sys.stderr
         )
         return run_id
+    _refuse_unjoined(ds, media_scope)
 
     # Build picklable per-(group, sequence, camera) work specs (temporal chunks
     # of one camera merged). resolve_media_scope yields one entry per camera, so
@@ -607,7 +892,12 @@ def _run_extract_frames(
             entry.camera,
             entry.resolved,
         )
-        facts = tuple(resolved.facts)
+        # A camera whose clips differ in frame rate is read through its join,
+        # which holds the same frames on one timeline; _refuse_unjoined has
+        # already refused any camera without one.
+        joined = join_to_read(ds, entry, asker="extract-frames")
+        paths = (joined,) if joined is not None else tuple(resolved.paths)
+        facts = () if joined is not None else tuple(resolved.facts)
         # A multi-camera recording writes each camera into its own subdir so the
         # cameras never collide; single-camera media keeps the flat layout.
         key = make_entry_key(group, sequence)
@@ -617,15 +907,17 @@ def _run_extract_frames(
                 group=group,
                 sequence=sequence,
                 camera=camera,
-                video_paths=tuple(resolved.paths),
+                video_paths=paths,
                 facts=facts,
                 video_uuids=source_uids.get((group, sequence, camera), ""),
                 media_composition=source_compositions.get((group, sequence), ""),
                 seq_dir=seq_dir,
                 run_id=run_id,
                 params_hash=params_hash,
-                n_frames=int(p.n_frames),
+                n_frames=p.n_frames,
                 method=p.method,
+                frame_indices=None if listed is None else listed[(group, sequence)],
+                n_media_frames=sum(int(clip.frame_count) for clip in resolved.facts),
                 start_frame=p.start_frame,
                 end_frame=p.end_frame,
                 candidate_step=int(p.candidate_step),
@@ -641,7 +933,21 @@ def _run_extract_frames(
             )
         )
 
+    _refuse_out_of_range(specs)
     _refuse_to_overwrite(specs)
+
+    # Created only once every refusal has passed, so a refused run leaves no
+    # run directory for a scan of the frames root to list as a run with none.
+    run_root.mkdir(parents=True, exist_ok=True)
+    try:
+        (run_root / "run_params.json").write_text(
+            json.dumps(json_ready(frames_identity_payload(p)), indent=2)
+        )
+    except Exception as exc:
+        print(
+            f"[extract_frames:{p.method}] failed to save run_params.json: {exc}",
+            file=sys.stderr,
+        )
 
     ctx.set_total(len(specs))
     idx = frames_index(frames_index_path(ds, p.method))
@@ -707,9 +1013,10 @@ def _run_extract_frames(
             idx.append(index_rows)
             idx.mark_finished(run_id)
 
+    unlisted = f"; {skipped} scoped entries list no frames" if skipped else ""
     print(
         f"[extract_frames:{p.method}] completed run_id={run_id} "
-        f"({len(index_rows)}/{len(specs)} sequences) -> {run_root}"
+        f"({len(index_rows)}/{len(specs)} sequences{unlisted}) -> {run_root}"
     )
     return run_id
 
@@ -759,9 +1066,11 @@ class ExtractFramesOp(Op[ExtractFramesParams]):
 
 def extract_frames(
     ds: Dataset,
-    n_frames: int,
+    n_frames: int | None = None,
     method: ExtractionMethod = "uniform",
     *,
+    frames: Mapping[Entry, Iterable[int]] | None = None,
+    revision: int = 0,
     scope: Scope | None = None,
     overwrite: bool = False,
     start_frame: int | None = None,
@@ -793,18 +1102,32 @@ def extract_frames(
     content ``run_id``.
 
     Parameters mirror :class:`ExtractFramesParams` -- the method, the k-means
-    knobs and ``parallel_workers`` / ``parallel_mode`` -- plus the standard
-    contract knobs
+    knobs, ``revision`` and ``parallel_workers`` / ``parallel_mode`` -- plus the
+    standard contract knobs
     (``execution_id``/``owner``/``track``/``progress_callback``/``cancel_token``).
+
+    *frames* is the list for ``method="list"``: a mapping from each
+    ``(group, sequence)`` entry to the frame indices to write for it, which
+    becomes ``ExtractFramesParams.frames``. ``n_frames`` is then left unset. The
+    list chooses the entries, and *scope* can only narrow it.
 
     *scope* is the selector every other entry point takes, and *overwrite* says
     whether an existing frame set is recomputed. Both reach the op through
     ``run_op`` and neither enters the params. What a run covers and whether it
     recomputes describe the attempt, where the params describe the recipe.
     """
+    listed = (
+        None
+        if frames is None
+        else tuple(
+            EntryFrames(group=group, sequence=sequence, indices=tuple(indices))
+            for (group, sequence), indices in frames.items()
+        )
+    )
     params = ExtractFramesParams(
         n_frames=n_frames,
         method=method,
+        frames=listed,
         start_frame=start_frame,
         end_frame=end_frame,
         candidate_step=candidate_step,
@@ -816,6 +1139,7 @@ def extract_frames(
         kmeans_batch_size=kmeans_batch_size,
         kmeans_max_iter=kmeans_max_iter,
         kmeans_n_init=kmeans_n_init,
+        revision=revision,
         parallel_workers=parallel_workers,
         parallel_mode=parallel_mode,
     )
@@ -840,7 +1164,7 @@ def list_frame_runs(ds: Dataset, method: str | None = None) -> pd.DataFrame:
     Parameters
     ----------
     method : str, optional
-        Filter to a specific method ("uniform" or "kmeans").
+        Filter to a specific method ("uniform", "kmeans" or "list").
         If None, returns runs across all methods.
 
     Returns
@@ -882,7 +1206,7 @@ def get_frame_paths(
     Parameters
     ----------
     method : str
-        Extraction method ("uniform" or "kmeans").
+        Extraction method ("uniform", "kmeans" or "list").
     run_id : str, optional
         Specific run_id. If None, uses the latest run.
     group, sequence : str, optional
@@ -935,7 +1259,7 @@ def get_frame_manifests(
     Parameters
     ----------
     method : str
-        Extraction method ("uniform" or "kmeans").
+        Extraction method ("uniform", "kmeans" or "list").
     run_id : str, optional
         Specific run_id. If None, uses the latest run.
     group, sequence : str, optional

@@ -815,7 +815,7 @@ src/mosaic/
 │   └── visualization_library/  # overlay renderer + the media features (overlay, crops)
 └── tracking/
     ├── ops/                    # @register_op layer behind `mosaic run --kind`
-    ├── frame_extraction/       # uniform / k-means frame sampling → PNGs for annotation
+    ├── frame_extraction/       # uniform / k-means sampling or listed frames → PNGs for annotation
     ├── pose_training/          # annotation prep, localizer training, and mosaic's side of the YOLO/POLO exchange
     │   ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
     │   └── augmentation.py     # YOLO + localizer augmentation presets
@@ -878,7 +878,7 @@ dataset.yaml  (mosaic init)
 
 video files
    ├─ scan_media()  / index_media()    → media_raw/index.csv  (ffprobe metadata)
-   └─ tracking.extract_frames(ds, …)   → media/frames/     (uniform or k-means PNGs)
+   └─ tracking.extract_frames(ds, …)   → media/frames/     (uniform, k-means or listed PNGs)
 
 raw tracks/labels
    ├─ scan_tracks() / scan_labels()   → <root>_raw/index.csv
@@ -1285,6 +1285,9 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   writes one stream-copied video per multi-clip entry, **verified frame-exact
   against the sum of the clips' own counts and refused rather than published when
   it comes up short**, and `resolve_tool_inputs` is the seam that hands it over.
+  Frame extraction reads a join too, through `join_to_read`, for a recording whose
+  clips differ in frame rate: `MultiVideoReader` refuses such clips and stays strict,
+  and both consumers find the join through `current_join`.
   Measured through the pipeline: the `.pv` index then equals the media index at
   every former boundary. So `joins_sources` no longer means "this tool accepts a
   list of files" but "this producer covers the whole entry", and all four

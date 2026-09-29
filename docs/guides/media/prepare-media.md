@@ -72,10 +72,52 @@ mosaic run -m dataset.yaml --kind extract-frames \
 
 Writes PNGs into `media/frames`. `uniform` spreads the sample evenly across each video;
 `kmeans` picks visually diverse frames, so the annotation budget is not spent on near
-duplicates. Those two spellings are the whole vocabulary and are matched exactly —
-`"KMeans"` is refused rather than folded to lower case. Narrow with `--entries`,
-`--groups` or `--sequences`; naming a selector inside `--params` is refused.
+duplicates. The method names are matched exactly — `"KMeans"` is refused rather than
+folded to lower case. Narrow with `--entries`, `--groups` or `--sequences`; naming a
+selector inside `--params` is refused.
 [Train a pose model](../tracking/train-a-pose-model.md) picks up from here.
+
+### Extract the frames you choose
+
+To annotate particular frames — where a tracker loses an animal, say — list them with
+`method: "list"`. Each item names an entry and the frame indices to write for it:
+
+```json
+{
+  "method": "list",
+  "frames": [
+    {"sequence": "trial01", "indices": [1745, 3487, 14237]},
+    {"group": "day2", "sequence": "trial07", "indices": [0, 600]}
+  ]
+}
+```
+
+```bash
+mosaic run -m dataset.yaml --kind extract-frames --params @frames.json
+```
+
+```python
+from mosaic.tracking import extract_frames
+
+extract_frames(ds, method="list", frames={("", "trial01"): [1745, 3487, 14237]})
+```
+
+An index counts from 0 across a recording's clips in order, which is the axis of its
+tracks' `frame` column, so frame numbers read off a track table can be listed as they
+are. Order and repeats do not matter. The list chooses the entries: without a selector
+every listed entry is extracted, and `--entries` narrows the list. `n_frames`,
+`start_frame` and `end_frame` are refused under `list`, and an index past the end of a
+recording is refused before anything is written.
+
+### A recording whose clips differ in frame rate
+
+A recording split into clips at different rates (30, 29.95 and 31 fps, say) cannot be
+read as one timeline from its clips. Frame extraction reads it from its joined video
+instead, under every method, and refuses the recording until one exists:
+
+```bash
+mosaic run -m dataset.yaml --kind export-joined --entries day1:trial01
+```
 
 ## Calibrate for physical units
 

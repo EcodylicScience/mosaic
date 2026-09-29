@@ -12,7 +12,7 @@ from mosaic.tracking import extract_frames  # noqa: E402
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("method", ["uniform", "kmeans"])
+@pytest.mark.parametrize("method", ["uniform", "kmeans", "list"])
 def test_extract_frames_from_imgstore(tmp_path, make_imgstore, method):
     # No ``media_raw``: ``index_media`` resolves through ``resolve_media_root``,
     # so the store is indexed into ``media/index.csv``.
@@ -21,7 +21,11 @@ def test_extract_frames_from_imgstore(tmp_path, make_imgstore, method):
     make_imgstore(name="rec", nframes=20, parent=search)
     ds.index_media([search])
 
-    extract_frames(ds, n_frames=4, method=method)
+    if method == "list":
+        (entry,) = {(row["group"], row["sequence"]) for row in ds.read_media_index()}
+        extract_frames(ds, method="list", frames={entry: [0, 7, 13, 19]})
+    else:
+        extract_frames(ds, n_frames=4, method=method)
 
     pngs = list((tmp_path / "frames").rglob("*.png"))
     assert len(pngs) == 4

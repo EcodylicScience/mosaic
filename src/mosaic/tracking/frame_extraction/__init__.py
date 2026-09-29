@@ -1,15 +1,17 @@
 """Frame extraction / sampling for annotation → pose/detection training.
 
-Uniform and k-means sampling of representative video frames, saved as PNGs for
-annotation. This is a tracking-domain concern: it reads media indexed by the
-dataset and writes to the dataset's ``frames`` root via ``ds.get_root("frames")``.
-Low-level frame decode/encode lives in :mod:`mosaic.core.media.video_io`.
+Uniform and k-means sampling of representative video frames, or the frames a
+caller lists, saved as PNGs for annotation. This is a tracking-domain concern:
+it reads media indexed by the dataset and writes to the dataset's ``frames``
+root via ``ds.get_root("frames")``. Low-level frame decode/encode lives in
+:mod:`mosaic.core.media.video_io`.
 
 The headline ``extract_frames(ds, ...)`` is the dataset-wide orchestrator; the
 per-video workflow function is exported as ``extract_frames_single``.
 """
 
 from .dataset_runs import (
+    EntryFrames,
     FramesIndexRow,
     extract_frames,
     frames_index,
@@ -26,6 +28,7 @@ from .extraction import extract_frames as extract_frames_single
 from .sampling import select_kmeans_frames, select_uniform_frames
 
 __all__ = [
+    "EntryFrames",
     "FrameExtractionResult",
     "FramesIndexRow",
     "extract_frames",

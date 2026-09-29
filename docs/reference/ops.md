@@ -326,10 +326,11 @@ Sample representative video frames as PNGs for annotation.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `n_frames` | `integer` | _required_ |  | How many frames to write per camera. |
-| `method` | `"uniform"` \| `"kmeans"` | `"uniform"` |  | How the frames are chosen: 'uniform' spaces them evenly over the candidate range, 'kmeans' clusters the candidates by pixel content and keeps one frame per cluster. |
-| `start_frame` | `integer` \| `None` | `null` |  | First frame of the range frames are chosen from, inclusive. Unset starts at the beginning of the video. |
-| `end_frame` | `integer` \| `None` | `null` |  | Last frame of the range frames are chosen from, inclusive. Unset runs to the end of the video. |
+| `method` | `"uniform"` \| `"kmeans"` \| `"list"` | `"uniform"` |  | How the frames are chosen: 'uniform' spaces them evenly over the candidate range, 'kmeans' clusters the candidates by pixel content and keeps one frame per cluster, and 'list' writes exactly the frames listed in frames. |
+| `n_frames` | `integer` \| `None` | `null` |  | How many frames to write per camera. Required by 'uniform' and 'kmeans', and refused by 'list', whose listed frames are what is written. |
+| `frames` | list of `EntryFrames` \| `None` | `null` |  | The frames to write under 'list', one item per entry, and refused by the other methods. The list chooses the entries: a run covers every listed entry, narrowed by its scope. Each item's frames apply to every camera of the entry. |
+| `start_frame` | `integer` \| `None` | `null` |  | First frame of the range frames are chosen from, inclusive. Unset starts at the beginning of the video. Refused by 'list'. |
+| `end_frame` | `integer` \| `None` | `null` |  | Last frame of the range frames are chosen from, inclusive. Unset runs to the end of the video. Refused by 'list'. |
 | `candidate_step` | `integer` | `1` |  | Stride between candidate frames within the range. A wider stride samples a long recording without decoding every frame of it. |
 | `crop` | tuple of (`integer`, `integer`, `integer`, `integer`) \| `None` | `null` |  | Crop rectangle (x, y, width, height) applied to every written frame. Unset writes the full frame. |
 | `random_state` | `integer` | `42` |  | Seed for k-means and for breaking ties between candidates. |
@@ -342,6 +343,14 @@ Sample representative video frames as PNGs for annotation.
 | `revision` | `integer` | `0` |  | Bump to extract a second selection under the same settings. It is the one term allowed to move the extraction identifier, and only a non-zero value enters it. Revision 0 reproduces every identifier already on disk. |
 | `parallel_workers` | `integer` \| `string` \| `None` | `"auto"` |  | How many cameras are extracted at once. 'auto' reads the machine, and an integer pins the count. |
 | `parallel_mode` | `"thread"` \| `"process"` | `"thread"` |  | Which executor runs the cameras: 'thread' shares one process, 'process' forks, which a decoder holding the interpreter lock needs. |
+
+??? note "`EntryFrames`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `group` | `string` | `""` |  | The entry's group; empty for a dataset with none. |
+    | `sequence` | `string` | _required_ | min length `1` | The entry's sequence. |
+    | `indices` | list of `integer` | _required_ | min items `1` | Frame indices on the entry's media axis: 0 is its first frame, and a recording in several clips counts across them in order, as its tracks' frame column does. Order and repeats do not matter. |
 
 ### infer
 

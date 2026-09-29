@@ -264,7 +264,8 @@ def _install_fake_extract(monkeypatch):
         (out / "run_info.json").write_text(
             json.dumps({"output_dir": str(out), "video_path": str(video_path)})
         )
-        return _Res(n_frames)
+        listed = kw.get("frame_indices")
+        return _Res(len(listed) if listed is not None else n_frames)
 
     monkeypatch.setattr(dr, "_extract_frames", fake)
     return dr
@@ -301,6 +302,33 @@ def test_extract_frames_lifecycle(tmp_path, monkeypatch):
     # cache hit: same params -> same run_id, new attempt
     run_id2 = extract_frames(ds, n_frames=3, method="uniform")
     assert run_id2 == run_id
+    assert len(read_runs(_run_dir(ds), kind="extract-frames")) == 2
+
+
+def test_extract_frames_list_lifecycle(tmp_path, monkeypatch):
+    """A list run is named by its frames, covers the listed entries, and reuses."""
+    ds = _make_dataset(tmp_path)
+    _install_fake_extract(monkeypatch)
+
+    from mosaic.tracking import extract_frames
+    from mosaic.tracking.frame_extraction.dataset_runs import (
+        frames_index,
+        frames_index_path,
+    )
+
+    run_id = extract_frames(ds, method="list", frames={("", "vid1"): [3, 1, 3]})
+    assert run_id.startswith("list-")
+
+    runs = read_runs(_run_dir(ds), kind="extract-frames")
+    assert len(runs) == 1 and runs[0]["status"] == "finished"
+    assert int(runs[0]["progress_total"]) == 1
+
+    df = frames_index(frames_index_path(ds, "list")).read(run_id=run_id)
+    assert list(df["sequence"]) == ["vid1"]
+    assert list(df["n_frames_requested"]) == [2]
+
+    # The same frames, listed another way: the same run, a new attempt.
+    assert extract_frames(ds, method="list", frames={("", "vid1"): [1, 3]}) == run_id
     assert len(read_runs(_run_dir(ds), kind="extract-frames")) == 2
 
 

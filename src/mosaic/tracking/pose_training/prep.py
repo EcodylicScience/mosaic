@@ -872,7 +872,7 @@ def tracks_to_yolo_pose(
         Loaded mosaic Dataset with indexed media, extracted frames, and
         converted tracks.
     extraction_method : str
-        Frame extraction method name (e.g. ``"kmeans"`` or ``"uniform"``).
+        Frame extraction method name: ``"uniform"``, ``"kmeans"`` or ``"list"``.
     n_keypoints : int
         Number of keypoints per animal (e.g. 7 for CalMS21 MARS).
     output_dir : path

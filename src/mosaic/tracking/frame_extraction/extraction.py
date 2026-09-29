@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Sequence
-from typing import Any, Optional
+from typing import Any, Final, Optional, get_args
 import json
 import math
 import uuid
@@ -27,7 +27,7 @@ from mosaic.core.media.video_io import (
     video_metadata_or_probe,
 )
 
-from .sampling import select_kmeans_frames, select_uniform_frames
+from .sampling import ExtractionMethod, select_kmeans_frames, select_uniform_frames
 
 
 CropSpec = tuple[int, int, int, int] | dict[str, Any]
@@ -62,6 +62,72 @@ def _make_run_id() -> str:
     return f"{now}_{suffix}"
 
 
+_METHODS: Final = frozenset(get_args(ExtractionMethod))
+
+_SHOWN_OUT_OF_RANGE: Final = 5
+"""How many out-of-range indices a refusal names before summarising the rest."""
+
+
+def _requested_count(n_frames: int | None) -> int:
+    """How many frames a sampling method is asked for, refused unless positive."""
+    if n_frames is None or int(n_frames) <= 0:
+        raise ValueError("n_frames must be > 0")
+    return int(n_frames)
+
+
+def _checked_method(
+    method: str,
+    n_frames: int | None,
+    candidate_step: int,
+    frame_indices: Sequence[int] | None,
+) -> str:
+    """The method, normalised, once the arguments it reads agree with it.
+
+    ``frame_indices`` is given exactly when the method is ``"list"``, so a
+    caller can branch on it and the checker narrows it there.
+    """
+    method_norm = str(method).strip().lower()
+    if method_norm not in _METHODS:
+        allowed = ", ".join(repr(name) for name in get_args(ExtractionMethod))
+        raise ValueError(f"method must be one of: {allowed}")
+    if method_norm == "list":
+        if frame_indices is None:
+            raise ValueError("method 'list' needs frame_indices")
+    else:
+        if frame_indices is not None:
+            message = (
+                f"frame_indices is read only under method 'list', not {method_norm!r}"
+            )
+            raise ValueError(message)
+        _ = _requested_count(n_frames)
+    if int(candidate_step) <= 0:
+        raise ValueError("candidate_step must be > 0")
+    return method_norm
+
+
+def _listed_selection(frame_indices: Sequence[int], total_frames: int) -> np.ndarray:
+    """The listed frames, sorted and de-duplicated, refused past either end.
+
+    Sorted because a frame's file is named by its index and the order carries
+    no meaning, and because the readers decode forward.
+
+    Raises:
+        ValueError: If an index is negative or not below *total_frames*.
+    """
+    selected = sorted({int(index) for index in frame_indices})
+    outside = [index for index in selected if index < 0 or index >= total_frames]
+    if outside:
+        shown = ", ".join(str(index) for index in outside[:_SHOWN_OUT_OF_RANGE])
+        rest = len(outside) - _SHOWN_OUT_OF_RANGE
+        more = f" and {rest} more" if rest > 0 else ""
+        message = (
+            f"frame indices {shown}{more} fall outside the video's "
+            f"{total_frames} frames"
+        )
+        raise ValueError(message)
+    return np.asarray(selected, dtype=np.int32)
+
+
 def _crop_to_dict(
     crop_rect: Optional[tuple[int, int, int, int]],
 ) -> Optional[dict[str, int]]:
@@ -74,7 +140,7 @@ def _crop_to_dict(
 def extract_frames(
     video_path: Path | str,
     output_root: Path | str | None = None,
-    n_frames: int = 50,
+    n_frames: int | None = 50,
     method: str = "uniform",
     start_frame: Optional[int] = None,
     end_frame: Optional[int] = None,
@@ -90,6 +156,7 @@ def extract_frames(
     run_id: Optional[str] = None,
     output_dir: Optional[Path | str] = None,
     facts: MediaFacts | None = None,
+    frame_indices: Sequence[int] | None = None,
 ) -> FrameExtractionResult:
     """
     Extract representative frames from a single video.
@@ -101,9 +168,10 @@ def extract_frames(
     output_root
         Root directory where run outputs are created.
     n_frames
-        Number of frames to extract.
+        Number of frames to extract under "uniform" or "kmeans". Not read under
+        "list".
     method
-        "uniform" or "kmeans".
+        "uniform", "kmeans" or "list".
     start_frame, end_frame
         Optional inclusive frame range; defaults to full video.
     candidate_step
@@ -128,14 +196,11 @@ def extract_frames(
     facts
         Stored media facts for *video_path*, injected into the candidate-frame
         reader so it does not re-probe. ``None`` for bare-path callers.
+    frame_indices
+        The frames to write under "list", and given only then. Sorted and
+        de-duplicated; an index outside the video raises ``ValueError``.
     """
-    method_norm = str(method).strip().lower()
-    if method_norm not in {"uniform", "kmeans"}:
-        raise ValueError("method must be one of: 'uniform', 'kmeans'")
-    if int(n_frames) <= 0:
-        raise ValueError("n_frames must be > 0")
-    if int(candidate_step) <= 0:
-        raise ValueError("candidate_step must be > 0")
+    method_norm = _checked_method(method, n_frames, candidate_step, frame_indices)
 
     # Resolve the measurement once, for the plain-video case only: a store is a
     # directory with no elementary stream, so probe_media cannot measure it, and
@@ -149,11 +214,16 @@ def extract_frames(
     start, end = normalize_frame_range(meta.frame_count, start_frame, end_frame)
     crop_rect = normalize_crop_rect(crop, meta.width, meta.height)
 
-    if method_norm == "uniform":
+    sampling_details: dict[str, Any] = {}
+    if frame_indices is not None:
+        selected = _listed_selection(frame_indices, meta.frame_count)
+        n_requested = int(selected.size)
+    elif method_norm == "uniform":
+        n_requested = _requested_count(n_frames)
         candidates = np.arange(start, end + 1, int(candidate_step), dtype=np.int32)
-        selected = select_uniform_frames(candidates, int(n_frames))
-        sampling_details: dict[str, Any] = {}
+        selected = select_uniform_frames(candidates, n_requested)
     else:
+        n_requested = _requested_count(n_frames)
         effective_step = int(candidate_step)
         if kmeans_max_candidates is not None and int(kmeans_max_candidates) > 0:
             approx_candidates = ((int(end) - int(start)) // int(candidate_step)) + 1
@@ -177,7 +247,7 @@ def extract_frames(
         selected = select_kmeans_frames(
             candidate_indices=candidates,
             features=features,
-            n_frames=int(n_frames),
+            n_frames=n_requested,
             random_state=int(random_state),
             batch_size=int(kmeans_batch_size),
             max_iter=int(kmeans_max_iter),
@@ -223,7 +293,7 @@ def extract_frames(
         video_path=str(meta.path),
         output_dir=str(out_dir),
         manifest_path=str(out_dir / "run_info.json"),
-        n_requested=int(n_frames),
+        n_requested=n_requested,
         n_extracted=int(len(file_records)),
         selected_frame_indices=[int(i) for i in selected.tolist()],
         start_frame=int(start),
@@ -250,7 +320,7 @@ def extract_frames(
 def extract_frames_multi(
     video_paths: Sequence[Path | str],
     output_root: Path | str | None = None,
-    n_frames: int = 50,
+    n_frames: int | None = 50,
     method: str = "uniform",
     start_frame: Optional[int] = None,
     end_frame: Optional[int] = None,
@@ -266,6 +336,7 @@ def extract_frames_multi(
     run_id: Optional[str] = None,
     output_dir: Optional[Path | str] = None,
     facts: Sequence[MediaFacts] | None = None,
+    frame_indices: Sequence[int] | None = None,
 ) -> FrameExtractionResult:
     """
     Extract representative frames from a multi-video sequence.
@@ -282,14 +353,10 @@ def extract_frames_multi(
     facts : sequence of MediaFacts, optional
         Stored media facts parallel to *video_paths*, injected into the reader
         so it does not re-probe. ``None`` for bare-path callers.
+    frame_indices : sequence of int, optional
+        Global frame indices to write under "list", counted across the clips.
     """
-    method_norm = str(method).strip().lower()
-    if method_norm not in {"uniform", "kmeans"}:
-        raise ValueError("method must be one of: 'uniform', 'kmeans'")
-    if int(n_frames) <= 0:
-        raise ValueError("n_frames must be > 0")
-    if int(candidate_step) <= 0:
-        raise ValueError("candidate_step must be > 0")
+    method_norm = _checked_method(method, n_frames, candidate_step, frame_indices)
 
     # Extracted PNGs are addressed by global frame index and become
     # pose-annotation input, so a misindexed frame poisons the annotation set:
@@ -301,11 +368,16 @@ def extract_frames_multi(
     start, end = normalize_frame_range(total_frames, start_frame, end_frame)
     crop_rect = normalize_crop_rect(crop, reader.width, reader.height)
 
-    if method_norm == "uniform":
+    sampling_details: dict[str, Any] = {}
+    if frame_indices is not None:
+        selected = _listed_selection(frame_indices, total_frames)
+        n_requested = int(selected.size)
+    elif method_norm == "uniform":
+        n_requested = _requested_count(n_frames)
         candidates = np.arange(start, end + 1, int(candidate_step), dtype=np.int32)
-        selected = select_uniform_frames(candidates, int(n_frames))
-        sampling_details: dict[str, Any] = {}
+        selected = select_uniform_frames(candidates, n_requested)
     else:
+        n_requested = _requested_count(n_frames)
         effective_step = int(candidate_step)
         if kmeans_max_candidates is not None and int(kmeans_max_candidates) > 0:
             approx_candidates = ((int(end) - int(start)) // int(candidate_step)) + 1
@@ -328,7 +400,7 @@ def extract_frames_multi(
         selected = select_kmeans_frames(
             candidate_indices=candidates,
             features=features,
-            n_frames=int(n_frames),
+            n_frames=n_requested,
             random_state=int(random_state),
             batch_size=int(kmeans_batch_size),
             max_iter=int(kmeans_max_iter),
@@ -375,7 +447,7 @@ def extract_frames_multi(
         video_path=json.dumps([str(p) for p in video_paths]),
         output_dir=str(out_dir),
         manifest_path=str(out_dir / "run_info.json"),
-        n_requested=int(n_frames),
+        n_requested=n_requested,
         n_extracted=int(len(file_records)),
         selected_frame_indices=[int(i) for i in selected.tolist()],
         start_frame=int(start),
