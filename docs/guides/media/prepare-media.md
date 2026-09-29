@@ -49,6 +49,9 @@ For a one-off file outside a dataset:
 mosaic media transcode recording.mp4 --target analysis --output derivatives/
 ```
 
+To crop, mask, trim or adjust a recording before a tracker reads it, see
+[Pre-process media for a tracker](preprocess.md).
+
 ## imgstore recordings
 
 Motif and Loopbio stores are directories, not single files. `scan_media()` finds them

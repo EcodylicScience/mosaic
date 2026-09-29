@@ -8,6 +8,7 @@
 | Guide | For |
 | --- | --- |
 | [Prepare and index your media](media/prepare-media.md) | Indexing, transcoding, imgstore, frame extraction, calibration |
+| [Pre-process media for a tracker](media/preprocess.md) | Cropping, masking, trimming and adjusting video into a variant a tracker reads |
 | [Render an annotated video](media/render-a-video.md) | Drawing tracks, identities and behaviors back onto the recording |
 
 Declaring a media source and scanning it is dataset setup — see

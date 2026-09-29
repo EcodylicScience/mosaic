@@ -224,10 +224,10 @@ mkdocs build     # static site into ./site/
 ```
 
 **`docs/reference/` is generated wholesale** by `scripts/gen_docs_reference.py`
-from the live registries and the Typer app — features, ops, the CLI, and the track
-formats. Never edit those files. Run the script with `--write` after changing a
-registry, and commit the result; the docs workflow runs it with `--check` and fails
-when a committed page no longer matches the code.
+from the live registries and the Typer app: features, ops, media steps, the CLI,
+and the track formats. Never edit those files. Run the script with `--write` after
+changing a registry, and commit the result; the docs workflow runs it with
+`--check` and fails when a committed page no longer matches the code.
 
 Every other page under `docs/` is hand-written prose, and there is no rendered
 Python API reference. `docs/api/` held one: fourteen mkdocstrings stubs reaching 87
@@ -291,6 +291,11 @@ named roots:
 - `media/`        — transcode derivatives + their own `index.csv`, one row per
                   derivative, reached through `media_routing_context`
 - `media/frames/` — extracted PNGs for annotation (root key `frames`)
+- `media/preprocess/<run_id>/`: media variants written by the `preprocess` op,
+                  one re-encoded file per entry (and camera) under the variant's
+                  run id, with one typed `index.csv` for every variant beside the
+                  run directories. Media scans skip this directory by resolved
+                  path, beside the `_tracking` exclusion
 - `tracks_raw/`   — user-uploaded raw tracks + `index.csv`
 - `labels_raw/`   — user-uploaded raw labels + `index.csv`, and beside them the
                   **versioned label series** (`keypoints/`, with `behavior/`
@@ -557,6 +562,13 @@ mosaic uses decorator-based registries; new functionality almost always means
 | `register_track_converter` | `TRACK_CONVERTERS`  | `core/track_converter.py` (impls in `core/track_library/`) |
 | `register_label_converter` | `LABEL_CONVERTERS`  | `core/label_converter.py` (impls in `behavior/label_library/`) |
 | `@register_op`             | `OPS`               | `core/pipeline/ops.py`            |
+| `@register_media_step`     | `MEDIA_STEPS`       | `core/media/preprocess/`          |
+
+The media-step set is closed. `MediaStepSpec` (`core/media/preprocess/specs.py`)
+is a static discriminated union of the built-in steps, which publishes each
+step's full schema in any parameter model with a list of steps. A new step edits
+the union beside registering, and `test_the_union_and_the_registry_name_the_same_steps`
+fails when the two disagree.
 
 **`register_label_converter` is called, never decorated.**
 `behavior/label_library/__init__.py` imports each converter module and then calls it
@@ -792,6 +804,12 @@ src/mosaic/
 │   │   ├── label_series_index.py  # series index row, revision writer, revision reader
 │   │   ├── entry_claim.py      # per-entry claim: take, keep alive, release
 │   │   ├── consumed_camera.py  # which camera of an entry a tracker reads
+│   │   ├── preprocess.py       # the preprocess op: media steps -> one variant file per entry
+│   │   ├── preprocess_layout.py  # the media/preprocess/ layout and the media-scan exclusion
+│   │   ├── preprocess_index.py # MediaVariantRow, its one writer and reader, missing/drifted errors
+│   │   ├── variant_source.py   # an entry's variant row resolved for a consumer, drift refused
+│   │   ├── media_input.py      # MediaInputParams: the `media` parameter, frame windows refused
+│   │   ├── placement.py        # to_source_space: a variant's table mapped back to source space
 │   │   ├── inventory/          # what a dataset holds: coverage, status, params.json
 │   │   ├── graph/              # a pipeline as a file: recipe, plan, submit, run a step
 │   │   ├── writers.py          # parquet output writing, overlap trimming
@@ -800,7 +818,8 @@ src/mosaic/
 │   │   ├── video_io.py         # media I/O facade: libav reader/writer + dispatchers (mosaic-media)
 │   │   ├── imgstore_io.py      # imgstore (Motif / Loopbio) dispatch + capture adapter
 │   │   ├── imgstore_native.py  # native imgstore decode: mp4 via reader, raw via numpy
-│   │   └── facts_columns.py    # MediaFacts / verdict <-> media-index row mapping
+│   │   ├── facts_columns.py    # MediaFacts / verdict <-> media-index row mapping
+│   │   └── preprocess/         # MEDIA_STEPS: the built-in steps, Placement, shared CLAHE / gray
 │   ├── schema.py               # track-schema validation (e.g. trex_v1)
 │   ├── params.py               # Params + the declaration vocabulary every parameter model shares
 │   ├── entry.py                # Entry / CameraEntry: the (group, sequence) aliases
@@ -880,6 +899,8 @@ dataset.yaml  (mosaic init)
 
 video files
    ├─ scan_media()  / index_media()    → media_raw/index.csv  (ffprobe metadata)
+   ├─ preprocess (ordered media steps) → media/preprocess/<run_id>/<group>__<seq>.mp4
+   │                                     + media/preprocess/index.csv   (one media variant)
    └─ tracking.extract_frames(ds, …)   → media/frames/     (uniform, k-means or listed PNGs)
 
 raw tracks/labels
@@ -896,9 +917,10 @@ in a library dataset, linked from each project by `libraries:`
    ├─ prepare-training-data   → models/prepare-training-data/<run_id>/  (images copied)
    └─ train-*  (data = that run id)     → models/<kind>/<run_id>/ + training.json
 
-run_trex / run_sleap / run_litpose / infer-*
+run_trex / run_sleap / run_litpose / infer-*   (media= a media variant's run_id, or empty)
    ├─ (working)              → _tracking/<tool>/<run_id>/<group>__<seq>/
    └─ (bridged)              → tracks/<variant>/<group>__<seq>.parquet
+                                 (a media variant's table mapped back to source space)
         ↑ reclaimed by `mosaic sweep-tracking`; a correction is promoted back
           out with `promote_correction` → tracks_raw/<entry>/corrected.rev<N>
 
@@ -1344,6 +1366,18 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   table. A converter that writes a scaled column, or puts a landmark other than
   the body centre in `X`, reintroduces a difference that reads as a plausible
   number and is recorded nowhere.
+- **A variant is consumed by name, and its tracks are published in source space.**
+  A tracker or inference op reads a media variant only when its `media` parameter
+  names the variant's run id, and that run id enters the consumer's identity.
+  `publish_tracks_table` maps the table back through the variant's recorded
+  placement (`to_source_space` in
+  [`core/pipeline/placement.py`](src/mosaic/core/pipeline/placement.py)) before
+  the table is validated and written. Every reader of `tracks/` therefore reads
+  source pixels and source frames, whatever crop or trim the tracker saw. When
+  each consumer shifts crop coordinates itself, one that omits the offset writes
+  plausible positions on the wrong pixel grid, and its output looks like any
+  other. A frame window on the consumer is refused beside `media`
+  (`MediaInputParams`), because it would count variant frames.
 - **A tracker reports; a feature derives.** `mosaic_v1` *forbids* `VX`, `VY`,
   `SPEED`, `ANGLE` and the rest, so a converter cannot compute one and present it
   as a measurement. Heading is the sharpest case: the principal-component fit the

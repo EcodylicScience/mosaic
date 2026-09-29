@@ -8,11 +8,12 @@ executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
 
-!!! note "Two of these are not discoverable from the CLI"
+!!! note "4 of these are not discoverable from the CLI"
 
-    `mosaic tracking list` filters to `domain = "tracking"`, so the media ops
-    below appear in no discovery command even though `mosaic run --kind` runs
-    them. This page reads `OPS` directly and lists all of them.
+    `mosaic tracking list` shows only the ops whose domain is `tracking`.
+    It omits `export-joined`, `export-store`, `preprocess` and `transcode`,
+    which `mosaic run --kind` runs all the same. This page reads `OPS` directly
+    and lists every op.
 
 In the tables below, **_required_** means the parameter has no default and must
 be supplied. **_constructed_** means it is optional but its default is built by a
@@ -56,10 +57,6 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 | `model_path` | `string` | _required_ |  | A trained Lightning Pose model directory (config.yaml plus a checkpoint under tb_logs/). |
 | `litpose_overrides` | `object` \| `None` | `null` |  | Hydra config overrides applied at inference time. |
 | `precision` | `string` | `"fp32"` |  | The forward-pass precision: fp32, fp16, or bf16. |
-
-??? note "`JsonValue`"
-
-    No parameters.
 
 #### `prepare-training-data`
 
@@ -144,10 +141,6 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 | `batch_size` | `integer` | `4` |  | The inference batch size. |
 | `device` | `string` \| `None` | `null` |  | The device to run inference on: cpu, cuda, mps, a CUDA index such as 0, or cuda:<index>. Unset and auto leave the choice to sleap-nn; a named device fails where it is absent. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 
-??? note "`JsonValue`"
-
-    No parameters.
-
 #### `trex`
 
 Version `0.2` &middot; `mosaic.tracking.ops.trex.TrexOp` &middot; resource class `gpu`
@@ -176,10 +169,6 @@ Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``
 | `auto_train` | `boolean` | `false` |  | Train visual identification automatically after tracking. |
 | `detect_keypoint_count` | `integer` \| `None` | `null` |  | How many keypoints detect_model reports. Set it whenever that model is a pose model, or the tracks come back without their keypoint columns. TREx derives the poseX<i> / poseY<i> names from a keypoint format it learns by loading the model, and mosaic converts and tracks as two invocations, so the exporting process has never loaded one. |
 | `track_extra_settings` | `object` \| `None` | `null` |  | Additional TREx parameters sent as -key value pairs for the tracking phase. A None value removes a parameter mosaic would otherwise send. |
-
-??? note "`JsonValue`"
-
-    No parameters.
 
 #### `ultralytics`
 
@@ -447,10 +436,6 @@ Train a Lightning Pose model, registering the directory it produces.
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |
 | `num_workers` | `integer` \| `None` | `null` |  | Worker processes loading training data. Throughput only: excluded from the run identity, so changing it never retrains a model. Unset leaves the tool's own default. |
 
-??? note "`JsonValue`"
-
-    No parameters.
-
 #### `train-localizer`
 
 Version `0.1` &middot; `mosaic.tracking.ops.train.TrainLocalizerOp`
@@ -497,10 +482,6 @@ Train a POLO point-detection model, registering the directory it produces.
 | `dor` | `number` | `0.8` |  | The Distance of Reference threshold POLO evaluates against. |
 | `backend` | `string` | `"polo"` |  | The point-detection backend. polo is the only value the op accepts. |
 
-??? note "`JsonValue`"
-
-    No parameters.
-
 #### `train-pose`
 
 Version `0.2` &middot; `mosaic.tracking.ops.train.TrainPoseOp`
@@ -521,10 +502,6 @@ Train a YOLO pose model, registering the directory it produces.
 | `device` | `string` | `"0"` |  | Which accelerator trains the model: a GPU index, or cpu. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `batch` | `integer` | `16` |  | How many training images the model reads in one forward pass. |
 | `workers` | `integer` \| `None` | `null` |  | Worker processes loading training data. Throughput only: excluded from the run identity, so changing it never retrains a model. Unset leaves the tool's own default. |
-
-??? note "`JsonValue`"
-
-    No parameters.
 
 #### `train-sleap`
 
@@ -547,10 +524,6 @@ Train a SLEAP model, registering the directory it produces.
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |
 | `num_workers` | `integer` \| `None` | `null` |  | Worker processes loading training data. Throughput only: excluded from the run identity, so changing it never retrains a model. Unset leaves the tool's own default. Sets both the training and the validation loader. sleap-nn's own caveat: under its default data pipeline, workers above 0 can fail on labels that read frames from video, which does not pickle. |
 
-??? note "`JsonValue`"
-
-    No parameters.
-
 ## Media
 
 ### preprocess
@@ -563,10 +536,10 @@ Write one media variant file per scoped entry.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `steps` | list of `MediaStepSpec` | _required_ |  | The steps applied to each frame, in order. Every position and frame number a step names is in the entry media's pixels and frames, wherever the step sits in the list. |
+| `steps` | list of (`CropStep` \| `MaskStep` \| `TrimStep` \| `DecimateStep` \| `GrayscaleStep` \| `AdjustStep` \| `ClaheStep`) | _required_ |  | The steps applied to each frame, in order. Every position and frame number a step names is in the entry media's pixels and frames, wherever the step sits in the list. |
 | `media` | `string` | `""` |  | The run identifier of a variant to read in place of the entry media, so these steps apply after that variant's. Empty reads the entry media. |
 | `fps` | `number` \| `None` | `null` |  | The frame rate the output file is labeled at, which sets its frames' timestamps and so what a tool with per-second thresholds reads. Unset, it is the rate the kept frames were recorded at: the first clip's rate divided by the decimation. Under any other label the tracker's per-second columns are wrong, and they are dropped when its table is mapped back. [fps] |
-| `codec` | `VariantCodec` | `"av1"` |  | The output codec. 'h264' is a fallback for a decoder that cannot read AV1, such as Lightning Pose on a GPU below compute capability 8.6, and needs an ffmpeg built with libx264. |
+| `codec` | `"av1"` \| `"h264"` | `"av1"` |  | The output codec. 'h264' is a fallback for a decoder that cannot read AV1, such as Lightning Pose on a GPU below compute capability 8.6, and needs an ffmpeg built with libx264. |
 | `quality` | `integer` \| `None` | `null` |  | The encoder's constant rate factor, on the chosen codec's own scale, where lower is better: SVT-AV1 CRF from 0 to 63 for 'av1', x264 CRF from 0 to 51 for 'h264'. Unset uses mosaic's default, 14 for AV1 and 16 for H.264. |
 | `allow_hardware` | `boolean` | `false` |  | Permit the av1_nvenc hardware encoder where the machine offers a usable one. The encode falls back to the CPU encoder where it does not, and an 'h264' variant always encodes on the CPU. A permission rather than a setting, so it does not change the variant's run identifier. |
 
@@ -618,10 +591,6 @@ Write one media variant file per scoped entry.
     | `polygon` | list of tuple of (`integer`, `integer`) | _required_ | min items `3` | The polygon's vertices as (x, y) source coordinates, at least three. It may reach outside the image, but not lie wholly outside it. [px] |
     | `keep` | `boolean` | `true` |  | Keep the pixels inside the polygon and black out the rest. False blacks out the inside instead. |
 
-??? note "`MediaStepSpec`"
-
-    No parameters.
-
 ??? note "`TrimStep`"
 
     | Parameter | Type | Default | Constraints | Description |
@@ -629,10 +598,6 @@ Write one media variant file per scoped entry.
     | `step` | `"trim"` | `"trim"` |  | The step's name, which selects this step in a list of steps. |
     | `start` | `integer` | _required_ | >= `0` | The first source frame of the range kept. |
     | `stop` | `integer` | _required_ |  | The source frame the kept range stops before. |
-
-??? note "`VariantCodec`"
-
-    No parameters.
 
 ### transcode
 

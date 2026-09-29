@@ -204,7 +204,7 @@ and each object's alias, origin and box provenance under `attributes`.
     | Field | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `pose` | `integer` | _required_ |  | The id of the object's pose. |
-    | `keypoints` | list of tuple of (`number`, `number`, `1` \| `2`) \| `None` | _required_ |  | One entry per keypoint of the pose: [x, y, visibility] in image pixels, where visibility 1 is occluded and 2 visible, or null when the keypoint was not placed. |
+    | `keypoints` | list of (tuple of (`number`, `number`, `1` \| `2`) \| `None`) | _required_ |  | One entry per keypoint of the pose: [x, y, visibility] in image pixels, where visibility 1 is occluded and 2 visible, or null when the keypoint was not placed. |
     | `alias` | `integer` \| `None` | `null` |  | The id of the object's alias, or null. |
     | `origin` | `"human"` \| `"model"` \| `"heuristic"` \| `None` | `null` |  | Who placed it, or null when the source did not say. |
     | `source_ref` | `string` \| `None` | `null` |  | What produced it when not a person, such as a model run. |

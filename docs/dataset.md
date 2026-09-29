@@ -85,7 +85,8 @@ accessor on it then fails against a manifest file that is perfectly correct.
 ├── labels_raw/
 │   └── keypoints/          saved revisions of annotation sets
 ├── media/
-│   └── frames/
+│   ├── frames/
+│   └── preprocess/         media variants, one directory per variant
 ├── labels/
 ├── tracks/
 ├── _tracking/
@@ -100,8 +101,9 @@ Directory assignments:
 - **Raw files**, what you supplied — `media_raw/` recordings index, `tracks_raw/` raw
   tracks, `labels_raw/` raw annotations.
 - **Derived files**, computed by mosaic and recomputable — `media/` transcode
-  derivatives, `media/frames/` extracted PNGs for annotation, `tracks/` standardized
-  parquet, `labels/` converted labels, `features/`, `models/`.
+  derivatives, `media/frames/` extracted PNGs for annotation, `media/preprocess/`
+  media variants, `tracks/` standardized parquet, `labels/` converted labels,
+  `features/`, `models/`.
 - **Temporary files** — `_tracking/` raw tracker output before conversion, reclaimed
   by `mosaic sweep-tracking` once a run is finished.
 

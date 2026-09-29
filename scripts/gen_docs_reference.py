@@ -1,10 +1,11 @@
 """Regenerate `docs/reference/` from the registries the running code holds.
 
-Four pages, four authorities, and not one hand-written line in any of them:
-`FEATURES`, `OPS`, the two converter registries beside `TRACK_SCHEMAS`, and the
-Typer app behind the `mosaic` console script. Each is already the authority at
-run time -- the CLI's own discovery commands read exactly these -- so a reference
-page derived from anything else is a second answer, and second answers drift.
+Five pages, five authorities, and not one hand-written line in any of them:
+`FEATURES`, `OPS`, `MEDIA_STEPS`, the two converter registries beside
+`TRACK_SCHEMAS`, and the Typer app behind the `mosaic` console script. Each is
+already the authority at run time, and the CLI's discovery commands read these
+same registries. A reference page derived from anything else is a second answer,
+and second answers drift.
 
 They had drifted. Three hand-maintained feature lists disagreed with each other
 and all three with the registry: the site's landing page said "~30", the feature
@@ -143,25 +144,50 @@ def model_name(raw: str) -> str:
     return raw.rstrip("_")
 
 
-def type_text(spec: Mapping[str, JsonValue]) -> str:
+def is_model(spec: Mapping[str, JsonValue]) -> bool:
+    """Whether a `$defs` entry is a model with fields.
+
+    pydantic also writes a `$defs` entry for a named type alias: a `Literal`
+    alias, a discriminated union of models, or the recursive `JsonValue`. Such
+    an entry declares no `properties`. It is a type, and the type column writes
+    it out wherever a field uses it.
+    """
+    return isinstance(spec.get("properties"), dict)
+
+
+def type_text(
+    spec: Mapping[str, JsonValue],
+    aliases: Mapping[str, Mapping[str, JsonValue]],
+    expanding: frozenset[str] = frozenset(),
+) -> str:
     """One JSON-Schema property reduced to a readable type expression.
 
     `anyOf` is what pydantic emits for `X | None`, which most optional fields
     are; echoing the full two-branch union would drown the table. `oneOf` is
     what a tagged union emits, and its branches are the models a client picks
     between. A `$ref` names a nested model whose own table follows in a
-    collapsed block.
+    collapsed block. A `$ref` to a type alias in *aliases* is replaced by the
+    type the alias names. *expanding* names the aliases already being written
+    out, and a recursive alias met inside itself is written as its name.
     """
     ref = spec.get("$ref")
     if isinstance(ref, str):
-        return f"`{model_name(ref.rsplit('/', 1)[-1])}`"
+        name = ref.rsplit("/", 1)[-1]
+        alias = aliases.get(name)
+        if alias is not None and name not in expanding:
+            return type_text(alias, aliases, expanding | {name})
+        return f"`{model_name(name)}`"
     for key in ("anyOf", "oneOf"):
         variants = spec.get(key)
         if isinstance(variants, list):
             # `dict.fromkeys` rather than `set`, to keep the declared branch
             # order: a set would reorder `str | None` between runs and flap
             # `--check`.
-            parts = [type_text(v) for v in variants if isinstance(v, dict)]
+            parts = [
+                type_text(v, aliases, expanding)
+                for v in variants
+                if isinstance(v, dict)
+            ]
             return " | ".join(dict.fromkeys(parts))
     if "const" in spec:
         return f"`{json.dumps(spec['const'])}`"
@@ -170,12 +196,20 @@ def type_text(spec: Mapping[str, JsonValue]) -> str:
         return " | ".join(f"`{json.dumps(c)}`" for c in choices)
     fixed = spec.get("prefixItems")
     if isinstance(fixed, list):
-        inner = ", ".join(type_text(f) for f in fixed if isinstance(f, dict))
+        inner = ", ".join(
+            type_text(f, aliases, expanding) for f in fixed if isinstance(f, dict)
+        )
         return f"tuple of ({inner})" if inner else "`tuple`"
     kind = spec.get("type")
     if kind == "array":
         items = spec.get("items")
-        inner = type_text(items) if isinstance(items, dict) else "any"
+        inner = (
+            type_text(items, aliases, expanding) if isinstance(items, dict) else "any"
+        )
+        # `list of A | None` reads as a list or None. A union of item types is
+        # parenthesized, to read as a list of either.
+        if " | " in inner:
+            inner = f"({inner})"
         return f"list of {inner}"
     if kind == "object":
         return "`object`"
@@ -218,15 +252,29 @@ def description_text(spec: Mapping[str, JsonValue]) -> str:
 
 
 def params_table(
-    schema: Mapping[str, JsonValue], depth: int = 0, *, noun: str = "Parameter"
+    schema: Mapping[str, JsonValue],
+    depth: int = 0,
+    *,
+    noun: str = "Parameter",
+    aliases: Mapping[str, Mapping[str, JsonValue]] | None = None,
 ) -> list[str]:
     """The properties table, plus one collapsed table per nested model.
 
     Most feature params carry `$defs`. Inlining them would put dozens of rows
     under a feature that has four of its own, so each nested model gets a
-    `pymdownx.details` block that opens on demand. *noun* heads the first
-    column: a file format has fields, not parameters.
+    `pymdownx.details` block that opens on demand. A type alias among the
+    `$defs` is written into the type column instead (see `is_model`). *noun*
+    heads the first column: a file format has fields, not parameters.
+    *aliases* is passed down from the top level, whose `$defs` contain every
+    alias a nested model can name.
     """
+    nested = schema.get("$defs")
+    if aliases is None:
+        aliases = {
+            name: spec
+            for name, spec in (nested.items() if isinstance(nested, dict) else ())
+            if isinstance(spec, dict) and not is_model(spec)
+        }
     lines: list[str] = []
     properties = schema.get("properties")
     if isinstance(properties, dict) and properties:
@@ -251,7 +299,7 @@ def params_table(
             else:
                 default = "_constructed_"
             lines.append(
-                f"| `{name}` | {escape_cell(type_text(spec))} "
+                f"| `{name}` | {escape_cell(type_text(spec, aliases))} "
                 f"| {escape_cell(default)} | {escape_cell(constraints_text(spec))} "
                 f"| {escape_cell(description_text(spec))} |"
             )
@@ -261,17 +309,16 @@ def params_table(
 
     # Only the top level expands nested models: a `$defs` block is shared by the
     # whole document, so recursing would repeat every definition at every depth.
-    nested = schema.get("$defs")
     if depth == 0 and isinstance(nested, dict):
         for raw_name in sorted(nested):
             sub = nested[raw_name]
-            if not isinstance(sub, dict):
+            if not isinstance(sub, dict) or not is_model(sub):
                 continue
             lines.append(f'??? note "`{model_name(raw_name)}`"')
             lines.append("")
             lines += [
                 f"    {line}" if line else ""
-                for line in params_table(sub, depth + 1, noun=noun)
+                for line in params_table(sub, depth + 1, noun=noun, aliases=aliases)
             ]
     return lines
 
@@ -325,6 +372,42 @@ def render_features() -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def and_list(items: list[str]) -> str:
+    """*items* joined as prose: `a`, `a and b`, `a, b and c`."""
+    if len(items) < 2:
+        return "".join(items)
+    return f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def unlisted_ops_note() -> list[str]:
+    """The note naming every op `mosaic tracking list` leaves out, or nothing.
+
+    The command lists `list_ops(domain=LISTED_OP_DOMAIN)`, and the set is
+    computed from the same call with the constant imported from the command's
+    module. The count and the names therefore follow the registry as ops are
+    added.
+    """
+    from mosaic.cli.tracking.list import LISTED_OP_DOMAIN
+    from mosaic.core.pipeline.ops import OPS, list_ops
+
+    listed = {str(row["kind"]) for row in list_ops(domain=LISTED_OP_DOMAIN)}
+    unlisted = [f"`{kind}`" for kind in sorted(OPS) if kind not in listed]
+    if not unlisted:
+        return []
+    count = len(unlisted)
+    verb = "is" if count == 1 else "are"
+    return [
+        f'!!! note "{count} of these {verb} not discoverable from the CLI"',
+        "",
+        "    `mosaic tracking list` shows only the ops whose domain is "
+        f"`{LISTED_OP_DOMAIN}`.",
+        f"    It omits {and_list(unlisted)},",
+        "    which `mosaic run --kind` runs all the same. This page reads `OPS` directly",
+        "    and lists every op.",
+        "",
+    ]
+
+
 def render_ops() -> str:
     from mosaic.core.pipeline.ops import OPS
     from mosaic.tracking import register_ops
@@ -347,12 +430,7 @@ def render_ops() -> str:
         "a media operation. Features transform tables that already exist; ops are what",
         "produce them and what reaches outside the process.",
         "",
-        '!!! note "Two of these are not discoverable from the CLI"',
-        "",
-        '    `mosaic tracking list` filters to `domain = "tracking"`, so the media ops',
-        "    below appear in no discovery command even though `mosaic run --kind` runs",
-        "    them. This page reads `OPS` directly and lists all of them.",
-        "",
+        *unlisted_ops_note(),
         *TABLE_LEGEND,
     ]
     for domain, title in DOMAIN_TITLES:
@@ -382,6 +460,58 @@ def render_ops() -> str:
                 if text:
                     lines += [text, ""]
                 lines += params_table(cls.Params.model_json_schema())
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_media_steps() -> str:
+    from mosaic.core.media.preprocess import MEDIA_STEPS
+
+    steps = [MEDIA_STEPS[name] for name in sorted(MEDIA_STEPS)]
+    lines = [
+        BANNER,
+        "",
+        "# Media steps",
+        "",
+        f"{len(MEDIA_STEPS)} media steps are registered. A `preprocess` run applies",
+        "a list of them to every frame of an entry, in order, and writes the result",
+        "as a media variant. [Pre-process media for a tracker](../guides/media/preprocess.md)",
+        "shows how to make one and track it.",
+        "",
+        "Every position a step names is a pixel of the original video, and every frame",
+        "number is a frame of the original video, whatever the step's position in the",
+        "list.",
+        "Each step is written as an object whose `step` key is its name, for example",
+        '`{"step": "crop", "x": 100, "y": 40, "width": 640, "height": 480}`.',
+        "",
+        "- **Moves pixels**: the step changes where a point of the scene appears in",
+        "  the image, as `crop` does.",
+        "- **Appearance**: the step changes every pixel by one rule that does not",
+        "  depend on the pixel's position.",
+        "",
+        "A new version of a step gives every variant that uses the step a new run id.",
+        "",
+        "| Step | Version | Moves pixels | Appearance | Summary |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for cls in steps:
+        lines.append(
+            f"| [`{cls.name}`](#{cls.name}) | `{cls.version}` "
+            f"| {'yes' if cls.moves_pixels else 'no'} "
+            f"| {'yes' if cls.appearance else 'no'} "
+            f"| {escape_cell(summary_line(cls))} |"
+        )
+    lines += ["", *TABLE_LEGEND]
+    for cls in steps:
+        lines += [
+            f"## `{cls.name}`",
+            "",
+            f"Version `{cls.version}` &middot; `{cls.__module__}.{cls.__qualname__}`",
+            "",
+        ]
+        text = summary_line(cls)
+        if text:
+            lines += [text, ""]
+        lines += params_table(cls.model_json_schema())
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -552,6 +682,7 @@ def render_index() -> str:
         LABEL_CONVERTERS,
         ensure_label_converters_registered,
     )
+    from mosaic.core.media.preprocess import MEDIA_STEPS
     from mosaic.core.pipeline.ops import OPS
     from mosaic.core.schema import TRACK_SCHEMAS
     from mosaic.core.track_converter import (
@@ -569,9 +700,9 @@ def render_index() -> str:
         "\n"
         "# What is where\n"
         "\n"
-        "Every feature, op, command and format mosaic knows about, with the parameters\n"
-        "each one takes. Reach for these when you know what you want to do and need the\n"
-        "name and the knobs.\n"
+        "Every feature, op, media step, command and format mosaic knows about, with the\n"
+        "parameters each one takes. Reach for these when you know what you want to do\n"
+        "and need the name and the knobs.\n"
         "\n"
         "| Page | Holds |\n"
         "| --- | --- |\n"
@@ -579,12 +710,14 @@ def render_index() -> str:
         "grouped by category, with their parameters |\n"
         f"| [Ops](ops.md) | {len(OPS)} registered ops -- trackers, training, "
         "inference, frame extraction and media |\n"
+        f"| [Media steps](media-steps.md) | {len(MEDIA_STEPS)} steps a `preprocess` "
+        "run applies to make a media variant, with their parameters |\n"
         "| [CLI](cli.md) | Every `mosaic` command and flag |\n"
         f"| [Track formats](track-formats.md) | {len(TRACK_CONVERTERS)} track "
         f"converters, {len(TRACK_SCHEMAS)} schemas, {len(LABEL_CONVERTERS)} label "
         "converters |\n"
         "\n"
-        "These four pages are generated from the registries themselves by\n"
+        "These five pages are generated from the registries themselves by\n"
         "`scripts/gen_docs_reference.py`. Continuous integration regenerates them and\n"
         "fails if the result differs from what is committed, so a count here cannot fall\n"
         "behind the code that produces it.\n"
@@ -601,6 +734,7 @@ PAGES: Final[dict[str, Callable[[], str]]] = {
     "index": render_index,
     "features": render_features,
     "ops": render_ops,
+    "media-steps": render_media_steps,
     "cli": render_cli,
     "track-formats": render_track_formats,
 }

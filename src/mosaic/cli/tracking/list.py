@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Final
 
 import typer
 
 from mosaic.cli._io import emit_json
 from mosaic.cli._render import render_table
+
+__all__ = ["LISTED_OP_DOMAIN", "list_command"]
+
+LISTED_OP_DOMAIN: Final = "tracking"
+"""The op domain this command lists. Ops of any other domain are left out."""
 
 
 def list_command(
@@ -26,7 +31,7 @@ def list_command(
     from mosaic.tracking import register_ops
 
     register_ops()
-    ops = list_ops(category, domain="tracking")
+    ops = list_ops(category, domain=LISTED_OP_DOMAIN)
     if as_json:
         emit_json(ops)
     else:

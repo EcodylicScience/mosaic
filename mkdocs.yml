@@ -116,6 +116,10 @@ markdown_extensions:
   - admonition
   - pymdownx.details
   - pymdownx.superfences
+  # Content tabs, for a guide that shows one task from Python and from the CLI.
+  # Material styles only the alternate markup.
+  - pymdownx.tabbed:
+      alternate_style: true
   # `attr_list` sizes the hero image and drives Material's `#only-light` /
   # `#only-dark` variants; `md_in_html` lets a `<figure>` wrapper hold markdown.
   - attr_list
@@ -146,6 +150,7 @@ nav:
       - Overview: guides/index.md
       - Media:
           - Prepare and index your media: guides/media/prepare-media.md
+          - Pre-process media for a tracker: guides/media/preprocess.md
           - Render an annotated video: guides/media/render-a-video.md
       - Tracking:
           - Import tracks you already have: guides/tracking/import.md
@@ -173,5 +178,6 @@ nav:
       - What is where: reference/index.md
       - Features: reference/features.md
       - Ops: reference/ops.md
+      - Media steps: reference/media-steps.md
       - CLI: reference/cli.md
       - Track formats: reference/track-formats.md

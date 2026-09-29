@@ -3,18 +3,19 @@
 
 # What is where
 
-Every feature, op, command and format mosaic knows about, with the parameters
-each one takes. Reach for these when you know what you want to do and need the
-name and the knobs.
+Every feature, op, media step, command and format mosaic knows about, with the
+parameters each one takes. Reach for these when you know what you want to do
+and need the name and the knobs.
 
 | Page | Holds |
 | --- | --- |
 | [Features](features.md) | 45 registered features, grouped by category, with their parameters |
 | [Ops](ops.md) | 20 registered ops -- trackers, training, inference, frame extraction and media |
+| [Media steps](media-steps.md) | 7 steps a `preprocess` run applies to make a media variant, with their parameters |
 | [CLI](cli.md) | Every `mosaic` command and flag |
 | [Track formats](track-formats.md) | 8 track converters, 4 schemas, 3 label converters |
 
-These four pages are generated from the registries themselves by
+These five pages are generated from the registries themselves by
 `scripts/gen_docs_reference.py`. Continuous integration regenerates them and
 fails if the result differs from what is committed, so a count here cannot fall
 behind the code that produces it.

@@ -111,10 +111,12 @@ conda install -c conda-forge py-opencv
 ```
 
 That build links the conda ffmpeg beside it, which carries `libdav1d`, and
-satisfies SLEAP's unpinned `opencv-python` requirement. Without it mosaic refuses
-the run naming the codec — which is the good outcome; the one it replaced was
-SLEAP reading zero frames and exiting 0, recorded as a run that succeeded and
-found nothing. `sleap-io` picks OpenCV whenever it is importable and reads no
+satisfies SLEAP's unpinned `opencv-python` requirement. mosaic does not inspect the
+SLEAP environment, and it refuses to hand SLEAP an AV1 file until
+`MOSAIC_ALLOW_TOOL_CODECS=av1` says the environment decodes it. Set the variable
+once the install above is done. The refusal names the codec. Before it, SLEAP read
+zero frames and exited 0, and the run was recorded as one that succeeded and found
+nothing. `sleap-io` picks OpenCV whenever it is importable and reads no
 environment variable to say otherwise, so a working PyAV in the same environment
 does not help.
 
@@ -135,8 +137,11 @@ DALI, which decodes on the GPU via NVDEC and has no software fallback. NVDEC
 reads AV1 only at compute capability 8.6 or newer, so on a Pascal or Turing card
 — a GTX 1080 Ti is 6.1 — mosaic's AV1 derivatives cannot be read at all, and no
 package changes that. mosaic refuses such a run naming NVDEC rather than letting
-it return nothing. The remedies are a newer GPU, or feeding Lightning Pose media
-that never needed an analysis transcode.
+it return nothing. It refuses AV1 on any card until `MOSAIC_ALLOW_TOOL_CODECS=av1`
+is set, because it does not know which GPU a run uses. Set the variable on a card
+of compute capability 8.6 or newer. Otherwise the remedies are a newer GPU, media
+that never needed an analysis transcode, or an H.264
+[media variant](guides/media/preprocess.md#codec).
 
 ### Ultralytics and POLO
 
