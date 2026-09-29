@@ -13,7 +13,8 @@ What lives where:
 - ``datasets`` -- the `Dataset` a test runs against.
 - ``features`` -- the templates and per-sequence frames the global
   fit-then-apply features are tested on.
-- ``tracks`` -- track tables, tracks variants, raw TREx exports.
+- ``tracks`` -- track tables, tracks variants, raw TREx, SLEAP and DeepLabCut
+  exports.
 - ``media`` -- media files, media-index rows, transcode derivatives.
 - ``ops`` -- the smallest params dict that validates for each registered op.
 - ``scope`` -- a resolved scope over named entries, for the ops and drivers
@@ -83,6 +84,8 @@ from tests.helpers.tracks import (
     add_track_sequences,
     add_tracks_variant,
     track_sequences,
+    write_dlc_csv,
+    write_sleap_analysis_h5,
     write_trex_npz,
 )
 
@@ -125,9 +128,11 @@ __all__ = [
     "scope_over",
     "source_tree",
     "track_sequences",
+    "write_dlc_csv",
     "write_h264_mp4",
     "write_media_index",
     "write_mpeg4_mp4",
+    "write_sleap_analysis_h5",
     "write_templates",
     "write_trex_npz",
 ]

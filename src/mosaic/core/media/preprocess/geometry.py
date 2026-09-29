@@ -185,9 +185,9 @@ class Placement:
     stored beside them, so a placement answers whether it is the identity without
     reading anything else.
 
-    ``fps`` is the rate the variant file is labelled at, which sets the file's
+    ``fps`` is the rate the variant file is labeled at, which sets the file's
     timestamp grid. It is not a statement about real time. The identity
-    predicates leave it out, and what a relabelled rate means is decided where
+    predicates leave it out, and what a relabeled rate means is decided where
     tracks are mapped back.
 
     Attributes:
@@ -200,7 +200,7 @@ class Placement:
         source_frame_count: How many frames the entry media holds, across all of
             its clips.
         frames: The source frames the variant's frames are.
-        fps: The variant file's labelled frame rate.
+        fps: The variant file's labeled frame rate.
     """
 
     offset_x: int
@@ -260,13 +260,13 @@ class Placement:
             )
         if not (math.isfinite(self.fps) and self.fps > 0):
             raise ValueError(
-                f"a labelled rate of {self.fps} fps is not a frame rate; it must be "
+                f"a labeled rate of {self.fps} fps is not a frame rate; it must be "
                 f"positive and finite"
             )
 
     @classmethod
     def identity(cls, width: int, height: int, frame_count: int, fps: float) -> Self:
-        """The placement of a file that is its own source, labelled at *fps*."""
+        """The placement of a file that is its own source, labeled at *fps*."""
         return cls(
             offset_x=0,
             offset_y=0,

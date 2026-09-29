@@ -12,7 +12,7 @@ from __future__ import annotations
 from types import ModuleType
 
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import cv2
 import numpy as np
@@ -22,6 +22,15 @@ from scipy.ndimage import maximum_filter
 
 from mosaic.core.media.video_io import open_frame_reader
 from mosaic.optional_dependency import require
+
+
+class LocalizerDetection(TypedDict):
+    """One location the localizer detected, in image pixel coordinates."""
+
+    x: float
+    y: float
+    confidence: float
+    class_id: int
 
 
 def _require_torch() -> ModuleType:
@@ -41,7 +50,7 @@ def detect_locations(
     device: str = "cpu",
     min_distance: int = 3,
     refine_window: int = 7,
-) -> list[dict]:
+) -> list[LocalizerDetection]:
     """Detect animal locations in a single image.
 
     Parameters
@@ -99,7 +108,7 @@ def detect_locations(
     if isinstance(thresholds, (int, float)):
         thresholds = {i: float(thresholds) for i in range(num_classes)}
 
-    detections: list[dict] = []
+    detections: list[LocalizerDetection] = []
     half_w = refine_window // 2
 
     for class_id in range(num_classes):
@@ -172,7 +181,7 @@ def run_localizer_inference(
     point_radius: int = 4,
     class_colors: dict[int, tuple[int, int, int]] | None = None,
     facts: MediaFacts | None = None,
-) -> list[list[dict]]:
+) -> list[list[LocalizerDetection]]:
     """Run localizer inference on a video.
 
     Parameters
@@ -248,7 +257,7 @@ def run_localizer_inference(
         palette = [(0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255)]
         class_colors = {i: palette[i % len(palette)] for i in range(num_classes)}
 
-    all_results: list[list[dict]] = []
+    all_results: list[list[LocalizerDetection]] = []
     processed = 0
 
     try:
@@ -293,7 +302,7 @@ def run_localizer_inference(
 
 
 def localizer_detections_to_dataframe(
-    results: list[list[dict]],
+    results: list[list[LocalizerDetection]],
     class_names: list[str] | None = None,
 ) -> pd.DataFrame:
     """Convert localizer detection results to a DataFrame.

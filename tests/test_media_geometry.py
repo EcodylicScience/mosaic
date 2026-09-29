@@ -283,8 +283,8 @@ def test_a_frame_selection_is_not_a_frame_identity(frames: FrameMap) -> None:
     assert not selected.is_identity
 
 
-def test_a_relabelled_rate_leaves_the_identity_alone() -> None:
-    """What a relabelled rate means is decided by map-back, not here."""
+def test_a_relabeled_rate_leaves_the_identity_alone() -> None:
+    """What a relabeled rate means is decided by map-back, not here."""
     assert _placement(fps=15.0).is_identity
 
 

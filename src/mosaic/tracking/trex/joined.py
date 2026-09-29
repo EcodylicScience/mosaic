@@ -34,6 +34,11 @@ not in fact report.
 
 A uniform-rate session keeps all of it: nothing was wrong with it.
 
+The rule itself, and the list of per-second fields it drops
+(``RATE_DEPENDENT_BASES``), live in :mod:`mosaic.core.pipeline.placement`, whose
+:func:`~mosaic.core.pipeline.placement.retime` also times a table tracked on a
+media variant. This module applies it to a joined conversion.
+
 **A joined conversion gets two things wrong, and this module owns only the
 first.** The second is that TRex's ``.pv`` is *shorter* than the media: its
 ``FFmpegVideoCapture`` under-counts every file it opens and then reads only as
@@ -57,33 +62,14 @@ costs no registration.
 
 from __future__ import annotations
 
-from typing import Final
-
+import numpy as np
 import pandas as pd
 
-import numpy as np
-
 from mosaic.core.media.timeline import ConcatenatedTimeline
+from mosaic.core.pipeline.placement import retime
 from mosaic.core.track_library.helpers import column_array, column_names
-from mosaic.core.track_library.trex import base_field
 
-__all__ = ["RATE_DEPENDENT_BASES", "retime_joined_frame"]
-
-RATE_DEPENDENT_BASES: Final[frozenset[str]] = frozenset(
-    {"VX", "VY", "AX", "AY", "SPEED", "ANGULAR_V", "ANGULAR_A"}
-)
-"""Base fields TRex computed per *second*, and so against a single frame rate.
-
-Matched on the base name so every ``#`` variant goes with it -- ``SPEED``,
-``SPEED#wcentroid`` and ``SPEED#pcentroid`` are one quantity under three
-estimators and are equally wrong.
-
-Deliberately its own list rather than a reuse of the converter's
-``DERIVED_COLUMNS``. That set also holds ``ANGLE`` and the ``#wcentroid``
-positions, which are an angle and a coordinate: neither depends on a rate, and
-dropping ``X#wcentroid`` would take the body centre with it, since that is where
-``X``/``Y`` come from.
-"""
+__all__ = ["retime_joined_frame"]
 
 
 def retime_joined_frame(
@@ -117,22 +103,7 @@ def retime_joined_frame(
         3% that this function exists to remove, so it is still worth computing.
         The loss itself is reported by the bridge, not corrected here.
     """
-    present = column_names(df)
-    if len(timeline.segments) < 2 or "frame" not in present:
+    if len(timeline.segments) < 2 or "frame" not in column_names(df):
         return df
-
-    out = df.copy()
     frames = column_array(df, "frame").astype(np.int64, copy=False)
-    out["time"] = timeline.times(frames)
-    if "frame_rate" in present:
-        # Per row rather than per file: this names the rate in force at *that*
-        # frame, which is the only reading of the column that stays true.
-        out["frame_rate"] = timeline.rates(frames)
-
-    # Minted by TRex from the index and the one rate, never measured -- see the
-    # module docstring. Dropped rather than recomputed: a microsecond stamp
-    # mosaic did not measure has no business being written back.
-    doomed = [name for name in present if name == "timestamp"]
-    if not timeline.uniform_rate:
-        doomed += [name for name in present if base_field(name) in RATE_DEPENDENT_BASES]
-    return out.drop(columns=doomed) if doomed else out
+    return retime(df, timeline, frames).frame

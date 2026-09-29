@@ -221,15 +221,15 @@ def test_convert_mode_still_refuses_a_table_with_nothing_to_scale() -> None:
 
 
 def test_every_length_trex_divides_out_is_one_this_multiplies_back() -> None:
-    from mosaic.core.track_library.trex import _LENGTH_FIELDS
+    from mosaic.core.track_library.trex import LENGTH_FIELDS
 
-    stranded = sorted(f for f in _LENGTH_FIELDS if not scalable_columns([f]))
+    stranded = sorted(f for f in LENGTH_FIELDS if not scalable_columns([f]))
     assert stranded == []
 
 
 def test_nothing_trex_calls_dimensionless_is_scaled_here() -> None:
     """`midline_length` is pixels sitting under a name that reads like a length."""
-    from mosaic.core.track_library.trex import _DIMENSIONLESS_FIELDS
+    from mosaic.core.track_library.trex import DIMENSIONLESS_FIELDS
 
-    scaled = sorted(f for f in _DIMENSIONLESS_FIELDS if scalable_columns([f]))
+    scaled = sorted(f for f in DIMENSIONLESS_FIELDS if scalable_columns([f]))
     assert scaled == []

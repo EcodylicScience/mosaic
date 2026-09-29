@@ -1,4 +1,4 @@
-"""Building track tables, tracks variants, and raw TREx exports.
+"""Building track tables, tracks variants, and raw tracker exports.
 
 Every helper here writes what production writes: ``add_tracks_variant`` goes
 through ``write_tracks_row`` rather than a hand-built CSV, and ``write_trex_npz``
@@ -8,10 +8,14 @@ writes a shape no converter produces is measuring something that cannot occur.
 
 from __future__ import annotations
 
+import json
 import re
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 
 from mosaic.core.dataset import Dataset
@@ -108,6 +112,89 @@ def write_trex_npz(
     }
     fields.update(columns)
     np.savez(path, **fields)
+
+
+type SleapPreset = Literal["matlab", "standard"]
+"""The two array layouts ``sleap-convert --format analysis`` writes."""
+
+
+def write_sleap_analysis_h5(
+    path: Path,
+    tracks: npt.NDArray[np.float64],
+    scores: npt.NDArray[np.float64] | None = None,
+    *,
+    preset: SleapPreset = "matlab",
+    with_dims: bool = True,
+) -> None:
+    """Write a SLEAP analysis HDF5 from canonical arrays.
+
+    *tracks* is ``(frame, track, node, 2)`` and *scores* is ``(frame, track,
+    node)``. ``matlab`` writes the transposed layout ``sleap-convert`` produces by
+    default and ``standard`` the Python-native one. Both carry a ``dims``
+    attribute, which the converter reads to reorder either.
+    """
+    # Deferred like the converter's own import: most test modules import these
+    # helpers, and few of them open an HDF5 file.
+    import h5py
+
+    if preset == "matlab":
+        track_array = np.transpose(tracks, (1, 3, 2, 0))
+        track_dims = ["track", "xy", "node", "frame"]
+        score_array = None if scores is None else np.transpose(scores, (1, 2, 0))
+        score_dims = ["track", "node", "frame"]
+    else:
+        track_array = tracks
+        track_dims = ["frame", "track", "node", "xy"]
+        score_array = scores
+        score_dims = ["frame", "track", "node"]
+
+    with h5py.File(str(path), "w") as handle:
+        handle["tracks"] = track_array
+        if with_dims:
+            handle["tracks"].attrs["dims"] = json.dumps(track_dims)
+        if score_array is not None:
+            handle["point_scores"] = score_array
+            if with_dims:
+                handle["point_scores"].attrs["dims"] = json.dumps(score_dims)
+
+
+def write_dlc_csv(
+    path: Path, bodyparts: Sequence[str], *, n_frames: int = 20
+) -> npt.NDArray[np.float64]:
+    """Write a single-animal DeepLabCut CSV, the layout Lightning Pose also writes.
+
+    The header rows are ``scorer``, ``bodyparts`` and ``coords``, and each row
+    after them is a frame index followed by ``x``, ``y`` and ``likelihood`` per
+    bodypart.
+
+    Returns:
+        The ``(n_frames, len(bodyparts), 3)`` array of ``[x, y, likelihood]``
+        written, drawn from a fixed seed.
+    """
+    rng = np.random.default_rng(0)
+    values = rng.uniform(0, 100, size=(n_frames, len(bodyparts), 3))
+    values[:, :, 2] = rng.uniform(0.5, 1.0, size=(n_frames, len(bodyparts)))
+
+    header_scorer = ["scorer"]
+    header_bodyparts = ["bodyparts"]
+    header_coords = ["coords"]
+    for bodypart in bodyparts:
+        header_scorer += ["DLC_model"] * 3
+        header_bodyparts += [bodypart] * 3
+        header_coords += ["x", "y", "likelihood"]
+
+    lines = [
+        ",".join(header_scorer),
+        ",".join(header_bodyparts),
+        ",".join(header_coords),
+    ]
+    for index in range(n_frames):
+        row = [str(index)]
+        for bodypart in range(len(bodyparts)):
+            row += [f"{values[index, bodypart, coord]:.6f}" for coord in range(3)]
+        lines.append(",".join(row))
+    path.write_text("\n".join(lines))
+    return values
 
 
 def add_tracks_variant(

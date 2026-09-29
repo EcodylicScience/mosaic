@@ -81,7 +81,7 @@ _COLUMNS_DESCRIPTION = (
 # Column families that carry a length, and so scale. Read after stripping a
 # ``#`` suffix, so ``X``, ``X#wcentroid`` and ``X#head`` are all covered.
 #
-# Kept in step with ``mosaic.core.track_library.trex._LENGTH_FIELDS``, which is
+# Kept in step with ``mosaic.core.track_library.trex.LENGTH_FIELDS``, which is
 # the list the TREx converter divides *back out*. A name on one list and not the
 # other is a column that goes to pixels and never returns, and the number stays
 # plausible the whole way down -- a border distance in pixels compared against a

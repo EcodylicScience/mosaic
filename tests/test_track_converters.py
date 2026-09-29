@@ -41,7 +41,7 @@ from mosaic.core.track_library.sleap import (
 from mosaic.core.dataset import Dataset
 from mosaic.core.track_library.trex import TrexNpzConverter
 
-from tests.helpers import write_trex_npz
+from tests.helpers import write_sleap_analysis_h5, write_trex_npz
 
 # What entry identity is spelled as. A converter may accept these as hints; none
 # may accept them as parameters.
@@ -604,44 +604,6 @@ def test_the_error_says_what_to_do_instead() -> None:
 # --- SLEAP analysis-HDF5 converter -------------------------------------------
 
 
-def _write_sleap_analysis_h5(
-    path: Path,
-    tracks_ftn2: np.ndarray,
-    scores_ftn: np.ndarray | None = None,
-    *,
-    preset: str = "matlab",
-    with_dims: bool = True,
-) -> None:
-    """Write a synthetic SLEAP analysis HDF5 from a canonical tracks array.
-
-    *tracks_ftn2* is ``(frame, track, node, 2)``; *scores_ftn* is
-    ``(frame, track, node)`` or None. ``matlab`` writes the transposed layout
-    ``sleap-convert`` produces by default; ``standard`` writes the Python-native
-    layout -- both carry a ``dims`` attribute so the converter reorders either.
-    """
-    import h5py
-
-    if preset == "matlab":
-        arr = np.transpose(tracks_ftn2, (1, 3, 2, 0))  # (track, xy, node, frame)
-        dims = ["track", "xy", "node", "frame"]
-        sarr = np.transpose(scores_ftn, (1, 2, 0)) if scores_ftn is not None else None
-        sdims = ["track", "node", "frame"]
-    else:  # standard / python-native
-        arr = tracks_ftn2
-        dims = ["frame", "track", "node", "xy"]
-        sarr = scores_ftn
-        sdims = ["frame", "track", "node"]
-
-    with h5py.File(str(path), "w") as f:
-        d = f.create_dataset("tracks", data=arr)
-        if with_dims:
-            d.attrs["dims"] = json.dumps(dims)
-        if sarr is not None:
-            s = f.create_dataset("point_scores", data=sarr)
-            if with_dims:
-                s.attrs["dims"] = json.dumps(sdims)
-
-
 def _two_track_fixture() -> tuple[np.ndarray, np.ndarray]:
     """4 frames, 2 tracks, 2 nodes. Track 0 present 0-3; track 1 present 1-2."""
     tracks = np.full((4, 2, 2, 2), np.nan)
@@ -667,7 +629,7 @@ def test_sleap_converter_flattens_tracks_to_trex_v1(tmp_path: Path) -> None:
 
     tracks, scores = _two_track_fixture()
     h5 = tmp_path / "vid1.analysis.h5"
-    _write_sleap_analysis_h5(h5, tracks, scores, preset="matlab")
+    write_sleap_analysis_h5(h5, tracks, scores, preset="matlab")
 
     conv = SleapAnalysisH5Converter()
     df = conv.convert(
@@ -710,8 +672,8 @@ def test_sleap_converter_reorders_by_dims_matlab_equals_standard(
     tracks, scores = _two_track_fixture()
     m = tmp_path / "m.analysis.h5"
     s = tmp_path / "s.analysis.h5"
-    _write_sleap_analysis_h5(m, tracks, scores, preset="matlab")
-    _write_sleap_analysis_h5(s, tracks, scores, preset="standard")
+    write_sleap_analysis_h5(m, tracks, scores, preset="matlab")
+    write_sleap_analysis_h5(s, tracks, scores, preset="standard")
 
     conv = SleapAnalysisH5Converter()
     hints = EntryHints(group="", sequence="x")
@@ -731,7 +693,7 @@ def test_sleap_converter_falls_back_to_matlab_when_dims_absent(tmp_path: Path) -
 
     tracks, scores = _two_track_fixture()
     h5 = tmp_path / "nodims.analysis.h5"
-    _write_sleap_analysis_h5(h5, tracks, scores, preset="matlab", with_dims=False)
+    write_sleap_analysis_h5(h5, tracks, scores, preset="matlab", with_dims=False)
     df = SleapAnalysisH5Converter().convert(
         h5, SleapConvertParams(), EntryHints(group="", sequence="x")
     )

@@ -60,6 +60,9 @@ from mosaic.core.track_converter import (
 
 __all__ = [
     "CALIBRATION_COLUMN",
+    "DIMENSIONLESS_FIELDS",
+    "LENGTH_FIELDS",
+    "PIXEL_PREFIXES",
     "MissingBodyCentreError",
     "MissingTrexCalibrationError",
     "TrexCalibrationConflictError",
@@ -172,7 +175,7 @@ class UnknownTrexUnitsError(ValueError):
 # ``midline_segment_length`` -- but ``midline_length`` is not (its conversion is
 # commented out in ``OutputLibrary.cpp``), so it stays in pixels despite sitting
 # beside them under a name that reads like a length.
-_LENGTH_FIELDS: frozenset[str] = frozenset(
+LENGTH_FIELDS: frozenset[str] = frozenset(
     {
         "X",
         "Y",
@@ -202,7 +205,7 @@ _LENGTH_FIELDS: frozenset[str] = frozenset(
 # probabilities, timings, and the pixel-valued fields TRex never scales.
 # ``MIDLINE_OFFSET`` is here because it returns an *angle* despite its name, and
 # ``midline_length`` because its centimetre conversion is disabled upstream.
-_DIMENSIONLESS_FIELDS: frozenset[str] = frozenset(
+DIMENSIONLESS_FIELDS: frozenset[str] = frozenset(
     {
         "ANGLE",
         "ORIENTATION",
@@ -245,7 +248,7 @@ _DIMENSIONLESS_FIELDS: frozenset[str] = frozenset(
 # Keypoint columns are already pixels -- TRex passes through what the pose model
 # reported, unscaled -- and are prefix-shaped rather than named, so they are
 # matched separately from the two sets above.
-_PIXEL_PREFIXES: tuple[str, ...] = ("poseX", "poseY", "poseP", "pose")
+PIXEL_PREFIXES: tuple[str, ...] = ("poseX", "poseY", "poseP", "pose")
 
 
 _FLATTENED_INDEX = re.compile(r"_\d+$")
@@ -357,11 +360,11 @@ def unscale_to_pixels(frame: pd.DataFrame, cm_per_pixel: float) -> pd.DataFrame:
     scaled: dict[str, np.ndarray] = {}
     for name in column_names(frame):
         base = base_field(name)
-        if base in _LENGTH_FIELDS:
+        if base in LENGTH_FIELDS:
             values = column_array(frame, name).astype("float64", copy=False)
             scaled[name] = values / cm_per_pixel
             continue
-        if base in _DIMENSIONLESS_FIELDS or name.startswith(_PIXEL_PREFIXES):
+        if base in DIMENSIONLESS_FIELDS or name.startswith(PIXEL_PREFIXES):
             continue
         # Only a numeric column can carry a unit to get wrong; a label or a flag
         # is passed through whatever it is called. ``kind`` is "f" for floats and

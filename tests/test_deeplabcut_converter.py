@@ -11,38 +11,9 @@ from mosaic.core.schema import ensure_track_schema
 from mosaic.core.track_converter import EntryHints
 from mosaic.core.track_library.deeplabcut import DlcConverter, DlcParams, load_dlc
 
+from tests.helpers import write_dlc_csv
+
 _BODYPARTS = ["snout", "midbody", "tailtip"]
-
-
-def _write_single_animal_csv(path: Path, n_frames: int = 20) -> np.ndarray:
-    """Write a single-animal DLC CSV (scorer/bodyparts/coords header).
-
-    Returns the (n_frames, n_bodyparts, 3) array of [x, y, likelihood] written.
-    """
-    rng = np.random.default_rng(0)
-    vals = rng.uniform(0, 100, size=(n_frames, len(_BODYPARTS), 3))
-    vals[:, :, 2] = rng.uniform(0.5, 1.0, size=(n_frames, len(_BODYPARTS)))
-
-    header_scorer = ["scorer"]
-    header_bp = ["bodyparts"]
-    header_coord = ["coords"]
-    for bp in _BODYPARTS:
-        header_scorer += ["DLC_model"] * 3
-        header_bp += [bp] * 3
-        header_coord += ["x", "y", "likelihood"]
-
-    lines = [
-        ",".join(header_scorer),
-        ",".join(header_bp),
-        ",".join(header_coord),
-    ]
-    for i in range(n_frames):
-        row = [str(i)]
-        for b in range(len(_BODYPARTS)):
-            row += [f"{vals[i, b, c]:.6f}" for c in range(3)]
-        lines.append(",".join(row))
-    path.write_text("\n".join(lines))
-    return vals
 
 
 def _write_multi_animal_csv(path: Path, n_frames: int = 15) -> int:
@@ -76,7 +47,7 @@ def _write_multi_animal_csv(path: Path, n_frames: int = 15) -> int:
 
 def test_load_dlc_single_animal(tmp_path: Path) -> None:
     csv = tmp_path / "single.csv"
-    vals = _write_single_animal_csv(csv, n_frames=20)
+    vals = write_dlc_csv(csv, _BODYPARTS, n_frames=20)
 
     individuals = load_dlc(csv)
     assert len(individuals) == 1
@@ -90,7 +61,7 @@ def test_load_dlc_single_animal(tmp_path: Path) -> None:
 
 def test_dlc_converter_single_animal_schema(tmp_path: Path) -> None:
     csv = tmp_path / "single.csv"
-    _write_single_animal_csv(csv, n_frames=20)
+    write_dlc_csv(csv, _BODYPARTS, n_frames=20)
 
     df = DlcConverter().convert(
         csv, DlcParams(fps=50.0), EntryHints(group="g1", sequence="s1")
@@ -137,7 +108,7 @@ def test_dlc_converter_multi_animal(tmp_path: Path) -> None:
 def test_dlc_converter_csv_h5_roundtrip(tmp_path: Path) -> None:
     """A DLC export saved as HDF5 yields the same poses as the CSV form."""
     csv = tmp_path / "single.csv"
-    _write_single_animal_csv(csv, n_frames=12)
+    write_dlc_csv(csv, _BODYPARTS, n_frames=12)
 
     indiv = load_dlc(csv)[0]
     # Build the equivalent maDLC-less HDF5 with a (scorer, bodypart, coord) index.
