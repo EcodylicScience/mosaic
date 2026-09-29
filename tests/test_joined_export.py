@@ -32,6 +32,7 @@ from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.joined_export import (
     CURRENT_JOINED_PARAMS,
+    JoinedExportMissingError,
     JoinedExportParams,
     current_joined_recipes,
     joined_export_path,
@@ -44,11 +45,8 @@ from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.progress import NullProgressCallback
 from mosaic.core.scope import Scope
 from mosaic.tracking.common.scope import build_work_items
-from mosaic.tracking.common.tool_input import (
-    JoinedExportMissingError,
-    resolve_tool_inputs,
-)
-from tests.helpers import add_media_sequence, make_dataset
+from mosaic.tracking.common.tool_input import resolve_tool_inputs
+from tests.helpers import add_media_sequence, clip_facts, make_dataset
 
 pytestmark = pytest.mark.media
 
@@ -245,10 +243,9 @@ def test_reencode_normalises_the_odd_clip_and_joins_every_frame(
 def test_the_majority_profile_is_normalised_to_not_from(tmp_path: Path) -> None:
     """One derivative among sixteen originals must cost one re-encode, not sixteen."""
     from mosaic.core.pipeline.joined_export import _outliers
-    from tests.test_media_timeline import _facts
 
-    av1 = dataclasses.replace(_facts(), codec_name="av1", pixel_format="yuv420p")
-    h264 = dataclasses.replace(_facts(), codec_name="h264", pixel_format="yuv420p")
+    av1 = dataclasses.replace(clip_facts(), codec_name="av1", pixel_format="yuv420p")
+    h264 = dataclasses.replace(clip_facts(), codec_name="h264", pixel_format="yuv420p")
     majority, odd = _outliers([h264] * 16 + [av1])
 
     assert majority == ("h264", "yuv420p")

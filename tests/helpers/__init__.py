@@ -62,6 +62,7 @@ from tests.helpers.media import (
     add_media_sequence,
     add_transcode_derivative,
     clean_facts_cells,
+    clip_facts,
     write_media_index,
     write_mpeg4_mp4,
 )
@@ -98,6 +99,7 @@ __all__ = [
     "assert_no_literal_tilde",
     "healthy_probe",
     "clean_facts_cells",
+    "clip_facts",
     "dotted_values",
     "functions_named",
     "inside_a_virtualenv",

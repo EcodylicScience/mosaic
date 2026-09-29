@@ -17,8 +17,8 @@ from mosaic_media import MediaFacts
 
 from mosaic.core.media.timeline import concatenated_timeline
 from mosaic.tracking.trex.joined import retime_joined_frame
+from tests.helpers import clip_facts
 
-from tests.test_media_timeline import _facts
 
 # Clip length matters here, and is not incidental. `rate_uniform` measures
 # *accumulated* drift -- |other - first| / first, scaled by the shorter clip's
@@ -27,10 +27,13 @@ from tests.test_media_timeline import _facts
 # ten-frame fixture would read as uniform and quietly test nothing.
 CLIP = 300
 SESSION = [
-    _facts(fps=30.0, frame_count=CLIP),
-    _facts(fps=31.0, frame_count=CLIP),
+    clip_facts(fps=30.0, frame_count=CLIP),
+    clip_facts(fps=31.0, frame_count=CLIP),
 ]
-UNIFORM = [_facts(fps=30.0, frame_count=CLIP), _facts(fps=30.0, frame_count=CLIP)]
+UNIFORM = [
+    clip_facts(fps=30.0, frame_count=CLIP),
+    clip_facts(fps=30.0, frame_count=CLIP),
+]
 
 
 def _export(n: int = 2 * CLIP) -> pd.DataFrame:
@@ -132,7 +135,7 @@ class TestWhatARateSpoiled:
 class TestOneClip:
     def test_a_single_segment_timeline_changes_nothing(self) -> None:
         exported = _export(CLIP)
-        timeline = concatenated_timeline([_facts(fps=30.0, frame_count=CLIP)])
+        timeline = concatenated_timeline([clip_facts(fps=30.0, frame_count=CLIP)])
         out = retime_joined_frame(exported, timeline)
         pd.testing.assert_frame_equal(out, exported)
 
@@ -143,5 +146,5 @@ class TestOneClip:
 
 
 def test_the_facts_helper_is_the_shared_one() -> None:
-    """Guards the cross-module import this file leans on."""
-    assert isinstance(_facts(), MediaFacts)
+    """Guards the shared builder this file leans on."""
+    assert isinstance(clip_facts(), MediaFacts)

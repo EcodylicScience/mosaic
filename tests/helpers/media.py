@@ -375,3 +375,57 @@ def add_transcode_derivative(
             candidate[column] = f"{TRANSCODE_KIND_DIRECTORY}/{derivative.name}"
     write_media_index_rows(raw_index, frame_from_rows(list(originals)))
     return derivative
+
+
+def clip_facts(
+    *,
+    fps: float = 30.0,
+    frame_count: int = 300,
+    width: int = 64,
+    height: int = 48,
+    rotation: int = 0,
+    duration: float | None = None,
+    start_time: float = 0.0,
+    video_uuid: str = "uuid",
+) -> MediaFacts:
+    """One clip's probed facts, carrying what a timeline or a rate check reads.
+
+    Built rather than probed, so a test can state a 31 fps clip of three hundred
+    frames without encoding one.
+    """
+    return MediaFacts(
+        container="mp4",
+        codec_name="h264",
+        pixel_format="yuv420p",
+        color_range="",
+        color_primaries="",
+        color_transfer="",
+        width=width,
+        height=height,
+        rotation_degrees=rotation,
+        square_pixels=True,
+        progressive=True,
+        has_audio=False,
+        video_stream_count=1,
+        duration=(frame_count / fps if fps else 0.0) if duration is None else duration,
+        fps=fps,
+        frame_count=frame_count,
+        start_time=start_time,
+        constant_frame_rate=True,
+        max_instantaneous_fps=None,
+        declared_duration=frame_count / fps if fps else 0.0,
+        declared_fps=fps,
+        declared_frame_count=frame_count,
+        moov_at_start=True,
+        max_keyframe_interval_frames=1,
+        max_gop_bytes=1,
+        discard_flagged_packets=0,
+        leading_non_keyframe_frames=0,
+        coded_reordering_depth=0,
+        max_timestamp_gap_frame_periods=1.0,
+        timing_source="presentation",
+        video_uuid=video_uuid,
+        content_digest="digest",
+        identity_scheme="1",
+        prober_version="test",
+    )

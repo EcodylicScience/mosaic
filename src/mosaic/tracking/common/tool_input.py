@@ -33,6 +33,7 @@ from mosaic_media.transcode import TranscodeError
 
 from mosaic.core.media.facts_columns import derivative_path_for_target, row_mapping
 from mosaic.core.media.imgstore_io import is_imgstore
+from mosaic.core.pipeline.joined_export import current_join
 from mosaic.core.pipeline.store_export import EXPORT_TARGET
 from mosaic.core.pipeline.tracking_roots import (
     CONSERVATIVE_DECODER,
@@ -45,7 +46,6 @@ if TYPE_CHECKING:
     from mosaic.tracking.common.scope import TrackerWorkItem
 
 __all__ = [
-    "JoinedExportMissingError",
     "StoreExportMissingError",
     "ToolCodecError",
     "refuse_undecodable_codec",
@@ -60,15 +60,6 @@ _CODEC_PROBE_TIMEOUT_SECONDS: Final = 120.0
 
 class StoreExportMissingError(FileNotFoundError):
     """An imgstore has no exported video for a subprocess tool to open."""
-
-
-class JoinedExportMissingError(FileNotFoundError):
-    """A multi-clip entry has no joined video for a subprocess tool to open.
-
-    Its own class rather than a reuse of the one above, because the two have
-    different remedies -- ``export-store`` and ``export-joined`` -- and a caller
-    catching one should not silently swallow the other.
-    """
 
 
 class ToolCodecError(TranscodeError):
@@ -274,83 +265,22 @@ def resolve_entry_input(
 def _joined_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
     """The one video holding *item*'s clips, or a refusal naming how to build it.
 
-    Found by the clip set's own ordered composition digest -- the value
-    ``item.source_uid`` already computes for the reuse gate -- so this looks for
-    the join of *these* clips in *this* order and never for whatever join
-    happens to be on disk.
-
-    **Any current recipe answers the question, and a superseded one never
-    does.** A consumer is asking "give me these clips as one video". Every join
-    the current op writes answers that, whatever its parameters, because the op
-    verifies the frames and the timeline before publishing either. Re-deriving
-    the name from default parameters instead made every non-default join
-    invisible: a ``reencode`` run wrote one file and the tracker looked for
-    another, then reported the join missing on a session that had just been
-    joined.
-
-    A join named under an earlier op version is not an answer, because the op no
-    longer vouches for it. The 0.1 join held the right frames on a timeline TREx
-    could not seek, and TREx read the wrong pixels from it at 2 fps. So a
-    superseded join is ignored: when a current one exists this one is not read,
-    and when none does the entry is refused as unjoined.
-
-    Two current joins of one clip set are refused rather than chosen between,
-    for the reason ``select_variant_rows`` refuses two recipes for one entry:
-    they are different inputs, and picking by sort order would make what a
-    tracker read -- and so what it published -- depend on a filesystem accident.
-
-    Refused rather than built here. Joining is minutes of I/O over tens of
-    gigabytes: it belongs to an op with a ledger entry, a claim and a
-    cancellation point, not to a path resolution that a planner also calls.
+    The lookup is :func:`~mosaic.core.pipeline.joined_export.current_join`'s,
+    keyed by ``item.source_uid`` -- the value the reuse gate already computes.
     """
-    from mosaic.core.pipeline.joined_export import joins_of
-
-    source_uid = item.source_uid
-    where = (
-        f"    mosaic run -m <manifest> --kind export-joined "
-        f'--entries "{item.group}:{item.sequence}"'
+    why = (
+        f"{kind} is handed one video file, and a tool that joins clips itself "
+        f"loses frames at every boundary, so mosaic joins them first."
     )
-    if not source_uid:
-        message = (
-            f"[{kind}] ({item.group}, {item.sequence}) has {item.n_sources} "
-            f"clips and at least one carries no content identity, so the join "
-            f"of them cannot be addressed. Run 'mosaic reprobe-media --apply' "
-            f"to mint one for every clip, then:\n{where}"
-        )
-        raise JoinedExportMissingError(message)
-
-    current, superseded = joins_of(ds.get_root("media"), source_uid)
-    if len(current) > 1:
-        listed = "\n".join(f"      {p.name}" for p in current)
-        message = (
-            f"[{kind}] ({item.group}, {item.sequence}) has {len(current)} "
-            f"current joins of the same clips, made by different recipes:\n"
-            f"{listed}\n"
-            f"They are different inputs, and choosing between them here would "
-            f"make what this run read depend on which sorts first. Each is "
-            f"current, so which to keep is your call: delete the rest and "
-            f"re-run."
-        )
-        raise JoinedExportMissingError(message)
-    if current:
-        return current[0]
-    if superseded:
-        listed = "\n".join(f"      {p.name}" for p in superseded)
-        message = (
-            f"[{kind}] ({item.group}, {item.sequence}) was joined by an earlier "
-            f"version of export-joined, which the current version would not "
-            f"write:\n{listed}\n"
-            f"Build the current join:\n{where}\n"
-            f"then `mosaic prune-joined --apply` reclaims the old one."
-        )
-        raise JoinedExportMissingError(message)
-    message = (
-        f"[{kind}] ({item.group}, {item.sequence}) is one recording in "
-        f"{item.n_sources} clips. {kind} is handed one video file, and a "
-        f"tool that joins clips itself loses frames at every boundary, so "
-        f"mosaic joins them first. Build it:\n{where}"
+    return current_join(
+        ds,
+        item.group,
+        item.sequence,
+        item.source_uid,
+        item.n_sources,
+        asker=kind,
+        why=why,
     )
-    raise JoinedExportMissingError(message)
 
 
 def _registered_export(

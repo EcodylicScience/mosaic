@@ -79,8 +79,10 @@ composition digest of the clips it joined -- the same value
 reuse gate -- plus the recipe. So adding, removing, reordering or replacing a
 clip addresses a different file, and a file at this path is this clip set joined
 by this recipe. There is no index row and no forward link: nothing routes to a
-joined export, and only a caller that explicitly asks for one
-(:func:`mosaic.tracking.common.tool_input.resolve_tool_inputs`) follows it.
+joined export, and only a caller that explicitly asks for one follows it --
+:func:`mosaic.tracking.common.tool_input.resolve_tool_inputs` for a tracker, and
+:func:`join_to_read` for mosaic's own reader over clips whose rates differ. Both
+look it up through :func:`current_join`.
 
 **A consumer reads a join under a current recipe, and never under any other.**
 Current means one this op writes today for some valid parameters
@@ -94,6 +96,8 @@ could not seek. :func:`joins_of` sorts one clip set's joins into the two, and
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final
 
@@ -115,19 +119,25 @@ from mosaic.core.pipeline.stream_copy import (
 )
 
 if TYPE_CHECKING:
-    from mosaic.core.dataset import Dataset
+    from mosaic.core.dataset import Dataset, ResolvedScopeEntry
     from mosaic.core.pipeline.job import JobContext
 
 __all__ = [
     "CURRENT_JOINED_PARAMS",
     "JOINED_KIND_DIRECTORY",
+    "JoinedExportMissingError",
     "JoinedExportOp",
     "JoinedExportParams",
+    "MissingJoin",
+    "current_join",
     "current_joined_recipes",
     "joined_export_path",
     "joined_recipe_hash",
     "joined_source_uid",
+    "join_to_read",
     "joins_of",
+    "missing_joins",
+    "needs_join",
     "parse_joined_name",
     "write_joined_export",
 ]
@@ -310,6 +320,205 @@ def joined_export_path(ds: "Dataset", source_uid: str, recipe_hash: str) -> Path
     """Where the join of one clip set by one recipe lives."""
     root = ds.get_root("media") / JOINED_KIND_DIRECTORY
     return root / f"{source_uid}.{recipe_hash}.joined.mp4"
+
+
+class JoinedExportMissingError(FileNotFoundError):
+    """A multi-clip entry has no joined video for its reader to open.
+
+    Its own class rather than a reuse of ``StoreExportMissingError``, because the
+    two have different remedies -- ``export-store`` and ``export-joined`` -- and a
+    caller catching one should not silently swallow the other.
+    """
+
+
+def current_join(
+    ds: "Dataset",
+    group: str,
+    sequence: str,
+    source_uid: str,
+    n_sources: int,
+    *,
+    asker: str,
+    why: str,
+) -> Path:
+    """The one current join of a clip set, or a refusal naming how to build it.
+
+    Found by the clip set's own ordered composition digest (*source_uid*, as
+    :func:`joined_source_uid` computes it), so this looks for the join of *these*
+    clips in *this* order and never for whatever join happens to be on disk.
+
+    **Any current recipe answers the question, and a superseded one never
+    does.** A consumer is asking "give me these clips as one video". Every join
+    the current op writes answers that, whatever its parameters, because the op
+    verifies the frames and the timeline before publishing either. Re-deriving
+    the name from default parameters instead made every non-default join
+    invisible: a ``reencode`` run wrote one file and the tracker looked for
+    another, then reported the join missing on a session that had just been
+    joined.
+
+    A join named under an earlier op version is not an answer, because the op no
+    longer vouches for it. The 0.1 join held the right frames on a timeline TREx
+    could not seek, and TREx read the wrong pixels from it at 2 fps. So a
+    superseded join is ignored: when a current one exists this one is not read,
+    and when none does the entry is refused as unjoined.
+
+    Two current joins of one clip set are refused rather than chosen between,
+    for the reason ``select_variant_rows`` refuses two recipes for one entry:
+    they are different inputs, and picking by sort order would make what a
+    consumer read -- and so what it published -- depend on a filesystem accident.
+
+    Refused rather than built here. Joining is minutes of I/O over tens of
+    gigabytes: it belongs to an op with a ledger entry, a claim and a
+    cancellation point, not to a path resolution that a planner also calls.
+
+    Args:
+        ds: The dataset whose ``media`` root holds the joins.
+        group: The entry's group, for the refusal and the command it names.
+        sequence: The entry's sequence, likewise.
+        source_uid: The clip set's ordered composition digest, ``""`` when a clip
+            carries no content identity.
+        n_sources: How many clips the entry has.
+        asker: The op asking, which prefixes every refusal.
+        why: Why *asker* needs one file rather than the clips, stated where no
+            join exists at all.
+
+    Returns:
+        The current join's path.
+
+    Raises:
+        JoinedExportMissingError: If the clip set cannot be addressed, has two
+            current joins, has only superseded ones, or has none.
+    """
+    where = (
+        f"    mosaic run -m <manifest> --kind export-joined "
+        f'--entries "{group}:{sequence}"'
+    )
+    if not source_uid:
+        message = (
+            f"[{asker}] ({group}, {sequence}) has {n_sources} clips and at least "
+            f"one carries no content identity, so the join of them cannot be "
+            f"addressed. Run 'mosaic reprobe-media --apply' to mint one for every "
+            f"clip, then:\n{where}"
+        )
+        raise JoinedExportMissingError(message)
+
+    current, superseded = joins_of(ds.get_root("media"), source_uid)
+    if len(current) > 1:
+        listed = "\n".join(f"      {p.name}" for p in current)
+        message = (
+            f"[{asker}] ({group}, {sequence}) has {len(current)} current joins of "
+            f"the same clips, made by different recipes:\n{listed}\n"
+            f"They are different inputs, and choosing between them here would "
+            f"make what this run read depend on which sorts first. Each is "
+            f"current, so which to keep is your call: delete the rest and "
+            f"re-run."
+        )
+        raise JoinedExportMissingError(message)
+    if current:
+        return current[0]
+    if superseded:
+        listed = "\n".join(f"      {p.name}" for p in superseded)
+        message = (
+            f"[{asker}] ({group}, {sequence}) was joined by an earlier version of "
+            f"export-joined, which the current version would not write:\n"
+            f"{listed}\nBuild the current join:\n{where}\n"
+            f"then `mosaic prune-joined --apply` reclaims the old one."
+        )
+        raise JoinedExportMissingError(message)
+    message = (
+        f"[{asker}] ({group}, {sequence}) is one recording in {n_sources} clips. "
+        f"{why} Build it:\n{where}"
+    )
+    raise JoinedExportMissingError(message)
+
+
+def needs_join(paths: Sequence[Path], facts: Sequence[MediaFacts]) -> bool:
+    """Whether mosaic's own reader must read these clips through their join.
+
+    ``MultiVideoReader`` refuses clips whose frame rates disagree, and it stays
+    strict: one rate is what lets it place a global frame index. The join holds
+    the same frames restamped onto one timeline and verified against the clips'
+    summed counts, so it is the one file that reads such a session frame for
+    frame. The rule is :func:`~mosaic.core.media.uniformity.rate_uniform`'s,
+    which is the reader's own check, so this and the reader cannot disagree about
+    a marginal session.
+
+    ``False`` for one clip, which is its own timeline, and for an imgstore
+    sequence, whose reader compares no rate and reads the stores natively.
+    """
+    # Local: `uniformity` reaches `core.pipeline.media_index`, and this module is
+    # imported from `core.pipeline.__init__`. A module-level import would make
+    # the order two modules happen to be imported in decide whether either loads.
+    from mosaic.core.media.imgstore_io import is_imgstore
+    from mosaic.core.media.uniformity import rate_uniform
+
+    if len(paths) < 2 or any(is_imgstore(path) for path in paths):
+        return False
+    return not rate_uniform(facts)
+
+
+_MIXED_RATE_WHY: Final = (
+    "Its clips differ in frame rate, and mosaic reads such a recording only "
+    "through its join, which holds every frame on one timeline."
+)
+
+
+def join_to_read(
+    ds: "Dataset", entry: "ResolvedScopeEntry", *, asker: str
+) -> Path | None:
+    """The join mosaic's reader opens for one camera, or ``None`` for its clips.
+
+    Looked up by the camera's own clip set. ``export-joined`` joins an entry's
+    clips, so for a single-camera entry the two are the same set; a multi-camera
+    entry's per-camera join is not something the op writes, and is refused as
+    missing.
+
+    Raises:
+        JoinedExportMissingError: If the camera :func:`needs_join` and
+            :func:`current_join` refuses.
+    """
+    paths = entry.resolved.paths
+    facts = entry.resolved.facts
+    if not needs_join(paths, facts):
+        return None
+    return current_join(
+        ds,
+        entry.group,
+        entry.sequence,
+        joined_source_uid(facts),
+        len(paths),
+        asker=asker,
+        why=_MIXED_RATE_WHY,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class MissingJoin:
+    """One camera that needs a join and has no single current one."""
+
+    group: str
+    sequence: str
+    camera: str
+    reason: str
+
+
+def missing_joins(
+    ds: "Dataset", media_scope: Iterable["ResolvedScopeEntry"], *, asker: str
+) -> list[MissingJoin]:
+    """Every camera in *media_scope* whose join :func:`join_to_read` refuses.
+
+    A lookup that raises nothing, so a caller can name every missing join at
+    once before any work starts, or report readiness without starting any.
+    """
+    missing: list[MissingJoin] = []
+    for entry in media_scope:
+        try:
+            _ = join_to_read(ds, entry, asker=asker)
+        except JoinedExportMissingError as exc:
+            missing.append(
+                MissingJoin(entry.group, entry.sequence, entry.camera, str(exc))
+            )
+    return missing
 
 
 def _refuse_mismatched_geometry(paths: list[Path], facts: list[MediaFacts]) -> None:

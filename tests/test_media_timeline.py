@@ -10,72 +10,23 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from mosaic_media import MediaFacts
 
 from mosaic.core.media.timeline import concatenated_timeline
 from mosaic.core.media.uniformity import geometry_mismatch, rate_uniform
-
-
-def _facts(
-    *,
-    fps: float = 30.0,
-    frame_count: int = 300,
-    width: int = 64,
-    height: int = 48,
-    rotation: int = 0,
-    duration: float | None = None,
-    start_time: float = 0.0,
-) -> MediaFacts:
-    """One clip's probed facts, carrying just what the timeline reads."""
-    return MediaFacts(
-        container="mp4",
-        codec_name="h264",
-        pixel_format="yuv420p",
-        color_range="",
-        color_primaries="",
-        color_transfer="",
-        width=width,
-        height=height,
-        rotation_degrees=rotation,
-        square_pixels=True,
-        progressive=True,
-        has_audio=False,
-        video_stream_count=1,
-        duration=(frame_count / fps if fps else 0.0) if duration is None else duration,
-        fps=fps,
-        frame_count=frame_count,
-        start_time=start_time,
-        constant_frame_rate=True,
-        max_instantaneous_fps=None,
-        declared_duration=frame_count / fps if fps else 0.0,
-        declared_fps=fps,
-        declared_frame_count=frame_count,
-        moov_at_start=True,
-        max_keyframe_interval_frames=1,
-        max_gop_bytes=1,
-        discard_flagged_packets=0,
-        leading_non_keyframe_frames=0,
-        coded_reordering_depth=0,
-        max_timestamp_gap_frame_periods=1.0,
-        timing_source="presentation",
-        video_uuid="uuid",
-        content_digest="digest",
-        identity_scheme="1",
-        prober_version="test",
-    )
+from tests.helpers import clip_facts
 
 
 # The measured shape of session 20250922, shortened: 30, then 29.95, then 31.
 SESSION = [
-    _facts(fps=30.0, frame_count=300),
-    _facts(fps=29.95, frame_count=300),
-    _facts(fps=31.0, frame_count=300),
+    clip_facts(fps=30.0, frame_count=300),
+    clip_facts(fps=29.95, frame_count=300),
+    clip_facts(fps=31.0, frame_count=300),
 ]
 
 
 class TestPlacement:
     def test_a_single_clip_is_frame_over_fps(self) -> None:
-        timeline = concatenated_timeline([_facts(fps=25.0, frame_count=10)])
+        timeline = concatenated_timeline([clip_facts(fps=25.0, frame_count=10)])
         frames = np.arange(10)
         assert timeline.times(frames) == pytest.approx(frames / 25.0)
 
@@ -109,8 +60,8 @@ class TestPlacement:
         one-second hole at the boundary.
         """
         clips = [
-            _facts(fps=30.0, frame_count=300, duration=11.0),
-            _facts(fps=30.0, frame_count=300),
+            clip_facts(fps=30.0, frame_count=300, duration=11.0),
+            clip_facts(fps=30.0, frame_count=300),
         ]
         timeline = concatenated_timeline(clips)
         assert timeline.segments[0].measured_duration == pytest.approx(11.0)
@@ -126,7 +77,7 @@ class TestPlacement:
 
     def test_start_time_moves_nothing(self) -> None:
         """It is a container presentation offset, not a wall clock."""
-        shifted = [_facts(start_time=4.5), _facts(start_time=4.5)]
+        shifted = [clip_facts(start_time=4.5), clip_facts(start_time=4.5)]
         timeline = concatenated_timeline(shifted)
         assert timeline.times([0])[0] == pytest.approx(0.0)
         assert timeline.segments[1].start_time == pytest.approx(10.0)
@@ -139,7 +90,7 @@ class TestRates:
         assert list(rates) == [30.0, 30.0, 29.95, 29.95, 31.0, 31.0]
 
     def test_a_session_of_one_rate_is_uniform(self) -> None:
-        timeline = concatenated_timeline([_facts(), _facts()])
+        timeline = concatenated_timeline([clip_facts(), clip_facts()])
         assert timeline.uniform_rate is True
 
     def test_the_measured_session_is_not_uniform(self) -> None:
@@ -147,7 +98,7 @@ class TestRates:
 
     def test_a_same_rig_pair_stays_uniform(self) -> None:
         """The tolerance exists so measurement noise is not a disagreement."""
-        pair = [_facts(fps=30.0), _facts(fps=30.000000040)]
+        pair = [clip_facts(fps=30.0), clip_facts(fps=30.000000040)]
         assert concatenated_timeline(pair).uniform_rate is True
 
 
@@ -165,7 +116,7 @@ class TestEdges:
 
     def test_an_unknown_rate_raises_rather_than_being_defaulted(self) -> None:
         with pytest.raises(ValueError, match="frame rate"):
-            _ = concatenated_timeline([_facts(), _facts(fps=0.0)])
+            _ = concatenated_timeline([clip_facts(), clip_facts(fps=0.0)])
 
     def test_segment_for_frame_finds_the_holder(self) -> None:
         timeline = concatenated_timeline(SESSION)
@@ -183,17 +134,19 @@ class TestTheTwoHalvesAreAskedSeparately:
 
     def test_a_rotation_difference_is_caught_at_equal_coded_size(self) -> None:
         """Coded-only would wave this through; the reader then transposes it."""
-        mismatch = geometry_mismatch([_facts(), _facts(rotation=90)])
+        mismatch = geometry_mismatch([clip_facts(), clip_facts(rotation=90)])
         assert mismatch is not None
         assert mismatch.field == "rotation_degrees"
         assert mismatch.index == 1
 
     def test_a_width_difference_names_the_clip_that_disagrees(self) -> None:
-        mismatch = geometry_mismatch([_facts(), _facts(), _facts(width=1280)])
+        mismatch = geometry_mismatch(
+            [clip_facts(), clip_facts(), clip_facts(width=1280)]
+        )
         assert mismatch is not None
         assert (mismatch.field, mismatch.index) == ("width", 2)
         assert (mismatch.first, mismatch.other) == (64, 1280)
 
     def test_one_clip_agrees_with_itself(self) -> None:
-        assert geometry_mismatch([_facts()]) is None
-        assert rate_uniform([_facts()]) is True
+        assert geometry_mismatch([clip_facts()]) is None
+        assert rate_uniform([clip_facts()]) is True

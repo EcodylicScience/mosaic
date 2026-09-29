@@ -937,7 +937,7 @@ def test_a_session_with_no_joined_video_is_refused_naming_the_command(
     ds: Dataset, trex: FakeTrex
 ) -> None:
     """Refused, not silently truncated and not silently joined by the tool."""
-    from mosaic.tracking.common.tool_input import JoinedExportMissingError
+    from mosaic.core.pipeline.joined_export import JoinedExportMissingError
 
     _session(ds, "c0.mp4", "c1.mp4", "c2.mp4", joined=False)
 
