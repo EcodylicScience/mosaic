@@ -291,6 +291,10 @@ A variant records the original recordings that it was made from. A new transcode
 those recordings unchanged and is not detected. After transcoding an entry again,
 run its `preprocess` command with `--overwrite` to rewrite the variant.
 
+Then run the tracker or inference op again with the same settings. A tracker tracks
+each rewritten entry again and reuses the rest. An inference op predicts on every entry
+and replaces each entry's table.
+
 ## Deleting a variant
 
 A variant is one directory, `media/preprocess/<run_id>/`. Delete it, then drop its

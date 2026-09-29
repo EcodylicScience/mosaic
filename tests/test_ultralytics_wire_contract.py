@@ -42,6 +42,8 @@ from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
 from mosaic.tracking.external import runner as runner_package
 from mosaic.tracking.external.runner.ultralytics_protocol import (
+    POINT_COLUMNS,
+    POINT_DTYPES,
     InferPointsRequest,
     InferPoseRequest,
     ProbeResponse,
@@ -259,6 +261,16 @@ def test_the_point_inference_request_carries_dor() -> None:
 
 
 # --- the column contract ---------------------------------------------------
+
+
+def test_the_point_types_name_every_point_column_in_order() -> None:
+    """A type for every column that the point predictions carry, and no other.
+
+    The runner casts its table to these types, and no CI job runs the runner's
+    point inference. A column added to one declaration and not the other would
+    therefore fail on a user's machine and nowhere else.
+    """
+    assert tuple(POINT_DTYPES) == POINT_COLUMNS
 
 
 @pytest.mark.parametrize("n_keypoints", [1, _N_KEYPOINTS, 17])

@@ -259,12 +259,18 @@ def _run_decode_probe(
         )
     except subprocess.TimeoutExpired:
         reason = f"  The test did not finish within {timeout:g} seconds."
-        return ProbeVerdict(False, path, environment, reason)
+        return ProbeVerdict(
+            decoded=False, tested=path, environment=environment, output=reason
+        )
     except OSError as error:
         reason = f"  The interpreter did not start: {error}"
-        return ProbeVerdict(False, path, environment, reason)
+        return ProbeVerdict(
+            decoded=False, tested=path, environment=environment, output=reason
+        )
     output = captured_output(stdout, stderr)
-    return ProbeVerdict(returncode == 0, path, environment, output)
+    return ProbeVerdict(
+        decoded=returncode == 0, tested=path, environment=environment, output=output
+    )
 
 
 def refuse_undecodable_codec(

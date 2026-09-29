@@ -75,6 +75,7 @@ from pydantic import BaseModel, TypeAdapter
 
 from ultralytics_protocol import (
     POINT_COLUMNS,
+    POINT_DTYPES,
     EpochEvent,
     HeartbeatEvent,
     InferenceResult,
@@ -845,22 +846,14 @@ def run_infer_points(request: InferPointsRequest) -> InferResponse:
 
     numeric = list(POINT_COLUMNS[:-1])
     table, n_rows = _numeric_frame(outcome.blocks, numeric)
-    table = table.astype(
-        {"frame": "int64", "detection_id": "int64", "class_id": "int64"}
-    )
-    # ``dtype=object`` explicitly: an empty run would otherwise get a float64
-    # ``class_name`` from an empty list, and the table is now written even when it
-    # holds no rows -- so a reader concatenating an empty run with a full one
-    # would meet two dtypes for one column.
-    table["class_name"] = pd.Series(
-        [
-            outcome.names.get(class_id, f"class_{class_id}")
-            for class_id in table["class_id"]
-        ],
-        dtype=object,
-        index=table.index,
-    )
-    _publish_parquet(table[list(request.columns)], request.output_parquet)
+    table["class_name"] = [
+        outcome.names.get(class_id, f"class_{class_id}")
+        for class_id in map(int, table["class_id"])
+    ]
+    # Every column is cast to its declared type after ``class_name`` exists. An
+    # empty run would otherwise get a float64 ``class_name`` from an empty list.
+    table = table[list(request.columns)].astype(POINT_DTYPES)
+    _publish_parquet(table, request.output_parquet)
     return InferResponse(n_frames=outcome.n_frames, n_rows=n_rows)
 
 

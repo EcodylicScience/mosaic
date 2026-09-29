@@ -22,6 +22,10 @@ from scipy.ndimage import maximum_filter
 
 from mosaic.core.media.video_io import open_frame_reader
 from mosaic.optional_dependency import require
+from mosaic.tracking.external.runner.ultralytics_protocol import (
+    POINT_COLUMNS,
+    POINT_DTYPES,
+)
 
 
 class LocalizerDetection(TypedDict):
@@ -317,9 +321,11 @@ def localizer_detections_to_dataframe(
     Returns
     -------
     DataFrame
-        Columns: ``frame, detection_id, x, y, confidence, class_id, class_name``.
+        The columns of :data:`POINT_COLUMNS`, typed by :data:`POINT_DTYPES`,
+        whether or not any frame holds a detection. Frames without a detection
+        therefore give a table without a row that still names every column.
     """
-    rows = []
+    rows: list[dict[str, float | int | str]] = []
     for frame_idx, detections in enumerate(results):
         for det_idx, det in enumerate(detections):
             class_id = det["class_id"]
@@ -338,4 +344,4 @@ def localizer_detections_to_dataframe(
                     ),
                 }
             )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=list(POINT_COLUMNS)).astype(POINT_DTYPES)

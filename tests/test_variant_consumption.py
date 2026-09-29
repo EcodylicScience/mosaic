@@ -27,7 +27,12 @@ import mosaic.tracking.sleap.dataset_runs as sleap_runs
 import mosaic.tracking.trex.dataset_runs as trex_runs
 import mosaic.tracking.ultralytics_track.dataset_runs as ultralytics_runs
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline.markers import new_inflight, write_inflight
+from mosaic.core.media.video_io import open_frame_reader
+from mosaic.core.pipeline.markers import (
+    new_inflight,
+    read_phase_marker,
+    write_inflight,
+)
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.preprocess_index import media_variant_rows
 from mosaic.core.pipeline.promotion import promote_correction
@@ -71,6 +76,7 @@ from tests.helpers import (
     install_fake_trex,
     install_fake_ultralytics,
     make_dataset,
+    pose_predictions,
     scope_over,
     write_litpose_model,
     write_painted_entry,
@@ -129,6 +135,7 @@ def _variant(
     sequences: Sequence[str] = ("s",),
     *,
     codec: str = "av1",
+    overwrite: bool = False,
 ) -> str:
     """Write the variant of :data:`_STEPS` for *sequences*, and return its run id."""
     return run_op(
@@ -136,6 +143,7 @@ def _variant(
         "preprocess",
         {"steps": _STEPS, "codec": codec},
         scope=Scope(entries=[("", sequence) for sequence in sequences]),
+        overwrite=overwrite,
     )
 
 
@@ -493,11 +501,14 @@ def test_a_trex_variant_table_is_mapped_into_source_space(
 # --- inference ----------------------------------------------------------------
 
 
-def _install_fake_localizer(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+def _install_fake_localizer(
+    monkeypatch: pytest.MonkeyPatch, blind: Callable[[Path], bool] | None = None
+) -> list[Path]:
     """Stand in for the localizer, which runs in this process.
 
     It reports one detection per frame, at ``(1, 4)`` in frame 0 and ``(3, 6)``
-    in frame 1, and records each video that it is handed.
+    in frame 1, and records each video that it is handed. In a video for which
+    *blind* returns true, it reports both frames without a detection.
     """
     import mosaic.tracking.pose_training.localizer_inference as localizer
 
@@ -507,6 +518,8 @@ def _install_fake_localizer(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
         _model_path: str, video_path: Path, **_kwargs: object
     ) -> list[list[LocalizerDetection]]:
         videos.append(Path(video_path))
+        if blind is not None and blind(Path(video_path)):
+            return [[], []]
         return [
             [{"x": 1.0, "y": 4.0, "confidence": 0.9, "class_id": 0}],
             [{"x": 3.0, "y": 6.0, "confidence": 0.8, "class_id": 0}],
@@ -684,7 +697,7 @@ def test_an_inference_run_whose_readable_entries_are_held_names_the_variant(
 def test_an_inference_run_reports_the_entries_it_holds(
     tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The count includes cache hits, and a re-run reports a first run's coverage."""
+    """A re-run publishes every entry again and reports the first run's count."""
     _ = install_fake_point_inference(monkeypatch)
     ds = _dataset(tmp_path, ("s", "t"))
 
@@ -693,6 +706,171 @@ def test_an_inference_run_reports_the_entries_it_holds(
         snapshot = reduce_run_log(run_log_path(ds.base_dir, attempt))
         assert snapshot is not None
         assert snapshot["entries_written"] == 2
+
+
+def _shade(video: Path) -> float:
+    """Return the mean level of *video*'s first frame, decoded for analysis."""
+    with open_frame_reader(video, target="analysis") as reader:
+        for _, frame in reader:
+            return float(np.mean(frame))
+    raise AssertionError(f"{video} has no frame")
+
+
+def _shaded_pose(video: Path) -> pd.DataFrame:
+    """Return the fake pose table, with keypoint 0's x set to the shade of *video*."""
+    return pose_predictions().assign(poseX0=_shade(video))
+
+
+def _is_bright(video: Path) -> bool:
+    """Return whether *video*'s first frame is brighter than level 128."""
+    return _shade(video) > 128
+
+
+def _dark_pose(video: Path) -> pd.DataFrame:
+    """Return :func:`_shaded_pose`, without a row when *video* is bright.
+
+    The fake model then detects nothing in the entry once it is painted bright.
+    """
+    table = _shaded_pose(video)
+    return table.iloc[0:0] if _is_bright(video) else table
+
+
+def _published_table(
+    ds: Dataset, kind: str = "infer-pose"
+) -> tuple[Path, pd.DataFrame]:
+    """Return the path and contents of the one table that *kind* published."""
+    (row,) = [row for _, row in _tracks(ds, kind).iterrows()]
+    path = ds.resolve_path(str(row["abs_path"]))
+    table = pd.read_parquet(path)
+    assert int(row["n_rows"]) == len(table)
+    return path, table
+
+
+def _repaint(ds: Dataset, media: str) -> None:
+    """Paint entry ``s`` at level 200, and write *media*'s variant again if named.
+
+    The variant is written with ``overwrite`` and keeps its run id.
+    """
+    _ = write_painted_entry(ds, "s", _CLIP, _flat(200), size=_SIZE)
+    if media:
+        assert _variant(ds, overwrite=True) == media
+
+
+_ON_VARIANT = pytest.mark.parametrize(
+    "on_variant", [True, False], ids=["variant", "entry-media"]
+)
+
+
+@_ON_VARIANT
+def test_an_inference_rerun_publishes_the_predictions_of_the_rewritten_file(
+    tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch, on_variant: bool
+) -> None:
+    """The file that the model reads changes under the same run id.
+
+    The entry is painted again. On a variant, the variant is then written again
+    with ``overwrite``. The fake model reports the shade of the file that it reads,
+    and the re-run publishes the table of the new shade in place of the old one.
+    """
+    fake = install_fake_pose_inference(monkeypatch, _shaded_pose)
+    ds = _dataset(tmp_path)
+    media = _variant(ds) if on_variant else ""
+    run_id = _infer(ds, "infer-pose", model, media)
+    path, before = _published_table(ds)
+
+    _repaint(ds, media)
+    assert _infer(ds, "infer-pose", model, media, execution_id="again") == run_id
+
+    (video,) = set(fake.videos)
+    offset = _OFFSET_X if on_variant else 0
+    republished, after = _published_table(ds)
+    assert republished == path
+    assert after["poseX0"].tolist() == [_shade(video) + offset] * len(after)
+    assert not after["poseX0"].equals(before["poseX0"])
+    snapshot = reduce_run_log(run_log_path(ds.base_dir, "again"))
+    assert snapshot is not None
+    assert (snapshot["entries_written"], snapshot["entries_failed"]) == (1, 0)
+
+
+_BLIND_WHEN_BRIGHT: dict[str, Callable[[pytest.MonkeyPatch], object]] = {
+    "infer-pose": lambda monkeypatch: install_fake_pose_inference(
+        monkeypatch, _dark_pose
+    ),
+    "infer-localizer": lambda monkeypatch: _install_fake_localizer(
+        monkeypatch, blind=_is_bright
+    ),
+}
+"""Install a fake model of each kind that detects nothing in a bright video.
+
+The pose runner writes its predictions itself. The op writes the localizer's.
+"""
+
+
+@pytest.mark.parametrize("kind", sorted(_BLIND_WHEN_BRIGHT))
+@_ON_VARIANT
+def test_an_inference_rerun_that_detects_nothing_publishes_an_empty_table(
+    tmp_path: Path,
+    model: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    on_variant: bool,
+    kind: str,
+) -> None:
+    """The rewritten file yields predictions without a row, under the same run id.
+
+    The re-run writes the empty predictions, records them as the entry's output,
+    and publishes an empty table with the columns of the first one. The table
+    from the old file does not stay published, and the entry counts as written.
+    """
+    _ = _BLIND_WHEN_BRIGHT[kind](monkeypatch)
+    ds = _dataset(tmp_path)
+    media = _variant(ds) if on_variant else ""
+    run_id = _infer(ds, kind, model, media)
+    path, before = _published_table(ds, kind)
+    assert not before.empty
+
+    _repaint(ds, media)
+    _ = _infer(ds, kind, model, media, execution_id="again")
+
+    republished, after = _published_table(ds, kind)
+    assert republished == path
+    assert after.empty
+    assert list(after.columns) == list(before.columns)
+    entry_dir = infer_run_root(ds, kind, run_id) / "s"
+    predictions = entry_dir / "predictions.parquet"
+    assert pd.read_parquet(predictions).empty
+    marker = read_phase_marker(entry_dir, "infer")
+    assert marker is not None
+    assert marker.execution_id == "again"
+    assert ds.resolve_path(marker.recorded_output) == predictions
+    snapshot = reduce_run_log(run_log_path(ds.base_dir, "again"))
+    assert snapshot is not None
+    assert (snapshot["entries_written"], snapshot["entries_failed"]) == (1, 0)
+
+
+@_ON_VARIANT
+def test_an_inference_rerun_on_unchanged_media_republishes_the_same_table(
+    tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch, on_variant: bool
+) -> None:
+    """The re-run writes the table again, with the same contents, and loses nothing.
+
+    The atomic write replaces the file. A new inode at the table's path therefore
+    shows that the re-run published it.
+    """
+    _ = install_fake_pose_inference(monkeypatch, _shaded_pose)
+    ds = _dataset(tmp_path)
+    media = _variant(ds) if on_variant else ""
+    _ = _infer(ds, "infer-pose", model, media)
+    path, before = _published_table(ds)
+    inode = path.stat().st_ino
+
+    _ = _infer(ds, "infer-pose", model, media, execution_id="again")
+
+    republished, after = _published_table(ds)
+    assert republished == path
+    assert path.stat().st_ino != inode, "the re-run did not publish the table"
+    pd.testing.assert_frame_equal(after, before)
+    snapshot = reduce_run_log(run_log_path(ds.base_dir, "again"))
+    assert snapshot is not None
+    assert (snapshot["entries_written"], snapshot["entries_failed"]) == (1, 0)
 
 
 # --- provenance ---------------------------------------------------------------

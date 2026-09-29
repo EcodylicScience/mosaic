@@ -301,10 +301,8 @@ def test_the_inference_bridge_points_back_at_its_predictions(tmp_path: Path) -> 
         seq_dir=seq_dir,
         consumed_media=[video],
         model_pt=model,
-        overwrite=True,
     )
 
-    assert written is not None
     assert written.n_rows == 5
     row = _one_row(ds)
     assert str(row["producer"]) == "infer-points"
@@ -354,7 +352,6 @@ def test_a_second_producer_adds_a_row_rather_than_replacing_the_first(
         seq_dir=seq_dir,
         consumed_media=[ds.get_root("media_raw") / "vid1.mp4"],
         model_pt=ds.get_root("models") / "best.pt",
-        overwrite=True,
     )
 
     rows = read_tracks_index(ds)

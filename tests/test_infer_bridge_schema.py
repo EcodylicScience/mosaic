@@ -35,6 +35,7 @@ from mosaic.core.pipeline.tracking_roots import tracking_output_schema
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.schema import ensure_track_schema
 from mosaic.tracking.common import bridge as bridge_module
+from mosaic.tracking.common.bridge import BridgeCounts
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     POINT_COLUMNS,
     pose_columns,
@@ -42,6 +43,7 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
 from mosaic.tracking.ops import infer as infer_module
 from mosaic.tracking.ops.infer import _bridge_df_to_tracks
 from mosaic.tracking.pose_training.localizer_inference import (
+    LocalizerDetection,
     localizer_detections_to_dataframe,
 )
 
@@ -116,8 +118,22 @@ _PRODUCERS = {
 }
 
 
-def _bridge(tmp_path: Path, kind: str) -> pd.DataFrame:
-    """Run one kind's predictions through the bridge and read the table back."""
+_NO_DETECTIONS = {
+    "infer-pose": lambda: _pose_predictions().iloc[0:0],
+    "infer-points": lambda: _point_predictions().iloc[0:0],
+    "infer-localizer": lambda: localizer_detections_to_dataframe([[], []]),
+}
+"""Each producer's predictions for a video in which the model detects nothing.
+
+The runner writes its full column set with no rows. The localizer's frames come
+from its real builder, given two frames without a detection.
+"""
+
+
+def _publish(
+    tmp_path: Path, kind: str, predictions: pd.DataFrame
+) -> tuple[BridgeCounts, pd.DataFrame]:
+    """Run *predictions* through *kind*'s bridge, and read the published table back."""
     ds = _dataset(tmp_path, kind)
     seq_dir = ds.get_root(kind) / "run" / "vid1"
     seq_dir.mkdir(parents=True, exist_ok=True)
@@ -130,7 +146,7 @@ def _bridge(tmp_path: Path, kind: str) -> pd.DataFrame:
     variant = f"{kind}.9.9-aaaaaaaaaa"
     written = _bridge_df_to_tracks(
         ds,
-        _PRODUCERS[kind](),
+        predictions,
         "",
         "vid1",
         tracks_variant=variant,
@@ -139,14 +155,20 @@ def _bridge(tmp_path: Path, kind: str) -> pd.DataFrame:
         seq_dir=seq_dir,
         consumed_media=[video],
         model_pt=model,
-        overwrite=True,
     )
-    assert written is not None
-    assert written.n_rows == _N_ROWS
 
     rows = read_tracks_index(ds)
     assert len(rows) == 1
-    return pd.read_parquet(ds.resolve_path(str(rows.iloc[0]["abs_path"])))
+    table = pd.read_parquet(ds.resolve_path(str(rows.iloc[0]["abs_path"])))
+    assert int(rows.iloc[0]["n_rows"]) == len(table)
+    return written, table
+
+
+def _bridge(tmp_path: Path, kind: str) -> pd.DataFrame:
+    """Run one kind's predictions through the bridge and read the table back."""
+    written, table = _publish(tmp_path, kind, _PRODUCERS[kind]())
+    assert written.n_rows == _N_ROWS
+    return table
 
 
 @pytest.mark.parametrize("kind", sorted(_PRODUCERS))
@@ -167,6 +189,24 @@ def test_the_bridged_table_satisfies_the_schema_the_root_declares(
     assert report["missing_required"] == []
     assert report["missing_prefixes"] == []
     assert report["forbidden_present"] == []
+
+
+@pytest.mark.parametrize("kind", sorted(_NO_DETECTIONS))
+def test_predictions_without_a_row_publish_an_empty_table(
+    tmp_path: Path, kind: str
+) -> None:
+    """A video in which the model detects nothing has a result, and it is published.
+
+    The table holds every column that the schema requires and no rows.
+    """
+    written, table = _publish(tmp_path, kind, _NO_DETECTIONS[kind]())
+
+    assert (written.n_rows, written.n_ids) == (0, 0)
+    assert table.empty
+    _, report = ensure_track_schema(
+        table, tracking_output_schema(kind), strict=True, source=kind
+    )
+    assert report["missing_required"] == []
 
 
 @pytest.mark.parametrize("kind", sorted(_PRODUCERS))
@@ -209,6 +249,26 @@ def test_a_point_producers_position_is_renamed_not_duplicated(
     assert not {"x", "y"} & set(table.columns)
     assert table["X"].tolist() == [1.0, 2.0, 3.0, 4.0]
     assert table["Y"].tolist() == [5.0, 6.0, 7.0, 8.0]
+
+
+def test_the_localizer_table_has_the_same_types_with_and_without_a_row() -> None:
+    """An empty localizer table is typed as a full one, column by column.
+
+    Both are written as predictions and published as tracks. Two types for one
+    column would give two parquet schemas for one producer's output.
+    """
+    detection: LocalizerDetection = {
+        "x": 1.0,
+        "y": 2.0,
+        "confidence": 0.9,
+        "class_id": 0,
+    }
+    full = localizer_detections_to_dataframe([[detection]], class_names=["bee"])
+    empty = localizer_detections_to_dataframe([[], []], class_names=["bee"])
+
+    assert empty.empty
+    assert list(full.columns) == list(POINT_COLUMNS)
+    assert empty.dtypes.to_dict() == full.dtypes.to_dict()
 
 
 def _spy_on_tracks_rows(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
@@ -272,7 +332,6 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
         seq_dir=seq_dir,
         consumed_media=[video],
         model_pt=model,
-        overwrite=True,
     )
 
     out_path = ds.get_root("tracks") / variant / "g__s.parquet"
@@ -341,5 +400,4 @@ def test_a_table_with_no_position_at_all_is_refused(tmp_path: Path) -> None:
             seq_dir=seq_dir,
             consumed_media=[video],
             model_pt=model,
-            overwrite=True,
         )

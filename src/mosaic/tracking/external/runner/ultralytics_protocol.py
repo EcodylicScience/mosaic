@@ -16,6 +16,7 @@ own.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Final, Literal, Protocol, TypeAlias
 
 import numpy as np
@@ -431,6 +432,29 @@ Fixed rather than a function of the model, unlike :func:`pose_columns`: a point
 detector localizes one thing per detection whatever it was trained on.
 ``class_name`` is the one non-numeric column either table carries, so it is
 appended after the numeric block rather than being part of it.
+"""
+
+
+POINT_DTYPES: Final[Mapping[str, str]] = {
+    "frame": "int64",
+    "detection_id": "int64",
+    "x": "float64",
+    "y": "float64",
+    "confidence": "float64",
+    "class_id": "int64",
+    "class_name": "object",
+}
+"""The type of each point predictions column, in :data:`POINT_COLUMNS` order.
+
+``class_name`` holds strings in an ``object`` column. The runner and mosaic's
+localizer both cast their tables to these types. A table from either producer
+therefore has the same pandas types whether or not it holds a row.
+
+Parquet stores an empty ``object`` column with the ``null`` type, and a full one
+as ``string``. A single read over several files, such as ``pd.read_parquet`` of
+a directory, takes its schema from the first file. When that file is an empty
+table, the read fails on the ``class_name`` of a full one. Each file reads on its
+own, and the frames concatenate.
 """
 
 
@@ -925,6 +949,7 @@ class HeartbeatEvent(BaseModel):
 # what a caller passes. Exporting them would advertise a surface no caller has.
 __all__ = [
     "POINT_COLUMNS",
+    "POINT_DTYPES",
     "EpochEvent",
     "HeartbeatEvent",
     "InferPointsRequest",

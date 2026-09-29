@@ -69,7 +69,6 @@ from mosaic.tracking.common.bridge import (
     BridgeCounts,
     publish_or_record,
     publish_tracks_table,
-    tracks_table_path,
 )
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
 from mosaic.tracking.common.tool_input import (
@@ -159,9 +158,12 @@ class VideoPredictions:
     localizer does. The two Ultralytics ops run out of process and the runner
     writes the parquet itself, atomically, so re-writing it here would copy a
     whole table to the path it already occupies.
+
+    ``frame`` without a row is a result, from a video in which the model detected
+    nothing, and its empty table is published.
     """
 
-    frame: pd.DataFrame | None
+    frame: pd.DataFrame
     published_path: Path | None = None
 
 
@@ -372,7 +374,7 @@ def _name_the_body_centre(df: pd.DataFrame) -> None:
 
 def _bridge_df_to_tracks(
     ds: Dataset,
-    df: pd.DataFrame | None,
+    df: pd.DataFrame,
     group: str,
     sequence: str,
     *,
@@ -382,18 +384,31 @@ def _bridge_df_to_tracks(
     seq_dir: Path,
     consumed_media: Sequence[Path],
     model_pt: Path,
-    overwrite: bool,
     mapping: SourceMapping | None = None,
-) -> BridgeCounts | None:
+) -> BridgeCounts:
     """Publish an inference DataFrame as a standardized ``tracks/`` parquet.
 
     Names the columns that the schema requires, then publishes through the bridge
     that every tracker shares. ``tracks_variant`` names the directory as well as the
     row. Two models (or two parameter sets) therefore never target one path.
 
+    The table replaces the one that the variant already has for the entry. An
+    inference run predicts on every entry, and the file that the model reads can
+    change under one run id, as when a media variant is written again or the
+    entry is transcoded again. The table therefore always comes from the
+    predictions just made.
+
+    Predictions without a row are the result for a video in which the model
+    detected nothing. They publish an empty table, which replaces an earlier one
+    as any other table does. The Ultralytics runner writes such predictions with
+    its full column set, and the localizer's builder returns its columns without
+    a row. The bridge then names the same columns that it names for predictions
+    with rows, and the empty table satisfies the schema.
+
     Args:
         ds: The dataset.
-        df: The predictions, as the model's runner reported them.
+        df: The predictions, as the model's runner reported them, possibly
+            without a row.
         group: The entry's group, which may be empty.
         sequence: The entry's sequence.
         tracks_variant: The tracks variant that the table belongs to.
@@ -404,22 +419,12 @@ def _bridge_df_to_tracks(
             that the model read and, for a media variant, the entry media that it
             was made from.
         model_pt: The weights that the model loaded.
-        overwrite: Replace the table that this variant already has for the
-            entry.
         mapping: The placement in the entry's media of the media variant that
             the model read, or ``None`` when it read the entry media itself.
 
     Returns:
-        Counts of the published table, or ``None`` when the predictions are empty
-        or the table exists and *overwrite* is false.
+        Counts of the published table, which are ``(0, 0)`` for an empty one.
     """
-    if df is None or df.empty:
-        return None
-    if (
-        tracks_table_path(ds, tracks_variant, make_entry_key(group, sequence)).exists()
-        and not overwrite
-    ):
-        return None
     df = df.copy()
     df["group"] = group
     df["sequence"] = sequence
@@ -577,7 +582,6 @@ def _run_inference_op(
     ctx: JobContext,
     *,
     scope: ResolvedScope | None = None,
-    overwrite: bool = False,
     kind: str,
     version: str,
     train_kind: str,
@@ -594,6 +598,10 @@ def _run_inference_op(
     When ``media`` names a variant, each entry's model reads the variant's file
     and its table is mapped back into the entry's source space. An entry whose
     variant is missing or out of date fails alone and counts as lost.
+
+    An inference op predicts on every entry on every run, and publishes each
+    entry's table when ``convert_to_tracks`` is set. The ``overwrite`` argument
+    that each op's ``run`` receives therefore changes nothing for it.
     """
     if not ds.has_root(kind):
         ds.set_root(kind, tracking_root_default(kind))
@@ -700,14 +708,14 @@ def _run_inference_op(
             ctx.progress.on_entry_start(i, len(work), key)
             ctx.progress.on_phase("infer", key)
 
-            # A claim, not a cache. Inference still re-infers unconditionally -- the
-            # completion marker below records that output is whole, and nothing gates
-            # on it, because turning this into a cache is a behavior change with its
-            # own failure mode (a silently skipped re-run over a corrected video). What
-            # the claim prevents is two executions writing one ``predictions.parquet``
-            # at once. Through ``open_entry`` rather than a fifth inline copy of it, so
-            # the exclusive create and the ownership-checked release are the same ones
-            # every tracker gets.
+            # A claim, not a cache. Inference predicts on every entry and publishes
+            # its table again on every run. The completion marker below records that
+            # output is whole, and nothing gates on it, because turning this into a
+            # cache is a behavior change with its own failure mode (a skipped re-run
+            # over a corrected video). What the claim prevents is two executions
+            # writing one ``predictions.parquet`` at once. ``open_entry`` takes it
+            # with the exclusive create and the ownership-checked release that every
+            # tracker gets, rather than a fifth inline copy of them.
             opened = open_entry(
                 ds,
                 ctx,
@@ -742,15 +750,16 @@ def _run_inference_op(
                         cancel_check=ctx.cancel_token.is_cancelled,
                     )
                 )
+                # A runner that writes no predictions file raises, and the run fails.
                 df = outcome.frame
                 pred_path = outcome.published_path or seq_dir / _PREDICTIONS_NAME
                 # Written here only when the caller did not publish it. An op that ran
                 # out of process wrote the table itself, atomically, at this same path;
                 # copying it back over itself would double the write for nothing.
-                if outcome.published_path is None and df is not None and not df.empty:
+                if outcome.published_path is None:
                     _ = write_parquet_atomic(df, pred_path)
 
-                if params.convert_to_tracks and df is not None and not df.empty:
+                if params.convert_to_tracks:
                     ctx.progress.on_phase("bridge", key)
                     # A table that cannot be published fails this entry on the
                     # attempt's run-log, and the next entry still runs.
@@ -769,7 +778,6 @@ def _run_inference_op(
                             seq_dir=seq_dir,
                             consumed_media=item.consumed_media,
                             model_pt=model.path,
-                            overwrite=overwrite,
                             mapping=item.mapping,
                         ),
                         kind=kind,
@@ -944,7 +952,6 @@ class InferPoseOp(Op[PoseInferParams]):
             params,
             ctx,
             scope=scope,
-            overwrite=overwrite,
             kind=self.kind,
             version=self.version,
             train_kind="train-pose",
@@ -1054,7 +1061,6 @@ class InferPointsOp(Op[PointInferParams]):
             params,
             ctx,
             scope=scope,
-            overwrite=overwrite,
             kind=self.kind,
             version=self.version,
             train_kind="train-points",
@@ -1130,7 +1136,6 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
             params,
             ctx,
             scope=scope,
-            overwrite=overwrite,
             kind=self.kind,
             version=self.version,
             train_kind="train-localizer",
