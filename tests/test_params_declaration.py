@@ -96,6 +96,11 @@ UNREGISTERED_PARAMS_MODULES: tuple[str, ...] = (
     "mosaic.behavior.label_library.custom_label_template",
     "mosaic.behavior.label_library.label_converter_template",
     "mosaic.core.annotations.bbox",
+    "mosaic.core.media.preprocess.crop",
+    "mosaic.core.media.preprocess.frames",
+    "mosaic.core.media.preprocess.mask",
+    "mosaic.core.media.preprocess.registry",
+    "mosaic.core.media.preprocess.steps",
     "mosaic.core.track_library.track_converter_template",
 )
 """Modules holding a ``Params`` subclass that neither registry reaches.
@@ -103,7 +108,9 @@ UNREGISTERED_PARAMS_MODULES: tuple[str, ...] = (
 The label and track converters reach users through the converter CLIs and hash
 through the same ``identity_dump()``. The ``*_template`` modules are the classes
 a person copies to add a converter or a feature, which is where an undescribed
-field propagates from.
+field propagates from. The media steps are parameter models held in a list by
+the pre-processing op, and each step's fields reach a client as that list's
+items.
 """
 
 # The op registry fills on an explicit call rather than on importing the

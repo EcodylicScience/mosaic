@@ -13,6 +13,7 @@ The crop extraction uses the same algorithms as EgocentricCrop
 
 from __future__ import annotations
 
+from functools import cached_property
 from pathlib import Path
 from typing import Annotated, Any, final
 
@@ -23,6 +24,7 @@ from mosaic_media import MediaProbeError
 from mosaic_media.io import FFmpegVideoWriter
 from pydantic import Field
 
+from mosaic.core.media.preprocess.appearance import apply_clahe, make_clahe, to_gray
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pose_columns import (
     configured_pose_pairs,
@@ -192,21 +194,17 @@ class InteractionCropPipeline:
         self._ds = None
         self._scope: ResolvedScope = ResolvedScope()
         self._run_root: Path | None = None
-        self._clahe = None  # lazily constructed; reused across frames/segments
 
-    def _get_clahe(self):
-        """Return a single CLAHE instance, built once from params.
+    @cached_property
+    def _clahe(self) -> cv2.CLAHE:
+        """The CLAHE for this instance's params, built on first use and then reused.
 
-        Building the CLAHE object costs O(tileGridSize^2) for LUT init, so
-        we construct it once per feature-instance rather than per frame.
+        Building one initializes a lookup table per tile, so it is built once per
+        instance rather than once per frame or segment.
         """
-        if self._clahe is None:
-            p = self.params
-            self._clahe = cv2.createCLAHE(
-                clipLimit=p.clahe_clip_limit,
-                tileGridSize=(p.clahe_tile_grid_size, p.clahe_tile_grid_size),
-            )
-        return self._clahe
+        return make_clahe(
+            self.params.clahe_clip_limit, self.params.clahe_tile_grid_size
+        )
 
     # --- Dataset hooks ---
 
@@ -433,7 +431,7 @@ class InteractionCropPipeline:
                     continue
 
                 gi = frame_to_geom_idx[frame_idx]
-                crop = self._extract_crop(
+                crop = self.extract_crop(
                     frame, (centers_x[gi], centers_y[gi]), angles[gi]
                 )
                 writer.write(crop)
@@ -567,12 +565,25 @@ class InteractionCropPipeline:
 
     # --- Per-frame crop ---
 
-    def _extract_crop(
+    def extract_crop(
         self,
         frame: np.ndarray,
         center: tuple[float, float],
         angle: float,
     ) -> np.ndarray:
+        """The crop of *frame* around *center*, post-processed as the params ask.
+
+        Args:
+            frame: The source frame, ``H x W x C`` or ``H x W``.
+            center: The crop center ``(cx, cy)`` in the frame's pixels. A
+                non-finite center gives a crop filled with ``background_color``.
+            angle: The heading in radians, 0 facing +x. With
+                ``rotate_to_heading`` the crop is rotated so it faces +x.
+
+        Returns:
+            The crop, with the body mask, gray conversion and CLAHE applied when
+            the params enable them.
+        """
         p = self.params
         crop_w, crop_h = p.crop_size
         cx, cy = center
@@ -632,23 +643,19 @@ class InteractionCropPipeline:
                 -1,
             )
             if crop.ndim == 3:
-                crop = cv2.bitwise_and(crop, crop, mask=mask)
+                crop = np.asarray(
+                    cv2.bitwise_and(crop, crop, mask=mask), dtype=crop.dtype
+                )
             else:
                 crop = np.where(mask > 0, crop, 0).astype(crop.dtype)
 
         # Grayscale
-        if p.grayscale and crop.ndim == 3:
-            crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        if p.grayscale:
+            crop = to_gray(crop)
 
         # CLAHE (object built once, reused across frames)
         if p.use_clahe:
-            clahe = self._get_clahe()
-            if crop.ndim == 2:
-                crop = clahe.apply(crop)
-            else:
-                lab = cv2.cvtColor(crop, cv2.COLOR_BGR2LAB)
-                lab[:, :, 0] = clahe.apply(lab[:, :, 0])
-                crop = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            crop = apply_clahe(crop, self._clahe)
 
         return crop
 
