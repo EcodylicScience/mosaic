@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Final, TypeVar
 import pandas as pd
 
 from mosaic.core.entry import Entry
-from mosaic.core.pipeline.composition import compositions_disagree
+from mosaic.core.pipeline.composition import composition_drift
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, project_to_schema
 from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
 from mosaic.core.pipeline.inventory.model import ArtifactRecord, InventoryScope
@@ -93,6 +93,13 @@ class TrackerRunRowBase(RunIndexRowBase):
     before this column, or a dataset with no ``media_raw`` -- and never "no
     media", which is how every other composition cell here reads.
     """
+    media: str = ""
+    """The media variant this entry was read from, ``""`` for the entry media.
+
+    The tool's output under the working directory is in the variant's pixels and
+    frames, and only its published table is mapped back into source space. This
+    cell is what says so for a run whose output is read again later.
+    """
 
 
 def tracker_index_path(ds: Dataset, kind: str) -> Path:
@@ -117,19 +124,6 @@ def _adopt_for(row_cls: type[RowT]) -> Callable[[pd.DataFrame], pd.DataFrame]:
         return project_to_schema(df, columns)
 
     return adopt
-
-
-def media_composition_cell(ds: Dataset, group: str, sequence: str) -> str:
-    """The media composition to record on one entry's run row.
-
-    Per entry rather than per run because a tracker row is per entry and the
-    driver builds them one at a time. It reads the per-sequence projection
-    rather than the media index, so the cost is a small CSV beside work
-    measured in minutes.
-    """
-    from mosaic.core.pipeline.sequence_index import media_compositions_for
-
-    return media_compositions_for(ds, [(group, sequence)]).get((group, sequence), "")
 
 
 def tracker_index(path: Path, row_cls: type[RowT]) -> IndexCSV[RowT]:
@@ -203,10 +197,8 @@ def drifted_media_entries(
     a reuse gate keyed on identity alone serves the old run over pixels from a
     different encode, and reports the work done.
 
-    Both sides must be non-empty to count, the honest-empty rule every
-    composition comparison here follows: a blank recorded cell is a run written
-    before the column existed, a blank current one is a projection that is not
-    establishable, and neither is evidence of change.
+    Compared under :func:`~mosaic.core.pipeline.composition.composition_drift`,
+    so a blank cell on either side is not drift.
     """
     from mosaic.core.pipeline.index_csv import index_records
     from mosaic.core.pipeline.sequence_index import media_compositions_for
@@ -226,14 +218,7 @@ def drifted_media_entries(
     }
     if not recorded:
         return ()
-    current = media_compositions_for(ds, recorded)
-    return tuple(
-        sorted(
-            entry
-            for entry, was in recorded.items()
-            if compositions_disagree(was, current.get(entry, ""))
-        )
-    )
+    return composition_drift(recorded, media_compositions_for(ds, recorded))
 
 
 def _tracker_run_records(

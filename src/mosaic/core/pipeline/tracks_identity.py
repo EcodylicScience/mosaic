@@ -36,17 +36,22 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from ._utils import atomic_write, json_ready
 from .op_identity import op_run_id
 
 __all__ = [
     "TRACKS_IDENTITY_SCHEME",
+    "VariantSidecar",
     "convert_variant_payload",
     "converter_op",
     "infer_variant_payload",
+    "read_variant_sidecar",
     "resample_variant_payload",
     "tracker_variant_payload",
     "tracks_run_id",
+    "tracks_variant_media",
     "tracks_variant_root",
     "write_tracks_variant",
 ]
@@ -149,13 +154,18 @@ def tracker_variant_payload(settings: Mapping[str, object]) -> dict[str, object]
 
 
 def infer_variant_payload(
-    params_identity: Mapping[str, object], model_id: str
+    params_identity: Mapping[str, object], model_id: str, media: str = ""
 ) -> dict[str, object]:
     """What determines a table bridged from an inference run.
 
     The op params plus the model that produced the predictions, matching
     ``infer_run_id`` term for term and for the same reason: leaving the model out
     would let two detectors share one identifier.
+
+    *media* is the media variant the predictions were made on, and empty when
+    they were made on the entry's original media. Omitted from the payload
+    entirely when empty, so every variant minted before variants existed keeps
+    the identifier it has.
 
     *model_id* is what **names** the model, never where it sits: a training run
     identity, or the weights' content digest when there is no run to name them
@@ -164,7 +174,10 @@ def infer_variant_payload(
     minted a new one -- wrong in both directions, and the first is the one that
     reports a cache hit over another model's output.
     """
-    return {"params": dict(params_identity), "model": model_id}
+    payload: dict[str, object] = {"params": dict(params_identity), "model": model_id}
+    if media:
+        payload["media"] = media
+    return payload
 
 
 def resample_variant_payload(
@@ -247,3 +260,46 @@ def write_tracks_variant(
     path = root / "params.json"
     atomic_write(path, lambda p: p.write_text(json.dumps(record, indent=2)))
     return path
+
+
+class VariantSidecar(BaseModel):
+    """A variant's ``params.json``, typed.
+
+    :func:`write_tracks_variant` and the label writer in
+    :mod:`mosaic.core.pipeline.labels_identity` record the same keys, and
+    ``kind`` is populated for labels only. ``params`` is the hashed payload.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    identity_scheme: str = ""
+    op: str = ""
+    version: str = ""
+    kind: str = ""
+    params: dict[str, object] = Field(default_factory=dict)
+    observed: dict[str, str] = Field(default_factory=dict)
+
+
+def read_variant_sidecar(path: Path) -> VariantSidecar | None:
+    """The variant sidecar at *path*, or ``None`` when it is absent or unreadable."""
+    if not path.exists():
+        return None
+    try:
+        return VariantSidecar.model_validate_json(path.read_text())
+    except (OSError, ValidationError):
+        return None
+
+
+def tracks_variant_media(tracks_root: Path, run_id: str) -> str:
+    """The media variant tracks variant *run_id*'s tables were made from, or ``""``.
+
+    Read from the payload :func:`write_tracks_variant` recorded, where a tracker's
+    or an inference op's ``media`` term sits when it names a variant. ``""`` for
+    a variant made from the entry media, and for one whose sidecar is absent or
+    unreadable.
+    """
+    sidecar = read_variant_sidecar(
+        tracks_variant_root(tracks_root, run_id) / "params.json"
+    )
+    media = sidecar.params.get("media", "") if sidecar is not None else ""
+    return media if isinstance(media, str) else ""

@@ -9,8 +9,6 @@ index writers -- with no models and no GPU.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
@@ -22,11 +20,13 @@ from mosaic.core.pipeline.markers import read_phase_marker
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.litpose.dataset_runs import litpose_index_path, litpose_run_root
 from mosaic.tracking.litpose.params import LitposeParams
-from mosaic.tracking.litpose.run import LitposePredictResult
 
-from tests.helpers import write_dlc_csv, write_media_index
-
-_BODYPARTS = ("nose", "tail")
+from tests.helpers import (
+    FakeLitpose,
+    install_fake_litpose,
+    write_litpose_model,
+    write_media_index,
+)
 
 
 # --- fixtures --------------------------------------------------------------
@@ -40,45 +40,14 @@ def ds(tmp_path: Path) -> Dataset:
     return dataset
 
 
-def _make_model(model_dir: Path, *, weights: bytes = b"weights") -> Path:
-    """A minimal Lightning Pose model directory: config.yaml + one checkpoint."""
-    ckpt = model_dir / "tb_logs" / "m" / "version_0" / "checkpoints" / "best.ckpt"
-    ckpt.parent.mkdir(parents=True, exist_ok=True)
-    ckpt.write_bytes(weights)
-    (model_dir / "config.yaml").write_text(
-        "model:\n  model_type: heatmap\ndata:\n  keypoint_names: [nose, tail]\n"
-    )
-    return model_dir
-
-
 @pytest.fixture
 def model(tmp_path: Path) -> Path:
-    return _make_model(tmp_path / "litpose_model")
-
-
-@dataclass
-class FakeLitpose:
-    """Recording stand-in for the single Lightning Pose inference phase."""
-
-    predicted: list[Path] = field(default_factory=list)
-    frames: int = 6
-
-    def predict(
-        self, video_path: Path, out_csv: Path, **_kwargs: object
-    ) -> LitposePredictResult:
-        self.predicted.append(Path(video_path))
-        out = Path(out_csv)
-        _ = write_dlc_csv(
-            out, _BODYPARTS, n_frames=self.frames, scorer="heatmap_tracker"
-        )
-        return LitposePredictResult(csv_path=out, stdout="", stderr="")
+    return write_litpose_model(tmp_path / "litpose_model")
 
 
 @pytest.fixture
-def litpose(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeLitpose]:
-    fake = FakeLitpose()
-    monkeypatch.setattr(dr, "run_litpose_predict", fake.predict)
-    yield fake
+def litpose(monkeypatch: pytest.MonkeyPatch) -> FakeLitpose:
+    return install_fake_litpose(monkeypatch)
 
 
 # --- a fresh run produces tracks + both index rows -------------------------
@@ -157,8 +126,7 @@ def test_an_interrupted_predict_is_not_trusted(
     assert len(read_tracks_index(ds)) == 0
 
     # A working predict now re-runs (clearing the partial) and bridges to tracks.
-    fake = FakeLitpose()
-    monkeypatch.setattr(dr, "run_litpose_predict", fake.predict)
+    fake = install_fake_litpose(monkeypatch)
     dr.run_litpose(ds, LitposeParams(model_path=str(model)))
     assert len(fake.predicted) == 1  # the partial was not reused
     assert len(read_tracks_index(ds)) == 1
@@ -183,8 +151,8 @@ def test_overwrite_forces_a_recompute(
 def test_different_weights_are_a_different_run(
     ds: Dataset, tmp_path: Path, litpose: FakeLitpose
 ) -> None:
-    m1 = _make_model(tmp_path / "m1", weights=b"weights-A")
-    m2 = _make_model(tmp_path / "m2", weights=b"weights-B")
+    m1 = write_litpose_model(tmp_path / "m1", weights=b"weights-A")
+    m2 = write_litpose_model(tmp_path / "m2", weights=b"weights-B")
 
     a = dr.run_litpose(ds, LitposeParams(model_path=str(m1)))
     b = dr.run_litpose(ds, LitposeParams(model_path=str(m2)))
@@ -196,8 +164,8 @@ def test_a_different_config_is_a_different_run(
     ds: Dataset, tmp_path: Path, litpose: FakeLitpose
 ) -> None:
     """The config.yaml is part of model identity (it shapes the output)."""
-    m1 = _make_model(tmp_path / "c1")
-    m2 = _make_model(tmp_path / "c2")
+    m1 = write_litpose_model(tmp_path / "c1")
+    m2 = write_litpose_model(tmp_path / "c2")
     # Same weights, different config -> different run.
     (m2 / "config.yaml").write_text(
         "model:\n  model_type: heatmap\ndata:\n  keypoint_names: [nose, tail, mid]\n"

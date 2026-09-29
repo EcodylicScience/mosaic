@@ -18,6 +18,7 @@ from typing import Annotated, Self
 
 from pydantic import Field, field_validator, model_validator
 
+from mosaic.core.pipeline.media_input import MediaInputParams
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.core.params import (
     HASH_EXCLUDE,
@@ -31,6 +32,7 @@ from mosaic.tracking.sleap.run import (
     SleapScoringMethod,
     sleap_track_device_args,
 )
+from mosaic.tracking.sleap.version import SLEAP_KIND
 
 __all__ = ["SleapParams"]
 
@@ -102,8 +104,16 @@ _DEVICE_DESCRIPTION = (
 ) + DEVICE_INDEX_NOTE
 
 
-class SleapParams(TrackerOpParams):
+class SleapParams(TrackerOpParams, MediaInputParams):
     """Parameters for the ``sleap`` tracking op and for ``run_sleap``."""
+
+    window_fields = ("analysis_range",)
+    # `--frames` is the one `sleap-nn track` option that selects a video's frames
+    # by index (sleap_nn/cli.py, sleap-nn 0.3.1), and `analysis_range` is sent as
+    # it. The options that filter by annotation status read a .slp and only warn
+    # on a video.
+    extra_settings_window_keys = {"sleap_extra_settings": ("frames",)}
+    op_kind = SLEAP_KIND
 
     # model: one external model directory, or two for top-down (centroid, then
     # centered-instance). Part of the run_id identity -- via a content digest of

@@ -51,6 +51,7 @@ __all__ = [
     "MediaMember",
     "SequenceComposition",
     "SourceMember",
+    "composition_drift",
     "compositions_disagree",
     "labels_raw_composition",
     "media_composition",
@@ -249,3 +250,24 @@ def compositions_disagree(recorded: str, current: str) -> bool:
     values that differ disagree.
     """
     return bool(recorded) and bool(current) and recorded != current
+
+
+def composition_drift(
+    recorded: Mapping[tuple[str, str], str], current: Mapping[tuple[str, str], str]
+) -> tuple[tuple[str, str], ...]:
+    """The entries whose recorded composition disagrees with the current one.
+
+    Each entry of *recorded* is compared with its cell in *current* under
+    :func:`compositions_disagree`, so a blank on either side, or an entry
+    *current* does not name, is not drift.
+
+    Returns:
+        The drifted entries, sorted.
+    """
+    return tuple(
+        sorted(
+            entry
+            for entry, was in recorded.items()
+            if compositions_disagree(was, current.get(entry, ""))
+        )
+    )

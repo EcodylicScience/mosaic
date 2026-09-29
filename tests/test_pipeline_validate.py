@@ -507,3 +507,88 @@ def test_an_ordering_edge_from_a_media_writer_is_permitted() -> None:
             }
         )
     )
+
+
+_CROP_STEP: Document = {
+    "id": "pre",
+    "type": "op",
+    "kind": "preprocess",
+    "params": {"steps": [{"step": "crop", "x": 0, "y": 0, "width": 32, "height": 24}]},
+}
+
+
+def test_a_media_reference_to_a_preprocess_step_validates() -> None:
+    """A tracker names a variant by the step that writes it, with no ``after``."""
+    assert (
+        _problems(
+            {
+                "steps": [
+                    _CROP_STEP,
+                    {
+                        "id": "sleap",
+                        "type": "op",
+                        "kind": "sleap",
+                        "params": {
+                            "model_paths": ["models/sleap/run"],
+                            "media": {"step": "pre"},
+                        },
+                    },
+                ]
+            }
+        )
+        == ()
+    )
+
+
+@pytest.mark.parametrize("writer", ["transcode", "export-joined", "trex"])
+def test_a_media_reference_must_name_a_preprocess_step(writer: str) -> None:
+    """Only a preprocess run id names a variant a consumer can read.
+
+    A transcode writes media too, and its run id addresses nothing a ``media``
+    field could resolve, so the reference is refused at the step and field that
+    hold it.
+    """
+    problem = _at(
+        {
+            "steps": [
+                {"id": "upstream", "type": "op", "kind": writer},
+                {
+                    "id": "sleap",
+                    "type": "op",
+                    "kind": "sleap",
+                    "params": {
+                        "model_paths": ["models/sleap/run"],
+                        "media": {"step": "upstream"},
+                    },
+                },
+            ]
+        },
+        "params.media",
+    )
+
+    assert problem.step == "sleap"
+    assert f"runs {writer!r}" in problem.message
+    assert "preprocess" in problem.message
+
+
+def test_a_preprocess_step_may_read_another_preprocess_step() -> None:
+    """A chained variant names its upstream variant the same way a tracker does."""
+    assert (
+        _problems(
+            {
+                "steps": [
+                    _CROP_STEP,
+                    {
+                        "id": "gray",
+                        "type": "op",
+                        "kind": "preprocess",
+                        "params": {
+                            "steps": [{"step": "grayscale"}],
+                            "media": {"step": "pre"},
+                        },
+                    },
+                ]
+            }
+        )
+        == ()
+    )

@@ -57,7 +57,7 @@ def _dataset(tmp_path: Path, clips: list[MediaClip]) -> Dataset:
 
 
 def _items(ds: Dataset, *, kind: str) -> list[TrackerWorkItem]:
-    return build_work_items(ds, ds.resolve_media_scope(None), kind=kind)
+    return list(build_work_items(ds, ds.resolve_media_scope(None), kind=kind).items)
 
 
 # The measured shape of one real session, shortened.

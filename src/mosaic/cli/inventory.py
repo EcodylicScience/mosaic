@@ -40,7 +40,8 @@ def inventory_command(
                 "Restrict to an artifact kind (repeatable): feature, "
                 "tracks-variant, labels-variant, label-series, tracker-run, "
                 "frame-run, "
-                "trained-model, prepared-dataset, media-derivative."
+                "trained-model, prepared-dataset, media-derivative, "
+                "media-variant."
             ),
         ),
     ] = None,

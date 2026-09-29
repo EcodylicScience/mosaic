@@ -30,7 +30,6 @@ from mosaic.core.pipeline.ops import OPS, describe_op, list_ops, run_op
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     InferPointsRequest,
-    ProbeResponse,
 )
 from mosaic.tracking.pose_training.ultralytics_infer import InferenceOutcome
 from mosaic.core.pipeline.run_log import (
@@ -43,7 +42,16 @@ from mosaic.tracking import resolve_model
 from mosaic.tracking.frame_extraction.dataset_runs import ExtractFramesParams
 
 from mosaic.core.scope import Scope
-from tests.helpers import FakeTrainer, make_dataset, scope_over
+from tests.helpers import (
+    FakeTrainer,
+    FakeTrex,
+    install_fake_point_inference,
+    install_fake_pose_inference,
+    install_fake_trex,
+    make_dataset,
+    scope_over,
+    write_litpose_model,
+)
 
 
 # --- fixtures --------------------------------------------------------------
@@ -535,61 +543,9 @@ def test_train_localizer_mints_and_registers(
 # --- infer-pose op -> tracks bridge (mocked model) -------------------------
 
 
-def _fake_pose_backend(monkeypatch) -> None:
-    """Replace the two module-scope seams `infer-pose` reaches its model through.
-
-    The op now spawns a runner in the Ultralytics environment, so what a test
-    stands in for is the probe and the tool call -- not an in-process function
-    returning results objects. The stand-in writes a real parquet at the path the
-    request names, because the op reads it back to bridge it, exactly as the
-    runner would have written it.
-    """
-    import mosaic.tracking.common.ultralytics_env as tool_env
-    import mosaic.tracking.pose_training.ultralytics_infer as infer_run
-
-    def fake_probe(model_path, **_kwargs):
-        return ProbeResponse(
-            has_ultralytics=True,
-            has_lap=True,
-            has_locate=False,
-            ultralytics_version="8.4.63",
-            tracker_names=[],
-            model_task="pose",
-            n_keypoints=2,
-            model_load_error="",
-            installed_tracker_table={},
-        )
-
-    def fake_run(request, *, work_dir, **_kwargs):
-        # Two keypoints, and deliberately not the same value: the body centre
-        # the bridge derives is their mean, so a test asserting it cannot pass
-        # by the bridge having copied either one.
-        table = pd.DataFrame(
-            {
-                "frame": range(4),
-                "id": [0] * 4,
-                "poseX0": [1.0] * 4,
-                "poseY0": [2.0] * 4,
-                "poseP0": [0.9] * 4,
-                "poseX1": [5.0] * 4,
-                "poseY1": [8.0] * 4,
-                "poseP1": [0.8] * 4,
-            }
-        )
-        published = Path(request.output_parquet)
-        published.parent.mkdir(parents=True, exist_ok=True)
-        table.to_parquet(published, index=False)
-        return InferenceOutcome(
-            predictions_path=published, n_frames=4, n_rows=len(table)
-        )
-
-    monkeypatch.setattr(tool_env, "probe_environment", fake_probe)
-    monkeypatch.setattr(infer_run, "run_pose_inference_tool", fake_run)
-
-
 def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
     ds = _make_dataset(tmp_path)
-    _fake_pose_backend(monkeypatch)
+    _ = install_fake_pose_inference(monkeypatch)
 
     # a raw model path (no training run needed)
     model = tmp_path / "m.pt"
@@ -635,56 +591,10 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
 # --- infer under the marker protocol (items 8.2 / 8.3, via 8.7) ------------
 
 
-def _fake_points_backend(monkeypatch) -> None:
-    """The same two seams, for the POLO fork's environment.
-
-    `infer-points` had no execution test at all before it ran out of process:
-    nothing in the suite called the op, faked its backend, or installed the
-    `polo` extra, and no CI job did either. This is the first.
-    """
-    import mosaic.tracking.common.ultralytics_env as tool_env
-    import mosaic.tracking.pose_training.ultralytics_infer as infer_run
-
-    def fake_probe(model_path, **_kwargs):
-        return ProbeResponse(
-            has_ultralytics=True,
-            has_lap=True,
-            has_locate=True,
-            ultralytics_version="8.4.84",
-            tracker_names=[],
-            model_task="locate",
-            n_keypoints=1,
-            model_load_error="",
-            installed_tracker_table={},
-        )
-
-    def fake_run(request, *, work_dir, **_kwargs):
-        table = pd.DataFrame(
-            {
-                "frame": [0, 0, 1],
-                "detection_id": [0, 1, 0],
-                "x": [1.0, 2.0, 3.0],
-                "y": [4.0, 5.0, 6.0],
-                "confidence": [0.9, 0.8, 0.7],
-                "class_id": [0, 0, 1],
-                "class_name": ["bee", "bee", "feeder"],
-            }
-        )
-        published = Path(request.output_parquet)
-        published.parent.mkdir(parents=True, exist_ok=True)
-        table.to_parquet(published, index=False)
-        return InferenceOutcome(
-            predictions_path=published, n_frames=2, n_rows=len(table)
-        )
-
-    monkeypatch.setattr(tool_env, "probe_environment", fake_probe)
-    monkeypatch.setattr(infer_run, "run_point_inference_tool", fake_run)
-
-
 def test_infer_points_runs_and_bridges(tmp_path, monkeypatch):
     """The whole op over the POLO seam: identity, claim, parquet, bridge, marker."""
     ds = _make_dataset(tmp_path)
-    _fake_points_backend(monkeypatch)
+    _ = install_fake_point_inference(monkeypatch)
     model = tmp_path / "polo.pt"
     model.write_bytes(b"w")
 
@@ -726,7 +636,7 @@ def _positionless_predictions_for(
     """
     import mosaic.tracking.pose_training.ultralytics_infer as infer_run
 
-    _fake_points_backend(monkeypatch)
+    _ = install_fake_point_inference(monkeypatch)
     whole: Callable[..., InferenceOutcome] = infer_run.run_point_inference_tool
 
     def fake_run(
@@ -798,7 +708,7 @@ def test_the_predictions_the_runner_published_are_not_rewritten(tmp_path, monkey
     still computes in this process, must keep getting its write.
     """
     ds = _make_dataset(tmp_path)
-    _fake_points_backend(monkeypatch)
+    _ = install_fake_point_inference(monkeypatch)
     model = tmp_path / "polo.pt"
     model.write_bytes(b"w")
 
@@ -821,7 +731,7 @@ def test_the_predictions_the_runner_published_are_not_rewritten(tmp_path, monkey
 
 def _fake_pose_model(monkeypatch, tmp_path) -> Path:
     """Patch the pose backend out and return a bare weights path."""
-    _fake_pose_backend(monkeypatch)
+    _ = install_fake_pose_inference(monkeypatch)
     model = tmp_path / "m.pt"
     model.write_bytes(b"w")
     return model
@@ -1070,20 +980,6 @@ def test_sleap_unresolvable_model_raises(tmp_path):
 # --- litpose op (registered; run_id parity with the standalone run_litpose) -
 
 
-def _fake_litpose_model(
-    root: Path, name: str = "lp_model", weights: bytes = b"weights"
-) -> Path:
-    """A minimal Lightning Pose model directory (config.yaml + a checkpoint)."""
-    model_dir = root / name
-    ckpt = model_dir / "tb_logs" / "m" / "version_0" / "checkpoints" / "best.ckpt"
-    ckpt.parent.mkdir(parents=True, exist_ok=True)
-    ckpt.write_bytes(weights)
-    (model_dir / "config.yaml").write_text(
-        "model:\n  model_type: heatmap\ndata:\n  keypoint_names: [nose, tail]\n"
-    )
-    return model_dir
-
-
 def test_litpose_registered_as_gpu_convert_op():
     assert "litpose" in OPS
     d = describe_op("litpose")
@@ -1103,7 +999,7 @@ def test_litpose_op_run_id_matches_standalone_run_litpose(tmp_path):
     from mosaic.tracking.litpose.params import LitposeParams
 
     ds = _make_dataset(tmp_path)
-    model = _fake_litpose_model(tmp_path)
+    model = write_litpose_model(tmp_path / "lp_model")
     absent = ("", "nonexistent")
     direct = run_litpose(ds, LitposeParams(model_path=str(model)), scope_over(absent))
     via_op = run_op(
@@ -1146,9 +1042,9 @@ def test_litpose_model_identity_is_content_not_path(tmp_path):
     # (and so the same run_id); different weights mint a different one.
     from mosaic.tracking.model_refs import resolve_model_set
 
-    a = _fake_litpose_model(tmp_path / "a", weights=b"same-weights")
-    b = _fake_litpose_model(tmp_path / "b", weights=b"same-weights")
-    c = _fake_litpose_model(tmp_path / "c", weights=b"other-weights")
+    a = write_litpose_model(tmp_path / "a", weights=b"same-weights")
+    b = write_litpose_model(tmp_path / "b", weights=b"same-weights")
+    c = write_litpose_model(tmp_path / "c", weights=b"other-weights")
 
     id_a = resolve_model_set(None, [str(a)], "litpose").model_id
     id_b = resolve_model_set(None, [str(b)], "litpose").model_id
@@ -1162,8 +1058,8 @@ def test_litpose_config_is_part_of_identity(tmp_path):
     # identity: same weights + different config -> different run.
     from mosaic.tracking.model_refs import resolve_model_set
 
-    a = _fake_litpose_model(tmp_path / "a")
-    b = _fake_litpose_model(tmp_path / "b")
+    a = write_litpose_model(tmp_path / "a")
+    b = write_litpose_model(tmp_path / "b")
     (b / "config.yaml").write_text(
         "model:\n  model_type: heatmap\ndata:\n  keypoint_names: [nose, tail, mid]\n"
     )
@@ -1375,36 +1271,25 @@ def test_run_trex_resolves_detect_model_run_id_to_weights(tmp_path, monkeypatch)
     )
     idx.mark_finished(rid)
 
-    # Capture the weights run_trex_convert receives, then abort before the binary.
+    # Record the weights the conversion receives, then stop before tracking.
     class _Stop(Exception):
         pass
 
-    captured: dict[str, object] = {}
-    import mosaic.tracking.trex.dataset_runs as dr
-
-    def fake_convert(
-        video_path: object,
-        seq_dir: object,
-        *,
-        detect_model_path: Path | None = None,
-        **kw: object,
-    ):
-        captured["detect_model_path"] = detect_model_path
+    def stop(_output_dir: Path) -> None:
         raise _Stop()
 
-    monkeypatch.setattr(dr, "run_trex_convert", fake_convert)
+    fake = install_fake_trex(monkeypatch, FakeTrex(on_convert=stop))
 
-    try:
+    with pytest.raises(_Stop):
         run_trex(
             ds,
             TrexParams(detect_model=rid, detect_type="yolo"),
             scope_over(("", "vid1")),
         )
-    except _Stop:
-        pass
 
     # resolved run_id -> absolute best.pt
-    assert captured["detect_model_path"] == weights
+    (convert_kwargs,) = fake.convert_kwargs
+    assert convert_kwargs["detect_model_path"] == weights
 
 
 # --- verdict routing in the per-frame ops (analysis-required originals) -----
@@ -1544,32 +1429,12 @@ def test_run_trex_routes_required_row_to_derivative(tmp_path, monkeypatch):
     assert derivative is not None
     import mosaic.tracking.trex.dataset_runs as dr
     from mosaic.tracking.trex.params import TrexParams
-    from mosaic.tracking.trex.run import TRexConvertResult, TRexTrackResult
 
-    seen: list[Path] = []
-
-    def fake_convert(video_path, seq_dir, **kw):
-        # A tuple of sources now, one element per clip; this entry has one.
-        seen.append(Path(video_path[0]))
-        pv_path = Path(seq_dir) / "vid1.pv"
-        pv_path.write_bytes(b"")
-        return TRexConvertResult(
-            pv_path=pv_path,
-            settings_path=Path(seq_dir) / "vid1.settings",
-            background_path=None,
-            stdout="",
-            stderr="",
-        )
-
-    def fake_track(pv_path, seq_dir, **kw):
-        return TRexTrackResult()
-
-    monkeypatch.setattr(dr, "run_trex_convert", fake_convert)
-    monkeypatch.setattr(dr, "run_trex_track", fake_track)
+    fake = install_fake_trex(monkeypatch)
 
     dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
     # TREx tracked the clean analysis derivative, never the defective original.
-    assert [p.resolve() for p in seen] == [derivative.resolve()]
+    assert [p.resolve() for p in fake.converted] == [derivative.resolve()]
 
 
 def test_run_trex_required_unlinked_raises(tmp_path, monkeypatch):

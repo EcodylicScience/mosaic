@@ -17,12 +17,14 @@ from typing import Annotated
 
 from pydantic import Field
 
+from mosaic.core.pipeline.media_input import MediaInputParams
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
 )
 from mosaic.tracking.common.params import TrackerOpParams
+from mosaic.tracking.litpose.version import LITPOSE_KIND
 
 __all__ = ["LitposeParams"]
 
@@ -36,8 +38,13 @@ _LITPOSE_OVERRIDES_DESCRIPTION = "Hydra config overrides applied at inference ti
 _PRECISION_DESCRIPTION = "The forward-pass precision: fp32, fp16, or bf16."
 
 
-class LitposeParams(TrackerOpParams):
-    """Parameters for the ``litpose`` tracking op and for ``run_litpose``."""
+class LitposeParams(TrackerOpParams, MediaInputParams):
+    """Parameters for the ``litpose`` tracking op and for ``run_litpose``.
+
+    Lightning Pose predicts on every frame and exposes no frame window.
+    """
+
+    op_kind = LITPOSE_KIND
 
     # model: one external Lightning Pose model directory (config.yaml plus a
     # checkpoint under tb_logs/). Part of the run_id identity -- via a content

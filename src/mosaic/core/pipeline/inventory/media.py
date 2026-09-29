@@ -1,4 +1,4 @@
-"""Transcode coverage: the kind with no run directory to look in.
+"""Media coverage: transcode derivatives, and the variants ``preprocess`` writes.
 
 Every other artifact is addressed by a run identifier naming a directory, and
 its coverage is which outputs that directory holds. Transcode is not.
@@ -16,33 +16,81 @@ exist, a directory-shaped check reports zero of N -- so a corpus that is entirel
 clean, with nothing to transcode and nothing missing, reads as permanently
 incomplete. Anything acting on that resubmits the same work every tick, forever.
 
+A **media variant** is the opposite case: a run directory per variant, one file
+per entry and camera, and an index recording each file's row. It is keyed and
+reported the way a frame run is.
+
 **Built in ``core`` rather than through the contributor registry**, unlike the
 ops kinds. The registry exists to carry what lives above the layering line;
-the media index and its verdict columns are core's own, so routing this through
-a registration would create a seam with no boundary behind it and make the kind
-unavailable to a core-only caller for no reason.
+the media index, its verdict columns and the variant index are core's own, so
+routing these through a registration would create a seam with no boundary
+behind it and make the kinds unavailable to a core-only caller for no reason.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from mosaic.core.entry import CameraEntry, Entry
 from mosaic.core.media.facts_columns import (
     derivative_path_for_target,
     media_row_uuid,
     read_link_cell,
     transcode_required,
 )
+from mosaic.core.pipeline.composition import composition_drift
+from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.media_index import read_media_index
+from mosaic.core.pipeline.preprocess_index import read_media_variant_index
+from mosaic.core.pipeline.preprocess_layout import (
+    MEDIA_ROOT_KEY,
+    PREPROCESS_KIND_DIRECTORY,
+    media_variant_index_path,
+    media_variant_path,
+    media_variant_run_root,
+)
+from mosaic.core.pipeline.sequence_index import media_compositions_for
 
-from .model import ArtifactRecord, Coverage, InventoryScope, MediaDerivativeRef, Target
-from .model import classify
+from ._read import finish_state, run_ids
+from .model import (
+    ArtifactRecord,
+    Coverage,
+    InventoryScope,
+    MediaDerivativeRef,
+    MediaVariantRef,
+    Target,
+    classify,
+)
 
 if TYPE_CHECKING:
+    import pandas as pd
+
     from ._read import IndexReader
     from mosaic.core.dataset import Dataset
 
-__all__ = ["media_derivative_record"]
+__all__ = [
+    "media_derivative_record",
+    "media_variant_records",
+]
+
+
+def _media_index_path(ds: Dataset, reader: IndexReader) -> Path | None:
+    """The originals index, noted on *reader*, or ``None`` when *ds* has no media.
+
+    ``resolve_media_root`` falls back to ``"media"`` when ``media_raw`` is unset,
+    and returns that name whether or not ``media`` is set either. A tracks-only
+    dataset, which declares both roots and fills neither, therefore names a root
+    ``get_root`` refuses. It holds no media to be short of, so it reads as none
+    rather than raising out of a read.
+    """
+    root_key = ds.resolve_media_root()
+    if not ds.has_root(root_key):
+        return None
+    index_path = ds.get_root(root_key) / "index.csv"
+    reader.note(index_path)
+    return index_path
 
 
 def _nothing_to_cover(target: Target) -> ArtifactRecord[str]:
@@ -74,17 +122,9 @@ def media_derivative_record(
     no reconstructable measurement wants ``mosaic reprobe-media``. Collapsing
     them would tell a user their corpus is short without saying what to do.
     """
-    # ``resolve_media_root`` falls back to ``"media"`` when ``media_raw`` is
-    # unset, and returns that name whether or not ``media`` is set either -- so a
-    # tracks-only dataset, which declares both roots and fills neither, names a
-    # root ``get_root`` then refuses. There is no media to be short of in that
-    # case, and empty coverage is the honest answer rather than an exception out
-    # of a read.
-    root_key = ds.resolve_media_root()
-    if not ds.has_root(root_key):
+    index_path = _media_index_path(ds, reader)
+    if index_path is None:
         return _nothing_to_cover(target)
-    index_path = ds.get_root(root_key) / "index.csv"
-    reader.note(index_path)
     # Derivatives are anchored under the ``media`` root. Without one, nothing can
     # be registered, so a row needing a transcode reads as needing it still.
     media_root = ds.get_root("media") if ds.has_root("media") else None
@@ -151,3 +191,173 @@ def media_derivative_record(
             "needs_probe": frozenset(needs_probe),
         },
     )
+
+
+def media_variant_records(
+    ds: Dataset, scope: InventoryScope, reader: IndexReader
+) -> list[ArtifactRecord[CameraEntry]]:
+    """What each media variant holds, keyed by ``(group, sequence, camera)``.
+
+    One record per variant the index names. A variant covers the entries its own
+    rows name, and the variant files found beside them, not the dataset's
+    universe: a variant is legitimately made for a subset, and measuring one
+    against everything would report a finished run as short.
+
+    An entry is held when it has both a row and a file. The op renames a file
+    into place and then writes its row, and a consumer reads the row, so a file
+    ahead of its row is not yet usable. On a run still writing that is progress
+    and reads as partial, and on a finished run it is damage. A file is looked
+    for where :func:`~mosaic.core.pipeline.preprocess_layout.media_variant_path`
+    puts one, for every entry and camera the run's rows or the media index name.
+    An entry's claim and its encode in flight sit in its directory under
+    ``.work/``, so neither is taken for a variant file.
+
+    A row whose recorded media composition differs from the entry's current one
+    is drift, under the rule that a blank on either side is not.
+
+    The media index and the entries' current compositions are read once for
+    every variant rather than once for each, and not at all when the index names
+    no variant. A dataset with no media root holds no variant, because every
+    variant sits under that root.
+
+    Args:
+        ds: The dataset. Read only.
+        scope: What the inventory was asked about. Its selector narrows the
+            entries reported.
+        reader: This scan's view of the index files.
+
+    Returns:
+        One record per variant.
+    """
+    if not ds.has_root(MEDIA_ROOT_KEY):
+        return []
+    frame = _variant_index(ds, reader)
+    variants = run_ids(frame)
+    if not variants:
+        return []
+    wanted = scope.selector.entry_pairs
+    rows = _wanted_rows(frame, wanted)
+    media_entries = _media_entries(ds, wanted, reader)
+    compositions = media_compositions_for(ds, _entries_of(rows))
+    return [
+        _variant_record(
+            ds,
+            frame,
+            run_id,
+            [record for record in rows if record.get("run_id", "") == run_id],
+            media_entries,
+            compositions,
+        )
+        for run_id in variants
+    ]
+
+
+def _variant_record(
+    ds: Dataset,
+    frame: pd.DataFrame,
+    run_id: str,
+    run_rows: list[dict[str, str]],
+    media_entries: frozenset[CameraEntry],
+    compositions: Mapping[Entry, str],
+) -> ArtifactRecord[CameraEntry]:
+    """The record of variant *run_id* from its rows and what the scan read once.
+
+    Args:
+        ds: The dataset.
+        frame: The whole variant index, for when the run started and finished.
+        run_id: The variant.
+        run_rows: The variant's rows within the scope.
+        media_entries: Every entry and camera the media index names within the
+            scope, looked for a file in beside the run's rows.
+        compositions: The current media composition of each entry the rows
+            name.
+    """
+    rows = frozenset(
+        (
+            record.get("group", ""),
+            record.get("sequence", ""),
+            record.get("camera", ""),
+        )
+        for record in run_rows
+    )
+    files = frozenset(
+        key
+        for key in rows | media_entries
+        if media_variant_path(ds, run_id, *key).is_file()
+    )
+    coverage = Coverage(target=rows | files, present=rows & files)
+    drift = composition_drift(
+        {
+            (record.get("group", ""), record.get("sequence", "")): record.get(
+                "consumed_media_composition", ""
+            )
+            for record in run_rows
+        },
+        compositions,
+    )
+    started_at, finished_at, finished = finish_state(frame, run_id)
+    return ArtifactRecord[CameraEntry](
+        ref=MediaVariantRef(run_id=run_id),
+        name=PREPROCESS_KIND_DIRECTORY,
+        run_id=run_id,
+        coverage=coverage,
+        status=classify(
+            satisfied=coverage.is_satisfied,
+            any_covered=bool(coverage.covered),
+            orphan_rows=bool(rows - files),
+            orphan_files=bool(files - rows),
+            drifted=bool(drift),
+            finished=finished,
+        ),
+        run_root=media_variant_run_root(ds, run_id),
+        index_path=media_variant_index_path(ds),
+        rows=rows,
+        orphan_rows=rows - files,
+        orphan_files=files - rows,
+        drift=drift,
+        started_at=started_at,
+        finished_at=finished_at,
+        upstreams=tuple(
+            sorted({record.get("upstream", "") for record in run_rows} - {""})
+        ),
+    )
+
+
+def _variant_index(ds: Dataset, reader: IndexReader) -> pd.DataFrame:
+    """The variant index, read once per scan through *reader*."""
+    return reader.frame(
+        media_variant_index_path(ds), lambda: read_media_variant_index(ds)
+    )
+
+
+def _wanted_rows(
+    frame: pd.DataFrame, wanted: set[Entry] | None
+) -> list[dict[str, str]]:
+    """The rows of *frame* whose entry is in *wanted*, every row when unset."""
+    return [
+        record
+        for record in index_records(frame)
+        if wanted is None
+        or (record.get("group", ""), record.get("sequence", "")) in wanted
+    ]
+
+
+def _entries_of(rows: list[dict[str, str]]) -> set[Entry]:
+    """The ``(group, sequence)`` pairs *rows* name."""
+    return {(record.get("group", ""), record.get("sequence", "")) for record in rows}
+
+
+def _media_entries(
+    ds: Dataset, wanted: set[Entry] | None, reader: IndexReader
+) -> frozenset[CameraEntry]:
+    """Every ``(group, sequence, camera)`` the media index names, within *wanted*."""
+    index_path = _media_index_path(ds, reader)
+    if index_path is None:
+        return frozenset()
+    found: set[CameraEntry] = set()
+    for row in read_media_index(index_path):
+        group = read_link_cell(row, "group")
+        sequence = read_link_cell(row, "sequence")
+        if wanted is None or (group, sequence) in wanted:
+            found.add((group, sequence, read_link_cell(row, "camera")))
+    return frozenset(found)

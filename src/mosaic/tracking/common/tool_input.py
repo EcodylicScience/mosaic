@@ -121,7 +121,7 @@ def _allowed_codecs(decoder: ToolDecoder) -> frozenset[str]:
 
 
 def refuse_undecodable_codec(
-    path: Path, *, kind: str, group: str, sequence: str
+    path: Path, *, kind: str, group: str, sequence: str, variant: str = ""
 ) -> None:
     """Raise unless *kind*'s decoder can be expected to open *path*.
 
@@ -147,6 +147,10 @@ def refuse_undecodable_codec(
 
     A kind with no registered root gets the conservative declaration, which
     assumes nothing beyond the universal baseline.
+
+    *variant* names the media variant *path* is the file of, when it is one. A
+    variant's codec is chosen when it is made, so the refusal then also names
+    making the variant again in H.264.
     """
     root = TRACKING_ROOTS.get(kind)
     decoder = root.decoder if root is not None else CONSERVATIVE_DECODER
@@ -154,12 +158,19 @@ def refuse_undecodable_codec(
     if not codec or codec in _allowed_codecs(decoder):
         return
     remedy = f"\n    {decoder.remedy}." if decoder.remedy else ""
+    remake = (
+        f"\n    Or make the media variant in a codec {kind} reads: re-run the "
+        f'preprocess step that made {variant} with "codec": "h264", and name '
+        f"the variant it writes in media."
+        if variant
+        else ""
+    )
     message = (
         f"[{kind}] ({group}, {sequence}) resolves to {path.name}, which is "
         f"{codec}. {kind} decodes with {decoder.stack}, which cannot be "
         f"expected to open {codec}. A tool that cannot decode returns zero "
         f"frames and exits 0, so this would otherwise be recorded as a run "
-        f"that succeeded and found nothing.{remedy}\n"
+        f"that succeeded and found nothing.{remedy}{remake}\n"
         f"    To say this environment does handle it, set "
         f"{_ALLOW_CODECS_VAR}={codec}."
     )
@@ -187,6 +198,10 @@ def resolve_tool_inputs(
     A single-clip entry is unchanged, and is the overwhelming majority: it
     resolves to its one file with nothing built and nothing required.
 
+    An item reading a media variant resolves to the variant file. It is a plain
+    video mosaic wrote, one file for the whole entry, so neither an export nor a
+    join applies to it.
+
     Args:
         ds: The dataset, read for the media index and the ``media`` root.
         item: The work item whose source paths are being resolved.
@@ -198,19 +213,27 @@ def resolve_tool_inputs(
         JoinedExportMissingError: If the entry has several clips and no joined
             export has been built for exactly that clip set.
     """
-    clips = tuple(
-        resolve_entry_input(ds, item.group, item.sequence, source, kind=kind)
-        for source in item.video_paths
-    )
-    # Several clips resolve to their join and the clips themselves are dropped,
-    # so the codec gate runs over what is returned rather than inside the
-    # comprehension above: an AV1 derivative about to be re-encoded into a
-    # uniform join is not a file any tool will open, and refusing it here would
-    # block a run that would have worked.
-    handed = clips if len(clips) < 2 else (_joined_input(ds, item, kind=kind),)
+    handed: tuple[Path, ...]
+    if item.variant is not None:
+        handed = (item.variant.path,)
+    else:
+        clips = tuple(
+            resolve_entry_input(ds, item.group, item.sequence, source, kind=kind)
+            for source in item.video_paths
+        )
+        # Several clips resolve to their join and the clips themselves are
+        # dropped, so the codec gate runs over what is returned rather than
+        # inside the comprehension above: an AV1 derivative about to be
+        # re-encoded into a uniform join is not a file any tool will open, and
+        # refusing it here would block a run that would have worked.
+        handed = clips if len(clips) < 2 else (_joined_input(ds, item, kind=kind),)
     for target in handed:
         refuse_undecodable_codec(
-            target, kind=kind, group=item.group, sequence=item.sequence
+            target,
+            kind=kind,
+            group=item.group,
+            sequence=item.sequence,
+            variant=item.media,
         )
     return handed
 
@@ -235,9 +258,8 @@ def resolve_entry_input(
     ops reach this boundary too and build no work items: they walk a media scope
     directly. Those two names are all a work item ever supplied here.
 
-    The store row is found by path rather than by camera: a work item carries no
-    camera (per-camera tracker output is not built), and the path is what
-    unambiguously identifies which store of a multi-camera sequence this is.
+    The store row is found by path rather than by camera, because the path
+    alone identifies which store of a multi-camera sequence this is.
     """
     if not is_imgstore(source):
         return source

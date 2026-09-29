@@ -59,7 +59,8 @@ def media_variant_work_root(ds: Dataset, run_id: str) -> Path:
 
     An entry's claim directory is ``<work_root>/<entry_key>``, keyed on the entry
     alone. A run encodes one camera per entry, the camera a tracker reads, so the
-    entry key keeps every claim apart.
+    entry key keeps every claim apart. The claim directory also holds the entry's
+    encode in flight, so a partial file never sits among the variant files.
     """
     return media_variant_run_root(ds, run_id) / _WORK_DIRECTORY
 

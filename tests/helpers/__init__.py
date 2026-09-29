@@ -15,7 +15,13 @@ What lives where:
   fit-then-apply features are tested on.
 - ``tracks`` -- track tables, tracks variants, raw TREx, SLEAP and DeepLabCut
   exports.
+- ``trex``, ``sleap``, ``litpose`` and ``ultralytics`` hold recording
+  stand-ins for the tools those trackers run, installed over each tracker's own
+  seams, and
+  ``inference`` the same for the environments of ``infer-pose`` and
+  ``infer-points``.
 - ``media`` -- media files, media-index rows, transcode derivatives.
+- ``variants`` -- media variant files and their index rows.
 - ``ops`` -- the smallest params dict that validates for each registered op.
 - ``scope`` -- a resolved scope over named entries, for the ops and drivers
   that take their coverage as an argument.
@@ -64,10 +70,12 @@ from tests.helpers.media import (
     add_transcode_derivative,
     clean_facts_cells,
     clip_facts,
+    dot_image,
     index_media_sequence,
     write_h264_mp4,
     write_media_index,
     write_mpeg4_mp4,
+    write_painted_entry,
 )
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.ops import minimal_op_params
@@ -89,15 +97,44 @@ from tests.helpers.tracks import (
     write_sleap_analysis_h5,
     write_trex_npz,
 )
+from tests.helpers.inference import (
+    FakeInference,
+    install_fake_point_inference,
+    install_fake_pose_inference,
+    point_predictions,
+    pose_predictions,
+)
+from tests.helpers.litpose import (
+    FakeLitpose,
+    install_fake_litpose,
+    write_litpose_model,
+)
+from tests.helpers.sleap import FakeSleap, install_fake_sleap
+from tests.helpers.trex import FakeTrex, install_fake_trex
+from tests.helpers.ultralytics import (
+    ULTRALYTICS_KEYPOINTS,
+    FakeUltralytics,
+    install_fake_ultralytics,
+    ultralytics_probe_response,
+    write_ultralytics_predictions,
+)
+from tests.helpers.variants import add_media_variant, finish_media_variant
 
 __all__ = [
     "FFMPEG_TOOLCHAIN",
     "KEYPOINTS_PAYLOAD",
     "MOUSE",
+    "ULTRALYTICS_KEYPOINTS",
+    "FakeInference",
+    "FakeLitpose",
+    "FakeSleap",
     "FakeTrainer",
+    "FakeTrex",
+    "FakeUltralytics",
     "MediaClip",
     "MockDataset",
     "add_media_sequence",
+    "add_media_variant",
     "add_track_sequences",
     "add_tracks_variant",
     "add_transcode_derivative",
@@ -105,10 +142,18 @@ __all__ = [
     "healthy_probe",
     "clean_facts_cells",
     "clip_facts",
+    "dot_image",
     "dotted_values",
+    "finish_media_variant",
     "functions_named",
     "index_media_sequence",
     "inside_a_virtualenv",
+    "install_fake_litpose",
+    "install_fake_point_inference",
+    "install_fake_pose_inference",
+    "install_fake_sleap",
+    "install_fake_trex",
+    "install_fake_ultralytics",
     "is_section",
     "make_dataset",
     "make_pair_df",
@@ -119,6 +164,8 @@ __all__ = [
     "module_tree",
     "names_called_by",
     "names_read",
+    "point_predictions",
+    "pose_predictions",
     "pose_frame",
     "pose_object",
     "pose_set",
@@ -130,11 +177,15 @@ __all__ = [
     "scope_over",
     "source_tree",
     "track_sequences",
+    "ultralytics_probe_response",
     "write_dlc_csv",
     "write_h264_mp4",
+    "write_litpose_model",
     "write_media_index",
     "write_mpeg4_mp4",
+    "write_painted_entry",
     "write_sleap_analysis_h5",
     "write_templates",
     "write_trex_npz",
+    "write_ultralytics_predictions",
 ]

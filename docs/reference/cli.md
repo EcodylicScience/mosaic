@@ -210,7 +210,7 @@ $ mosaic inventory [OPTIONS]
 **Options**:
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Restrict to an artifact kind (repeatable): feature, tracks-variant, labels-variant, label-series, tracker-run, frame-run, trained-model, prepared-dataset, media-derivative.
+* `--kind <str>`: Restrict to an artifact kind (repeatable): feature, tracks-variant, labels-variant, label-series, tracker-run, frame-run, trained-model, prepared-dataset, media-derivative, media-variant.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 

@@ -39,10 +39,10 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from mosaic.core.scope import Scope
 
-from ._read import IndexReader
+from ._read import IndexReader, finish_state, run_ids
 from .contributors import inventory_contributor, registered_inventory_kinds
 from .label_series import label_series_records
-from .media import media_derivative_record
+from .media import media_derivative_record, media_variant_records
 from .model import (
     AnyRecord,
     ArtifactKind,
@@ -97,6 +97,7 @@ CORE_KINDS: frozenset[ArtifactKind] = frozenset(
         "labels-variant",
         "label-series",
         "media-derivative",
+        "media-variant",
     }
 )
 """The kinds ``core`` can report on by itself, with no producer registered."""
@@ -252,17 +253,6 @@ def _rows_of(frame: pd.DataFrame, run_id: str) -> frozenset[Entry]:
     )
 
 
-def _finish_state(frame: pd.DataFrame, run_id: str) -> tuple[str, str, bool]:
-    """``(started_at, finished_at, finished)`` for one run, from its index rows."""
-    started, finished = "", ""
-    for record in index_records(frame):
-        if str(record.get("run_id", "")) != run_id:
-            continue
-        started = started or str(record.get("started_at", ""))
-        finished = finished or str(record.get("finished_at", ""))
-    return started, finished, bool(finished)
-
-
 def _status_for(
     coverage: Coverage[Entry],
     rows: frozenset[Entry],
@@ -338,14 +328,14 @@ def _feature_records(
         frame = reader.frame(index_path, lambda p=index_path: feature_index(p).read())
         if frame.empty or "run_id" not in frame.columns:
             continue
-        for run_id in _run_ids(frame):
+        for run_id in run_ids(frame):
             run_root = feature_run_root(ds, name, run_id)
             rows = _rows_of(frame, run_id)
             # The run's own index rows are what make its outputs recognisable
             # when the target cannot name them -- see ``run_covers``.
             coverage = run_covers(run_root, target, known=rows)
             files = coverage.present
-            started, finished_at, finished = _finish_state(frame, run_id)
+            started, finished_at, finished = finish_state(frame, run_id)
             read = read_run_params(run_root)
             drift = drifted_entries(ds, name, run_id)
             records.append(
@@ -403,7 +393,7 @@ def _variant_records(
     if frame.empty or "run_id" not in frame.columns:
         return []
     records: list[ArtifactRecord[Entry]] = []
-    for run_id in _run_ids(frame):
+    for run_id in run_ids(frame):
         rows = _rows_of(frame, run_id)
         wanted = scope.selector.entry_pairs
         target = frozenset(rows if wanted is None else rows & wanted)
@@ -411,7 +401,7 @@ def _variant_records(
             entry for entry in rows if _variant_table_exists(ds, frame, run_id, entry)
         )
         coverage = Coverage(target=target, present=files)
-        started, finished_at, finished = _finish_state(frame, run_id)
+        started, finished_at, finished = finish_state(frame, run_id)
         drift = drifted_media_entries(ds, run_id)
         mismatched = frozenset(
             make_entry_key(m.group, m.sequence)
@@ -461,7 +451,7 @@ def _labels_records(
         frame = reader.frame(index_path, lambda k=kind: read_labels_index(ds, k))
         if frame.empty or "run_id" not in frame.columns:
             continue
-        for run_id in _run_ids(frame):
+        for run_id in run_ids(frame):
             rows = _rows_of(frame, run_id)
             wanted = scope.selector.entry_pairs
             target = frozenset(rows if wanted is None else rows & wanted)
@@ -471,7 +461,7 @@ def _labels_records(
                 if _variant_table_exists(ds, frame, run_id, entry)
             )
             coverage = Coverage(target=target, present=files)
-            started, finished_at, finished = _finish_state(frame, run_id)
+            started, finished_at, finished = finish_state(frame, run_id)
             records.append(
                 ArtifactRecord[Entry](
                     ref=LabelsVariantRef(label_kind=kind, run_id=run_id),
@@ -532,6 +522,11 @@ def inventory(
             for media_target in ("analysis", "playback"):
                 records.append(media_derivative_record(ds, media_target, asked, reader))
             continue
+        if kind == "media-variant":
+            # Keyed by entry and camera, so it cannot share the entry-keyed
+            # builder table below.
+            records.extend(media_variant_records(ds, asked, reader))
+            continue
         if kind == "label-series":
             # Keyed by revision rather than by entry, so it cannot share the
             # entry-keyed builder table below. Guarded like a contributor: a
@@ -581,10 +576,3 @@ _CORE_BUILDERS: dict[ArtifactKind, _CoreBuilder] = {
     "tracks-variant": _variant_records,
     "labels-variant": _labels_records,
 }
-
-
-def _run_ids(frame: pd.DataFrame) -> list[str]:
-    """Every run identifier in an index, sorted. Empty when the index has none."""
-    if frame.empty or "run_id" not in frame.columns:
-        return []
-    return sorted({record.get("run_id", "") for record in index_records(frame)})

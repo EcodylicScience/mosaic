@@ -19,12 +19,14 @@ from typing import Annotated
 from pydantic import Field
 
 from mosaic.core.pipeline.markers import Phase
+from mosaic.core.pipeline.media_input import MediaInputParams
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.core.params import (
     Declared,
     Probability,
 )
 from mosaic.tracking.common.params import PhasedTrackerOpParams
+from mosaic.tracking.trex.version import TREX_KIND
 
 __all__ = ["TrexParams"]
 
@@ -106,8 +108,21 @@ _TRACK_EXTRA_SETTINGS_DESCRIPTION = (
     "phase. A None value removes a parameter mosaic would otherwise send."
 )
 
+# The TREx settings that select frames, refused in either pass-through dictionary
+# when `media` names a variant. In the TREx source, `analysis_range` is declared
+# in Application/src/tracker/core/default_config.cpp, whose deprecation table
+# rewrites `analysis_stop_after` and `gui_stop_after` into it, and
+# `video_conversion_range`, the range a conversion reads, is declared in
+# Application/src/grabber/misc/default_config.cpp.
+_FRAME_SETTINGS: tuple[str, ...] = (
+    "analysis_range",
+    "analysis_stop_after",
+    "gui_stop_after",
+    "video_conversion_range",
+)
 
-class TrexParams(PhasedTrackerOpParams):
+
+class TrexParams(PhasedTrackerOpParams, MediaInputParams):
     """Parameters for the ``trex`` tracking op and for ``run_trex``.
 
     Every tool-facing parameter but ``auto_train`` defaults to ``None``, which
@@ -118,7 +133,17 @@ class TrexParams(PhasedTrackerOpParams):
     applied are two different runs. Unset is recorded as a setting of its own,
     so the two hash to different ``run_id`` values and neither reuses the
     other's output.
+
+    ``media`` names no phase. It selects the file TREx reads and never reaches a
+    TREx settings file.
     """
+
+    window_fields = ("analysis_range",)
+    extra_settings_window_keys = {
+        "convert_extra_settings": _FRAME_SETTINGS,
+        "track_extra_settings": _FRAME_SETTINGS,
+    }
+    op_kind = TREX_KIND
 
     # No field states a default of mosaic's own. One that differed from TREx's
     # would impose an opinion a caller cannot decline, and None reaches the argv

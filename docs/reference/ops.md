@@ -49,6 +49,7 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
@@ -123,6 +124,7 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
@@ -154,6 +156,7 @@ Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
@@ -186,6 +189,7 @@ Track scoped videos with a YOLO model, bridging results into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Convert the tool's native output into a standardized tracks table once tracking finishes, instead of leaving the output where the tool wrote it. |
 | `idle_timeout` | `number` | `900` |  | How long a phase may go without a line of output from the tool before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
@@ -362,6 +366,7 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
 | `model` | `string` | _required_ |  | The weights to predict with, as a path or as the run identifier of the training run that produced them. |
 | `conf_threshold` | `number` | `0.25` |  | Minimum detection confidence a prediction must reach to be written. |
 | `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
@@ -385,6 +390,7 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
 | `model` | `string` | _required_ |  | The weights to predict with, as a path or as the run identifier of the training run that produced them. |
 | `conf_threshold` | `number` | `0.25` |  | Minimum detection confidence a prediction must reach to be written. |
 | `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
@@ -406,6 +412,7 @@ Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
+| `media` | `string` | `""` |  | The run id of a preprocess media variant to read in place of the entry's original media. The tool reads that derived video, and its tracks are published in the entry's own pixels and frames. Empty reads the original recording from media_raw. A frame window cannot be combined with it: the variant's trim and decimate steps set the range. |
 | `model` | `string` | _required_ |  | The weights to predict with, as a path or as the run identifier of the training run that produced them. |
 | `conf_threshold` | `number` | `0.25` |  | Minimum detection confidence a prediction must reach to be written. |
 | `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |

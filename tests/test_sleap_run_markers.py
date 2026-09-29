@@ -9,11 +9,8 @@ the analysis-h5 -> tracks bridge, and the two index writers -- with no models.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from dataclasses import dataclass, field
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -22,9 +19,8 @@ from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.sleap.dataset_runs import sleap_index_path, sleap_run_root
 from mosaic.tracking.sleap.params import SleapParams
-from mosaic.tracking.sleap.run import SleapConvertResult, SleapTrackResult
 
-from tests.helpers import write_media_index, write_sleap_analysis_h5
+from tests.helpers import FakeSleap, install_fake_sleap, write_media_index
 
 
 # --- fixtures --------------------------------------------------------------
@@ -46,41 +42,9 @@ def model(tmp_path: Path) -> Path:
     return model_dir
 
 
-@dataclass
-class FakeSleap:
-    """Recording stand-ins for the two SLEAP phases."""
-
-    tracked: list[Path] = field(default_factory=list)
-    track_settings: list[dict[str, object]] = field(default_factory=list)
-    converted: list[Path] = field(default_factory=list)
-    frames: int = 6
-
-    def track(
-        self, video_path: Path, output_slp: Path, **kwargs: object
-    ) -> SleapTrackResult:
-        self.tracked.append(Path(video_path))
-        self.track_settings.append(kwargs)
-        out = Path(output_slp)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"slp")
-        return SleapTrackResult(slp_path=out, stdout="", stderr="")
-
-    def convert(
-        self, slp_path: Path, output_h5: Path, **_kwargs: object
-    ) -> SleapConvertResult:
-        self.converted.append(Path(slp_path))
-        out = Path(output_h5)
-        tracks = np.random.default_rng(0).random((self.frames, 1, 1, 2))
-        write_sleap_analysis_h5(out, tracks)
-        return SleapConvertResult(analysis_h5_path=out, stdout="", stderr="")
-
-
 @pytest.fixture
-def sleap(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeSleap]:
-    fake = FakeSleap()
-    monkeypatch.setattr(dr, "run_sleap_track", fake.track)
-    monkeypatch.setattr(dr, "run_sleap_convert", fake.convert)
-    yield fake
+def sleap(monkeypatch: pytest.MonkeyPatch) -> FakeSleap:
+    return install_fake_sleap(monkeypatch)
 
 
 def _tracks_rows(ds: Dataset) -> pd.DataFrame:

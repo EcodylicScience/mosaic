@@ -290,6 +290,25 @@ def test_declarations_are_read_off_what_a_class_declares() -> None:
     assert not trainer.consumes.reads_media
 
 
+def test_the_media_domain_ops_are_the_ones_that_write_media() -> None:
+    """Read off each op's declared domain, so a new media op needs no name list.
+
+    The three media ops that wrote media before a variant existed keep their
+    answer, and ``preprocess``, which declares the media domain with a category
+    of its own, writes media as well.
+    """
+    catalog = declaration_catalog()
+
+    writers = {
+        name
+        for name, declared in catalog.entries.items()
+        if declared.produces.kind == "op" and declared.produces.writes_media
+    }
+
+    assert writers == {"transcode", "export-store", "export-joined", "preprocess"}
+    assert not any(catalog.entries[name].produces.writes_tracks for name in writers)
+
+
 # --- no dataset ---------------------------------------------------------------
 
 _REFUSE_WITH_NO_DATASET = """

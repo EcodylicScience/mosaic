@@ -4,10 +4,10 @@
 50 of 90 sequences is not "done", and it becomes less done the moment the scope
 widens to 120 -- so what is reported is *which* entries exist, never a flag. And
 the thing covered differs by artifact kind: a feature run covers
-``(group, sequence)``, a frame run covers a ``(group, sequence, camera)`` because
-the cameras of one recording share an entry, and a trained model is one artifact
-that is covered or is not. Transcode covers *media rows*, and has no
-run-addressed directory at all.
+``(group, sequence)``, a frame run and a media variant cover a
+``(group, sequence, camera)`` because the cameras of one recording share an
+entry, and a trained model is one artifact that is covered or is not. Transcode
+covers *media rows*, and has no run-addressed directory at all.
 
 That last case is why :class:`Coverage` is generic in its key and why the lookup
 takes a per-kind ``ref``. Under one signature -- ``coverage(storage, run_id)`` --
@@ -58,6 +58,7 @@ __all__ = [
     "LabelSeriesRef",
     "LabelsVariantRef",
     "MediaDerivativeRef",
+    "MediaVariantRef",
     "PreparedDatasetRef",
     "TrackerRunRef",
     "TracksVariantRef",
@@ -77,6 +78,7 @@ ArtifactKind = Literal[
     "trained-model",
     "prepared-dataset",
     "media-derivative",
+    "media-variant",
 ]
 """Every kind of artifact a dataset can hold, named once."""
 
@@ -90,6 +92,7 @@ ARTIFACT_KINDS: Final[tuple[ArtifactKind, ...]] = (
     "trained-model",
     "prepared-dataset",
     "media-derivative",
+    "media-variant",
 )
 """The same vocabulary as a value, for anything that has to enumerate or check it.
 
@@ -268,6 +271,14 @@ class MediaDerivativeRef:
     target: Target
 
 
+@dataclass(frozen=True, slots=True)
+class MediaVariantRef:
+    """One media variant: ``media/preprocess/<run_id>/``, one file per entry."""
+
+    kind: ClassVar[ArtifactKind] = "media-variant"
+    run_id: str
+
+
 type ArtifactRef = (
     FeatureRunRef
     | TracksVariantRef
@@ -278,6 +289,7 @@ type ArtifactRef = (
     | TrainedModelRef
     | PreparedDatasetRef
     | MediaDerivativeRef
+    | MediaVariantRef
 )
 
 
@@ -449,7 +461,7 @@ class DatasetInventory:
     ) -> Coverage[Entry]: ...
 
     @overload
-    def coverage(self, ref: FrameRunRef) -> Coverage[CameraEntry]: ...
+    def coverage(self, ref: FrameRunRef | MediaVariantRef) -> Coverage[CameraEntry]: ...
 
     @overload
     def coverage(self, ref: TrainedModelRef | MediaDerivativeRef) -> Coverage[str]: ...

@@ -45,11 +45,13 @@ from ..inventory.model import (
     Entry,
     FeatureRunRef,
     MediaDerivativeRef,
+    MediaVariantRef,
     TracksVariantRef,
     TrainedModelRef,
     classify,
 )
 from ..ops import IdentityDeferred, OpIdentity, check_scope_takes
+from ..preprocess import PREPROCESS_KIND
 from ..resolve import resolve_references
 from ..run import resolve_feature_identity
 from .digest import recipe_digest
@@ -713,7 +715,8 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
     which is not always the op's own run: what follows a tracker is its
     ``tracks/`` variant, and what follows a training op is its model. Transcode
     has no run-addressed artifact at all -- its derivatives are named by recipe
-    and source -- so it is looked up per target.
+    and source -- so it is looked up per target. A media variant is its own run,
+    one file per entry.
 
     ``None`` is honest rather than a gap: an op whose output nothing inventories
     reads as having no coverage answer, where reporting zero would say it had
@@ -728,6 +731,8 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
         return MediaDerivativeRef(
             target="playback" if wanted == "playback" else "analysis"
         )
+    if kind == PREPROCESS_KIND:
+        return MediaVariantRef(run_id=identity.run_id)
     return None
 
 
@@ -768,6 +773,13 @@ def coverage_against(
     reports ``covers_all`` instead, which is what a single artifact answering for
     everything means. Reading its entry coverage would report a complete model as
     zero of ninety.
+
+    A media variant is keyed by entry and camera, and an entry is covered when
+    the camera the variant was made from holds a row and a file. The op writes
+    only an entry's consumed camera, so the camera is dropped here. A camera
+    that stops being the consumed one changes the entry's media composition,
+    and the variant then reports that entry as drifted when both compositions
+    are known.
     """
     record = inv.record(ref) if ref is not None else None
     if record is None:
@@ -780,6 +792,13 @@ def coverage_against(
             target=target,
             present=cast("frozenset[Entry]", record.coverage.present),
             covers_all=record.coverage.covers_all,
+        )
+    elif isinstance(ref, MediaVariantRef):
+        coverage = Coverage[Entry](
+            target=target,
+            present=frozenset(
+                (group, sequence) for group, sequence, _ in inv.coverage(ref).present
+            ),
         )
     else:
         coverage = Coverage[Entry](

@@ -38,12 +38,15 @@ import pandas as pd
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
+from mosaic.core.pipeline.media_input import media_identity_terms
 from mosaic.core.pipeline.markers import (
     clear_phase_marker,
 )
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.entry_claim import claim, phase_activity
 from mosaic.core.pipeline.op_identity import op_run_id
+from mosaic.core.pipeline.placement import SourceMapping
+from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
     publish_or_record,
@@ -58,7 +61,6 @@ from mosaic.tracking.common.entry import (
     reusable_output,
 )
 from mosaic.tracking.common.index import (
-    media_composition_cell,
     register_tracker_row_class,
     TrackerRunRowBase,
     list_tracker_runs,
@@ -130,6 +132,7 @@ def litpose_settings(params: LitposeParams, *, model_id: str) -> dict[str, objec
     The model is carried as its content digest (``model_id``), never a path.
     Lightning Pose is pose-only, so there are no tracker knobs; the Hydra
     ``litpose_overrides`` are identity because they change the produced keypoints.
+    ``media`` joins only when it names a variant.
 
     Args:
         params: The run's parameters.
@@ -145,6 +148,7 @@ def litpose_settings(params: LitposeParams, *, model_id: str) -> dict[str, objec
     return {
         "model": model_id,
         "litpose_overrides": dict(overrides) if overrides else None,
+        **media_identity_terms(params),
     }
 
 
@@ -169,16 +173,19 @@ def _bridge_csv_to_tracks(
     *,
     tracks_variant: str,
     producer_run_id: str,
-    video_path: Path,
+    media_paths: Sequence[Path],
     model_files: Sequence[Path],
     fps: float,
     overwrite: bool,
+    mapping: SourceMapping | None,
 ) -> BridgeCounts | None:
     """Bridge a Lightning Pose CSV into ``tracks/<variant>/<group>__<seq>.parquet``.
 
     Reuses the registered ``deeplabcut`` converter -- Lightning Pose exports the
     same ``(scorer, bodypart, coord)`` layout -- with the authoritative (group,
     sequence) known from the media index, so no name is guessed from a filename.
+    *media_paths* are the media files the table derives from, and *mapping* maps
+    a table tracked on a media variant into source space, ``None`` otherwise.
     Returns ``None`` when the conversion failed and nothing was published.
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
@@ -208,7 +215,8 @@ def _bridge_csv_to_tracks(
         tracks_variant=tracks_variant,
         producer_run_id=producer_run_id,
         source=csv_path.parent,
-        consumed=[csv_path, video_path, *model_files],
+        consumed=[csv_path, *media_paths, *model_files],
+        mapping=mapping,
     )
 
 
@@ -356,7 +364,7 @@ def run_litpose(
             # tracker identity carries no media term, so without this a
             # re-transcode leaves the run reading as current over
             # different pixels.
-            consumed_media_composition=media_composition_cell(
+            consumed_media_composition=media_composition_for(
                 job.ds, item.group, item.sequence
             ),
             abs_path=Path(job.ds.relative_to_root(work_dir)),
@@ -373,6 +381,7 @@ def run_litpose(
             model_type=resolved_model.model_type,
             n_ids=1,
             csv_path=job.ds.relative_to_root(csv_out),
+            media=item.media,
         )
 
         if not params.convert_to_tracks:
@@ -390,10 +399,11 @@ def run_litpose(
                 csv_out,
                 tracks_variant=minted.tracks_variant,
                 producer_run_id=minted.run_id,
-                video_path=item.video_path,
+                media_paths=item.consumed_media,
                 model_files=list(resolved_model.significant_files),
                 fps=item.fps,
                 overwrite=job.overwrite or recomputed,
+                mapping=item.source_mapping,
             ),
             kind=LITPOSE_KIND,
         )
@@ -404,7 +414,9 @@ def run_litpose(
         kind=LITPOSE_KIND,
         target="litpose-predict",
         minted=minted,
-        work_items=build_work_items(ds, media_scope, kind=LITPOSE_KIND),
+        work_items=build_work_items(
+            ds, media_scope, kind=LITPOSE_KIND, media=params.media
+        ),
         index=litpose_index(litpose_index_path(ds)),
         run_entry=predict_one,
         overwrite=overwrite,

@@ -21,10 +21,8 @@ rather than left as folklore.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 import mosaic.tracking.trex.dataset_runs as trex_runs
@@ -39,6 +37,8 @@ from mosaic.core.pipeline.graph import (
     build_step_feature,
     plan_pipeline,
 )
+from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
+from mosaic.core.pipeline.preprocess_layout import media_variants_root
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.scope import Scope
 from mosaic.core.pipeline.tracks_index import (
@@ -46,9 +46,12 @@ from mosaic.core.pipeline.tracks_index import (
     variant_for_producer_run,
 )
 from mosaic.tracking.trex.params import TrexParams
-from mosaic.tracking.trex.run import TRexConvertResult, TRexTrackResult
 from tests.helpers import (
+    FakeTrex,
+    add_media_variant,
     add_tracks_variant,
+    finish_media_variant,
+    install_fake_trex,
     make_dataset,
     scope_over,
     write_media_index,
@@ -279,61 +282,13 @@ def test_fewer_entries_than_intended_gives_a_different_identity(
 
 
 @pytest.fixture
-def fake_trex(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+def fake_trex(monkeypatch: pytest.MonkeyPatch) -> FakeTrex:
     """TREx's two phases, replaced by fakes that write what TREx writes.
 
-    The established shape for this suite: the tool never runs, and what it leaves
-    behind is real enough to convert, so the bridge that publishes into
-    ``tracks/`` is exercised rather than stubbed.
+    The tool never runs, and what it leaves behind is real enough to convert, so
+    the bridge that publishes into ``tracks/`` is exercised rather than stubbed.
     """
-
-    def convert(
-        video_path: Path | list[Path],
-        seq_dir: Path,
-        *,
-        output_name: str | None = None,
-        **_kwargs: object,
-    ) -> TRexConvertResult:
-        given = (
-            [video_path] if isinstance(video_path, (str, Path)) else list(video_path)
-        )
-        home = Path(seq_dir)
-        home.mkdir(parents=True, exist_ok=True)
-        stem = output_name if output_name is not None else Path(given[0]).stem
-        pv_path = home / f"{stem}.pv"
-        _ = pv_path.write_bytes(b"pv")
-        # TREx writes one beside every conversion, and it carries the detection
-        # parameters into tracking; a fake that omits it exercises a degraded
-        # path rather than the ordinary one.
-        settings_path = home / f"{stem}.settings"
-        _ = settings_path.write_text("detect_type = yolo\n")
-        return TRexConvertResult(
-            pv_path=pv_path,
-            settings_path=settings_path,
-            background_path=None,
-            stdout="",
-            stderr="",
-        )
-
-    def track(pv_path: Path, seq_dir: Path, **_kwargs: object) -> TRexTrackResult:
-        data_dir = Path(seq_dir) / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        np.savez(
-            data_dir / "fish0.npz",
-            frame=np.arange(4),
-            time=np.arange(4) / 30.0,
-            cm_per_pixel=np.array([1.0]),
-            **{
-                "X#wcentroid": np.arange(4, dtype=float),
-                "Y#wcentroid": np.arange(4, dtype=float),
-            },
-        )
-        _ = (Path(seq_dir) / f"{Path(pv_path).stem}.results").write_bytes(b"results")
-        return TRexTrackResult()
-
-    monkeypatch.setattr(trex_runs, "run_trex_convert", convert)
-    monkeypatch.setattr(trex_runs, "run_trex_track", track)
-    yield
+    return install_fake_trex(monkeypatch)
 
 
 TREX_TO_SPEED: Document = {
@@ -357,7 +312,7 @@ TREX_TO_SPEED: Document = {
 
 @pytest.mark.tracker
 def test_a_tracker_step_resolves_the_variant_its_run_writes(
-    tmp_path: Path, fake_trex: None
+    tmp_path: Path, fake_trex: FakeTrex
 ) -> None:
     """The op-to-feature edge, which resolves before the op has run.
 
@@ -385,7 +340,7 @@ def test_a_tracker_step_resolves_the_variant_its_run_writes(
 
 @pytest.mark.tracker
 def test_a_feature_below_a_tracker_resolves_to_what_it_then_records(
-    tmp_path: Path, fake_trex: None
+    tmp_path: Path, fake_trex: FakeTrex
 ) -> None:
     """The whole edge, end to end: predicted before, recorded after."""
     dataset = make_dataset(tmp_path / "media")
@@ -407,6 +362,178 @@ def test_a_feature_below_a_tracker_resolves_to_what_it_then_records(
     )
 
     assert result.run_id == predicted
+
+
+# --- a media variant -------------------------------------------------------------
+
+
+@pytest.fixture
+def with_media(tmp_path: Path) -> Dataset:
+    """Two indexed videos of 640x480, and nothing computed from them."""
+    dataset = make_dataset(tmp_path / "media")
+    write_media_index(dataset, ["vid1", "vid2"], uids={"vid1": "u1", "vid2": "u2"})
+    return dataset
+
+
+@pytest.fixture
+def sleap_model(tmp_path: Path) -> Path:
+    """A model directory on disk, so a SLEAP step's identity can be read."""
+    model = tmp_path / "sleap-model"
+    model.mkdir()
+    _ = (model / "best.ckpt").write_bytes(b"weights")
+    return model
+
+
+def _crop(width: int = 320) -> Document:
+    return {"step": "crop", "x": 0, "y": 0, "width": width, "height": 240}
+
+
+def _variant_then_sleap(model: Path, width: int = 320) -> Recipe:
+    """A variant and a tracker that reads it, joined by the ``media`` reference."""
+    return Recipe.model_validate(
+        {
+            "steps": [
+                {
+                    "id": "pre",
+                    "type": "op",
+                    "kind": "preprocess",
+                    "params": {"steps": [_crop(width)]},
+                },
+                {
+                    "id": "sleap",
+                    "type": "op",
+                    "kind": "sleap",
+                    "params": {"model_paths": [str(model)], "media": {"step": "pre"}},
+                },
+            ]
+        }
+    )
+
+
+def _variant_id(steps: list[Document], media: str = "") -> str:
+    """What a variant of *steps* over *media* is called, minted by the op."""
+    params = PreprocessParams.model_validate({"steps": steps, "media": media})
+    return preprocess_identity(params).run_id
+
+
+def test_a_tracker_reading_a_variant_resolves_both_identities_before_anything_runs(
+    with_media: Dataset, sleap_model: Path
+) -> None:
+    """The variant's identity is its params, and the tracker's names the variant."""
+    plan = plan_pipeline(with_media, _variant_then_sleap(sleap_model))
+    pre = plan.step("pre")
+    sleap = plan.step("sleap")
+
+    assert pre.run_id == _variant_id([_crop()])
+    assert sleap.run_id is not None
+    assert sleap.spec.params["media"] == pre.run_id
+    assert sleap.parents == ("pre",)
+    assert not media_variants_root(with_media).exists(), "planning wrote nothing"
+
+
+def test_a_changed_crop_moves_the_variant_and_the_tracker_below_it(
+    with_media: Dataset, sleap_model: Path
+) -> None:
+    before = plan_pipeline(with_media, _variant_then_sleap(sleap_model, width=320))
+    after = plan_pipeline(with_media, _variant_then_sleap(sleap_model, width=322))
+
+    assert after.step("pre").run_id != before.step("pre").run_id
+    assert after.step("sleap").run_id != before.step("sleap").run_id
+
+
+_BOTH_VIDEOS = Scope(entries=[("", "vid1"), ("", "vid2")])
+"""Named rather than left to the planner, which plans a graph writing no tracks
+over the tracks universe, and these datasets have no tracks yet."""
+
+
+def test_a_variant_after_a_transcode_plans(with_media: Dataset) -> None:
+    """The transcode is ordering only, so the variant's identity is its params."""
+    plan = plan_pipeline(
+        with_media,
+        scope=_BOTH_VIDEOS,
+        recipe=Recipe.model_validate(
+            {
+                "steps": [
+                    {
+                        "id": "transcode",
+                        "type": "op",
+                        "kind": "transcode",
+                        "params": {"target": "analysis"},
+                    },
+                    {
+                        "id": "pre",
+                        "type": "op",
+                        "kind": "preprocess",
+                        "params": {"steps": [_crop()]},
+                        "after": ["transcode"],
+                    },
+                ]
+            }
+        ),
+    )
+
+    assert plan.step("transcode").run_id is not None
+    assert plan.step("pre").run_id == _variant_id([_crop()])
+    assert plan.step("pre").parents == ("transcode",)
+
+
+def test_a_variant_after_another_variant_names_it(with_media: Dataset) -> None:
+    """A chained variant's identity carries its upstream's, before either exists."""
+    plan = plan_pipeline(
+        with_media,
+        scope=_BOTH_VIDEOS,
+        recipe=Recipe.model_validate(
+            {
+                "steps": [
+                    {
+                        "id": "pre",
+                        "type": "op",
+                        "kind": "preprocess",
+                        "params": {"steps": [_crop()]},
+                    },
+                    {
+                        "id": "gray",
+                        "type": "op",
+                        "kind": "preprocess",
+                        "params": {
+                            "steps": [{"step": "grayscale"}],
+                            "media": {"step": "pre"},
+                        },
+                    },
+                ]
+            }
+        ),
+    )
+    upstream = plan.step("pre").run_id
+    assert upstream is not None
+
+    assert plan.step("gray").spec.params["media"] == upstream
+    assert plan.step("gray").run_id == _variant_id(
+        [{"step": "grayscale"}], media=upstream
+    )
+
+
+def test_a_variant_over_some_entries_reads_complete_for_them(
+    with_media: Dataset, sleap_model: Path
+) -> None:
+    """An entry is covered when its consumed camera has a row and a file."""
+    recipe = _variant_then_sleap(sleap_model)
+    variant = plan_pipeline(with_media, recipe).step("pre").run_id
+    assert variant is not None
+    _ = add_media_variant(with_media, variant, "vid1")
+    finish_media_variant(with_media, variant)
+
+    whole = plan_pipeline(with_media, recipe)
+    narrowed = plan_pipeline(with_media, recipe, scope=Scope(entries=[("", "vid1")]))
+
+    assert whole.step("pre").status == "partial"
+    assert whole.step("pre").reason == CoverageShort(
+        covered=1, target=2, missing=(("", "vid2"),)
+    )
+    assert whole.step("sleap").reason == DepsIncomplete(blocking=("pre",))
+    assert narrowed.step("pre").status == "complete"
+    assert narrowed.step("pre").coverage.covered == frozenset({("", "vid1")})
+    assert narrowed.step("sleap").reason is None
 
 
 # --- what a plan says about work that is not simply running ---------------------

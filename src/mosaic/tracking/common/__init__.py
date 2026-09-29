@@ -40,6 +40,8 @@ from mosaic.tracking.common.mint import MintedRun, mint_tracker_run, tracker_run
 from mosaic.tracking.common.scope import (
     JoinedSourceMismatchError,
     TrackerWorkItem,
+    UnresolvedEntry,
+    WorkItems,
     build_work_items,
 )
 from mosaic.tracking.common.toolenv import (
@@ -63,6 +65,8 @@ __all__ = [
     "TrackerRunRowBase",
     "JoinedSourceMismatchError",
     "TrackerWorkItem",
+    "UnresolvedEntry",
+    "WorkItems",
     "adopt_completed_directory",
     "build_work_items",
     "clear_outputs",

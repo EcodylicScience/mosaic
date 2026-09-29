@@ -12,21 +12,16 @@ sweeper that reclaims one still in use.
 
 from __future__ import annotations
 
-import dataclasses
 import os
 import shutil
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
-from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 
 import mosaic.tracking.trex.dataset_runs as dr
 from mosaic.core.dataset import Dataset, new_dataset_manifest
-from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.markers import (
     phase_fields,
@@ -42,61 +37,11 @@ from mosaic.tracking.trex.conversion_cache import (
     conversion_run_id,
 )
 from mosaic.tracking.trex.params import TrexParams
-from mosaic.tracking.trex.run import TRexConvertResult, TRexTrackResult
 from mosaic.tracking.trex.version import TREX_VERSION
 
+from tests.helpers import FakeTrex, install_fake_trex, write_media_index
+
 # --- fixtures --------------------------------------------------------------
-
-
-def _facts_cells(video_uuid: str) -> dict[str, object]:
-    facts: MediaFacts = store_facts(
-        width=640,
-        height=480,
-        fps=30.0,
-        frame_count=100,
-        codec="h264",
-        duration=100 / 30.0,
-        video_uuid=video_uuid,
-        identity_scheme="video/1" if video_uuid else "",
-    )
-    facts = dataclasses.replace(
-        facts,
-        container="mov,mp4,m4a,3gp,3g2,mj2",
-        pixel_format="yuv420p",
-        moov_at_start=True,
-    )
-    return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
-
-
-def write_media(ds: Dataset, *, sequence: str, uid: str) -> None:
-    """Rewrite the media index to hold one sequence with content identity *uid*."""
-    media_root = ds.get_root(ds.resolve_media_root())
-    media_root.mkdir(parents=True, exist_ok=True)
-    video = media_root / f"{sequence}.mp4"
-    if not video.exists():
-        _ = video.write_bytes(b"fake")
-    pd.DataFrame(
-        [
-            {
-                "name": video.name,
-                "group": "",
-                "sequence": sequence,
-                "group_safe": "",
-                "sequence_safe": sequence,
-                "camera": "",
-                "abs_path": ds.relative_to_root(video),
-                "size_bytes": 4,
-                "mtime_iso": "",
-                "width": 640,
-                "height": 480,
-                "fps": 30.0,
-                "codec": "h264",
-                "media_type": "video",
-                "video_order": 0,
-                **_facts_cells(uid),
-            }
-        ]
-    ).to_csv(media_root / "index.csv", index=False)
 
 
 @pytest.fixture
@@ -104,97 +49,13 @@ def ds(tmp_path: Path) -> Dataset:
     """One sequence, ``vid1``, whose media carries a content identity."""
     manifest = new_dataset_manifest("cache", base_dir=tmp_path)
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
-    write_media(dataset, sequence="vid1", uid="uid-vid1")
+    write_media_index(dataset, ["vid1"], uids={"vid1": "uid-vid1"})
     return dataset
 
 
-@dataclass
-class FakeTrex:
-    """Stand-ins for the two phases, recording what each was asked to do."""
-
-    converted: list[Path] = field(default_factory=list)
-    tracked: list[Path] = field(default_factory=list)
-    convert_kwargs: list[dict[str, object]] = field(default_factory=list)
-    track_kwargs: list[dict[str, object]] = field(default_factory=list)
-    write_settings: bool = True
-    on_convert: Callable[[Path], None] | None = None
-
-    def convert(
-        self,
-        video_path: Path | list[Path],
-        output_dir: Path,
-        *,
-        output_name: str | None = None,
-        **kwargs: object,
-    ) -> TRexConvertResult:
-        given = (
-            [Path(video_path)]
-            if isinstance(video_path, (str, Path))
-            else [Path(p) for p in video_path]
-        )
-        self.converted.append(given[0])
-        self.convert_kwargs.append(dict(kwargs))
-        out = Path(output_dir)
-        out.mkdir(parents=True, exist_ok=True)
-        stem = output_name if output_name is not None else given[0].stem
-        pv = out / f"{stem}.pv"
-        _ = pv.write_bytes(b"pv")
-        settings = out / f"{stem}.settings"
-        if self.write_settings:
-            _ = settings.write_text("detect_type = yolo\n")
-        # TREx writes one of these at the end of every conversion whatever it is
-        # asked for, which is why publishing has to remove it rather than rely on
-        # a flag.
-        _ = (out / f"{stem}.results").write_bytes(b"conversion results")
-        if self.on_convert is not None:
-            self.on_convert(out)
-        return TRexConvertResult(
-            pv_path=pv,
-            settings_path=settings,
-            background_path=None,
-            stdout="",
-            stderr="",
-        )
-
-    def track(
-        self, pv_path: Path, output_dir: Path, **kwargs: object
-    ) -> TRexTrackResult:
-        self.tracked.append(Path(pv_path))
-        self.track_kwargs.append(dict(kwargs))
-        out = Path(output_dir)
-        stem = Path(pv_path).stem
-        data = out / "data"
-        data.mkdir(parents=True, exist_ok=True)
-        npz = data / f"{stem}_id0.npz"
-        np.savez(
-            npz,
-            frame=np.arange(6),
-            time=np.arange(6) / 30.0,
-            cm_per_pixel=np.array([1.0]),
-            **{
-                "X#wcentroid": np.arange(6, dtype=float),
-                "Y#wcentroid": np.arange(6, dtype=float),
-            },
-            poseX0=np.arange(6, dtype=float),
-            poseY0=np.arange(6, dtype=float),
-        )
-        results = out / f"{stem}.results"
-        _ = results.write_bytes(b"results")
-        return TRexTrackResult(
-            npz_paths=[npz],
-            results_path=results,
-            settings_path=out / f"{stem}.settings",
-            stdout="",
-            stderr="",
-        )
-
-
 @pytest.fixture
-def trex(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeTrex]:
-    fake = FakeTrex()
-    monkeypatch.setattr(dr, "run_trex_convert", fake.convert)
-    monkeypatch.setattr(dr, "run_trex_track", fake.track)
-    yield fake
+def trex(monkeypatch: pytest.MonkeyPatch) -> FakeTrex:
+    return install_fake_trex(monkeypatch)
 
 
 def slot_of(ds: Dataset, uid: str = "uid-vid1") -> Path:
@@ -269,7 +130,7 @@ def test_a_replaced_source_video_mints_a_different_slot(
     """Same path, new bytes: never the same conversion, and never rewritten."""
     _ = dr.run_trex(ds, TrexParams())
     first = slot_of(ds, "uid-vid1")
-    write_media(ds, sequence="vid1", uid="uid-replaced")
+    write_media_index(ds, ["vid1"], uids={"vid1": "uid-replaced"})
     _ = dr.run_trex(ds, TrexParams())
 
     assert len(trex.converted) == 2
@@ -284,7 +145,7 @@ def test_media_without_a_uid_converts_in_place_and_says_so(
     """A path is a mutable key, so media with no content identity is not cached."""
     manifest = new_dataset_manifest("nouid", base_dir=tmp_path)
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
-    write_media(dataset, sequence="vid1", uid="")
+    write_media_index(dataset, ["vid1"], uids={"vid1": ""})
 
     run_id = dr.run_trex(dataset, TrexParams())
     assert slots(dataset) == []
@@ -307,15 +168,13 @@ def test_a_cache_hit_and_a_fresh_convert_produce_one_identity(
     warm_ids: list[str] = []
     tables: list[pd.DataFrame] = []
     for name in ("cold", "warm"):
-        fake = FakeTrex()
-        monkeypatch.setattr(dr, "run_trex_convert", fake.convert)
-        monkeypatch.setattr(dr, "run_trex_track", fake.track)
+        fake = install_fake_trex(monkeypatch)
         base = tmp_path / name
         base.mkdir()
         dataset = Dataset(manifest_path=new_dataset_manifest(name, base_dir=base)).load(
             ensure_roots=True
         )
-        write_media(dataset, sequence="vid1", uid="uid-vid1")
+        write_media_index(dataset, ["vid1"], uids={"vid1": "uid-vid1"})
         if name == "warm":
             # Prime the cache with a run at other tracking settings, so the run
             # under test is a hit rather than a conversion.
@@ -808,7 +667,7 @@ def test_visual_identification_probabilities_are_not_read_as_tracks(
     published = read_tracks_index(ds)
     assert len(published) == 1, "the entry published, so visual identity is usable"
     assert published.iloc[0]["run_id"] == variant
-    assert int(published.iloc[0]["n_rows"]) == 6, (
+    assert int(published.iloc[0]["n_rows"]) == trex.npz_frames, (
         "the per-id export is what became the table"
     )
 

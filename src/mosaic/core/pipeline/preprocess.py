@@ -65,12 +65,8 @@ from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.preprocess_index import (
-    MediaVariantDriftedError,
-    MediaVariantMissingError,
     media_variant_index,
     media_variant_row,
-    variant_facts,
-    variant_placement,
     variant_row,
     write_media_variant_row,
 )
@@ -83,6 +79,7 @@ from mosaic.core.pipeline.preprocess_layout import (
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.pipeline.stream_copy import coded_frame_count
 from mosaic.core.pipeline.tracks_index import media_composition_for
+from mosaic.core.pipeline.variant_source import VariantSource, resolve_variant_source
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
@@ -500,23 +497,13 @@ class _EntryMedia:
 
 
 @dataclass(frozen=True, slots=True)
-class _UpstreamFile:
-    """The upstream variant's file for an entry, and its row's contents."""
-
-    path: Path
-    facts: MediaFacts
-    placement: Placement
-    video_uuid: str
-
-
-@dataclass(frozen=True, slots=True)
 class _EntryPlan:
     """Everything the run knows about one entry before decoding it."""
 
     group: str
     sequence: str
     camera: str
-    source: _EntryMedia | _UpstreamFile
+    source: _EntryMedia | VariantSource
     start: Placement
     final: Placement
     composition: str
@@ -577,50 +564,6 @@ def _entry_media(key: str, media: ResolvedScopeEntry) -> tuple[_EntryMedia, Plac
     return _EntryMedia(paths, facts, timeline), start
 
 
-def _upstream_file(
-    ds: Dataset,
-    upstream: str,
-    media: ResolvedScopeEntry,
-    composition: str,
-) -> _UpstreamFile:
-    """The upstream variant's file for *media*'s entry and camera.
-
-    Raises:
-        MediaVariantMissingError: If the upstream variant has no row or no file
-            for the entry.
-        MediaVariantDriftedError: If the entry's media changed after the upstream
-            file was written from it.
-    """
-    key = make_entry_key(media.group, media.sequence)
-    row = variant_row(ds, upstream, media.group, media.sequence, media.camera)
-    if row is None:
-        message = (
-            f"{key}: the upstream variant {upstream} holds no file for this entry. "
-            f"Run it over the entry first."
-        )
-        raise MediaVariantMissingError(message)
-    path = ds.resolve_path(row["abs_path"])
-    if not path.is_file():
-        message = (
-            f"{key}: the file of the upstream variant {upstream} is missing at "
-            f"{path}. Run that variant over the entry again."
-        )
-        raise MediaVariantMissingError(message)
-    if compositions_disagree(row["consumed_media_composition"], composition):
-        message = (
-            f"{key}: the entry's media changed after the upstream variant "
-            f"{upstream} was written from it. Run {upstream} over the entry again "
-            f"to bring it up to date."
-        )
-        raise MediaVariantDriftedError(message)
-    return _UpstreamFile(
-        path=path,
-        facts=variant_facts(row),
-        placement=variant_placement(row),
-        video_uuid=row["video_uuid"],
-    )
-
-
 def _place(
     key: str, params: PreprocessParams, start: Placement, first_clip_fps: float
 ) -> Placement:
@@ -675,14 +618,14 @@ def _plan_entry(ds: Dataset, params: PreprocessParams, entry: Entry) -> _EntryPl
     media = _consumed_media(ds, entry)
     key = make_entry_key(media.group, media.sequence)
     composition = media_composition_for(ds, media.group, media.sequence)
-    source: _EntryMedia | _UpstreamFile
+    source: _EntryMedia | VariantSource
     if params.media:
-        source = _upstream_file(ds, params.media, media, composition)
+        source = resolve_variant_source(ds, params.media, media)
         start = source.placement
     else:
         source, start = _entry_media(key, media)
     final = _place(key, params, start, media.resolved.facts[0].fps)
-    if isinstance(source, _UpstreamFile):
+    if isinstance(source, VariantSource):
         try:
             _ = final.frames.file_indices(source.placement.frames)
         except ValueError as exc:
@@ -758,7 +701,7 @@ def _entry_frames(source: _EntryMedia, frames: FrameMap) -> Iterator[Frame]:
             yield from _clip_frames(path, facts, window[0], window[1], frames.step)
 
 
-def _upstream_frames(source: _UpstreamFile, frames: FrameMap) -> Iterator[Frame]:
+def _upstream_frames(source: VariantSource, frames: FrameMap) -> Iterator[Frame]:
     """The frames *frames* selects from the upstream variant's file."""
     first, stride, count = frames.file_indices(source.placement.frames)
     with open_frame_reader(
@@ -775,7 +718,7 @@ def _upstream_frames(source: _UpstreamFile, frames: FrameMap) -> Iterator[Frame]
 
 def _source_frames(plan: _EntryPlan) -> Iterator[Frame]:
     """The frames of *plan*'s entry its final frame map selects, before any step."""
-    if isinstance(plan.source, _UpstreamFile):
+    if isinstance(plan.source, VariantSource):
         return _upstream_frames(plan.source, plan.final.frames)
     return _entry_frames(plan.source, plan.final.frames)
 
@@ -812,8 +755,8 @@ def _reusable(ds: Dataset, run_id: str, plan: _EntryPlan, dest: Path) -> bool:
         return False
     if compositions_disagree(row["consumed_media_composition"], plan.composition):
         return False
-    if isinstance(plan.source, _UpstreamFile):
-        return row["upstream_video_uuid"] == plan.source.video_uuid
+    if isinstance(plan.source, VariantSource):
+        return row["upstream_video_uuid"] == plan.source.facts.video_uuid
     return True
 
 
@@ -823,14 +766,17 @@ def _write_variant(
     params: PreprocessParams,
     run_id: str,
     plan: _EntryPlan,
+    work_dir: Path,
     refresh_claim: Callable[[], bool],
 ) -> None:
     """Encode one entry's variant, count it, publish it and record its row.
 
-    The frames go to a partial file beside the destination. A partial whose
-    coded frame count, or probed frame count, is not the placement's count is
-    kept for inspection and refused. Otherwise it is renamed into place and its
-    row written: a row is the claim that the file exists.
+    The frames go to a partial file in the entry's claimed working directory
+    *work_dir*, never beside the destination, where it could sit at the path of
+    another entry's variant file. A partial whose coded frame count, or probed
+    frame count, is not the placement's count is kept for inspection and
+    refused. Otherwise it is renamed into place and its row written: a row is
+    the claim that the file exists.
 
     Raises:
         TranscodeError: If the encode holds another number of frames than the
@@ -838,7 +784,7 @@ def _write_variant(
     """
     dest = media_variant_path(ds, run_id, plan.group, plan.sequence, plan.camera)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    partial = dest.with_name(f"{dest.stem}.partial{dest.suffix}")
+    partial = work_dir / f"{dest.stem}.partial{dest.suffix}"
     final = plan.final
     expected = final.frames.count
     keep_partial = False
@@ -861,7 +807,7 @@ def _write_variant(
             message = (
                 f"{plan.key}: the encode holds {coded} frames where the steps "
                 f"select {expected}, so it is not published. It is kept at "
-                f"{partial.name} for inspection."
+                f"{partial} for inspection."
             )
             raise TranscodeError(message)
         facts = probe_media(partial)
@@ -870,7 +816,7 @@ def _write_variant(
             message = (
                 f"{plan.key}: the encode holds {expected} frames but its timestamps "
                 f"place only {facts.frame_count}, so a reader seeking by time would "
-                f"miss frames. It is kept at {partial.name} for inspection."
+                f"miss frames. It is kept at {partial} for inspection."
             )
             raise TranscodeError(message)
         _ = partial.replace(dest)
@@ -878,7 +824,7 @@ def _write_variant(
         if not keep_partial:
             partial.unlink(missing_ok=True)
     upstream_video_uuid = (
-        plan.source.video_uuid if isinstance(plan.source, _UpstreamFile) else ""
+        plan.source.facts.video_uuid if isinstance(plan.source, VariantSource) else ""
     )
     write_media_variant_row(
         ds,
@@ -1028,6 +974,7 @@ class PreprocessOp(Op[PreprocessParams]):
                             params,
                             run_id,
                             plan,
+                            work_dir,
                             throttled_refresh(work_dir, marker, _ENCODE_IDLE_SECONDS),
                         )
                     written += 1

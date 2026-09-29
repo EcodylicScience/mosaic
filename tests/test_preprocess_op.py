@@ -57,10 +57,9 @@ from mosaic.runlog import reduce_run_log, run_log_path
 
 from tests.helpers import (
     MediaClip,
-    index_media_sequence,
     make_dataset,
-    write_h264_mp4,
     write_media_index,
+    write_painted_entry,
 )
 
 _KIND = "preprocess"
@@ -115,22 +114,12 @@ def _entry(
     Every frame is flat at :func:`_level` of its frame number across the whole
     entry, so the clips continue one another.
     """
-    directory = ds.get_root("media_raw") / sequence
-    names: list[str] = []
-    offset = 0
     width, height = _SIZE
-    for position, (frames, fps) in enumerate(clips):
-        name = f"clip{position}.mp4"
 
-        def paint(frame: int, first: int = offset) -> Image:
-            return np.full((height, width, 3), _level(first + frame, base), np.uint8)
+    def paint(frame: int) -> Image:
+        return np.full((height, width, 3), _level(frame, base), np.uint8)
 
-        write_h264_mp4(
-            directory / name, frames=frames, fps=fps, size=_SIZE, paint=paint
-        )
-        names.append(name)
-        offset += frames
-    index_media_sequence(ds, sequence, names)
+    _ = write_painted_entry(ds, sequence, clips, paint, size=_SIZE)
 
 
 def _params(
@@ -184,8 +173,14 @@ def _entries_written(ds: Dataset, execution_id: str) -> int:
 
 
 def _variant_files(ds: Dataset) -> list[Path]:
+    """Every ``.mp4`` under the variants root, work directories included."""
     root = media_variants_root(ds)
     return sorted(root.rglob("*.mp4")) if root.exists() else []
+
+
+def _partial(ds: Dataset, run_id: str, sequence: str) -> Path:
+    """Where the op encodes *sequence*'s variant before publishing it."""
+    return media_variant_work_root(ds, run_id) / sequence / f"{sequence}.partial.mp4"
 
 
 class _WriterSpy:
@@ -272,7 +267,7 @@ def test_a_single_clip_crop_is_the_cropped_size_count_and_codec(
     assert row["video_uuid"] == facts.video_uuid
     assert row["consumed_media_composition"] == media_composition_for(ds, "", "s")
     assert row["consumed_media_composition"] != ""
-    assert not path.with_name("s.partial.mp4").exists()
+    assert _variant_files(ds) == [path]
 
 
 @pytest.mark.media
@@ -580,11 +575,36 @@ def test_a_short_encode_is_refused_and_its_partial_kept(
     run_id = preprocess_identity(_params([_GRAYSCALE])).run_id
     path = media_variant_path(ds, run_id, "", "s", "")
     assert not path.exists()
-    assert path.with_name("s.partial.mp4").is_file()
+    assert _variant_files(ds) == [_partial(ds, run_id, "s")]
     assert variant_row(ds, run_id, "", "s", "") is None
     (line,) = _error_lines(ds, "short")
     assert "11" in line
     assert "12" in line
+
+
+@pytest.mark.media
+def test_an_encode_never_writes_where_another_entry_publishes(tmp_path: Path) -> None:
+    """Entry ``a`` encoding again leaves entry ``a.partial``'s variant file alone.
+
+    The partial is written inside the entry's work directory. Beside the
+    destination it was ``a.partial.mp4``, the file ``a.partial`` publishes, and
+    renaming it into ``a.mp4`` took that file away.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    _entry(ds, "a", [(12, 30.0)])
+    _entry(ds, "a.partial", [(12, 30.0)], base=50)
+    run_id = _run(ds, [_GRAYSCALE], ("a", "a.partial"))
+    neighbor = media_variant_path(ds, run_id, "", "a.partial", "")
+    published = neighbor.read_bytes()
+
+    _ = _run(ds, [_GRAYSCALE], ("a",), overwrite=True)
+
+    assert neighbor.read_bytes() == published
+    assert media_variant_path(ds, run_id, "", "a", "").is_file()
+    assert _variant_files(ds) == sorted(
+        media_variant_path(ds, run_id, "", sequence, "")
+        for sequence in ("a", "a.partial")
+    )
 
 
 @pytest.mark.media

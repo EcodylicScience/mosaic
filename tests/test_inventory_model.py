@@ -8,6 +8,8 @@ otherwise only reachable through a live filesystem.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from mosaic.core.pipeline.inventory.model import (
@@ -18,6 +20,7 @@ from mosaic.core.pipeline.inventory.model import (
     FeatureRunRef,
     InventoryScope,
     MediaDerivativeRef,
+    MediaVariantRef,
     classify,
 )
 
@@ -149,8 +152,24 @@ def test_every_ref_kind_is_a_declared_artifact_kind() -> None:
     refs = [
         FeatureRunRef("f", "r"),
         MediaDerivativeRef("analysis"),
+        MediaVariantRef("preprocess.0.1-aaaaaaaaaa"),
     ]
     assert {ref.kind for ref in refs} <= declared
+
+
+def test_a_media_variant_answers_empty_camera_coverage_when_absent(
+    tmp_path: Path,
+) -> None:
+    """A variant is keyed by entry and camera, and its absence reads as absent."""
+    inventory = DatasetInventory(
+        dataset_root=tmp_path,
+        scope=InventoryScope(kinds=frozenset({"media-variant"})),
+    )
+    ref = MediaVariantRef(run_id="preprocess.0.1-aaaaaaaaaa")
+
+    assert ref.kind == "media-variant"
+    assert inventory.coverage(ref).present == frozenset()
+    assert inventory.status(ref) == "absent"
 
 
 def test_the_kind_vocabulary_is_spelled_once_in_two_places() -> None:

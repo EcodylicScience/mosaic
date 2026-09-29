@@ -40,12 +40,15 @@ import pandas as pd
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
+from mosaic.core.pipeline.media_input import media_identity_terms
 from mosaic.core.pipeline.markers import (
     clear_phase_marker,
 )
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.entry_claim import claim, phase_activity
 from mosaic.core.pipeline.op_identity import op_run_id
+from mosaic.core.pipeline.placement import SourceMapping
+from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
     publish_or_record,
@@ -62,7 +65,6 @@ from mosaic.tracking.common.entry import (
     reusable_output,
 )
 from mosaic.tracking.common.index import (
-    media_composition_cell,
     register_tracker_row_class,
     TrackerRunRowBase,
     list_tracker_runs,
@@ -134,7 +136,8 @@ def sleap_settings(params: SleapParams, *, model_id: str) -> dict[str, object]:
 
     The model is carried as its content digest (``model_id``), never a path. When
     tracking is off, the tracker knobs are dropped from identity so retuning them
-    cannot bust a cache they never fed.
+    cannot bust a cache they never fed. ``media`` joins only when it names a
+    variant.
 
     Args:
         params: The run's parameters.
@@ -163,6 +166,7 @@ def sleap_settings(params: SleapParams, *, model_id: str) -> dict[str, object]:
             list(params.analysis_range) if params.analysis_range else None
         ),
         "sleap_extra_settings": params.sleap_extra_settings,
+        **media_identity_terms(params),
     }
 
 
@@ -180,16 +184,19 @@ def _bridge_analysis_h5_to_tracks(
     *,
     tracks_variant: str,
     producer_run_id: str,
-    video_path: Path,
+    media_paths: Sequence[Path],
     model_checkpoints: Sequence[Path],
     fps: float,
     overwrite: bool,
+    mapping: SourceMapping | None,
 ) -> BridgeCounts | None:
     """Bridge a SLEAP analysis HDF5 into ``tracks/<variant>/<group>__<seq>.parquet``.
 
     Uses the registered ``sleap_analysis_h5`` converter with the authoritative
     (group, sequence) known from the media index, so no name is guessed from a
-    filename. Returns ``None`` when the conversion failed and nothing was
+    filename. *media_paths* are the media files the table derives from, and
+    *mapping* maps a table tracked on a media variant into source space, ``None``
+    otherwise. Returns ``None`` when the conversion failed and nothing was
     published.
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
@@ -223,7 +230,8 @@ def _bridge_analysis_h5_to_tracks(
         tracks_variant=tracks_variant,
         producer_run_id=producer_run_id,
         source=h5_path.parent,
-        consumed=[h5_path, video_path, *model_checkpoints],
+        consumed=[h5_path, *media_paths, *model_checkpoints],
+        mapping=mapping,
     )
 
 
@@ -423,7 +431,7 @@ def run_sleap(
             # tracker identity carries no media term, so without this a
             # re-transcode leaves the run reading as current over
             # different pixels.
-            consumed_media_composition=media_composition_cell(
+            consumed_media_composition=media_composition_for(
                 job.ds, item.group, item.sequence
             ),
             abs_path=Path(job.ds.relative_to_root(work_dir)),
@@ -440,6 +448,7 @@ def run_sleap(
             n_ids=0,
             slp_path=job.ds.relative_to_root(slp_out),
             analysis_h5_path=job.ds.relative_to_root(h5_path),
+            media=item.media,
         )
 
         if not params.convert_to_tracks:
@@ -454,10 +463,11 @@ def run_sleap(
                 h5_path,
                 tracks_variant=minted.tracks_variant,
                 producer_run_id=minted.run_id,
-                video_path=item.video_path,
+                media_paths=item.consumed_media,
                 model_checkpoints=list(resolved_models.significant_files),
                 fps=item.fps,
                 overwrite=job.overwrite or recomputed,
+                mapping=item.source_mapping,
             ),
             kind=SLEAP_KIND,
         )
@@ -468,7 +478,9 @@ def run_sleap(
         kind=SLEAP_KIND,
         target="sleap-nn track",
         minted=minted,
-        work_items=build_work_items(ds, media_scope, kind=SLEAP_KIND),
+        work_items=build_work_items(
+            ds, media_scope, kind=SLEAP_KIND, media=params.media
+        ),
         index=sleap_index(sleap_index_path(ds)),
         run_entry=track_one,
         overwrite=overwrite,

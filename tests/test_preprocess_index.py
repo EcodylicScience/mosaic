@@ -31,7 +31,6 @@ from mosaic.core.pipeline.preprocess_index import (
     MediaVariantMissingError,
     MediaVariantRow,
     media_variant_index,
-    media_variant_row,
     read_media_variant_index,
     variant_facts,
     variant_placement,
@@ -45,7 +44,7 @@ from mosaic.core.pipeline.preprocess_layout import (
     media_variant_run_root,
 )
 
-from tests.helpers import make_dataset
+from tests.helpers import add_media_variant, make_dataset
 
 _RUN = "preprocess.0.1-aaaaaaaaaa"
 
@@ -74,26 +73,17 @@ def _write(
     composition: str = "composition-1",
     facts: MediaFacts | None = None,
 ) -> MediaVariantRow:
-    """Write a variant file and its row, as the op does: the file first."""
-    path = media_variant_path(ds, _RUN, "g", sequence, camera)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_bytes(b"variant")
-    row = media_variant_row(
+    """Write a variant file and its row in group ``g``, under this file's defaults."""
+    return add_media_variant(
         ds,
-        path=path,
-        run_id=_RUN,
+        _RUN,
+        sequence,
         group="g",
-        sequence=sequence,
         camera=camera,
-        upstream="",
-        upstream_video_uuid="",
+        composition=composition,
         placement=_placement(),
         facts=_facts() if facts is None else facts,
-        encoder="libsvtav1",
-        consumed_media_composition=composition,
     )
-    write_media_variant_row(ds, row)
-    return row
 
 
 def _found(ds: Dataset, sequence: str = "s", camera: str = "") -> dict[str, str]:

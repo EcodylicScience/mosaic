@@ -57,6 +57,7 @@ from .resolve import (
     resolve_step_spec,
 )
 from .topo import RecipeCycle, topological_order
+from ..preprocess import PREPROCESS_KIND
 from mosaic.core.pipeline.types import ArtifactSpec
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
@@ -283,6 +284,7 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
     unsubstitutable = _reference_site_problems(step, name, expected_kind)
     problems.extend(unsubstitutable)
     problems.extend(_tracks_reference_problems(step, walk))
+    problems.extend(_media_reference_problems(step, walk))
 
     if unsubstitutable or any(
         referenced in walk.broken for referenced, _ in references_of(step)
@@ -412,6 +414,37 @@ def _tracks_reference_problems(step: Step, walk: _Walk) -> list[Problem]:
             "tracks",
             f"{step.tracks.step!r} runs {upstream.produces.name!r}, which writes "
             f"no tracks variant, so there is nothing for --tracks-run-id to name",
+        )
+    ]
+
+
+_MEDIA_FIELD: Final = "media"
+"""The params field that names the media variant a step reads."""
+
+
+def _media_reference_problems(step: Step, walk: _Walk) -> list[Problem]:
+    """A ``media`` reference must name a step that writes a media variant.
+
+    Every media op writes media, and only a ``preprocess`` run id names a variant
+    a consumer can read. A transcode's derivatives are routed by verdict and
+    named by recipe, so its run id in ``media`` would read as a variant with no
+    rows and fail every entry once the step runs.
+    """
+    reference = params_step_refs(step.params).get(_MEDIA_FIELD)
+    if reference is None:
+        return []
+    upstream = walk.declaration_behind(reference.step)
+    if upstream is None or (
+        upstream.produces.kind == "op" and upstream.produces.name == PREPROCESS_KIND
+    ):
+        return []
+    return [
+        Problem(
+            step.id,
+            f"params.{_MEDIA_FIELD}",
+            f"{reference.step!r} runs {upstream.produces.name!r}, which writes no "
+            f"media variant, so there is nothing for {_MEDIA_FIELD!r} to name. A "
+            f"media reference names a {PREPROCESS_KIND} step",
         )
     ]
 

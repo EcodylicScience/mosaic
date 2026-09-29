@@ -149,6 +149,7 @@ def test_an_absent_root_lists_empty_but_typed(ds: Dataset) -> None:
         "params_hash",
         "n_ids",
         "consumed_media_composition",
+        "media",
         "model_id",
         "model_type",
         "slp_path",

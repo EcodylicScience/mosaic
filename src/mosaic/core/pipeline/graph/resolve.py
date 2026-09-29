@@ -359,7 +359,8 @@ def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
     the tracking-roots registry -- the table a producer must appear in to *bridge
     from a tracker run root*, which is what every tracks producer did until one
     arrived that reads a tracks table and writes another. ``writes_media`` comes
-    from the op's declared category. Neither is a name list.
+    from the op's declared domain, so a media op of a new category writes media
+    without an entry here. Neither is a name list.
 
     ``reads_media`` stays tied to the registry rather than following
     ``writes_tracks``: it is true because bridging into tracks means opening the
@@ -378,7 +379,7 @@ def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
             writes_tracks=bridges_tracks
             if declared_tracks is None
             else bool(declared_tracks),
-            writes_media=str(getattr(op_cls, "category", "")) == "transcode",
+            writes_media=str(getattr(op_cls, "domain", "")) == "media",
         ),
         consumes=ConsumerDecl(
             name=kind,

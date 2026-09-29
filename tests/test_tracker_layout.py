@@ -18,26 +18,30 @@ change is either intended and re-pinned in the same commit, or a defect.
 
 from __future__ import annotations
 
-import dataclasses
-import io
 import json
-import zipfile
-from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
-from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
-from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.trex.params import TrexParams
+from mosaic.tracking.trex.run import TRexTrackResult
 
-from tests.helpers import write_dlc_csv, write_sleap_analysis_h5
+from tests.helpers import (
+    FakeLitpose,
+    FakeSleap,
+    FakeTrex,
+    install_fake_litpose,
+    install_fake_sleap,
+    install_fake_trex,
+    write_litpose_model,
+    write_media_index,
+    write_trex_npz,
+)
 
 # Marker fields this file does not own. Masked rather than dropped, so a field
 # that stops being written is still a visible diff. The first group differs
@@ -60,56 +64,15 @@ _MASKED: frozenset[str] = frozenset(
 
 # --- dataset fixture (shared shape with the three marker suites) ------------
 
-
-def _clean_facts_cells() -> dict[str, object]:
-    facts: MediaFacts = store_facts(
-        width=640,
-        height=480,
-        fps=30.0,
-        frame_count=100,
-        codec="h264",
-        duration=100 / 30.0,
-        video_uuid="uid-vid1",
-        identity_scheme="",
-    )
-    facts = dataclasses.replace(
-        facts,
-        container="mov,mp4,m4a,3gp,3g2,mj2",
-        pixel_format="yuv420p",
-        moov_at_start=True,
-    )
-    return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
+_UIDS: dict[str, str] = {"vid1": "uid-vid1", "vid2": "uid-vid2"}
+"""The content identity of each sequence's video."""
 
 
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
     manifest = new_dataset_manifest("layout", base_dir=tmp_path)
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
-    media_root = dataset.get_root(dataset.resolve_media_root())
-    media_root.mkdir(parents=True, exist_ok=True)
-    video = media_root / "vid1.mp4"
-    video.write_bytes(b"fake")
-    pd.DataFrame(
-        [
-            {
-                "name": "vid1.mp4",
-                "group": "",
-                "sequence": "vid1",
-                "group_safe": "",
-                "sequence_safe": "vid1",
-                "abs_path": dataset.relative_to_root(video),
-                "size_bytes": 4,
-                "mtime_iso": "",
-                "width": 640,
-                "height": 480,
-                "fps": 30.0,
-                "codec": "h264",
-                "media_type": "video",
-                "video_order": 0,
-                **_clean_facts_cells(),
-            }
-        ]
-    ).to_csv(media_root / "index.csv", index=False)
+    write_media_index(dataset, ["vid1"], uids=_UIDS)
     return dataset
 
 
@@ -162,43 +125,18 @@ def snapshot(ds: Dataset, kind: str, run_id: str) -> dict[str, object]:
 # --- Lightning Pose --------------------------------------------------------
 
 
-@dataclass
-class _FakeLitpose:
-    predicted: list[Path] = field(default_factory=list)
-
-    def predict(self, video_path: Path, out_csv: Path, **_kwargs: object) -> object:
-        from mosaic.tracking.litpose.run import LitposePredictResult
-
-        self.predicted.append(Path(video_path))
-        _ = write_dlc_csv(
-            Path(out_csv), ("nose", "tail"), n_frames=6, scorer="heatmap_tracker"
-        )
-        return LitposePredictResult(csv_path=Path(out_csv), stdout="", stderr="")
-
-
 @pytest.fixture
 def litpose_model(tmp_path: Path) -> Path:
-    model_dir = tmp_path / "lp_model"
-    ckpt = model_dir / "tb_logs" / "m" / "version_0" / "checkpoints" / "best.ckpt"
-    ckpt.parent.mkdir(parents=True, exist_ok=True)
-    ckpt.write_bytes(b"weights")
-    (model_dir / "config.yaml").write_text(
-        "model:\n  model_type: heatmap\ndata:\n  keypoint_names: [nose, tail]\n"
-    )
-    return model_dir
+    return write_litpose_model(tmp_path / "lp_model")
 
 
 @pytest.fixture
-def fake_litpose(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeLitpose]:
-    import mosaic.tracking.litpose.dataset_runs as litpose_runs
-
-    fake = _FakeLitpose()
-    monkeypatch.setattr(litpose_runs, "run_litpose_predict", fake.predict)
-    yield fake
+def fake_litpose(monkeypatch: pytest.MonkeyPatch) -> FakeLitpose:
+    return install_fake_litpose(monkeypatch)
 
 
 def test_litpose_leaves_this_shape(
-    ds: Dataset, litpose_model: Path, fake_litpose: _FakeLitpose
+    ds: Dataset, litpose_model: Path, fake_litpose: FakeLitpose
 ) -> None:
     import mosaic.tracking.litpose.dataset_runs as litpose_runs
 
@@ -243,6 +181,7 @@ def test_litpose_leaves_this_shape(
         "params_hash",
         "n_ids",
         "consumed_media_composition",
+        "media",
         "model_id",
         "model_type",
         "csv_path",
@@ -275,34 +214,6 @@ def test_litpose_leaves_this_shape(
 # --- SLEAP -----------------------------------------------------------------
 
 
-@dataclass
-class _FakeSleap:
-    tracked: list[Path] = field(default_factory=list)
-    converted: list[Path] = field(default_factory=list)
-
-    def track(self, video_path: Path, output_slp: Path, **_kwargs: object) -> object:
-        from mosaic.tracking.sleap.run import SleapTrackResult
-
-        self.tracked.append(Path(video_path))
-        Path(output_slp).parent.mkdir(parents=True, exist_ok=True)
-        Path(output_slp).write_bytes(b"slp")
-        return SleapTrackResult(slp_path=Path(output_slp), stdout="", stderr="")
-
-    def convert(self, slp_path: Path, output_h5: Path, **_kwargs: object) -> object:
-        from mosaic.tracking.sleap.run import SleapConvertResult
-
-        self.converted.append(Path(slp_path))
-        write_sleap_analysis_h5(
-            Path(output_h5),
-            np.random.default_rng(0).uniform(0, 100, (6, 1, 2, 2)),
-            node_names=("nose", "tail"),
-            track_names=("track_0",),
-        )
-        return SleapConvertResult(
-            analysis_h5_path=Path(output_h5), stdout="", stderr=""
-        )
-
-
 @pytest.fixture
 def sleap_model(tmp_path: Path) -> Path:
     model_dir = tmp_path / "sleap_model"
@@ -313,17 +224,12 @@ def sleap_model(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def fake_sleap(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeSleap]:
-    import mosaic.tracking.sleap.dataset_runs as sleap_runs
-
-    fake = _FakeSleap()
-    monkeypatch.setattr(sleap_runs, "run_sleap_track", fake.track)
-    monkeypatch.setattr(sleap_runs, "run_sleap_convert", fake.convert)
-    yield fake
+def fake_sleap(monkeypatch: pytest.MonkeyPatch) -> FakeSleap:
+    return install_fake_sleap(monkeypatch)
 
 
 def test_sleap_leaves_this_shape(
-    ds: Dataset, sleap_model: Path, fake_sleap: _FakeSleap
+    ds: Dataset, sleap_model: Path, fake_sleap: FakeSleap
 ) -> None:
     import mosaic.tracking.sleap.dataset_runs as sleap_runs
 
@@ -367,6 +273,7 @@ def test_sleap_leaves_this_shape(
         "params_hash",
         "n_ids",
         "consumed_media_composition",
+        "media",
         "model_id",
         "model_type",
         "slp_path",
@@ -394,107 +301,12 @@ def test_sleap_leaves_this_shape(
 # --- TREx ------------------------------------------------------------------
 
 
-def _write_npz(path: Path, arrays: Mapping[str, np.ndarray]) -> None:
-    """Write an NPZ whose member names need not be Python identifiers.
-
-    ``np.savez`` takes its array names as keyword arguments, and TREx column
-    names carry a ``#`` -- so they can only be passed by unpacking a mapping,
-    which collides with the ``allow_pickle`` keyword in the same signature. This
-    writes the same container directly: an uncompressed zip of ``.npy`` members,
-    which is exactly what ``np.savez`` produces and what ``np.load`` reads back.
-    """
-    with zipfile.ZipFile(path, "w") as archive:
-        for name, array in arrays.items():
-            buffer = io.BytesIO()
-            np.lib.format.write_array(buffer, array, allow_pickle=False)
-            archive.writestr(f"{name}.npy", buffer.getvalue())
-
-
-@dataclass
-class _FakeTrex:
-    converted: list[Path] = field(default_factory=list)
-    tracked: list[Path] = field(default_factory=list)
-
-    def convert(
-        self,
-        video_path: Path | Sequence[Path],
-        output_dir: Path,
-        *,
-        output_name: str | None = None,
-        **_kwargs: object,
-    ) -> object:
-        from mosaic.tracking.trex.run import TRexConvertResult
-
-        given = (
-            [Path(video_path)]
-            if isinstance(video_path, (str, Path))
-            else [Path(p) for p in video_path]
-        )
-        self.converted.append(given[0])
-        stem = output_name if output_name is not None else given[0].stem
-        pv = Path(output_dir) / f"{stem}.pv"
-        pv.parent.mkdir(parents=True, exist_ok=True)
-        pv.write_bytes(b"pv")
-        # TREx writes a settings file beside every conversion, and it carries the
-        # detection parameters into tracking -- re-opening a `.pv` recovers only
-        # seven fields from the file itself. A conversion without one cannot be
-        # shared, so a fake that omits it exercises the fallback rather than the
-        # ordinary path.
-        settings = Path(output_dir) / f"{stem}.settings"
-        settings.write_text("detect_type = yolo\n")
-        return TRexConvertResult(
-            pv_path=pv,
-            settings_path=settings,
-            background_path=None,
-            stdout="",
-            stderr="",
-        )
-
-    def track(self, pv_path: Path, output_dir: Path, **_kwargs: object) -> object:
-        from mosaic.tracking.trex.run import TRexTrackResult
-
-        self.tracked.append(Path(pv_path))
-        out = Path(output_dir)
-        stem = Path(pv_path).stem
-        data = out / "data"
-        data.mkdir(parents=True, exist_ok=True)
-        npz = data / f"{stem}_fish0.npz"
-        _write_npz(
-            npz,
-            {
-                "frame": np.arange(6),
-                "time": np.arange(6) / 30.0,
-                # TREx records the factor it scaled positions by in every
-                # export; the conversion refuses a file that does not say.
-                "cm_per_pixel": np.array([1.0]),
-                "X#wcentroid": np.arange(6, dtype=float),
-                "Y#wcentroid": np.arange(6, dtype=float),
-                "poseX0": np.arange(6, dtype=float),
-                "poseY0": np.arange(6, dtype=float),
-            },
-        )
-        results = out / f"{stem}.results"
-        results.write_bytes(b"results")
-        return TRexTrackResult(
-            npz_paths=[npz],
-            results_path=results,
-            settings_path=out / f"{stem}.settings",
-            stdout="",
-            stderr="",
-        )
-
-
 @pytest.fixture
-def fake_trex(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeTrex]:
-    import mosaic.tracking.trex.dataset_runs as trex_runs
-
-    fake = _FakeTrex()
-    monkeypatch.setattr(trex_runs, "run_trex_convert", fake.convert)
-    monkeypatch.setattr(trex_runs, "run_trex_track", fake.track)
-    yield fake
+def fake_trex(monkeypatch: pytest.MonkeyPatch) -> FakeTrex:
+    return install_fake_trex(monkeypatch)
 
 
-def test_trex_leaves_this_shape(ds: Dataset, fake_trex: _FakeTrex) -> None:
+def test_trex_leaves_this_shape(ds: Dataset, fake_trex: FakeTrex) -> None:
     import mosaic.tracking.trex.dataset_runs as trex_runs
 
     run_id = trex_runs.run_trex(ds, TrexParams())
@@ -555,6 +367,7 @@ def test_trex_leaves_this_shape(ds: Dataset, fake_trex: _FakeTrex) -> None:
         "params_hash",
         "n_ids",
         "consumed_media_composition",
+        "media",
         "pv_path",
         # What the run consumed, which video_abs_path cannot say for a session
         # of several clips -- it holds the first, as every tracker's does.
@@ -568,7 +381,7 @@ def test_trex_leaves_this_shape(ds: Dataset, fake_trex: _FakeTrex) -> None:
 
 
 def test_trex_gates_its_two_phases_on_different_parameter_subsets(
-    ds: Dataset, fake_trex: _FakeTrex
+    ds: Dataset, fake_trex: FakeTrex
 ) -> None:
     """The property a shared driver must not collapse into one hash.
 
@@ -610,48 +423,19 @@ def test_an_extra_trex_column_survives_into_the_tracks_table(
     keep it once TREx emits it" has a recorded answer rather than an assumption.
     """
     import mosaic.tracking.trex.dataset_runs as trex_runs
-    from mosaic.tracking.trex.run import TRexTrackResult
 
-    fake = _FakeTrex()
-
-    def track_with_extra_fields(
-        pv_path: Path, output_dir: Path, **_kwargs: object
-    ) -> TRexTrackResult:
-        out = Path(output_dir)
-        stem = Path(pv_path).stem
-        data = out / "data"
-        data.mkdir(parents=True, exist_ok=True)
-        npz = data / f"{stem}_fish0.npz"
-        _write_npz(
-            npz,
-            {
-                "frame": np.arange(6),
-                "time": np.arange(6) / 30.0,
-                # TREx records the factor it scaled positions by in every
-                # export; the conversion refuses a file that does not say.
-                "cm_per_pixel": np.array([1.0]),
-                "X#wcentroid": np.arange(6, dtype=float),
-                "Y#wcentroid": np.arange(6, dtype=float),
-                "poseX0": np.arange(6, dtype=float),
-                "poseY0": np.arange(6, dtype=float),
-                # The two fields a user adds to output_fields beyond TREx's
-                # defaults, and the reason this test exists.
+    _ = install_fake_trex(
+        monkeypatch,
+        FakeTrex(
+            npz_frames=6,
+            # The two fields a user adds to output_fields beyond TREx's
+            # defaults, and the reason this test exists.
+            extra_fields={
                 "tracklet_id": np.array([0, 0, 0, 1, 1, 1]),
                 "blobid": np.arange(6),
             },
-        )
-        results = out / f"{stem}.results"
-        results.write_bytes(b"results")
-        return TRexTrackResult(
-            npz_paths=[npz],
-            results_path=results,
-            settings_path=out / f"{stem}.settings",
-            stdout="",
-            stderr="",
-        )
-
-    monkeypatch.setattr(trex_runs, "run_trex_convert", fake.convert)
-    monkeypatch.setattr(trex_runs, "run_trex_track", track_with_extra_fields)
+        ),
+    )
 
     run_id = trex_runs.run_trex(ds, TrexParams())
 
@@ -680,21 +464,7 @@ def _add_second_entry(dataset: Dataset) -> None:
     Needed because with one entry, one failure is *all* of them -- which is the
     raise, not the partial. Partial only exists where something else succeeded.
     """
-    media_root = dataset.get_root(dataset.resolve_media_root())
-    video = media_root / "vid2.mp4"
-    video.write_bytes(b"fake")
-    index = media_root / "index.csv"
-    rows = pd.read_csv(index).to_dict("records")
-    second = dict(rows[0])
-    second.update(
-        {
-            "name": "vid2.mp4",
-            "sequence": "vid2",
-            "sequence_safe": "vid2",
-            "abs_path": dataset.relative_to_root(video),
-        }
-    )
-    pd.DataFrame([*rows, second]).to_csv(index, index=False)
+    write_media_index(dataset, ["vid1", "vid2"], uids=_UIDS)
 
 
 def _unconvertible_npz(path: Path) -> None:
@@ -705,33 +475,28 @@ def _unconvertible_npz(path: Path) -> None:
     whose units nobody wrote down. This is the exact shape that lost the real
     session.
     """
-    _write_npz(
+    write_trex_npz(
         path,
-        {
-            "frame": np.arange(6),
-            "time": np.arange(6) / 30.0,
-            "cm_per_pixel": np.array([0.03]),
-            "X#wcentroid": np.arange(6, dtype=float),
-            "Y#wcentroid": np.arange(6, dtype=float),
-            "a_field_mosaic_has_never_seen": np.arange(6, dtype=float),
-        },
+        n=6,
+        cm_per_pixel=0.03,
+        a_field_mosaic_has_never_seen=np.arange(6, dtype=float),
     )
 
 
-def _trex_failing_for(monkeypatch: pytest.MonkeyPatch, doomed: set[str]) -> _FakeTrex:
+def _trex_failing_for(monkeypatch: pytest.MonkeyPatch, doomed: set[str]) -> FakeTrex:
     """A fake TREx that tracks everything but exports garbage for *doomed*."""
     import mosaic.tracking.trex.dataset_runs as trex_runs
 
-    fake = _FakeTrex()
+    fake = FakeTrex()
 
-    def track(pv_path: Path, output_dir: Path, **kwargs: object) -> object:
+    def track(pv_path: Path, output_dir: Path, **kwargs: object) -> TRexTrackResult:
         result = fake.track(pv_path, output_dir, **kwargs)
         # Keyed on the working directory rather than on the `.pv`'s name: a
         # conversion is shared between every run over the same pixels, so its
         # file names cannot identify an entry and every slot spells the stem the
         # same way. The working directory is still one per entry.
         if Path(output_dir).name in doomed:
-            _unconvertible_npz(result.npz_paths[0])  # pyright: ignore[reportAttributeAccessIssue]
+            _unconvertible_npz(result.npz_paths[0])
         return result
 
     monkeypatch.setattr(trex_runs, "run_trex_convert", fake.convert)
@@ -890,9 +655,7 @@ def test_an_entry_with_no_detections_is_a_success_not_a_loss(
     import mosaic.tracking.trex.dataset_runs as trex_runs
     from mosaic.tracking.common.bridge import BridgeCounts
 
-    fake = _FakeTrex()
-    monkeypatch.setattr(trex_runs, "run_trex_convert", fake.convert)
-    monkeypatch.setattr(trex_runs, "run_trex_track", fake.track)
+    _ = install_fake_trex(monkeypatch)
     monkeypatch.setattr(
         trex_runs,
         "_bridge_npz_to_tracks",
@@ -919,9 +682,7 @@ def test_a_tracker_records_how_many_entries_it_published(
     import mosaic.tracking.trex.dataset_runs as trex_runs
 
     _add_second_entry(ds)
-    fake = _FakeTrex()
-    monkeypatch.setattr(trex_runs, "run_trex_convert", fake.convert)
-    monkeypatch.setattr(trex_runs, "run_trex_track", fake.track)
+    _ = install_fake_trex(monkeypatch)
 
     _ = trex_runs.run_trex(ds, TrexParams(), execution_id="exec-two")
 

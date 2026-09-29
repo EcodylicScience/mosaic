@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.pipeline.media_input import MediaInputParams
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
@@ -37,6 +38,7 @@ from mosaic.tracking.ultralytics_track.tracker_defaults import (
     resolve_tracker_config,
     validate_tracker_overrides,
 )
+from mosaic.tracking.ultralytics_track.version import ULTRALYTICS_KIND
 
 if TYPE_CHECKING:
     from typing_extensions import Self
@@ -149,7 +151,7 @@ def _selected_backend(value: object) -> TrackerName | None:
     return next((name for name in TRACKER_NAMES if name == value), None)
 
 
-class UltralyticsParams(TrackerOpParams):
+class UltralyticsParams(TrackerOpParams, MediaInputParams):
     """Parameters for the ``ultralytics`` tracking op and for ``run_ultralytics``.
 
     ``tracker_overrides`` takes the settings of whichever backend ``tracker``
@@ -161,6 +163,9 @@ class UltralyticsParams(TrackerOpParams):
     installed Ultralytics release applies. ``conf`` is the one that differs from
     the documented default, for the reason its description gives.
     """
+
+    window_fields = ("start_frame", "end_frame", "frame_step")
+    op_kind = ULTRALYTICS_KIND
 
     # tracker_overrides is a tagged union over the six backend configurations,
     # so the discovery schema states the settings the selected backend takes

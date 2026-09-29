@@ -30,8 +30,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
 from mosaic.core.pipeline.dataset_indexes import label_kinds
 from mosaic.core.pipeline.labels_identity import (
     LABELS_IDENTITY_SCHEME,
@@ -56,7 +54,9 @@ from mosaic.core.pipeline.reconcile import (
 )
 from mosaic.core.pipeline.tracks_identity import (
     TRACKS_IDENTITY_SCHEME,
+    VariantSidecar,
     convert_variant_payload,
+    read_variant_sidecar,
     write_tracks_variant,
 )
 from mosaic.core.pipeline.tracks_index import (
@@ -80,28 +80,6 @@ class _Remappable(Protocol):
         path_rewrite: Callable[[str], str] | None = None,
         dry_run: bool = False,
     ) -> int: ...
-
-
-class _VariantSidecar(BaseModel):
-    """A variant's ``params.json``, typed. ``kind`` is populated for labels only."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    identity_scheme: str = ""
-    op: str = ""
-    version: str = ""
-    kind: str = ""
-    params: dict[str, object] = Field(default_factory=dict)
-    observed: dict[str, str] = Field(default_factory=dict)
-
-
-def _read_sidecar(path: Path) -> _VariantSidecar | None:
-    if not path.exists():
-        return None
-    try:
-        return _VariantSidecar.model_validate_json(path.read_text())
-    except (OSError, ValidationError):
-        return None
 
 
 @dataclass(frozen=True)
@@ -176,14 +154,14 @@ class _VariantReconciler:
     def _sites(self) -> Iterable[_VariantSite]:
         raise NotImplementedError
 
-    def _terms(self, sidecar: _VariantSidecar) -> dict[str, object]:
+    def _terms(self, sidecar: VariantSidecar) -> dict[str, object]:
         raise NotImplementedError
 
     def _index(self, index_path: Path) -> _Remappable:
         raise NotImplementedError
 
     def _write_variant(
-        self, site: _VariantSite, target_run_id: str, sidecar: _VariantSidecar
+        self, site: _VariantSite, target_run_id: str, sidecar: VariantSidecar
     ) -> None:
         raise NotImplementedError
 
@@ -209,7 +187,7 @@ class _VariantReconciler:
         *,
         apply: bool,
     ) -> None:
-        sidecar = _read_sidecar(site.variant_root / "params.json")
+        sidecar = read_variant_sidecar(site.variant_root / "params.json")
         if sidecar is None:
             state.record_blocked(self.key, site.run_id)
             builder.add(
@@ -289,7 +267,7 @@ class _VariantReconciler:
     def _apply(
         self,
         site: _VariantSite,
-        sidecar: _VariantSidecar,
+        sidecar: VariantSidecar,
         finding: ReconcileFinding,
         builder: PassBuilder,
     ) -> ReconcileFinding:
@@ -303,7 +281,7 @@ class _VariantReconciler:
     def _relocate(
         self,
         site: _VariantSite,
-        sidecar: _VariantSidecar,
+        sidecar: VariantSidecar,
         finding: ReconcileFinding,
         builder: PassBuilder,
     ) -> ReconcileFinding:
@@ -332,7 +310,7 @@ class _VariantReconciler:
         return finding.with_action("relocated")
 
 
-def _tracks_terms(sidecar: _VariantSidecar) -> dict[str, object]:
+def _tracks_terms(sidecar: VariantSidecar) -> dict[str, object]:
     """The hashed payload behind a tracks variant, rebuilt from its sidecar.
 
     A converter records the inner params and wraps them at mint time, so it is
@@ -345,7 +323,7 @@ def _tracks_terms(sidecar: _VariantSidecar) -> dict[str, object]:
     return dict(sidecar.params)
 
 
-def _labels_terms(sidecar: _VariantSidecar) -> dict[str, object]:
+def _labels_terms(sidecar: VariantSidecar) -> dict[str, object]:
     """The hashed payload behind a label variant, rebuilt from its sidecar.
 
     A label converter records the inner params and the kind separately and wraps
@@ -372,14 +350,14 @@ class TracksReconciler(_VariantReconciler):
         for run_id in sorted({str(value) for value in frame["run_id"] if str(value)}):
             yield _VariantSite(run_id, root / run_id, index_path, root)
 
-    def _terms(self, sidecar: _VariantSidecar) -> dict[str, object]:
+    def _terms(self, sidecar: VariantSidecar) -> dict[str, object]:
         return _tracks_terms(sidecar)
 
     def _index(self, index_path: Path) -> _Remappable:
         return tracks_index(index_path)
 
     def _write_variant(
-        self, site: _VariantSite, target_run_id: str, sidecar: _VariantSidecar
+        self, site: _VariantSite, target_run_id: str, sidecar: VariantSidecar
     ) -> None:
         _ = write_tracks_variant(
             site.parent,
@@ -421,14 +399,14 @@ class LabelsReconciler(_VariantReconciler):
                     run_id, kind_dir / run_id, index_path, kind_dir, kind
                 )
 
-    def _terms(self, sidecar: _VariantSidecar) -> dict[str, object]:
+    def _terms(self, sidecar: VariantSidecar) -> dict[str, object]:
         return _labels_terms(sidecar)
 
     def _index(self, index_path: Path) -> _Remappable:
         return labels_index(index_path)
 
     def _write_variant(
-        self, site: _VariantSite, target_run_id: str, sidecar: _VariantSidecar
+        self, site: _VariantSite, target_run_id: str, sidecar: VariantSidecar
     ) -> None:
         _ = write_labels_variant(
             site.parent,

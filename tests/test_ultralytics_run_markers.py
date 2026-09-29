@@ -15,11 +15,9 @@ file with be asserted.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from collections.abc import Callable
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -28,7 +26,6 @@ from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.markers import read_phase_marker
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_index import read_tracks_index
-from mosaic.core.track_library.ultralytics_tracks import raw_columns
 from mosaic.tracking.common.scope import TrackerWorkItem
 from mosaic.tracking.common.tool_input import StoreExportMissingError
 from mosaic.tracking.external.runner.ultralytics_protocol import (
@@ -44,17 +41,21 @@ from mosaic.tracking.ultralytics_track.run import (
     TRACK_RESPONSE_NAME,
     UltralyticsTrackResult,
 )
-from mosaic.tracking.ultralytics_track.tracker_defaults import TRACKER_NAMES
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 
-from tests.helpers import scope_over, write_media_index
+from tests.helpers import (
+    ULTRALYTICS_KEYPOINTS,
+    FakeUltralytics,
+    install_fake_ultralytics,
+    scope_over,
+    ultralytics_probe_response,
+    write_media_index,
+    write_ultralytics_predictions,
+)
 
 # Selected by CI's `tracking` job with `-m tracker` rather than by a filename
 # list in the workflow, so a new file here is covered the day it lands.
 pytestmark = pytest.mark.tracker
-
-_N_KEYPOINTS = 2
-
 
 # --- fixtures --------------------------------------------------------------
 
@@ -88,79 +89,9 @@ def _params(model: Path, **stated: object) -> UltralyticsParams:
     return UltralyticsParams.model_validate({"model_path": str(model), **stated})
 
 
-def _write_predictions(path: Path, *, n_frames: int = 4, n_ids: int = 2) -> None:
-    """A predictions parquet in the shape the runner writes."""
-    rows: list[list[float]] = []
-    for frame in range(n_frames):
-        for track in range(1, n_ids + 1):
-            box = [10.0 * track, 20.0, 10.0 * track + 5, 25.0]
-            keypoints: list[float] = []
-            for k in range(_N_KEYPOINTS):
-                keypoints += [10.0 * track + frame + k, 20.0 + k, 0.8]
-            rows.append([float(frame), float(track), *box, 0.9, 0.0, *keypoints])
-    table = pd.DataFrame(
-        np.array(rows, dtype=float), columns=list(raw_columns(_N_KEYPOINTS))
-    )
-    table = table.astype({"frame": "int64", "track_id": "int64", "cls": "int64"})
-    path.parent.mkdir(parents=True, exist_ok=True)
-    table.to_parquet(path, index=False)
-
-
-def _probe_response(model_task: str = "pose") -> ProbeResponse:
-    """What a healthy environment reports for the fixture's weights.
-
-    ``installed_tracker_table`` is empty, so the merge mosaic writes is its own
-    resolved table -- exactly the case a fresh Ultralytics with no extra settings
-    produces, and the one that makes the written YAML assertable.
-    """
-    return ProbeResponse(
-        has_ultralytics=True,
-        has_lap=True,
-        has_locate=False,
-        ultralytics_version="8.4.63",
-        tracker_names=list(TRACKER_NAMES),
-        model_task=model_task,
-        n_keypoints=_N_KEYPOINTS,
-        model_load_error="",
-        installed_tracker_table={},
-    )
-
-
-@dataclass
-class FakeUltralytics:
-    """Recording stand-in for the two runner seams."""
-
-    events: list[tuple[str, str]] = field(default_factory=list)
-    requests: list[TrackRequest] = field(default_factory=list)
-    work_dirs: list[Path] = field(default_factory=list)
-    tracked: list[Path] = field(default_factory=list)
-    n_frames: int = 4
-    n_ids: int = 2
-
-    def probe(self, model_path: Path | str, **_kwargs: object) -> ProbeResponse:
-        self.events.append((str(model_path), "probe"))
-        return _probe_response()
-
-    def track(
-        self, request: TrackRequest, *, work_dir: Path, **_kwargs: object
-    ) -> UltralyticsTrackResult:
-        self.requests.append(request)
-        self.work_dirs.append(Path(work_dir))
-        self.tracked.append(Path(request.video_path))
-        out_parquet = Path(request.output_parquet)
-        self.events.append((out_parquet.name, "track"))
-        _write_predictions(out_parquet, n_frames=self.n_frames, n_ids=self.n_ids)
-        return UltralyticsTrackResult(
-            predictions_path=out_parquet, n_frames=self.n_frames, n_ids=self.n_ids
-        )
-
-
 @pytest.fixture
-def ultralytics(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeUltralytics]:
-    fake = FakeUltralytics()
-    monkeypatch.setattr(dr, "probe_ultralytics", fake.probe)
-    monkeypatch.setattr(dr, "run_ultralytics_tool", fake.track)
-    yield fake
+def ultralytics(monkeypatch: pytest.MonkeyPatch) -> FakeUltralytics:
+    return install_fake_ultralytics(monkeypatch)
 
 
 def _index(ds: Dataset) -> pd.DataFrame:
@@ -200,7 +131,7 @@ def test_a_fresh_run_tracks_and_bridges(
     index = _index(ds)
     assert str(index.iloc[0]["tracker"]) == "bytetrack"
     assert str(index.iloc[0]["model_task"]) == "pose"
-    assert int(index.iloc[0]["n_keypoints"]) == _N_KEYPOINTS
+    assert int(index.iloc[0]["n_keypoints"]) == ULTRALYTICS_KEYPOINTS
     assert int(index.iloc[0]["n_frames"]) == 4
     assert str(index.iloc[0]["model_id"]) != ""
 
@@ -223,7 +154,7 @@ def test_a_completed_run_reuses_the_tracking(
     assert len(index) == 1
     assert int(index.iloc[0]["n_ids"]) == 2
     assert int(index.iloc[0]["n_frames"]) == 4
-    assert int(index.iloc[0]["n_keypoints"]) == _N_KEYPOINTS
+    assert int(index.iloc[0]["n_keypoints"]) == ULTRALYTICS_KEYPOINTS
     assert str(index.iloc[0]["model_task"]) == "pose"
 
 
@@ -298,7 +229,7 @@ def test_an_interrupted_track_is_not_trusted(
     ds: Dataset, model: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def steady_probe(_model_path: Path | str, **_kwargs: object) -> ProbeResponse:
-        return _probe_response()
+        return ultralytics_probe_response()
 
     monkeypatch.setattr(dr, "probe_ultralytics", steady_probe)
 
@@ -306,7 +237,7 @@ def test_an_interrupted_track_is_not_trusted(
         request: TrackRequest, *, work_dir: Path, **_kwargs: object
     ) -> UltralyticsTrackResult:
         # A partial file, as a killed runner would leave behind.
-        _write_predictions(Path(request.output_parquet), n_frames=1, n_ids=1)
+        write_ultralytics_predictions(Path(request.output_parquet), n_frames=1, n_ids=1)
         raise RuntimeError("killed mid-video")
 
     monkeypatch.setattr(dr, "run_ultralytics_tool", dying_track)

@@ -122,6 +122,62 @@ def write_h264_mp4(
     )
 
 
+def write_painted_entry(
+    dataset: Dataset,
+    sequence: str,
+    clips: Sequence[tuple[int, float]],
+    paint: Callable[[int], npt.NDArray[np.uint8]],
+    *,
+    size: tuple[int, int] = (64, 48),
+) -> list[Path]:
+    """Write and index *sequence*'s clips, each ``(frames, fps)``, in order.
+
+    Frame ``i`` of the entry, counted across all its clips, is ``paint(i)``, so
+    the clips continue one another and a decoded frame tells which entry frame it
+    is. The clips are ``clip0.mp4``, ``clip1.mp4``, ... under
+    ``media_raw/<sequence>/``, returned in order.
+    """
+    directory = dataset.get_root("media_raw") / sequence
+    paths: list[Path] = []
+    offset = 0
+    for position, (frames, fps) in enumerate(clips):
+
+        def paint_clip(frame: int, first: int = offset) -> npt.NDArray[np.uint8]:
+            return paint(first + frame)
+
+        path = directory / f"clip{position}.mp4"
+        write_h264_mp4(path, frames=frames, fps=fps, size=size, paint=paint_clip)
+        paths.append(path)
+        offset += frames
+    index_media_sequence(dataset, sequence, [path.name for path in paths])
+    return paths
+
+
+def dot_image(size: tuple[int, int], center: tuple[int, int]) -> npt.NDArray[np.uint8]:
+    """A dark BGR image of *size* holding one bright 3x3 dot centered on *center*.
+
+    The dot peaks at its center: 255 there, 192 on its four sides and 128 at its
+    corners, on a background of 16. The nine pixels of a flat dot tie, and a
+    lossy encode then puts the brightest one anywhere in the dot. A peaked dot
+    keeps its brightest pixel at *center*, measured at least 50 gray levels clear
+    of every other pixel after an H.264 encode and an AV1 encode of it.
+
+    Raises:
+        ValueError: If the dot does not fit inside the image.
+    """
+    width, height = size
+    x, y = center
+    if not (1 <= x < width - 1 and 1 <= y < height - 1):
+        message = f"a 3x3 dot centered on {center} does not fit in {width}x{height}"
+        raise ValueError(message)
+    image = np.full((height, width, 3), 16, np.uint8)
+    image[y - 1 : y + 2, x - 1 : x + 2] = 128
+    image[y - 1 : y + 2, x] = 192
+    image[y, x - 1 : x + 2] = 192
+    image[y, x] = 255
+    return image
+
+
 def write_mpeg4_mp4(
     path: Path,
     *,

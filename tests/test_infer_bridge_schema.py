@@ -137,7 +137,7 @@ def _bridge(tmp_path: Path, kind: str) -> pd.DataFrame:
         producer_run_id=variant,
         kind=kind,
         seq_dir=seq_dir,
-        video_path=video,
+        media_paths=[video],
         model_pt=model,
         overwrite=True,
     )
@@ -269,7 +269,7 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
         producer_run_id="infer-pose.9.9-bbbbbbbbbb",
         kind=kind,
         seq_dir=seq_dir,
-        video_path=video,
+        media_paths=[video],
         model_pt=model,
         overwrite=True,
     )
@@ -338,7 +338,7 @@ def test_a_table_with_no_position_at_all_is_refused(tmp_path: Path) -> None:
             producer_run_id="infer-pose.9.9-aaaaaaaaaa",
             kind="infer-pose",
             seq_dir=seq_dir,
-            video_path=video,
+            media_paths=[video],
             model_pt=model,
             overwrite=True,
         )

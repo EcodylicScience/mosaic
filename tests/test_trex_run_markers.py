@@ -22,25 +22,22 @@ with recording fakes, the established shape in ``test_tracking_ops.py``.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import shutil
-from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
-import numpy as np
 import pandas as pd
 import pytest
-from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 from pydantic import Field
 
 import mosaic.tracking.trex.dataset_runs as dr
 from mosaic.tracking.common.bridge import BridgeCounts
 from mosaic.tracking.common.scope import JoinedSourceMismatchError
 from mosaic.core.dataset import Dataset, new_dataset_manifest
-from mosaic.core.media.facts_columns import facts_to_row, store_facts
+from mosaic.core.pipeline.media_input import MediaInputParams
 from mosaic.core.pipeline.markers import (
     InflightMarker,
     inflight_marker_path,
@@ -60,41 +57,10 @@ from mosaic.tracking.common.params import (
 from mosaic.tracking.trex.conversion_cache import CONVERT_KIND
 from mosaic.tracking.trex.dataset_runs import trex_index_path
 from mosaic.tracking.trex.params import TrexParams
-from mosaic.tracking.trex.run import TRexConvertResult, TRexTrackResult
-from tests.helpers import scope_over
+from mosaic.tracking.trex.run import TRexConvertResult
+from tests.helpers import FakeTrex, clean_facts_cells, install_fake_trex, scope_over
 
 # --- fixtures --------------------------------------------------------------
-
-
-def clean_facts_cells(
-    width: int = 640,
-    height: int = 480,
-    video_uuid: str = "",
-    frame_count: int = 100,
-) -> dict[str, object]:
-    """Flat + JSON facts cells for one analysis-clean media row.
-
-    ``video_uuid`` defaults empty, which is the state of every media index
-    written before the identity columns existed -- so the tests that do not pass
-    one exercise the reuse guard's *path* fallback, deliberately.
-    """
-    facts: MediaFacts = store_facts(
-        width=width,
-        height=height,
-        fps=30.0,
-        frame_count=frame_count,
-        codec="h264",
-        duration=frame_count / 30.0,
-        video_uuid=video_uuid,
-        identity_scheme="video/1" if video_uuid else "",
-    )
-    facts = dataclasses.replace(
-        facts,
-        container="mov,mp4,m4a,3gp,3g2,mj2",
-        pixel_format="yuv420p",
-        moov_at_start=True,
-    )
-    return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
 
 
 @dataclass
@@ -175,108 +141,9 @@ def ds(tmp_path: Path) -> Dataset:
     return dataset
 
 
-@dataclass
-class FakeTrex:
-    """Recording stand-ins for the two TREx phases."""
-
-    converted: list[Path] = field(default_factory=list)
-    tracked: list[Path] = field(default_factory=list)
-    npz_per_track: int = 1
-    npz_frames: int = 4
-    """How many frames each per-individual export carries.
-
-    Four by default, which is what every marker and reuse test here needs and
-    what they were written against. A test about the *frame axis* sets it: a
-    value short of the media's total is what TREx's joined conversion produces
-    when it drops the tail of each clip, and is the only way to reach that path
-    without a real tool.
-    """
-    pv_beside_the_video: bool = False
-    on_convert: Callable[[Path], None] | None = None
-    sources: list[list[Path]] = field(default_factory=list)
-    """Every conversion's *whole* source list, so a joined run is inspectable.
-
-    ``converted`` keeps recording one path per call -- clip 0 -- because that is
-    what every single-video assertion in this file reads.
-    """
-
-    def convert(
-        self,
-        video_path: Path | Sequence[Path],
-        seq_dir: Path,
-        *,
-        output_name: str | None = None,
-        **_kwargs: object,
-    ) -> TRexConvertResult:
-        # Mirrors run_trex_convert's own normalisation: one source or many.
-        given = (
-            [Path(video_path)]
-            if isinstance(video_path, (str, Path))
-            else [Path(p) for p in video_path]
-        )
-        self.sources.append(given)
-        self.converted.append(given[0])
-        if self.on_convert is not None:
-            self.on_convert(Path(seq_dir))
-        stem = output_name if output_name is not None else given[0].stem
-        # `pv_beside_the_video` models TREx choosing its own location, which it
-        # only does when nothing pinned the name. Given `filename`, it writes
-        # where it was told -- the same order `run_trex_convert` looks in.
-        home = (
-            given[0].parent
-            if self.pv_beside_the_video and output_name is None
-            else Path(seq_dir)
-        )
-        home.mkdir(parents=True, exist_ok=True)
-        pv_path = home / f"{stem}.pv"
-        _ = pv_path.write_bytes(b"pv")
-        # TREx writes a settings file beside every conversion, and it is not
-        # decorative: re-opening a `.pv` recovers only seven fields from the file
-        # itself, so this is the only thing carrying the detection parameters
-        # into a later tracking run. Written here for the same reason the npz
-        # below is real rather than a stub -- a fake that omits what the tool
-        # always produces exercises a path that cannot happen.
-        settings_path = home / f"{stem}.settings"
-        _ = settings_path.write_text("detect_type = yolo\n")
-        return TRexConvertResult(
-            pv_path=pv_path,
-            settings_path=settings_path,
-            background_path=None,
-            stdout="",
-            stderr="",
-        )
-
-    def track(self, pv_path: Path, seq_dir: Path, **_kwargs: object) -> TRexTrackResult:
-        self.tracked.append(Path(pv_path))
-        data_dir = Path(seq_dir) / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        for i in range(self.npz_per_track):
-            # A real, convertible export rather than a stub. These tests are
-            # about markers and reuse, not about conversion -- but a stub made
-            # every bridge in this suite fail, which used to be swallowed and is
-            # now recorded as a lost entry. Writing what TREx writes keeps the
-            # suite exercising the real publish path instead of a broken one.
-            n = self.npz_frames
-            np.savez(
-                data_dir / f"fish{i}.npz",
-                frame=np.arange(n),
-                time=np.arange(n) / 30.0,
-                cm_per_pixel=np.array([1.0]),
-                **{
-                    "X#wcentroid": np.arange(n, dtype=float),
-                    "Y#wcentroid": np.arange(n, dtype=float),
-                },
-            )
-        _ = (Path(seq_dir) / f"{Path(pv_path).stem}.results").write_bytes(b"results")
-        return TRexTrackResult()
-
-
 @pytest.fixture
-def trex(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeTrex]:
-    fake = FakeTrex()
-    monkeypatch.setattr(dr, "run_trex_convert", fake.convert)
-    monkeypatch.setattr(dr, "run_trex_track", fake.track)
-    yield fake
+def trex(monkeypatch: pytest.MonkeyPatch) -> FakeTrex:
+    return install_fake_trex(monkeypatch)
 
 
 def seq_dir_of(ds: Dataset, run_id: str, key: str = "vid1") -> Path:
@@ -335,8 +202,7 @@ def test_the_track_phase_receives_the_recorded_pv(
 ) -> None:
     """TREx may leave the .pv beside the source video, where no seq_dir glob finds it."""
     fake = FakeTrex(pv_beside_the_video=True)
-    monkeypatch.setattr(dr, "run_trex_convert", fake.convert)
-    monkeypatch.setattr(dr, "run_trex_track", fake.track)
+    _ = install_fake_trex(monkeypatch, fake)
 
     run_id = dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
     work_dir = seq_dir_of(ds, run_id)
@@ -353,8 +219,7 @@ def test_a_track_finding_no_individuals_still_counts_as_complete(
 ) -> None:
     """Completion is "the phase returned", not "the outputs are non-empty"."""
     fake = FakeTrex(npz_per_track=0)
-    monkeypatch.setattr(dr, "run_trex_convert", fake.convert)
-    monkeypatch.setattr(dr, "run_trex_track", fake.track)
+    _ = install_fake_trex(monkeypatch, fake)
 
     dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
     dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
@@ -417,8 +282,7 @@ def test_the_claim_is_held_during_the_phase_and_released_after(
 ) -> None:
     seen: list[InflightMarker | None] = []
     fake = FakeTrex(on_convert=lambda work_dir: seen.append(read_inflight(work_dir)))
-    monkeypatch.setattr(dr, "run_trex_convert", fake.convert)
-    monkeypatch.setattr(dr, "run_trex_track", fake.track)
+    _ = install_fake_trex(monkeypatch, fake)
 
     run_id = dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
 
@@ -624,10 +488,11 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
         *,
         tracks_variant: str,
         producer_run_id: str,
-        video_paths: Sequence[Path],
+        media_paths: Sequence[Path],
         timeline: object,
         media_frames: int | None,
         overwrite: bool,
+        mapping: object,
     ) -> BridgeCounts | None:
         written.append(Path(f"{group}__{sequence}"))
         assert overwrite is True, "a recomputed entry must overwrite its parquet"
@@ -764,11 +629,17 @@ def test_the_base_itself_is_checked_where_it_is_declared() -> None:
 
 
 def test_every_tool_facing_field_reaches_a_phase() -> None:
-    """The other half: the phases between them consume all sixteen fields."""
+    """The other half: the phases between them consume all sixteen fields.
+
+    ``media`` is inherited from :class:`MediaInputParams` and names no phase. It
+    selects the file TREx reads rather than a setting sent to it.
+    """
     phased = set(phase_fields(TrexParams, "convert")) | set(
         phase_fields(TrexParams, "track")
     )
-    inherited = set(PhasedTrackerOpParams.model_fields)
+    inherited = set(PhasedTrackerOpParams.model_fields) | set(
+        MediaInputParams.model_fields
+    )
 
     assert phased == set(TrexParams.model_fields) - inherited
     assert "track_max_individuals" in phase_fields(TrexParams, "convert"), (

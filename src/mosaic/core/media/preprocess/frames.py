@@ -35,11 +35,13 @@ def _unchanged(frame: Frame) -> Frame:
 
 @register_media_step
 class TrimStep(MediaStep):
-    """Keep the frames of the current frame map that lie in ``[start, stop)``.
+    """Keep the frames from ``start`` up to, not including, ``stop``.
 
-    After a ``decimate``, a *start* between two kept frames begins at the next
-    kept frame. A range reaching past the source or past the current frame map,
-    or holding none of its frames, is refused.
+    Both are source frame numbers, and the range applies to the frames the
+    steps before it kept (the placement's frame map). After a ``decimate``, a
+    ``start`` between two kept frames begins at the next kept frame. A range
+    reaching past the source or past the frames already kept, or holding none
+    of them, is refused.
     """
 
     name: ClassVar[str] = "trim"
@@ -85,7 +87,11 @@ class TrimStep(MediaStep):
 
 @register_media_step
 class DecimateStep(MediaStep):
-    """Keep every *every*-th frame of the current frame map, starting with its first."""
+    """Keep every n-th frame, where n is ``every``, starting with the first.
+
+    The count runs over the frames the steps before it kept (the placement's
+    frame map), so after a ``trim`` it thins only the trimmed range.
+    """
 
     name: ClassVar[str] = "decimate"
     version: ClassVar[str] = "0.1"

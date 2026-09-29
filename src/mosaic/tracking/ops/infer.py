@@ -20,6 +20,7 @@ its ``source_abs_path``.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Callable, Final, TypeAlias
@@ -49,12 +50,20 @@ from mosaic.core.pipeline.tracks_identity import (
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
-    Params,
 )
+from mosaic.core.pipeline.media_input import MediaInputParams
 from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
 from mosaic.core.pipeline.entry_claim import open_entry, phase_activity, release_entry
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
+from mosaic.core.pipeline.preprocess_index import (
+    MediaVariantDriftedError,
+    MediaVariantMissingError,
+)
 from mosaic.core.pipeline.run import AllEntriesFailed
+from mosaic.core.pipeline.variant_source import (
+    no_readable_variant_message,
+    resolve_variant_source,
+)
 from mosaic.runlog import now_iso
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
@@ -72,7 +81,7 @@ from mosaic.tracking.model_refs import observed_model_source, resolve_model
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
 if TYPE_CHECKING:
-    from mosaic.core.dataset import Dataset
+    from mosaic.core.dataset import Dataset, ResolvedScopeEntry
     from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.placement import SourceMapping
 
@@ -210,11 +219,19 @@ _SAVE_IMAGES_DESCRIPTION = (
 )
 
 
-class _InferParamsBase(Params):
+_WINDOW_FIELDS: tuple[str, ...] = (
+    "start_frame",
+    "end_frame",
+    "frame_step",
+    "max_frames",
+)
+
+
+class _InferParamsBase(MediaInputParams):
     """What every inference op predicts with.
 
     The settings alone. Which entries a run covers and whether it recomputes
-    are arguments to the run.
+    are arguments to the run. Each subclass names its own op for a refusal.
 
     ``convert_to_tracks`` reaches ``identity_dump()`` where the same knob on
     :class:`~mosaic.tracking.common.params.TrackerOpParams` is ``HASH_EXCLUDE``.
@@ -238,9 +255,11 @@ class _InferParamsBase(Params):
         False
     )
 
+    window_fields = _WINDOW_FIELDS
+
 
 class PoseInferParams(_InferParamsBase):
-    pass
+    op_kind = "infer-pose"
 
 
 _DOR_DESCRIPTION = (
@@ -253,6 +272,8 @@ _DOR_UNWIRED = (
 
 
 class PointInferParams(_InferParamsBase):
+    op_kind = "infer-points"
+
     dor: Annotated[float, Declared(_DOR_DESCRIPTION, unwired=_DOR_UNWIRED)] = 0.8
 
 
@@ -272,6 +293,8 @@ _THRESHOLDS_DESCRIPTION = (
 
 
 class LocalizerInferParams(_InferParamsBase):
+    op_kind = "infer-localizer"
+
     num_classes: Annotated[int, Declared(_NUM_CLASSES_DESCRIPTION)] = 4
     initial_channels: Annotated[int, Declared(_INITIAL_CHANNELS_DESCRIPTION)] = 32
     thresholds: Annotated[float, Declared(_THRESHOLDS_DESCRIPTION)] = 0.5
@@ -280,20 +303,27 @@ class LocalizerInferParams(_InferParamsBase):
 # --- Shared machinery ----------------------------------------------------
 
 
-def infer_run_id(kind: str, version: str, params: Params, model_id: str) -> str:
+def infer_run_id(
+    kind: str, version: str, params: MediaInputParams, model_id: str
+) -> str:
     """Mint an inference run identifier.
+
+    Minted from the payload the run's tracks variant is minted from, so the two
+    identifiers coincide.
 
     Args:
         kind: The op kind, e.g. ``"infer-points"``.
         version: The op's declared version -- a visible segment, not hashed.
-        params: Op params; only ``identity_dump()`` enters the digest.
+        params: Op params; ``identity_dump()`` and ``media`` enter the digest.
         model_id: The training run that produced the weights, or a digest of
             the weights path when they were given as a bare path. The model is
             what determined the predictions, so leaving it out would let two
             detectors share one identifier.
     """
     return op_run_id(
-        kind, version, {"params": params.identity_dump(), "model": model_id}
+        kind,
+        version,
+        infer_variant_payload(params.identity_dump(), model_id, media=params.media),
     )
 
 
@@ -349,7 +379,7 @@ def _bridge_df_to_tracks(
     producer_run_id: str,
     kind: str,
     seq_dir: Path,
-    video_path: Path,
+    media_paths: Sequence[Path],
     model_pt: Path,
     overwrite: bool,
     mapping: SourceMapping | None = None,
@@ -369,7 +399,9 @@ def _bridge_df_to_tracks(
         producer_run_id: The inference run that produced the predictions.
         kind: The inference op, recorded as the row's ``producer``.
         seq_dir: The entry's working directory, which holds the predictions.
-        video_path: The video the model read.
+        media_paths: The media files the table derives from: the video the
+            model read and, for a media variant, the entry media it was made
+            from.
         model_pt: The weights the model loaded.
         overwrite: Replace a table this variant already holds for the entry.
         mapping: Where the media variant the model read sits in the entry's
@@ -405,7 +437,7 @@ def _bridge_df_to_tracks(
         # The prediction directory this run wrote: the row-level pointer from a
         # tracks table back to the predictions that produced it.
         source=seq_dir,
-        consumed=[video_path, model_pt],
+        consumed=[*media_paths, model_pt],
         mapping=mapping,
         # Strict here alone. Every *tracker* write path validates leniently,
         # because a missing required column is merely an incomplete table, and
@@ -438,8 +470,100 @@ def infer_identity(
     return OpIdentity(
         run_id=infer_run_id(kind, version, params, model_id),
         tracks_variant=tracks_run_id(
-            kind, version, infer_variant_payload(params.identity_dump(), model_id)
+            kind,
+            version,
+            infer_variant_payload(params.identity_dump(), model_id, media=params.media),
         ),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _InferenceEntry:
+    """One entry to predict on: the file the model reads, and how to publish it.
+
+    Attributes:
+        group: The entry's group.
+        sequence: The entry's sequence.
+        video_path: The file the model reads.
+        facts: *video_path*'s facts, gated for analysis.
+        media_paths: The media files a table from this entry derives from.
+        mapping: Where a media variant's file sits in the entry media, or
+            ``None`` when the model reads the entry media.
+    """
+
+    group: str
+    sequence: str
+    video_path: Path
+    facts: MediaFacts
+    media_paths: tuple[Path, ...]
+    mapping: SourceMapping | None
+
+    @property
+    def key(self) -> str:
+        return make_entry_key(self.group, self.sequence)
+
+
+def _inference_entry(
+    ds: Dataset,
+    entry: ResolvedScopeEntry,
+    *,
+    kind: str,
+    media: str,
+    opens_by_path: bool,
+) -> _InferenceEntry:
+    """What the model reads for *entry*: its media, or the variant *media* names.
+
+    A variant is a plain video mosaic wrote, so it is never an imgstore to
+    export, and its index row's stored facts describe it without a probe.
+
+    Raises:
+        MediaVariantMissingError: If *media* names a variant with no file for
+            the entry.
+        MediaVariantDriftedError: If the entry's media changed after the
+            variant's file was written.
+        ToolCodecError: If the op hands its model's runner a file whose codec
+            that runner's decoder cannot be expected to open.
+    """
+    group, sequence, resolved = entry.group, entry.sequence, entry.resolved
+    mapping: SourceMapping | None = None
+    if media:
+        variant = resolve_variant_source(ds, media, entry)
+        target, stored = variant.path, variant.facts
+        media_paths = variant.consumed_paths
+        mapping = variant.mapping()
+    else:
+        # The op reads the first path. A required-but-unlinked entry already
+        # raised in resolve_media_scope, before any defective original was opened.
+        source = resolved.paths[0]
+        # An op that hands a tool a path cannot hand it an imgstore, which is a
+        # directory of chunk files -- so a store resolves to the video
+        # ``export-store`` wrote for it, or raises naming that command.
+        target = (
+            resolve_entry_input(ds, group, sequence, source, kind=kind)
+            if opens_by_path
+            else source
+        )
+        # The facts must describe the file that will be read: for an export
+        # that is not the file the index measured, so it is probed on its own.
+        stored = resolved.facts[0] if target == source else None
+        media_paths = (target,)
+    if opens_by_path:
+        # Only for an op that hands the path over. The localizer reads the
+        # file in this process with mosaic's own decoder, so what a foreign
+        # stack can open says nothing about it.
+        refuse_undecodable_codec(
+            target, kind=kind, group=group, sequence=sequence, variant=media
+        )
+    # The gate, run here rather than inside the reader, because two of the
+    # three ops no longer open the video in this process.
+    facts = verified_read_facts(target, stored, "analysis")[0]
+    return _InferenceEntry(
+        group=group,
+        sequence=sequence,
+        video_path=target,
+        facts=facts,
+        media_paths=media_paths,
+        mapping=mapping,
     )
 
 
@@ -462,6 +586,10 @@ def _run_inference_op(
     which decides two things about every entry: whether an imgstore has to have
     been exported first, and which file's verdict is the one that gates the read.
     Producer knowledge, declared by the op rather than inferred from its kind.
+
+    When ``media`` names a variant, each entry's model reads the variant's file
+    and its table is mapped back into the entry's source space. An entry whose
+    variant is missing or out of date fails alone and counts as lost.
     """
     if not ds.has_root(kind):
         ds.set_root(kind, tracking_root_default(kind))
@@ -483,33 +611,32 @@ def _run_inference_op(
         print(f"[{kind}] No media entries match the given scope.")
         return run_id
 
-    work: list[tuple[str, str, Path, MediaFacts]] = []
+    work: list[_InferenceEntry] = []
+    # Entries whose variant could not be read. Each is recorded as failed here,
+    # and counts as attempted and lost below.
+    unresolved: set[str] = set()
     for entry in one_camera_per_entry(kind, media_scope):
-        # The op reads the first path. A required-but-unlinked entry already
-        # raised in resolve_media_scope, before any defective original was opened.
-        group, sequence, resolved = entry.group, entry.sequence, entry.resolved
-        source = resolved.paths[0]
-        # An op that hands a tool a path cannot hand it an imgstore, which is a
-        # directory of chunk files -- so a store resolves to the video
-        # ``export-store`` wrote for it, or raises naming that command.
-        target = (
-            resolve_entry_input(ds, group, sequence, source, kind=kind)
-            if opens_by_path
-            else source
+        try:
+            work.append(
+                _inference_entry(
+                    ds,
+                    entry,
+                    kind=kind,
+                    media=params.media,
+                    opens_by_path=opens_by_path,
+                )
+            )
+        except (MediaVariantMissingError, MediaVariantDriftedError) as exc:
+            key = make_entry_key(entry.group, entry.sequence)
+            ctx.entry_failed(key, exc)
+            unresolved.add(key)
+
+    # Every entry lost before any model ran: the variant the run names is not
+    # readable for any of them, so nothing is probed and no variant recorded.
+    if unresolved and not work:
+        raise AllEntriesFailed(
+            no_readable_variant_message(kind, params.media, run_id, unresolved)
         )
-        if opens_by_path:
-            # Only for an op that hands the path over. The localizer reads the
-            # file in this process with mosaic's own decoder, so what a foreign
-            # stack can open says nothing about it.
-            refuse_undecodable_codec(target, kind=kind, group=group, sequence=sequence)
-        # The gate, run here rather than inside the reader, because two of the
-        # three ops no longer open the video in this process. The facts must
-        # describe the file that will actually be read: for an export that is not
-        # the file the index measured, so it is probed and gated on its own.
-        facts = verified_read_facts(
-            target, resolved.facts[0] if target == source else None, "analysis"
-        )[0]
-        work.append((group, sequence, target, facts))
 
     # Preflight after the scope and before anything is written. Two orderings
     # matter here. It follows the scope because resolving media is local and
@@ -536,7 +663,7 @@ def _run_inference_op(
         tracks_variant,
         kind,
         version,
-        infer_variant_payload(params.identity_dump(), model_id),
+        infer_variant_payload(params.identity_dump(), model_id, media=params.media),
         observed=observed_model_source(model) or None,
     )
 
@@ -546,121 +673,132 @@ def _run_inference_op(
     write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
     done = 0
-    # Entries this run opened, and those whose predictions it could not publish.
-    # An entry held by another execution was never this run's to lose.
-    attempted: set[str] = set()
-    lost: set[str] = set()
-    for i, (group, sequence, video_path, facts) in enumerate(work):
-        ctx.check_cancel()
-        key = make_entry_key(group, sequence)
-        ctx.progress.on_entry_start(i, len(work), key)
-        ctx.progress.on_phase("infer", key)
+    # Entries this run opened or could not read a variant for, and those whose
+    # predictions it could not publish. An entry held by another execution was
+    # never this run's to lose.
+    attempted: set[str] = set(unresolved)
+    lost: set[str] = set(unresolved)
+    try:
+        for i, item in enumerate(work):
+            ctx.check_cancel()
+            key = item.key
+            ctx.progress.on_entry_start(i, len(work), key)
+            ctx.progress.on_phase("infer", key)
 
-        # A claim, not a cache. Inference still re-infers unconditionally -- the
-        # completion marker below records that output is whole, and nothing gates
-        # on it, because turning this into a cache is a behaviour change with its
-        # own failure mode (a silently skipped re-run over a corrected video). What
-        # the claim prevents is two executions writing one ``predictions.parquet``
-        # at once. Through ``open_entry`` rather than a fifth inline copy of it, so
-        # the exclusive create and the ownership-checked release are the same ones
-        # every tracker gets.
-        opened = open_entry(
-            ds,
-            ctx,
-            run_root,
-            key,
-            kind=kind,
-            overwrite=False,
-            idle_seconds=_INFER_IDLE_SECONDS,
-        )
-        if opened is None:
-            ctx.progress.on_entry_end(i + 1, len(work), key)
-            continue
-        seq_dir, held = opened
-        attempted.add(key)
-        try:
-            outcome = per_video(
-                VideoInput(
-                    video_path=video_path,
-                    work_dir=seq_dir,
-                    facts=facts,
-                    # Every line the model's runner writes refreshes the claim and
-                    # reports position. Without it a video longer than
-                    # ``_INFER_IDLE_SECONDS`` expires its own claim mid-run and a
-                    # concurrent execution reads the directory as abandoned; an
-                    # in-process op simply never had a line to hang this on.
-                    on_output=progress_activity(
+            # A claim, not a cache. Inference still re-infers unconditionally -- the
+            # completion marker below records that output is whole, and nothing gates
+            # on it, because turning this into a cache is a behaviour change with its
+            # own failure mode (a silently skipped re-run over a corrected video). What
+            # the claim prevents is two executions writing one ``predictions.parquet``
+            # at once. Through ``open_entry`` rather than a fifth inline copy of it, so
+            # the exclusive create and the ownership-checked release are the same ones
+            # every tracker gets.
+            opened = open_entry(
+                ds,
+                ctx,
+                run_root,
+                key,
+                kind=kind,
+                overwrite=False,
+                idle_seconds=_INFER_IDLE_SECONDS,
+            )
+            if opened is None:
+                ctx.progress.on_entry_end(i + 1, len(work), key)
+                continue
+            seq_dir, held = opened
+            attempted.add(key)
+            try:
+                outcome = per_video(
+                    VideoInput(
+                        video_path=item.video_path,
+                        work_dir=seq_dir,
+                        facts=item.facts,
+                        # Every line the model's runner writes refreshes the claim and
+                        # reports position. Without it a video longer than
+                        # ``_INFER_IDLE_SECONDS`` expires its own claim mid-run and a
+                        # concurrent execution reads the directory as abandoned; an
+                        # in-process op simply never had a line to hang this on.
+                        on_output=progress_activity(
+                            ctx,
+                            key,
+                            "infer",
+                            phase_activity(ctx, seq_dir, held, _INFER_IDLE_SECONDS),
+                        ),
+                        cancel_check=ctx.cancel_token.is_cancelled,
+                    )
+                )
+                df = outcome.frame
+                pred_path = outcome.published_path or seq_dir / _PREDICTIONS_NAME
+                # Written here only when the caller did not publish it. An op that ran
+                # out of process wrote the table itself, atomically, at this same path;
+                # copying it back over itself would double the write for nothing.
+                if outcome.published_path is None and df is not None and not df.empty:
+                    _ = write_parquet_atomic(df, pred_path)
+
+                if params.convert_to_tracks and df is not None and not df.empty:
+                    ctx.progress.on_phase("bridge", key)
+                    # A table that cannot be published fails this entry on the
+                    # attempt's run-log, and the next entry still runs.
+                    failures = len(ctx.failed_keys)
+                    _ = publish_or_record(
                         ctx,
                         key,
-                        "infer",
-                        phase_activity(ctx, seq_dir, held, _INFER_IDLE_SECONDS),
-                    ),
-                    cancel_check=ctx.cancel_token.is_cancelled,
-                )
-            )
-            df = outcome.frame
-            pred_path = outcome.published_path or seq_dir / _PREDICTIONS_NAME
-            # Written here only when the caller did not publish it. An op that ran
-            # out of process wrote the table itself, atomically, at this same path;
-            # copying it back over itself would double the write for nothing.
-            if outcome.published_path is None and df is not None and not df.empty:
-                _ = write_parquet_atomic(df, pred_path)
-
-            if params.convert_to_tracks and df is not None and not df.empty:
-                ctx.progress.on_phase("bridge", key)
-                # A table that cannot be published fails this entry on the
-                # attempt's run-log, and the next entry still runs.
-                failures = len(ctx.failed_keys)
-                _ = publish_or_record(
-                    ctx,
-                    key,
-                    lambda: _bridge_df_to_tracks(
-                        ds,
-                        df,
-                        group,
-                        sequence,
-                        tracks_variant=tracks_variant,
-                        producer_run_id=run_id,
+                        lambda: _bridge_df_to_tracks(
+                            ds,
+                            df,
+                            item.group,
+                            item.sequence,
+                            tracks_variant=tracks_variant,
+                            producer_run_id=run_id,
+                            kind=kind,
+                            seq_dir=seq_dir,
+                            media_paths=item.media_paths,
+                            model_pt=model.path,
+                            overwrite=overwrite,
+                            mapping=item.mapping,
+                        ),
                         kind=kind,
-                        seq_dir=seq_dir,
-                        video_path=video_path,
-                        model_pt=model.path,
-                        overwrite=overwrite,
-                    ),
-                    kind=kind,
-                )
-                if len(ctx.failed_keys) > failures:
-                    lost.add(key)
+                    )
+                    if len(ctx.failed_keys) > failures:
+                        lost.add(key)
 
-            # Written after the bridge, not after the parquet. A directory whose
-            # output has not reached ``tracks/`` is not finished, and the sweeper
-            # reads this marker to decide what may be reclaimed -- so marking it
-            # complete a moment early is how an unbridged run gets deleted. An
-            # entry whose bridge failed gets none, and keeps its predictions.
-            if key not in lost:
-                write_phase_marker(
-                    seq_dir,
-                    PhaseMarker(
-                        phase="infer",
-                        run_id=run_id,
-                        execution_id=ctx.execution_id,
-                        completed_at=now_iso(),
-                        source=str(ds.relative_to_root(video_path)),
-                        source_uid=facts.video_uuid,
-                        recorded_output=str(ds.relative_to_root(pred_path))
-                        if pred_path.exists()
-                        else "",
-                    ),
-                )
-                done += 1
-        finally:
-            # Released whatever happened, including a cancel: a claim outliving
-            # its process is what makes the next run read a dead directory as
-            # busy, and only its expiry would ever free it.
-            release_entry(seq_dir, ctx.execution_id)
+                # Written after the bridge, not after the parquet. A directory whose
+                # output has not reached ``tracks/`` is not finished, and the sweeper
+                # reads this marker to decide what may be reclaimed -- so marking it
+                # complete a moment early is how an unbridged run gets deleted. An
+                # entry whose bridge failed gets none, and keeps its predictions.
+                if key not in lost:
+                    write_phase_marker(
+                        seq_dir,
+                        PhaseMarker(
+                            phase="infer",
+                            run_id=run_id,
+                            execution_id=ctx.execution_id,
+                            completed_at=now_iso(),
+                            source=str(ds.relative_to_root(item.video_path)),
+                            source_uid=item.facts.video_uuid,
+                            recorded_output=str(ds.relative_to_root(pred_path))
+                            if pred_path.exists()
+                            else "",
+                        ),
+                    )
+                    done += 1
+            finally:
+                # Released whatever happened, including a cancel: a claim outliving
+                # its process is what makes the next run read a dead directory as
+                # busy, and only its expiry would ever free it.
+                release_entry(seq_dir, ctx.execution_id)
 
-        ctx.progress.on_entry_end(i + 1, len(work), key)
-        ctx.heartbeat(i + 1)
+            ctx.progress.on_entry_end(i + 1, len(work), key)
+            ctx.heartbeat(i + 1)
+
+    finally:
+        # Attempted-minus-lost, the count the tracker driver reports, and in a
+        # `finally` for its reason: a run stopped partway has still published
+        # what it finished, and a count written after the context closes is
+        # dropped.
+        if params.convert_to_tracks:
+            ctx.entries_written(len(attempted) - len(lost))
 
     # Losing every entry means the run published nothing, which is a failed run
     # and not a finished one.

@@ -35,7 +35,9 @@ from typing import TYPE_CHECKING, Final
 
 import pandas as pd
 
-from mosaic.core.helpers import entry_directory, validate_entry_name
+from mosaic.core.helpers import entry_directory, make_entry_key, validate_entry_name
+from mosaic.core.pipeline.index_csv import index_records
+from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.provenance import reached_by
 from mosaic.core.pipeline.sequence_index import (
     SequenceLabelRow,
@@ -43,6 +45,7 @@ from mosaic.core.pipeline.sequence_index import (
     sequence_label_path,
     sequence_labels,
 )
+from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -156,6 +159,13 @@ def promote_correction(
 
     Returns:
         A :class:`PromotionReport`.
+
+    Raises:
+        FileNotFoundError: If a file to promote does not exist.
+        ValueError: If *derived_from* names a tracker run that read a media
+            variant. That run's output is in the variant's pixels and frames,
+            and a promoted file is converted as it is, with no mapping back into
+            the entry media. *force* does not override this.
     """
     from mosaic.core.pipeline.tracks_raw_index import TracksRawIndexScope
 
@@ -168,6 +178,17 @@ def promote_correction(
     if missing:
         named = ", ".join(str(p) for p in missing)
         raise FileNotFoundError(f"nothing to promote at: {named}")
+    variant = _media_variant_read(ds, derived_from) if derived_from else ""
+    if variant:
+        message = (
+            f"{make_entry_key(group, sequence)}: {derived_from} tracked the media "
+            f"variant {variant}, so its output is in that variant's pixels and "
+            f"frames. A promoted correction is converted as it is, with no "
+            f"mapping back into the entry's media, so its positions and frames "
+            f"would be published on the wrong axes. Correct the output of a run "
+            f"over the entry's own media instead."
+        )
+        raise ValueError(message)
 
     # O3 decided per-sequence subdirectories for tracks_raw, and this is the
     # gesture that needs them: a flat root cannot hold a revision series without
@@ -243,6 +264,31 @@ def promote_correction(
         derived_from=derived_from,
         reached=reached,
     )
+
+
+def _media_variant_read(ds: Dataset, run_id: str) -> str:
+    """The media variant tracker run *run_id* read, or ``""``.
+
+    Read from the run's rows in its tracker's run index, the ``index.csv`` at
+    the top of that tracker's root, whose ``media`` column records the variant
+    each entry was read from. ``""`` when the run read the entry media, when
+    *run_id* names no tracker's run, and when the index is absent or unreadable.
+    """
+    parsed = parse_op_run_id(run_id)
+    if parsed is None or parsed.kind not in TRACKING_ROOTS:
+        return ""
+    if not ds.has_root(parsed.kind):
+        return ""
+    try:
+        frame = pd.read_csv(
+            ds.get_root(parsed.kind) / "index.csv", dtype=str, keep_default_na=False
+        )
+    except (OSError, pd.errors.ParserError, pd.errors.EmptyDataError):
+        return ""
+    for record in index_records(frame):
+        if record.get("run_id", "") == run_id and record.get("media", ""):
+            return record["media"]
+    return ""
 
 
 def _suffixes(path: Path) -> str:

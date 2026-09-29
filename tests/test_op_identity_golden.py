@@ -71,6 +71,7 @@ from mosaic.core.pipeline.labels_identity import (
     labels_run_id,
 )
 from mosaic.core.media.preprocess import ClaheStep, CropStep, TrimStep
+from mosaic.core.pipeline.media_input import MediaInputParams
 from mosaic.core.pipeline.ops import OPS
 from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.transcode import (
@@ -137,6 +138,22 @@ def _op_params(kind: str, /, **values: object) -> Params:
     from the registry fails here instead of silently losing coverage.
     """
     return OPS[kind].Params(**values)
+
+
+def _media_op_params(kind: str, /, **values: object) -> MediaInputParams:
+    """Build the registered ``Params`` for *kind*, an op that takes ``media``."""
+    params = _op_params(kind, **values)
+    assert isinstance(params, MediaInputParams)
+    return params
+
+
+MEDIA_VARIANT = "preprocess.0.1-aaaaaaaaaa"
+"""The media variant every ``*-media`` case reads.
+
+``media`` is ``HASH_EXCLUDE``, so an ``OpCase`` digest over ``identity_dump()``
+cannot see it. Each consumer folds it in where it mints, and those minters are
+what the function cases below call.
+"""
 
 
 OP_CASES: tuple[OpCase, ...] = (
@@ -358,6 +375,16 @@ def _infer_variant() -> str:
     )
 
 
+def _infer_variant_on_media() -> str:
+    return tracks_run_id(
+        "infer-points",
+        "0.1",
+        infer_variant_payload(
+            {"conf": 0.5}, "train-points.0.1-aaaaaaaaaa", media=MEDIA_VARIANT
+        ),
+    )
+
+
 def _resample_variant() -> str:
     """A re-gridded variant: the resampling params, plus the source it chains from.
 
@@ -399,7 +426,7 @@ def _resample_variant_other_upstream() -> str:
     )
 
 
-def _trex_run_id_settings() -> str:
+def _trex_run_id_settings(media: str = "") -> str:
     """The identifier ``trex_settings``' *key set* mints, pinned.
 
     Nothing else pins it. The ``trex/*`` op cases come from ``TrexParams``, and
@@ -432,6 +459,7 @@ def _trex_run_id_settings() -> str:
         auto_train=False,
         detect_keypoint_count=7,
         track_extra_settings=None,
+        media=media,
     )
     return trex_run_id(
         trex_settings(
@@ -468,7 +496,7 @@ def _litpose_variant() -> str:
     )
 
 
-def _sleap_run_id_settings() -> str:
+def _sleap_run_id_settings(media: str = "") -> str:
     """The identifier ``sleap_settings``' *key set* mints, pinned.
 
     The SLEAP counterpart of :func:`_trex_run_id_settings`, and it exists for the
@@ -499,11 +527,12 @@ def _sleap_run_id_settings() -> str:
         peak_threshold=0.2,
         analysis_range=None,
         sleap_extra_settings=None,
+        media=media,
     )
     return sleap_run_id(sleap_settings(params, model_id="0123456789abcdef"))
 
 
-def _litpose_run_id_settings() -> str:
+def _litpose_run_id_settings(media: str = "") -> str:
     """The identifier ``litpose_settings``' *key set* mints, pinned.
 
     The Lightning Pose counterpart of :func:`_trex_run_id_settings`. Its settings
@@ -513,7 +542,9 @@ def _litpose_run_id_settings() -> str:
     from mosaic.tracking.litpose.dataset_runs import litpose_run_id, litpose_settings
     from mosaic.tracking.litpose.params import LitposeParams
 
-    params = LitposeParams(model_path="models/litpose_model", litpose_overrides=None)
+    params = LitposeParams(
+        model_path="models/litpose_model", litpose_overrides=None, media=media
+    )
     return litpose_run_id(litpose_settings(params, model_id="0123456789abcdef"))
 
 
@@ -644,9 +675,23 @@ def _infer_run_id() -> str:
     return infer_run_id(
         "infer-points",
         "0.1",
-        _op_params("infer-points", model="m.pt"),
+        _media_op_params("infer-points", model="m.pt"),
         "train-points.0.1-aaaaaaaaaa",
     )
+
+
+def _infer_run_id_on_media(kind: str, model_id: str) -> Callable[[], str]:
+    """The identifier inference op *kind* mints over a media variant."""
+
+    def mint() -> str:
+        return infer_run_id(
+            kind,
+            OPS[kind].version,
+            _media_op_params(kind, model="m.pt", media=MEDIA_VARIANT),
+            model_id,
+        )
+
+    return mint
 
 
 def _tracks_raw_two_files() -> str:
@@ -713,7 +758,7 @@ def _frames_run_id_list() -> str:
     return frames_run_id(params.method, params)
 
 
-def _ultralytics_settings_case() -> dict[str, object]:
+def _ultralytics_settings_case(media: str = "") -> dict[str, object]:
     """The one settings dict both Ultralytics golden cases are built from.
 
     Shared rather than spelled twice, so the run-identifier case and the tracks
@@ -744,6 +789,7 @@ def _ultralytics_settings_case() -> dict[str, object]:
         start_frame=0,
         end_frame=None,
         frame_step=1,
+        media=media,
     )
     return ultralytics_settings(
         params,
@@ -754,11 +800,11 @@ def _ultralytics_settings_case() -> dict[str, object]:
     )
 
 
-def _ultralytics_run_id_settings() -> str:
+def _ultralytics_run_id_settings(media: str = "") -> str:
     """The identifier ``ultralytics_settings``' *key set* mints, pinned."""
     from mosaic.tracking.ultralytics_track.dataset_runs import ultralytics_run_id
 
-    return ultralytics_run_id(_ultralytics_settings_case())
+    return ultralytics_run_id(_ultralytics_settings_case(media))
 
 
 def _ultralytics_variant() -> str:
@@ -863,6 +909,22 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "preprocess/upstream": _preprocess_upstream,
     "preprocess/labeled-rate": _preprocess_labeled_rate,
     "preprocess/h264": _preprocess_h264,
+    "tracks/infer-variant-media": _infer_variant_on_media,
+    "trex/run-id-settings-media": lambda: _trex_run_id_settings(MEDIA_VARIANT),
+    "sleap/run-id-settings-media": lambda: _sleap_run_id_settings(MEDIA_VARIANT),
+    "litpose/run-id-settings-media": lambda: _litpose_run_id_settings(MEDIA_VARIANT),
+    "ultralytics/run-id-settings-media": lambda: _ultralytics_run_id_settings(
+        MEDIA_VARIANT
+    ),
+    "infer-pose/run-id-media": _infer_run_id_on_media(
+        "infer-pose", "train-pose.0.1-aaaaaaaaaa"
+    ),
+    "infer-points/run-id-media": _infer_run_id_on_media(
+        "infer-points", "train-points.0.1-aaaaaaaaaa"
+    ),
+    "infer-localizer/run-id-media": _infer_run_id_on_media(
+        "infer-localizer", "train-localizer.0.1-aaaaaaaaaa"
+    ),
 }
 
 

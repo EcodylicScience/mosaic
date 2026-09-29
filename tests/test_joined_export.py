@@ -296,7 +296,7 @@ def test_a_join_that_does_not_line_up_is_refused_and_not_published(
 
 
 def _item(ds: Dataset):
-    (item,) = build_work_items(ds, ds.resolve_media_scope(None), kind="trex")
+    (item,) = build_work_items(ds, ds.resolve_media_scope(None), kind="trex").items
     return item
 
 

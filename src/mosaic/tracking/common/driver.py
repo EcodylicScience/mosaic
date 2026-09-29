@@ -20,7 +20,7 @@ that. Losing them would mean the work happened and nothing recorded it.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,11 +29,16 @@ from typing import TYPE_CHECKING, TypeVar
 from mosaic.core.pipeline.entry_claim import open_entry, release_entry
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
+from mosaic.core.pipeline.preprocess_index import (
+    MediaVariantDriftedError,
+    MediaVariantMissingError,
+)
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
+from mosaic.core.pipeline.variant_source import no_readable_variant_message
 from mosaic.tracking.common.index import TrackerRunRowBase
 from mosaic.tracking.common.mint import MintedRun
-from mosaic.tracking.common.scope import TrackerWorkItem
+from mosaic.tracking.common.scope import TrackerWorkItem, UnresolvedEntry, WorkItems
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -67,7 +72,7 @@ def run_tracker(
     kind: str,
     target: str,
     minted: MintedRun,
-    work_items: Sequence[TrackerWorkItem],
+    work_items: WorkItems,
     index: IndexCSV[RowT],
     run_entry: Callable[[EntryJob], RowT | None],
     overwrite: bool = False,
@@ -87,8 +92,10 @@ def run_tracker(
         minted: What :func:`~mosaic.tracking.common.mint.mint_tracker_run`
             returned. Minted by the caller, because an unresolvable model must
             abort before any of it is written.
-        work_items: One per entry, from
-            :func:`~mosaic.tracking.common.scope.build_work_items`.
+        work_items: What :func:`~mosaic.tracking.common.scope.build_work_items`
+            returned: one item per entry, and the entries whose media variant
+            could not be read. Each of those is recorded as a failed entry
+            before the first item runs, and counts as lost.
         index: This tracker's run index, already ensured.
         run_entry: The tool-specific work for one entry, returning the row
             that records it -- or ``None`` for an entry worth no row. ``None`` is
@@ -101,12 +108,13 @@ def run_tracker(
             path leaves it ``None`` and one is opened from the arguments above.
     """
     index.ensure()
+    items = work_items.items
     rows: list[RowT] = []
     skipped: list[str] = []
-    # Entries this run actually opened. Not `work_items`: one held by another
-    # execution was never this run's to lose, and counting it would let a
-    # contended run declare itself a total failure.
-    attempted: set[str] = set()
+    # Entries this run opened, and those whose variant it could not read. Not
+    # every item: one held by another execution was never this run's to lose,
+    # and counting it would let a contended run declare itself a total failure.
+    attempted: set[str] = {failure.key for failure in work_items.failures}
 
     managed: AbstractContextManager[JobContext] = (
         nullcontext(ctx)
@@ -124,12 +132,13 @@ def run_tracker(
     )
     with managed as job:
         job.set_run_id(minted.run_id)
-        job.set_total(len(work_items))
+        job.set_total(len(items))
+        _record_unresolved(job, work_items.failures)
 
         try:
-            for i, item in enumerate(work_items):
+            for i, item in enumerate(items):
                 job.check_cancel()
-                job.progress.on_entry_start(i, len(work_items), item.key)
+                job.progress.on_entry_start(i, len(items), item.key)
 
                 opened = open_entry(
                     ds,
@@ -141,7 +150,7 @@ def run_tracker(
                 )
                 if opened is None:
                     skipped.append(item.key)
-                    job.progress.on_entry_end(i + 1, len(work_items), item.key)
+                    job.progress.on_entry_end(i + 1, len(items), item.key)
                     continue
                 work_dir, _held = opened
                 attempted.add(item.key)
@@ -162,7 +171,7 @@ def run_tracker(
 
                 if row is not None:
                     rows.append(row)
-                job.progress.on_entry_end(i + 1, len(work_items), item.key)
+                job.progress.on_entry_end(i + 1, len(items), item.key)
                 job.heartbeat(i + 1)
         except ProcessCancelled as exc:
             # A killed subprocess is a cancelled attempt, not a failed one.
@@ -199,7 +208,17 @@ def run_tracker(
         # table published. Raised after the `finally` above, so the rows for the
         # tracking that *did* happen are already durable and a re-run adopts the
         # finished directories rather than recomputing them.
+        #
+        # When every lost entry is one whose media variant could not be read,
+        # no tool ran and there is no output to adopt, so the message says that
+        # instead.
         if attempted and lost == attempted:
+            if lost <= {failure.key for failure in work_items.failures}:
+                raise AllEntriesFailed(
+                    no_readable_variant_message(
+                        kind, work_items.media, minted.run_id, lost
+                    )
+                )
             raise AllEntriesFailed(
                 f"[{kind}] every one of {len(attempted)} attempted entries failed "
                 f"to publish, so run_id={minted.run_id} produced no tracks: "
@@ -210,8 +229,24 @@ def run_tracker(
             )
 
     held = f", {len(skipped)} held by another execution" if skipped else ""
+    unread = work_items.failures
+    unresolved = f", {len(unread)} without a readable media variant" if unread else ""
     print(
         f"[{kind}] completed run_id={minted.run_id} "
-        f"({len(rows)}/{len(work_items)} sequences{held}) -> {minted.run_root}"
+        f"({len(rows)}/{len(items) + len(unread)} sequences{held}{unresolved}) "
+        f"-> {minted.run_root}"
     )
     return minted.run_id
+
+
+def _record_unresolved(job: JobContext, failures: tuple[UnresolvedEntry, ...]) -> None:
+    """Record each entry whose media variant could not be read as failed.
+
+    Each error is raised again inside a handler, because ``entry_failed`` records
+    the traceback of the exception being handled.
+    """
+    for failure in failures:
+        try:
+            raise failure.error
+        except (MediaVariantMissingError, MediaVariantDriftedError) as exc:
+            job.entry_failed(failure.key, exc)

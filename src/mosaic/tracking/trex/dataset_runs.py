@@ -79,7 +79,6 @@ from mosaic.tracking.common.entry import (
     reusable_output,
 )
 from mosaic.tracking.common.index import (
-    media_composition_cell,
     register_tracker_row_class,
     TrackerRunRowBase,
     list_tracker_runs,
@@ -111,6 +110,9 @@ from mosaic.tracking.trex.joined import retime_joined_frame
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
+from mosaic.core.pipeline.media_input import media_identity_terms
+from mosaic.core.pipeline.placement import SourceMapping
+from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.core.pipeline.markers import (
     InflightMarker,
     PhaseMarker,
@@ -249,10 +251,13 @@ def trex_settings(
     leaves TREx to decide. The key is kept rather than dropped, so the payload's
     shape does not depend on what was set.
 
+    **``media`` joins only when set**, as the media variant TREx reads. It names
+    no phase, so :func:`phase_settings` never sends it to TREx.
+
     Args:
-        params: The run's parameters. Only the phase-declaring fields reach the
-            payload. The execution knobs are excluded from identity and stay
-            out of it.
+        params: The run's parameters. The phase-declaring fields reach the
+            payload, and ``media`` when it names a variant. The execution knobs
+            are excluded from identity and stay out of it.
         detect_model_id: The detection model's identity, or ``None``.
         vi_model_id: The visual-identification model's identity, or ``None``.
     """
@@ -260,6 +265,7 @@ def trex_settings(
     settings = {name: dumped[name] for name in SETTING_FIELDS}
     settings["detect_model"] = detect_model_id
     settings["visual_identification_model_path"] = vi_model_id
+    settings.update(media_identity_terms(params))
     return settings
 
 
@@ -291,10 +297,11 @@ def _bridge_npz_to_tracks(
     *,
     tracks_variant: str,
     producer_run_id: str,
-    video_paths: Sequence[Path],
+    media_paths: Sequence[Path],
     timeline: ConcatenatedTimeline | None,
     media_frames: int | None,
     overwrite: bool,
+    mapping: SourceMapping | None,
 ) -> BridgeCounts | None:
     """Merge per-individual TREx NPZ into ``tracks/<variant>/<group>__<seq>.parquet``.
 
@@ -316,6 +323,10 @@ def _bridge_npz_to_tracks(
     *timeline* rather than derived from it here, because whether the number is
     answerable is a property of the *run* (an ``analysis_range`` covers less on
     purpose) and the caller is what knows.
+
+    *media_paths* are the media files the table derives from. *mapping* maps a
+    table tracked on a media variant into source space, retiming it on the
+    entry's own timeline, so a caller passing one passes no *timeline*.
 
     Returns ``None`` when there was nothing to convert or the conversion failed.
     """
@@ -376,8 +387,9 @@ def _bridge_npz_to_tracks(
         tracks_variant=tracks_variant,
         producer_run_id=producer_run_id,
         source=npz_paths[0].parent,
-        consumed=[npz_paths[0], *video_paths],
+        consumed=[npz_paths[0], *media_paths],
         media_frames=media_frames,
+        mapping=mapping,
     )
 
 
@@ -762,9 +774,12 @@ def run_trex(
         # It is what puts a joined entry's `time` on the clips' own measured
         # rates -- TREx takes one rate from the first clip and never checks the
         # others. `None` when the facts are absent, which leaves the export as
-        # it is rather than guessing at a timeline.
+        # it is rather than guessing at a timeline, and for a media variant,
+        # whose table the bridge maps back and retimes on the entry's own clips.
         timeline = (
-            concatenated_timeline(item.source_facts) if item.source_facts else None
+            concatenated_timeline(item.source_facts)
+            if item.source_facts and item.variant is None
+            else None
         )
 
         # The .results file is the only output TREx writes at the *end* of
@@ -1005,7 +1020,7 @@ def run_trex(
             # tracker identity carries no media term, so without this a
             # re-transcode leaves the run reading as current over
             # different pixels.
-            consumed_media_composition=media_composition_cell(
+            consumed_media_composition=media_composition_for(
                 job.ds, item.group, item.sequence
             ),
             abs_path=Path(job.ds.relative_to_root(work_dir)),
@@ -1032,6 +1047,7 @@ def run_trex(
             video_uuids=(",".join(item.video_uids) if all(item.video_uids) else ""),
             media_composition=item.source_uid if joined else "",
             n_source_videos=item.n_sources,
+            media=item.media,
         )
 
         if params.convert_to_tracks:
@@ -1048,7 +1064,7 @@ def run_trex(
                     npz_paths,
                     tracks_variant=minted.tracks_variant,
                     producer_run_id=minted.run_id,
-                    video_paths=item.video_paths,
+                    media_paths=item.consumed_media,
                     timeline=timeline,
                     # What the tracker was pointed at, for the runs where the
                     # question has an answer worth recording.
@@ -1073,6 +1089,7 @@ def run_trex(
                         else None
                     ),
                     overwrite=job.overwrite or recomputed,
+                    mapping=item.source_mapping,
                 ),
                 kind=TREX_KIND,
             )
@@ -1083,7 +1100,9 @@ def run_trex(
         kind=TREX_KIND,
         target="trex-track",
         minted=minted,
-        work_items=build_work_items(ds, media_scope, kind=TREX_KIND),
+        work_items=build_work_items(
+            ds, media_scope, kind=TREX_KIND, media=params.media
+        ),
         index=trex_index(trex_index_path(ds)),
         run_entry=convert_and_track,
         overwrite=overwrite,

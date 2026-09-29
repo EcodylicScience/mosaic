@@ -47,7 +47,7 @@ from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types.data_config import COLUMNS
 from mosaic.core.pipeline.writers import read_parquet_table_columns
-from mosaic.core.pipeline.composition import compositions_disagree
+from mosaic.core.pipeline.composition import composition_drift
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.index_csv import (
@@ -57,6 +57,7 @@ from mosaic.core.pipeline.index_csv import (
     project_to_schema,
 )
 from mosaic.core.pipeline.index_lock import index_lock
+from mosaic.core.pipeline.tracks_identity import tracks_variant_media
 from mosaic.core.pipeline.sequence_index import (
     SourceRoot,
     encode_entry_composition,
@@ -827,6 +828,11 @@ def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> pd.DataFrame
     run read, which is honest rather than wrong -- the drift cell is what says
     so, and inventing the old number is not available to anyone.
 
+    A row whose tracks variant was made from a media variant is left blank, as
+    its producer left it. The tool read one file, and a trimmed or decimated
+    variant's table does not span its source axis, so comparing it against the
+    source length would report a mismatch for every such run.
+
     Locked for the whole read-measure-write, and a dry run holds the lock too,
     for the reasons :func:`backfill_frame_extents` gives.
 
@@ -840,8 +846,17 @@ def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> pd.DataFrame
         if df.empty:
             return df.iloc[0:0]
         filled: list[int] = []
+        tracks_root = ds.get_root("tracks")
+        media_of: dict[str, str] = {}
         for position, row in df.iterrows():
             if read_media_frames(row) is not None:
+                continue
+            variant = str(row["run_id"])
+            if variant not in media_of:
+                media_of[variant] = (
+                    tracks_variant_media(tracks_root, variant) if variant else ""
+                )
+            if media_of[variant]:
                 continue
             total = resolved_media_frames(ds, str(row["group"]), str(row["sequence"]))
             if total is None:
@@ -1001,10 +1016,8 @@ def drifted_media_entries(ds: Dataset, run_id: str) -> tuple[tuple[str, str], ..
     identifier exactly where it was -- and a reuse gate keyed on identity alone
     serves the old tables over a different encode and reports the work done.
 
-    Both sides must be non-empty to count, the honest-empty rule every
-    composition comparison follows: a blank recorded cell is a row written before
-    the column existed, a blank current one is a projection that is not
-    establishable, and neither is evidence of change.
+    Compared under :func:`~mosaic.core.pipeline.composition.composition_drift`,
+    so a blank cell on either side is not drift.
     """
     from mosaic.core.pipeline.sequence_index import media_compositions_for
 
@@ -1020,14 +1033,7 @@ def drifted_media_entries(ds: Dataset, run_id: str) -> tuple[tuple[str, str], ..
     }
     if not recorded:
         return ()
-    current = media_compositions_for(ds, recorded)
-    return tuple(
-        sorted(
-            entry
-            for entry, was in recorded.items()
-            if compositions_disagree(was, current.get(entry, ""))
-        )
-    )
+    return composition_drift(recorded, media_compositions_for(ds, recorded))
 
 
 def tracks_compositions(

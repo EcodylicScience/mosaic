@@ -36,7 +36,10 @@ from mosaic.core.pipeline.entry_claim import claim, phase_activity
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext
 from mosaic.core.pipeline.markers import clear_phase_marker
+from mosaic.core.pipeline.media_input import media_identity_terms
 from mosaic.core.pipeline.op_identity import op_run_id, parse_op_run_id
+from mosaic.core.pipeline.placement import SourceMapping
+from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
 from mosaic.tracking.common.bridge import (
@@ -53,7 +56,6 @@ from mosaic.tracking.common.entry import (
     reusable_output,
 )
 from mosaic.tracking.common.index import (
-    media_composition_cell,
     register_tracker_row_class,
     TrackerRunRowBase,
     list_tracker_runs,
@@ -159,7 +161,8 @@ def ultralytics_settings(
     Scope-free: no dataset, no video, no entry, no output location -- and no
     device, precision or batch size, which change how a run happens rather than
     what it produces. So one value names one variant across every sequence the
-    run covered.
+    run covered. ``media`` joins only when it names a variant, which is a run
+    identifier rather than a video.
 
     Args:
         params: The run's parameters.
@@ -199,6 +202,7 @@ def ultralytics_settings(
         "start_frame": params.start_frame,
         "end_frame": params.end_frame,
         "frame_step": params.frame_step,
+        **media_identity_terms(params),
     }
 
 
@@ -213,12 +217,17 @@ def _bridge_predictions_to_tracks(
     *,
     tracks_variant: str,
     producer_run_id: str,
-    video_path: Path,
+    media_paths: Sequence[Path],
     model_files: Sequence[Path],
     fps: float,
     overwrite: bool,
+    mapping: SourceMapping | None,
 ) -> BridgeCounts | None:
-    """Convert one entry's raw predictions into its standardized table."""
+    """Convert one entry's raw predictions into its standardized table.
+
+    *media_paths* are the media files the table derives from, and *mapping* maps
+    a table tracked on a media variant into source space, ``None`` otherwise.
+    """
     from mosaic.core.track_converter import EntryHints, get_track_converter
     from mosaic.core.track_library.ultralytics_tracks import UltralyticsTracksParams
 
@@ -252,7 +261,8 @@ def _bridge_predictions_to_tracks(
         tracks_variant=tracks_variant,
         producer_run_id=producer_run_id,
         source=predictions_path.parent,
-        consumed=[predictions_path, video_path, *model_files],
+        consumed=[predictions_path, *media_paths, *model_files],
+        mapping=mapping,
     )
 
 
@@ -512,7 +522,7 @@ def run_ultralytics(
             # tracker identity carries no media term, so without this a
             # re-transcode leaves the run reading as current over
             # different pixels.
-            consumed_media_composition=media_composition_cell(
+            consumed_media_composition=media_composition_for(
                 job.ds, item.group, item.sequence
             ),
             abs_path=Path(job.ds.relative_to_root(work_dir)),
@@ -529,6 +539,7 @@ def run_ultralytics(
             n_frames=n_frames,
             n_keypoints=n_keypoints,
             predictions_path=job.ds.relative_to_root(out_path),
+            media=item.media,
         )
 
         if not params.convert_to_tracks:
@@ -543,10 +554,11 @@ def run_ultralytics(
                 out_path,
                 tracks_variant=minted.tracks_variant,
                 producer_run_id=minted.run_id,
-                video_path=item.video_path,
+                media_paths=item.consumed_media,
                 model_files=list(resolved_model.significant_files),
                 fps=item.fps,
                 overwrite=job.overwrite or recomputed,
+                mapping=item.source_mapping,
             ),
             kind=ULTRALYTICS_KIND,
         )
@@ -557,7 +569,9 @@ def run_ultralytics(
         kind=ULTRALYTICS_KIND,
         target="ultralytics-track",
         minted=minted,
-        work_items=build_work_items(ds, media_scope, kind=ULTRALYTICS_KIND),
+        work_items=build_work_items(
+            ds, media_scope, kind=ULTRALYTICS_KIND, media=params.media
+        ),
         index=ultralytics_index(ultralytics_index_path(ds)),
         run_entry=track_one,
         overwrite=overwrite,
