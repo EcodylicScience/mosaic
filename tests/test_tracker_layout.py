@@ -416,10 +416,11 @@ def test_an_extra_trex_column_survives_into_the_tracks_table(
     list, ``ensure_track_schema`` accepts unknown columns, and the bridge
     concatenates per-individual frames on the *union* of their columns.
 
-    ``tracklet_id`` is the case this exists for. It identifies consecutively
-    tracked frame segments, it is absent from TREx's default ``output_fields``,
-    and it is what future identity work needs -- so the question "will mosaic
-    keep it once TREx emits it" has a recorded answer rather than an assumption.
+    ``tracklet_id`` is the case this exists for: it is absent from TREx's
+    default ``output_fields``, and a user adds it. The converter drops it only
+    where the export also carries ``tracklets``, whose exact bounds become
+    ``tracklet_start``; this export carries none, so ``tracklet_id`` is the only
+    record of which tracklet a frame belongs to, and it must come through.
     """
     import mosaic.tracking.trex.dataset_runs as trex_runs
 

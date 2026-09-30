@@ -131,13 +131,23 @@ That normalization is the point of the standard, and the rules behind it are in
     defaults to unset and is then absent from the command entirely, so **TRex's own
     default applies**. Set the ones you care about and leave the rest alone.
 
+??? note "TRex: which tracklet a row belongs to"
+
+    Every converted TRex table carries `tracklet_start`: the first frame of the
+    tracklet the row belongs to, and empty on a frame where TRex did not detect the
+    individual. `(id, tracklet_start)` names one tracklet. It is read from the exact
+    tracklet bounds TRex writes into every export, so it needs no setting.
+
+    Do not add TRex's own `tracklet_id` field for this. It is stored at a precision
+    that gives many tracklets the same value, and mosaic drops it wherever
+    `tracklet_start` can be computed.
+
 ??? note "TRex: asking for extra columns"
 
     TRex decides what its per-individual `.npz` holds with `output_fields`, and mosaic
     does not set it, so you get TRex's default export. That default does **not**
-    include `tracklet_id` (which tracklet a frame belongs to) or `blobid`. Setting
-    `output_fields` *replaces* the list rather than adding to it, so pass TRex's own
-    default plus what you want:
+    include `blobid`, for example. Setting `output_fields` *replaces* the list rather
+    than adding to it, so pass TRex's own default plus what you want:
 
     ```python
     TREX_DEFAULT_OUTPUT_FIELDS = [
@@ -161,10 +171,7 @@ That normalization is the point of the standard, and the rules behind it are in
         ds,
         TrexParams(
             track_extra_settings={
-                "output_fields": [
-                    *TREX_DEFAULT_OUTPUT_FIELDS,
-                    ["tracklet_id", []], ["blobid", []],
-                ]
+                "output_fields": [*TREX_DEFAULT_OUTPUT_FIELDS, ["blobid", []]]
             }
         ),
     )

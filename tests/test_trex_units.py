@@ -25,6 +25,7 @@ can override it without reaching mosaic. What TRex writes is what TRex applied.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -32,9 +33,15 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from mosaic.core.track_converter import EntryHints, TrackConvertParams
+from mosaic.core.pipeline.writers import write_parquet_atomic
+from mosaic.core.track_converter import (
+    EntryHints,
+    TrackConvertParams,
+    merge_on_column_union,
+)
 from mosaic.core.track_library.trex import (
     CALIBRATION_COLUMN,
+    TRACKLET_START_COLUMN,
     MissingBodyCentreError,
     MissingTrexCalibrationError,
     TrexCalibrationConflictError,
@@ -42,9 +49,11 @@ from mosaic.core.track_library.trex import (
     TrexNpzConverter,
     TrexNpzScaledConverter,
     TrexScaledNpzParams,
+    TrexTrackletBoundsError,
     UnknownTrexUnitsError,
     load_npz_to_df,
     calibration_from_frame,
+    tracklet_starts,
     unscale_to_pixels,
 )
 
@@ -262,19 +271,32 @@ def test_the_converter_declares_the_trex_superset_schema() -> None:
 # --- the per-tracklet exports are a different axis ---------------------------
 
 
+_COLLAPSED_TRACKLET_ID: float = float(np.float32(1.266e14))
+"""What TRex's float32 ``tracklet_id`` holds for two different tracklets.
+
+TRex writes the tracklet object's address, around 1.3e14, and float32 steps by
+2^23 there. Two tracklets whose addresses fall in one step export one value.
+"""
+
+
 def _with_tracklet_arrays(path: Path, *, n: int = 8) -> None:
     """A real export's tracklet trio, at the shapes TRex actually writes.
 
     Taken from a measured file: ``tracklets`` is ``(n_tracklets, 2)`` and
     ``tracklet_vxys`` ``(n_frames_in_tracklets, 4)``, both shorter than the frame
-    axis, while ``tracklet_id`` is one value per frame.
+    axis, while ``tracklet_id`` is one value per frame. Two tracklets, frames
+    0-2 and 4-7, around one undetected frame -- and one ``tracklet_id`` value for
+    both, which is the collision that makes it useless as a key.
     """
+    missing = np.zeros(n, dtype=np.float32)
+    missing[3] = 1.0
     write_trex_npz(
         path,
         n=n,
         cm_per_pixel=0.03,
-        tracklet_id=np.full(n, 1.266e14),
-        tracklets=np.array([[0, 3], [4, 7]], dtype=np.uint32),
+        missing=missing,
+        tracklet_id=np.full(n, _COLLAPSED_TRACKLET_ID, dtype=np.float32),
+        tracklets=np.array([[0, 2], [4, 7]], dtype=np.uint32),
         tracklet_vxys=np.array(
             [[1.0, -60.0, -120.0, 134.164], [2.0, -109.9, -300.0, 319.504]],
             dtype=np.float32,
@@ -296,20 +318,114 @@ def test_a_calibrated_export_with_tracklet_arrays_converts(tmp_path: Path) -> No
 
     table = _convert(path)
 
-    assert "tracklet_id" in table.columns, "the per-frame tracklet key must survive"
+    assert TRACKLET_START_COLUMN in table.columns
+    assert "tracklet_id" not in table.columns, "the collapsed key must be replaced"
     leaked = [c for c in table.columns if c.startswith(("tracklets", "tracklet_vxys"))]
     assert not leaked, f"off-axis per-tracklet arrays reached the table: {leaked}"
 
 
 def test_the_dropped_arrays_are_the_off_axis_ones_only(tmp_path: Path) -> None:
-    """Dropping must not become a licence to drop the per-frame column too."""
+    """Dropping must not become a licence to drop the per-frame key too."""
     path = tmp_path / "seq_fish0.npz"
     _with_tracklet_arrays(path)
 
     table = _convert(path)
 
-    assert table["tracklet_id"].notna().all()
+    assert int(table[TRACKLET_START_COLUMN].notna().sum()) == 7
     assert len(table) == 8, "the frame axis must be unchanged by the drop"
+
+
+# --- the exact tracklet key -------------------------------------------------
+
+
+def test_tracklets_sharing_a_collapsed_id_stay_apart(tmp_path: Path) -> None:
+    """The defect this column exists for: one float32 value, two tracklets."""
+    path = tmp_path / "seq_fish0.npz"
+    _with_tracklet_arrays(path)
+
+    raw = np.load(path)["tracklet_id"]
+    assert len(np.unique(raw)) == 1, "the fixture must reproduce the collision"
+
+    table = _convert(path)
+
+    assert sorted(table[TRACKLET_START_COLUMN].dropna().unique()) == [0, 4]
+
+
+def test_each_row_carries_its_tracklet_start_and_a_gap_carries_none(
+    tmp_path: Path,
+) -> None:
+    """The start frame on detected rows, NA on the undetected one, end included."""
+    path = tmp_path / "seq_fish0.npz"
+    _with_tracklet_arrays(path)
+
+    table = _convert(path).sort_values("frame")
+
+    assert table[TRACKLET_START_COLUMN].tolist() == [0, 0, 0, pd.NA, 4, 4, 4, 4]
+
+
+def test_the_key_is_a_nullable_integer_not_a_float(tmp_path: Path) -> None:
+    """A float key is interpolated on resample, inventing unobserved tracklets."""
+    path = tmp_path / "seq_fish0.npz"
+    _with_tracklet_arrays(path)
+
+    assert _convert(path)[TRACKLET_START_COLUMN].dtype == "Int64"
+
+
+def test_the_key_survives_the_merge_and_a_parquet_round_trip(tmp_path: Path) -> None:
+    """The bridge concatenates individuals and writes parquet; neither may upcast."""
+    frames: list[pd.DataFrame] = []
+    for individual in (0, 1):
+        path = tmp_path / f"seq_fish{individual}.npz"
+        _with_tracklet_arrays(path)
+        frames.append(_convert(path))
+
+    merged = merge_on_column_union(frames)
+    assert merged[TRACKLET_START_COLUMN].dtype == "Int64"
+
+    out = tmp_path / "seq.parquet"
+    _ = write_parquet_atomic(merged, out)
+    read_back = pd.read_parquet(out)
+
+    assert read_back[TRACKLET_START_COLUMN].dtype == "Int64"
+    assert int(read_back[TRACKLET_START_COLUMN].isna().sum()) == 2
+
+
+def test_an_export_without_bounds_keeps_its_own_tracklet_id(tmp_path: Path) -> None:
+    """With no ``tracklets`` the per-frame export is the only record, so it stays."""
+    path = tmp_path / "seq_fish0.npz"
+    write_trex_npz(path, n=4, tracklet_id=np.array([7.0, 7.0, 9.0, 9.0]))
+
+    table = _convert(path)
+
+    assert TRACKLET_START_COLUMN not in table.columns
+    assert table["tracklet_id"].tolist() == [7.0, 7.0, 9.0, 9.0]
+
+
+def test_an_individual_with_no_tracklets_is_all_na(tmp_path: Path) -> None:
+    starts = tracklet_starts(
+        np.arange(3.0), np.zeros((0, 2), dtype=np.uint32), source=tmp_path
+    )
+
+    assert starts.isna().all()
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    [
+        [[4, 7], [0, 2]],
+        [[0, 3], [3, 5]],
+        [[0, 5], [2, 3]],
+        [[5, 2]],
+        [0, 2],
+    ],
+    ids=["unsorted", "shared-frame", "nested", "backwards", "not-n-by-2"],
+)
+def test_bounds_that_cannot_assign_frames_refuse(
+    tmp_path: Path, bounds: list[int] | list[list[int]]
+) -> None:
+    """Guessing a tracklet for a frame is worse than naming the export."""
+    with pytest.raises(TrexTrackletBoundsError):
+        _ = tracklet_starts(np.arange(8.0), np.array(bounds), source=tmp_path)
 
 
 def test_a_flattened_field_is_classified_under_its_base_name() -> None:
@@ -588,7 +704,7 @@ def _write_trex_1x(path: Path, *, n: int = 6) -> None:
     fields["X#wcentroid"] = ramp.copy()
     fields["Y#wcentroid"] = ramp.copy()
     # Per-tracklet, not per-frame, under the 1.x names.
-    fields["frame_segments"] = np.zeros((3, 2), dtype=np.int32)
+    fields["frame_segments"] = np.array([[0, 1], [2, 3], [4, 5]], dtype=np.int32)
     fields["segment_vxys"] = np.zeros((5, 4), dtype=np.float32)
     path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(path, **fields)
@@ -618,6 +734,16 @@ def test_the_1x_per_tracklet_fields_are_dropped_not_padded(tmp_path: Path) -> No
     assert stray == []
 
 
+def test_a_trex_1x_export_reads_its_bounds_under_the_1x_name(tmp_path: Path) -> None:
+    """``frame_segments`` is the same ``[start, end]`` array TREx 2.x calls ``tracklets``."""
+    path = tmp_path / "seq_fish0.npz"
+    _write_trex_1x(path)
+
+    out = _convert_cm(path).sort_values("frame")
+
+    assert out[TRACKLET_START_COLUMN].tolist() == [0, 0, 2, 2, 4, 4]
+
+
 def test_a_trex_1x_export_unscales_when_told_the_factor(tmp_path: Path) -> None:
     """The same file down the pixel route: every 1.x field has to classify."""
     path = tmp_path / "seq_fish0.npz"
@@ -631,3 +757,25 @@ def test_a_trex_1x_export_unscales_when_told_the_factor(tmp_path: Path) -> None:
     )
     # `midline_length` is the one TREx leaves in pixels.
     assert out["midline_length"].to_numpy() == pytest.approx(np.linspace(0.0, 1.0, 6))
+
+
+def _convert_scaled_at_the_recorded_factor(path: Path) -> pd.DataFrame:
+    return _convert_scaled(path, 0.03)
+
+
+@pytest.mark.parametrize(
+    "convert",
+    [_convert, _convert_scaled_at_the_recorded_factor, _convert_cm],
+    ids=["trex_npz", "trex_npz_scaled", "trex_npz_cm"],
+)
+def test_every_reader_carries_the_tracklet_key(
+    tmp_path: Path, convert: Callable[[Path], pd.DataFrame]
+) -> None:
+    """All three readers share ``load_npz_to_df``, and so all three carry it."""
+    path = tmp_path / "seq_fish0.npz"
+    _with_tracklet_arrays(path)
+
+    table = convert(path)
+
+    assert TRACKLET_START_COLUMN in table.columns
+    assert "tracklet_id" not in table.columns

@@ -30,7 +30,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from mosaic.core.media.preprocess.geometry import Placement
+from mosaic.core.media.preprocess.geometry import FrameMap, Placement
 from mosaic.core.media.timeline import ConcatenatedTimeline
 from mosaic.core.track_library.helpers import column_array, column_names
 from mosaic.core.track_library.trex import base_field
@@ -70,12 +70,13 @@ position plus the midline offset.
 _Y_POSITION_BASES: Final = frozenset({"Y", "bbox_y1", "bbox_y2", "midline_y"})
 """Base fields with a y position in the image that the tracker was given."""
 
-_FRAME_BASES: Final = frozenset({"frame", "frames"})
+_FRAME_BASES: Final = frozenset({"frame", "frames", "tracklet_start"})
 """Base fields with a frame number on the tracker's frame axis.
 
 ``frames`` is TRex's name for the frame numbers of an export that is not the
 per-individual table. When a table contains one, it names frames as ``frame``
-does and is mapped the same way.
+does and is mapped the same way. ``tracklet_start`` is the first frame of the row's
+TRex tracklet, and is NA on a row no tracklet covers.
 """
 
 _RETIMED_BASES: Final = frozenset({"time", "frame_rate"})
@@ -362,7 +363,9 @@ def to_source_space(df: pd.DataFrame, mapping: SourceMapping) -> MappedTable:
         UnclassifiedColumnError: If a numeric column is not classified. Every
             such column is named.
         ValueError: If a frame column contains a value that is not a finite whole
-            number, or if the table must be retimed and has no ``frame`` column.
+            number, other than NA in a nullable integer column such as
+            ``tracklet_start``, or if the table must be retimed and has no
+            ``frame`` column.
     """
     if mapping.is_identity:
         return MappedTable(df, ())
@@ -393,11 +396,11 @@ def to_source_space(df: pd.DataFrame, mapping: SourceMapping) -> MappedTable:
             out[name] = _positions(df, name) + placement.offset_x
         elif kind == "y_position":
             out[name] = _positions(df, name) + placement.offset_y
+        elif kind == "frame" and name == "frame":
+            source_frames = placement.frames.source_frames(_frame_numbers(df, name))
+            out[name] = source_frames
         elif kind == "frame":
-            mapped = placement.frames.source_frames(_frame_numbers(df, name))
-            out[name] = mapped
-            if name == "frame":
-                source_frames = mapped
+            out[name] = _mapped_frame_column(df, name, placement.frames)
 
     doomed: set[str] = set()
     # A relabeled rate retimes as well, because the tracker timed each frame by
@@ -450,6 +453,30 @@ def _frame_numbers(frame: pd.DataFrame, name: str) -> npt.NDArray[np.int64]:
             )
             raise ValueError(message)
     return values.astype(np.int64)
+
+
+def _mapped_frame_column(
+    frame: pd.DataFrame, name: str, frames: FrameMap
+) -> npt.NDArray[np.int64] | pd.arrays.IntegerArray:
+    """Return the frame column *name*, other than ``frame``, mapped to source frames.
+
+    A nullable integer column maps its present values and keeps NA, which in such
+    a column states that no frame applies. ``tracklet_start`` is one. Any other
+    column must contain only whole frame numbers, as :func:`_frame_numbers`
+    requires, because there a NaN may be TRex's padding.
+
+    Raises:
+        ValueError: If a column that is not a nullable integer contains a value
+            that is not a finite whole number.
+    """
+    dtype = frame.dtypes[name]
+    if isinstance(dtype, pd.api.extensions.ExtensionDtype) and (
+        pd.api.types.is_integer_dtype(dtype)
+    ):
+        present = frame[name].notna().to_numpy(dtype=bool)
+        values = frame[name].to_numpy(dtype=np.int64, na_value=0)
+        return pd.arrays.IntegerArray(frames.source_frames(values), ~present)
+    return frames.source_frames(_frame_numbers(frame, name))
 
 
 def _positions(frame: pd.DataFrame, name: str) -> npt.NDArray[np.float64]:

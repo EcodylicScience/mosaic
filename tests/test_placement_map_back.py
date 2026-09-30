@@ -211,8 +211,9 @@ def test_a_whole_number_frame_stored_as_a_float_is_mapped() -> None:
         ("frame", [0.0, np.nan, 2.0], 1),
         ("frame", [0.5, 1.0, 2.0], 1),
         ("frames", [np.inf, 1.5, 2.0], 2),
+        ("tracklet_start", [0.0, np.nan, 2.0], 1),
     ],
-    ids=["nan", "fractional", "frames"],
+    ids=["nan", "fractional", "frames", "float-tracklet-start"],
 )
 def test_a_frame_that_is_not_a_whole_number_refuses_the_table(
     name: str, values: list[float], count: int
@@ -224,6 +225,30 @@ def test_a_frame_that_is_not_a_whole_number_refuses_the_table(
 
     with pytest.raises(ValueError, match=rf"'{name}'.* {count} of its 3 values"):
         _ = to_source_space(tracked, mapping)
+
+
+def test_a_tracklet_start_maps_like_a_frame_and_keeps_its_na() -> None:
+    """TRex's tracklet key is a frame number, and NA there means no tracklet.
+
+    A nullable integer column says so explicitly, unlike a float NaN, which may be
+    padding. So its present values are mapped as ``frame`` is and NA stays NA.
+    """
+    mapping = _mapping(
+        _ONE_CLIP, [TrimStep(start=100, stop=400), DecimateStep(every=3)]
+    )
+    tracked = pd.DataFrame(
+        {
+            "frame": np.arange(4, dtype=np.int64),
+            "tracklet_start": pd.array([0, 0, None, 3], dtype="Int64"),
+            "X": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+
+    mapped = to_source_space(tracked, mapping).frame
+
+    assert mapped["tracklet_start"].dtype == "Int64"
+    assert mapped["tracklet_start"].tolist() == [100, 100, pd.NA, 109]
+    assert column_array(mapped, "frame").tolist() == [100, 103, 106, 109]
 
 
 # --- time and frame rate -----------------------------------------------------

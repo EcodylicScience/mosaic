@@ -20,9 +20,9 @@ by `mosaic convert-tracks`.
 | `calms21_npy` | `0.3` | `mosaic_v1` | yes | no | CalMS21 -> a ``mosaic_v1`` table, one ``(group, sequence)`` at a time. |
 | `deeplabcut` | `0.2` | `mosaic_v1` | no | no | DeepLabCut ``.csv`` / ``.h5`` -> a ``mosaic_v1`` table. |
 | `sleap_analysis_h5` | `0.2` | `mosaic_v1` | no | no | SLEAP analysis ``.h5`` -> a ``mosaic_v1`` table. |
-| `trex_npz` | `0.2` | `trex_v2` | no | yes | Per-id TRex NPZ -> the standard T-Rex-like table. |
-| `trex_npz_cm` | `0.1` | `mosaic_cm_v1` | no | yes | TRex per-id NPZ kept in the centimeters TRex wrote it in. |
-| `trex_npz_scaled` | `0.1` | `trex_v2` | no | yes | TRex per-id NPZ from before TRex wrote its factor down, told the factor. |
+| `trex_npz` | `0.3` | `trex_v2` | no | yes | Per-id TRex NPZ -> the standard T-Rex-like table. |
+| `trex_npz_cm` | `0.2` | `mosaic_cm_v1` | no | yes | TRex per-id NPZ kept in the centimeters TRex wrote it in. |
+| `trex_npz_scaled` | `0.2` | `trex_v2` | no | yes | TRex per-id NPZ from before TRex wrote its factor down, told the factor. |
 | `ultralytics_tracks` | `0.2` | `mosaic_v1` | no | no | Ultralytics tracker predictions parquet -> a ``mosaic_v1`` table. |
 
 ### Converter parameters

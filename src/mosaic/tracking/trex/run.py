@@ -151,7 +151,7 @@ def _build_args(params: dict[str, JsonValue]) -> list[str]:
     ``str`` of a nested list is its repr -- single quotes and spaces --
     which TREx's parameter parser does not accept. That made every nested
     parameter unreachable: ``output_fields``, which is how a user asks TREx
-    to export ``tracklet_id`` or ``blobid``, is a list of ``[name, [sources]]``
+    to export a field such as ``blobid``, is a list of ``[name, [sources]]``
     pairs, so passing it through ``track_extra_settings`` produced argv TREx
     would reject. Scoping the change to nested values leaves every flat one
     byte-identical to what it was.

@@ -63,6 +63,7 @@ __all__ = [
     "DIMENSIONLESS_FIELDS",
     "LENGTH_FIELDS",
     "PIXEL_PREFIXES",
+    "TRACKLET_START_COLUMN",
     "MissingBodyCentreError",
     "MissingTrexCalibrationError",
     "TrexCalibrationConflictError",
@@ -70,11 +71,13 @@ __all__ = [
     "TrexNpzConverter",
     "TrexNpzScaledConverter",
     "TrexScaledNpzParams",
+    "TrexTrackletBoundsError",
     "UnknownTrexUnitsError",
     "calibration_from_frame",
     "is_per_individual_export",
     "load_npz_to_df",
     "name_the_body_centre",
+    "tracklet_starts",
     "unscale_to_pixels",
 ]
 
@@ -126,6 +129,23 @@ full length with NaN: the value sits in the first row of each individual's block
 and nowhere else. That is why it is read by dropping NaN rather than by position.
 """
 
+TRACKLET_START_COLUMN = "tracklet_start"
+"""The per-row column naming which TRex tracklet a row belongs to.
+
+It holds the first frame of the tracklet containing the row's ``frame``, and is
+NA on a row no tracklet covers (a frame TRex did not detect the individual in).
+``(id, tracklet_start)`` names one tracklet within a session. It is read from
+TRex's exact ``tracklets`` bounds (TREx <= 1.x: ``frame_segments``), not from
+TRex's per-frame ``tracklet_id``, which cannot tell tracklets apart -- see
+:data:`OFF_AXIS_FIELDS`.
+
+Nullable ``Int64``, never a float: a float column is interpolated when a table
+is resampled, which would invent a tracklet that was never observed. The value
+is a frame on the tracker's own axis. A table tracked on a media variant has it
+mapped to source frames as ``frame`` is. After a resample re-grids ``frame`` it
+still names the tracklet but is no longer a frame of the resampled table.
+"""
+
 
 class MissingTrexCalibrationError(ValueError):
     """A TRex export does not record the factor it scaled its positions by.
@@ -151,6 +171,16 @@ class MissingBodyCentreError(ValueError):
 
     Raised rather than falling back to the bare ``X``/``Y``, which are the *head*
     position under a name that looks interchangeable. See the module docstring.
+    """
+
+
+class TrexTrackletBoundsError(ValueError):
+    """A TRex export's tracklet bounds do not partition its frames.
+
+    TRex writes each individual's tracklets sorted by start, disjoint, and with
+    the end frame included. Bounds that break any of that cannot say which
+    tracklet a frame belongs to, and choosing one anyway would put a frame in a
+    tracklet TRex never gave it.
     """
 
 
@@ -227,11 +257,13 @@ DIMENSIONLESS_FIELDS: frozenset[str] = frozenset(
         "qr_id",
         "detection_p",
         "visual_identification_p",
-        # Per frame, and the one of the three tracklet exports that belongs in
-        # this table. ``tracklets`` and ``tracklet_vxys`` used to be listed here
-        # too, where they never matched anything -- the flattener renames them
-        # ``tracklets_0`` and so on -- and they are now dropped outright as
-        # off-axis rather than classified. See OFF_AXIS_FIELDS.
+        # The per-frame tracklet key mosaic derives from ``tracklets``, and
+        # TRex's own per-frame export, which passes through only when an export
+        # carries no bounds. ``tracklets`` and ``tracklet_vxys`` used to be
+        # listed here too, where they never matched anything -- the flattener
+        # renames them ``tracklets_0`` and so on -- and they are now dropped
+        # outright as off-axis rather than classified. See OFF_AXIS_FIELDS.
+        TRACKLET_START_COLUMN,
         "tracklet_id",
         "blobid",
         "blob_id",
@@ -302,9 +334,84 @@ multi-clip session gets from its *first* clip alone; that is precisely why
 carrying these would smuggle the same error back in under a name it does not
 check.
 
-Nothing is lost: ``tracklet_id`` is per frame and carries which tracklet a frame
-belongs to, so the tracklet bounds are a ``groupby`` away.
+The bounds are not lost with the column. ``load_npz_to_df`` reads ``tracklets``
+before dropping it and writes each row's tracklet into
+:data:`TRACKLET_START_COLUMN`. TRex's per-frame ``tracklet_id`` cannot stand in
+for them: it is the tracklet object's memory address, exported as float32, and
+at around 1.3e14 float32 steps by 2^23, so many tracklets share one value. On one
+real session an animal with 12,120 tracklets carried 483 distinct values. Where
+the bounds are present ``tracklet_id`` is therefore dropped; where they are
+absent it passes through, being the only record there is.
 """
+
+_TRACKLET_BOUNDS_FIELDS: tuple[str, ...] = ("tracklets", "frame_segments")
+"""Where an export keeps its tracklet bounds, in the order they are looked for.
+
+The 2.x name first, then the TREx <= 1.x one. Both hold ``(n_tracklets, 2)`` of
+``[start_frame, end_frame]`` with the end frame included (``Export.cpp`` in both
+versions), so one reading serves both.
+"""
+
+
+def tracklet_starts(
+    frames: np.ndarray, bounds: np.ndarray, *, source: Path
+) -> pd.arrays.IntegerArray:
+    """The start frame of the tracklet containing each of *frames*, else NA.
+
+    Args:
+        frames: One individual's ``frame`` column.
+        bounds: That individual's ``(n_tracklets, 2)`` ``[start, end]`` array,
+            the end frame included.
+        source: The export the bounds came from, named in an error.
+
+    Returns:
+        A nullable ``Int64`` array aligned with *frames*: NA where no tracklet
+        covers the frame, and where the frame is not finite.
+
+    Raises:
+        TrexTrackletBoundsError: If *bounds* is not ``(n, 2)``, holds a tracklet
+            ending before it starts, or holds tracklets that are unsorted or
+            overlap.
+    """
+    raw = np.asarray(bounds)
+    if raw.ndim != 2 or raw.shape[1] != 2:
+        msg = f"{source}: tracklet bounds have shape {raw.shape}, expected (n, 2)."
+        raise TrexTrackletBoundsError(msg)
+    starts = raw[:, 0].astype(np.int64)
+    ends = raw[:, 1].astype(np.int64)
+    backwards = np.flatnonzero(ends < starts)
+    if backwards.size:
+        first = int(backwards[0])
+        msg = (
+            f"{source}: tracklet {first} ends at frame {int(ends[first])} before "
+            f"it starts at {int(starts[first])}."
+        )
+        raise TrexTrackletBoundsError(msg)
+    # The end is inclusive, so sorted and disjoint together mean every start
+    # lies past the previous end. One comparison catches both violations.
+    clashing = np.flatnonzero(starts[1:] <= ends[:-1])
+    if clashing.size:
+        first = int(clashing[0])
+        msg = (
+            f"{source}: tracklet {first + 1} starts at frame "
+            f"{int(starts[first + 1])}, inside or before tracklet {first} "
+            f"({int(starts[first])}-{int(ends[first])}). TRex writes tracklets "
+            "sorted and disjoint, so these bounds cannot assign frames."
+        )
+        raise TrexTrackletBoundsError(msg)
+
+    values = np.asarray(frames, dtype=np.float64)
+    if not starts.size:
+        # An individual TRex never tracked: every row is outside a tracklet.
+        return pd.arrays.IntegerArray(
+            np.zeros(values.shape, dtype=np.int64), np.ones(values.shape, dtype=bool)
+        )
+    finite = np.isfinite(values)
+    whole = np.where(finite, values, 0.0).astype(np.int64)
+    position = np.searchsorted(starts, whole, side="right") - 1
+    clipped = position.clip(0)
+    inside = finite & (position >= 0) & (whole <= ends[clipped])
+    return pd.arrays.IntegerArray(np.where(inside, starts[clipped], 0), ~inside)
 
 
 def calibration_from_frame(frame: pd.DataFrame) -> float | None:
@@ -404,7 +511,7 @@ def load_npz_to_df(filepath: Path) -> pd.DataFrame:
     skip_keys = OFF_AXIS_FIELDS
 
     # Determine candidate lengths per key
-    lens = []
+    lens: list[int] = []
     for k in keys:
         if k in skip_keys:
             continue
@@ -487,6 +594,18 @@ def load_npz_to_df(filepath: Path) -> pd.DataFrame:
         else:
             df["time"] = df["frame"].astype(float)
 
+    # The bounds are an off-axis array, so they never became columns above.
+    # Read here, once `frame` is settled, into the per-row key that replaces
+    # TRex's collapsed `tracklet_id`. See OFF_AXIS_FIELDS.
+    bounds_field = next((k for k in _TRACKLET_BOUNDS_FIELDS if k in data.files), None)
+    if bounds_field is not None:
+        df[TRACKLET_START_COLUMN] = tracklet_starts(
+            df["frame"].to_numpy(dtype=np.float64, na_value=np.nan),
+            data[bounds_field],
+            source=filepath,
+        )
+        df = df.drop(columns="tracklet_id", errors="ignore")
+
     return df
 
 
@@ -537,7 +656,9 @@ class TrexNpzConverter(TrackConverter[TrackConvertParams]):
     # 0.2: tables are pixels rather than centimetres, and ``X``/``Y`` name the
     # body centre (TRex's ``#wcentroid``) rather than its head. Both change what
     # the numbers mean, so they are a new recipe rather than the same one.
-    version = "0.2"
+    # 0.3: rows carry ``tracklet_start`` from TRex's exact tracklet bounds, and
+    # TRex's collapsed ``tracklet_id`` is dropped wherever those bounds exist.
+    version = "0.3"
     output_schema = "trex_v2"
     merges_per_sequence = True
     Params = TrackConvertParams
@@ -608,7 +729,9 @@ class TrexNpzCmConverter(TrexNpzConverter):
     """
 
     src_format = "trex_npz_cm"
-    version = "0.1"
+    # 0.2: ``tracklet_start`` replaces TRex's collapsed ``tracklet_id``, as in
+    # the shared reader.
+    version = "0.2"
     output_schema = "mosaic_cm_v1"
     Params = TrackConvertParams
 
@@ -680,7 +803,9 @@ class TrexNpzScaledConverter(TrexNpzConverter):
     """
 
     src_format = "trex_npz_scaled"
-    version = "0.1"
+    # 0.2: ``tracklet_start`` replaces TRex's collapsed ``tracklet_id``, as in
+    # the shared reader.
+    version = "0.2"
     output_schema = "trex_v2"
     Params = TrexScaledNpzParams
 

@@ -219,6 +219,26 @@ def test_an_integer_column_is_gathered_rather_than_averaged() -> None:
     assert set(np.unique(resampled["tracklet_id"])) <= {0, 1, 2, 3, 4, 5}
 
 
+def test_a_nullable_tracklet_key_is_gathered_and_keeps_its_gaps() -> None:
+    """The TRex converter's ``tracklet_start``: Int64, NA where undetected.
+
+    Carried by the same rule as any integer column, and with its dtype intact,
+    so a gap stays NA rather than becoming a float the next resample would
+    interpolate.
+    """
+    frame = _table(34.679, n=600)
+    starts = (frame["frame"] // 100) * 100
+    frame["tracklet_start"] = pd.array(starts, dtype="Int64")
+    frame.loc[frame["frame"].between(250, 299), "tracklet_start"] = pd.NA
+
+    resampled = resample_entry_table(frame, 30.0)
+
+    assert resampled["tracklet_start"].dtype == "Int64"
+    observed = set(resampled["tracklet_start"].dropna().astype(int))
+    assert observed <= {0, 100, 200, 300, 400, 500}
+    assert resampled["tracklet_start"].isna().any(), "the gap must survive"
+
+
 def test_the_padded_calibration_row_survives() -> None:
     """``cm_per_pixel`` is a scalar about the recording, not a series along it.
 
