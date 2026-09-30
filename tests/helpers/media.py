@@ -50,20 +50,14 @@ def write_h264_mp4(
     size: tuple[int, int] = (64, 48),
     shade: int | Literal["from-name"] = 0,
     fps: float = 30.0,
-    levels: Sequence[int] | None = None,
     paint: Callable[[int], npt.NDArray[np.uint8]] | None = None,
     lossless: bool = False,
 ) -> None:
     """A small constant-frame-rate H.264 mp4, written by a subprocess ffmpeg.
 
-    Every frame is the flat *shade*, unless one of two options is given:
-
-    - *levels* is each frame's grey level in order, and replaces *frames* and
-      *shade*. A clip whose frames encode their index lets a test tell which
-      frame a reader returned, not only which clip.
-    - *paint* makes frame ``i`` the BGR image ``paint(i)`` of *size*.
-
-    Giving both raises ``ValueError``.
+    Every frame is the flat *shade*, unless *paint* is given. Frame ``i`` is then
+    ``paint(i)``, a BGR image of *size*, so a test can make every frame tell which
+    frame it is.
 
     *lossless* writes RGB H.264 with libx264rgb at quantizer 0 and does not convert
     the pixel format. Each frame then decodes to the BGR values that were written. The
@@ -85,17 +79,6 @@ def write_h264_mp4(
     path.parent.mkdir(parents=True, exist_ok=True)
     level = _shade_for_name(path.name) if shade == "from-name" else int(shade)
     width, height = size
-    if levels is not None:
-        if paint is not None:
-            message = "give write_h264_mp4 levels or paint, not both"
-            raise ValueError(message)
-        per_frame = list(levels)
-        frames = len(per_frame)
-
-        def paint_level(index: int) -> npt.NDArray[np.uint8]:
-            return np.full((height, width, 3), per_frame[index], np.uint8)
-
-        paint = paint_level
     if paint is None:
         payload = np.full((height, width, 3), level, np.uint8).tobytes() * frames
     else:

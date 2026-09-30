@@ -24,7 +24,6 @@ from typer.testing import CliRunner
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.joined_export import JoinedExportMissingError
-from mosaic.core.pipeline.media_index import MediaIndexScope
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.scope import Scope
 from mosaic.tracking import extract_frames
@@ -35,7 +34,7 @@ from mosaic.tracking.frame_extraction.dataset_runs import (
     frames_identity_payload,
     frames_run_id,
 )
-from tests.helpers import add_media_sequence, write_h264_mp4
+from tests.helpers import add_media_sequence, write_painted_entry
 
 runner = CliRunner()
 
@@ -341,24 +340,11 @@ def mixed_rate(tmp_path: Path, requires_ffmpeg: None) -> Dataset:
     from tests.helpers import make_dataset
 
     ds = make_dataset(tmp_path, roots=["media_raw", "media", "tracks", "frames"])
-    directory = ds.get_root("media_raw") / "sess"
-    for position, fps in enumerate((30.0, 31.0)):
-        first = position * RATE_CLIP
-        write_h264_mp4(
-            directory / f"c{position}.mp4",
-            fps=fps,
-            levels=[_level_of(first + i) for i in range(RATE_CLIP)],
-        )
-    _ = ds.write_media_index(
-        [
-            MediaIndexScope(
-                directory=directory,
-                group="",
-                sequence="sess",
-                order_by_name={"c0.mp4": 0, "c1.mp4": 1},
-            )
-        ],
-        extensions=(".mp4",),
+    _ = write_painted_entry(
+        ds,
+        "sess",
+        [(RATE_CLIP, 30.0), (RATE_CLIP, 31.0)],
+        lambda index: np.full((48, 64, 3), _level_of(index), np.uint8),
     )
     return ds
 
