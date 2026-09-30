@@ -689,3 +689,134 @@ def test_a_tracker_records_how_many_entries_it_published(
     snapshot = _snapshot_for(ds, "exec-two")
     assert snapshot["entries_written"] == 2
     assert snapshot["entries_failed"] == 0
+
+
+# --- republishing without tracking --------------------------------------------
+#
+# A converter fix has to reach sessions already tracked, and re-tracking one costs
+# hours. A republish rebuilds the tracks table from the export TREx already wrote,
+# and must never fall through to running TREx -- a missed phase gate clears the
+# very export it reads.
+
+
+def _trex_that_must_not_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("a republish ran TREx")
+
+    monkeypatch.setattr(trex_runs, "run_trex_convert", refuse)
+    monkeypatch.setattr(trex_runs, "run_trex_track", refuse)
+
+
+def _entry_dir(dataset: Dataset, run_id: str, key: str = "vid1") -> Path:
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+
+    return trex_runs.trex_run_root(dataset, run_id) / key
+
+
+def _add_tracklet_bounds(export: Path) -> None:
+    """Rewrite *export* as a current TREx writes it: with ``tracklets``.
+
+    Two tracklets over the fake's four frames, frames 0-1 and 3, around one
+    undetected frame.
+    """
+    from mosaic.core.pipeline._utils import atomic_savez
+
+    arrays = dict(np.load(export))
+    arrays["tracklets"] = np.array([[0, 1], [3, 3]], dtype=np.uint32)
+    atomic_savez(export, **arrays)
+
+
+def test_a_republish_rebuilds_the_table_without_running_trex(
+    ds: Dataset, fake_trex: FakeTrex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the op, as ``mosaic run --kind trex --republish`` reaches it."""
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+    from mosaic.core.pipeline.ops import run_op
+    from mosaic.core.pipeline.tracks_index import read_tracks_index
+    from mosaic.tracking import register_ops
+
+    run_id = trex_runs.run_trex(ds, TrexParams())
+    table_path = next(ds.get_root("tracks").rglob("*.parquet"))
+    assert "tracklet_start" not in pd.read_parquet(table_path).columns
+    _add_tracklet_bounds(_entry_dir(ds, run_id) / "data" / "conversion_fish0.npz")
+    _trex_that_must_not_run(monkeypatch)
+    register_ops()
+
+    republished = run_op(
+        ds, "trex", TrexParams(), republish=True, execution_id="exec-republish"
+    )
+
+    assert republished == run_id
+    table = pd.read_parquet(table_path)
+    assert table["tracklet_start"].tolist() == [0, 0, pd.NA, 3]
+    assert len(read_tracks_index(ds)) == 1, "the row is replaced, not added"
+    assert len(trex_runs.list_trex_runs(ds)) == 1, "no tracking row is written"
+    snapshot = _snapshot_for(ds, "exec-republish")
+    assert snapshot["target"] == "trex-republish"
+    assert snapshot["entries_written"] == 1
+    assert snapshot["entries_failed"] == 0
+
+
+def test_a_republish_over_a_swept_entry_refuses_and_leaves_nothing(
+    ds: Dataset, fake_trex: FakeTrex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No tracking to publish from is a recorded refusal, never a re-track.
+
+    And the directory the claim needed is removed again: left empty, it carries
+    no marker, and the sweeper refuses such a directory permanently.
+    """
+    import shutil
+
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+    from mosaic.core.pipeline.run import AllEntriesFailed
+    from mosaic.core.pipeline.run_log import run_log_dir
+
+    run_id = trex_runs.run_trex(ds, TrexParams())
+    shutil.rmtree(_entry_dir(ds, run_id))
+    _trex_that_must_not_run(monkeypatch)
+
+    with pytest.raises(AllEntriesFailed):
+        _ = trex_runs.run_trex(
+            ds, TrexParams(), republish=True, execution_id="exec-swept"
+        )
+
+    assert not _entry_dir(ds, run_id).exists()
+    log_path = run_log_dir(ds.base_dir) / "exec-swept.jsonl"
+    events = [json.loads(line) for line in log_path.read_text().splitlines() if line]
+    errors = [e for e in events if e.get("ev") == "entry_error"]
+    assert "NothingToRepublishError" in errors[0].get("error", "")
+
+
+def test_a_republish_whose_export_is_gone_refuses(
+    ds: Dataset, fake_trex: FakeTrex, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Markers without the NPZ prove tracking finished and nothing is left of it."""
+    import shutil
+
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+    from mosaic.core.pipeline.run import AllEntriesFailed
+
+    run_id = trex_runs.run_trex(ds, TrexParams())
+    shutil.rmtree(_entry_dir(ds, run_id) / "data")
+    _trex_that_must_not_run(monkeypatch)
+
+    with pytest.raises(AllEntriesFailed):
+        _ = trex_runs.run_trex(ds, TrexParams(), republish=True)
+
+    assert (_entry_dir(ds, run_id) / ".mosaic-track.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("params", "overwrite"),
+    [(TrexParams(), True), (TrexParams(convert_to_tracks=False), False)],
+    ids=["with-overwrite", "without-tracks"],
+)
+def test_a_republish_refuses_what_contradicts_it(
+    ds: Dataset, params: TrexParams, overwrite: bool
+) -> None:
+    import mosaic.tracking.trex.dataset_runs as trex_runs
+
+    with pytest.raises(ValueError, match="republish"):
+        _ = trex_runs.run_trex(ds, params, republish=True, overwrite=overwrite)

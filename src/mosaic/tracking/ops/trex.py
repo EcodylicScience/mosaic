@@ -110,6 +110,21 @@ class TrexOp(Op[TrexParams]):
         # independent of where it ran.
         return run_trex(ds, params, scope, overwrite=overwrite, ctx=ctx)
 
+    def republish(
+        self,
+        ds: Dataset,
+        params: TrexParams,
+        scope: ResolvedScope,
+        ctx: JobContext,
+    ) -> str:
+        """Rebuild each entry's tracks table from TRex's existing export.
+
+        No TRex runs. *params* must be the settings of the run being
+        republished, since they name the run root its exports are read from.
+        See :func:`~mosaic.tracking.trex.dataset_runs.run_trex`.
+        """
+        return run_trex(ds, params, scope, republish=True, ctx=ctx)
+
 
 def _detect_model_kind(ref: str | None) -> str:
     """Which training op's index a detection-model reference resolves against.

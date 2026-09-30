@@ -26,7 +26,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
-from mosaic.core.pipeline.entry_claim import open_entry, release_entry
+from mosaic.core.pipeline.entry_claim import (
+    discard_if_empty,
+    open_entry,
+    release_entry,
+)
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
 from mosaic.core.pipeline.preprocess_index import (
@@ -169,6 +173,10 @@ def run_tracker(
                     )
                 finally:
                     release_entry(work_dir, job.execution_id)
+                    # An entry refused before it wrote anything -- a republish
+                    # over a swept directory -- must not leave the directory
+                    # `open_entry` created for its claim.
+                    discard_if_empty(work_dir)
 
                 if row is not None:
                     rows.append(row)

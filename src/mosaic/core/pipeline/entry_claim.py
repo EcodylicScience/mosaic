@@ -46,6 +46,7 @@ __all__ = [
     "INFLIGHT_REFRESH_SECONDS",
     "ClaimRefreshingProgress",
     "claim",
+    "discard_if_empty",
     "open_entry",
     "phase_activity",
     "release_entry",
@@ -250,3 +251,19 @@ def release_entry(work_dir: Path, execution_id: str = "") -> None:
     directory, so an unchecked unlink deleted a live peer's claim.
     """
     clear_inflight(work_dir, execution_id=execution_id)
+
+
+def discard_if_empty(directory: Path) -> None:
+    """Remove *directory* if nothing was ever written into it.
+
+    A claim can only be taken inside a directory, so claiming creates one, and
+    an attempt that then wrote nothing leaves it behind empty. The sweeper reads
+    an empty directory as carrying no marker, classifies it ``foreign`` and
+    refuses it permanently, telling the operator that a directory mosaic created
+    is not one of its own. Call only after the claim is released.
+    """
+    try:
+        if not any(directory.iterdir()):
+            directory.rmdir()
+    except OSError:
+        pass

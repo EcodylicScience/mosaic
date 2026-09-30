@@ -184,3 +184,58 @@ def test_a_run_that_lost_an_entry_reports_partial(
     payload = json.loads(result.stdout)
     assert payload["status"] == "partial"
     assert payload["entries_failed"] == 1
+
+
+# --- republish -----------------------------------------------------------------
+
+
+def test_republish_and_overwrite_are_refused_together(manifest: Path) -> None:
+    """One rebuilds from finished work; the other discards it first."""
+    result = runner.invoke(
+        app, ["track", "trex", "-m", str(manifest), "--republish", "--overwrite"]
+    )
+
+    assert result.exit_code == 1
+    assert "cannot be combined" in result.stderr
+
+
+def test_a_tracker_without_a_republish_path_refuses_by_name(manifest: Path) -> None:
+    """Refused before the attempt opens, so no failed run is recorded for it."""
+    result = runner.invoke(app, ["track", "sleap", "-m", str(manifest), "--republish"])
+
+    assert result.exit_code == 1
+    assert "'sleap' has no republish path" in result.stderr
+    assert not (manifest.parent / ".mosaic" / "runs").exists() or not any(
+        (manifest.parent / ".mosaic" / "runs").iterdir()
+    )
+
+
+def test_a_trex_republish_reaches_the_op(manifest: Path) -> None:
+    """An empty scope returns before any entry, so this exercises the wiring."""
+    result = runner.invoke(
+        app,
+        [
+            "track",
+            "trex",
+            "-m",
+            str(manifest),
+            "--sequences",
+            "nonexistent",
+            "--republish",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "trex." in result.stdout
+
+
+def test_run_accepts_republish_with_kind_only(manifest: Path) -> None:
+    """A feature or a graph step has no republish; only an op does."""
+    result = runner.invoke(
+        app,
+        ["run", "-m", str(manifest), "--feature", "speed-angvel", "--republish"],
+    )
+
+    assert result.exit_code == 1
+    assert "--kind only" in result.stderr

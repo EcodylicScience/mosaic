@@ -57,7 +57,11 @@ from mosaic.tracking.model_refs import (
     resolve_model,
 )
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
-from mosaic.core.pipeline.entry_claim import claim, phase_activity
+from mosaic.core.pipeline.entry_claim import (
+    claim,
+    discard_if_empty,
+    phase_activity,
+)
 from mosaic.core.pipeline.op_identity import (
     op_run_id,
     parse_op_run_id,
@@ -352,8 +356,8 @@ def _bridge_npz_to_tracks(
         # returns before the converter, before `retime_joined_frame`, and before
         # anything opens the parquet's `frame` column. Its row keeps whatever it
         # was written with, which for a table published before `media_frames`
-        # existed is a blank. `mosaic measure-tracks` is what fills those in --
-        # a re-run cannot, because re-publishing a table costs a re-track.
+        # existed is a blank. `mosaic measure-tracks` fills those in, and a
+        # republish (`overwrite=True` here) re-bridges the table and records it.
         reusable = readable_tracks_table(out_path)
         if reusable is not None:
             return reusable
@@ -394,6 +398,90 @@ def _bridge_npz_to_tracks(
         media_frames=media_frames,
         mapping=mapping,
         dropped=retimed,
+    )
+
+
+def _individual_exports(work_dir: Path) -> list[Path]:
+    """The per-individual NPZ TRex left in *work_dir*, sorted.
+
+    Filtered, not just globbed. ``auto_train`` (visual identification) makes
+    TRex write ``<prefix>_vi_probs.npz`` into the same directory -- a ``probs``
+    matrix with no positions and no ``cm_per_pixel`` -- and handing it to the
+    converter raises MissingTrexCalibrationError, failing the whole entry after
+    the tracking itself succeeded. An unfiltered glob also counted it as one
+    individual too many.
+    """
+    data_dir = work_dir / "data"
+    if not data_dir.is_dir():
+        return []
+    return [f for f in sorted(data_dir.glob("*.npz")) if is_per_individual_export(f)]
+
+
+class NothingToRepublishError(RuntimeError):
+    """A republish found no finished TRex output to publish from.
+
+    Refused rather than falling back to tracking. A republish exists to rebuild
+    a tracks table from what TRex already wrote, in seconds; running TRex
+    instead would cost hours the caller did not ask for, and clearing a stale
+    phase first would delete the very export the republish was meant to read.
+    """
+
+
+def _republish_entry(
+    job: EntryJob,
+    *,
+    track_hash: str,
+    timeline: ConcatenatedTimeline | None,
+    media_frames: int | None,
+) -> BridgeCounts | None:
+    """Rebuild one entry's tracks table from TRex's existing per-individual NPZ.
+
+    Needs only the working directory: no TRex binary, no display, no video. The
+    track marker is what proves TRex finished this entry under these settings
+    from this media; the conversion is not consulted, because nothing here reads
+    the ``.pv``.
+
+    Raises:
+        NothingToRepublishError: If the entry holds no matching track marker,
+            or no per-individual export.
+    """
+    item, work_dir, run_id = job.item, job.work_dir, job.minted.run_id
+    marker = reusable_marker(
+        job.ds,
+        work_dir,
+        "track",
+        params_hash=track_hash,
+        video_path=item.video_path,
+        video_uid=item.source_uid,
+    )
+    if marker is None:
+        msg = (
+            f"{item.key} holds no finished TRex tracking under {run_id} for its "
+            "current media. Either its working directory was swept, or the "
+            "settings or media differ from the run being republished; a "
+            "republish runs no tracking, so it has nothing to publish."
+        )
+        raise NothingToRepublishError(msg)
+    npz_paths = _individual_exports(work_dir)
+    if not npz_paths:
+        msg = (
+            f"{item.key} finished tracking under {run_id}, but TRex's "
+            f"per-individual export is gone from {work_dir / 'data'}, so there is "
+            "nothing to republish from. Only re-tracking can recover it."
+        )
+        raise NothingToRepublishError(msg)
+    return _bridge_npz_to_tracks(
+        job.ds,
+        item.group,
+        item.sequence,
+        npz_paths,
+        tracks_variant=job.minted.tracks_variant,
+        producer_run_id=run_id,
+        consumed_media=item.consumed_media,
+        timeline=timeline,
+        media_frames=media_frames,
+        overwrite=True,
+        mapping=item.source_mapping,
     )
 
 
@@ -483,7 +571,7 @@ def _conversion_from_cache(
             # sweeper refuses as `foreign` rather than reclaiming.
             shutil.rmtree(staging, ignore_errors=True)
             release_slot(slot, seq_ctx.execution_id)
-            _discard_empty_slot(slot)
+            discard_if_empty(slot)
         return pv_path
 
 
@@ -501,22 +589,6 @@ def _clear_staging(slot: Path) -> None:
     """Remove every staging tree under *slot*. Call only while holding its claim."""
     for stale in slot.glob(".incoming-*"):
         shutil.rmtree(stale, ignore_errors=True)
-
-
-def _discard_empty_slot(slot: Path) -> None:
-    """Remove a slot directory nothing was ever published into.
-
-    ``claim_slot`` has to create the directory before it can take a claim in it,
-    so a conversion that declined to publish leaves an empty one behind -- and an
-    empty directory carries no marker, which the sweeper classifies ``foreign``
-    and refuses permanently, telling the operator a root mosaic created is not a
-    tracker root.
-    """
-    try:
-        if not any(slot.iterdir()):
-            slot.rmdir()
-    except OSError:
-        pass
 
 
 def _keep_unshareable_conversion(job: EntryJob, *, staging: Path, why: str) -> Path:
@@ -545,7 +617,7 @@ def _keep_unshareable_conversion(job: EntryJob, *, staging: Path, why: str) -> P
         if spare.exists():
             os.replace(spare, job.work_dir / name)
     shutil.rmtree(staging, ignore_errors=True)
-    _discard_empty_slot(staging.parent)
+    discard_if_empty(staging.parent)
     print(
         f"[{CONVERT_KIND}] {job.item.key}: {why}. Keeping the conversion in "
         f"{job.work_dir} for this run instead of sharing it; later runs with "
@@ -589,7 +661,7 @@ def _adopt_into_cache(
     seq_ctx = job.ctx
     claim_marker = claim_slot(job.ds, seq_ctx, slot, idle_seconds=idle_timeout)
     if claim_marker is None:
-        _discard_empty_slot(slot)
+        discard_if_empty(slot)
         return None
     staging = staging_dir(slot, seq_ctx.execution_id)
     try:
@@ -619,7 +691,7 @@ def _adopt_into_cache(
     finally:
         shutil.rmtree(staging, ignore_errors=True)
         release_slot(slot, seq_ctx.execution_id)
-        _discard_empty_slot(slot)
+        discard_if_empty(slot)
     return pv_path
 
 
@@ -660,6 +732,7 @@ def run_trex(
     scope: "ResolvedScope | None" = None,
     *,
     overwrite: bool = False,
+    republish: bool = False,
     # Job Contract
     execution_id: str | None = None,
     owner: str = "",
@@ -682,12 +755,37 @@ def run_trex(
     ``cancel_token``) open the run's context, and *ctx* runs inside one that is
     already open instead.
 
+    *republish* runs no TRex at all. It rebuilds each entry's tracks table from
+    the per-individual export an earlier run under the same *params* left in its
+    working directory, which is how a converter fix reaches data already tracked.
+    It needs neither the TRex binary, a display nor the video, and an entry with
+    no finished tracking to publish from is recorded as failed, never tracked.
+    The tracks variant is unchanged, so the table is replaced in place.
+
     Which conda environment, binary and display TREx is launched from is read
     from ``MOSAIC_TREX_CONDA_ENV`` / ``MOSAIC_TREX_BIN`` / ``MOSAIC_TREX_DISPLAY``,
     so the run identifier does not depend on where the tool was installed.
 
     Returns the content-addressed ``run_id``.
+
+    Raises:
+        ValueError: If *republish* is combined with *overwrite*, which deletes
+            the export a republish reads, or with ``convert_to_tracks=False``,
+            which asks for no table.
     """
+    if republish and overwrite:
+        msg = (
+            "republish and overwrite cannot be combined: overwrite deletes each "
+            "entry's TRex output, which is what a republish publishes from."
+        )
+        raise ValueError(msg)
+    if republish and not params.convert_to_tracks:
+        msg = (
+            "republish rebuilds tracks tables, and convert_to_tracks=False asks "
+            "for none."
+        )
+        raise ValueError(msg)
+
     # Resolve the detection model *before* the settings that name it, because
     # what the settings must carry is the model's identity and not the string
     # that pointed at it. A bare weights path is a mutable key: swap best.pt and
@@ -787,6 +885,27 @@ def run_trex(
             if item.source_facts and item.variant is None
             else None
         )
+        # What the tracker was pointed at, for the runs where the question has
+        # an answer worth recording.
+        #
+        # Joined entries only. A single-clip entry's frame axis IS the media's
+        # -- there is no concatenation to lose frames at -- so the comparison
+        # can catch nothing there and would false-positive on the ordinary case
+        # of a tracker writing no rows for the frames after the animal left:
+        # `frame_max` is the last frame carrying a row, not the last frame seen.
+        #
+        # `analysis_range` is excluded for the opposite reason: it narrows the
+        # tracking phase on purpose, so a short span is the run working as
+        # asked. Blank says "the producer did not ask this question", and
+        # `mosaic measure-tracks` fills the cell afterwards for anyone who wants
+        # the comparison anyway.
+        media_frames = (
+            timeline.total_frames
+            if timeline is not None
+            and len(timeline.segments) > 1
+            and params.analysis_range is None
+            else None
+        )
 
         # The .results file is the only output TREx writes at the *end* of
         # tracking; the .pv and the per-individual files appear as processing
@@ -811,6 +930,24 @@ def run_trex(
                     AdoptEvidence("track", "*.results"),
                 ),
             )
+
+        if republish:
+            # Before any phase code, never beside it: a phase gate that misses
+            # clears the track outputs -- the export this reads -- and then
+            # runs TRex. No row either; the one tracking wrote still stands,
+            # and a swept entry has none to restore.
+            _ = publish_or_record(
+                job.ctx,
+                item.key,
+                lambda: _republish_entry(
+                    job,
+                    track_hash=phase_hashes["track"],
+                    timeline=timeline,
+                    media_frames=media_frames,
+                ),
+                kind=TREX_KIND,
+            )
+            return None
 
         def convert_into(
             out_dir: Path,
@@ -1006,18 +1143,7 @@ def run_trex(
         else:
             recomputed = False
 
-        data_dir = work_dir / "data"
-        # Filtered, not just globbed. `auto_train` (visual identification) makes
-        # TRex write `<prefix>_vi_probs.npz` into the same directory -- a `probs`
-        # matrix with no positions and no `cm_per_pixel` -- and handing it to the
-        # converter raises MissingTrexCalibrationError, failing the whole entry
-        # after the tracking itself succeeded. `n_ids` below counts this too, so
-        # an unfiltered glob also reported one individual too many.
-        npz_paths = (
-            [f for f in sorted(data_dir.glob("*.npz")) if is_per_individual_export(f)]
-            if data_dir.is_dir()
-            else []
-        )
+        npz_paths = _individual_exports(work_dir)
         row = TRexIndexRow(
             run_id=minted.run_id,
             group=item.group,
@@ -1072,28 +1198,7 @@ def run_trex(
                     producer_run_id=minted.run_id,
                     consumed_media=item.consumed_media,
                     timeline=timeline,
-                    # What the tracker was pointed at, for the runs where the
-                    # question has an answer worth recording.
-                    #
-                    # Joined entries only. A single-clip entry's frame axis IS
-                    # the media's -- there is no concatenation to lose frames at
-                    # -- so the comparison can catch nothing there and would
-                    # false-positive on the ordinary case of a tracker writing no
-                    # rows for the frames after the animal left: `frame_max` is
-                    # the last frame carrying a row, not the last frame seen.
-                    #
-                    # `analysis_range` is excluded for the opposite reason: it
-                    # narrows the tracking phase on purpose, so a short span is
-                    # the run working as asked. Blank says "the producer did not
-                    # ask this question", and `mosaic measure-tracks` fills the
-                    # cell afterwards for anyone who wants the comparison anyway.
-                    media_frames=(
-                        timeline.total_frames
-                        if timeline is not None
-                        and len(timeline.segments) > 1
-                        and params.analysis_range is None
-                        else None
-                    ),
+                    media_frames=media_frames,
                     overwrite=job.overwrite or recomputed,
                     mapping=item.source_mapping,
                 ),
@@ -1104,7 +1209,7 @@ def run_trex(
     return run_tracker(
         ds,
         kind=TREX_KIND,
-        target="trex-track",
+        target="trex-republish" if republish else "trex-track",
         minted=minted,
         work_items=build_work_items(
             ds, media_scope, kind=TREX_KIND, media=params.media

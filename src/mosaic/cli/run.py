@@ -161,6 +161,17 @@ def run_command(
     overwrite: Annotated[
         bool, typer.Option("--overwrite", help="Recompute even if a cached run exists.")
     ] = False,
+    republish: Annotated[
+        bool,
+        typer.Option(
+            "--republish",
+            help=(
+                "With --kind: rebuild the op's published outputs from its "
+                "finished work without redoing it. Ops without a republish path "
+                "refuse it."
+            ),
+        ),
+    ] = False,
     owner: Annotated[
         str,
         typer.Option("--owner", help="Free-form attribution recorded on the attempt."),
@@ -195,6 +206,12 @@ def run_command(
         )
     if (graph_request is not None) != (step is not None):
         fail("--graph-request and --step are used together, or not at all.")
+    if republish and kind is None:
+        msg = (
+            "--republish rebuilds an op's published outputs, so it is used with "
+            "--kind only."
+        )
+        fail(msg)
     # Below the pairing check, which reports the more actionable fault, and above
     # ``load_dataset``. A step covers the entries its plan resolved: the
     # submission's narrowing minus what is computed and minus what is
@@ -357,6 +374,7 @@ def run_command(
                     params_dict or {},
                     scope=scope,
                     overwrite=overwrite,
+                    republish=republish,
                     execution_id=exec_id,
                     owner=owner,
                     cancel_token=token,

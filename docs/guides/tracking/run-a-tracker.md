@@ -180,6 +180,21 @@ That normalization is the point of the standard, and the rules behind it are in
     Pose keypoints need no entry — TRex appends every keypoint the model reports that
     you did not name yourself, so an override cannot lose them.
 
+??? note "TRex: rebuilding tables without re-tracking"
+
+    When a mosaic update changes how TRex output is converted, `--republish`
+    rebuilds each entry's table from what a finished run left behind, without
+    running TRex:
+
+    ```bash
+    mosaic track trex -m dataset.yaml --republish --set cm_per_pixel=0.05
+    ```
+
+    The settings name the run, so pass exactly the `--set` values it ran with; any
+    other value names a run that does not exist, and every entry is refused. An
+    entry whose working directory `mosaic sweep-tracking` has reclaimed cannot be
+    republished, only tracked again.
+
 ## Worked examples
 
 Two notebooks run a tracker end to end on data they download themselves, and both

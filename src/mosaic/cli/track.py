@@ -113,6 +113,17 @@ def track_command(
         ),
     ] = None,
     overwrite: Annotated[bool, typer.Option("--overwrite")] = False,
+    republish: Annotated[
+        bool,
+        typer.Option(
+            "--republish",
+            help=(
+                "Rebuild each entry's tracks table from the tracker's existing "
+                "output without running the tracker. Pass the original run's "
+                "--set values: they name the run being republished."
+            ),
+        ),
+    ] = False,
     convert_to_tracks: Annotated[
         bool, typer.Option("--convert-to-tracks/--no-convert-to-tracks")
     ] = True,
@@ -190,6 +201,7 @@ def track_command(
                 params,
                 scope=scope,
                 overwrite=overwrite,
+                republish=republish,
                 execution_id=exec_id,
                 owner=owner,
                 cancel_token=token_,
@@ -201,6 +213,11 @@ def track_command(
             log(f"[mosaic] cancelled {exec_id}")
         raise typer.Exit(code=130) from None
     except (ImportError, FileNotFoundError) as exc:
+        fail(f"{kind} run failed: {exc}")
+    except ValueError as exc:
+        # A request the tracker cannot honor -- a republish it has no path for,
+        # or one combined with --overwrite -- and anything else raised as a
+        # plain ValueError, rendered as a message rather than a traceback.
         fail(f"{kind} run failed: {exc}")
 
     payload: dict[str, object] = {

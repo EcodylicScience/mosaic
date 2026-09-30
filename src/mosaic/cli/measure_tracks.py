@@ -51,10 +51,11 @@ def measure_tracks_command(
     progressively wrong through it. Everything computed *inside* such a table is
     unaffected; what breaks is anything that reads a pixel at a track frame.
 
-    This is the only way to ask that question of a table already on disk. A run
-    records the comparison as it publishes, but a published table cannot be
-    re-bridged without re-tracking, so a session tracked before that existed can
-    be measured and never re-reported.
+    This is the one way to ask that question of any table already on disk. A run
+    records the comparison as it publishes, and only TRex can re-bridge a
+    published table without re-tracking (``mosaic track trex --republish``), so
+    for the other trackers a session tracked before that existed can be measured
+    and never re-reported.
 
     Dry-run by default. A disagreement it finds is a measurement, not a verdict:
     nothing is rewritten and no table is refused.

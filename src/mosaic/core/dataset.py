@@ -968,10 +968,11 @@ class Dataset:
     def measure_media_frames(self, *, dry_run: bool = False) -> "pd.DataFrame":
         """Record the media-axis length of every tracks row that lacks one.
 
-        The other half of :meth:`measure_frame_extents`, and the only way an
-        already-tracked session can be compared against the video it addresses:
-        a table on disk cannot be re-bridged without re-tracking. Returns the
-        rows filled, with their measured values.
+        The other half of :meth:`measure_frame_extents`, and the one way to
+        compare an already-tracked session against the video it addresses that
+        works for every tracker: only TRex can re-bridge a table on disk without
+        re-tracking (a republish). Returns the rows filled, with their measured
+        values.
         """
         return backfill_media_frames(self, dry_run=dry_run)
 

@@ -304,11 +304,12 @@ def publish_or_record(
     mosaic knows only the size of the gap. It reports that and says so.
 
     Raising instead was considered and rejected. It would be permanent: the
-    condition is deterministic, so every re-run would fail the same entry, and
-    there is no way to re-publish a table without re-tracking -- the bridge
-    serves an existing parquet before it converts anything, and ``overwrite``
-    clears the whole working tree. A defect that spoils registration would then
-    cost the analyses that never depended on registration.
+    condition is deterministic, so every re-run and every TRex republish would
+    fail the same entry, and the other trackers cannot re-publish a table without
+    re-tracking at all -- their bridge serves an existing parquet before it
+    converts anything, and ``overwrite`` clears the whole working tree. A defect
+    that spoils registration would then cost the analyses that never depended on
+    registration.
 
     **Dropped columns are reported the same way.** A table mapped from a media
     variant into source space publishes without the columns that the mapping

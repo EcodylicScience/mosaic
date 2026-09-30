@@ -148,6 +148,22 @@ class ScopeRefused(ValueError):
     """
 
 
+class RepublishUnsupported(ValueError):
+    """A republish asked of an op that has no way to do one.
+
+    A ``ValueError`` for the reason :class:`ScopeRefused` is one: the command
+    line renders it as a message. :func:`run_op` raises it before opening the
+    attempt, so a request the op cannot serve records no failed run.
+    """
+
+    def __init__(self, kind: str) -> None:
+        msg = (
+            f"op {kind!r} has no republish path: its published outputs can be "
+            "rebuilt only by running it again, with overwrite."
+        )
+        super().__init__(msg)
+
+
 _UNSCOPED_CONSEQUENCE: Final[dict[str, str]] = {
     "transcode": "re-encode every video in the dataset",
     "export-store": "export every imgstore in the dataset",
@@ -381,6 +397,28 @@ class Op(Generic[P]):
         """
         raise NotImplementedError
 
+    def republish(
+        self,
+        ds: "Dataset",
+        params: P,
+        scope: "ResolvedScope",
+        ctx: JobContext,
+    ) -> str:
+        """Rebuild this op's published outputs from its own finished work.
+
+        What reaches data already produced when the step *after* the expensive
+        one changes -- a converter fix, say -- without redoing the expensive
+        one. An op that can do this overrides it; the arguments are
+        :meth:`run`'s without ``overwrite``, which a republish contradicts.
+
+        Returns:
+            The content ``run_id`` whose outputs were republished.
+
+        Raises:
+            RepublishUnsupported: Always, here. This op has no republish path.
+        """
+        raise RepublishUnsupported(self.kind)
+
 
 OPS: dict[str, type[Op[Any]]] = {}
 
@@ -417,6 +455,17 @@ def register_op(cls: type[Op[Any]]) -> type[Op[Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _overrides_republish(op_cls: type[Op[Any]]) -> bool:
+    """Does *op_cls*, or a class between it and :class:`Op`, define ``republish``?
+
+    Asked before the attempt opens, so a republish the op cannot serve is
+    refused without recording a failed run.
+    """
+    return any(
+        "republish" in vars(klass) for klass in op_cls.__mro__ if klass is not Op
+    )
+
+
 def run_op(
     ds: "Dataset",
     kind: str,
@@ -429,6 +478,7 @@ def run_op(
     cancel_token: CancelToken | None = None,
     scope: "Scope | None" = None,
     overwrite: bool = False,
+    republish: bool = False,
 ) -> str:
     """Run a registered op as a tracked Job-Contract attempt.
 
@@ -450,12 +500,18 @@ def run_op(
         overwrite: Whether the op recomputes what is already there. Every op
             reads it from here. Two attempts differing only in it produce the
             same run identifier.
+        republish: Call :meth:`Op.republish` instead of :meth:`Op.run`,
+            rebuilding the published outputs of work already done. The attempt
+            is recorded with the target ``<kind>-republish``.
 
     Returns:
         The content ``run_id`` the op produced.
 
     Raises:
         KeyError: *kind* names no registered op.
+        ValueError: *republish* and *overwrite* were both asked for.
+        RepublishUnsupported: *republish* was asked of an op without a
+            republish path.
         ScopeRefused: *scope* is one the op's declaration does not accept.
         FileNotFoundError: *scope* names groups or sequences and the originals
             index does not exist.
@@ -463,7 +519,15 @@ def run_op(
     op_cls = OPS.get(kind)
     if op_cls is None:
         raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(OPS)}")
+    if republish and overwrite:
+        msg = (
+            "republish and overwrite cannot be combined: a republish rebuilds "
+            "outputs from finished work, and overwrite discards that work."
+        )
+        raise ValueError(msg)
     op = op_cls()
+    if republish and not _overrides_republish(op_cls):
+        raise RepublishUnsupported(kind)
     p = op.Params.model_validate(params) if isinstance(params, dict) else params
     # The seam every op reads its scope from, and the one place a scope is
     # refused. Resolved here so one enumeration answers for every op, and checked
@@ -473,13 +537,15 @@ def run_op(
     with job_context(
         ds,
         kind=kind,
-        target=op.target(p, resolved),
+        target=f"{kind}-republish" if republish else op.target(p, resolved),
         execution_id=execution_id,
         owner=owner,
         track=track,
         progress_callback=progress_callback,
         cancel_token=cancel_token,
     ) as ctx:
+        if republish:
+            return op.republish(ds, p, resolved, ctx)
         return op.run(ds, p, resolved, overwrite, ctx)
 
 

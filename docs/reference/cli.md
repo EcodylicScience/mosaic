@@ -73,6 +73,7 @@ $ mosaic run [OPTIONS]
 * `--tracks-run-id <str>`: Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Feature runs only; needed when one sequence has two recipes.
 * `--labels-run-id <str>`: Which labels variant to read, e.g. 'trex.0.1-abc123def0'. Feature runs only; needed when one sequence has two recipes.
 * `--overwrite`: Recompute even if a cached run exists.
+* `--republish`: With --kind: rebuild the op's published outputs from its finished work without redoing it. Ops without a republish path refuse it.
 * `--owner <str>`: Free-form attribution recorded on the attempt.
 * `--execution-id <str>`: Reuse an externally minted ULID (executor unit-of-work).
 * `--json`: Emit one JSON object on stdout; logs go to stderr.
@@ -172,6 +173,7 @@ $ mosaic track [OPTIONS] {kind}
 * `--sequences <str>`: Scope to these sequences.
 * `--entries <str>`: Scope to group:sequence pairs (repeatable). A bare token is a sequence in the empty group.
 * `--overwrite`
+* `--republish`: Rebuild each entry's tracks table from the tracker's existing output without running the tracker. Pass the original run's --set values: they name the run being republished.
 * `--convert-to-tracks / --no-convert-to-tracks`: [default: convert-to-tracks]
 * `--idle-timeout <float>`: Kill a phase after this many seconds with no output from the tool.  [default: 900]
 * `--max-runtime <float>`: Optional absolute wall-clock ceiling.
@@ -468,10 +470,11 @@ column no longer addresses the video: correct at the start of a sequence and
 progressively wrong through it. Everything computed *inside* such a table is
 unaffected; what breaks is anything that reads a pixel at a track frame.
 
-This is the only way to ask that question of a table already on disk. A run
-records the comparison as it publishes, but a published table cannot be
-re-bridged without re-tracking, so a session tracked before that existed can
-be measured and never re-reported.
+This is the one way to ask that question of any table already on disk. A run
+records the comparison as it publishes, and only TRex can re-bridge a
+published table without re-tracking (``mosaic track trex --republish``), so
+for the other trackers a session tracked before that existed can be measured
+and never re-reported.
 
 Dry-run by default. A disagreement it finds is a measurement, not a verdict:
 nothing is rewritten and no table is refused.

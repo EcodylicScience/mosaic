@@ -812,11 +812,11 @@ def backfill_frame_extents(ds: Dataset, *, dry_run: bool = False) -> pd.DataFram
 def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> pd.DataFrame:
     """Record the media-axis length of every row that lacks one.
 
-    The migration path for tables published before the column existed, and the
-    only way an already-tracked session can be compared against its media at
-    all: a tracker run records the number at bridge time, and a table on disk
-    cannot be re-bridged without re-tracking -- the bridge serves an existing
-    parquet before it converts anything.
+    The migration path for tables published before the column existed, and for
+    most trackers the only way an already-tracked session can be compared
+    against its media at all: a tracker run records the number at bridge time,
+    and the bridge serves an existing parquet before it converts anything. TRex
+    alone can re-bridge a table without re-tracking, through a republish.
 
     **Its own pass, not an extension of :func:`backfill_frame_extents`.** The two
     read different sources of truth: that one opens a column of each parquet,
