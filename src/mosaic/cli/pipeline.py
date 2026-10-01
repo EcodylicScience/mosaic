@@ -27,6 +27,7 @@ import typer
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import (
     emit_json,
+    exit_refused,
     fail,
     load_json_arg,
     log,
@@ -34,11 +35,12 @@ from mosaic.cli._io import (
     with_command_line_scope,
 )
 from mosaic.core.pipeline.ops import ScopeRefused
+from mosaic.core.pipeline.refusal import Refusal
 from mosaic.cli._render import render_table
 from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
-    from mosaic.core.pipeline.graph import Plan, PlannedStep, Recipe
+    from mosaic.core.pipeline.graph import Plan, PlannedStep, Recipe, Request
 
 pipeline_app = typer.Typer(
     name="pipeline",
@@ -197,6 +199,31 @@ def show_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
     )
 
 
+def _refused_attempt(
+    base_dir: Path, request: Request | None, refusal: Refusal
+) -> tuple[str, str]:
+    """The step of *request* that *refusal* ended the run at, and its attempt.
+
+    A refusal that names its step names the attempt too, because the request
+    assigned every step one: a step can be refused after its attempt finished,
+    when the run finds coverage did not move. One raised inside an attempt, such
+    as a tracker's refusal of a codec, names no step. A step that raises ends the
+    run, so its attempt is the one that the run-logs record as failed: every step
+    before it finished, and none after it started. Both are empty when neither
+    answers.
+    """
+    from mosaic.core.pipeline.graph import request_rollup
+
+    if request is None:
+        return refusal.step_id, ""
+    if refusal.step_id:
+        return refusal.step_id, request.step_executions.get(refusal.step_id, "")
+    for attempt in request_rollup(base_dir, request).steps:
+        if attempt.status == "failed":
+            return attempt.step_id, attempt.execution_id
+    return "", ""
+
+
 def run_command(
     recipe: RecipeOption,
     manifest: ManifestOption,
@@ -217,24 +244,33 @@ def run_command(
     as_json: JsonOption = False,
 ) -> None:
     """Run every step of a recipe here, in order, skipping what is already done."""
-    from mosaic.core.pipeline.graph import StepRefused, run_pipeline
+    from mosaic.core.pipeline.graph import run_pipeline, submit_request
     from mosaic.tracking.model_refs import ModelReferenceRefusedError
 
     ds = load_dataset(manifest)
     parsed = _recipe(recipe)
+    submitted: Request | None = None
     try:
         with stdout_to_stderr():
-            done = run_pipeline(
+            # Submitted here rather than inside run_pipeline, so that a refusal
+            # raised by one step can be traced to that step's attempt.
+            submitted = submit_request(
                 ds,
                 parsed,
                 scope=_scope(entry),
                 allow_partial=allow_partial,
                 owner=owner,
-            )
+            ).request
+            done = run_pipeline(ds, parsed, request=submitted, owner=owner)
     except ScopeRefused as refusal:
         fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
-    except (StepRefused, ModelReferenceRefusedError) as refusal:
+    except ModelReferenceRefusedError as refusal:
         fail(str(refusal))
+    except Refusal as refusal:
+        # A step's own refusal, or one raised inside a step's attempt, such as a
+        # tracker's refusal of a codec. Either ends the run at that step.
+        step_id, execution_id = _refused_attempt(ds.base_dir, submitted, refusal)
+        exit_refused(execution_id, refusal, step_id=step_id, as_json=as_json)
 
     rows = [
         {

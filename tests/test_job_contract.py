@@ -19,6 +19,7 @@ import pytest
 from mosaic.core.pipeline._utils import hash_params, new_execution_id
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.job import CancelToken, Cancelled, job_context
+from mosaic.core.pipeline.refusal import Refusal
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.run_log import (
     JsonlRunLog,
@@ -259,6 +260,37 @@ def test_failure_marks_failed_with_error(tmp_path: Path):
     failed = read_runs(_run_dir(ds), status="failed")
     assert len(failed) == 1
     assert "kaboom" in failed[0]["error_json"]
+
+
+class _Declined(Refusal):
+    """A refusal as any module declares one: by subclassing :class:`Refusal`."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, reason="undecodable_codec", detail={"codec": "av1"})
+
+
+def test_a_refusal_is_recorded_by_its_reason_and_the_step_it_ran_in(
+    tmp_path: Path,
+) -> None:
+    """The blob a pipeline step's refusal writes, rather than a traceback."""
+    ds = make_dataset(tmp_path / "ds")
+    execution_id = new_execution_id()
+
+    with pytest.raises(_Declined):
+        with job_context(
+            ds, kind="t", target="t", execution_id=execution_id, step_id="track"
+        ):
+            raise _Declined("no")
+
+    logged = read_run(run_log_dir(ds.base_dir), execution_id)
+    assert logged is not None
+    assert logged["status"] == "failed"
+    assert json.loads(logged["error_json"]) == {
+        "reason": "undecodable_codec",
+        "step": "track",
+        "message": "no",
+        "codec": "av1",
+    }
 
 
 # --- track=False opt-out ---------------------------------------------------

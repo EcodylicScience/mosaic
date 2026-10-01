@@ -32,6 +32,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import ClassVar, Final, Literal
 
+from mosaic.core.pipeline.subprocess_util import command_summary
 from mosaic.user_paths import user_path
 
 __all__ = [
@@ -145,8 +146,8 @@ class ToolExitError(RuntimeError):
 
     ``head`` is how many argv tokens the message echoes before eliding. It is a
     readability knob, not a limit: six covers a console script and its first
-    flags, and Lightning Pose lowers it to four because its argv is
-    ``python -c <an entire program>`` and printing the program helps nobody.
+    flags. A program passed with ``-c`` is never quoted; see
+    :func:`~mosaic.core.pipeline.subprocess_util.command_summary`.
     """
 
     tool_name: ClassVar[str] = "The tracking tool"
@@ -163,11 +164,9 @@ class ToolExitError(RuntimeError):
         self.returncode: int = returncode
         self.stdout: str = stdout
         self.stderr: str = stderr
-        head = type(self).head
-        cmd_str = " ".join(cmd[:head]) + (" ..." if len(cmd) > head else "")
         super().__init__(
             f"{type(self).tool_name} exited with code {returncode}.\n"
-            f"  Command: {cmd_str}\n"
+            f"  Command: {command_summary(cmd, type(self).head)}\n"
             f"{captured_output(stdout, stderr)}"
         )
 
@@ -321,14 +320,23 @@ def tool_invocation(env: ToolEnv, *, executable: str) -> list[str]:
     if env.conda_env:
         return conda_invocation(env, env.conda_env, executable)
     if env.bin_path:
-        return [_from_bin(env, env.bin_path, executable)]
+        return [
+            _from_bin(
+                env,
+                env.bin_path,
+                executable,
+                source="the binary this run was placed with",
+            )
+        ]
 
     env_conda = os.environ.get(env.conda_env_var)
     if env_conda:
         return conda_invocation(env, env_conda, executable)
     env_bin = os.environ.get(env.bin_var)
     if env_bin:
-        return [_from_bin(env, env_bin, executable)]
+        return [
+            _from_bin(env, env_bin, executable, source=f"the value of {env.bin_var}")
+        ]
 
     # A locator is looked up in order to find something beside it; without one
     # the executable is what is looked up, and what is found is what runs.
@@ -342,7 +350,9 @@ def tool_invocation(env: ToolEnv, *, executable: str) -> list[str]:
     return [str(Path(found).resolve().parent / executable)]
 
 
-def _from_bin(env: ToolEnv, bin_path: str | Path, executable: str) -> str:
+def _from_bin(
+    env: ToolEnv, bin_path: str | Path, executable: str, *, source: str
+) -> str:
     """Read an explicit ``bin`` value according to the tool's :class:`BinMode`.
 
     Expanded but never resolved. These values arrive from ``MOSAIC_<TOOL>_BIN``,
@@ -351,10 +361,35 @@ def _from_bin(env: ToolEnv, bin_path: str | Path, executable: str) -> str:
     fails with ENOENT. Resolving would break the other supported spelling: a bare
     ``MOSAIC_TREX_BIN=trex`` is a name for ``$PATH`` to find, and resolving it
     would turn it into ``$CWD/trex``.
+
+    A bare name in sibling mode is looked up on ``$PATH`` and resolved through
+    any link, as the ``$PATH`` rung resolves a locator. Read as a path, it has no
+    directory, and the executable beside it would be a bare name that ``$PATH``
+    resolves to whatever comes first: ``MOSAIC_SLEAP_BIN=sleap-convert`` ran the
+    first ``python`` on ``$PATH``.
+
+    Args:
+        env: The tool's placement.
+        bin_path: The value to read.
+        executable: What to run, beside the value in sibling mode.
+        source: Where *bin_path* came from, named in a refusal.
+
+    Raises:
+        ToolNotFoundError: The subclass named by ``env.not_found``, for a bare
+            sibling name that is not on ``$PATH``.
     """
     if env.bin_mode == "direct":
         return str(user_path(bin_path))
-    return str(user_path(bin_path).parent / executable)
+    given = str(bin_path).strip()
+    if os.path.dirname(given):
+        return str(user_path(given).parent / executable)
+    found = shutil.which(given)
+    if found is None:
+        raise env.not_found(
+            f"'{given}', {source}, is not on $PATH, so the {env.tool} environment "
+            f"it names cannot be located. Name the file by its path."
+        )
+    return str(Path(found).resolve().parent / executable)
 
 
 # Jupyter exports ``MPLBACKEND=module://matplotlib_inline.backend_inline`` into

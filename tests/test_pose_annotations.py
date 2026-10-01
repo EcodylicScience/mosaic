@@ -416,19 +416,31 @@ def test_a_set_of_one_pose_is_narrowed_to_it_unnamed() -> None:
     assert narrow_pose_sets({"s": finished}).pose == MOUSE
 
 
-def test_sets_that_choose_different_poses_are_named_by_the_first() -> None:
-    """The first set's pose gives the layout and the one class, so it names the result."""
-    rat = replace(MOUSE, id=MOUSE.id + 1, name="rat")
+@pytest.mark.parametrize(
+    "other",
+    [replace(MOUSE, id=MOUSE.id + 1, name="rat"), CRICKET],
+    ids=["same-layout", "other-layout"],
+)
+def test_sets_that_choose_different_poses_are_refused(other: PoseDefinition) -> None:
+    """The different pose is named, whether or not its layout differs too.
+
+    Two poses sharing a layout would otherwise train as one class. Two poses of
+    different layouts differ in layout because they are different poses, so the
+    pose is the cause the refusal names. Each set holds one pose, so each chooses
+    its own.
+    """
     mice = pose_set([pose_frame("m.png", pose_object((1.0, 2.0), (3.0, 4.0)))])
-    rats = pose_set(
-        [pose_frame("r.png", pose_object((1.0, 2.0), (3.0, 4.0), pose_id=rat.id))],
-        poses=(rat,),
+    others = pose_set(
+        [pose_frame("o.png", pose_object((1.0, 2.0), (3.0, 4.0), pose_id=other.id))],
+        poses=(other,),
     )
 
-    narrowed = narrow_pose_sets({"rats": rats, "mice": mice})
+    with pytest.raises(ValueError, match="One model trains one pose") as caught:
+        _ = narrow_pose_sets({"others": others, "mice": mice})
 
-    assert narrowed.pose == rat
-    assert narrowed.sets["mice"].categories == ("rat",)
+    message = str(caught.value)
+    assert f"set mice chose pose {MOUSE.id} ({MOUSE.name})" in message
+    assert f"set others chose pose {other.id} ({other.name})" in message
 
 
 def test_a_state_with_two_poses_says_which_to_name() -> None:

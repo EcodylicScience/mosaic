@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
@@ -25,7 +25,9 @@ from mosaic.core.pipeline.graph import (
     plan_pipeline,
     run_pipeline,
 )
+from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from mosaic.core.pipeline.run import run_feature
+from mosaic.core.pipeline.run_log import read_run, run_log_dir
 from mosaic.core.scope import Scope
 from tests.helpers import add_tracks_variant, make_dataset
 
@@ -384,10 +386,9 @@ def test_run_executes_the_graph_and_then_finds_it_complete(
     assert json.loads(again.stdout)["complete"] is True
 
 
-def test_run_refuses_a_shortfall_with_a_non_zero_exit(
-    tracked: Dataset, tmp_path: Path
-) -> None:
-    result = runner.invoke(
+def _run_short(tracked: Dataset, tmp_path: Path, *flags: str) -> Result:
+    """``mosaic pipeline run`` over a scope a step of CHAIN cannot fully cover."""
+    return runner.invoke(
         app,
         [
             "pipeline",
@@ -397,11 +398,39 @@ def test_run_refuses_a_shortfall_with_a_non_zero_exit(
             "--manifest",
             str(tracked.manifest_path),
             *[f"--entry={group}:{sequence}" for group, sequence in UNCOMPUTABLE],
+            *flags,
         ],
     )
 
-    assert result.exit_code == 1
-    assert "allow_partial" in result.output
+
+def test_run_refuses_a_shortfall_with_the_refusal_exit_code(
+    tracked: Dataset, tmp_path: Path
+) -> None:
+    result = _run_short(tracked, tmp_path)
+
+    assert result.exit_code == REFUSED_EXIT_CODE
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert "[mosaic] refused (coverage_shortfall)" in result.stderr
+    assert "allow_partial" in result.stderr
+
+
+def test_a_shortfall_is_a_json_refusal_under_json(
+    tracked: Dataset, tmp_path: Path
+) -> None:
+    """The shape a codec refusal has, naming the step and its attempt.
+
+    The step here stalls: its attempt finishes, and the run refuses to go on
+    because coverage did not move.
+    """
+    result = _run_short(tracked, tmp_path, "--json")
+
+    assert result.exit_code == REFUSED_EXIT_CODE
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "coverage_shortfall"
+    assert payload["step"] == json.loads(payload["error_json"])["step"] == "speed"
+    attempt = read_run(run_log_dir(tracked.base_dir), payload["execution_id"])
+    assert attempt is not None, "the attempt of the step that was refused"
 
 
 POINT_MODEL_TRACKED: Document = {

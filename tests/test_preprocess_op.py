@@ -770,6 +770,59 @@ def test_a_cancel_during_an_encode_stops_the_run_and_leaves_nothing(
     assert "heartbeat" in events
 
 
+class _KilledWriter:
+    """Asks the run to stop, then fails as an encoder killed by its signal does.
+
+    A cancel reaches the process group, so the encoder dies with an error of its
+    own before the op checks for the cancel.
+    """
+
+    def __init__(self, inner: VariantWriter, token: CancelToken) -> None:
+        self._inner = inner
+        self._token = token
+
+    def write(self, frame: Image) -> None:
+        self._token.cancel()
+        raise TranscodeError("ffmpeg exited with code -15")
+
+    def close(self) -> None:
+        self._inner.close()
+
+    @property
+    def frames_written(self) -> int:
+        return self._inner.frames_written
+
+    @property
+    def encoder_name(self) -> str:
+        return self._inner.encoder_name
+
+
+@pytest.mark.media
+def test_an_encoder_killed_by_a_cancel_is_a_cancel_and_not_a_lost_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The last entry's encode fails after the cancel, and no check follows it."""
+    ds = make_dataset(tmp_path / "ds")
+    _entry(ds, "s", [(12, 30.0)])
+    token = CancelToken()
+    _ = _WriterSpy(monkeypatch, wrap=lambda inner: _KilledWriter(inner, token))
+
+    with pytest.raises(Cancelled):
+        _ = run_op(
+            ds,
+            _KIND,
+            {"steps": [_GRAYSCALE]},
+            scope=Scope(entries=[("", "s")]),
+            cancel_token=token,
+            execution_id="killed",
+        )
+
+    snapshot = reduce_run_log(run_log_path(ds.base_dir, "killed"))
+    assert snapshot is not None
+    assert snapshot["status"] == "cancelled"
+    assert entry_error_lines(ds, "killed") == []
+
+
 def test_an_entry_held_by_another_execution_is_skipped(
     three_entry_dataset: Dataset, capsys: pytest.CaptureFixture[str]
 ) -> None:

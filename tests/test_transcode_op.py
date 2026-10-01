@@ -25,13 +25,14 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS, row_to_facts
 from mosaic.core.scope import Scope
-from tests.helpers import resolved_scope
+from tests.helpers import entry_error_lines, resolved_scope
 from mosaic.core.pipeline.media_index import (
     MediaIndexScope,
     frame_from_rows,
     read_media_index,
     write_media_index_rows,
 )
+from mosaic.core.pipeline.job import CancelToken, Cancelled
 from mosaic.core.pipeline.ops import list_ops, run_op
 from mosaic.core.pipeline.transcode import (
     TranscodeParams,
@@ -39,6 +40,7 @@ from mosaic.core.pipeline.transcode import (
     transcode_run_id,
 )
 from mosaic.media_probe_config import media_thresholds
+from mosaic.runlog import reduce_run_log, run_log_path
 
 # Every transcode here leaks one file descriptor, and it is not this suite's doing.
 # `mosaic_media.transcode.convert._run_ffmpeg` starts ffmpeg with
@@ -388,6 +390,51 @@ def test_overwrite_forces_a_re_encode(
 
     _ = run_op(ds, "transcode", params, scope=GS, overwrite=True)
     assert len(encodes) == 1, "overwrite must re-encode the entry it would reuse"
+
+
+def test_a_cancel_during_the_last_encode_is_recorded_as_cancelled(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """mosaic-media reports a cancel as a ``TranscodeError`` of its own.
+
+    The op checks for a cancel before each source, and none follows the last one.
+    Taken as an entry failure, the cancel would count the entry as lost and the
+    attempt would finish with exit 0.
+    """
+    import mosaic.core.pipeline.transcode as transcode_module
+
+    ds, _ = _analysis_required_dataset(tmp_path, make_media_dataset)
+    token = CancelToken()
+
+    def cancelled(
+        source: Path,
+        *_args: object,
+        cancel_check: Callable[[], bool],
+        **_kwargs: object,
+    ) -> object:
+        token.cancel()
+        assert cancel_check()
+        raise TranscodeError(f"transcode of {source} was canceled")
+
+    monkeypatch.setattr(transcode_module, "run_transcode", cancelled)
+
+    with pytest.raises(Cancelled):
+        _ = run_op(
+            ds,
+            "transcode",
+            TranscodeParams(target="analysis"),
+            scope=GS,
+            cancel_token=token,
+            execution_id="cancelled",
+        )
+
+    snapshot = reduce_run_log(run_log_path(ds.base_dir, "cancelled"))
+    assert snapshot is not None
+    assert snapshot["status"] == "cancelled"
+    assert snapshot["entries_failed"] == 0
+    assert entry_error_lines(ds, "cancelled") == []
 
 
 def test_an_existing_but_unlinked_derivative_is_relinked(

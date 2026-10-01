@@ -14,6 +14,10 @@ from pathlib import Path
 import pytest
 
 from mosaic.tracking.common import toolenv
+from mosaic.tracking.sleap import run as sleap_run
+from mosaic.tracking.sleap import training as sleap_training
+from mosaic.tracking.trex import run as trex_run
+from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.common.toolenv import (
     ToolEnv,
     ToolExitError,
@@ -103,6 +107,70 @@ def test_sibling_mode_resolves_the_executable_beside_an_explicit_bin() -> None:
     got = tool_invocation(_SIBLING.placed(bin_path="/x/bin/other"), executable="runme")
 
     assert got == ["/x/bin/runme"]
+
+
+def test_a_bare_sibling_name_is_looked_up_on_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``MOSAIC_SLEAP_BIN=sleap-convert`` names the environment ``$PATH`` finds it in.
+
+    Read as a path, a bare name has no directory, and the executable beside it
+    would be a bare ``python`` that ``$PATH`` resolves to another interpreter.
+    """
+    monkeypatch.setenv("MOSAIC_FAKE_BIN", "finder")
+
+    assert tool_invocation(_SIBLING, executable="python") == ["/p/bin/python"]
+
+
+def test_a_bare_sibling_name_is_resolved_through_its_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bare name that ``$PATH`` finds as a link names its target's environment."""
+    env_bin = tmp_path.resolve() / "tools" / "fake" / "bin"
+    env_bin.mkdir(parents=True)
+    (env_bin / "finder").touch()
+    linked = tmp_path / "local-bin" / "finder"
+    linked.parent.mkdir()
+    linked.symlink_to(env_bin / "finder")
+    monkeypatch.setattr(toolenv.shutil, "which", {"finder": str(linked)}.get)
+
+    got = tool_invocation(_SIBLING.placed(bin_path="finder"), executable="python")
+
+    assert got == [str(env_bin / "python")]
+
+
+def test_a_bare_sibling_name_not_on_path_is_refused_naming_the_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
+    monkeypatch.setenv("MOSAIC_FAKE_BIN", "finder")
+
+    with pytest.raises(
+        _FakeNotFound, match="'finder', the value of MOSAIC_FAKE_BIN, is not on"
+    ):
+        tool_invocation(_SIBLING, executable="python")
+
+
+def test_a_bare_sibling_name_not_on_path_is_refused_naming_the_placement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller's argument overrides the variable, so the variable is not named."""
+    monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
+    monkeypatch.setenv("MOSAIC_FAKE_BIN", "/elsewhere/finder")
+
+    with pytest.raises(_FakeNotFound) as refused:
+        tool_invocation(_SIBLING.placed(bin_path="finder"), executable="python")
+
+    message = str(refused.value)
+    assert "'finder', the binary this run was placed with, is not on" in message
+    assert "MOSAIC_FAKE_BIN" not in message
+
+
+def test_a_bare_direct_name_is_left_for_path_to_find() -> None:
+    """``MOSAIC_TREX_BIN=trex`` is the executable, which ``$PATH`` finds at launch."""
+    got = tool_invocation(_DIRECT.placed(bin_path="trex"), executable="trex")
+
+    assert got == ["trex"]
 
 
 def test_without_a_locator_the_executable_is_looked_up_directly() -> None:
@@ -286,11 +354,107 @@ def test_a_short_command_is_not_elided() -> None:
 
 
 def test_a_tool_may_shorten_how_much_of_its_command_is_echoed() -> None:
-    """Lightning Pose's argv is ``python -c <a whole program>``."""
-    error = _TerseExit(["python", "-c", "import sys; ..."], 1, "", "")
+    error = _TerseExit(["tool", "--flag", "value"], 1, "", "")
 
-    assert "python -c ..." in str(error)
+    assert "tool --flag ..." in str(error)
+    assert "value" not in str(error)
+
+
+_PROGRAM = "import sys\nprint(sys.argv)"
+
+
+@pytest.mark.parametrize(
+    ("argv", "echoed"),
+    [
+        (
+            ["/envs/lp/bin/python", "-c", _PROGRAM, "config.yaml", "out.csv"],
+            "/envs/lp/bin/python -c <program> config.yaml out.csv",
+        ),
+        (
+            [
+                "conda",
+                "run",
+                "--no-capture-output",
+                "-n",
+                "lp",
+                "python",
+                "-c",
+                _PROGRAM,
+            ],
+            "conda run --no-capture-output -n lp python ...",
+        ),
+    ],
+    ids=["bin", "conda"],
+)
+def test_a_python_program_is_named_and_never_quoted(
+    argv: list[str], echoed: str
+) -> None:
+    """``python -c <program>`` runs Lightning Pose and SLEAP from either placement.
+
+    The program is one argv token however many lines it holds, so no count of
+    tokens elides it: from a bin placement it is the third.
+    """
+    error = _FakeExit(argv, 1, "", "")
+
+    assert echoed in str(error)
     assert "import sys" not in str(error)
+    assert error.cmd == argv
+
+
+class _Launched(Exception):
+    """Raised by a stand-in for ``run_supervised`` once it has the argv."""
+
+
+@pytest.mark.parametrize("site", ["trex", "sleap", "sleap-train"])
+def test_every_running_line_is_the_summary_of_the_argv_run(
+    site: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One function prints an argv, so a program after ``-c`` is never quoted."""
+    module = {"trex": trex_run, "sleap": sleap_run, "sleap-train": sleap_training}[site]
+    launched: list[list[str]] = []
+    summarized: list[list[str]] = []
+
+    def run(argv: list[str], **_kwargs: object) -> tuple[str, str, int]:
+        launched.append(list(argv))
+        raise _Launched
+
+    def summary(cmd: list[str], head: int | None = None) -> str:
+        summarized.append(list(cmd))
+        return "<summary>"
+
+    monkeypatch.setattr(module, "run_supervised", run)
+    monkeypatch.setattr(module, "command_summary", summary)
+    caplog.set_level("INFO")
+
+    with pytest.raises(_Launched):
+        if site == "trex":
+            _ = trex_run.run_trex_convert(
+                tmp_path / "clip.mp4",
+                tmp_path / "out",
+                params=TrexParams(),
+                env=trex_run.TREX_ENV.placed(bin_path=tmp_path / "trex"),
+            )
+        elif site == "sleap":
+            _ = sleap_run.run_sleap_convert(
+                tmp_path / "in.slp",
+                tmp_path / "out.h5",
+                sleap_bin=tmp_path / "sleap-convert",
+            )
+        else:
+            labels = tmp_path / "in.slp"
+            _ = labels.write_bytes(b"slp")
+            _ = sleap_training.train_sleap(
+                labels,
+                tmp_path / "run",
+                sleap_bin=tmp_path / "sleap-nn-train",
+            )
+
+    running = [r.getMessage() for r in caplog.records if "Running:" in r.getMessage()]
+    assert running == ["Running: <summary>"]
+    assert summarized == launched
 
 
 # --- what the tool said, when the tool said it went fine ---------------------

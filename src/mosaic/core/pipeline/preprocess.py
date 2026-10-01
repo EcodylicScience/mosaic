@@ -1042,7 +1042,7 @@ class PreprocessOp(Op[PreprocessParams]):
             except PreprocessRefused:
                 raise
             except Exception as exc:
-                ctx.entry_failed(make_entry_key(group, sequence), exc)
+                ctx.entry_failed_unless_cancelled(make_entry_key(group, sequence), exc)
                 failed += 1
 
         _record_recipe(ds, params, run_id)
@@ -1097,7 +1097,7 @@ class PreprocessOp(Op[PreprocessParams]):
                 except Cancelled:
                     raise
                 except Exception as exc:
-                    ctx.entry_failed(plan.key, exc)
+                    ctx.entry_failed_unless_cancelled(plan.key, exc)
                     failed += 1
                 finally:
                     release_entry(work_dir, ctx.execution_id)

@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
-from mosaic.core.pipeline.subprocess_util import run_supervised
+from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.tracking.common.toolenv import (
     ToolEnv,
     ToolExitError,
@@ -209,7 +209,7 @@ def _run_sleap(
     Raises :class:`SleapError` on non-zero exit.
     """
     cmd = [*invocation, *args]
-    logger.info("Running: %s", " ".join(cmd))
+    logger.info("Running: %s", command_summary(cmd))
 
     stdout, stderr, returncode = run_supervised(
         cmd,

@@ -38,8 +38,9 @@ from typing import (
     get_args,
 )
 
-from mosaic.core.pipeline.job import CancelToken, JobContext, job_context
+from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
 from mosaic.core.params import Params
+from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -524,6 +525,7 @@ def run_op(
     scope: "Scope | None" = None,
     overwrite: bool = False,
     republish: bool = False,
+    step_id: str = "",
 ) -> str:
     """Run a registered op as a tracked Job-Contract attempt.
 
@@ -548,6 +550,8 @@ def run_op(
         republish: Call :meth:`Op.republish` instead of :meth:`Op.run`,
             rebuilding the published outputs of work already done. The attempt
             is recorded with the target ``<kind>-republish``.
+        step_id: The pipeline step this attempt runs, or ``""`` outside a
+            pipeline. A refusal recorded for the attempt names it.
 
     Returns:
         The content ``run_id`` the op produced.
@@ -560,6 +564,7 @@ def run_op(
         ScopeRefused: *scope* is one the op's declaration does not accept.
         FileNotFoundError: *scope* names groups or sequences and the originals
             index does not exist.
+        Cancelled: The run was cancelled, including by killing a tool it ran.
     """
     op_cls = registered_op(kind)
     if republish and overwrite:
@@ -586,10 +591,17 @@ def run_op(
         track=track,
         progress_callback=progress_callback,
         cancel_token=cancel_token,
+        step_id=step_id,
     ) as ctx:
-        if republish:
-            return op.republish(ds, p, resolved, ctx)
-        return op.run(ds, p, resolved, overwrite, ctx)
+        try:
+            if republish:
+                return op.republish(ds, p, resolved, ctx)
+            return op.run(ds, p, resolved, overwrite, ctx)
+        except ProcessCancelled as killed:
+            # A tool killed on a cancel is a cancelled attempt, not a failed one.
+            # Converted here, inside the context, so every op's attempt records
+            # it that way.
+            raise Cancelled() from killed
 
 
 # ---------------------------------------------------------------------------

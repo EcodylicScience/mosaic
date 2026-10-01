@@ -37,6 +37,7 @@ from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.ops import registered_op
+from mosaic.core.pipeline.tracks_identity import observed_model_runs
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -324,6 +325,11 @@ class ResolvedModel:
     registered run, and are empty when this dataset's own index did. They are
     provenance and never reach identity: the run identifier already names the
     model, and naming where it was found would make one model two.
+
+    ``member_run_ids`` are the training runs that a set of several references
+    named, in reference order. Such a set has no ``run_id`` and is named by its
+    digest, so they are recorded as provenance, where a search for the tracks a
+    model made finds them. Empty for a single reference.
     """
 
     artifacts: tuple[ModelArtifact, ...]
@@ -332,6 +338,7 @@ class ResolvedModel:
     model_type: str = ""
     library_id: str = ""
     library_uuid: str = ""
+    member_run_ids: tuple[str, ...] = ()
 
     @property
     def path(self) -> Path:
@@ -720,25 +727,32 @@ def _resolve_registered(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
 
 
 def observed_model_source(*resolved: ResolvedModel | None) -> dict[str, str]:
-    """Which linked library served a run's models, as variant provenance.
+    """Where a run's models came from, as variant provenance.
 
-    Merged into the ``observed`` mapping a variant sidecar records. Empty when
-    every model came from this dataset's own index or from a bare path, so a
-    sidecar written before libraries existed and one written now for a local
-    model are byte-identical.
+    Merged into the ``observed`` mapping a variant sidecar records. It holds the
+    linked libraries that served the models, and the member runs of a model set
+    of several references. Empty when every model came from this dataset's own
+    index or from a bare path, and was named by one reference, so a sidecar
+    written before libraries existed and one written now for a local model are
+    byte-identical.
 
     Provenance and never identity. The run identifier already names the model;
     which dataset happened to hold it is what a later export needs to find the
-    weights, and must not make one model mint two variants.
+    weights, and must not make one model mint two variants. A set of several is
+    named by its digest, and its member runs are what a search for the tracks a
+    model made looks for.
     """
+    present = [model for model in resolved if model is not None]
     sources = sorted(
         {
             f"{model.library_id}@{model.library_uuid}"
-            for model in resolved
-            if model is not None and model.library_id
+            for model in present
+            if model.library_id
         }
     )
-    return {"model_source": ",".join(sources)} if sources else {}
+    served = {"model_source": ",".join(sources)} if sources else {}
+    members = [run for model in present for run in model.member_run_ids]
+    return {**served, **observed_model_runs(members)}
 
 
 def resolve_model_set(
@@ -805,6 +819,7 @@ def resolve_model_set(
         model_type=model_type,
         library_id=served[0].library_id if single else "",
         library_uuid=served[0].library_uuid if single else "",
+        member_run_ids=() if len(refs) == 1 else tuple(registered),
     )
 
 

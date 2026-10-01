@@ -28,6 +28,7 @@ import pytest
 from mosaic.core.pipeline.subprocess_util import (
     IdleTimeoutExpired,
     ProcessCancelled,
+    command_summary,
     run_supervised,
 )
 
@@ -251,3 +252,88 @@ def test_a_cancelled_child_stops_writing(tmp_path: Path) -> None:
     assert scratch.stat().st_size == settled, (
         "the child went on writing after the cancel, so the group was not killed"
     )
+
+
+# A tool's environment runs a probe as ``python -c <program> <path>``, so from a
+# bin placement the program is the third token of the argv. A message about the
+# run reaches the run-log's error_json and an API error body, and must not quote
+# the program.
+_PROGRAM_MARKER = "# the program that no message quotes"
+
+
+def _program_argv(program: str) -> list[str]:
+    """*program* as a tool's environment runs it, with its path argument."""
+    return [sys.executable, "-c", f"{_PROGRAM_MARKER}\n{program}", "clip.mp4"]
+
+
+def _assert_names_the_program_without_quoting_it(message: str) -> None:
+    assert f"{sys.executable} -c <program> clip.mp4" in message
+    assert _PROGRAM_MARKER not in message
+
+
+def test_a_cancel_message_does_not_quote_the_program() -> None:
+    with pytest.raises(ProcessCancelled) as excinfo:
+        run_supervised(
+            _program_argv(NEVER_STOPS),
+            cancel_check=_fires_after(2),
+            poll_interval=0.05,
+        )
+
+    _assert_names_the_program_without_quoting_it(str(excinfo.value))
+
+
+def test_an_idle_timeout_message_does_not_quote_the_program() -> None:
+    with pytest.raises(IdleTimeoutExpired) as excinfo:
+        run_supervised(
+            _program_argv(GOES_SILENT),
+            idle_timeout=0.4,
+            poll_interval=0.05,
+        )
+
+    message = str(excinfo.value)
+    _assert_names_the_program_without_quoting_it(message)
+    assert "produced no output for 0.4 seconds" in message
+
+
+def test_a_wall_clock_timeout_message_does_not_quote_the_program() -> None:
+    """Still a ``TimeoutExpired``, so a caller catching that is unaffected."""
+    argv = _program_argv(NEVER_STOPS)
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        run_supervised(argv, timeout=0.5, poll_interval=0.05)
+
+    message = str(excinfo.value)
+    _assert_names_the_program_without_quoting_it(message)
+    assert "timed out after 0.5 seconds" in message
+    assert excinfo.value.cmd == argv
+
+
+# A decoder library can write a byte that is not UTF-8 before the tool answers,
+# as an OpenCV or ffmpeg warning quoting a raw tag does.
+NOT_UTF8_FIRST = (
+    "import sys, time\n"
+    "sys.stderr.buffer.write(b'[h264 @ 0x1] warning: \\xff\\xfe tag\\n')\n"
+    "sys.stderr.flush()\n"
+    "time.sleep(0.2)\n"
+    "print('read frame 0', flush=True)\n"
+    "sys.stderr.write('a later warning\\n')\n"
+)
+
+
+def test_output_that_is_not_utf8_is_read_to_the_end() -> None:
+    """A byte that is not UTF-8 is replaced, and both streams are still drained."""
+    stdout, stderr, rc = run_supervised(_argv(NOT_UTF8_FIRST), poll_interval=0.05)
+
+    assert rc == 0
+    assert stdout == "read frame 0\n"
+    assert stderr == "[h264 @ 0x1] warning: \ufffd\ufffd tag\na later warning\n"
+
+
+def test_a_summary_without_a_head_keeps_every_token_but_the_program() -> None:
+    argv = ["/env/bin/python", "-c", "import sys", "a", "b", "c", "d", "e", "f"]
+
+    assert command_summary(argv) == "/env/bin/python -c <program> a b c d e f"
+    assert command_summary(argv, 3) == "/env/bin/python -c <program> ..."
+
+
+def test_any_token_after_dash_c_is_a_program_whatever_the_executable() -> None:
+    assert command_summary(["sh", "-c", "echo hi", "x"]) == "sh -c <program> x"

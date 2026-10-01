@@ -302,7 +302,7 @@ def run_litpose(
         print("[run_litpose] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
     # One probe for the run, in the environment that the run places Lightning Pose
-    # in. It tests a codec outside the declaration once per run.
+    # in. A codec outside the declaration that decodes is tested once per run.
     decode_probe = DecodeProbe(
         LITPOSE_ENV.placed(conda_env=litpose_conda_env, bin_path=litpose_bin)
     )

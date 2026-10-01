@@ -41,6 +41,7 @@ from mosaic.runlog import JsonlRunLog, read_run, run_log_dir, run_log_path
 
 from ..inventory.cache import InventoryCache
 from ..inventory.model import ArtifactRef, FeatureRunRef
+from ..job import Cancelled
 from ..ops import run_op
 from ..run import run_feature
 from .claims import FileFailureStore
@@ -502,6 +503,7 @@ def _run(
             execution_id=attempt,
             owner=owner,
             cancel_token=cancel_token,
+            step_id=planned.step_id,
         )
         return StepOutcome(
             step_id=planned.step_id,
@@ -529,6 +531,9 @@ def _run(
             owner=owner,
             cancel_token=cancel_token,
         )
+    except Cancelled:
+        # A cancel is not a failure, and backoff and quarantine read the count.
+        raise
     except Exception as exc:
         store.note_step_failure(
             (planned.storage_name, planned.run_id or ""),

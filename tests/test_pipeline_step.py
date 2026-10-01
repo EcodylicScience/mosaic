@@ -23,7 +23,6 @@ import mosaic.core.pipeline.graph.step as step_module
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
-    REFUSED_EXIT_CODE,
     CoverageShortfall,
     Plan,
     PlannedStep,
@@ -32,12 +31,16 @@ from mosaic.core.pipeline.graph import (
     StepSpec,
     asked_of,
     execute_step,
+    plan_pipeline,
     load_recipe_for_request,
     recipe_path,
     request_rollup,
     save_recipe,
     submit_request,
 )
+from mosaic.core.pipeline.graph.claims import FileFailureStore
+from mosaic.core.pipeline.job import Cancelled
+from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from mosaic.core.scope import Scope
 from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import add_tracks_variant, make_dataset
@@ -110,6 +113,34 @@ def test_a_step_pins_its_parent_from_that_parent_s_run_log(
     assert logged is not None
     assert logged["run_id"] == speed.run_id
     assert speed.run_id in _params_text(tracked, templates.run_id)
+
+
+@pytest.mark.parametrize(
+    ("raised", "attempts"),
+    [(Cancelled(), 0), (RuntimeError("the feature failed"), 1)],
+    ids=["cancelled", "failed"],
+)
+def test_a_cancelled_feature_step_is_not_counted_as_a_step_failure(
+    tracked: Dataset,
+    monkeypatch: pytest.MonkeyPatch,
+    raised: Exception,
+    attempts: int,
+) -> None:
+    """Backoff and quarantine read the count, and a cancel is not a failure."""
+    recipe = Recipe.model_validate(_chain())
+    request = submit_request(tracked, recipe).request
+    planned = plan_pipeline(tracked, recipe).step("speed")
+
+    def run_feature(*_args: object, **_kwargs: object) -> None:
+        raise raised
+
+    monkeypatch.setattr(step_module, "run_feature", run_feature)
+
+    with pytest.raises(type(raised)):
+        _ = execute_step(tracked, request, "speed")
+
+    key = (planned.storage_name, planned.run_id or "")
+    assert FileFailureStore(tracked.base_dir).step_record(key).attempts == attempts
 
 
 def test_a_feature_step_records_the_tracks_variant_it_read(tracked: Dataset) -> None:

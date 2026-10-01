@@ -627,7 +627,6 @@ def train_through_the_tool[RequestT: TrainRequestBase](
     line to hang a refresh on -- so the run root was read as abandoned by whatever
     came next.
     """
-    from mosaic.core.pipeline.subprocess_util import ProcessCancelled
     from mosaic.tracking.common.cooperative_cancel import stop_then_kill
     from mosaic.tracking.common.ultralytics_env import (
         probe_environment,
@@ -644,26 +643,20 @@ def train_through_the_tool[RequestT: TrainRequestBase](
     preflight(probe, base_weights)
 
     work_dir = attempt_directory(run_root, ctx.execution_id)
-    try:
-        outcome = run_tool(
-            request,
-            work_dir=work_dir,
-            idle_timeout=_TRAIN_IDLE_SECONDS,
-            cancel_check=stop_then_kill(
-                ctx.cancel_token.is_cancelled,
-                Path(request.cancel_sentinel),
-                _TRAIN_CANCEL_GRACE_SECONDS,
-            ),
-            on_output=training_activity(
-                ctx,
-                phase_activity(ctx, run_root, marker, _TRAIN_IDLE_SECONDS),
-            ),
-        )
-    except ProcessCancelled as killed:
-        # The tool was asked and did not stop in time, so it was killed. That is a
-        # cancelled attempt, not a failed one -- the same reading the tracker
-        # driver gives it.
-        raise Cancelled() from killed
+    outcome = run_tool(
+        request,
+        work_dir=work_dir,
+        idle_timeout=_TRAIN_IDLE_SECONDS,
+        cancel_check=stop_then_kill(
+            ctx.cancel_token.is_cancelled,
+            Path(request.cancel_sentinel),
+            _TRAIN_CANCEL_GRACE_SECONDS,
+        ),
+        on_output=training_activity(
+            ctx,
+            phase_activity(ctx, run_root, marker, _TRAIN_IDLE_SECONDS),
+        ),
+    )
 
     ctx.check_cancel()
     if outcome.stop == "cancelled":

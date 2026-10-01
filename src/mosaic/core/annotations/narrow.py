@@ -57,9 +57,7 @@ class NarrowedSets:
             their objects of the chosen pose, with every box explicit.
         pose: The first set's chosen pose, which names the result: every set
             shares its layout, and its name is the one class when classes are
-            not taken from aliases. Another set may have chosen a pose with the
-            same layout under another id, when the choice is by name or each
-            set holds one pose.
+            not taken from aliases.
     """
 
     sets: dict[str, AnnotationSet]
@@ -78,9 +76,9 @@ def narrow_pose_sets(
 
     Args:
         sets: The sets, keyed by a label that names each in an error. The first
-            in iteration order is the reference: its keypoint layout is the one
-            every set must match, and an alias takes its name from the first
-            set that declares it.
+            in iteration order is the reference: its pose and its keypoint
+            layout are the ones every set must match, and an alias takes its
+            name from the first set that declares it.
         pose: Which pose: its id, its name, or ``None`` when every set declares
             exactly one pose.
         class_by: ``"alias"`` makes each alias a class, and refuses an object
@@ -97,9 +95,10 @@ def narrow_pose_sets(
 
     Raises:
         ValueError: A set does not declare the pose, or declares it ambiguously;
-            the sets' layouts differ; ``class_by`` meets an object without an
-            alias, or two aliases share a name; or no set holds a finished
-            frame.
+            the sets chose poses of different ids, or the pose's layout differs
+            between them;
+            ``class_by`` meets an object without an alias, or two aliases share
+            a name; or no set holds a finished frame.
     """
     if not sets:
         msg = "there are no annotation sets to narrow"
@@ -107,6 +106,11 @@ def narrow_pose_sets(
     chosen = {label: _select(label, state, pose) for label, state in sets.items()}
     reference_label = next(iter(chosen))
     reference = chosen[reference_label]
+    # The pose first: two poses differ in layout because they differ, and the
+    # pose is the cause to name. One pose edited across revisions keeps its id,
+    # so a layout that changed still reaches the layout check.
+    for label, definition in chosen.items():
+        _check_pose(label, definition, reference_label, reference)
     for label, definition in chosen.items():
         _check_layout(label, definition.schema, reference_label, reference.schema)
 
@@ -208,6 +212,27 @@ def _check_layout(
                 f"{theirs}. One model has one keypoint layout."
             )
             raise ValueError(msg)
+
+
+def _check_pose(
+    label: str,
+    definition: PoseDefinition,
+    reference_label: str,
+    reference: PoseDefinition,
+) -> None:
+    """Refuse a set that chose a different pose from the first.
+
+    Two poses can share a layout, as a mouse and a rat can, and a choice by name,
+    or each set's only pose, can land on either. Trained together they would be
+    one class under the first set's name.
+    """
+    if definition.id != reference.id:
+        msg = (
+            f"set {label} chose pose {definition.id} ({definition.name}), but set "
+            f"{reference_label} chose pose {reference.id} ({reference.name}). One "
+            "model trains one pose."
+        )
+        raise ValueError(msg)
 
 
 def _unordered(pairs: tuple[tuple[int, int], ...]) -> list[tuple[int, int]]:

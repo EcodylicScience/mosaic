@@ -24,9 +24,39 @@ import subprocess
 import sys
 import threading
 import time
-from typing import IO, Callable, Sequence
+from typing import IO, Callable, ClassVar, Final, Sequence
 
 _PR_SET_PDEATHSIG = 1  # from <sys/prctl.h>
+
+_COMMAND_HEAD: Final = 6
+"""How many argv tokens the message of a cancel or a timeout quotes."""
+
+
+def command_summary(cmd: Sequence[str], head: int | None = None) -> str:
+    """*cmd* as a message or a log line quotes it.
+
+    Any token that follows a ``-c`` token is rendered as ``<program>``, whatever
+    the executable. For a Python interpreter it is an entire program, and
+    printing it helps nobody. That token is third from a bin placement and later
+    under conda, so no count of tokens elides it. Then the first *head* tokens
+    are kept, and ``...`` marks the rest.
+
+    Args:
+        cmd: The argv as run.
+        head: How many tokens to keep. ``None`` keeps every token, which is what
+            a log line wants for a command it may be asked to reproduce.
+
+    Returns:
+        The kept tokens joined by spaces, with ``<program>`` in place of each
+        token after ``-c``, and a space and ``...`` appended when a token was
+        dropped.
+    """
+    shown = [
+        "<program>" if i > 0 and cmd[i - 1] == "-c" else str(token)
+        for i, token in enumerate(cmd)
+    ]
+    kept = shown if head is None else shown[:head]
+    return " ".join(kept) + (" ..." if len(kept) < len(shown) else "")
 
 
 class ProcessCancelled(RuntimeError):
@@ -34,22 +64,60 @@ class ProcessCancelled(RuntimeError):
 
     def __init__(self, argv: Sequence[str]) -> None:
         self.argv = list(argv)
-        super().__init__(f"subprocess cancelled: {' '.join(map(str, argv[:4]))} ...")
+        super().__init__(
+            f"subprocess cancelled: {command_summary(self.argv, _COMMAND_HEAD)}"
+        )
 
 
-class IdleTimeoutExpired(subprocess.TimeoutExpired):
+class _LimitExpired(subprocess.TimeoutExpired):
+    """A limit of :func:`run_supervised` expired.
+
+    The message summarizes the argv with :func:`command_summary`, because the
+    argv's own text would quote a program passed with ``-c`` and the message
+    reaches a run-log's ``error_json``. ``cmd`` still holds the whole argv.
+    """
+
+    expired: ClassVar[str] = ""
+    """What happened, between the command and the limit in seconds."""
+
+    def __init__(
+        self,
+        argv: Sequence[str],
+        timeout: float,
+        output: str | None = None,
+        stderr: str | None = None,
+    ) -> None:
+        self.argv: list[str] = list(argv)
+        super().__init__(self.argv, timeout, output=output, stderr=stderr)
+
+    def __str__(self) -> str:
+        summary = command_summary(self.argv, _COMMAND_HEAD)
+        return f"Command '{summary}' {self.expired} {self.timeout} seconds"
+
+
+class WallClockTimeoutExpired(_LimitExpired):
+    """Raised by :func:`run_supervised` when the run outlasted ``timeout`` seconds.
+
+    A :class:`subprocess.TimeoutExpired`, which ``subprocess.run`` raises for the
+    same limit, so an ``except subprocess.TimeoutExpired`` catches it.
+    """
+
+    expired: ClassVar[str] = "timed out after"
+
+
+class IdleTimeoutExpired(_LimitExpired):
     """Raised by :func:`run_supervised` when the child produced no output for
     ``idle_timeout`` seconds -- an inactivity (hang) kill.
 
     Subclasses :class:`subprocess.TimeoutExpired` so an existing ``except
     subprocess.TimeoutExpired`` still catches it, while a caller that wants to
-    tell a hang apart from the absolute wall-clock ceiling (a plain
-    ``TimeoutExpired``) or a cancel (:class:`ProcessCancelled`) can match this
-    type. ``self.timeout`` carries the idle window, not the elapsed runtime.
+    tell a hang apart from the absolute wall-clock ceiling
+    (:class:`WallClockTimeoutExpired`) or a cancel (:class:`ProcessCancelled`)
+    can match this type. ``self.timeout`` carries the idle window, not the
+    elapsed runtime.
     """
 
-    def __str__(self) -> str:
-        return f"Command '{self.cmd}' produced no output for {self.timeout} seconds"
+    expired: ClassVar[str] = "produced no output for"
 
 
 def set_pdeathsig() -> None:
@@ -123,7 +191,8 @@ def run_supervised(
     timeout:
         Absolute wall-clock ceiling. ``None`` (the default) imposes no total
         limit; on expiry the group is terminated and
-        ``subprocess.TimeoutExpired`` is raised (matching ``subprocess.run``).
+        :class:`WallClockTimeoutExpired`, a ``subprocess.TimeoutExpired``, is
+        raised.
     idle_timeout:
         Inactivity limit. When set, the group is terminated once the child has
         produced *no* output -- on stdout **or** stderr -- for this many
@@ -149,11 +218,15 @@ def run_supervised(
         popen_kwargs["start_new_session"] = True  # setsid -> own process group
         popen_kwargs["preexec_fn"] = set_pdeathsig
 
+    # Decoded leniently: a tool's decoder library can print a byte that is not
+    # UTF-8, and a strict decode would end the reader thread on it, leaving the
+    # rest of that stream unread.
     proc = subprocess.Popen(
         [str(a) for a in argv],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
         **popen_kwargs,  # type: ignore[arg-type]
     )
@@ -237,10 +310,10 @@ def run_supervised(
         raise ProcessCancelled(argv)
     if idled_out:
         raise IdleTimeoutExpired(
-            list(argv), idle_timeout or 0.0, output=stdout, stderr=stderr
+            argv, idle_timeout or 0.0, output=stdout, stderr=stderr
         )
     if timed_out:
-        raise subprocess.TimeoutExpired(
-            list(argv), timeout or 0.0, output=stdout, stderr=stderr
+        raise WallClockTimeoutExpired(
+            argv, timeout or 0.0, output=stdout, stderr=stderr
         )
     return stdout, stderr, proc.returncode

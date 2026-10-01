@@ -9,7 +9,7 @@ from any project that links it.
 from __future__ import annotations
 
 import json
-from dataclasses import fields
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pandas as pd
@@ -338,10 +338,14 @@ def _one_pose_set(library: Dataset, key: str, pose: PoseDefinition) -> None:
 def test_two_layouts_cannot_be_one_model(
     tmp_path: Path, schema: KeypointSchema
 ) -> None:
-    """Names, edges and mirror pairs all have to agree; each alone differs here."""
+    """Names, edges and mirror pairs all have to agree; each alone differs here.
+
+    Both sets hold the one pose, edited between them: a pose keeps its id when its
+    layout changes, so the pose check passes and the layout check refuses.
+    """
     library = make_dataset(tmp_path / "libraries" / "7", name="library")
     _ = _save_set(library, "two-points", {"m01": 2})
-    _one_pose_set(library, "other", PoseDefinition(id=3, name="mouse", schema=schema))
+    _one_pose_set(library, "other", replace(MOUSE, schema=schema))
 
     with pytest.raises(ValueError, match="One model has one keypoint layout"):
         _ = run_op(
@@ -524,14 +528,40 @@ def test_one_pose_is_trained_and_the_others_are_background(full_state: Dataset) 
 
 
 @pytest.mark.parametrize(
-    ("pose", "chosen"),
-    [(EARS.id, EARS), ("mouse", EARS), (CRICKET.id, CRICKET), ("cricket", CRICKET)],
-    ids=["mouse-by-id", "mouse-by-name", "cricket-by-id", "cricket-by-name"],
+    ("pose", "target", "chosen"),
+    [
+        (EARS.id, "yolo-pose", EARS),
+        ("mouse", "yolo-pose", EARS),
+        (CRICKET.id, "yolo-pose", CRICKET),
+        ("cricket", "yolo-pose", CRICKET),
+        ("cricket", "sleap", CRICKET),
+    ],
+    ids=[
+        "mouse-by-id",
+        "mouse-by-name",
+        "cricket-by-id",
+        "cricket-by-name",
+        "cricket-for-sleap",
+    ],
 )
 def test_a_preparation_records_the_pose_it_chose(
-    full_state: Dataset, pose: int | str, chosen: PoseDefinition
+    full_state: Dataset,
+    pose: int | str,
+    target: str,
+    chosen: PoseDefinition,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run_id = run_op(full_state, KIND, {**FULL, "pose": pose})
+    """Recorded on both write paths: the split tree, and a tool's own format."""
+
+    def fake_write_slp(
+        annotations: AnnotationSet, out_path: Path, **kwargs: object
+    ) -> Path:
+        _ = out_path.write_bytes(b"slp")
+        return out_path
+
+    monkeypatch.setattr("mosaic.tracking.sleap.labels.write_slp", fake_write_slp)
+
+    run_id = run_op(full_state, KIND, {**FULL, "pose": pose, "target": target})
 
     assert _recorded_pose(full_state, run_id) == (str(chosen.id), chosen.name)
 
@@ -766,13 +796,20 @@ def test_a_model_names_the_pose_it_was_trained_on(full_state: Dataset) -> None:
 def test_an_index_older_than_the_pose_reads_blank_and_is_adopted_on_the_next_write(
     world: tuple[Dataset, Dataset, Dataset],
 ) -> None:
-    """A row from before the pose was recorded names none; blank means unknown."""
+    """A row from before the pose was recorded names none; blank means unknown.
+
+    The older file holds its columns out of schema order and one the schema has
+    retired, so an appended row alone does not bring it to the schema: only the
+    adoption does.
+    """
     _mice, _rats, library = world
     earlier = _prepare(library)
     model = _train(library, earlier)
     path = model_index_path(library, KIND)
     written = pd.read_csv(path, dtype=str, keep_default_na=False)
-    written.drop(columns=["pose_id", "pose_name"]).to_csv(path, index=False)
+    legacy = written.drop(columns=["pose_id", "pose_name"])
+    legacy = legacy[list(reversed(legacy.columns))].assign(retired="x")
+    legacy.to_csv(path, index=False)
 
     found = training_provenance(library, "train-pose", model)
     assert (found.pose_id, found.pose_name) == (None, "")
@@ -784,6 +821,7 @@ def test_an_index_older_than_the_pose_reads_blank_and_is_adopted_on_the_next_wri
     assert list(adopted.columns) == [
         field.name for field in fields(PreparedDatasetIndexRow)
     ]
+    assert "retired" not in adopted.columns
     rows = {row["run_id"]: row for row in index_records(adopted)}
     assert (rows[earlier]["pose_id"], rows[earlier]["pose_name"]) == ("", "")
     assert (rows[later]["pose_id"], rows[later]["pose_name"]) == (

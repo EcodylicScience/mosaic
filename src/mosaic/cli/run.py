@@ -30,6 +30,7 @@ from mosaic.cli._context import attempt_facts, load_dataset
 from mosaic.cli._features import build_feature
 from mosaic.cli._io import (
     emit_json,
+    exit_refused,
     fail,
     load_json_arg,
     log,
@@ -230,9 +231,9 @@ def run_command(
         )
 
     from mosaic.core.pipeline._utils import new_execution_id
-    from mosaic.core.pipeline.graph import REFUSED_EXIT_CODE, StepRefused
     from mosaic.core.pipeline.ops import ScopeRefused
     from mosaic.core.pipeline.job import CancelToken, Cancelled, install_signal_handler
+    from mosaic.core.pipeline.refusal import Refusal
 
     ds = load_dataset(manifest)
 
@@ -391,24 +392,13 @@ def run_command(
         else:
             log(f"[mosaic] cancelled {exec_id}")
         raise typer.Exit(code=130) from None
-    except StepRefused as refusal:
-        # A reserved exit code rather than a new terminal status: that set is
-        # read by three repositories and mosaic-api's sweeper reaps it, so the
-        # ledger row stays ``failed`` and the reason travels in ``error_json``,
-        # which this attempt's run-log already carries.
-        if as_json:
-            emit_json(
-                {
-                    "execution_id": exec_id,
-                    "status": "refused",
-                    "reason": refusal.reason,
-                    "step": refusal.step_id,
-                    "error_json": refusal.error_json(),
-                }
-            )
-        else:
-            log(f"[mosaic] refused ({refusal.reason}): {refusal}")
-        raise typer.Exit(code=REFUSED_EXIT_CODE) from None
+    except Refusal as refusal:
+        # A step declining to run, or a tracker refusing a file's codec. A
+        # reserved exit code rather than a new terminal status: that set is read
+        # by three repositories and mosaic-api's sweeper reaps it, so the ledger
+        # row stays ``failed`` and the reason travels in ``error_json``, which
+        # this attempt's run-log already carries.
+        exit_refused(exec_id, refusal, step_id=step or "", as_json=as_json)
     except KeyError as exc:
         fail(str(exc))
     except ImportError as exc:

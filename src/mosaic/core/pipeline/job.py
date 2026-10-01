@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING
 
 from ._utils import new_execution_id
 from .progress import NullProgressCallback, ProgressCallback
+from .refusal import Refusal
 from .run_log import JsonlRunLog, run_log_path
 
 if TYPE_CHECKING:
@@ -103,7 +104,17 @@ _HEARTBEAT_EVERY = 10  # write a heartbeat at least every N entries
 _HEARTBEAT_SECONDS = 15.0  # ...and at least this often for slow single-entry jobs
 
 
-def _capture_error(exc: BaseException) -> str:
+def _capture_error(exc: BaseException, step_id: str) -> str:
+    """The ``error_json`` blob that records *exc*.
+
+    A :class:`~mosaic.core.pipeline.refusal.Refusal` is recorded as the refusal
+    it declares, in the shape a pipeline step's refusal has, so that a reader of
+    the ledger can branch on its reason. *step_id* is the step it names when it
+    does not name its own. Anything else is recorded by type, message and
+    traceback.
+    """
+    if isinstance(exc, Refusal):
+        return exc.error_json(step_id)
     return json.dumps(
         {
             "type": type(exc).__name__,
@@ -124,6 +135,7 @@ class JobContext:
     progress: ProgressCallback
     cancel_token: CancelToken
     owner: str = ""
+    step_id: str = ""
     run_id: str | None = None
     failed_keys: list[str] = field(default_factory=list)
     _total: int = 0
@@ -182,7 +194,26 @@ class JobContext:
         """
         self.failed_keys.append(key)
         if self.run_log is not None:
-            self.run_log.entry_failed(key, _capture_error(exc))
+            self.run_log.entry_failed(key, _capture_error(exc, self.step_id))
+
+    def entry_failed_unless_cancelled(self, key: str, exc: Exception) -> None:
+        """Record that one entity failed, or raise :class:`Cancelled` from *exc*.
+
+        A cancel reaches the tools an entry runs, and they fail with an error of
+        their own: mosaic-media reports "transcode of X was canceled", and an
+        encoder killed with the process group breaks its pipe. While the attempt's
+        cancel token is set, the failure is the cancel's. Recording it as a lost
+        entry would count the entry as failed, and after the last entry the
+        attempt would finish with no cancel check to stop it.
+
+        Call from inside the ``except`` block, as :meth:`entry_failed`.
+
+        Raises:
+            Cancelled: When a cancel has been requested.
+        """
+        if self.cancel_token.is_cancelled():
+            raise Cancelled() from exc
+        self.entry_failed(key, exc)
 
     def frame_axis_mismatch(self, key: str, *, tracked: int, media: int) -> None:
         """Record that one entry's frame axis is not its media's.
@@ -252,6 +283,7 @@ def job_context(
     progress_callback: ProgressCallback | None = None,
     cancel_token: CancelToken | None = None,
     total: int = 0,
+    step_id: str = "",
 ) -> Generator[JobContext]:
     """Run a block as a tracked job attempt.
 
@@ -273,6 +305,9 @@ def job_context(
         Optional injected backends; sensible defaults are provided. When a
         progress callback is injected, per-entry/per-epoch events go to it and
         only coarse progress (via :meth:`JobContext.heartbeat`) lands in the log.
+    step_id:
+        The pipeline step this attempt runs, or ``""`` outside a pipeline. A
+        refusal recorded for the attempt names it.
     """
     execution_id = execution_id or new_execution_id()
 
@@ -306,6 +341,7 @@ def job_context(
         progress=progress,
         cancel_token=token,
         owner=owner,
+        step_id=step_id,
         _total=total,
     )
 
@@ -322,7 +358,7 @@ def job_context(
         raise
     except Exception as exc:
         if run_log is not None:
-            run_log.failed(_capture_error(exc))
+            run_log.failed(_capture_error(exc, step_id))
         raise
     else:
         if run_log is not None:

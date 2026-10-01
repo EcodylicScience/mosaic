@@ -23,6 +23,9 @@ from mosaic.core.pipeline.tracks_identity import (
     convert_variant_payload,
     converter_op,
     infer_variant_payload,
+    observed_model_runs,
+    read_tracks_variant,
+    recorded_model_runs,
     tracks_run_id,
     tracks_variant_root,
     tracker_variant_payload,
@@ -154,6 +157,29 @@ def test_recording_a_variant_twice_is_idempotent(tmp_path: Path) -> None:
 
     assert first == second
     assert second.read_text() == before
+
+
+def test_a_rewrite_keeps_the_member_runs_recorded_before_it(tmp_path: Path) -> None:
+    """The union of the member runs, those recorded first, in their order.
+
+    One set named by run ids and then by paths is one variant, and the second
+    record names no runs. Replacing the first would forget the runs a search for
+    a model's tracks reads.
+    """
+    run_id = tracks_run_id("sleap", "1.6", {"model": "0e1d0e190f"})
+    payload = {"model": "0e1d0e190f"}
+
+    _ = write_tracks_variant(
+        tmp_path, run_id, "sleap", "1.6", payload, observed_model_runs(["a", "b"])
+    )
+    _ = write_tracks_variant(tmp_path, run_id, "sleap", "1.6", payload, {"x": "1"})
+    _ = write_tracks_variant(
+        tmp_path, run_id, "sleap", "1.6", payload, observed_model_runs(["c", "a"])
+    )
+
+    sidecar = read_tracks_variant(tmp_path, run_id)
+    assert sidecar is not None
+    assert recorded_model_runs(sidecar) == ("a", "b", "c")
 
 
 # --- The dataset seam ---------------------------------------------------------

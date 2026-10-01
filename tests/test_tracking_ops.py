@@ -33,10 +33,13 @@ from mosaic.core.pipeline.ops import (
     run_op,
 )
 from mosaic.core.pipeline.run import AllEntriesFailed
+from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     InferPointsRequest,
+    TrainRequestBase,
 )
 from mosaic.tracking.pose_training.ultralytics_infer import InferenceOutcome
+from mosaic.tracking.pose_training.ultralytics_train import TrainingOutcome
 from mosaic.core.pipeline.run_log import (
     read_run,
     read_run_progress,
@@ -457,6 +460,43 @@ def test_train_pose_cancel(tmp_path, monkeypatch):
             ds, "train-pose", {"data": str(data_yaml), "epochs": 1}, cancel_token=token
         )
     assert read_runs(_run_dir(ds), kind="train-pose")[0]["status"] == "cancelled"
+
+
+class _KilledTrainer(FakeTrainer):
+    """A trainer that did not stop within its grace, and was killed."""
+
+    def __call__(
+        self,
+        request: TrainRequestBase,
+        /,
+        *,
+        work_dir: Path,
+        idle_timeout: float,
+        cancel_check: object = None,
+        on_output: object = None,
+        **_kwargs: object,
+    ) -> TrainingOutcome:
+        raise ProcessCancelled(["yolo", "train", request.run_name])
+
+
+def test_a_killed_trainer_records_a_cancelled_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_op converts a killed tool, so the trainer does not have to.
+
+    The token is not set, so no cancel check in the op can raise instead.
+    """
+    ds = _make_dataset(tmp_path)
+    _KilledTrainer().install(monkeypatch)
+    data_yaml = tmp_path / "data.yaml"
+    _ = data_yaml.write_text("kpt_shape: [4, 3]\n")
+
+    with pytest.raises(Cancelled):
+        _ = run_op(ds, "train-pose", {"data": str(data_yaml), "epochs": 1})
+
+    (run,) = read_runs(_run_dir(ds), kind="train-pose")
+    assert run["status"] == "cancelled"
+    assert run["error_json"] == ""
 
 
 def test_a_tool_that_reports_a_cancel_is_never_registered(tmp_path, monkeypatch):

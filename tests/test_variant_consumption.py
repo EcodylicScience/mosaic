@@ -48,10 +48,10 @@ from mosaic.core.pipeline.tracks_index import (
     read_media_frames,
     read_tracks_index,
 )
+from mosaic.core.pipeline.tracking_roots import ToolCodecError
 from mosaic.core.scope import Scope
 from mosaic.runlog import reduce_run_log, run_log_path
 from mosaic.tracking.common.scope import build_work_items
-from mosaic.tracking.common.tool_input import ToolCodecError
 from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.ops.infer import infer_run_root
 from mosaic.tracking.pose_training.localizer_inference import LocalizerDetection

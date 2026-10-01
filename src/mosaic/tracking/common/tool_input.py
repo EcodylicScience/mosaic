@@ -22,7 +22,8 @@ does not: it is mosaic's own PyTorch and still reads a store natively.
 
 :func:`refuse_undecodable_codec` checks the codec of each file handed over. A tool
 that declares a decode probe is tested in its environment by a
-:class:`DecodeProbe`, which runs the probe program there once per run.
+:class:`DecodeProbe`, which runs the probe program there and remembers for the
+rest of the run a codec that decodes.
 """
 
 from __future__ import annotations
@@ -47,7 +48,9 @@ from mosaic.core.pipeline.store_export import EXPORT_TARGET
 from mosaic.core.pipeline.subprocess_util import run_supervised
 from mosaic.core.pipeline.tracking_roots import (
     CONSERVATIVE_DECODER,
+    DECODE_PROBE_IMPORT_FAILED,
     TRACKING_ROOTS,
+    ToolCodecError,
     ToolDecoder,
 )
 from mosaic.core.pipeline.variant_source import preprocess_command
@@ -66,7 +69,6 @@ __all__ = [
     "DecodeProbe",
     "ProbeVerdict",
     "StoreExportMissingError",
-    "ToolCodecError",
     "refuse_undecodable_codec",
     "resolve_entry_input",
     "resolve_tool_input",
@@ -81,15 +83,6 @@ _DECODE_PROBE_TIMEOUT_SECONDS: Final = 300.0
 
 class StoreExportMissingError(FileNotFoundError):
     """An imgstore has no exported video for a subprocess tool to open."""
-
-
-class ToolCodecError(TranscodeError):
-    """A tool is being handed a file its decoder stack may not open.
-
-    Its own class rather than a reuse of the two above, and for the same reason
-    they are separate from each other: the remedy differs. Those two say build
-    the file; this one says the file exists and is in the wrong codec.
-    """
 
 
 def _stream_codec(path: Path) -> str:
@@ -147,26 +140,31 @@ class ProbeVerdict:
 
     Attributes:
         decoded: True when the probe exited 0.
-        tested: The file that the probe was run on. A later file in the same
-            codec reuses this result.
+        tested: The file that the probe was run on.
         environment: The interpreter's argv, joined by spaces.
         output: The probe's captured output, or the reason that it did not run,
             indented for a message.
+        import_failed: True when the probe exited
+            ``DECODE_PROBE_IMPORT_FAILED``. The interpreter did not import the
+            tool's reader, and the file was not read.
     """
 
     decoded: bool
     tested: Path
     environment: str
     output: str
+    import_failed: bool = False
 
 
 class DecodeProbe:
-    """Test a tool's environment for a codec once per run, and keep the result.
+    """Test a tool's environment for a codec, and keep the result when it decodes.
 
     A run creates one for its tool, from the placement that the run resolved, and
-    passes it to the check of every entry. Each pair of interpreter argv and codec
-    is tested once. A new run tests again, because an environment can be rebuilt
-    between runs.
+    passes it to the check of every entry. A pair of interpreter argv and codec
+    that decodes is tested once. A refusal is not kept, and the next file of the
+    codec is tested itself: the SLEAP probe reads the file, so one unreadable file
+    says nothing about the next. A new run tests again, because an environment
+    can be rebuilt between runs.
 
     Args:
         env: The tool's placement, as :meth:`ToolEnv.placed` returns it.
@@ -190,12 +188,13 @@ class DecodeProbe:
         kind: str,
         cancel_check: Callable[[], bool] | None = None,
     ) -> ProbeVerdict:
-        """Return whether the environment decodes *codec*, tested on *path* once.
+        """Return whether the environment decodes *codec*, tested on *path*.
 
-        The first call for an interpreter and a codec runs *program* on *path*.
-        When the program decodes the file, one line on standard error names the
-        tool, the codec and the environment. Later calls return the kept result.
-        A cancelled probe is not kept.
+        A call runs *program* on *path* unless an earlier call decoded *codec*
+        with the same interpreter, whose result it returns. When the program
+        decodes the file, one line on standard error names the tool, the codec
+        and the environment, and the result is kept. A refusal and a cancelled
+        probe are not kept.
 
         Args:
             program: The probe that the tool's decoder declares.
@@ -206,7 +205,8 @@ class DecodeProbe:
                 when it returns True.
 
         Returns:
-            The result, from this call's probe or from an earlier one.
+            The result, from this call's probe or from an earlier one that
+            decoded.
 
         Raises:
             ToolNotFoundError: The subclass that the tool declares, when its
@@ -224,8 +224,8 @@ class DecodeProbe:
             timeout=self.timeout,
             cancel_check=cancel_check,
         )
-        self._verdicts[(interpreter, codec)] = verdict
         if verdict.decoded:
+            self._verdicts[(interpreter, codec)] = verdict
             print(
                 f"[{kind}] A test in the environment of {kind} decoded {codec} "
                 f"from {path.name}, and {kind} is handed {codec} files for the "
@@ -267,9 +267,12 @@ def _run_decode_probe(
         return ProbeVerdict(
             decoded=False, tested=path, environment=environment, output=reason
         )
-    output = captured_output(stdout, stderr)
     return ProbeVerdict(
-        decoded=returncode == 0, tested=path, environment=environment, output=output
+        decoded=returncode == 0,
+        tested=path,
+        environment=environment,
+        output=captured_output(stdout, stderr),
+        import_failed=returncode == DECODE_PROBE_IMPORT_FAILED,
     )
 
 
@@ -333,16 +336,8 @@ def refuse_undecodable_codec(
     codec = _stream_codec(path)
     if not codec or codec in _allowed_codecs(decoder):
         return
-    verdict = (
-        decode_probe.verdict(
-            decoder.probe, path, codec, kind=kind, cancel_check=cancel_check
-        )
-        if decoder.probe and decode_probe is not None
-        else None
-    )
-    if verdict is not None and verdict.decoded:
-        return
-    if verdict is None:
+    remedy = f"\n    {decoder.remedy}." if decoder.remedy else ""
+    if not decoder.probe or decode_probe is None:
         finding = (
             f", and its declaration does not list {codec}. A tool without a "
             f"decoder for a file reads zero frames and exits 0, and without this "
@@ -350,19 +345,32 @@ def refuse_undecodable_codec(
         )
         setting = f"To declare that this environment decodes {codec}, set"
     else:
-        tested = (
-            path.name
-            if verdict.tested == path
-            else f"{verdict.tested} earlier in this run"
+        verdict = decode_probe.verdict(
+            decoder.probe, path, codec, kind=kind, cancel_check=cancel_check
         )
-        finding = (
-            f". A test in the environment of {kind} did not decode {codec} in "
-            f"{tested}:\n"
+        if verdict.decoded:
+            return
+        measured = (
             f"    Environment: {verdict.environment}\n"
             f"{textwrap.indent(verdict.output, '  ')}"
         )
+        if verdict.import_failed:
+            finding = (
+                f". The interpreter that was to test it did not import that "
+                f"reader, because it is not an environment of {kind} or the "
+                f"reader's installation in it is broken:\n{measured}"
+            )
+            remedy = (
+                f"\n    Place the run in an environment that {kind} is installed "
+                f"in, or repair the reader in the environment this run was "
+                f"placed in."
+            )
+        else:
+            finding = (
+                f". A test in the environment of {kind} did not decode {codec} in "
+                f"{verdict.tested.name}:\n{measured}"
+            )
         setting = "To skip the test, set"
-    remedy = f"\n    {decoder.remedy}." if decoder.remedy else ""
     remake = (
         f"\n    Or make the media variant in a codec that {kind} reads. Run the "
         f'recipe of {variant} with "codec" set to "h264" in a copy of it, and name '
@@ -511,20 +519,15 @@ def _joined_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
     """The one video holding *item*'s clips, or a refusal naming how to build it.
 
     The lookup is :func:`~mosaic.core.pipeline.joined_export.current_join`'s,
-    keyed by ``item.source_uid`` -- the value the reuse gate already computes.
+    over the clips whose composition ``item.source_uid`` digests for the reuse
+    gate.
     """
     why = (
         f"{kind} is handed one video file, and a tool that joins clips itself "
         f"loses frames at every boundary, so mosaic joins them first."
     )
     return current_join(
-        ds,
-        item.group,
-        item.sequence,
-        item.source_uid,
-        item.n_sources,
-        asker=kind,
-        why=why,
+        ds, item.group, item.sequence, item.source_facts, asker=kind, why=why
     )
 
 

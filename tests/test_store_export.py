@@ -26,6 +26,7 @@ from mosaic.core.media.video_io import open_frame_reader  # noqa: E402
 from mosaic.core.pipeline.ops import OpIdentity, ScopeRefused, run_op  # noqa: E402
 from mosaic.core.pipeline.stream_copy import coded_frame_count  # noqa: E402
 from mosaic.core.scope import Scope  # noqa: E402
+from mosaic.core.pipeline.tracking_roots import ToolCodecError  # noqa: E402
 from mosaic.core.pipeline.store_export import (  # noqa: E402
     EXPORT_TARGET,
     StoreExportOp,
@@ -38,7 +39,6 @@ from mosaic.tracking.common.scope import TrackerWorkItem  # noqa: E402
 from mosaic.tracking.common.tool_input import (  # noqa: E402
     DecodeProbe,
     StoreExportMissingError,
-    ToolCodecError,
     resolve_tool_input,
 )
 

@@ -294,7 +294,7 @@ def joins_of(media_root: Path, source_uid: str) -> tuple[list[Path], list[Path]]
     return current, superseded
 
 
-def joined_source_uid(facts: "list[MediaFacts] | tuple[MediaFacts, ...]") -> str:
+def joined_source_uid(facts: Sequence[MediaFacts]) -> str:
     """The ordered composition digest of the clips a joined export holds.
 
     The same value
@@ -336,16 +336,15 @@ def current_join(
     ds: "Dataset",
     group: str,
     sequence: str,
-    source_uid: str,
-    n_sources: int,
+    facts: Sequence[MediaFacts],
     *,
     asker: str,
     why: str,
 ) -> Path:
     """The one current join of a clip set, or a refusal naming how to build it.
 
-    Found by the clip set's own ordered composition digest (*source_uid*, as
-    :func:`joined_source_uid` computes it), so this looks for the join of *these*
+    Found by the clip set's own ordered composition digest, as
+    :func:`joined_source_uid` computes it, so this looks for the join of *these*
     clips in *this* order and never for whatever join happens to be on disk.
 
     **Any current recipe answers the question, and a superseded one never
@@ -370,15 +369,16 @@ def current_join(
 
     Refused rather than built here. Joining is minutes of I/O over tens of
     gigabytes: it belongs to an op with a ledger entry, a claim and a
-    cancellation point, not to a path resolution that a planner also calls.
+    cancellation point, not to a path resolution that a planner also calls. The
+    command a refusal names sets ``reencode`` when :func:`join_needs_reencode`
+    says these clips need it, so the first remedy shown is one that works.
 
     Args:
         ds: The dataset whose ``media`` root holds the joins.
         group: The entry's group, for the refusal and the command it names.
         sequence: The entry's sequence, likewise.
-        source_uid: The clip set's ordered composition digest, ``""`` when a clip
-            carries no content identity.
-        n_sources: How many clips the entry has.
+        facts: The clips' facts, in order: the routed ones, as
+            ``ds.resolve_media(group, sequence).facts`` returns them.
         asker: The op asking, which prefixes every refusal.
         why: Why *asker* needs one file rather than the clips, stated where no
             join exists at all.
@@ -390,9 +390,14 @@ def current_join(
         JoinedExportMissingError: If the clip set cannot be addressed, has two
             current joins, has only superseded ones, or has none.
     """
+    source_uid = joined_source_uid(facts)
+    n_sources = len(facts)
+    reencode = (
+        """ --params '{"reencode": true}'""" if join_needs_reencode(facts) else ""
+    )
     where = (
         f"    mosaic run -m <manifest> --kind export-joined "
-        f'--entries "{group}:{sequence}"'
+        f'--entries "{group}:{sequence}"{reencode}'
     )
     if not source_uid:
         message = (
@@ -483,13 +488,7 @@ def join_to_read(
     if not needs_join(paths, facts):
         return None
     return current_join(
-        ds,
-        entry.group,
-        entry.sequence,
-        joined_source_uid(facts),
-        len(paths),
-        asker=asker,
-        why=_MIXED_RATE_WHY,
+        ds, entry.group, entry.sequence, facts, asker=asker, why=_MIXED_RATE_WHY
     )
 
 

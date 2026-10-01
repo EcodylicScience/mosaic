@@ -31,7 +31,7 @@ from typing import Final, Literal, TypedDict, TypeGuard
 
 import yaml
 
-from mosaic.core.pipeline.subprocess_util import run_supervised
+from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.tracking.common.toolenv import subprocess_env, tool_invocation
 from mosaic.tracking.sleap.run import SLEAP_ENV, SleapError
@@ -420,7 +420,7 @@ def train_sleap(
         executable=_SLEAP_NN_TRAIN,
     )
     cmd = [*invocation, *args]
-    logger.info("Running: %s", " ".join(cmd))
+    logger.info("Running: %s", command_summary(cmd))
 
     stdout, stderr, returncode = run_supervised(
         cmd,

@@ -26,9 +26,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from mosaic.core.pipeline.subprocess_util import run_supervised
+from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.core.pipeline.types import JsonValue
-from mosaic.tracking.common.toolenv import subprocess_env, tool_invocation
+from mosaic.tracking.common.toolenv import (
+    subprocess_env,
+    tool_invocation,
+)
 from mosaic.tracking.litpose.run import LITPOSE_ENV, LitposeError
 
 logger = logging.getLogger(__name__)
@@ -359,7 +362,7 @@ def train_litpose(
         str(run_root),
         *(f"{key}={value}" for key, value in assignments.items()),
     ]
-    logger.info("Running: %s", " ".join(cmd[:4]) + " ...")
+    logger.info("Running: %s", command_summary(cmd, LitposeError.head))
 
     stdout, stderr, returncode = run_supervised(
         cmd,

@@ -32,14 +32,14 @@ identifier of one that does not.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ._utils import atomic_write, json_ready
-from .op_identity import op_run_id
+from .op_identity import op_run_id, parse_op_run_id
 
 __all__ = [
     "TRACKS_IDENTITY_SCHEME",
@@ -47,7 +47,12 @@ __all__ = [
     "convert_variant_payload",
     "converter_op",
     "infer_variant_payload",
+    "names_model_by_path",
+    "observed_model_runs",
+    "read_tracks_variant",
     "read_variant_sidecar",
+    "recorded_model_id",
+    "recorded_model_runs",
     "resample_variant_payload",
     "tracker_variant_payload",
     "tracks_run_id",
@@ -153,6 +158,10 @@ def tracker_variant_payload(settings: Mapping[str, object]) -> dict[str, object]
     return dict(settings)
 
 
+_MODEL: Final = "model"
+"""The key of an inference variant's payload that names its model."""
+
+
 def infer_variant_payload(
     params_identity: Mapping[str, object], model_id: str, media: str = ""
 ) -> dict[str, object]:
@@ -174,7 +183,7 @@ def infer_variant_payload(
     minted a new one -- wrong in both directions, and the first is the one that
     reports a cache hit over another model's output.
     """
-    payload: dict[str, object] = {"params": dict(params_identity), "model": model_id}
+    payload: dict[str, object] = {"params": dict(params_identity), _MODEL: model_id}
     if media:
         payload["media"] = media
     return payload
@@ -232,6 +241,13 @@ def write_tracks_variant(
     Idempotent: one variant is described once, however many sequences it covers,
     and re-running a conversion rewrites the same content.
 
+    A rewrite replaces what was observed, except the member runs of a model set
+    (:func:`observed_model_runs`), which it keeps as a union, those recorded
+    first. One set named once by run ids and once by the paths of the same
+    artifacts is one variant, because its digest covers the artifacts only, and
+    the second record names no runs. Replacing the first would forget the runs
+    that :func:`~mosaic.core.pipeline.tracks_index.tracks_made_with` reads.
+
     Args:
         tracks_root: The dataset's ``tracks`` root.
         run_id: The variant identity from :func:`tracks_run_id`.
@@ -250,14 +266,20 @@ def write_tracks_variant(
     """
     root = tracks_variant_root(tracks_root, run_id)
     root.mkdir(parents=True, exist_ok=True)
+    path = root / "params.json"
+    recorded = read_variant_sidecar(path)
+    kept = dict(observed or {})
+    if recorded is not None:
+        given = _split_runs(kept.get(_MODEL_RUNS, ""))
+        runs = recorded_model_runs(recorded)
+        kept.update(observed_model_runs([*runs, *(r for r in given if r not in runs)]))
     record: dict[str, object] = {
         "identity_scheme": TRACKS_IDENTITY_SCHEME,
         "op": op,
         "version": version,
         "params": json_ready(dict(params_identity)),
-        "observed": dict(observed or {}),
+        "observed": kept,
     }
-    path = root / "params.json"
     atomic_write(path, lambda p: p.write_text(json.dumps(record, indent=2)))
     return path
 
@@ -290,6 +312,77 @@ def read_variant_sidecar(path: Path) -> VariantSidecar | None:
         return None
 
 
+_MODEL_RUNS: Final = "model_run_ids"
+"""The ``observed`` key that records the training runs of a model set of several.
+
+A set of several references has no one run to name it, so the payload names it
+by a digest over its artifacts, and no member's run id reaches the identity. The
+members' run ids are recorded here, comma-joined in reference order.
+"""
+
+
+def observed_model_runs(run_ids: Sequence[str]) -> dict[str, str]:
+    """Return the ``observed`` entry that records *run_ids*, or none when empty.
+
+    Provenance and never identity, so recording the runs moves no identifier.
+
+    Args:
+        run_ids: The training runs of a model set's members, in reference order.
+    """
+    return {_MODEL_RUNS: ",".join(run_ids)} if run_ids else {}
+
+
+def names_model_by_path(sidecar: VariantSidecar) -> bool:
+    """Whether *sidecar* names its model by a digest of the path it sat at.
+
+    What an inference variant recorded under tracks identity scheme 1 for a
+    model handed in by path (see :data:`TRACKS_IDENTITY_SCHEME`). The digest
+    names neither the training run nor the weights' content, so nothing can be
+    matched against it. A model handed in by run id was named by the run id
+    under scheme 1 too.
+    """
+    model = sidecar.params.get(_MODEL)
+    return (
+        sidecar.identity_scheme == "1"
+        and sidecar.op.startswith("infer-")
+        and isinstance(model, str)
+        and parse_op_run_id(model) is None
+    )
+
+
+def recorded_model_runs(sidecar: VariantSidecar) -> tuple[str, ...]:
+    """Return the member runs that :func:`observed_model_runs` recorded in *sidecar*."""
+    return _split_runs(sidecar.observed.get(_MODEL_RUNS, ""))
+
+
+def _split_runs(joined: str) -> tuple[str, ...]:
+    """The runs in one ``observed`` value that :func:`observed_model_runs` joined."""
+    return tuple(run for run in joined.split(",") if run)
+
+
+_MODEL_ID: Final = "model_id"
+"""The ``observed`` key a tracker records its model's identity under.
+
+That identity is the training run id when the model was named by one, and
+otherwise a content digest. SLEAP, Lightning Pose and Ultralytics record it.
+"""
+
+
+def recorded_model_id(sidecar: VariantSidecar) -> str:
+    """Return the model identity a tracker recorded in *sidecar*, or ``""``."""
+    return sidecar.observed.get(_MODEL_ID, "")
+
+
+def read_tracks_variant(tracks_root: Path, run_id: str) -> VariantSidecar | None:
+    """Return what :func:`write_tracks_variant` recorded for tracks variant *run_id*.
+
+    ``None`` when the record is absent or unreadable.
+    """
+    return read_variant_sidecar(
+        tracks_variant_root(tracks_root, run_id) / "params.json"
+    )
+
+
 def tracks_variant_media(tracks_root: Path, run_id: str) -> str:
     """Return the media variant that tracks variant *run_id* was made from, or ``""``.
 
@@ -298,8 +391,6 @@ def tracks_variant_media(tracks_root: Path, run_id: str) -> str:
     variant. The function returns ``""`` for a variant made from the entry media,
     and for one whose sidecar is absent or unreadable.
     """
-    sidecar = read_variant_sidecar(
-        tracks_variant_root(tracks_root, run_id) / "params.json"
-    )
+    sidecar = read_tracks_variant(tracks_root, run_id)
     media = sidecar.params.get("media", "") if sidecar is not None else ""
     return media if isinstance(media, str) else ""

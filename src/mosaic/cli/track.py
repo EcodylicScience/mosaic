@@ -30,6 +30,7 @@ from pydantic import ValidationError
 from mosaic.cli._context import attempt_facts, load_dataset
 from mosaic.cli._io import (
     emit_json,
+    exit_refused,
     fail,
     log,
     parse_entries,
@@ -151,6 +152,7 @@ def track_command(
     from mosaic.core.pipeline._utils import new_execution_id
     from mosaic.core.pipeline.ops import OPS, run_op
     from mosaic.core.pipeline.job import CancelToken, Cancelled, install_signal_handler
+    from mosaic.core.pipeline.refusal import Refusal
 
     known = tracker_kinds()
     if kind not in known:
@@ -212,6 +214,8 @@ def track_command(
         else:
             log(f"[mosaic] cancelled {exec_id}")
         raise typer.Exit(code=130) from None
+    except Refusal as refusal:
+        exit_refused(exec_id, refusal, as_json=as_json)
     except (ImportError, FileNotFoundError) as exc:
         fail(f"{kind} run failed: {exc}")
     except ValueError as exc:

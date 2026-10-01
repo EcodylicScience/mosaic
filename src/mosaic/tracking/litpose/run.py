@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from mosaic.core.pipeline.subprocess_util import run_supervised
+from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.tracking.common.toolenv import (
     ToolEnv,
     ToolExitError,
@@ -103,9 +103,6 @@ class LitposeError(ToolExitError):
     """Raised when a Lightning Pose subprocess exits with a non-zero return code."""
 
     tool_name = "Lightning Pose"
-    # The argv is ``python -c <the whole predict program>``; echoing past the
-    # fourth token in an error message prints the program.
-    head = 4
 
 
 # Lightning Pose is driven through its environment's ``python`` rather than a
@@ -190,7 +187,7 @@ def _run_litpose(
     Raises :class:`LitposeError` on non-zero exit.
     """
     cmd = [*invocation, *args]
-    logger.info("Running: %s", " ".join(cmd[:4]) + (" ..." if len(cmd) > 4 else ""))
+    logger.info("Running: %s", command_summary(cmd, LitposeError.head))
 
     stdout, stderr, returncode = run_supervised(
         cmd,

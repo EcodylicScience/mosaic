@@ -29,15 +29,21 @@ and reach this table through registration, not import.
 
 from __future__ import annotations
 
+import textwrap
 from dataclasses import dataclass
 from typing import Final, Literal
 
+from mosaic_media.transcode import TranscodeError
+
 from mosaic.core.pipeline.markers import PhaseName
+from mosaic.core.pipeline.refusal import Refusal
 
 __all__ = [
+    "DECODE_PROBE_IMPORT_FAILED",
     "TRACKING_ROOT",
     "TRACKING_ROOTS",
     "RetentionClass",
+    "ToolCodecError",
     "TrackingPhase",
     "TrackingRoot",
     "is_under_tracking_root",
@@ -121,10 +127,11 @@ class ToolDecoder:
         probe: A Python program that the interpreter of the tool's environment
             runs with a file's path as its only argument. It decodes one frame
             with the reader that the tool uses and exits 0. When it cannot, it
-            prints the reader's error and exits non-zero. A file in a codec
-            outside the declared set is handed to the tool only after the probe
-            decodes it. Empty means the tool is not tested, and the declared set
-            decides.
+            prints the reader's error and exits non-zero. When the reader does
+            not import, it exits :data:`DECODE_PROBE_IMPORT_FAILED`. A file in a
+            codec outside the declared set is handed to the tool only after the
+            probe decodes it. Empty means the tool is not tested, and the
+            declared set decides.
         remedy: What an operator can do about a refusal. Empty when the refusal
             cannot be remedied.
     """
@@ -150,13 +157,54 @@ turns that silence into a named failure.
 """
 
 
-_SLEAP_DECODE_PROBE: Final = """\
-import sys
+class ToolCodecError(Refusal, TranscodeError):
+    """A tool is being handed a file its decoder stack may not open.
 
+    Its own class rather than a reuse of ``StoreExportMissingError`` or
+    ``JoinedExportMissingError``, because the remedy differs: those say build the
+    file, and this one says the file exists and is in the wrong codec.
+
+    A refusal, ``undecodable_codec``, raised when a tracker reaches the entry.
+    The attempt ends there, and entries before it in the same run may already be
+    tracked and published.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, reason="undecodable_codec")
+
+
+DECODE_PROBE_IMPORT_FAILED: Final = 3
+"""The exit status of a decode probe whose interpreter does not import the reader.
+
+That interpreter is not an environment of the tool, or the reader's installation
+in it is broken, and the probe did not reach the file. It is told apart from a
+reader that fails on the file, whose remedy is a decoder rather than a placement
+or a repair.
+"""
+
+
+def _importing(reader: str, statements: str) -> str:
+    """The head of a decode probe, which imports *reader* with *statements*.
+
+    The import is outside the read, and an import that raises exits
+    :data:`DECODE_PROBE_IMPORT_FAILED` with the error.
+    """
+    return (
+        "import sys\n\n"
+        "try:\n"
+        f"{textwrap.indent(statements, '    ')}"
+        "except Exception as exc:\n"
+        f'    print(f"{reader} did not import: {{type(exc).__name__}}: {{exc}}", '
+        "file=sys.stderr)\n"
+        f"    sys.exit({DECODE_PROBE_IMPORT_FAILED})\n\n"
+    )
+
+
+_SLEAP_DECODE_PROBE: Final = _importing(
+    "sleap_io", "import numpy as np\nimport sleap_io as sio\n"
+) + (
+    """\
 try:
-    import numpy as np
-    import sleap_io as sio
-
     frame = sio.load_video(sys.argv[1])[0]
 except Exception as exc:
     sys.exit(f"sleap_io could not read frame 0: {type(exc).__name__}: {exc}")
@@ -164,6 +212,7 @@ if not isinstance(frame, np.ndarray) or frame.size == 0:
     sys.exit(f"sleap_io read frame 0 as {frame!r:.200}")
 print(f"sleap_io read frame 0 with shape {frame.shape}")
 """
+)
 """SLEAP's decode probe, which reads frame 0 with ``sleap_io.load_video``.
 
 ``sleap-nn track`` reads video through sleap-io, and sleap-io reads through OpenCV
@@ -171,12 +220,11 @@ whenever OpenCV is importable. When OpenCV cannot decode the codec, sleap-io
 raises, and the probe exits 1 with its message.
 """
 
-_LITPOSE_DECODE_PROBE: Final = """\
-import sys
-
+_LITPOSE_DECODE_PROBE: Final = _importing(
+    "nvidia.dali", "from nvidia.dali import fn, pipeline_def, types\n"
+) + (
+    """\
 try:
-    from nvidia.dali import fn, pipeline_def, types
-
     @pipeline_def(batch_size=1, num_threads=1, device_id=0)
     def read_one_frame():
         return fn.readers.video(
@@ -197,6 +245,7 @@ except Exception as exc:
     sys.exit(f"DALI could not read a frame: {type(exc).__name__}: {reason}")
 print("DALI read one frame")
 """
+)
 """Lightning Pose's decode probe, which reads one frame through a DALI pipeline.
 
 The pipeline runs on the GPU. Its reader takes the arguments of Lightning Pose's

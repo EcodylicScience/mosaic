@@ -24,13 +24,16 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
-from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
+from mosaic.core.pipeline.tracking_roots import (
+    DECODE_PROBE_IMPORT_FAILED,
+    TRACKING_ROOTS,
+    ToolCodecError,
+)
 from mosaic.tracking.common.tool_input import (
     DecodeProbe,
-    ToolCodecError,
     refuse_undecodable_codec,
 )
-from mosaic.tracking.common.toolenv import ToolNotFoundError, tool_invocation
+from mosaic.tracking.common.toolenv import ToolEnv, ToolNotFoundError, tool_invocation
 from mosaic.tracking.litpose import dataset_runs as litpose_runs
 from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.litpose.run import LITPOSE_ENV
@@ -104,42 +107,41 @@ def test_a_file_that_the_environment_decodes_is_handed_to_the_tool(
 def test_a_file_that_the_environment_cannot_decode_is_refused_with_its_output(
     tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The refusal quotes the probe and names the remedy and the setting.
-
-    A second file of the codec is refused on the first probe's result, without a
-    second run.
-    """
-    ds = _av1_dataset(tmp_path, write_cfr_mp4, ("s", "t"))
+    """The refusal quotes the probe and names the remedy and the setting."""
+    ds = _av1_dataset(tmp_path, write_cfr_mp4)
     python = install_fake_tool_python(
         monkeypatch, SLEAP_ENV, tmp_path / "bin", exit_code=1, output=_SLEAP_FAILURE
     )
-    probe = DecodeProbe(SLEAP_ENV)
 
-    for sequence in ("s", "t"):
-        with pytest.raises(ToolCodecError) as refused:
-            refuse_undecodable_codec(
-                ds,
-                _clip(ds, sequence),
-                kind="sleap",
-                group="",
-                sequence=sequence,
-                decode_probe=probe,
-            )
-        message = str(refused.value)
-        assert f"(, {sequence}) resolves to clip0.mp4, which is av1" in message
-        assert _SLEAP_FAILURE in message
-        assert str(python.interpreter) in message
-        assert "pip uninstall -y opencv-python opencv-python-headless" in message
-        assert "conda install -c conda-forge py-opencv" in message
-        assert "--update-all" in message
-        assert "MOSAIC_ALLOW_TOOL_CODECS=av1" in message
+    with pytest.raises(ToolCodecError) as refused:
+        refuse_undecodable_codec(
+            ds,
+            _clip(ds),
+            kind="sleap",
+            group="",
+            sequence="s",
+            decode_probe=DecodeProbe(SLEAP_ENV),
+        )
 
-    assert python.calls() == [("-c", str(_clip(ds, "s")))]
+    message = str(refused.value)
+    assert "(, s) resolves to clip0.mp4, which is av1" in message
+    assert "did not decode av1 in clip0.mp4:" in message
+    assert _SLEAP_FAILURE in message
+    assert str(python.interpreter) in message
+    assert "pip uninstall -y opencv-python opencv-python-headless" in message
+    assert "conda install -c conda-forge py-opencv" in message
+    assert "--update-all" in message
+    assert "MOSAIC_ALLOW_TOOL_CODECS=av1" in message
 
 
-def test_a_remembered_refusal_names_the_file_that_was_tested(
+def test_a_refusal_is_not_remembered_for_the_codec(
     tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Each file that the environment does not decode is tested itself.
+
+    The SLEAP probe reads the file, so one unreadable file says nothing about the
+    next file of its codec.
+    """
     ds = make_dataset(tmp_path / "ds")
     first, second = tmp_path / "first.mp4", tmp_path / "second.mp4"
     write_cfr_mp4(first)
@@ -157,11 +159,148 @@ def test_a_remembered_refusal_names_the_file_that_was_tested(
             )
         messages.append(str(refused.value))
 
+    assert python.calls() == [("-c", str(first)), ("-c", str(second))]
     assert "did not decode av1 in first.mp4:" in messages[0]
-    assert "resolves to second.mp4, which is av1" in messages[1]
-    assert f"did not decode av1 in {first} earlier in this run:" in messages[1]
-    assert _SLEAP_FAILURE in messages[1]
-    assert python.calls() == [("-c", str(first))]
+    assert "did not decode av1 in second.mp4:" in messages[1]
+    assert all("earlier in this run" not in message for message in messages)
+
+
+_FAKE_SLEAP_IO_BY_NAME = """
+import numpy as np
+
+
+class _Video:
+    def __init__(self, filename):
+        self.filename = filename
+
+    def __getitem__(self, index):
+        if "bad" in self.filename:
+            raise IndexError(f"Failed to read frame {index}")
+        return np.zeros((4, 4, 3), np.uint8)
+
+
+def load_video(filename):
+    return _Video(filename)
+"""
+"""A ``sleap_io`` that reads every file but one whose name holds ``bad``."""
+
+
+def test_a_file_after_a_refused_one_is_handed_over_when_it_decodes(
+    tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    bad, good = tmp_path / "bad.mp4", tmp_path / "good.mp4"
+    write_cfr_mp4(bad)
+    write_cfr_mp4(good)
+    fakes = tmp_path / "fakes"
+    (fakes / "sleap_io").mkdir(parents=True)
+    _ = (fakes / "sleap_io" / "__init__.py").write_text(_FAKE_SLEAP_IO_BY_NAME)
+    python = install_fake_tool_python(
+        monkeypatch, SLEAP_ENV, tmp_path / "bin", imports=fakes
+    )
+    probe = DecodeProbe(SLEAP_ENV)
+
+    with pytest.raises(ToolCodecError, match="did not decode av1 in bad.mp4:"):
+        refuse_undecodable_codec(
+            ds, bad, kind="sleap", group="", sequence="a", decode_probe=probe
+        )
+    refuse_undecodable_codec(
+        ds, good, kind="sleap", group="", sequence="b", decode_probe=probe
+    )
+
+    assert python.calls() == [("-c", str(bad)), ("-c", str(good))]
+
+
+def test_the_result_is_kept_per_interpreter_and_not_per_codec(
+    tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A codec that one interpreter decodes is tested again under another.
+
+    ``MOSAIC_SLEAP_BIN`` is read on each check, so the interpreter can change
+    within one probe's life. Both decode, so a result kept per codec alone would
+    answer the second from the first.
+    """
+    ds = _av1_dataset(tmp_path, write_cfr_mp4)
+    first = install_fake_tool_python(monkeypatch, SLEAP_ENV, tmp_path / "first")
+    second = install_fake_tool_python(monkeypatch, SLEAP_ENV, tmp_path / "second")
+    probe = DecodeProbe(SLEAP_ENV)
+
+    for python in (first, second, first):
+        monkeypatch.setenv(SLEAP_ENV.bin_var, str(python.directory / "sleap-convert"))
+        refuse_undecodable_codec(
+            ds, _clip(ds), kind="sleap", group="", sequence="s", decode_probe=probe
+        )
+
+    assert first.calls() == [("-c", str(_clip(ds)))]
+    assert second.calls() == [("-c", str(_clip(ds)))]
+
+
+def _conda_with_env(root: Path, env_name: str, output: str) -> Path:
+    """Write a fake ``conda`` whose *env_name* holds a ``python`` that exits 1.
+
+    Like ``conda run``, it appends a report of the failure after the child's
+    output, and the report echoes the whole command, program included.
+    """
+    python = root / "envs" / env_name / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    _ = python.write_text(f"#!/bin/sh\necho {output!r} >&2\nexit 1\n")
+    python.chmod(0o755)
+    conda = root / "bin" / "conda"
+    conda.parent.mkdir(parents=True)
+    _ = conda.write_text(
+        "#!/bin/sh\n"
+        "shift 4\n"
+        'target="$1"\n'
+        "shift\n"
+        '"$target" "$@"\n'
+        "code=$?\n"
+        'printf "ERROR conda.cli.main_run:execute(125): \\`conda run %s %s\\` '
+        'failed. (See above for error)\\n" "$target" "$*" >&2\n'
+        "exit $code\n"
+    )
+    conda.chmod(0o755)
+    return conda.parent
+
+
+@pytest.mark.parametrize("placement", ["bin", "conda"])
+def test_a_refusal_does_not_quote_the_probe_program(
+    placement: str,
+    tmp_path: Path,
+    write_cfr_mp4: WriteVideo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The program is one argv token, and a refusal quotes the reader's error alone.
+
+    Under conda the launcher's report echoes the command after the child's
+    output, so the refusal quotes what came before it.
+    """
+    ds = _av1_dataset(tmp_path, write_cfr_mp4)
+    python = install_fake_tool_python(
+        monkeypatch, SLEAP_ENV, tmp_path / "bin", exit_code=1, output=_SLEAP_FAILURE
+    )
+    if placement == "conda":
+        bin_dir = _conda_with_env(tmp_path / "conda", "sleap", _SLEAP_FAILURE)
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.delenv("CONDA_ENVS_DIRS", raising=False)
+        monkeypatch.delenv(SLEAP_ENV.bin_var)
+        monkeypatch.setenv(SLEAP_ENV.conda_env_var, "sleap")
+
+    with pytest.raises(ToolCodecError) as refused:
+        refuse_undecodable_codec(
+            ds,
+            _clip(ds),
+            kind="sleap",
+            group="",
+            sequence="s",
+            decode_probe=DecodeProbe(SLEAP_ENV),
+        )
+
+    message = str(refused.value)
+    assert _SLEAP_FAILURE in message
+    assert "sio.load_video" not in message
+    assert "import sleap_io" not in message
+    assert "conda.cli.main_run" not in message
+    assert python.calls() == ([("-c", str(_clip(ds)))] if placement == "bin" else [])
 
 
 def test_an_interpreter_that_cannot_start_refuses_the_file(
@@ -680,6 +819,82 @@ def test_a_dali_refusal_ends_with_the_reason_and_not_the_stacktrace(
     assert _DALI_REASON in message
     assert "Stacktrace (" not in message
     assert "[frame " not in message
+
+
+_READERS = {"sleap": "sleap_io", "litpose": "nvidia.dali"}
+"""The package whose reader each probe program imports."""
+
+
+def _unimportable_reader(tmp_path: Path, kind: str) -> Path:
+    """Return a module directory in which *kind*'s reader raises on import."""
+    fakes = tmp_path / "fakes"
+    package = fakes.joinpath(*_READERS[kind].split("."))
+    package.mkdir(parents=True)
+    for parent in package.relative_to(fakes).parents:
+        if parent != Path("."):
+            _ = (fakes / parent / "__init__.py").write_text("")
+    _ = (package / "__init__.py").write_text(
+        "raise ImportError('not installed in this environment')\n"
+    )
+    return fakes
+
+
+@pytest.mark.parametrize("kind", ["sleap", "litpose"])
+def test_a_program_that_cannot_import_its_reader_exits_with_its_own_code(
+    kind: str, tmp_path: Path
+) -> None:
+    """An interpreter without the reader is told apart from a reader that fails."""
+    ran = _run_program(
+        kind, tmp_path / "clip.mp4", _unimportable_reader(tmp_path, kind), {}
+    )
+
+    assert ran.returncode == DECODE_PROBE_IMPORT_FAILED, ran.stderr
+    reason = "ImportError: not installed in this environment"
+    assert f"{_READERS[kind]} did not import: {reason}" in ran.stderr
+
+
+@pytest.mark.parametrize(
+    ("kind", "env"), [("sleap", SLEAP_ENV), ("litpose", LITPOSE_ENV)]
+)
+def test_an_interpreter_that_does_not_import_the_reader_is_refused_as_such(
+    kind: str,
+    env: ToolEnv,
+    tmp_path: Path,
+    write_cfr_mp4: WriteVideo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refusal names the placement or the installation, not a decoder.
+
+    It names neither variable of the placement ladder, because an argument such
+    as ``sleap_bin=`` overrides both.
+    """
+    ds = _av1_dataset(tmp_path, write_cfr_mp4)
+    python = install_fake_tool_python(
+        monkeypatch, env, tmp_path / "bin", imports=_unimportable_reader(tmp_path, kind)
+    )
+
+    with pytest.raises(ToolCodecError) as refused:
+        refuse_undecodable_codec(
+            ds,
+            _clip(ds),
+            kind=kind,
+            group="",
+            sequence="s",
+            decode_probe=DecodeProbe(env),
+        )
+
+    message = str(refused.value)
+    assert (
+        f"did not import that reader, because it is not an environment of {kind} "
+        "or the reader's installation in it is broken"
+    ) in message
+    assert f"{_READERS[kind]} did not import" in message
+    assert str(python.interpreter) in message
+    assert "the environment this run was placed in" in message
+    assert env.conda_env_var not in message
+    assert env.bin_var not in message
+    assert TRACKING_ROOTS[kind].decoder.remedy not in message
+    assert "did not decode" not in message
 
 
 def test_the_sleap_program_reads_real_files_in_a_sleap_environment(

@@ -35,13 +35,14 @@ silently rewritten by someone merely looking at it.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast, get_args
+from typing import TYPE_CHECKING, Final, Literal, cast, get_args
 
 import pandas as pd
 import pyarrow.parquet as pq
+from typing_extensions import TypeIs
 
 from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
 from mosaic.core.pose_columns import pose_column_pairs
@@ -49,7 +50,8 @@ from mosaic.core.pipeline.types.data_config import COLUMNS
 from mosaic.core.pipeline.writers import read_parquet_table_columns
 from mosaic.core.pipeline.composition import composition_drift
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
-from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline.file_digest import MODEL_DIGEST_HEX
+from mosaic.core.pipeline._utils import atomic_write, hash_params
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
     RunIndexRowBase,
@@ -57,7 +59,14 @@ from mosaic.core.pipeline.index_csv import (
     project_to_schema,
 )
 from mosaic.core.pipeline.index_lock import index_lock
-from mosaic.core.pipeline.tracks_identity import tracks_variant_media
+from mosaic.core.pipeline.op_identity import parse_op_run_id
+from mosaic.core.pipeline.tracks_identity import (
+    names_model_by_path,
+    read_tracks_variant,
+    recorded_model_id,
+    recorded_model_runs,
+    tracks_variant_media,
+)
 from mosaic.core.pipeline.sequence_index import (
     SourceRoot,
     encode_entry_composition,
@@ -72,6 +81,8 @@ __all__ = [
     "TRACKS_INDEX_COLUMNS",
     "TRACKS_INDEX_PATH_COLUMNS",
     "TracksIndexRow",
+    "TracksMadeWith",
+    "TracksMadeWithEntry",
     "adopt_legacy_columns",
     "backfill_media_frames",
     "consumed_composition_for",
@@ -87,6 +98,7 @@ __all__ = [
     "variant_for_producer_run",
     "tracks_index",
     "tracks_index_path",
+    "tracks_made_with",
     "write_tracks_row",
 ]
 
@@ -463,6 +475,212 @@ def variant_for_producer_run(df: pd.DataFrame, producer_run_id: str) -> str | No
             f"reader wants"
         )
     return found.pop()
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class TracksMadeWithEntry:
+    """One entry's table in a tracks variant made with a trained model.
+
+    Ordered by variant, then group, then sequence.
+
+    Attributes:
+        variant: The tracks variant, as the index row's ``run_id`` names it.
+        group: The entry's group.
+        sequence: The entry's sequence.
+        producer: The op that produced the variant.
+        producer_run_id: The op run the table was bridged from.
+    """
+
+    variant: str
+    group: str
+    sequence: str
+    producer: str
+    producer_run_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class TracksMadeWith:
+    """What :func:`tracks_made_with` found for one model.
+
+    Attributes:
+        entries: Every entry whose variant's payload names the model, in order.
+        unreadable_variants: The variants whose record is absent or unreadable,
+            sorted. Any of them might name the model. ``""`` names the
+            unlabelled tables, as it does for :func:`select_variant_rows`: they
+            were written before variants existed, and no record says what made
+            them.
+        unconfirmed_variants: The variants whose record names a model only by a
+            digest that does not match, sorted. Any of them might have been made
+            with the model: from the same bytes handed in by path when no
+            digest was asked about, as a member of a SLEAP model set recorded
+            before member runs were, whose digest covers every member and
+            equals none of them, or by an inference run recorded under tracks
+            identity scheme 1 from a model handed in by path, whose digest is of
+            the path string. The record cannot tell the first two apart from a
+            different model handed in by path.
+    """
+
+    entries: tuple[TracksMadeWithEntry, ...]
+    unreadable_variants: tuple[str, ...]
+    unconfirmed_variants: tuple[str, ...]
+
+
+type _Verdict = Literal["made", "not_made", "unreadable", "unconfirmed"]
+"""What one variant's record says about the model, as :func:`_verdict` reads it."""
+
+
+_DIGEST_HEX_LENGTHS: Final = frozenset({MODEL_DIGEST_HEX, len(hash_params({}))})
+"""How many hex characters a model digest that is matched as an exact value has.
+
+A model named by its content carries one of two digests: ``MODEL_DIGEST_HEX``
+(sixteen) hex characters of blake2b over a weights file, or ``hash_params``'s
+ten of SHA-1 over the file digests of a SLEAP or Lightning Pose model directory.
+Either is at least 40 random bits, so, like a run id, a value in a payload that
+equals one is a reference to that model. No model is named by a value of any
+other length, or one that is not lowercase hex, and such a value could equal a
+setting.
+"""
+
+
+def tracks_made_with(
+    ds: Dataset, model_run_id: str, *, digest: str | None = None
+) -> TracksMadeWith:
+    """Which of *ds*'s tracks entries were made with the trained model *model_run_id*.
+
+    A tracker or an inference op records the model it ran in its variant's
+    identity payload, by the training run id when the model was named by one.
+    The run id is matched as an exact string anywhere in the payload, through
+    nested mappings and lists, rather than under a known key. Each tool names its
+    model under a key of its own, such as ``model``, or TREx's ``detect_model``
+    and ``visual_identification_model_path``, and ``core`` cannot import the
+    tools that declare them. A run id is distinctive enough that an exact match
+    is a reference to it. A variant made through a linked library is found the
+    same way, because the payload names the run and not where it was stored.
+
+    Two uses of a model are named by content, and are found through other
+    records. A SLEAP model set of more than one reference is named by one digest
+    over its artifacts, and the variant's ``observed`` provenance records each
+    member's run id, which *model_run_id* is matched against. A model handed in
+    as a weights path is named by its content digest, which *digest* is matched
+    against, as an exact value anywhere in the payload. Neither finds a member of
+    a set that was handed in as a path, or a member of a set recorded before
+    member runs were, or a model handed in by path to an inference run recorded
+    under tracks identity scheme 1. A variant whose record names its model only
+    by a digest that does not match is reported as unconfirmed.
+
+    Reads the tracks index and the variants' records. Writes nothing.
+
+    Args:
+        ds: The dataset whose tracks are searched.
+        model_run_id: The training run identifier.
+        digest: The content digest of the model's artifact, as model resolution
+            reports it, which also finds the variants made from the same bytes
+            handed in by path. ``None`` matches the run id alone.
+
+    Returns:
+        The entries found, the variants whose record could not be read, and
+        those whose record can neither confirm nor rule out the model.
+
+    Raises:
+        ValueError: *model_run_id* is not a run identifier, or *digest* is not
+            lowercase hex of ten or sixteen characters.
+    """
+    if parse_op_run_id(model_run_id) is None:
+        message = (
+            f"{model_run_id!r} is not a run id; name a trained model by the run "
+            "id of the training that made it."
+        )
+        raise ValueError(message)
+    if digest is not None and not _is_model_digest(digest):
+        lengths = " or ".join(str(n) for n in sorted(_DIGEST_HEX_LENGTHS))
+        message = (
+            f"{digest!r} is not a model digest, which is lowercase hex of "
+            f"{lengths} characters."
+        )
+        raise ValueError(message)
+    named = frozenset({model_run_id} if digest is None else {model_run_id, digest})
+    tracks_root = ds.get_root("tracks")
+    verdicts: dict[str, _Verdict] = {}
+    entries: set[TracksMadeWithEntry] = set()
+    for record in index_records(read_tracks_index(ds)):
+        variant = record["run_id"]
+        if variant not in verdicts:
+            verdicts[variant] = _verdict(tracks_root, variant, model_run_id, named)
+        if verdicts[variant] == "made":
+            entries.add(
+                TracksMadeWithEntry(
+                    variant=variant,
+                    group=record["group"],
+                    sequence=record["sequence"],
+                    producer=record["producer"],
+                    producer_run_id=record["producer_run_id"],
+                )
+            )
+    return TracksMadeWith(
+        entries=tuple(sorted(entries)),
+        unreadable_variants=_variants_judged(verdicts, "unreadable"),
+        unconfirmed_variants=_variants_judged(verdicts, "unconfirmed"),
+    )
+
+
+def _variants_judged(
+    verdicts: Mapping[str, _Verdict], verdict: _Verdict
+) -> tuple[str, ...]:
+    """The variants in *verdicts* judged *verdict*, sorted."""
+    return tuple(
+        sorted(variant for variant, judged in verdicts.items() if judged == verdict)
+    )
+
+
+def _is_model_digest(value: str) -> bool:
+    """Whether *value* is lowercase hex of a length in ``_DIGEST_HEX_LENGTHS``."""
+    return len(value) in _DIGEST_HEX_LENGTHS and all(
+        char in "0123456789abcdef" for char in value
+    )
+
+
+def _verdict(
+    tracks_root: Path, variant: str, run_id: str, values: frozenset[str]
+) -> _Verdict:
+    """What *variant*'s record says about whether it was made with the model.
+
+    Made when its payload holds one of *values*, or its provenance records
+    *run_id* as a member of a model set. Unconfirmed when neither holds and the
+    provenance names the model by a content digest with no member runs, or the
+    payload names it by a digest of its path.
+    """
+    if not variant:
+        return "unreadable"
+    sidecar = read_tracks_variant(tracks_root, variant)
+    if sidecar is None:
+        return "unreadable"
+    members = recorded_model_runs(sidecar)
+    if run_id in members or _holds(sidecar.params, values):
+        return "made"
+    model_id = recorded_model_id(sidecar)
+    by_content = bool(model_id) and parse_op_run_id(model_id) is None
+    if (by_content and not members) or names_model_by_path(sidecar):
+        return "unconfirmed"
+    return "not_made"
+
+
+def _holds(node: object, values: frozenset[str]) -> bool:
+    """Whether *node* is one of *values*, or holds one in a nested mapping or list."""
+    if isinstance(node, str):
+        return node in values
+    if _is_mapping(node):
+        return any(_holds(child, values) for child in node.values())
+    if _is_list(node):
+        return any(_holds(child, values) for child in node)
+    return False
+
+
+def _is_mapping(node: object) -> TypeIs[Mapping[object, object]]:
+    return isinstance(node, Mapping)
+
+
+def _is_list(node: object) -> TypeIs[list[object]]:
+    return isinstance(node, list)
 
 
 def _ambiguous_variant_message(entry: tuple[str, str], variants: list[str]) -> str:

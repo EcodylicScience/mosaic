@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Callable, Final, Sequence
 
 from mosaic.core.json_value import JsonValue
-from mosaic.core.pipeline.subprocess_util import run_supervised
+from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.common.toolenv import (
     ToolEnv,
@@ -208,7 +208,7 @@ def _run_trex(
     Raises :class:`TRexError` on non-zero exit.
     """
     cmd = [*(invocation or _trex_invocation()), *args]
-    logger.info("Running: %s", " ".join(cmd))
+    logger.info("Running: %s", command_summary(cmd))
 
     stdout, stderr, returncode = run_supervised(
         cmd,

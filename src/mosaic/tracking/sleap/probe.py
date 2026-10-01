@@ -39,7 +39,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from mosaic.core.pipeline.subprocess_util import run_supervised
+from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.tracking.common.toolenv import (
     PROBE_DEADLINE_FLOOR_SECONDS,
     missing_output_error,
@@ -194,7 +194,7 @@ def probe_sleap(
             str(labels_path) if labels_path is not None else "",
             str(response_path),
         ]
-        logger.info("Running: %s", " ".join(cmd[:4]) + " ...")
+        logger.info("Running: %s", command_summary(cmd, SleapError.head))
         stdout, stderr, returncode = run_supervised(
             cmd,
             env=subprocess_env(),

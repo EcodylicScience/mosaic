@@ -79,9 +79,7 @@ from .plan import (
     plan_pipeline,
 )
 from .preflight import (
-    REFUSED_EXIT_CODE,
     CoverageShortfall,
-    RefusalReason,
     StepRefused,
     preflight,
     refuse_mixed_schemas,
@@ -188,13 +186,11 @@ __all__ = [
     "Problem",
     "ProducerDecl",
     "QUARANTINE_AFTER",
-    "REFUSED_EXIT_CODE",
     "Reason",
     "Recipe",
     "RecipeCycle",
     "RecipeInvalid",
     "ReferenceSite",
-    "RefusalReason",
     "Request",
     "RequestRollup",
     "RequestStatus",

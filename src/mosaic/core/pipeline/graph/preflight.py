@@ -13,11 +13,8 @@ these checks are here: each is a predicate that already exists somewhere, run
 where a refusal is still free. A general check registry, and any check that reads
 the data itself, wait for a third caller.
 
-**A refusal is not a new terminal status.** It is an ordinary failure carrying a
-reason: the exit code is :data:`REFUSED_EXIT_CODE`, the run-log status stays
-``failed``, and the reason travels in ``error_json``. Adding a status would mean
-adding a member to ``runlog.TERMINAL_STATUSES``, which three repositories read
-and mosaic-api's sweeper reaps -- the same reason ``partial`` was kept out of it.
+A refusal is an ordinary failure carrying a reason, not a new terminal status;
+:mod:`mosaic.core.pipeline.refusal` says why.
 
 **``allow_partial`` answers exactly one of these.** A shortfall is a question
 about *how much*, and a person may decide to proceed over less. A digest that
@@ -28,10 +25,10 @@ them.
 
 from __future__ import annotations
 
-import json
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING
 
 from ..manifest import refuse_mixed_track_schemas
+from ..refusal import Refusal, RefusalReason
 from .plan import COMPLETE_STATUSES, MISSING_SAMPLE, Plan, PlannedStep
 from .resolve import build_step_feature
 
@@ -42,49 +39,17 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "REFUSED_EXIT_CODE",
     "CoverageShortfall",
-    "RefusalReason",
     "StepRefused",
     "preflight",
     "refuse_mixed_schemas",
 ]
 
-REFUSED_EXIT_CODE: Final = 65
-"""The exit code a step uses when it refuses before doing any work.
 
-Reserved so a driver can tell a refusal from a crash without parsing anything,
-and chosen to land where ``terminal_status_for_exit`` already maps it: not zero,
-not the cooperative-cancel code, not negative. The ledger row therefore reads
-``failed``, which is what it is, with the reason beside it in ``error_json``.
-"""
-
-type RefusalReason = Literal[
-    "coverage_shortfall",
-    "upstream_empty",
-    "schema_family_mismatch",
-    "variant_mismatch",
-    "version_moved",
-    "parent_unrecorded",
-    "recipe_missing",
-    "digest_mismatch",
-]
-"""Every way a step can refuse before running. A closed set on purpose.
-
-It crosses two repository boundaries as the ``reason`` field of ``error_json``,
-so a new member is a wire addition rather than a local choice, and a free-text
-reason would be one nobody downstream can branch on.
-"""
-
-
-class StepRefused(RuntimeError):
+class StepRefused(Refusal, RuntimeError):
     """A step declined to run, and said why.
 
-    Attributes:
-        reason: Which refusal this is.
-        step_id: The step that refused.
-        detail: The numbers or names that make the reason actionable. JSON, so it
-            travels in the run-log unchanged.
+    Always names its step, unlike a :class:`Refusal` raised below one.
     """
 
     def __init__(
@@ -94,20 +59,7 @@ class StepRefused(RuntimeError):
         message: str,
         detail: dict[str, JsonValue] | None = None,
     ) -> None:
-        self.reason: RefusalReason = reason
-        self.step_id: str = step_id
-        self.detail: dict[str, JsonValue] = detail or {}
-        super().__init__(message)
-
-    def error_json(self) -> str:
-        """The refusal as the ``error_json`` blob a ledger row carries."""
-        payload: dict[str, JsonValue] = {
-            "reason": self.reason,
-            "step": self.step_id,
-            "message": str(self),
-            **self.detail,
-        }
-        return json.dumps(payload)
+        super().__init__(message, reason=reason, step_id=step_id, detail=detail)
 
 
 class CoverageShortfall(StepRefused):

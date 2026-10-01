@@ -8,7 +8,10 @@ address rather than encoding one: the lookup reads names, never pixels.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
+
+from typing import Final
 
 import pytest
 from mosaic_media import MediaFacts
@@ -38,6 +41,13 @@ def _clip(fps: float, uid: str) -> MediaFacts:
 
 MIXED = (_clip(30.0, "u-a"), _clip(31.0, "u-b"))
 UNIFORM = (_clip(30.0, "u-a"), _clip(30.0, "u-b"))
+MIXED_PROFILES = (
+    _clip(30.0, "u-a"),
+    dataclasses.replace(_clip(31.0, "u-b"), codec_name="av1"),
+)
+"""Clips at two rates and in two codecs, which a join copies only by re-encoding."""
+
+_REENCODE: Final = """--params '{"reencode": true}'"""
 
 
 @pytest.fixture
@@ -119,6 +129,16 @@ class TestJoinToRead:
         assert message.startswith("[extract-frames] (, sess)")
         assert "differ in frame rate" in message
         assert '--kind export-joined --entries ":sess"' in message
+        assert _REENCODE not in message
+
+    def test_a_missing_join_of_clips_in_two_profiles_is_built_by_reencoding(
+        self, ds: Dataset, tmp_path: Path
+    ) -> None:
+        """The command the refusal names is one that joins these clips."""
+        entry = _entry(tmp_path, MIXED_PROFILES)
+        with pytest.raises(JoinedExportMissingError) as excinfo:
+            _ = join_to_read(ds, entry, asker="extract-frames")
+        assert f'--entries ":sess" {_REENCODE}' in str(excinfo.value)
 
 
 class TestMissingJoins:
@@ -145,7 +165,6 @@ class TestMissingJoins:
 
 
 def test_a_clip_set_without_identity_cannot_be_addressed(ds: Dataset) -> None:
+    clips = (_clip(30.0, ""), _clip(31.0, "u-b"))
     with pytest.raises(JoinedExportMissingError, match="content identity"):
-        _ = current_join(
-            ds, "", "sess", "", 2, asker="extract-frames", why="unused here."
-        )
+        _ = current_join(ds, "", "sess", clips, asker="extract-frames", why="unused.")

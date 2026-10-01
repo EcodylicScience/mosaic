@@ -599,7 +599,7 @@ class TranscodeOp(Op[TranscodeParams]):
                 # entry is recorded as lost and the rest carry on, which is the
                 # same split every per-entry producer makes: coverage describes
                 # the artifact, the exit code describes the attempt.
-                ctx.entry_failed(make_entry_key(group, sequence), exc)
+                ctx.entry_failed_unless_cancelled(make_entry_key(group, sequence), exc)
                 done_ticks += len(sources) * _TICKS_PER_SOURCE
                 ctx.heartbeat(done=done_ticks)
         return run_id

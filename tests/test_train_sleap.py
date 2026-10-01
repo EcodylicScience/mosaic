@@ -17,8 +17,11 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.core.pipeline.ops import run_op
+from mosaic.core.pipeline.run_log import read_runs, run_log_dir
+from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.tracking import register_ops
 from mosaic.tracking.ops.train import trained_model_index
 from mosaic.tracking.ops.train_sleap import TrainSleapParams
@@ -325,6 +328,28 @@ def test_a_finished_run_is_reused_unless_overwrite_says_otherwise(
 
     assert run_op(ds, "train-sleap", dict(params), overwrite=True) == first
     assert len(seen) == 2, "overwrite must reach the gate"
+
+
+def test_a_killed_trainer_is_recorded_as_cancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trainer killed on a cancel is a cancelled attempt, not a failed one."""
+    ds = make_dataset(tmp_path / "ds", save=False)
+    _point_at_sleap(tmp_path, monkeypatch)
+
+    def killed(argv: Sequence[str], **kw: object) -> tuple[str, str, int]:
+        raise ProcessCancelled(argv)
+
+    monkeypatch.setattr(training_module, "run_supervised", killed)
+    labels = ds.base_dir / "session.slp"
+    _ = labels.write_bytes(b"slp")
+
+    with pytest.raises(Cancelled):
+        _ = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
+
+    (run,) = read_runs(run_log_dir(ds.base_dir), kind="train-sleap")
+    assert run["status"] == "cancelled"
+    assert run["error_json"] == ""
 
 
 # --- overrides and the device ----------------------------------------------

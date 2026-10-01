@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Final, Literal, TypeAlias
 from pydantic import ValidationError
 
 from mosaic.core.pipeline.entry_claim import INFLIGHT_REFRESH_SECONDS
-from mosaic.core.pipeline.subprocess_util import run_supervised
+from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.tracking.common.toolenv import (
     PROBE_DEADLINE_FLOOR_SECONDS,
     ToolEnv,
@@ -296,10 +296,7 @@ def run_runner(
     ]
     # The same head the failure message uses, read off the exception class so the
     # log line and the error cannot come to elide at different points.
-    head = failure.head
-    logger.info(
-        "Running: %s", " ".join(cmd[:head]) + (" ..." if len(cmd) > head else "")
-    )
+    logger.info("Running: %s", command_summary(cmd, failure.head))
 
     stdout, stderr, returncode = run_supervised(
         cmd,

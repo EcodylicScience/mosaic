@@ -31,8 +31,11 @@ from pathlib import Path
 
 from mosaic.core.annotations.model import AnnotationSet
 from mosaic.core.annotations.writers import write_coco_keypoints
-from mosaic.core.pipeline.subprocess_util import run_supervised
-from mosaic.tracking.common.toolenv import subprocess_env, tool_invocation
+from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
+from mosaic.tracking.common.toolenv import (
+    subprocess_env,
+    tool_invocation,
+)
 from mosaic.tracking.sleap.run import SLEAP_ENV, SleapError
 
 logger = logging.getLogger(__name__)
@@ -119,7 +122,7 @@ def write_slp(
         executable="python",
     )
     cmd = [*invocation, "-c", _TO_SLP_SNIPPET, str(coco_path), str(root), str(staging)]
-    logger.info("Running: %s", " ".join(cmd[:4]) + " ...")
+    logger.info("Running: %s", command_summary(cmd, SleapError.head))
 
     try:
         stdout, stderr, returncode = run_supervised(

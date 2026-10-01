@@ -498,10 +498,10 @@ knows nothing of mosaic-api's groups; the API keys one library per group.
 - **The provenance chain is walked, never stored**
   ([`tracking/training_provenance.py`](src/mosaic/tracking/training_provenance.py)):
   model row (`data_path`, `data_fingerprint`) -> prepared-data row
-  (`consumed_sets`) -> series index row -> the revision's `manifest.json`. A
-  training run root also holds `training.json`. That name is deliberate:
-  `params.json` belongs to one schema with one reader, and
-  `tests/test_run_params_reader.py` holds the line.
+  (`consumed_sets`, and the pose it narrowed to, `pose_id` and `pose_name`) ->
+  series index row -> the revision's `manifest.json`. A training run root also
+  holds `training.json`. That name is deliberate: `params.json` belongs to one
+  schema with one reader, and `tests/test_run_params_reader.py` holds the line.
 - `models/` also holds prepared training **data**
   (`PREPARED_DATA_KINDS` in `core/pipeline/models.py`), which has no weights. The
   trained-model inventory skips those kinds and a `prepared-dataset` kind reports
@@ -711,7 +711,10 @@ Deliberately separate from the live-object `Pipeline`, which holds feature
   `REFUSED_EXIT_CODE = 65`, the run-log status stays `failed`, and the reason
   travels in `error_json` as one of a closed `RefusalReason` set. Do **not** add
   a member to `runlog.TERMINAL_STATUSES` — three repositories read it and
-  mosaic-api's sweeper reaps it, which is why `partial` was kept out too.
+  mosaic-api's sweeper reaps it, which is why `partial` was kept out too. An
+  error anywhere declares itself a refusal by subclassing `Refusal`
+  ([`core/pipeline/refusal.py`](src/mosaic/core/pipeline/refusal.py)), and
+  `job_context` records its reason, as a tracker's `ToolCodecError` does.
 - **`allow_partial` answers exactly one refusal.** A shortfall is a question
   about *how much*; a digest mismatch, a moved version, a disagreeing variant and
   an upstream that finished having written nothing are not, and no flag unlocks
@@ -1399,8 +1402,10 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   the default codec for them. DALI 2.3's reader does not handle AV1 on any GPU
   ("Unhandled codec 225"), and a variant for Lightning Pose is made with
   `codec: "h264"`. Each run creates one `DecodeProbe` from the placement that it
-  resolved, and the probe runs once per interpreter and codec. A result is not
-  kept between runs, and a rebuilt environment is tested again.
+  resolved. A codec that decodes is tested once per interpreter and run. A refusal
+  is not kept, because the SLEAP probe reads the file and one unreadable file says
+  nothing about the next. A result is not kept between runs, and a rebuilt
+  environment is tested again.
   `tests/test_decoder_probe.py` tests both outcomes.
 - **A tracker reports; a feature derives.** `mosaic_v1` *forbids* `VX`, `VY`,
   `SPEED`, `ANGLE` and the rest, so a converter cannot compute one and present it

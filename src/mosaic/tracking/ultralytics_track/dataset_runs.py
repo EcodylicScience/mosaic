@@ -362,8 +362,8 @@ def run_ultralytics(
     # from an import mosaic must not make.
     # A cancel raised while the weights load is answered by killing the probe,
     # the same way it is answered during tracking. The translation is local
-    # because this call happens before `run_tracker` opens, and it is what makes
-    # a cancelled attempt read as cancelled rather than failed.
+    # because this call happens before `run_tracker` opens, so a caller outside
+    # an op is told `Cancelled` wherever the cancel lands.
     cancel = cancel_token if cancel_token is not None else _context_token(ctx)
     try:
         probe = probe_ultralytics(

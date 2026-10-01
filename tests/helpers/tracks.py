@@ -230,6 +230,7 @@ def add_tracks_variant(
     n_rows: int = 40,
     consumed_source_roots: tuple[str, ...] = ("tracks_raw",),
     std_format: str = "trex_v1",
+    producer_run_id: str = "",
 ) -> None:
     """Write a variant-addressed track table per sequence, through the real writer.
 
@@ -248,6 +249,9 @@ def add_tracks_variant(
     keeping one fixture in that shape is what keeps proving that such a dataset
     still resolves and still hashes the same. This one is the shape a conversion
     writes today: tables under ``tracks/<run_id>/`` and rows naming the recipe.
+
+    ``producer_run_id`` is the op run a tracked or inferred variant was bridged
+    from, and empty for a conversion, as the real writers record it.
 
     Uses ``write_tracks_row`` rather than a hand-built CSV, so the index it
     produces is the index production produces -- including the dedup that decides
@@ -301,6 +305,7 @@ def add_tracks_variant(
             sequence=sequence,
             out_path=out_path,
             producer=run_id.split(".")[0],
+            producer_run_id=producer_run_id,
             std_format=std_format,
             n_rows=n_rows,
             consumed_source_roots=consumed_source_roots,

@@ -12,12 +12,15 @@ import contextlib
 import json
 import sys
 from collections.abc import Generator
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
 from mosaic.core.entry import parse_entry_tokens
 from mosaic.user_paths import user_path
+
+if TYPE_CHECKING:
+    from mosaic.core.pipeline.refusal import Refusal
 
 
 @contextlib.contextmanager
@@ -46,6 +49,41 @@ def log(message: str) -> None:
 def emit_json(payload: object) -> None:
     """Emit one JSON value to stdout (the machine-readable ``--json`` output)."""
     typer.echo(json.dumps(payload, indent=2, default=str))
+
+
+def exit_refused(
+    execution_id: str, refusal: Refusal, *, step_id: str = "", as_json: bool
+) -> NoReturn:
+    """Report a refusal, and exit with the code reserved for one.
+
+    The message goes to stderr. Under ``--json`` the refusal is also the one JSON
+    value on stdout: the execution, ``"status": "refused"``, the reason, the step
+    and the ``error_json`` blob that a ledger row carries.
+
+    Args:
+        execution_id: The attempt that refused.
+        refusal: The refusal.
+        step_id: The step to name when *refusal* does not name its own, or
+            ``""`` for a run outside a pipeline.
+        as_json: Whether ``--json`` was given.
+
+    Raises:
+        typer.Exit: Always, with ``REFUSED_EXIT_CODE``.
+    """
+    from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
+
+    log(f"[mosaic] refused ({refusal.reason}): {refusal}")
+    if as_json:
+        emit_json(
+            {
+                "execution_id": execution_id,
+                "status": "refused",
+                "reason": refusal.reason,
+                "step": refusal.step_id or step_id,
+                "error_json": refusal.error_json(step_id),
+            }
+        )
+    raise typer.Exit(code=REFUSED_EXIT_CODE) from None
 
 
 def load_json_arg(value: str | None) -> object | None:

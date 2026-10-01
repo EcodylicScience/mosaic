@@ -317,8 +317,8 @@ def run_sleap(
     # sleap-nn track takes a frame selection as one "start-end" token.
     analysis_range = params.analysis_range
     frames_arg = f"{analysis_range[0]}-{analysis_range[1]}" if analysis_range else None
-    # One probe for the run, in the environment that the run places SLEAP in. It
-    # tests a codec outside SLEAP's declaration once per run.
+    # One probe for the run, in the environment that the run places SLEAP in. A
+    # codec outside SLEAP's declaration that decodes is tested once per run.
     decode_probe = DecodeProbe(
         SLEAP_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin)
     )
