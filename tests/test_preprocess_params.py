@@ -46,9 +46,16 @@ def _run_id(steps: list[MediaStepSpec], **fields: object) -> str:
 # --- refusals ----------------------------------------------------------------
 
 
-def test_an_empty_step_list_is_refused_naming_the_entry_media() -> None:
+def test_an_empty_av1_step_list_is_refused_naming_the_entry_media() -> None:
     with pytest.raises(ValidationError, match="Leave `media` empty"):
         _ = PreprocessParams(steps=[])
+
+
+def test_an_empty_h264_step_list_is_an_h264_copy_of_the_source() -> None:
+    params = PreprocessParams(steps=[], codec="h264")
+
+    assert params.steps == []
+    assert _run_id([], codec="h264") != _run_id([_CROP], codec="h264")
 
 
 @pytest.mark.parametrize("fps", [0.0, -30.0, math.nan, math.inf])

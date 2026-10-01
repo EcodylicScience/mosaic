@@ -37,7 +37,7 @@ from mosaic_media.ffmpeg import (
 )
 from mosaic_media.hwaccel import encoder_available
 from mosaic_media.transcode import TranscodeError
-from pydantic import Field, TypeAdapter, field_validator, model_validator
+from pydantic import Field, TypeAdapter, model_validator
 
 from mosaic.core.entry import CameraEntry, Entry
 from mosaic.core.helpers import is_nameless_entry, make_entry_key
@@ -140,7 +140,8 @@ _JSON_OBJECT: Final = TypeAdapter(dict[str, JsonValue])
 _STEPS_DESCRIPTION = (
     "The steps applied to each frame, in order. Every position and frame number "
     "that a step names is in the entry media's pixels and frames, whatever the "
-    "step's position in the list."
+    "step's position in the list. Empty only with codec 'h264', which copies "
+    "every frame of the source into H.264."
 )
 
 _MEDIA_DESCRIPTION = (
@@ -203,16 +204,18 @@ class PreprocessParams(Params):
         bool, HASH_EXCLUDE, Declared(_ALLOW_HARDWARE_DESCRIPTION)
     ] = False
 
-    @field_validator("steps")
-    @classmethod
-    def _refuse_no_steps(cls, steps: list[MediaStepSpec]) -> list[MediaStepSpec]:
-        if not steps:
+    @model_validator(mode="after")
+    def _refuse_no_steps_in_av1(self) -> Self:
+        # A step-less H.264 variant is the source re-encoded for a decoder without
+        # AV1. A step-less AV1 variant changes nothing a consumer reads.
+        if not self.steps and self.codec == "av1":
             message = (
-                "a variant needs at least one step. The step-less variant is the "
-                "entry media itself. Leave `media` empty on the consumer instead"
+                "an AV1 variant needs at least one step. The step-less AV1 variant "
+                "is the entry media itself. Leave `media` empty on the consumer "
+                "instead"
             )
             raise ValueError(message)
-        return steps
+        return self
 
     @model_validator(mode="after")
     def _refuse_a_quality_off_the_scale(self) -> Self:

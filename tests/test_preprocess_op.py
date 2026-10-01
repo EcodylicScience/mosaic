@@ -302,6 +302,28 @@ def test_a_single_clip_crop_is_the_cropped_size_count_and_codec(
 
 
 @pytest.mark.media
+def test_a_step_less_h264_variant_is_every_source_frame_in_h264(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    _entry(ds, "s", [(20, 30.0), (20, 30.0)])
+
+    run_id = _run(ds, [], codec="h264")
+
+    path = media_variant_path(ds, run_id, "", "s", "")
+    facts = probe_media(path)
+    width, height = _SIZE
+    assert (facts.width, facts.height, facts.codec_name) == (width, height, "h264")
+    means = _means(path)
+    assert len(means) == 40
+    for frame, mean in enumerate(means):
+        assert mean == pytest.approx(_level(frame, 0), abs=_LEVEL_TOLERANCE), frame
+    row = _row(ds, run_id)
+    assert media_variant_placement(row).frames == FrameMap(0, 1, 40)
+    assert row["encoder"] == "libx264"
+
+
+@pytest.mark.media
 def test_trim_and_decimate_across_clips_keep_the_mapped_source_frames(
     tmp_path: Path,
 ) -> None:

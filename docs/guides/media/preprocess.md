@@ -247,7 +247,9 @@ the encode.
 Variants are AV1 by default. Every tool reads H.264, and
 [Installation](../../installation.md#video-codecs-each-tool-reads) lists the tools that
 read AV1. Make a variant for Lightning Pose with `"codec": "h264"`. Lightning Pose
-reads AV1 on no GPU.
+reads AV1 on no GPU. An H.264 variant may have no steps, `{"steps": [], "codec":
+"h264"}`, which copies every frame of the entry media into one H.264 file. An AV1
+variant needs at least one step.
 
 A tracker refuses a run whose variant its environment does not decode, and the refusal
 quotes the reader's error. Then either:
