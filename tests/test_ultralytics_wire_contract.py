@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import ast
 import dataclasses
-import importlib
-import sys
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import ModuleType
@@ -42,7 +40,7 @@ from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
-from mosaic.tracking.external import runner as runner_package
+from mosaic.tracking.common.tool_input import ToolFile
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     POINT_COLUMNS,
     POINT_DTYPES,
@@ -71,36 +69,6 @@ _N_KEYPOINTS = 2
 
 
 # --- the runner program, imported rather than spawned ----------------------
-
-
-@pytest.fixture(scope="module")
-def runner_module() -> Iterator[ModuleType]:
-    """The runner program, imported into this process, and then unimported.
-
-    Its directory goes on ``sys.path`` because the program resolves
-    ``ultralytics_protocol`` as a bare top-level module -- what a script gets for
-    free from its own directory, and what it will get when it is spawned. The
-    insertion is safe: the directory holds those two modules and nothing that
-    could shadow a mosaic import.
-
-    Both are undone afterwards. Left in place they outlive this file: the search
-    path keeps answering ``ultralytics_protocol`` for the rest of the session,
-    and ``sys.modules`` holds a *second* copy of that module beside
-    ``mosaic.tracking.external.runner.ultralytics_protocol`` -- same file, two
-    classes. Nothing today compares a :class:`TrackRequest` by identity, so the
-    leak is currently harmless and would stop being so quietly.
-    """
-    directory = str(Path(runner_package.__file__).parent)
-    inserted = directory not in sys.path
-    if inserted:
-        sys.path.insert(0, directory)
-    try:
-        yield importlib.import_module("ultralytics_runner")
-    finally:
-        if inserted:
-            sys.path.remove(directory)
-        for name in ("ultralytics_runner", "ultralytics_protocol"):
-            _ = sys.modules.pop(name, None)
 
 
 # --- what each side says about the request ---------------------------------
@@ -407,7 +375,9 @@ class RunnerStandIn:
         request = self.module.TrackRequest.model_validate_json(payload)
         # The facts mosaic flattened, rebuilt the way the runner rebuilds them
         # before handing them to its reader.
-        self.reconstructed_facts.append(self.module._media_facts(request.media_facts))
+        self.reconstructed_facts.extend(
+            self.module._media_facts(source.media_facts) for source in request.sources
+        )
         columns = list(request.columns)
         rows = [
             [float(frame), 1.0, 10.0, 20.0, 15.0, 25.0, 0.9, 0.0]
@@ -476,22 +446,23 @@ def test_gated_media_facts_survive_the_crossing(
     """
     video = tmp_path / "clip.mp4"
     write_cfr_mp4(video, frames=6, size=(64, 48))
+    measured = verified_read_facts(video, None, "analysis")[0]
 
-    def resolved(_ds: Dataset, _item: object, *, kind: str) -> Path:
-        return video
+    def resolved(*_args: object, **_kwargs: object) -> tuple[ToolFile, ...]:
+        return (ToolFile(video, measured),)
 
-    monkeypatch.setattr(dataset_runs, "resolve_tool_input", resolved)
+    monkeypatch.setattr(dataset_runs, "entry_runner_sources", resolved)
     _ = dataset_runs.run_ultralytics(
         ds,
         UltralyticsParams(model_path=str(model)),
         ultralytics_bin="/x/bin/yolo",
     )
 
-    measured = verified_read_facts(video, None, "analysis")[0]
     assert stand_in.reconstructed_facts == [measured]
     # Flattened rather than pickled: what crossed is JSON a reader can inspect.
     request = TrackRequest.model_validate_json(stand_in.payloads[1])
-    assert request.media_facts == dataclasses.asdict(measured)
+    (source,) = request.sources
+    assert source.media_facts == dataclasses.asdict(measured)
 
 
 # --- a frame window, read by the runner's own loop ---------------------------

@@ -446,6 +446,29 @@ class StoreExportOp(Op[StoreExportParams]):
         return run_id
 
 
+def readable_chunks(store: Path) -> list[tuple[Path, int]]:
+    """*store*'s chunk files and their frame counts, when they hold what mosaic reads.
+
+    Empty otherwise. Two conditions, and each rules out a store whose chunk
+    files are not the frames mosaic reads from it:
+
+    * the chunks are video files at all -- a raw ``npy`` or image-directory
+      store has no stream to hand over;
+    * the store applies no colour conversion. A Bayer or YUV store is turned
+      into BGR by ``cv2.cvtColor`` on every read, so its chunks hold different
+      pixels from the ones mosaic serves, and a tool reading them would see
+      something mosaic never sees.
+
+    Read from the store's metadata and chunk indexes. No chunk is opened.
+    """
+    from mosaic.core.media.imgstore_native import NativeStore
+
+    with NativeStore(store) as native:
+        if not native.is_video or native.encoding is not None:
+            return []
+        return native.chunk_spans()
+
+
 def copyable_chunks(store: Path) -> list[Path]:
     """*store*'s chunk files when they can be copied out verbatim, else empty.
 
@@ -456,25 +479,11 @@ def copyable_chunks(store: Path) -> list[Path]:
     20,000-frame Motif store: 0.30 s copied against about 140 s re-encoded, with
     the copy the smaller and the lossless of the two.
 
-    Three conditions, and each rules out a store whose chunks are not what
-    mosaic would read:
-
-    * the chunks are video files at all -- a raw ``npy`` or image-directory
-      store has no stream to copy;
-    * the store applies no colour conversion. A Bayer or YUV store is turned
-      into BGR by ``cv2.cvtColor`` on every read, so its chunks hold different
-      pixels from the ones mosaic serves and a copy would hand a tool something
-      mosaic never sees;
-    * the chunks are in a codec any libavcodec build decodes. A store written
-      in AV1 has to be re-encoded for exactly the reason this op's own output
-      did.
+    The chunks must hold what mosaic reads (:func:`readable_chunks`), and be in a
+    codec any libavcodec build decodes. A store written in AV1 has to be
+    re-encoded for exactly the reason this op's own output did.
     """
-    from mosaic.core.media.imgstore_native import NativeStore
-
-    with NativeStore(store) as native:
-        if not native.is_video or native.encoding is not None:
-            return []
-        chunks = native.chunk_paths()
+    chunks = [path for path, _ in readable_chunks(store)]
     if not chunks or stream_codec(chunks[0]) not in SOFTWARE_DECODABLE_CODECS:
         return []
     return chunks

@@ -20,13 +20,13 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from mosaic_media import MediaFacts, probe_media
 
 import mosaic.tracking.ultralytics_track.dataset_runs as dr
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.pipeline.markers import read_phase_marker
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_index import read_tracks_index
-from mosaic.tracking.common.scope import TrackerWorkItem
 from mosaic.tracking.common.tool_input import StoreExportMissingError
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     ProbeResponse,
@@ -48,6 +48,7 @@ from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 from tests.helpers import (
     ULTRALYTICS_KEYPOINTS,
     FakeUltralytics,
+    add_transcode_derivative,
     MediaClip,
     install_fake_ultralytics,
     point_at_a_store,
@@ -130,8 +131,9 @@ def test_a_fresh_run_tracks_and_bridges(
     # The facts travel with the request, describing the file the tool opens --
     # here the source itself, so they are the ones the index row measured.
     request = ultralytics.requests[0]
-    assert Path(request.video_path) == ds.get_root("media_raw") / "vid1.mp4"
-    assert request.media_facts["width"] == 640
+    (source,) = request.sources
+    assert Path(source.path) == ds.get_root("media_raw") / "vid1.mp4"
+    assert source.media_facts["width"] == 640
 
     index = _index(ds)
     assert str(index.iloc[0]["tracker"]) == "bytetrack"
@@ -447,7 +449,7 @@ def test_a_re_run_clears_the_previous_attempts_request_and_response(
 def test_a_store_with_no_export_refuses_and_names_the_command(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
-    """The tool opens a path, and no tool opens a directory of chunk files."""
+    """A store whose chunks are not video is read through its export, or refused."""
     _ = point_at_a_store(ds, "vid1", ds.get_root("media_raw") / "vid1.store")
 
     with pytest.raises(StoreExportMissingError, match="export-store"):
@@ -459,27 +461,25 @@ def test_the_facts_describe_the_file_the_tool_will_open(
     ds: Dataset,
     model: Path,
     ultralytics: FakeUltralytics,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
     write_cfr_mp4: Callable[..., None],
 ) -> None:
-    """A resolved export is a different file from the one the index measured.
+    """An export is a different file from the one the index measured.
 
-    ``resolve_tool_input`` answers with the export a store was written out to, so
-    passing the row's facts across would describe the store. The indexed row says
-    640x480; the export here is 64x48, which is what tells the two apart.
+    A store whose chunks are not video is read through its export, so passing the
+    row's facts across would describe the store. The indexed row says 640x480;
+    the export here is 64x48, which is what tells the two apart.
     """
-    export = tmp_path / "exports" / "vid1.mp4"
-    write_cfr_mp4(export, frames=6, size=(64, 48))
+    _ = point_at_a_store(ds, "vid1", ds.get_root("media_raw") / "vid1.store")
 
-    def resolved_export(_ds: Dataset, _item: TrackerWorkItem, *, kind: str) -> Path:
-        return export
+    def encode(_store: Path, destination: Path) -> MediaFacts:
+        write_cfr_mp4(destination, frames=6, size=(64, 48))
+        return probe_media(destination)
 
-    monkeypatch.setattr(dr, "resolve_tool_input", resolved_export)
+    export = add_transcode_derivative(ds, "vid1", target="analysis", encode=encode)
 
     _ = dr.run_ultralytics(ds, _params(model))
 
-    request = ultralytics.requests[0]
-    assert Path(request.video_path) == export
-    assert request.media_facts["width"] == 64
-    assert request.media_facts["height"] == 48
+    (source,) = ultralytics.requests[0].sources
+    assert Path(source.path) == export
+    assert source.media_facts["width"] == 64
+    assert source.media_facts["height"] == 48

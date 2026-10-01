@@ -69,6 +69,8 @@ from tests.helpers.features import (
     write_templates,
 )
 from tests.helpers.media import (
+    MOTIF_SYNC_UUID,
+    MakeStore,
     MediaClip,
     add_media_sequence,
     add_transcode_derivative,
@@ -79,6 +81,7 @@ from tests.helpers.media import (
     index_media_sequence,
     paint_gray,
     point_at_a_store,
+    store_dataset,
     stub_join,
     write_h264_mp4,
     write_media_index,
@@ -153,6 +156,8 @@ __all__ = [
     "FakeToolPython",
     "FakeUltralytics",
     "IndexReads",
+    "MOTIF_SYNC_UUID",
+    "MakeStore",
     "MediaClip",
     "MockDataset",
     "add_media_sequence",
@@ -212,6 +217,7 @@ __all__ = [
     "scope_over",
     "set_tracks_cell",
     "source_tree",
+    "store_dataset",
     "stub_join",
     "track_sequences",
     "ultralytics_probe_response",

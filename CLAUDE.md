@@ -1281,12 +1281,23 @@ single-model inference and model training all run out of process, so
 the location ladder cannot tell them apart — the probe reports whether a build
 defines the `locate` task, and `infer-points` refuses an upstream one by name.
 
-Two consequences a change should not undo. The tool is handed a video *path*, so
-an imgstore recording needs `mosaic run --kind export-store` first, exactly as the
-other three subprocess trackers do (`common/tool_input.py` is that boundary and
-raises naming the command); tracking a store natively is a capability this cost,
-and `infer-pose` / `infer-points` now pay it too. `infer-localizer` does not — it
-is mosaic's own PyTorch and still reads a store natively.
+**The runner reads files, and reads an entry's files in order.** Ultralytics never
+opens a path: the runner decodes frames itself, with mosaic-media's `VideoReader`,
+and hands them to `model.track(..., persist=True)` or `model.predict`. So it is
+handed the entry's files rather than one (`entry_runner_sources` in
+`common/tool_input.py`, `EntryReader` in the runner) and reads them on one frame
+axis: an entry's clips, or the chunk files of a store whose chunks hold the frames
+mosaic reads (`readable_chunks`). Nothing is joined or exported for Ultralytics
+tracking, `infer-pose` or `infer-points`, and the tracker's state carries across a
+file boundary as it carries across a batch. The frames, their numbers and the batches
+are those of the join, which `tests/test_runner_entry_files.py` compares pixel for
+pixel. A store whose chunks are images, raw arrays or Bayer/YUV data is still read
+through its `export-store` video, and a chunk whose measured count differs from the
+store's index sends the store there too. Each file's facts are gated in mosaic before
+they cross, because the runner cannot call the gate. `TrackingRoot.reads` declares how
+each tool reads (`one-file`, `entry-files`, `in-process`), and `required_media_ops`
+answers from it which export a tool still needs. `infer-localizer` is mosaic's own
+PyTorch and reads a store natively.
 
 **Training cancels cooperatively, and that is the one place `run_supervised`'s
 kill is wrong.** Ultralytics honours `trainer.stop` between epochs and nowhere
@@ -1337,10 +1348,11 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   applies at two levels. In a **discrete** dataset the enclosing unit is the
   sequence: a multi-clip sequence numbers frames across its ordered clips, which is
   what `ConcatenatedTimeline` and `MultiVideoReader` already build and what a
-  tracker delivers by reading the entry's join. In a **continuous** group, one
-  declared in `continuous_groups` because its sequences are time divisions of one
-  recording, the enclosing unit is the group: frames are numbered across the whole
-  recording, and its media resolves as one shared timeline for the same reason.
+  tracker delivers by reading the entry's join or its clips in order. In a
+  **continuous** group, one declared in `continuous_groups` because its sequences
+  are time divisions of one recording, the enclosing unit is the group: frames are
+  numbered across the whole recording, and its media resolves as one shared
+  timeline for the same reason.
   Never a group of independent divisions each restarting at zero; that makes one
   frame number name a different moment in each, which is exactly what
   `overlap_frames` refuses. Note the invariant is *not* enforced on the write paths.
@@ -1367,8 +1379,10 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   Measured through the pipeline: the `.pv` index then equals the media index at
   every former boundary. So every tracker and inference op covers the whole
   entry, and clips that cannot be one video (`refuse_unjoinable`) are refused
-  before any tool runs. `infer-pose` and `infer-points` are handed the join as the
-  trackers are. `infer-localizer` reads in process. It reads the clips on the
+  before any tool runs. Mosaic's own Ultralytics runner needs no join: it reads the
+  clips one after another on the same axis, so Ultralytics tracking, `infer-pose`
+  and `infer-points` are handed the clips (see "`tracking/external/` is where
+  Ultralytics runs"). `infer-localizer` reads in process. It reads the clips on the
   entry's axis (`read_entry_frames`), and their join only when `join_to_read` says
   so.
 

@@ -5,11 +5,12 @@ Ultralytics is AGPL-3.0, so mosaic never imports it. The imports live in
 in an environment the user builds, and what crosses between the two is a JSON
 request file, a JSON response file and progress lines on standard output.
 
-**Mosaic hands the tool a path**, exactly as TREx, SLEAP and Lightning Pose do,
-and :func:`~mosaic.tracking.common.tool_input.resolve_tool_input` is the boundary
-that keeps an imgstore recording working: a tool that opens a path cannot read a
-directory of chunk files, so a store resolves to the plain video
-``export-store`` wrote for it.
+**Mosaic hands the runner the entry's files**, and the runner decodes them with
+mosaic-media's reader in the tool's environment, in order on one frame axis.
+:func:`~mosaic.tracking.common.tool_input.entry_runner_sources` is the boundary:
+an entry's clips are handed as they are, and an imgstore recording, a directory
+the reader cannot open, as its chunk files, or as the plain video
+``export-store`` wrote for it when the chunks are not the frames mosaic reads.
 
 This module is the tracker's own half of that exchange: the preflight refusals,
 the merged tracker configuration, and the calls that write a request and read a

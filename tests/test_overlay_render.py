@@ -44,6 +44,7 @@ from mosaic.behavior.visualization_library.playback import play_video
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline.tracks_index import write_tracks_row
+from tests.helpers import MakeStore, store_dataset
 
 _FRAMES = 4
 _SIZE = (64, 48)  # (width, height)
@@ -167,33 +168,20 @@ def _add_variant(ds: Dataset, variant: str, *, pose: bool) -> None:
 def _store_dataset(
     tmp_path: Path,
     make_media_dataset: Callable[[Path], Dataset],
-    make_imgstore: Callable[..., tuple[Path, list[np.ndarray]]],
+    make_imgstore: MakeStore,
     cameras: list[str],
 ) -> Dataset:
     """A dataset with one imgstore per named camera (``""`` for single-camera)."""
-    ds = make_media_dataset((tmp_path / "dataset").resolve())
-    search = ds.get_root("media_raw") / "recordings"
-    search.mkdir(parents=True, exist_ok=True)
-    for serial in cameras:
-        extra = (
-            {
-                "camera_serial": serial,
-                "synchronizationuuid": "f064059f9ea046429f227bc7addab1eb",
-                "synchronization": "framenumber",
-            }
-            if serial
-            else None
-        )
-        make_imgstore(
-            name=f"seq.{serial}" if serial else "seq",
-            nframes=_FRAMES,
-            chunksize=4,
-            shape=(_SIZE[1], _SIZE[0], 3),
-            parent=search,
-            extra_metadata=extra,
-        )
-    ds.index_media([search])
-    return ds
+    return store_dataset(
+        tmp_path,
+        make_media_dataset,
+        make_imgstore,
+        cameras=cameras,
+        name="seq",
+        nframes=_FRAMES,
+        chunksize=4,
+        shape=(_SIZE[1], _SIZE[0], 3),
+    )
 
 
 def _rendered_and_source(

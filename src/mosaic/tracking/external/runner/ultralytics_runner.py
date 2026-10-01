@@ -91,6 +91,8 @@ from ultralytics_protocol import (
     ProgressEvent,
     ProgressEventKind,
     Result,
+    SourceFile,
+    SourceWindow,
     TrackerDefaultsRequest,
     TrackerDefaultsResponse,
     TrackerSetting,
@@ -104,6 +106,7 @@ from ultralytics_protocol import (
     point_rows_from_result,
     pose_rows_from_result,
     rows_from_result,
+    source_windows,
 )
 
 ResultT = TypeVar("ResultT", bound=InferenceResult)
@@ -410,9 +413,128 @@ def _media_facts(payload: dict[str, object]) -> MediaFacts:
     return _MEDIA_FACTS.validate_python(payload)
 
 
+class BatchReader(Protocol):
+    """What the batch loops read from: ``(indices, frames)``, empty at the end."""
+
+    def read_batch(self, batch_size: int) -> tuple[np.ndarray, np.ndarray]: ...
+
+
+class EntryReader:
+    """Read an entry's files one after another, numbered on the entry's frame axis.
+
+    An entry recorded in several files (the clips of a session, or the chunks of
+    an imgstore) is read without joining them into one file first. Frame 0 of
+    each file is the entry frame after every frame of the files before it, by
+    each file's ``frame_count``. That is the axis a join of the files holds, so
+    the frames, their numbers and the batches are those a reader of the join
+    gets.
+
+    Each file is opened when the reading reaches it, under its part of the frame
+    window (:func:`source_windows`), and closed when the reading leaves it. A
+    batch is filled across a file boundary, so a batch spans the boundary as it
+    spans one inside a join.
+
+    One ``VideoReader`` reads each file. It delivers exactly the frames of its
+    window, ending at ``frame_count``, and raises when a file ends short of that.
+    So a file shorter than its facts fails the run rather than moving every later
+    frame, and frames past ``frame_count`` are not read.
+
+    No decode-time resize: Ultralytics letterboxes to ``imgsz`` itself and maps
+    predictions back to the frame it was given, so feeding native frames is what
+    puts the coordinates in source pixels.
+
+    Every file's facts are validated when the reader is made, before any frame
+    is read.
+    """
+
+    def __init__(
+        self,
+        sources: Sequence[SourceFile],
+        *,
+        start_frame: int,
+        end_frame: int | None,
+        frame_step: int,
+    ) -> None:
+        self._paths: list[str] = [source.path for source in sources]
+        self._facts: list[MediaFacts] = [
+            _media_facts(source.media_facts) for source in sources
+        ]
+        self._step: int = max(1, frame_step)
+        self._windows: list[SourceWindow] = source_windows(
+            [facts.frame_count for facts in self._facts],
+            start=start_frame,
+            end=end_frame,
+            step=frame_step,
+        )
+        self._next_window: int = 0
+        self._reader: VideoReader | None = None
+        self._first_frame: int = 0
+
+    def __len__(self) -> int:
+        """The number of frames the reading delivers, over every file."""
+        return sum(
+            len(range(window.start, window.end, self._step)) for window in self._windows
+        )
+
+    def read_batch(self, batch_size: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return up to *batch_size* frames and their entry frames, empty at the end."""
+        indices: list[np.ndarray] = []
+        frames: list[np.ndarray] = []
+        wanted = max(1, batch_size)
+        while wanted > 0:
+            reader = self._current()
+            if reader is None:
+                break
+            file_indices, file_frames = reader.read_batch(wanted)
+            if len(file_indices) == 0:
+                self._close_file()
+                continue
+            indices.append(file_indices + self._first_frame)
+            frames.append(file_frames)
+            wanted -= len(file_indices)
+        if not indices:
+            return np.empty(0, dtype=np.int64), np.empty((0, 0, 0, 3), np.uint8)
+        return np.concatenate(indices), np.concatenate(frames)
+
+    def close(self) -> None:
+        """Close the open file, and read nothing more."""
+        self._close_file()
+        self._next_window = len(self._windows)
+
+    def __enter__(self) -> EntryReader:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def _current(self) -> VideoReader | None:
+        """Return the reader of the file being read, opening the next one if needed."""
+        if self._reader is not None:
+            return self._reader
+        if self._next_window >= len(self._windows):
+            return None
+        window = self._windows[self._next_window]
+        self._next_window += 1
+        self._reader = VideoReader(
+            self._paths[window.index],
+            start_frame=window.start,
+            end_frame=window.end,
+            frame_step=self._step,
+            resize=None,
+            facts=self._facts[window.index],
+        )
+        self._first_frame = window.first_frame
+        return self._reader
+
+    def _close_file(self) -> None:
+        if self._reader is not None:
+            self._reader.close()
+            self._reader = None
+
+
 @contextlib.contextmanager
 def _decoded_batches(
-    reader: VideoReader, batch_size: int, prefetch: bool
+    reader: BatchReader, batch_size: int, prefetch: bool
 ) -> Generator[Iterator[tuple[np.ndarray, np.ndarray]]]:
     """Yield ``(indices, frames)`` batches, optionally decoded a batch ahead.
 
@@ -476,7 +598,7 @@ def _decoded_batches(
 
 
 def _direct_batches(
-    reader: VideoReader, batch_size: int
+    reader: BatchReader, batch_size: int
 ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
     while True:
         indices, frames = reader.read_batch(max(1, batch_size))
@@ -570,20 +692,23 @@ def _publish_parquet(table: pd.DataFrame, output_parquet: str) -> None:
 
 
 def run_track(request: TrackRequest) -> TrackResponse:
-    """Track one video and write its raw predictions.
+    """Track one entry and write its raw predictions.
 
     Batching decodes and infers several frames per call while still tracking them
     one at a time in order: a list source puts Ultralytics in image mode, where
     one tracker is created and every result in the batch is fed through it in
     sequence. So a batch is a throughput choice, not a behavioral one.
 
-    Track identity is numbered from a counter on a class shared by every backend,
-    and this process tracks exactly one video -- so that counter starts at zero by
-    construction and there is deliberately nothing here that resets it.
+    The entry's files are read one after another (:class:`EntryReader`), and the
+    tracker persists across every call, so a track continues across a file
+    boundary as it continues across a batch boundary. Track identity is numbered
+    from a counter on a class shared by every backend, and this process tracks
+    exactly one entry -- so that counter starts at zero by construction and there
+    is deliberately nothing here that resets it.
 
     The table is written **even when it is empty**, with its full column set. The
     reuse gate proves a phase complete by finding the output it recorded, so an
-    absent file for a video with no detections would re-run that video forever.
+    absent file for an entry with no detections would re-run that entry forever.
     """
     from ultralytics import YOLO
 
@@ -609,16 +734,11 @@ def run_track(request: TrackRequest) -> TrackResponse:
 
     blocks: list[np.ndarray] = []
     n_frames = 0
-    reader = VideoReader(
-        request.video_path,
+    reader = EntryReader(
+        request.sources,
         start_frame=request.start_frame,
         end_frame=request.end_frame,
         frame_step=request.frame_step,
-        # No decode-time resize: Ultralytics letterboxes to `imgsz` itself and
-        # maps predictions back to the frame it was given, so feeding native
-        # frames is what puts the coordinates in source pixels.
-        resize=None,
-        facts=_media_facts(request.media_facts),
     )
     with reader:
         total = len(reader)
@@ -679,9 +799,9 @@ def _write_annotated(
 ) -> None:
     """Draw one frame the way Ultralytics draws it, and save it.
 
-    Named for the frame's index in the video, as its rows are numbered, so a
-    windowed or stepped run's images stay addressable against the video they
-    came from.
+    Named for the frame's index on the entry's axis, as its rows are numbered,
+    so a windowed or stepped run's images stay addressable against the entry
+    they came from.
 
     ``cv2`` is imported here rather than at module scope so a run with no
     annotated output does not pay for it, and so an environment without it still
@@ -694,7 +814,7 @@ def _write_annotated(
 
 @dataclass(slots=True)
 class _InferOutcome:
-    """What one video's inference produced, before it is given column names."""
+    """What one entry's inference produced, before it is given column names."""
 
     blocks: list[np.ndarray] = field(default_factory=list)
     n_frames: int = 0
@@ -709,8 +829,8 @@ def _infer_frames(
 ) -> _InferOutcome:
     """Read *request*'s window in batches, predict each, and keep only the rows.
 
-    Each frame's rows are numbered by the frame's index in the video, which the
-    reader returns with it, so a run with ``start_frame`` or ``frame_step`` set
+    Each frame's rows are numbered by the frame's index on the entry's axis, which
+    the reader returns with it, so a run with ``start_frame`` or ``frame_step`` set
     numbers its rows by the frames that it read. The tracker numbers its rows the
     same way.
 
@@ -733,13 +853,11 @@ def _infer_frames(
     if annotated is not None:
         annotated.mkdir(parents=True, exist_ok=True)
 
-    reader = VideoReader(
-        request.video_path,
+    reader = EntryReader(
+        request.sources,
         start_frame=request.start_frame,
         end_frame=request.end_frame,
         frame_step=request.frame_step,
-        resize=None,
-        facts=_media_facts(request.media_facts),
     )
     with reader:
         total = len(reader)
@@ -819,7 +937,7 @@ def _loaded_for(request: InferRequestBase) -> object:
 
 
 def run_infer_pose(request: InferPoseRequest) -> InferResponse:
-    """Run one video through a YOLO pose model and write its raw predictions."""
+    """Run one entry through a YOLO pose model and write its raw predictions."""
     model: _Predictor[PoseResult] = _loaded_for(request)
     outcome = _infer_frames(
         request,
@@ -836,7 +954,7 @@ def run_infer_pose(request: InferPoseRequest) -> InferResponse:
 
 
 def run_infer_points(request: InferPointsRequest) -> InferResponse:
-    """Run one video through a POLO point model and write its raw predictions.
+    """Run one entry through a POLO point model and write its raw predictions.
 
     ``class_name`` is mapped from ``class_id`` after the numeric block is
     assembled, because it is the one column of either table that is not a number
@@ -1130,15 +1248,15 @@ def run_train_points(request: TrainPointsRequest) -> TrainResponse:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ultralytics_runner",
-        description="Probe the Ultralytics environment, or run one video through it.",
+        description="Probe the Ultralytics environment, or run one entry through it.",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
     for name, help_text in (
         ("probe", "report what this environment holds"),
         ("tracker-defaults", "report every backend's shipped configuration table"),
-        ("track", "track one video and write its raw predictions"),
-        ("infer-pose", "run a pose model over one video"),
-        ("infer-points", "run a point model over one video"),
+        ("track", "track one entry and write its raw predictions"),
+        ("infer-pose", "run a pose model over one entry"),
+        ("infer-points", "run a point model over one entry"),
         ("train-pose", "train a pose model on one dataset"),
         ("train-points", "train a point model on one dataset"),
     ):

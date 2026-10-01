@@ -294,11 +294,25 @@ class NativeStore:
         :attr:`frame_count` counts in, so concatenating these reproduces the
         store's own frame sequence.
         """
+        return [path for path, _ in self.chunk_spans()]
+
+    def chunk_spans(self) -> list[tuple[Path, int]]:
+        """The store's video chunk files with the frames each holds, in frame order.
+
+        A chunk's count is the length of its own index, the count the store's
+        ``frame_index`` advances by across it, so the counts sum to
+        :attr:`frame_count`. A chunk skipped for a missing index is absent, as it
+        is from what a reader of the store reads. Empty for a store whose chunks
+        are not video files.
+        """
         if not self._is_video:
             return []
+        counts: dict[int, int] = {}
+        for chunk_id, _ in self._frame_map:
+            counts[chunk_id] = counts.get(chunk_id, 0) + 1
         return [
-            self._basedir / f"{chunk_id:06d}{self._video_ext}"
-            for chunk_id in sorted({chunk for chunk, _ in self._frame_map})
+            (self._basedir / f"{chunk_id:06d}{self._video_ext}", counts[chunk_id])
+            for chunk_id in sorted(counts)
         ]
 
     # --- Chunk discovery ---

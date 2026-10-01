@@ -9,8 +9,9 @@ Two collapses happen here, and both are load-bearing rather than tidy-up:
 
 * **Several videos under one entry** stay on one work item, which covers them
   all. A recorder that chops a session into clips leaves a boundary that is a
-  filesystem artifact, not an event, and every tool is handed the clips' join as
-  one video (:mod:`mosaic.core.pipeline.joined_export`).
+  filesystem artifact, not an event. A tool that opens one file is handed the
+  clips' join (:mod:`mosaic.core.pipeline.joined_export`), and mosaic's runner
+  reads the clips themselves in order, on the same frame axis.
 * **Several cameras under one entry** collapse onto one work item. The working
   directory is keyed on ``(group, sequence)`` with no camera, so a multi-camera
   sequence's entries all resolve to one directory. Left as several, the second
@@ -33,10 +34,11 @@ first, with a message naming the clip. Clips that were recorded at different
 rates are a real and common property of a session (30, then 29.95, then 31 fps is
 a measured example), and refusing them would refuse the data; they are carried
 instead, and the consumer reconstructs time per clip through
-:mod:`mosaic.core.media.timeline`. Imgstore recordings are the exception, because
-``export-joined`` does not join them. A tracker refuses an entry of several clips
-that includes a store, and a reader in this process refuses stores at different
-rates, because the store reader needs one rate.
+:mod:`mosaic.core.media.timeline`. Imgstore recordings are the exception. A
+tracker reads a store only as an entry's one clip, because ``export-joined`` does
+not join stores, so it refuses an entry of several clips that includes a store.
+A reader in this process refuses stores at different rates, because the store
+reader needs one rate.
 """
 
 from __future__ import annotations
@@ -389,11 +391,12 @@ def refuse_unjoinable(
     naming the file and the field rather than inside a subprocess whose
     traceback names neither. One clip is its own video and passes.
 
-    An entry of several clips that holds a store is refused for a consumer that
-    hands its tool a path (*hands_over_path*): the tool is handed one file, and
-    ``export-joined`` does not join stores. A consumer that reads the stores in
-    its own process reads them as one only at one rate, by the rule the store
-    reader applies (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`).
+    An entry of several clips that holds a store is refused for a consumer whose
+    tool reads files outside this process (*hands_over_path*): such a tool reads
+    a store only as an entry's one clip, and ``export-joined`` does not join
+    stores. A consumer that reads the stores in its own process reads them as one
+    only at one rate, by the rule the store reader applies
+    (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`).
     Either refusal says how to make a media variant that contains the entry as
     one file.
 
@@ -439,9 +442,9 @@ def refuse_unjoinable(
         return
     if hands_over_path:
         raise JoinedSourceMismatchError(
-            f"[{kind}] {entry} cannot be read as one video: {kind} is handed one "
-            f"file, and export-joined does not join stores, so no file holds "
-            f"{', '.join(stores)} with the entry's other clips. "
+            f"[{kind}] {entry} cannot be read as one video: {kind} reads a store "
+            f"only as an entry's one clip, and export-joined does not join stores, "
+            f"so nothing holds {', '.join(stores)} with the entry's other clips. "
             f"{_variant_remedy(group, sequence, facts)}"
         )
     other = store_rate_mismatch([clip.fps for clip in facts])

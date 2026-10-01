@@ -40,11 +40,11 @@ from mosaic.tracking.common.tool_input import (
     resolve_tool_input,
 )
 
+from tests.helpers import MakeStore, store_dataset
+
 # Only the fixtures that write real stores need the imgstore package. None of the
 # imports above loads it, so the skip can follow them.
 pytest.importorskip("imgstore")
-
-_SYNC_UUID = "f064059f9ea046429f227bc7addab1eb"
 
 # The lowest AV1 CRF, so a frame comes back close enough to its source that the
 # per-frame tag is still readable. Frames are written with ``fill=True`` for the
@@ -53,17 +53,6 @@ _SYNC_UUID = "f064059f9ea046429f227bc7addab1eb"
 # at any quality. Uniform frames do, which keeps the assertion about the export's
 # ordering rather than about the encoder's fidelity.
 _LOSSLESS = 0
-
-MakeStore = Callable[..., tuple[Path, list[np.ndarray]]]
-
-
-def _camera_meta(serial: str, uuid: str) -> dict[str, object]:
-    """Motif document-root metadata for one camera of a synced recording."""
-    return {
-        "camera_serial": serial,
-        "synchronizationuuid": uuid,
-        "synchronization": "framenumber",
-    }
 
 
 def _store_dataset(
@@ -76,28 +65,17 @@ def _store_dataset(
     chunksize: int = 5,
     fmt: str = "npy",
 ) -> tuple[Dataset, str, str]:
-    """A dataset holding one indexed store per camera, and its (group, sequence).
-
-    Stores are written into ``media_raw`` and indexed from there, which is the
-    shape the op requires: a dataset whose originals index is separate from the
-    derivative index under ``media``.
-    """
-    ds = make_media_dataset((tmp_path / "dataset").resolve())
-    search = ds.get_root("media_raw") / "recordings"
-    search.mkdir(parents=True, exist_ok=True)
-    for serial in cameras or [""]:
-        name = f"rec.{serial}" if serial else "rec"
-        extra = _camera_meta(serial, _SYNC_UUID) if serial else None
-        make_imgstore(
-            name=name,
-            nframes=nframes,
-            chunksize=chunksize,
-            parent=search,
-            fill=True,
-            extra_metadata=extra,
-            fmt=fmt,
-        )
-    ds.index_media([search])
+    """A dataset holding one indexed store per camera, and its (group, sequence)."""
+    ds = store_dataset(
+        tmp_path,
+        make_media_dataset,
+        make_imgstore,
+        cameras=cameras or [""],
+        nframes=nframes,
+        chunksize=chunksize,
+        fill=True,
+        fmt=fmt,
+    )
     row = _originals(ds).iloc[0]
     return ds, str(row["group"]), str(row["sequence"])
 

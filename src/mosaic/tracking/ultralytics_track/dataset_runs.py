@@ -6,9 +6,11 @@ identity, probe the Ultralytics environment, mint a run, and drive one gated
 predictions into ``tracks/<variant>/``.
 
 One expensive gated phase, like Lightning Pose, and like every other tracker the
-tool runs in an environment of its own and opens a path -- so each entry resolves
-through :func:`resolve_tool_input`, and every identifier, marker, reuse decision
-and index write is the shared machinery, unchanged.
+tool runs in an environment of its own. Mosaic's runner program reads the entry's
+files there, in order on one frame axis, so each entry resolves through
+:func:`entry_runner_sources` and needs neither a join nor a store export. Every
+identifier, marker, reuse decision and index write is the shared machinery,
+unchanged.
 
 **What precedes minting, and what does not.** Resolving the model reads its bytes
 for a digest, and the probe loads its weights where they will run; both come
@@ -30,7 +32,6 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.media.read_target import verified_read_facts
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.entry_claim import claim, phase_activity
 from mosaic.core.pipeline.index_csv import IndexCSV, index_records
@@ -66,10 +67,11 @@ from mosaic.tracking.common.index import (
 )
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
-from mosaic.tracking.common.tool_input import resolve_tool_input
+from mosaic.tracking.common.tool_input import entry_runner_sources
 from mosaic.tracking.common.ultralytics_env import (
     progress_activity,
     reported_frames_read,
+    request_sources,
 )
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     TrackRequest,
@@ -452,25 +454,27 @@ def run_ultralytics(
             clear_outputs(work_dir, ULTRALYTICS_KIND, "track")
             phase_claim = claim(seq_ctx, work_dir, "track", idle_timeout)
             seq_ctx.progress.on_phase("track", item.key)
-            # The runner opens the path itself, so an imgstore recording resolves
-            # to the plain video export-store wrote for it. Resolved here rather
-            # than before the reuse gate: an entry already tracked needs no
-            # export, and demanding one would fail a re-run over finished work.
-            tool_input = resolve_tool_input(job.ds, item, kind=ULTRALYTICS_KIND)
-            # The facts have to describe the file the tool will open, and the
-            # index row measured the source. For an exported store those are two
-            # files, so the indexed facts travel only when the resolved path is
-            # the source itself; otherwise the export is probed and gated on its
-            # own. The gate is mosaic's alone -- the runner cannot call it.
-            facts = verified_read_facts(
-                tool_input,
-                item.facts if tool_input == item.video_path else None,
-                "analysis",
-            )[0]
+            # The runner reads the entry's files itself: its clips, or a store's
+            # chunks. Resolved here rather than before the reuse gate, because
+            # resolving probes a store's chunks, which an entry already tracked
+            # does not need. The facts travel gated, because the gate is mosaic's
+            # alone and the runner cannot call it.
+            sources = entry_runner_sources(
+                job.ds,
+                item.group,
+                item.sequence,
+                item.video_paths,
+                item.source_facts,
+                kind=ULTRALYTICS_KIND,
+                variant=item.media,
+            )
             result = run_ultralytics_tool(
                 TrackRequest(
                     model_path=str(resolved_model.path),
-                    video_path=str(tool_input),
+                    sources=request_sources(
+                        [source.path for source in sources],
+                        [source.facts for source in sources],
+                    ),
                     output_parquet=str(predictions_path),
                     tracker_yaml=str(tracker_yaml),
                     # Ultralytics computes its own run directory eagerly even
@@ -493,7 +497,6 @@ def run_ultralytics(
                     frame_step=frame_step,
                     batch_size=params.batch_size,
                     prefetch=params.prefetch,
-                    media_facts=dataclasses.asdict(facts),
                 ),
                 work_dir=work_dir,
                 idle_timeout=idle_timeout,

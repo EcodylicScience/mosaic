@@ -210,10 +210,12 @@ Add `--extra augment` to either `uv sync` to install `albumentations`. Ultralyti
 applies Blur, MedianBlur, ToGray and CLAHE at p=0.01 during training. Nothing records
 which way a run went, so opt in deliberately.
 
-Both tools take a video path, so an imgstore recording has to be exported first with
-`mosaic run --kind export-store` — as TRex, SLEAP and Lightning Pose also require. The
-error message names the command. `infer-localizer` reads a store directly and needs no
-export.
+Both tools read an entry's files themselves: the clips of a split recording, and the
+chunk files of an imgstore whose chunks are video. Neither needs `export-joined` or
+`export-store` for those. A store whose chunks hold images, raw arrays, or Bayer or YUV
+data needs `mosaic run --kind export-store` first, as it does for TRex, SLEAP and
+Lightning Pose, and the error message names the command. `infer-localizer` reads a store
+directly and needs no export.
 
 ### keypoint-MoSeq
 

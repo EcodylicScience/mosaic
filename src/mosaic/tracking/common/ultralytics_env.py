@@ -25,10 +25,11 @@ request each op builds -- stays with that caller.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, TypeAlias
 
@@ -51,10 +52,13 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
     ProbeRequest,
     ProbeResponse,
     ProgressEvent,
+    SourceFile,
     TrackResponse,
 )
 
 if TYPE_CHECKING:
+    from mosaic_media import MediaFacts
+
     from mosaic.core.pipeline.job import JobContext
     from mosaic.core.pipeline.markers import PhaseName
 
@@ -488,6 +492,22 @@ def reported_frames_read(
         return None
 
 
+def request_sources(
+    paths: Sequence[Path], facts: Sequence[MediaFacts]
+) -> list[SourceFile]:
+    """Return an entry's files as a runner request names them, in order.
+
+    Args:
+        paths: The files the runner reads.
+        facts: Their facts, parallel to *paths* and already gated, because the
+            runner cannot call the gate.
+    """
+    return [
+        SourceFile(path=str(path), media_facts=dataclasses.asdict(file_facts))
+        for path, file_facts in zip(paths, facts, strict=True)
+    ]
+
+
 __all__ = [
     "POLO_BOOTSTRAP",
     "POLO_ENV",
@@ -506,6 +526,7 @@ __all__ = [
     "reported_epoch",
     "reported_frames_read",
     "reported_progress",
+    "request_sources",
     "run_runner",
     "runner_invocation",
     "runner_script",

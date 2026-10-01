@@ -1,9 +1,10 @@
 """A tracker reuses an entry's output only for the clips that the output was made from.
 
-Every tracker hands its tool one video per entry: the entry's one clip, or the
-join of its clips. The reuse gate compares the identity of that whole input,
-the ordered composition of the clips (``TrackerWorkItem.source_uid``), so a
-clip replaced after the first is noticed. A marker that cannot name the clip
+Every tracker reads the whole entry: its one clip, the join of its clips, or for
+Ultralytics, whose runner reads them in order, the clips themselves. The reuse
+gate compares the identity of that whole input, the ordered composition of the
+clips (``TrackerWorkItem.source_uid``), so a clip replaced after the first is
+noticed. A marker that cannot name the clip
 set, because it records only the first clip's uuid or no uuid at all, proves
 nothing for several clips. One clip's identity is its own uuid, so a single-clip
 entry reuses what it reused before.
@@ -129,10 +130,9 @@ def session(ds: Dataset, requires_ffmpeg: None) -> IndexSession:
     """Index the entry's clips, and write the join of several.
 
     The clips keep their filenames whatever their uids, so a changed uid is a clip
-    replaced in place. The clips are stubs, but the join is a real H.264 video,
-    because Ultralytics measures the file that it hands its tool. No join is
-    written when a uid is empty, because clips of which one is unidentified have no
-    join.
+    replaced in place. The clips are stubs with stored facts, and the join that a
+    one-file tool is handed is a real H.264 video. No join is written when a uid is
+    empty, because clips of which one is unidentified have no join.
     """
 
     def index(*uids: str) -> None:

@@ -1,11 +1,12 @@
 """An inference op covers the whole entry, not its first clip.
 
 A recorder that splits a session into clips leaves an entry whose frames are one
-axis over several files. The two Ultralytics inference ops hand their runner one
-path, so a multi-clip entry resolves to its join, as the trackers' entries do.
-The localizer reads in this process, so it reads the clips on the entry's frame
-axis, and their join only when their frame rates differ. Either way the
-published table's ``frame`` is the entry's frame.
+axis over several files. The two Ultralytics inference ops hand their runner the
+clips themselves, which it reads in order on that axis, so a multi-clip entry
+needs no join, whatever the clips' frame rates. The localizer reads in this
+process, so it reads the clips on the entry's frame axis, and their join only
+when their frame rates differ. Either way the published table's ``frame`` is the
+entry's frame.
 
 The clips and the joins are real. The model runners are the recording fakes from
 ``tests.helpers``, and the localizer's fake reports a detection per frame of
@@ -103,58 +104,47 @@ def _tracker_source_uid(ds: Dataset) -> str:
     return item.source_uid
 
 
-class TestAnOpThatHandsItsRunnerAPath:
-    def test_it_is_handed_the_join_and_its_table_spans_both_clips(
+class TestAnOpWhoseRunnerReadsTheClips:
+    @pytest.mark.parametrize("rates", [(30.0, 30.0), (30.0, 31.0)], ids=str)
+    def test_it_is_handed_the_clips_and_its_table_spans_both(
         self,
         tmp_path: Path,
         model: Path,
         monkeypatch: pytest.MonkeyPatch,
+        rates: tuple[float, float],
         requires_ffmpeg: None,
     ) -> None:
-        ds, _clips = _dataset(tmp_path, [30.0, 30.0])
-        joined = _join(ds)
+        """No join is built, including for clips at two frame rates."""
+        ds, clips = _dataset(tmp_path, rates)
         fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
 
         _ = _infer(ds, "infer-pose", model)
 
-        assert fake.videos == [joined]
+        assert fake.videos == clips
         frames = published_table(ds, "infer-pose")["frame"]
         assert (int(frames.min()), int(frames.max())) == (0, 2 * _CLIP_FRAMES - 1)
         (row,) = [row for _, row in read_tracks_index(ds).iterrows()]
         roots = decode_consumed_roots(str(row["consumed_source_roots"]))
-        assert roots == ("media_raw",), "the clips, not the join the model read"
+        assert roots == ("media_raw",)
+        assert not (ds.get_root("media") / JOINED_KIND_DIRECTORY).exists()
 
-    def test_it_records_the_clips_identity_not_the_join_s(
+    def test_a_join_on_disk_is_not_read_and_the_clips_identity_is_recorded(
         self,
         tmp_path: Path,
         model: Path,
         monkeypatch: pytest.MonkeyPatch,
         requires_ffmpeg: None,
     ) -> None:
-        ds, _clips = _dataset(tmp_path, [30.0, 30.0])
+        ds, clips = _dataset(tmp_path, [30.0, 30.0])
         joined = _join(ds)
-        _ = install_fake_pose_inference(monkeypatch, pose_per_frame)
+        fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
 
         run_id = _infer(ds, "infer-pose", model)
 
+        assert fake.videos == clips
         recorded = _recorded_source_uid(ds, "infer-pose", run_id)
         assert recorded == _tracker_source_uid(ds)
         assert recorded != probe_media(joined).video_uuid
-
-    def test_a_missing_join_is_refused_naming_the_command(
-        self,
-        tmp_path: Path,
-        model: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        requires_ffmpeg: None,
-    ) -> None:
-        ds, _clips = _dataset(tmp_path, [30.0, 30.0])
-        fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
-
-        with pytest.raises(JoinedExportMissingError, match="--kind export-joined"):
-            _ = _infer(ds, "infer-pose", model)
-        assert fake.videos == []
-        assert fake.probed == [], "the model's environment was probed first"
 
 
 @pytest.mark.parametrize("kind", ["infer-pose", "infer-points", "infer-localizer"])
@@ -207,10 +197,10 @@ def test_stores_at_two_rates_are_refused_before_a_model_loads(
 
 
 @pytest.mark.parametrize("kind", ["infer-pose", "infer-points"])
-def test_stores_at_one_rate_are_refused_for_a_runner_handed_a_path(
+def test_stores_at_one_rate_are_refused_for_a_runner(
     tmp_path: Path, model: Path, kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The runner is handed one file, and export-joined does not join stores."""
+    """The runner reads a store only as an entry's one clip, as a tracker does."""
     ds = make_dataset(tmp_path / "ds")
     write_media_index(
         ds,
@@ -238,16 +228,23 @@ def test_stores_at_one_rate_are_refused_for_a_runner_handed_a_path(
     assert pose.probed == [] and points.probed == []
 
 
-def _two_clips(sequence: str) -> list[MediaClip]:
+def _two_clips(
+    sequence: str, *, rates: tuple[float, float] = (30.0, 30.0)
+) -> list[MediaClip]:
+    """Two clips of *sequence*, at *rates*. Two rates make the localizer read a join."""
     return [
         MediaClip(
             sequence=sequence,
             filename=f"{sequence}-{order}.mp4",
             video_order=order,
             video_uuid=f"{sequence}-uid-{order}",
+            fps=rate,
         )
-        for order in range(2)
+        for order, rate in enumerate(rates)
     ]
+
+
+_TWO_RATES = (30.0, 31.0)
 
 
 class TestEntriesWithNoFileBuilt:
@@ -256,19 +253,22 @@ class TestEntriesWithNoFileBuilt:
     def test_every_missing_join_is_named_before_a_model_runs(
         self, tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The localizer reads clips at two frame rates through their join."""
         ds = make_dataset(tmp_path / "ds")
-        write_media_index(ds, [*_two_clips("a"), *_two_clips("b")])
-        fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
+        write_media_index(
+            ds,
+            [*_two_clips("a", rates=_TWO_RATES), *_two_clips("b", rates=_TWO_RATES)],
+        )
+        handed = _install_fake_localizer(monkeypatch)
 
         with pytest.raises(JoinedExportMissingError) as refused:
-            _ = run_op(ds, "infer-pose", {"model": str(model)})
+            _ = run_op(ds, "infer-localizer", {"model": str(model)})
 
         message = str(refused.value)
-        assert message.startswith("[infer-pose] 2 entries cannot be read yet")
+        assert message.startswith("[infer-localizer] 2 entries cannot be read yet")
         for sequence in ("a", "b"):
             assert f'--kind export-joined --entries ":{sequence}"' in message
-        assert fake.videos == []
-        assert fake.probed == [], "the model's environment was probed first"
+        assert handed == []
 
     def test_every_missing_store_export_is_named_as_one(
         self, tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch
@@ -295,41 +295,42 @@ class TestEntriesWithNoFileBuilt:
     ) -> None:
         """One entry needs a join built, and the other needs one of two deleted."""
         ds = make_dataset(tmp_path / "ds")
-        write_media_index(ds, [*_two_clips("a"), *_two_clips("b")])
+        write_media_index(
+            ds,
+            [*_two_clips("a", rates=_TWO_RATES), *_two_clips("b", rates=_TWO_RATES)],
+        )
         root = ds.get_root("media") / JOINED_KIND_DIRECTORY
         root.mkdir(parents=True)
         uid = joined_source_uid(ds.resolve_media("", "b").facts)
         for recipe in sorted(current_joined_recipes()):
             _ = (root / f"{uid}.{recipe}.joined.mp4").write_bytes(b"join")
-        fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
+        handed = _install_fake_localizer(monkeypatch)
 
         with pytest.raises(JoinedExportMissingError) as refused:
-            _ = run_op(ds, "infer-pose", {"model": str(model)})
+            _ = run_op(ds, "infer-localizer", {"model": str(model)})
 
         message = str(refused.value)
-        assert message.startswith("[infer-pose] 2 entries cannot be read yet")
+        assert message.startswith("[infer-localizer] 2 entries cannot be read yet")
         assert "Each is named below with what to do" in message
         assert '--kind export-joined --entries ":a"' in message
         assert "2 current joins" in message and "delete the rest" in message
-        assert fake.videos == [] and fake.probed == []
+        assert handed == []
 
-    def test_a_missing_join_and_a_missing_export_are_named_together(
+    def test_a_runner_op_names_a_missing_export_and_no_join(
         self, tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """An entry of several clips needs nothing built, and a store its export."""
         ds = make_dataset(tmp_path / "ds")
         write_media_index(ds, [*_two_clips("a"), MediaClip(sequence="s")])
         _ = point_at_a_store(ds, "s", ds.get_root("media_raw") / "s.store")
         fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
 
-        with pytest.raises(FileNotFoundError) as refused:
+        with pytest.raises(StoreExportMissingError) as refused:
             _ = run_op(ds, "infer-pose", {"model": str(model)})
 
-        assert not isinstance(
-            refused.value, (JoinedExportMissingError, StoreExportMissingError)
-        )
         message = str(refused.value)
-        assert '--kind export-joined --entries ":a"' in message
         assert '--kind export-store --entries ":s"' in message
+        assert "export-joined" not in message
         assert fake.videos == [] and fake.probed == []
 
 

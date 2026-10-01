@@ -247,8 +247,9 @@ def test_ultralytics_tracks_the_variant_and_publishes_in_source_space(
     run_id = ultralytics_runs.run_ultralytics(ds, _ultralytics_params(model, variant))
 
     (request,) = ultralytics.requests
-    assert Path(request.video_path) == media_variant_path(ds, variant, "", "s", "")
-    assert (request.media_facts["width"], request.media_facts["height"]) == (32, 24)
+    (source,) = request.sources
+    assert Path(source.path) == media_variant_path(ds, variant, "", "s", "")
+    assert (source.media_facts["width"], source.media_facts["height"]) == (32, 24)
 
     (row,) = [row for _, row in _tracks(ds, "ultralytics").iterrows()]
     table = _table(ds, row)
@@ -288,7 +289,7 @@ def test_ultralytics_reuses_a_variant_run_and_recomputes_a_rewritten_variant(
     _ = ultralytics_runs.run_ultralytics(ds, params)
 
     assert len(ultralytics.tracked) == 2
-    assert ultralytics.tracked[1] == media_variant_path(ds, variant, "", "s", "")
+    assert ultralytics.tracked[1] == (media_variant_path(ds, variant, "", "s", ""),)
 
 
 def test_a_missing_variant_fails_only_its_entry(
@@ -301,7 +302,7 @@ def test_a_missing_variant_fails_only_its_entry(
         ds, _ultralytics_params(model, variant), execution_id="missing"
     )
 
-    assert ultralytics.tracked == [media_variant_path(ds, variant, "", "s", "")]
+    assert ultralytics.tracked == [(media_variant_path(ds, variant, "", "s", ""),)]
     (line,) = entry_error_lines(ds, "missing")
     assert "MediaVariantMissingError" in line
     assert '"t"' in line
@@ -321,7 +322,7 @@ def test_a_drifted_variant_fails_only_its_entry(
         ds, _ultralytics_params(model, variant), execution_id="drifted"
     )
 
-    assert ultralytics.tracked == [media_variant_path(ds, variant, "", "s", "")]
+    assert ultralytics.tracked == [(media_variant_path(ds, variant, "", "s", ""),)]
     (line,) = entry_error_lines(ds, "drifted")
     assert "MediaVariantDriftedError" in line
     assert variant in line

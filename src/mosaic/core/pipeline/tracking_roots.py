@@ -47,6 +47,7 @@ __all__ = [
     "StreamHeader",
     "TailLoss",
     "ToolCodecError",
+    "ToolReads",
     "TrackingPhase",
     "TrackingRoot",
     "is_under_tracking_root",
@@ -62,6 +63,24 @@ Also the name a user-content scan must never descend into (item 8.1's exclusion
 clause), which is why it is a bare component name rather than a path: the check
 is against ``Path.parts``, since a directory exclusion cannot be expressed as a
 basename pattern.
+"""
+
+ToolReads = Literal["one-file", "entry-files", "in-process"]
+"""How a producer's tool reads an entry's media.
+
+``one-file``: the tool opens one path that mosaic hands it -- the entry's one
+clip, the join of its clips, the export of a store, or a media variant's file. A
+tool of this kind decodes the file itself, so an entry of several clips needs
+``export-joined`` and a store needs ``export-store`` first.
+
+``entry-files``: the tool runs in mosaic's runner program, which reads the
+entry's files in order on one frame axis -- its clips, or the chunk files of a
+store whose chunks hold the frames mosaic reads -- and needs neither a join nor
+an export. A store whose chunks are not those frames still needs its export.
+
+``in-process``: the tool reads in mosaic's own process, through mosaic's reader,
+which reads clips and stores natively. It needs a join only for clips that differ
+in frame rate.
 """
 
 RetentionClass = Literal["tracker", "inference", "conversion"]
@@ -355,6 +374,10 @@ class TrackingRoot:
     tail loss rather than as a frame-axis mismatch
     (:func:`~mosaic.core.pipeline.tracks_index.frame_axis_verdict`). A count
     cannot show where the missing frames were, so the report says so.
+
+    ``reads`` is how this producer's tool reads an entry's media
+    (:data:`ToolReads`), which decides what has to be built before it can: a
+    join, a store's export, or neither.
     """
 
     key: str
@@ -366,6 +389,7 @@ class TrackingRoot:
     decoder: ToolDecoder = CONSERVATIVE_DECODER
     model_sets: bool = False
     tail_loss: TailLoss | None = None
+    reads: ToolReads = "one-file"
 
     @property
     def phases(self) -> tuple[PhaseName, ...]:
@@ -522,6 +546,7 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 stack="mosaic-media's own PyAV reader, inside the tool's environment",
                 also_reads=frozenset({"av1"}),
             ),
+            reads="entry-files",
             retention="tracker",
             output_schema="mosaic_v1",
             outputs=("*.predictions.parquet",),
@@ -555,6 +580,7 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 stack="mosaic-media's own PyAV reader, inside the tool's environment",
                 also_reads=frozenset({"av1"}),
             ),
+            reads="entry-files",
             retention="inference",
             output_schema="mosaic_v1",
             outputs=("predictions.parquet",),
@@ -575,6 +601,7 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 stack="mosaic-media's own PyAV reader, inside the tool's environment",
                 also_reads=frozenset({"av1"}),
             ),
+            reads="entry-files",
             retention="inference",
             output_schema="mosaic_v1",
             outputs=("predictions.parquet",),
@@ -595,6 +622,7 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 stack="mosaic-media's own PyAV reader, inside the tool's environment",
                 also_reads=frozenset({"av1"}),
             ),
+            reads="in-process",
             retention="inference",
             output_schema="mosaic_v1",
             outputs=("predictions.parquet",),

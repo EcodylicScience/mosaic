@@ -13,7 +13,7 @@ and a test can compute the table that the bridge publishes from them.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -25,8 +25,10 @@ import pytest
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     ProbeResponse,
+    SourceFile,
     TrackRequest,
     TrackResponse,
+    source_windows,
 )
 from mosaic.tracking.ultralytics_track.run import (
     TRACK_RESPONSE_NAME,
@@ -62,24 +64,34 @@ def write_ultralytics_predictions(
     table.to_parquet(path, index=False)
 
 
+def source_frame_count(media_facts: Mapping[str, object]) -> int:
+    """Return the frame count in a source's flattened facts, 0 when it reports none."""
+    count = media_facts.get("frame_count")
+    return count if isinstance(count, int) else 0
+
+
 def frames_in_window(
-    media_facts: Mapping[str, object],
+    sources: Sequence[SourceFile],
     start_frame: int,
     end_frame: int | None,
     frame_step: int,
     max_frames: int | None = None,
 ) -> int:
-    """Return how many frames a runner reads of a video under a frame window.
+    """Return how many frames a runner reads of an entry's files under a frame window.
 
-    The reader stops at *end_frame*, exclusive, or at the video's frame count in
-    *media_facts*, whichever comes first, and a runner stops after *max_frames*.
-    A video whose facts report no count has none to read.
+    The window is on the entry's frame axis, divided among the files as the runner
+    divides it (``source_windows``). Each file ends at the frame count in its facts,
+    and a runner stops after *max_frames*. A file whose facts report no count has
+    none to read.
     """
-    count = media_facts.get("frame_count")
-    last = count if isinstance(count, int) else 0
-    if end_frame is not None:
-        last = min(last, end_frame)
-    read = len(range(start_frame, last, frame_step))
+    windows = source_windows(
+        [source_frame_count(source.media_facts) for source in sources],
+        start=start_frame,
+        end=end_frame,
+        step=frame_step,
+    )
+    step = max(1, frame_step)
+    read = sum(len(range(window.start, window.end, step)) for window in windows)
     return read if max_frames is None else min(read, max_frames)
 
 
@@ -117,14 +129,15 @@ class FakeUltralytics:
     events: list[tuple[str, str]] = field(default_factory=list)
     requests: list[TrackRequest] = field(default_factory=list)
     work_dirs: list[Path] = field(default_factory=list)
-    tracked: list[Path] = field(default_factory=list)
+    tracked: list[tuple[Path, ...]] = field(default_factory=list)
+    """The files of each request, in order: one element per entry tracked."""
     n_frames: int = 4
     """How many frames the predictions cover, each with a detection of every track."""
     n_ids: int = 2
     frames_read: int | None = None
     """How many frames the runner reports reading, in its response and its result.
 
-    ``None`` reports the frames of the request's window of its video, which the
+    ``None`` reports the frames of the request's window of its files, which the
     runner reads whether or not it detects anything in them
     (:func:`frames_in_window`). The response is written into the working
     directory, where the runner writes it.
@@ -139,7 +152,7 @@ class FakeUltralytics:
     ) -> UltralyticsTrackResult:
         self.requests.append(request)
         self.work_dirs.append(Path(work_dir))
-        self.tracked.append(Path(request.video_path))
+        self.tracked.append(tuple(Path(source.path) for source in request.sources))
         out_parquet = Path(request.output_parquet)
         self.events.append((out_parquet.name, "track"))
         write_ultralytics_predictions(
@@ -148,7 +161,7 @@ class FakeUltralytics:
         read = self.frames_read
         if read is None:
             read = frames_in_window(
-                request.media_facts,
+                request.sources,
                 request.start_frame,
                 request.end_frame,
                 request.frame_step,

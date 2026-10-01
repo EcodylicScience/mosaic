@@ -7,40 +7,14 @@ the video runs out, which is the one moment the two threads have to agree about.
 
 from __future__ import annotations
 
-import importlib
-import sys
 import time
-from collections.abc import Iterator
-from pathlib import Path
 from types import ModuleType
 
 import numpy as np
 import pytest
 
-from mosaic.tracking.external import runner as runner_package
 
 pytestmark = pytest.mark.tracker
-
-
-@pytest.fixture(scope="module")
-def runner_module() -> Iterator[ModuleType]:
-    """The runner program, imported into this process, and then unimported.
-
-    Every Ultralytics import in it is deferred into a function body, so the module
-    imports in an environment that has none -- which is what lets this run in
-    mosaic's own environment against the real code rather than a copy of it.
-    """
-    directory = str(Path(runner_package.__file__).parent)
-    inserted = directory not in sys.path
-    if inserted:
-        sys.path.insert(0, directory)
-    try:
-        yield importlib.import_module("ultralytics_runner")
-    finally:
-        if inserted:
-            sys.path.remove(directory)
-        for name in ("ultralytics_runner", "ultralytics_protocol"):
-            _ = sys.modules.pop(name, None)
 
 
 class _Reader:

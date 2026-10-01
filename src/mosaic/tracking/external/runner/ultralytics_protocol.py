@@ -16,11 +16,12 @@ own.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Final, Literal, Protocol, TypeAlias
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Annotated, Final, Literal, Protocol, TypeAlias
 
 import numpy as np
-from pydantic import BaseModel, JsonValue
+from pydantic import BaseModel, Field, JsonValue
 
 # Mirror of ``mosaic.tracking.ultralytics_track.tracker_defaults.TrackerSetting``.
 # Duplicated deliberately rather than imported: this module may take no import
@@ -300,14 +301,116 @@ class TrackerDefaultsResponse(BaseModel):
     """
 
 
+# --- an entry's files ------------------------------------------------------
+
+
+class SourceFile(BaseModel):
+    """One file of an entry, and the facts mosaic measured and gated for it.
+
+    An entry is read from its files in order, on one frame axis: frame 0 of a
+    file is the entry frame after every frame of the files before it. That is the
+    axis that mosaic's ``ConcatenatedTimeline`` defines and that a join of the
+    files holds, so no offset is sent. Each file's place on the axis follows from
+    the ``frame_count`` of the files before it.
+    """
+
+    path: str
+    media_facts: dict[str, object]
+    """A ``mosaic_media.MediaFacts`` flattened with ``dataclasses.asdict``.
+
+    **Required, and not nullable.** Mosaic owns the read-target gate: it probes
+    the file, derives its verdict and raises when the measured verdict says the
+    file needs transcoding before it can be read for analysis. The runner cannot
+    call that gate -- it lives in mosaic -- so an omitted payload would leave the
+    reader probing with no gate at all, and a rotated or variable-frame-rate
+    original would track silently to misindexed coordinates under a perfectly
+    valid identifier. Making the field required is what stops the boundary being
+    crossed ungated.
+
+    Passing measured facts rather than letting the runner probe also keeps a raw
+    ``.h264`` reading with its true frame count instead of the garbage count its
+    header declares. Its ``frame_count`` is also where the file sits on the
+    entry's frame axis. The runner rebuilds the dataclass by validating this
+    payload, so a field that arrived under the wrong type is refused here rather
+    than read as data.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class SourceWindow:
+    """The part of one file that an entry-axis frame window reads.
+
+    Attributes:
+        index: The file's position in the entry's files.
+        first_frame: The entry frame of the file's frame 0.
+        start: The first frame of the file that is read.
+        end: The frame of the file that reading stops before.
+    """
+
+    index: int
+    first_frame: int
+    start: int
+    end: int
+
+
+def source_windows(
+    frame_counts: Sequence[int], *, start: int, end: int | None, step: int
+) -> list[SourceWindow]:
+    """Divide an entry-axis frame window among the files that hold the entry.
+
+    The window reads entry frames ``start``, ``start + step`` and so on, up to
+    ``end`` exclusive, or to the entry's last frame when ``end`` is ``None``.
+    Each file reached gets the part of the window inside it, in the file's own
+    frame numbers, and a file that the window misses gets none. The stride keeps
+    its phase across a boundary, so the frames read are the frames a reader of
+    the files' join reads under the same window.
+
+    A start below zero reads from frame 0 and a step below one reads every frame,
+    as one reader of one file takes them.
+
+    Args:
+        frame_counts: How many frames each file holds, in order.
+        start: The first entry frame of the window.
+        end: The entry frame the window stops before, or ``None`` for the end.
+        step: The stride between frames read.
+
+    Returns:
+        One window per file that the window reaches, in file order.
+    """
+    first_read = max(0, start)
+    stride = max(1, step)
+    windows: list[SourceWindow] = []
+    first_frame = 0
+    for index, count in enumerate(frame_counts):
+        after = first_frame + count
+        low = max(first_read, first_frame)
+        high = after if end is None else min(end, after)
+        behind = (low - first_read) % stride
+        if behind:
+            low += stride - behind
+        if low < high:
+            windows.append(
+                SourceWindow(
+                    index=index,
+                    first_frame=first_frame,
+                    start=low - first_frame,
+                    end=high - first_frame,
+                )
+            )
+        first_frame = after
+    return windows
+
+
 # --- track -----------------------------------------------------------------
 
 
 class TrackRequest(BaseModel):
-    """One video, tracked once, in a process of its own."""
+    """One entry, tracked once, in a process of its own."""
 
     model_path: str
-    video_path: str
+    sources: Annotated[list[SourceFile], Field(min_length=1)]
+    """The entry's files, read in order on one frame axis."""
+
     output_parquet: str
     """Where the raw predictions table is published, atomically."""
 
@@ -353,28 +456,12 @@ class TrackRequest(BaseModel):
     """Spelled for the installed Ultralytics by the runner."""
 
     start_frame: int
+    """The first entry frame read. The frame window is on the entry's axis."""
+
     end_frame: int | None
     frame_step: int
     batch_size: int
     prefetch: bool
-    media_facts: dict[str, object]
-    """A ``mosaic_media.MediaFacts`` flattened with ``dataclasses.asdict``.
-
-    **Required, and not nullable.** Mosaic owns the read-target gate: it probes
-    the file, derives its verdict and raises when the measured verdict says the
-    file needs transcoding before it can be read for analysis. The runner cannot
-    call that gate -- it lives in mosaic -- so an omitted payload would leave the
-    reader probing with no gate at all, and a rotated or variable-frame-rate
-    original would track silently to misindexed coordinates under a perfectly
-    valid identifier. Making the field required is what stops the boundary being
-    crossed ungated.
-
-    Passing measured facts rather than letting the runner probe also keeps a raw
-    ``.h264`` reading with its true frame count instead of the garbage count its
-    header declares. The runner rebuilds the dataclass by validating this
-    payload, so a field that arrived under the wrong type is refused here rather
-    than read as data.
-    """
 
 
 class TrackResponse(BaseModel):
@@ -497,7 +584,7 @@ def pose_rows_from_result(
 ) -> np.ndarray | None:
     """One frame's pose detections as a ``(n, 2 + 3K)`` block, or None.
 
-    *frame_index* is the frame's index in the video, as :func:`rows_from_result`
+    *frame_index* is the frame's entry frame, as :func:`rows_from_result`
     takes it. A run with ``start_frame`` or ``frame_step`` set numbers its rows by
     the frames it read, not by their places among them.
     """
@@ -566,7 +653,9 @@ class InferRequestBase(BaseModel):
     """
 
     model_path: str
-    video_path: str
+    sources: Annotated[list[SourceFile], Field(min_length=1)]
+    """The entry's files, read in order on one frame axis."""
+
     output_parquet: str
     """Where the raw predictions table is published, atomically."""
 
@@ -599,18 +688,10 @@ class InferRequestBase(BaseModel):
     max_frames: int | None
     batch_size: int
     prefetch: bool
-    media_facts: dict[str, object]
-    """A ``mosaic_media.MediaFacts`` flattened with ``dataclasses.asdict``.
-
-    **Required, and not nullable**, for the reason
-    :attr:`TrackRequest.media_facts` gives at length: mosaic owns the read-target
-    gate and this program cannot call it, so an omitted payload would leave the
-    reader probing ungated.
-    """
 
 
 class InferPoseRequest(InferRequestBase):
-    """One video, run through a YOLO pose model, in a process of its own."""
+    """One entry, run through a YOLO pose model, in a process of its own."""
 
     n_keypoints: int
     """How many keypoints each row carries, from the probe. A term of the column
@@ -619,7 +700,7 @@ class InferPoseRequest(InferRequestBase):
 
 
 class InferPointsRequest(InferRequestBase):
-    """One video, run through a POLO point model, in a process of its own.
+    """One entry, run through a POLO point model, in a process of its own.
 
     Carries no ``dor``. ``PointInferParams.dor`` reaches no Ultralytics argument
     on the in-process path either -- it is declared, documented, and never
@@ -669,7 +750,7 @@ class TrainRequestBase(BaseModel):
     program constructs one model, calls ``train`` once, and reports how it ended.
 
     What is absent is the whole video-reading half the inference requests carry --
-    no ``media_facts``, no frame window, no ``prefetch`` -- because training reads
+    no ``sources``, no frame window, no ``prefetch`` -- because training reads
     the image files ``data_yaml`` declares and opens no reader, so mosaic's
     read-target gate has nothing to gate.
     """

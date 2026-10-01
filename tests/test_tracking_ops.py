@@ -715,7 +715,7 @@ def _positionless_predictions_for(
     def fake_run(
         request: InferPointsRequest, *, work_dir: Path, **kwargs: object
     ) -> InferenceOutcome:
-        if Path(request.video_path).stem not in sequences:
+        if sequences.isdisjoint(Path(source.path).stem for source in request.sources):
             return whole(request, work_dir=work_dir, **kwargs)
         table = pd.DataFrame({"frame": [0, 1], "confidence": [0.9, 0.8]})
         published = Path(request.output_parquet)

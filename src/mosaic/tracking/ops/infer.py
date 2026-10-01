@@ -19,7 +19,6 @@ its ``source_abs_path``.
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,7 +47,7 @@ from mosaic.core.pipeline.markers import (
 )
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.placement import EntryAxis
-from mosaic.core.pipeline.tracking_roots import tracking_root_default
+from mosaic.core.pipeline.tracking_roots import tracking_root, tracking_root_default
 from mosaic.core.pipeline.tracks_axis import register_frames_read_reader
 from mosaic.core.pipeline.tracks_identity import (
     infer_variant_payload,
@@ -83,12 +82,12 @@ from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
 from mosaic.tracking.common.scope import refuse_unjoinable
 from mosaic.tracking.common.tool_input import (
     StoreExportMissingError,
-    entry_tool_input,
-    refuse_undecodable_codec,
+    entry_runner_sources,
 )
 from mosaic.tracking.common.ultralytics_env import (
     progress_activity,
     reported_frames_read,
+    request_sources,
 )
 from mosaic.tracking.model_refs import (
     model_kind_for,
@@ -152,11 +151,13 @@ import this module."""
 class VideoInput:
     """One entry's video, and what running a model over it is given.
 
-    *video_paths* is one file for an op that hands its runner a path: the entry's
-    clip, its export, its join or a media variant's file. For the localizer, which
-    reads in this process, it is a media variant's file, the entry's clips in
-    order, or their join when their frame rates differ. Read from the entry
-    media, frame ``i`` of what is read is frame ``i`` of the entry.
+    *video_paths* are the files that the model reads, in order on one frame axis.
+    For an op whose runner reads them, they are a media variant's file, or the
+    entry's clips, with a store as its chunk files or, when those are not the
+    frames mosaic reads, its export. For the localizer, which reads in this
+    process, they are a media variant's file, the entry's clips, or their join
+    when their frame rates differ. Read from the entry media, frame ``i`` of what
+    is read is frame ``i`` of the entry.
 
     *facts* are parallel to *video_paths* and **gated**: the caller has already
     derived the read-target verdict and refused a file that needs an analysis
@@ -575,7 +576,6 @@ def _inference_entry(
     *,
     kind: str,
     variants: VariantLookup | None,
-    opens_by_path: bool,
     windowed: bool,
 ) -> _InferenceEntry:
     """Return the files that the model reads for *entry*: its media, or a variant's.
@@ -584,14 +584,16 @@ def _inference_entry(
     export, and its index row's stored facts describe it without a probe.
     *variants* is ``None`` when the run reads the entry media.
 
-    Every clip of the entry media is read. An op that hands its runner a path
-    hands it one file: the entry's clip, the export of a store, or the join of
-    several clips, as the trackers are handed. The localizer reads the clips in
-    this process on the entry's frame axis, and reads their join only when their
-    frame rates differ, by the rule that mosaic's reader follows everywhere
-    (:func:`~mosaic.core.pipeline.joined_export.join_to_read`). Either way, clips
-    that cannot be read as one video are refused first, as a tracker refuses
-    them (:func:`~mosaic.tracking.common.scope.refuse_unjoinable`).
+    Every clip of the entry media is read, as *kind*'s root declares
+    (``TrackingRoot.reads``). An op whose runner reads the files is handed the
+    entry's files in order, as the Ultralytics tracker is
+    (:func:`~mosaic.tracking.common.tool_input.entry_runner_sources`): its clips,
+    and a store's chunk files or its export, with no join. The localizer reads
+    the clips in this process on the entry's frame axis, and reads their join
+    only when their frame rates differ, by the rule that mosaic's reader follows
+    everywhere (:func:`~mosaic.core.pipeline.joined_export.join_to_read`). Either
+    way, clips that cannot be read as one video are refused first, as a tracker
+    refuses them (:func:`~mosaic.tracking.common.scope.refuse_unjoinable`).
 
     *windowed* says whether the run's frame window narrows what the model reads,
     which the entry's :class:`EntryAxis` needs to know.
@@ -602,27 +604,23 @@ def _inference_entry(
             variant's file was written.
         JoinedSourceMismatchError: If the entry's clips differ in frame
             geometry or one reports no frame rate; if they include a store and
-            the op hands its runner a path; or if they are stores whose frame
-            rates differ.
-        StoreExportMissingError: If an op that opens by path is handed a store
-            with no export.
-        JoinedExportMissingError: If the entry's clips must be read through a
-            join and there is no single current one.
+            the op's runner reads them; or if they are stores whose frame rates
+            differ.
+        StoreExportMissingError: If the op's runner reads a store whose chunks
+            are not the frames mosaic reads, and the store has no export.
+        JoinedExportMissingError: If the localizer must read the entry's clips
+            through a join and there is no single current one.
         ToolCodecError: If the op hands its model's runner a file whose codec
             that runner's decoder cannot be expected to open.
     """
+    in_process = tracking_root(kind).reads == "in-process"
     group, sequence, resolved = entry.group, entry.sequence, entry.resolved
     media = variants.run_id if variants is not None else ""
-    targets: tuple[Path, ...]
-    # The facts must describe the files that will be read. Where that is not
-    # the file the index measured (an export or a join), it is probed.
-    stored: tuple[MediaFacts, ...] | None
     if variants is not None:
         variant = variants.resolve(ds, entry)
-        targets, stored = (variant.path,), (variant.facts,)
+        paths, stored = (variant.path,), (variant.facts,)
         consumed_media = variant.consumed_media
         axis = EntryAxis.of_variant(variant.mapping())
-        source_uid = entry_source_uid(stored)
     else:
         # Before a join is looked up, so that clips no join can hold are named
         # for what is wrong with them rather than reported as unjoined.
@@ -632,39 +630,34 @@ def _inference_entry(
             sequence,
             resolved.paths,
             resolved.facts,
-            hands_over_path=opens_by_path,
+            hands_over_path=not in_process,
         )
+        paths, stored = tuple(resolved.paths), tuple(resolved.facts)
+        consumed_media = paths
         axis = EntryAxis.of_entry_media(resolved.facts, windowed=windowed)
-        source_uid = entry_source_uid(resolved.facts)
-        if opens_by_path:
-            # An op that hands a tool a path cannot hand it an imgstore, which
-            # is a directory of chunk files, nor several clips, which a tool
-            # that joins them itself loses frames at. A required-but-unlinked
-            # entry already raised in resolve_media_scope, before any defective
-            # original was opened.
-            target = entry_tool_input(
-                ds, group, sequence, resolved.paths, resolved.facts, kind=kind
+    source_uid = entry_source_uid(stored)
+    targets: tuple[Path, ...]
+    facts: tuple[MediaFacts, ...]
+    if in_process:
+        joined = join_to_read(ds, entry, asker=kind) if variants is None else None
+        targets = (joined,) if joined is not None else paths
+        # The gate, run here rather than inside the reader, as it is for the ops
+        # whose runner reads the files. A join is not the file the index
+        # measured, so it is probed.
+        facts = tuple(
+            verified_read_facts(
+                list(targets), None if joined is not None else stored, "analysis"
             )
-            targets = (target,)
-            stored = tuple(resolved.facts) if targets == tuple(resolved.paths) else None
-            consumed_media = (
-                tuple(resolved.paths) if len(resolved.paths) > 1 else targets
-            )
-        else:
-            joined = join_to_read(ds, entry, asker=kind)
-            targets = (joined,) if joined is not None else tuple(resolved.paths)
-            stored = None if joined is not None else tuple(resolved.facts)
-            consumed_media = tuple(resolved.paths)
-    if opens_by_path:
-        # Only for an op that hands the path over. The localizer reads the
-        # file in this process with mosaic's own decoder, so what a foreign
-        # stack can open says nothing about it.
-        refuse_undecodable_codec(
-            ds, targets[0], kind=kind, group=group, sequence=sequence, variant=media
         )
-    # The gate, run here rather than inside the reader, because two of the
-    # three ops no longer open the video in this process.
-    facts = tuple(verified_read_facts(list(targets), stored, "analysis"))
+    else:
+        # The runner reads the files itself, gated here because it cannot call
+        # the gate. A required-but-unlinked entry already raised in
+        # resolve_media_scope, before any defective original was opened.
+        files = entry_runner_sources(
+            ds, group, sequence, paths, stored, kind=kind, variant=media
+        )
+        targets = tuple(file.path for file in files)
+        facts = tuple(file.facts for file in files)
     return _InferenceEntry(
         group=group,
         sequence=sequence,
@@ -719,15 +712,14 @@ def _run_inference_op(
     kind: str,
     version: str,
     declared: ModelReference,
-    opens_by_path: bool,
     per_video_for: Callable[[str], PerVideo],
 ) -> str:
     """Shared scaffold: resolve model, preflight, loop scoped videos, predict, bridge.
 
-    *opens_by_path* says whether this op hands its model's runner a path to open,
-    which decides two things about every entry: whether an imgstore has to have
-    been exported first, and which file's verdict is the one that gates the read.
-    Producer knowledge, declared by the op rather than inferred from its kind.
+    How the op's model reads an entry's media is declared on its tracking root
+    (``TrackingRoot.reads``): through mosaic's runner, which is handed the
+    entry's files, or in this process. That decides whether a store's chunks or
+    its export are read, and which files' verdicts gate the read.
 
     When ``media`` names a variant, each entry's model reads the variant's file
     and its table is mapped back into the entry's source space. An entry whose
@@ -782,7 +774,6 @@ def _run_inference_op(
                     entry,
                     kind=kind,
                     variants=variants,
-                    opens_by_path=opens_by_path,
                     windowed=bool(params.frame_window),
                 )
             )
@@ -1072,10 +1063,9 @@ class InferPoseOp(Op[PoseInferParams]):
 
             def per_video(item: VideoInput) -> VideoPredictions:
                 published = item.work_dir / _PREDICTIONS_NAME
-                (video_path,), (facts,) = item.video_paths, item.facts
                 request = InferPoseRequest(
                     model_path=model_path,
-                    video_path=str(video_path),
+                    sources=request_sources(item.video_paths, item.facts),
                     output_parquet=str(published),
                     annotated_dir=str(item.work_dir) if params.save_images else "",
                     columns=pose_columns(n_keypoints),
@@ -1089,7 +1079,6 @@ class InferPoseOp(Op[PoseInferParams]):
                     max_frames=params.max_frames,
                     batch_size=params.batch_size,
                     prefetch=True,
-                    media_facts=dataclasses.asdict(facts),
                     n_keypoints=n_keypoints,
                 )
                 outcome = run_pose_inference_tool(
@@ -1115,7 +1104,6 @@ class InferPoseOp(Op[PoseInferParams]):
             kind=self.kind,
             version=self.version,
             declared=_POSE_MODEL,
-            opens_by_path=True,
             per_video_for=per_video_for,
         )
 
@@ -1181,10 +1169,9 @@ class InferPointsOp(Op[PointInferParams]):
 
             def per_video(item: VideoInput) -> VideoPredictions:
                 published = item.work_dir / _PREDICTIONS_NAME
-                (video_path,), (facts,) = item.video_paths, item.facts
                 request = InferPointsRequest(
                     model_path=model_path,
-                    video_path=str(video_path),
+                    sources=request_sources(item.video_paths, item.facts),
                     output_parquet=str(published),
                     annotated_dir=str(item.work_dir) if params.save_images else "",
                     columns=list(POINT_COLUMNS),
@@ -1198,7 +1185,6 @@ class InferPointsOp(Op[PointInferParams]):
                     max_frames=params.max_frames,
                     batch_size=params.batch_size,
                     prefetch=True,
-                    media_facts=dataclasses.asdict(facts),
                     # `params.dor` is deliberately not sent. It reaches no
                     # Ultralytics argument on the in-process path either, so
                     # forwarding it would change what this op computes rather than
@@ -1229,7 +1215,6 @@ class InferPointsOp(Op[PointInferParams]):
             kind=self.kind,
             version=self.version,
             declared=_POINTS_MODEL,
-            opens_by_path=True,
             per_video_for=per_video_for,
         )
 
@@ -1310,7 +1295,6 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
             version=self.version,
             declared=_LOCALIZER_MODEL,
             # Reads a store natively, through mosaic's own reader.
-            opens_by_path=False,
             per_video_for=per_video_for,
         )
 

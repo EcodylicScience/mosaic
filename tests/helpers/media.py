@@ -12,7 +12,7 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 import cv2
 import numpy as np
@@ -434,18 +434,77 @@ def stub_join(dataset: Dataset, uids: Sequence[str]) -> Path:
     return path
 
 
+MakeStore = Callable[..., tuple[Path, list[np.ndarray]]]
+"""The ``make_imgstore`` fixture's factory: writes a store, returns it and its frames."""
+
+MOTIF_SYNC_UUID: Final = "f064059f9ea046429f227bc7addab1eb"
+"""The synchronization uuid that :func:`store_dataset` gives a recording's cameras."""
+
+
+def store_dataset(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+    *,
+    cameras: Sequence[str] = ("",),
+    name: str = "rec",
+    **store: object,
+) -> Dataset:
+    """Return a dataset holding one indexed imgstore per camera of one recording.
+
+    The stores are written into ``media_raw/recordings`` and indexed from there,
+    which gives the dataset an originals index separate from the derivative index
+    under ``media``. A named camera's store is ``<name>.<camera>`` and carries the
+    Motif metadata that groups a synced recording's cameras. ``""`` is one store
+    with no camera.
+
+    Args:
+        tmp_path: Where the dataset is made, under ``dataset``.
+        make_media_dataset: The ``make_media_dataset`` fixture.
+        make_imgstore: The ``make_imgstore`` fixture.
+        cameras: The camera of each store.
+        name: The recording's name, which each store is named for.
+        **store: Passed to *make_imgstore* for every store.
+    """
+    ds = make_media_dataset((tmp_path / "dataset").resolve())
+    search = ds.get_root("media_raw") / "recordings"
+    search.mkdir(parents=True, exist_ok=True)
+    for serial in cameras:
+        extra = (
+            {
+                "camera_serial": serial,
+                "synchronizationuuid": MOTIF_SYNC_UUID,
+                "synchronization": "framenumber",
+            }
+            if serial
+            else None
+        )
+        _ = make_imgstore(
+            name=f"{name}.{serial}" if serial else name,
+            parent=search,
+            extra_metadata=extra,
+            **store,
+        )
+    ds.index_media([search])
+    return ds
+
+
 def point_at_a_store(
     dataset: Dataset, sequence: str, store: Path, *, video_order: int | None = None
 ) -> Path:
     """Re-address *sequence*'s indexed media at an imgstore recording, *store*.
 
-    A store is a directory holding a ``metadata.yaml`` naming ``__store``, which
-    is all ``is_imgstore`` reads, so this needs no chunk files and no imgstore
-    package. *video_order* names the one clip to re-address, and ``None`` every
-    clip of the sequence. Returns *store*.
+    A store is a directory holding a ``metadata.yaml`` naming ``__store``. This
+    one describes an image-directory store with no chunks, which needs no chunk
+    files and no imgstore package. Its chunks are not video, so a tool that reads
+    files outside mosaic's process reads it only through its export.
+    *video_order* names the one clip to re-address, and ``None`` every clip of the
+    sequence. Returns *store*.
     """
     store.mkdir(parents=True, exist_ok=True)
-    _ = (store / "metadata.yaml").write_text("__store: {}\n")
+    _ = (store / "metadata.yaml").write_text(
+        "__store: {class: DirectoryImgStore, format: npy, imgshape: [48, 64, 3]}\n"
+    )
     index_path = dataset.get_root(dataset.resolve_media_root()) / "index.csv"
     table = pd.read_csv(index_path)
     is_entry = table["sequence"] == sequence

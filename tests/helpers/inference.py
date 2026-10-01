@@ -4,7 +4,9 @@ Both ops spawn a runner in an Ultralytics environment. A test stands in for the
 environment probe and the tool call, two module-level seams, and the installers
 here replace both. The fake runner writes a predictions table, in the
 runner's layout, at the path that the request names, because the op reads it back
-to bridge it. The table is fixed unless a test passes a function of the video.
+to bridge it. The table is fixed unless a test passes a function of the video. A
+request of several files gets each file's table, its frames moved onto the
+entry's frame axis as the runner numbers them.
 """
 
 from __future__ import annotations
@@ -24,7 +26,11 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
 )
 from mosaic.tracking.pose_training.ultralytics_infer import InferenceOutcome
 
-from tests.helpers.ultralytics import frames_in_window, ultralytics_probe_response
+from tests.helpers.ultralytics import (
+    frames_in_window,
+    source_frame_count,
+    ultralytics_probe_response,
+)
 
 
 def pose_predictions(frames: int = 4) -> pd.DataFrame:
@@ -76,11 +82,14 @@ type PredictionsFor = Callable[[Path], pd.DataFrame]
 class FakeInference:
     """Stand in for the runner, and record every video that it is handed.
 
-    The runner writes ``predictions(video)`` for each video.
+    The runner writes ``predictions(video)`` for each video of a request, with
+    each video's frames after those of the videos before it, as the runner reads
+    an entry's files.
 
     Attributes:
         predictions: The table for each video, as a function of the video's path.
-        videos: Every video that the runner was handed, in order.
+        videos: Every video that the runner was handed, in order, over every
+            request.
         probed: Every model whose environment was probed, in order. A run probes
             before any model runs, after every entry's input is resolved.
     """
@@ -91,7 +100,7 @@ class FakeInference:
     frames_read: int | None = None
     """How many frames the runner reports reading.
 
-    ``None`` reports the frames of the request's window of its video, which the
+    ``None`` reports the frames of the request's window of its videos, which the
     runner reads whether or not it detects anything in them
     (:func:`~tests.helpers.ultralytics.frames_in_window`).
     """
@@ -103,16 +112,24 @@ class FakeInference:
         work_dir: Path,
         **_kwargs: object,
     ) -> InferenceOutcome:
-        video = Path(request.video_path)
-        self.videos.append(video)
-        table = self.predictions(video)
+        tables: list[pd.DataFrame] = []
+        first_frame = 0
+        for source in request.sources:
+            video = Path(source.path)
+            self.videos.append(video)
+            table = self.predictions(video)
+            if first_frame:
+                table = table.assign(frame=table["frame"] + first_frame)
+            tables.append(table)
+            first_frame += source_frame_count(source.media_facts)
+        table = tables[0] if len(tables) == 1 else pd.concat(tables, ignore_index=True)
         published = Path(request.output_parquet)
         published.parent.mkdir(parents=True, exist_ok=True)
         table.to_parquet(published, index=False)
         read = self.frames_read
         if read is None:
             read = frames_in_window(
-                request.media_facts,
+                request.sources,
                 request.start_frame,
                 request.end_frame,
                 request.frame_step,

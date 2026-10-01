@@ -141,7 +141,7 @@ def _run_inference(
     cancel_check: Callable[[], bool] | None,
     on_output: Callable[[str], None] | None,
 ) -> InferenceOutcome:
-    """Run one video through *env*, and read back what it did.
+    """Run one entry through *env*, and read back what it did.
 
     The request and the response are written into *work_dir*, beside the
     predictions parquet the runner publishes, so an attempt's whole exchange is on
@@ -200,7 +200,7 @@ def run_pose_inference_tool(
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
 ) -> InferenceOutcome:
-    """Run one video through a YOLO pose model in the Ultralytics environment."""
+    """Run one entry through a YOLO pose model in the Ultralytics environment."""
     return _run_inference(
         request,
         "infer-pose",
@@ -227,7 +227,7 @@ def run_point_inference_tool(
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
 ) -> InferenceOutcome:
-    """Run one video through a POLO point model in the POLO environment."""
+    """Run one entry through a POLO point model in the POLO environment."""
     return _run_inference(
         request,
         "infer-points",

@@ -79,14 +79,14 @@ mosaic run -m dataset.yaml --kind infer-pose --params '{"model": "<run_id>"}'
 ```
 
 `infer-points` and `infer-localizer` are the same shape for the other two model types.
-`infer-pose` and `infer-points` need their environment built and named first, and are
-handed one video path. An entry of several clips has to be joined first with
-`mosaic run --kind export-joined`, and an imgstore recording exported with
-`mosaic run --kind export-store`. An entry of several clips that includes a store is
-refused, because `export-joined` does not join stores. The refusal names the
-`preprocess` command that makes the entry one file. `infer-localizer` runs in mosaic's
-process, without an environment to build. It reads clips and stores itself, and needs a
-join only for clips that differ in frame rate.
+`infer-pose` and `infer-points` need their environment built and named first. Their
+runner reads an entry's clips one after another, and an imgstore's chunk files when the
+chunks are video, so neither needs a join or an export for those. A store whose chunks
+are not video has to be exported first with `mosaic run --kind export-store`. An entry
+of several clips that includes a store is refused, because `export-joined` does not join
+stores. The refusal names the `preprocess` command that makes the entry one file.
+`infer-localizer` runs in mosaic's process, without an environment to build. It reads
+clips and stores itself, and needs a join only for clips that differ in frame rate.
 
 Or hand the model to a tracker as its detector:
 

@@ -52,19 +52,30 @@ mosaic media transcode recording.mp4 --target analysis --output derivatives/
 To crop, mask, trim or adjust a recording before a tracker reads it, see
 [Pre-process media for a tracker](preprocess.md).
 
-## imgstore recordings
+## Recordings in several files
 
-Motif and Loopbio stores are directories, not single files. `scan_media()` finds them
-natively — one entry per store — and every frame-reading feature opens them directly.
+A recording split into clips is one entry, and so is a Motif or Loopbio imgstore, a
+directory of chunk files. `scan_media()` finds a store natively, one entry per store,
+and every frame-reading feature opens it directly.
 
-The four subprocess trackers (TRex, SLEAP, Lightning Pose, Ultralytics) and the
-`infer-pose` / `infer-points` ops take a video *path*, so export a store first:
+What a tool needs before it reads such an entry depends on how it reads:
+
+| Tool | An entry of several clips | An imgstore |
+| --- | --- | --- |
+| TRex, SLEAP, Lightning Pose | `export-joined` | `export-store` |
+| Ultralytics tracking, `infer-pose`, `infer-points` | Nothing | Nothing when its chunks are video, otherwise `export-store` |
+| `infer-localizer` | `export-joined` only for clips at different frame rates | Nothing |
 
 ```bash
+mosaic run -m dataset.yaml --kind export-joined --entries day1:trial01
 mosaic run -m dataset.yaml --kind export-store --entries day1:trial01
 ```
 
-`infer-localizer` and every analysis feature read a store without exporting.
+TRex, SLEAP and Lightning Pose open one video file, so mosaic writes the clips' join or
+the store's video first. Ultralytics and the two inference ops read the entry's files
+one after another, so nothing is copied. A store whose chunks hold images, raw arrays,
+or Bayer or YUV data is still read through its export. A run that needs a file it does
+not have stops before it starts and names the command that makes it.
 
 ## Extract frames to annotate
 
