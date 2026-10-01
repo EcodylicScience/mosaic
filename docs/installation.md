@@ -76,6 +76,49 @@ run`; a `_BIN` variable names a path directly. With neither set, mosaic looks on
 `$PATH`. Where a tool is installed never enters a `run_id`, so two machines that place
 it differently still agree on what a run is called.
 
+### Video codecs each tool reads
+
+Every tool reads H.264. Mosaic's analysis transcodes, media variants and imgstore
+exports are AV1 by default, and the software in a tool's environment decides whether
+the tool reads AV1:
+
+| Tool | Decodes video with | Reads AV1 |
+| ---- | ------------------ | --------- |
+| TRex | the ffmpeg of its conda environment, which links libdav1d | Yes |
+| Ultralytics, `infer-pose`, `infer-points` | PyAV, in the tool's environment | Yes |
+| `infer-localizer` | PyAV, in mosaic's process | Yes |
+| SLEAP | OpenCV, through sleap-io | With conda-forge's OpenCV, as [below](#sleap) |
+| Lightning Pose | NVIDIA DALI's `fn.readers.video` | No |
+
+The GPU does not change the AV1 column, although two error messages name hardware:
+
+- OpenCV prints "Your platform doesn't support hardware accelerated AV1 decoding"
+  when its build lacks a software AV1 decoder. The Linux OpenCV wheel from PyPI
+  lacks one, and fails on every GPU.
+- DALI raises "Unhandled codec 225" for an AV1 file on every GPU, including GPUs
+  whose hardware decodes AV1. Its reader accepts H.264, HEVC, MPEG-4, VP8, VP9 and
+  MJPEG.
+
+SLEAP, Lightning Pose and Ultralytics were measured on a GeForce GTX 1080 Ti (compute
+capability 6.1) and an RTX 4000 Ada (8.9), and TRex on the GTX 1080 Ti. The versions
+were SLEAP 1.6, Lightning Pose 2.3.1 and 2.4.2, DALI 1.50.0 and 2.3.0, and TRex 2.0.
+The `infer-*` ops read through the same PyAV reader as Ultralytics.
+
+Before SLEAP or Lightning Pose is handed an AV1 file, mosaic reads one frame of it
+with the tool's reader in the tool's environment, once per run. The tool is handed
+the file when the frame decodes. Otherwise the run is refused with the reader's
+error. `MOSAIC_ALLOW_TOOL_CODECS=av1` skips the test.
+
+A GPU older than Turing (compute capability below 7.5), such as a GTX 1080 Ti, limits
+every codec. It needs builds that still contain kernels for it:
+
+- DALI's `cuda130` build fails on it with `cudaErrorNoKernelImageForDevice`. The
+  `nvidia-dali-cuda110` build that `pip install lightning-pose` installs works.
+- PyTorch from PyPI fails with "no kernel image is available". Install PyTorch from
+  the cu126 index into the tool's environment, as the
+  [Ultralytics environments README](https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/tracking/external/README.md#older-gpus-need-torch-from-another-index)
+  describes.
+
 ### TRex
 
 TRex's conda package pins `python=3.11` and `numpy=1.26`, so it needs an environment of
@@ -100,15 +143,13 @@ to be on `$PATH`.
 Installed into a conda environment instead, name it with
 `export MOSAIC_SLEAP_CONDA_ENV=sleap`.
 
-**Give it an OpenCV that can decode AV1.** mosaic's analysis derivatives and
-imgstore exports are AV1, and SLEAP reads video through OpenCV — whose codec
-support is fixed when its wheel is built. The PyPI wheel for Linux carries no
-software AV1 decoder and no hardware accelerator, so it cannot decode AV1 on any
-Linux machine. In a conda environment:
+**Give it an OpenCV that decodes AV1.** SLEAP reads video through OpenCV, and the
+Linux OpenCV wheel from PyPI lacks an AV1 decoder. In a conda environment, replace
+it with conda-forge's headless build:
 
 ```bash
 pip uninstall -y opencv-python opencv-python-headless
-conda install -c conda-forge py-opencv
+conda install -c conda-forge "py-opencv=*=headless*" "libopencv=*=headless*"
 ```
 
 Remove the pip wheels first. conda does not remove them, and a wheel left
@@ -117,15 +158,11 @@ packages that the environment's history pins, such as `ffmpeg`, add `--update-al
 to the `conda install`.
 
 That build links the conda ffmpeg beside it, which carries `libdav1d`, and
-satisfies SLEAP's unpinned `opencv-python` requirement. SLEAP without an AV1
-decoder reads zero frames and exits 0, and without the refusal its run would be
-recorded as a success with an empty result. Before SLEAP is handed
-an AV1 file, mosaic reads one frame of it with `sleap-io` in the SLEAP
-environment, once per run. SLEAP is handed the file when the frame decodes. When
-it does not, the run is refused with the reader's error.
-`MOSAIC_ALLOW_TOOL_CODECS=av1` skips the test. `sleap-io` picks OpenCV whenever it
-is importable and does not read an environment variable to choose otherwise. A
-working PyAV in the same environment does not help.
+satisfies SLEAP's unpinned `opencv-python` requirement. Take the headless build.
+conda-forge's default build loads conda's Qt, and SLEAP's PySide6 then fails to
+import with "No Qt bindings could be found" whenever the two Qt versions differ.
+`sleap-io` reads through OpenCV whenever OpenCV is importable, and a working PyAV in
+the same environment does not help.
 
 ### Lightning Pose
 
@@ -139,17 +176,11 @@ pip install lightning-pose
 export MOSAIC_LITPOSE_CONDA_ENV=litpose
 ```
 
-**Hand it H.264 video.** Lightning Pose reads video through NVIDIA DALI's
-`fn.readers.video`, which decodes on the GPU. In DALI 2.3 that reader does not
-handle AV1 on any GPU. On an RTX 4000 Ada it fails with "Unhandled codec 225", in
-Lightning Pose and in mosaic's test alike. mosaic's analysis derivatives and
-imgstore exports are AV1. Before Lightning Pose is handed an AV1 file, mosaic
-reads one frame of it with the same reader, in the Lightning Pose environment,
-once per run. The file is handed over when the frame decodes, and the same test
-allows AV1 under a DALI release whose reader handles it. When the frame does not
-decode, the run is refused with DALI's error. The remedies are an H.264 [media
-variant](guides/media/preprocess.md#codec), made with `"codec": "h264"`, and media
-that never needed an analysis transcode.
+**Hand it H.264 video.** Lightning Pose reads video through DALI's
+`fn.readers.video`, which reads AV1 on no GPU. Give it an H.264 [media
+variant](guides/media/preprocess.md#codec), made with `"codec": "h264"`, or media
+that was not transcoded for analysis. mosaic's test before each run allows AV1
+under a DALI release whose reader adds it.
 
 ### Ultralytics and POLO
 

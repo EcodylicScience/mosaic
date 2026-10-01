@@ -1459,9 +1459,14 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   codec is refused, unless the tool declares a `probe` and the probe decodes a
   frame of the file in the tool's environment. SLEAP (`sleap_io.load_video`) and
   Lightning Pose (DALI's `fn.readers.video` on the GPU) declare one, and AV1 stays
-  the default codec for them. DALI 2.3's reader does not handle AV1 on any GPU
-  ("Unhandled codec 225"), and a variant for Lightning Pose is made with
-  `codec: "h264"`. Each run creates one `DecodeProbe` from the placement that it
+  the default codec for them. DALI's reader omits AV1 from its list of codecs, and
+  fails with "Unhandled codec 225" on every GPU, measured with DALI 1.50 and 2.3 on
+  a GTX 1080 Ti and an RTX 4000 Ada. A variant for Lightning Pose is made with
+  `codec: "h264"`. SLEAP decodes AV1 with conda-forge's headless OpenCV. The
+  default build loads conda's Qt and breaks SLEAP's PySide6.
+  [`docs/installation.md`](docs/installation.md#video-codecs-each-tool-reads)
+  records the codecs that each tool reads.
+  Each run creates one `DecodeProbe` from the placement that it
   resolved. A codec that decodes is tested once per interpreter and run. A refusal
   is not kept, because the SLEAP probe reads the file and one unreadable file says
   nothing about the next. A result is not kept between runs, and a rebuilt

@@ -244,24 +244,17 @@ own rate. TREx's per-second columns are dropped for such an entry.
 Choose the codec when you make the variant. The tracker checks it when it runs, after
 the encode.
 
-Variants are AV1 by default. TREx, Ultralytics and the `infer-*` ops read AV1 without
-extra configuration. SLEAP and Lightning Pose read AV1 only in some environments. SLEAP
-decodes AV1 with conda-forge's OpenCV installed in its environment, as
-[Installation](../../installation.md#sleap) describes. Lightning Pose reads video
-through DALI's `fn.readers.video`, which in DALI 2.3 does not handle AV1 on any GPU.
-Make a variant for Lightning Pose with `"codec": "h264"`.
+Variants are AV1 by default. Every tool reads H.264, and
+[Installation](../../installation.md#video-codecs-each-tool-reads) lists the tools that
+read AV1. Make a variant for Lightning Pose with `"codec": "h264"`. Lightning Pose
+reads AV1 on no GPU.
 
-Before SLEAP or Lightning Pose is handed an AV1 file, mosaic decodes one frame of it in
-the tool's environment, with the reader that the tool uses. The test runs once per
-tracking run. When the frame decodes, the tool is handed the file. When it does not,
-the run is refused with the reader's error. Then either:
+A tracker refuses a run whose variant its environment does not decode, and the refusal
+quotes the reader's error. Then either:
 
 - Make the variant with `"codec": "h264"`. H.264 needs an ffmpeg built with libx264,
   and the run is refused when the ffmpeg on `PATH` lacks it.
 - Give the tool an environment that decodes AV1, as the refusal describes.
-
-`MOSAIC_ALLOW_TOOL_CODECS=av1` skips the test, and the tool is handed AV1 files
-untested.
 
 `quality` sets the encoder's constant rate factor, where lower is better. Unset, it is
 14 for AV1 and 16 for H.264.

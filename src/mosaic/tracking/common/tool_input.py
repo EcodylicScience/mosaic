@@ -277,8 +277,8 @@ def refuse_undecodable_codec(
     differs per tool. TREx links the libavcodec of its environment, and
     Ultralytics reads through mosaic-media's PyAV. Both declare AV1. SLEAP reads
     through OpenCV, and the Linux OpenCV wheel from PyPI does not decode AV1.
-    Lightning Pose reads through DALI's ``fn.readers.video``, which in DALI 2.3
-    does not handle AV1 on any GPU.
+    Lightning Pose reads through DALI's ``fn.readers.video``, whose list of
+    codecs omits AV1. It reads AV1 on no GPU.
 
     A codec is allowed when it is in the baseline, in the tool's ``also_reads``,
     or in ``MOSAIC_ALLOW_TOOL_CODECS``. Otherwise a tool that declares a probe is

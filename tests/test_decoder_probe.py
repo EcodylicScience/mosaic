@@ -129,7 +129,7 @@ def test_a_file_that_the_environment_cannot_decode_is_refused_with_its_output(
     assert _SLEAP_FAILURE in message
     assert str(python.interpreter) in message
     assert "pip uninstall -y opencv-python opencv-python-headless" in message
-    assert "conda install -c conda-forge py-opencv" in message
+    assert 'conda install -c conda-forge "py-opencv=*=headless*"' in message
     assert "--update-all" in message
     assert "MOSAIC_ALLOW_TOOL_CODECS=av1" in message
 

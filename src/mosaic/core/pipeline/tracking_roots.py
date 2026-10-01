@@ -118,9 +118,9 @@ class ToolDecoder:
 
     Each tool declares here the codecs that it reads, beside the other facts
     about each producer. TREx and Ultralytics declare AV1. SLEAP reads AV1 when
-    the OpenCV in its environment links dav1d. Lightning Pose reads AV1 when the
-    installed DALI's ``fn.readers.video`` handles it, and DALI 2.3 does not on
-    any GPU.
+    the OpenCV in its environment links dav1d. Lightning Pose reads through
+    DALI's ``fn.readers.video``, whose list of codecs omits AV1 in DALI 1.50 and
+    2.3. It reads AV1 on no GPU.
     Those two declare a probe, which tests the environment that a run uses.
 
     Attributes:
@@ -257,7 +257,9 @@ prediction reader (``fn.readers.video`` in ``lightning_pose/data/dali.py``) that
 affect decoding: ``device="gpu"``, ``normalized=False``, a float ``dtype``,
 ``file_list_include_preceding_frame=True`` and ``skip_vfr_check=True``. It reads
 a sequence of one frame, and leaves out the batching, shuffling and padding
-arguments. DALI 2.3's reader raises "Unhandled codec 225" for AV1 on every GPU.
+arguments. The reader accepts H.264, HEVC, MPEG-4, VP8, VP9 and MJPEG. For an AV1
+file it raises "Unhandled codec 225" before it uses the GPU, and the GPU does
+not change the answer.
 
 DALI appends a native stacktrace to its error. The probe prints the error without
 it, and its output ends with the reason.
@@ -470,11 +472,13 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 remedy=(
                     "In the SLEAP environment, run `pip uninstall -y "
                     "opencv-python opencv-python-headless`, then `conda install "
-                    "-c conda-forge py-opencv`, and add `--update-all` when the "
+                    '-c conda-forge "py-opencv=*=headless*" '
+                    '"libopencv=*=headless*"`, and add `--update-all` when the '
                     "solve fails on packages that the environment pins. The "
                     "Linux OpenCV wheel from PyPI does not decode AV1, and "
                     "sleap-io reads video through OpenCV whenever OpenCV is "
-                    "importable"
+                    "importable. The default build loads conda's Qt, which "
+                    "conflicts with SLEAP's PySide6"
                 ),
             ),
             retention="tracker",
@@ -494,8 +498,8 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 probe=_LITPOSE_DECODE_PROBE,
                 remedy=(
                     "Hand Lightning Pose an H.264 file, such as a media variant "
-                    'made with "codec": "h264". The fn.readers.video of DALI 2.3 '
-                    'does not handle AV1 on any GPU, and fails with "Unhandled '
+                    'made with "codec": "h264". The fn.readers.video of DALI '
+                    'does not accept AV1 on any GPU, and fails with "Unhandled '
                     'codec 225"'
                 ),
             ),
