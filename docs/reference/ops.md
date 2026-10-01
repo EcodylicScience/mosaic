@@ -536,7 +536,7 @@ Write one media variant file per scoped entry.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `steps` | list of (`CropStep` \| `MaskStep` \| `TrimStep` \| `DecimateStep` \| `GrayscaleStep` \| `AdjustStep` \| `ClaheStep`) | _required_ |  | The steps applied to each frame, in order. Every position and frame number that a step names is in the entry media's pixels and frames, whatever the step's position in the list. |
+| `steps` | list of (`CropStep` \| `MaskStep` \| `TrimStep` \| `DecimateStep` \| `GrayscaleStep` \| `AdjustStep` \| `ClaheStep`) | _required_ |  | The steps applied to each frame, in order. Every position and frame number that a step names is in the entry media's pixels and frames, whatever the step's position in the list. Empty only with codec 'h264', which copies every frame of the source into H.264. |
 | `media` | `string` | `""` |  | The run identifier of a variant to read in place of the entry media. These steps then apply after that variant's. Empty reads the entry media. |
 | `fps` | `number` \| `None` | `null` |  | The frame rate that the output file is labeled at, which sets its frames' timestamps and therefore the time base of a tool's per-second thresholds. Unset, it is the rate that the kept frames were recorded at: the first clip's rate divided by the decimation. Under any other label the tracker's per-second columns are scaled by the label instead of the recording rate, and they are dropped when its table is mapped back. [fps] |
 | `codec` | `"av1"` \| `"h264"` | `"av1"` |  | The output codec. 'h264' is a fallback for a decoder without AV1 support, such as the DALI 2.3 video reader in Lightning Pose. It needs an ffmpeg built with libx264. |
