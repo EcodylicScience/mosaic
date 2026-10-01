@@ -24,10 +24,22 @@ from typing import override
 
 import numpy as np
 import pytest
-from mosaic_media import MediaFacts, probe_media
+from mosaic_media import (
+    CHROME_149,
+    DEFAULT_THRESHOLDS,
+    MediaFacts,
+    derive,
+    probe_media,
+)
 from mosaic_media.transcode import TranscodeError
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.media.facts_columns import (
+    MEDIA_INDEX_COLUMNS,
+    derivative_column_for_target,
+    facts_to_row,
+    store_facts,
+)
 from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.joined_export import (
@@ -35,14 +47,21 @@ from mosaic.core.pipeline.joined_export import (
     JoinedExportMissingError,
     JoinedExportParams,
     current_joined_recipes,
+    join_needs_reencode,
     joined_export_path,
     joined_recipe_hash,
     joined_source_uid,
     parse_joined_name,
     write_joined_export,
 )
+from mosaic.core.pipeline.media_index import (
+    frame_from_rows,
+    read_media_index,
+    write_media_index_rows,
+)
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.progress import NullProgressCallback
+from mosaic.core.pipeline.transcode import TRANSCODE_KIND_DIRECTORY
 from mosaic.core.scope import Scope
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_inputs
@@ -79,6 +98,7 @@ def _join(ds: Dataset, *, overwrite: bool = False) -> Path:
 
 def test_the_join_holds_every_frame_of_every_clip(ds: Dataset) -> None:
     """The property the whole op exists for: joined frame i is global frame i."""
+    assert not join_needs_reencode(ds.resolve_media("", "sess").facts)
     joined = _join(ds)
     assert joined.is_file()
 
@@ -215,11 +235,75 @@ def test_a_mixed_clip_set_is_refused_by_default_naming_both_remedies(
     other = tmp_path / "b_av1.mp4"
     mixed_facts = [facts[0], _as_av1(paths[1], other)]
     mixed_paths = [paths[0], other]
+    assert not join_needs_reencode(facts)
+    assert join_needs_reencode(mixed_facts)
 
     with pytest.raises(TranscodeError) as excinfo:
         _ = write_joined_export(mixed_paths, mixed_facts, tmp_path / "j.mp4")
     assert "transcode" in str(excinfo.value)
     assert "reencode=true" in str(excinfo.value)
+
+
+def _route_to_an_av1_derivative(ds: Dataset, name: str) -> None:
+    """Make clip *name* of ``sess`` resolve to an AV1 analysis derivative.
+
+    What ``transcode`` leaves for a defective clip: the original marked as
+    requiring an analysis transcode and linked to its derivative, and a
+    derivative row carrying that file's own facts.
+    """
+    raw_index = ds.get_root("media_raw") / "index.csv"
+    originals: list[dict[str, object]] = [
+        dict(row) for row in read_media_index(raw_index)
+    ]
+    original = next(row for row in originals if row["name"] == name)
+    derivative = (
+        ds.get_root("media")
+        / TRANSCODE_KIND_DIRECTORY
+        / f"{Path(name).stem}.analysis.mp4"
+    )
+    derivative.parent.mkdir(parents=True, exist_ok=True)
+    facts = _as_av1(ds.resolve_path(str(original["abs_path"])), derivative)
+
+    original["analysis_transcode"] = "required"
+    original[derivative_column_for_target("analysis")] = (
+        f"{TRANSCODE_KIND_DIRECTORY}/{derivative.name}"
+    )
+    write_media_index_rows(raw_index, frame_from_rows(originals))
+    row: dict[str, object] = dict.fromkeys(MEDIA_INDEX_COLUMNS, "")
+    row.update(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
+    row.update(
+        {
+            "name": derivative.name,
+            "sequence": "sess",
+            "abs_path": ds.relative_to_root(derivative),
+            "source_video_uuid": original["video_uuid"],
+        }
+    )
+    write_media_index_rows(ds.get_root("media") / "index.csv", frame_from_rows([row]))
+
+
+def test_an_entry_routed_to_a_derivative_in_another_profile_needs_reencoding(
+    ds: Dataset,
+) -> None:
+    """The predicate answers for the clips routing resolves, which the op joins.
+
+    Here those are one H.264 original and one AV1 derivative.
+    """
+    _route_to_an_av1_derivative(ds, "b.mp4")
+    scope = Scope(entries=[("", "sess")])
+
+    assert join_needs_reencode(ds.resolve_media("", "sess").facts)
+    with pytest.raises(TranscodeError, match="do not share the stream profile"):
+        _ = run_op(ds, "export-joined", {}, scope=scope)
+    _ = run_op(ds, "export-joined", {"reencode": True}, scope=scope)
+
+    resolved = ds.resolve_media("", "sess")
+    joined = joined_export_path(
+        ds,
+        joined_source_uid(list(resolved.facts)),
+        joined_recipe_hash(JoinedExportParams(reencode=True)),
+    )
+    assert int(probe_media(joined).frame_count) == 2 * CLIP_FRAMES
 
 
 def test_reencode_normalises_the_odd_clip_and_joins_every_frame(
@@ -250,6 +334,45 @@ def test_the_majority_profile_is_normalised_to_not_from(tmp_path: Path) -> None:
 
     assert majority == ("h264", "yuv420p")
     assert odd == [16], "the single AV1 clip is the one re-encoded"
+
+
+_H264 = ("h264", "yuv420p")
+
+
+@pytest.mark.parametrize(
+    ("profiles", "expected"),
+    [
+        pytest.param([], False, id="no-clips"),
+        pytest.param([_H264], False, id="one-clip"),
+        pytest.param([_H264] * 3, False, id="uniform"),
+        pytest.param([_H264, ("av1", "yuv420p"), _H264], True, id="codec-differs"),
+        pytest.param(
+            [_H264, _H264, ("h264", "yuv422p")], True, id="pixel-format-differs"
+        ),
+    ],
+)
+def test_a_join_needs_reencoding_exactly_when_the_stream_profiles_differ(
+    profiles: list[tuple[str, str]], expected: bool
+) -> None:
+    """The predicate a caller consults before queueing the op, without media."""
+    clips = [
+        dataclasses.replace(
+            store_facts(
+                width=64,
+                height=48,
+                fps=30.0,
+                frame_count=300,
+                codec=codec,
+                duration=10.0,
+                video_uuid="",
+                identity_scheme="",
+            ),
+            pixel_format=pixel_format,
+        )
+        for codec, pixel_format in profiles
+    ]
+
+    assert join_needs_reencode(clips) is expected
 
 
 def test_a_codec_mosaic_declares_no_encoder_for_is_refused_by_name(

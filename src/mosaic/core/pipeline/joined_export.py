@@ -134,6 +134,7 @@ __all__ = [
     "joined_export_path",
     "joined_recipe_hash",
     "joined_source_uid",
+    "join_needs_reencode",
     "join_to_read",
     "joins_of",
     "missing_joins",
@@ -556,7 +557,7 @@ def _stream_profile(clip: MediaFacts) -> tuple[str, str]:
     return (clip.codec_name, clip.pixel_format)
 
 
-def _outliers(facts: list[MediaFacts]) -> tuple[tuple[str, str], list[int]]:
+def _outliers(facts: Sequence[MediaFacts]) -> tuple[tuple[str, str], list[int]]:
     """The profile most clips share, and the positions of the ones that do not.
 
     Majority rather than "whatever the first clip is", because normalising one
@@ -571,6 +572,26 @@ def _outliers(facts: list[MediaFacts]) -> tuple[tuple[str, str], list[int]]:
     )
     majority = ranked[0]
     return majority, [i for i, p in enumerate(profiles) if p != majority]
+
+
+def join_needs_reencode(facts: Sequence[MediaFacts]) -> bool:
+    """Whether joining these clips needs ``reencode=True``.
+
+    True exactly when they do not all share one stream profile (codec and pixel
+    format), so never for fewer than two. :func:`write_joined_export` copies
+    packets and refuses such clips unless *reencode* is set, so a caller
+    queueing :class:`JoinedExportOp` sets that parameter from this. Frame
+    geometry is not part of the answer, because no parameter makes mismatched
+    geometry joinable.
+
+    Args:
+        facts: The clips the join is built from: the routed ones, after
+            analysis-transcode routing, as
+            ``ds.resolve_media(group, sequence).facts`` returns them. A
+            derivative's profile can differ from its original's, so the
+            originals' facts answer for a join the op does not build.
+    """
+    return len(facts) > 1 and bool(_outliers(facts)[1])
 
 
 def _joined_frame_rate(facts: list[MediaFacts], dest: Path) -> float:
@@ -712,7 +733,7 @@ def write_joined_export(
     partial = dest.with_name(f"{dest.stem}.partial{dest.suffix}")
     listing = dest.with_name(f"{dest.stem}.concat.txt")
     majority, odd = _outliers(facts)
-    if odd and not reencode:
+    if not reencode and join_needs_reencode(facts):
         named = ", ".join(
             f"{paths[i].name} ({facts[i].codec_name}/{facts[i].pixel_format})"
             for i in odd[:3]
@@ -1019,10 +1040,10 @@ class JoinedExportOp(Op[JoinedExportParams]):
             return run_id
 
         ctx.check_cancel()
-        _, odd = _outliers(facts)
-        note = (
-            f", re-encoding {len(odd)} of them first" if odd and params.reencode else ""
-        )
+        note = ""
+        if params.reencode and join_needs_reencode(facts):
+            _, odd = _outliers(facts)
+            note = f", re-encoding {len(odd)} of them first"
         ctx.progress.on_phase(
             "export-joined", f"{group}/{sequence}: joining {len(paths)} clips{note}"
         )
