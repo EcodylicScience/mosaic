@@ -600,7 +600,8 @@ def _inference_entry(
         MediaVariantDriftedError: If the entry's media changed after the
             variant's file was written.
         JoinedSourceMismatchError: If the entry's clips differ in frame
-            geometry, one reports no frame rate, or they are stores whose frame
+            geometry or one reports no frame rate; if they include a store and
+            the op hands its runner a path; or if they are stores whose frame
             rates differ.
         StoreExportMissingError: If an op that opens by path is handed a store
             with no export.
@@ -624,7 +625,14 @@ def _inference_entry(
     else:
         # Before a join is looked up, so that clips no join can hold are named
         # for what is wrong with them rather than reported as unjoined.
-        refuse_unjoinable(kind, group, sequence, resolved.paths, resolved.facts)
+        refuse_unjoinable(
+            kind,
+            group,
+            sequence,
+            resolved.paths,
+            resolved.facts,
+            hands_over_path=opens_by_path,
+        )
         axis = EntryAxis.of_entry_media(resolved.facts, windowed=windowed)
         source_uid = entry_source_uid(resolved.facts)
         if opens_by_path:

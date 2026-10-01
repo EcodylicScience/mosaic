@@ -100,7 +100,9 @@ class FakeTrex:
         home.mkdir(parents=True, exist_ok=True)
         pv_path = home / f"{stem}.pv"
         write_pv_header(
-            pv_path, self.npz_frames if self.pv_frames is None else self.pv_frames
+            pv_path,
+            self.npz_frames if self.pv_frames is None else self.pv_frames,
+            sources=given,
         )
         # TREx writes a settings file beside every conversion, and it is not
         # decorative: re-opening a `.pv` recovers only seven fields from the file
@@ -162,12 +164,22 @@ class FakeTrex:
         )
 
 
-def write_pv_header(path: Path, frames: int, *, version: int = 15) -> None:
+def write_pv_header(
+    path: Path,
+    frames: int,
+    *,
+    version: int = 15,
+    sources: Sequence[Path | str] = ("clip.mp4",),
+) -> None:
     """Write the header of a ``.pv`` that records *frames* frames, and nothing after it.
 
     The fields and their order are those of ``Header::write`` in TREx's
     ``Application/src/ProcessedVideo/pv.cpp`` for *version*, which each version
     extends. An older *version* writes what that version's reader expects.
+
+    *sources* are the files the conversion read, recorded from version 15 as TREx
+    records its ``source`` setting: one path as itself, several between brackets,
+    separated by commas and unquoted.
     """
     header = bytearray(f"PV{version}".encode() + b"\0")
     if version >= 14:
@@ -178,7 +190,9 @@ def write_pv_header(path: Path, frames: int, *, version: int = 15) -> None:
     if version >= 3:
         header += struct.pack("<4H", 0, 0, 8000, 8000)
     if version >= 15:
-        header += struct.pack("<qq", -1, -1) + b"clip.mp4\0"
+        named = [str(source) for source in sources]
+        source = named[0] if len(named) == 1 else f"[{','.join(named)}]"
+        header += struct.pack("<qq", -1, -1) + source.encode() + b"\0"
     header += struct.pack("<BIQQ", 4, frames, 0, 0) + b"clip\0"
     _ = path.write_bytes(bytes(header))
 

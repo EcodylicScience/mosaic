@@ -17,9 +17,9 @@ from collections.abc import Mapping
 from typing import Annotated, ClassVar, Self
 
 from pydantic import model_validator
-from typing_extensions import TypeIs
 
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
+from mosaic.core.pipeline._utils import is_str_mapping
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.preprocess_layout import PREPROCESS_KIND
 
@@ -88,7 +88,7 @@ class MediaInputParams(Params):
                 named.append(f"`{name}`")
         for settings_field, keys in cls.extra_settings_window_keys.items():
             settings = values.get(settings_field)
-            if not _is_settings(settings):
+            if not is_str_mapping(settings):
                 continue
             named.extend(
                 f"`{key}` in `{settings_field}`"
@@ -125,11 +125,6 @@ class MediaInputParams(Params):
             f"`media_raw` with this frame range."
         )
         raise ValueError(refused)
-
-
-def _is_settings(value: object) -> TypeIs[Mapping[str, object]]:
-    """Whether *value* is a pass-through settings mapping."""
-    return isinstance(value, Mapping)
 
 
 def media_identity_terms(params: MediaInputParams) -> dict[str, str]:

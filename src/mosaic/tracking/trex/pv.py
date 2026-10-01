@@ -1,11 +1,12 @@
-"""The number of frames that a TREx conversion read, from its ``.pv`` header.
+"""What a TREx conversion read, from its ``.pv`` header: frames, and of which files.
 
 A conversion writes one ``.pv`` frame for each video frame that TREx read, and
 records their number in the file's header. It is the count that TREx's own
 under-count shows in: TREx reads a file only as far as it counted, which was two
 frames short of a 60-frame clip in a measured conversion. The per-individual
 exports cannot show it, because each one runs from the individual's first tracked
-frame to its last.
+frame to its last. From version 15 the header also records the conversion's
+source, the file or files TREx read, whose headers say how short it read them.
 
 The layout follows ``Header::read`` in TREx's
 ``Application/src/ProcessedVideo/pv.cpp``. Each version adds fields before the
@@ -16,36 +17,56 @@ and every string ends in a NUL byte.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Final
 
-__all__ = ["pv_frame_count"]
+__all__ = ["PvHeader", "read_pv_header"]
 
 _CURRENT_VERSION: Final = 15
 """The newest header that TREx writes, ``PV15``. A newer one is not read."""
 
 _LONGEST_STRING: Final = 1 << 16
-"""The longest header string read, so that a file that is not a ``.pv`` ends the read."""
+"""The longest header string read.
+
+A file that is not a ``.pv`` need hold no NUL byte to end a string, and the read
+of one stops here.
+"""
 
 _VERSION_NAME: Final = re.compile(rb"PV(\d+)")
 
 
-def pv_frame_count(path: Path) -> int | None:
-    """Return the number of frames in the ``.pv`` at *path*, or ``None`` when unknown.
+@dataclass(frozen=True, slots=True)
+class PvHeader:
+    """What one ``.pv`` header records about its conversion.
+
+    Attributes:
+        frames: How many frames the conversion read. Zero for a conversion that
+            TREx did not finish, because TREx writes the count when it closes
+            the file.
+        sources: The files the conversion read, in order, as TREx recorded them.
+            Empty for a header older than ``PV15``, which records none.
+    """
+
+    frames: int
+    sources: tuple[str, ...]
+
+
+def read_pv_header(path: Path) -> PvHeader | None:
+    """Return what the ``.pv`` at *path* records, or ``None`` when unknown.
 
     ``None`` when the file is missing or unreadable, is not a ``.pv``, or has a
-    header newer than ``PV15``. A conversion that TREx did not finish has a count
-    of zero, because TREx writes the count when it closes the file.
+    header newer than ``PV15``.
     """
     try:
         with path.open("rb") as handle:
-            return _read_count(handle)
+            return _read_header(handle)
     except (OSError, ValueError):
         return None
 
 
-def _read_count(handle: BinaryIO) -> int | None:
-    """Read the header of *handle* up to the frame count, and return the count.
+def _read_header(handle: BinaryIO) -> PvHeader | None:
+    """Read the header of *handle* up to the frame count.
 
     Raises:
         ValueError: If the file ends inside the header, or a string runs past
@@ -63,11 +84,29 @@ def _read_count(handle: BinaryIO) -> int | None:
     _skip(handle, 4)  # the width and height, two bytes each
     if version >= 3:
         _skip(handle, 8)  # the four crop offsets, two bytes each
+    sources: tuple[str, ...] = ()
     if version >= 15:
         _skip(handle, 16)  # the conversion range, eight bytes per end
-        _ = _string(handle)  # the source
+        sources = _sources(_string(handle).decode("utf-8", errors="replace"))
     _skip(handle, 1)  # the line size
-    return int.from_bytes(_bytes(handle, 4), "little")
+    frames = int.from_bytes(_bytes(handle, 4), "little")
+    return PvHeader(frames=frames, sources=sources)
+
+
+def _sources(recorded: str) -> tuple[str, ...]:
+    """Split the source that TREx recorded into the files it names.
+
+    TREx records one file as its path, and several between brackets, separated
+    by commas and unquoted, as TREx build ``4b48601`` recorded two clips:
+    ``[/data/a.mp4,/data/b.mp4]``. That form cannot tell a comma inside a path
+    from one between paths, so such a path is read as two, which still names
+    several files.
+    """
+    if not recorded:
+        return ()
+    if not (recorded.startswith("[") and recorded.endswith("]")):
+        return (recorded,)
+    return tuple(recorded[1:-1].split(","))
 
 
 def _string(handle: BinaryIO) -> bytes:

@@ -16,7 +16,6 @@ standing in for the tools.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -36,7 +35,6 @@ from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.placement import EntryAxis, SourceMapping
 from mosaic.core.pipeline.tracks_index import read_media_frames, read_tracks_index
 from mosaic.core.scope import Scope
-from mosaic.runlog import reduce_run_log, run_log_dir
 from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
@@ -48,6 +46,8 @@ from tests.helpers import (
     install_fake_pose_inference,
     install_fake_sleap,
     install_fake_ultralytics,
+    latest_events,
+    latest_snapshot,
     make_dataset,
     write_litpose_model,
     write_painted_entry,
@@ -204,17 +204,10 @@ def _published(ds: Dataset) -> tuple[int | None, pd.DataFrame]:
     return read_media_frames(row), table
 
 
-def _latest_events(ds: Dataset) -> list[dict[str, object]]:
-    logs = sorted(run_log_dir(ds.base_dir).glob("*.jsonl"))
-    latest = max(logs, key=lambda path: path.stat().st_mtime)
-    return [json.loads(line) for line in latest.read_text().splitlines()]
-
-
 def _mismatch_events(ds: Dataset) -> list[tuple[object, object]]:
     return [
         (event["read"], event["media"])
-        for event in _latest_events(ds)
-        if event["ev"] == "frame_axis_mismatch"
+        for event in latest_events(ds, "frame_axis_mismatch")
     ]
 
 
@@ -254,9 +247,7 @@ class TestATrackerOverAJoinedEntry:
         (found,) = session.frame_axis_mismatches()
         assert (found.read, found.media) == (50, 60)
         assert _mismatch_events(session) == [(50, 60)]
-        logs = sorted(run_log_dir(session.base_dir).glob("*.jsonl"))
-        snapshot = reduce_run_log(max(logs, key=lambda path: path.stat().st_mtime))
-        assert snapshot is not None
+        snapshot = latest_snapshot(session)
         assert snapshot["entries_frame_axis_mismatch"] == 1
         assert snapshot["entries_failed"] == 0
 

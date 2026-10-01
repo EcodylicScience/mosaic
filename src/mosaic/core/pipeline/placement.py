@@ -422,6 +422,17 @@ class EntryAxis:
         return cls(mapping=mapping)
 
     @property
+    def reads_every_frame(self) -> bool:
+        """Whether the tool was meant to read every frame of the entry media.
+
+        ``False`` under a frame window, and for a variant that trims or decimates
+        its source. :attr:`media_frames` is known only where this holds.
+        """
+        if self.windowed:
+            return False
+        return self.mapping is None or self.mapping.placement.is_frame_identity
+
+    @property
     def media_frames(self) -> int | None:
         """Return how many frames the tool should have read, or ``None``.
 
@@ -432,15 +443,13 @@ class EntryAxis:
         reported reading, and the two differ where the tool lost frames, as TRex
         does at the end of every file it opens.
 
-        ``None`` when the tool read less on purpose: a frame window, or a trimmed
-        or decimated variant. ``None`` too when a clip's frame count is unknown,
-        because a partial sum would read as a measurement.
+        ``None`` when the tool read less on purpose (:attr:`reads_every_frame`).
+        ``None`` too when a clip's frame count is unknown, because a partial sum
+        would read as a measurement.
         """
-        if self.windowed:
+        if not self.reads_every_frame:
             return None
         if self.mapping is not None:
-            if not self.mapping.placement.is_frame_identity:
-                return None
             counts = [segment.frame_count for segment in self.mapping.timeline.segments]
         else:
             counts = [int(clip.frame_count) for clip in self.clips]

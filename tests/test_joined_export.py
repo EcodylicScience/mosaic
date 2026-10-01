@@ -62,6 +62,7 @@ from tests.helpers import (
     add_media_sequence,
     add_transcode_derivative,
     clip_facts,
+    latest_snapshot,
     make_dataset,
 )
 
@@ -584,14 +585,9 @@ def test_the_op_reports_that_it_joined_something(ds: Dataset) -> None:
     Which is how the addressing bug above hid behind a clean exit: the run said
     finished, entries_written 0, and 0 means "not reported".
     """
-    from mosaic.runlog import reduce_run_log, run_log_dir
-
     _ = run_op(ds, "export-joined", {}, scope=Scope(entries=[("", "sess")]))
 
-    logs = sorted(run_log_dir(ds.base_dir).glob("*.jsonl"))
-    snapshot = reduce_run_log(max(logs, key=lambda p: p.stat().st_mtime))
-    assert snapshot is not None
-    assert snapshot["entries_written"] == 1
+    assert latest_snapshot(ds)["entries_written"] == 1
 
 
 def test_a_join_is_counted_in_frames_not_in_distinct_timestamps(

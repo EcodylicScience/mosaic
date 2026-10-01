@@ -12,6 +12,14 @@ from typing import Final
 
 TREX_KIND: Final = "trex"
 
+CLIP_LIST_VERSION: Final = "0.1"
+"""The last version that handed TREx a multi-clip entry's clips as a list.
+
+Its run index rows are what proves, once a conversion's ``.pv`` is swept, that
+TREx read several files and not one join of them. See the 0.1 -> 0.2 note on
+:data:`TREX_VERSION`.
+"""
+
 TREX_VERSION: Final = "0.2"
 """The declared compatibility version of the TREx integration.
 

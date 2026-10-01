@@ -38,7 +38,13 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
-from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
+from mosaic.core.pipeline.tracks_index import (
+    FrameAxisVerdict,
+    consumed_roots_for,
+    frame_axis_verdict,
+    tail_allowance,
+    write_tracks_row,
+)
 from mosaic.core.pipeline.tracking_roots import tracking_root
 from mosaic.core.schema import ensure_track_schema
 
@@ -68,7 +74,11 @@ class BridgeCounts:
     many frames the producer's tool read, and how many it should have read
     (:attr:`~mosaic.core.pipeline.placement.EntryAxis.media_frames`). Both default
     to ``None``, which means *not known* and never zero. A reused table makes no
-    measurement.
+    measurement. ``producer`` is the tracking root that published the table,
+    whose declaration the comparison reads, and ``""`` for counts of a table
+    read back from disk. ``known_tail_loss`` is how many frames short of the end
+    of the file it read the producer's tool is known to stop, ``None`` when
+    unknown.
 
     ``dropped`` names the columns removed before the table was published because
     they do not map onto the source media's pixels, frames or clock, in the
@@ -81,20 +91,26 @@ class BridgeCounts:
     frames_read: int | None = None
     media_frames: int | None = None
     dropped: tuple[str, ...] = ()
+    producer: str = ""
+    known_tail_loss: int | None = None
 
     @property
-    def frame_axis_mismatch(self) -> tuple[int, int] | None:
-        """``(read, media)`` when the tool read another number of frames, else ``None``.
+    def frame_axis(self) -> FrameAxisVerdict | None:
+        """How the frames the tool read disagree with its media's, or ``None``.
 
-        ``None`` when either is unknown as well as when they agree: the honest
-        -empty rule the index comparison follows, because one measurement cannot
-        disagree with an absent one.
+        :func:`~mosaic.core.pipeline.tracks_index.frame_axis_verdict` decides, as
+        it does for the recorded cells. ``None`` when either count is unknown as
+        well as when they agree: the honest-empty rule the index comparison
+        follows, because one measurement cannot disagree with an absent one.
         """
         if self.frames_read is None or self.media_frames is None:
             return None
-        if self.frames_read == self.media_frames:
-            return None
-        return self.frames_read, self.media_frames
+        return frame_axis_verdict(
+            self.producer,
+            read=self.frames_read,
+            media=self.media_frames,
+            known_tail_loss=self.known_tail_loss,
+        )
 
 
 def tracks_table_path(ds: Dataset, tracks_variant: str, key: str) -> Path:
@@ -152,6 +168,7 @@ def publish_tracks_table(
     consumed: Sequence[Path],
     axis: EntryAxis,
     frames_read: int | None,
+    known_tail_loss: int | None = None,
     strict: bool = False,
 ) -> BridgeCounts:
     """Write one converted frame as this variant's table for one entry.
@@ -186,6 +203,12 @@ def publish_tracks_table(
             file it read, or ``None`` when the producer cannot know. The row
             records it. It is not the table's extent: a table with rows only
             where something was detected ends at its last detection.
+        known_tail_loss: How many frames short of the end of the file it read
+            the tool is known to stop, from that file's header by the rule of
+            the producer's root (``TrackingRoot.tail_loss``). The row records
+            it. ``None`` for a producer that declares no loss, and where the
+            file's header was not read: a shortfall is then allowed the most the
+            producer loses on any file.
         strict: Raise when the table lacks a column that its schema requires,
             rather than printing the report and publishing it.
 
@@ -227,6 +250,7 @@ def publish_tracks_table(
         consumed_source_roots=consumed_roots_for(ds, list(consumed)),
         media_frames=media_frames,
         frames_read=frames_read,
+        known_tail_loss=known_tail_loss,
         # A bridge opens the entry's media, so its row records what that
         # media was. The variant identity has no term for the pixels, so
         # this cell is the only thing that notices a re-transcode.
@@ -237,6 +261,8 @@ def publish_tracks_table(
         frames_read=frames_read,
         media_frames=media_frames,
         dropped=placed.dropped,
+        producer=kind,
+        known_tail_loss=known_tail_loss,
     )
 
 
@@ -280,6 +306,11 @@ def publish_or_record(
     move nothing, and frames missed earlier move every frame after them.
     mosaic knows only the size of the gap. It reports that and says so.
 
+    A shortfall within what the producer's tool is known to lose at the end of
+    the file it read (``TrackingRoot.tail_loss``) is reported apart, as a
+    ``frame_tail_short`` event. It is the loss that tool is known to have on that
+    file, and still a count that cannot show where the frames went.
+
     Raising instead was considered and rejected. It would be permanent: the
     condition is deterministic, so every re-run and every TRex republish would
     fail the same entry, and the other trackers cannot re-publish a table without
@@ -317,20 +348,8 @@ def publish_or_record(
             file=sys.stderr,
         )
         return None
-    if counts is not None and (mismatch := counts.frame_axis_mismatch) is not None:
-        read, media = mismatch
-        ctx.frame_axis_mismatch(key, read=read, media=media)
-        # Both the event and the line, for the reason `entry_failed` keeps both:
-        # the event is the record that survives a queue sending stderr to
-        # DEVNULL, and the line is what a person running this in a terminal sees.
-        print(
-            f"[{kind}] {key}: the tool read {read} of {media} frames. Unless the "
-            f"difference is all at the end, a frame of this table may be up to "
-            f"{abs(media - read)} frames from the video frame of that number. "
-            f"Check any overlay or crop from this entry before trusting it. "
-            f"Everything computed inside the table is unaffected.",
-            file=sys.stderr,
-        )
+    if counts is not None:
+        _report_frame_axis(ctx, key, counts, kind=kind)
     if counts is not None and counts.dropped:
         ctx.columns_dropped(key, counts.dropped)
         # Emit the event and the line, as for a frame-axis mismatch above.
@@ -342,3 +361,37 @@ def publish_or_record(
             file=sys.stderr,
         )
     return counts
+
+
+def _report_frame_axis(
+    ctx: JobContext, key: str, counts: BridgeCounts, *, kind: str
+) -> None:
+    """Record how the frames one entry's tool read disagree with its media's.
+
+    Both the event and the line, for the reason ``entry_failed`` keeps both: the
+    event is the record that survives a queue sending stderr to DEVNULL, and the
+    line is what a person running this in a terminal sees.
+    """
+    verdict = counts.frame_axis
+    if verdict is None or counts.frames_read is None or counts.media_frames is None:
+        return
+    read, media = counts.frames_read, counts.media_frames
+    if verdict == "tail_short":
+        ctx.frame_tail_short(key, read=read, media=media)
+        allowance = tail_allowance(counts.producer, counts.known_tail_loss)
+        print(
+            f"[{kind}] {key}: the tool read {read} of {media} frames, within "
+            f"{allowance.describe(counts.producer)}. A count cannot show that "
+            f"the missing frames are at the end.",
+            file=sys.stderr,
+        )
+        return
+    ctx.frame_axis_mismatch(key, read=read, media=media)
+    print(
+        f"[{kind}] {key}: the tool read {read} of {media} frames. Unless the "
+        f"difference is all at the end, a frame of this table may be up to "
+        f"{abs(media - read)} frames from the video frame of that number. "
+        f"Check any overlay or crop from this entry before trusting it. "
+        f"Everything computed inside the table is unaffected.",
+        file=sys.stderr,
+    )

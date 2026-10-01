@@ -11,6 +11,7 @@ hand, and check that the mapping recovers the source table.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +31,7 @@ from mosaic.core.media.preprocess import (
 from mosaic.core.media.timeline import ConcatenatedTimeline, concatenated_timeline
 from mosaic.core.pipeline.placement import (
     RATE_DEPENDENT_BASES,
+    EntryAxis,
     SourceMapping,
     UnclassifiedColumnError,
     classify_column,
@@ -62,16 +64,14 @@ from mosaic.tracking.pose_training.localizer_inference import (
     localizer_detections_to_dataframe,
 )
 
-from tests.helpers import write_dlc_csv, write_sleap_analysis_h5
+from tests.helpers import clip_facts, write_dlc_csv, write_sleap_analysis_h5
 
 _WIDTH, _HEIGHT = 640, 480
 _CLIP = 300
 
 
 def _clip(fps: float, frame_count: int = _CLIP) -> MediaFacts:
-    return store_facts(
-        _WIDTH, _HEIGHT, fps, frame_count, "h264", frame_count / fps, "", ""
-    )
+    return clip_facts(fps=fps, frame_count=frame_count, width=_WIDTH, height=_HEIGHT)
 
 
 _ONE_CLIP = concatenated_timeline([_clip(30.0, 2 * _CLIP)])
@@ -346,6 +346,60 @@ def test_a_two_rate_timeline_drops_the_rate_dependent_columns() -> None:
     result = to_source_space(_kinematic_table(400), mapping)
 
     assert result.dropped == ("timestamp", "SPEED#wcentroid", "VX", "ACCELERATION")
+
+
+_JITTER_FRAMES = 8_000
+"""Long enough that 30.0 and 30.002 fps place a frame more than half a frame apart."""
+
+
+def _jittered(clip: Callable[[float], MediaFacts]) -> list[MediaFacts]:
+    """Two recordings of one rate, estimated at 30.0 and 30.002 fps."""
+    return [clip(30.0), clip(30.002)]
+
+
+def _store(fps: float) -> MediaFacts:
+    duration = _JITTER_FRAMES / fps
+    return store_facts(_WIDTH, _HEIGHT, fps, _JITTER_FRAMES, "h264", duration, "", "")
+
+
+def _plain(fps: float) -> MediaFacts:
+    return _clip(fps, _JITTER_FRAMES)
+
+
+def test_stores_of_one_rate_measured_twice_keep_the_rate_dependent_columns() -> None:
+    """The store rule reads them as one rate, as the store reader does.
+
+    Plain clips at the same two rates drift apart by more than half a frame over
+    their length, which the plain rule reads as two rates.
+    """
+    trim: list[MediaStep] = [TrimStep(start=0, stop=400)]
+    stores = _mapping(concatenated_timeline(_jittered(_store)), trim)
+    plain = _mapping(concatenated_timeline(_jittered(_plain)), trim)
+
+    assert stores.true_rate == 30.0
+    assert to_source_space(_kinematic_table(400), stores).dropped == ("timestamp",)
+    assert plain.true_rate is None
+    assert to_source_space(_kinematic_table(400), plain).dropped == (
+        "timestamp",
+        "SPEED#wcentroid",
+        "VX",
+        "ACCELERATION",
+    )
+
+
+def test_stores_of_one_rate_read_as_they_are_keep_the_rate_dependent_columns() -> None:
+    """A tool that reads the stores themselves, as the localizer does."""
+    frames = 2 * _JITTER_FRAMES
+    stores = EntryAxis.of_entry_media(_jittered(_store), windowed=False)
+    plain = EntryAxis.of_entry_media(_jittered(_plain), windowed=False)
+
+    assert stores.place(_kinematic_table(frames)).dropped == ("timestamp",)
+    assert plain.place(_kinematic_table(frames)).dropped == (
+        "timestamp",
+        "SPEED#wcentroid",
+        "VX",
+        "ACCELERATION",
+    )
 
 
 def test_a_decimation_labeled_at_its_true_rate_keeps_the_rate_dependent_columns() -> (

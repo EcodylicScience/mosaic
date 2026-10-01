@@ -298,6 +298,10 @@ def run_sleap(
     )
 
     settings = sleap_settings(params, model_id=resolved_models.model_id)
+    scope_entries = scope.op_entries if scope is not None else None
+    media_scope = ds.resolve_media_scope(scope_entries)
+    # Before the mint, so a run refused for its media records no variant.
+    work_items = build_work_items(ds, media_scope, kind=SLEAP_KIND, media=params.media)
     minted = mint_tracker_run(
         ds,
         kind=SLEAP_KIND,
@@ -311,8 +315,6 @@ def run_sleap(
             **observed_model_source(resolved_models),
         },
     )
-    scope_entries = scope.op_entries if scope is not None else None
-    media_scope = ds.resolve_media_scope(scope_entries)
     if not media_scope:
         print("[run_sleap] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
@@ -492,9 +494,7 @@ def run_sleap(
         kind=SLEAP_KIND,
         target="sleap-nn track",
         minted=minted,
-        work_items=build_work_items(
-            ds, media_scope, kind=SLEAP_KIND, media=params.media
-        ),
+        work_items=work_items,
         index=sleap_index(sleap_index_path(ds)),
         run_entry=track_one,
         overwrite=overwrite,

@@ -450,33 +450,50 @@ $ mosaic sweep-tracking [OPTIONS]
 
 Measure the frame axis of this dataset's tracks tables, and their media's.
 
-Three passes over ``tracks/index.csv``, each filling only the cells that are
-blank and none touching a table:
+Four passes over ``tracks/index.csv``, none touching a table:
 
 * the **frame extent** (``frame_min`` / ``frame_max``), read from each
-  parquet. Blank refuses ``overlap_frames``, so a dataset converted before
-  the columns existed has to be measured once before it can use overlap.
+  parquet into the cells that are blank. Blank refuses ``overlap_frames``,
+  so a dataset converted before the columns existed has to be measured once
+  before it can use overlap.
 * the **media length** (``media_frames``): how many frames the tool should
   have read, from the media index, by the rule a producer records it by. A
-  table whose run read less on purpose keeps a blank cell: a frame window,
-  or a trimmed or decimated media variant. So does a converted or resampled
-  table, which no tool made from media.
+  table whose run read less on purpose is given a blank cell: a frame
+  window, or a trimmed or decimated media variant. So is a converted or
+  resampled table, which no tool made from media.
 * the **frames read** (``frames_read``): how many frames the tool did read,
   from what the run left on disk. That is the ``.pv`` of a TRex
   conversion, the response the Ultralytics runner wrote beside its
   predictions, or a Lightning Pose table, which has a row at every frame
-  read. A SLEAP or ``infer-localizer`` table, or one whose run's files are
-  gone, keeps a blank cell.
+  read. A converted or resampled table is given a blank cell.
+* the **known tail loss** (``known_tail_loss``): how many frames short of the
+  end of the file it read the tool is known to stop, from the header of the
+  file the run recorded reading. Only TRex has one: its ``.pv`` names the
+  file. Several clips that TRex read as a list are allowed none, which the
+  TRex run index still shows once the ``.pv`` is swept.
+
+The last three rewrite each row to what the rule gives: a count over a blank
+or a different value, and a blank where the rule leaves one, clearing what an
+earlier pass filled. A row whose run cannot be established keeps its value
+and is counted as not established: its variant record, media or files are
+missing or have changed, or its producer leaves nothing that tells, as SLEAP
+and ``infer-localizer`` do.
 
 Then it reports every table whose tool read another number of frames than
 its media holds (``frames_read`` against ``media_frames``), naming its
 variant: an entry re-tracked under a new recipe holds the old table too, and
-each is reported for itself rather than one being resolved to. A tool can
-read fewer frames than the media holds, as TRex does at the end of every
-file it opens. Where the missing frames are not all at the end, the table's
-``frame`` column no longer addresses the video. Everything computed
-*inside* such a table is unaffected; what breaks is anything that reads a
-pixel at a track frame.
+each is reported for itself rather than one being resolved to. Where the
+missing frames are not all at the end, the table's ``frame`` column no longer
+addresses the video. Everything computed *inside* such a table is
+unaffected; what breaks is anything that reads a pixel at a track frame.
+
+A shortfall within what the tool is known to lose at the end of the file it
+read is reported apart, as a known tail loss. TRex has one: it never reads
+the frames its decoder holds back to reorder, and reads one fewer when the
+container carries no frame count, so it loses nothing on AV1 and 2 frames on
+H.264 with B-frames. A row whose file's header was not read is allowed the
+most TRex loses on any file, 3, and the report says so. A count cannot show
+that the missing frames are at the end, and the report says that too.
 
 This is the one way to ask that question of any table already on disk. A run
 records both cells and the comparison as it publishes, and only TRex can
@@ -485,7 +502,7 @@ publish a table again without tracking again (``mosaic track trex
 and reported here, or not at all.
 
 Dry-run by default. A disagreement it finds is a measurement, not a verdict:
-nothing is rewritten and no table is refused.
+no table is refused.
 
 **Usage**:
 

@@ -17,7 +17,6 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
-from mosaic.core.media.facts_columns import store_facts
 from mosaic.core.media.preprocess import CropStep, Placement, TrimStep
 from mosaic.core.media.timeline import concatenated_timeline
 from mosaic.core.pipeline.job import job_context
@@ -47,8 +46,8 @@ _ROWS = 4
 
 def _crop_and_trim() -> SourceMapping:
     """Return a 320x240 crop at (120, 40) of source frames 100 to 199, at 30 fps."""
-    clip = store_facts(
-        _WIDTH, _HEIGHT, 30.0, _SOURCE_FRAMES, "h264", _SOURCE_FRAMES / 30.0, "", ""
+    clip = clip_facts(
+        fps=30.0, frame_count=_SOURCE_FRAMES, width=_WIDTH, height=_HEIGHT
     )
     placement = Placement.identity(_WIDTH, _HEIGHT, _SOURCE_FRAMES, 30.0)
     for step in (

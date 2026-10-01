@@ -183,12 +183,16 @@ from .pipeline.tracking_roots import (
 )
 from .pipeline.tracks_index import (
     TRACKS_INDEX_PATH_COLUMNS,
+    CellBackfill,
     adopt_legacy_columns,
     backfill_frame_extents,
     backfill_frames_read,
+    backfill_known_tail_loss,
     backfill_media_frames,
     FrameAxisMismatch,
+    FrameTailShortfall,
     frame_axis_mismatches,
+    frame_tail_shortfalls,
     consumed_composition_for,
     legacy_view,
     read_frame_extents,
@@ -966,26 +970,41 @@ class Dataset:
         """
         return backfill_frame_extents(self, dry_run=dry_run)
 
-    def measure_media_frames(self, *, dry_run: bool = False) -> "pd.DataFrame":
-        """Record how many frames the tool should have read, on every row lacking it.
+    def measure_media_frames(self, *, dry_run: bool = False) -> "CellBackfill":
+        """Rewrite every row's count of frames the tool should have read.
 
         One half of the way to compare an already-tracked session against the
         video it addresses: only TRex can re-bridge a table on disk without
-        re-tracking (a republish). A row is filled by the rule its producer
-        records it by, and a row whose run read less on purpose, or no media at
-        all, is left blank, as :func:`backfill_media_frames` says. Returns the
-        rows filled, with their measured values.
+        re-tracking (a republish). A row is rewritten by the rule its producer
+        records it by: a count where the run read the whole entry, and a blank
+        where it read less on purpose or no media at all. A row whose run cannot
+        be established keeps its value. So does a tracker row in a process that
+        has not imported ``mosaic.tracking``, which the result reports in
+        ``unregistered``. See :func:`backfill_media_frames`.
         """
         return backfill_media_frames(self, dry_run=dry_run)
 
-    def measure_frames_read(self, *, dry_run: bool = False) -> "pd.DataFrame":
-        """Record how many frames the tool read, on every row lacking it.
+    def measure_frames_read(self, *, dry_run: bool = False) -> "CellBackfill":
+        """Rewrite every row's count of frames the tool read.
 
         The other half, from what each run left on disk
-        (:func:`backfill_frames_read`). Returns the rows filled, with their
-        measured values.
+        (:func:`backfill_frames_read`). A row whose run left nothing that tells
+        keeps its value, and so does a tracker row in a process that has not
+        imported ``mosaic.tracking``, which the result reports in
+        ``unregistered``.
         """
         return backfill_frames_read(self, dry_run=dry_run)
+
+    def measure_known_tail_loss(self, *, dry_run: bool = False) -> "CellBackfill":
+        """Rewrite every row's known loss at the end of the file its tool read.
+
+        What a shortfall is compared with before it counts as a known tail loss
+        rather than a mismatch (:func:`backfill_known_tail_loss`). A row whose
+        file's header cannot be read keeps its value, and so does a tracker row
+        in a process that has not imported ``mosaic.tracking``, which the result
+        reports in ``unregistered``.
+        """
+        return backfill_known_tail_loss(self, dry_run=dry_run)
 
     def frame_axis_mismatches(
         self, run_id: str | None = None
@@ -998,6 +1017,17 @@ class Dataset:
         :func:`~mosaic.core.pipeline.tracks_index.frame_axis_mismatches`.
         """
         return frame_axis_mismatches(self, run_id)
+
+    def frame_tail_shortfalls(
+        self, run_id: str | None = None
+    ) -> "tuple[FrameTailShortfall, ...]":
+        """Tracks tables whose tool read short by no more than its producer declares.
+
+        The shortfalls that :meth:`frame_axis_mismatches` leaves out, as a known
+        loss at the end of a file. See
+        :func:`~mosaic.core.pipeline.tracks_index.frame_tail_shortfalls`.
+        """
+        return frame_tail_shortfalls(self, run_id)
 
     def set_continuous_groups(
         self, groups: Iterable[str], *, save: bool = True

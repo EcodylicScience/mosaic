@@ -26,8 +26,12 @@ from mosaic.core.track_library.ultralytics_tracks import raw_columns
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     ProbeResponse,
     TrackRequest,
+    TrackResponse,
 )
-from mosaic.tracking.ultralytics_track.run import UltralyticsTrackResult
+from mosaic.tracking.ultralytics_track.run import (
+    TRACK_RESPONSE_NAME,
+    UltralyticsTrackResult,
+)
 from mosaic.tracking.ultralytics_track.tracker_defaults import TRACKER_NAMES
 
 ULTRALYTICS_KEYPOINTS: Final = 2
@@ -118,11 +122,12 @@ class FakeUltralytics:
     """How many frames the predictions cover, each with a detection of every track."""
     n_ids: int = 2
     frames_read: int | None = None
-    """How many frames the runner reports reading.
+    """How many frames the runner reports reading, in its response and its result.
 
     ``None`` reports the frames of the request's window of its video, which the
     runner reads whether or not it detects anything in them
-    (:func:`frames_in_window`).
+    (:func:`frames_in_window`). The response is written into the working
+    directory, where the runner writes it.
     """
 
     def probe(self, model_path: Path | str, **_kwargs: object) -> ProbeResponse:
@@ -148,6 +153,10 @@ class FakeUltralytics:
                 request.end_frame,
                 request.frame_step,
             )
+        response = TrackResponse(n_frames=read, n_ids=self.n_ids)
+        _ = (Path(work_dir) / TRACK_RESPONSE_NAME).write_text(
+            response.model_dump_json()
+        )
         return UltralyticsTrackResult(
             predictions_path=out_parquet, n_frames=read, n_ids=self.n_ids
         )

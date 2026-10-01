@@ -904,7 +904,7 @@ def test_backfill_leaves_a_variant_table_media_frames_blank(
     rows = pd.read_csv(index, dtype=str, keep_default_na=False)
     rows.assign(media_frames="").to_csv(index, index=False)
 
-    filled = backfill_media_frames(ds)
+    filled = backfill_media_frames(ds).written
 
     assert filled["producer_run_id"].tolist() == [on_entry]
     recorded = {
@@ -912,6 +912,32 @@ def test_backfill_leaves_a_variant_table_media_frames_blank(
         for _, row in _tracks(ds, "litpose").iterrows()
     }
     assert recorded == {on_variant: None, on_entry: _FRAMES}
+
+
+def test_backfill_clears_a_stale_length_on_a_trimmed_variant_table(
+    tmp_path: Path, litpose_model: Path, litpose: FakeLitpose
+) -> None:
+    """A length an earlier pass filled from the entry media is cleared.
+
+    A trimmed variant's table does not span its source axis, so the rebuilt
+    placement answers blank rather than failing to answer, and the cell is
+    cleared rather than kept.
+    """
+    ds = _dataset(tmp_path)
+    variant = _variant(ds, codec="h264")
+    on_variant = litpose_runs.run_litpose(
+        ds, LitposeParams(model_path=str(litpose_model), media=variant)
+    )
+    index = tracks_index_path(ds)
+    rows = pd.read_csv(index, dtype=str, keep_default_na=False)
+    rows.assign(media_frames=str(_FRAMES)).to_csv(index, index=False)
+
+    done = backfill_media_frames(ds)
+
+    assert done.cleared["producer_run_id"].tolist() == [on_variant]
+    assert done.not_established.empty
+    (row,) = [row for _, row in _tracks(ds, "litpose").iterrows()]
+    assert read_media_frames(row) is None
 
 
 @pytest.mark.parametrize("kind", ["infer-pose", "infer-localizer"])

@@ -38,7 +38,7 @@ from mosaic.core.annotations.model import (
     AnnotationSet,
     KeypointSchema,
 )
-from mosaic.core.annotations.narrow import AliasRole, NarrowedSets, narrow_pose_sets
+from mosaic.core.annotations.narrow import AliasRole, narrow_pose_sets, narrowed_pose
 from mosaic.core.annotations.pose_annotations import (
     PoseAnnotationSet,
     PoseDefinition,
@@ -430,8 +430,10 @@ def check_preparation(ds: Dataset, params: PrepareTrainingDataParams) -> None:
         KeyError: A reference matches several datasets' sets and names none.
         IdentityDeferred: A revision is not indexed here, or not on disk.
     """
-    ordered_sets, narrowed = _narrowed(params, resolve_keypoint_sets(ds, params.sets))
-    _ = _split(params, ordered_sets, narrowed.sets)
+    ordered_sets, narrowed, _pose = _narrowed(
+        params, resolve_keypoint_sets(ds, params.sets)
+    )
+    _ = _split(params, ordered_sets, narrowed)
 
 
 # --- Building the tree ---------------------------------------------------------
@@ -495,8 +497,8 @@ def _split(
 
 def _narrowed(
     params: PrepareTrainingDataParams, sets: tuple[ResolvedSet, ...]
-) -> tuple[list[ResolvedSet], NarrowedSets]:
-    """The sets in identity order, and each narrowed as this preparation reads it.
+) -> tuple[list[ResolvedSet], dict[str, AnnotationSet], PoseDefinition]:
+    """The sets in identity order, each narrowed as this run reads it, and the pose.
 
     Narrowed together, in the order the run identifier sorts them, so the classes and
     the layout they are checked against do not depend on the order the sets were named
@@ -509,21 +511,22 @@ def _narrowed(
     ordered_sets = sorted(
         sets, key=lambda item: (item.origin_uuid, item.set_key, item.digest)
     )
+    states = {_set_label(item): _read_set(item) for item in ordered_sets}
     narrowed = narrow_pose_sets(
-        {_set_label(item): _read_set(item) for item in ordered_sets},
+        states,
         pose=params.pose,
         class_by=params.class_by,
         track_by=params.track_by if params.target == "sleap" else None,
         bbox=params.bbox,
     )
-    categories = narrowed.sets[_set_label(ordered_sets[0])].categories
+    categories = narrowed[_set_label(ordered_sets[0])].categories
     if params.target not in _TREE_TARGETS and len(categories) > 1:
         msg = (
             f"{params.target} trains one class, and class_by="
             f"{params.class_by!r} makes {len(categories)}: {list(categories)}"
         )
         raise ValueError(msg)
-    return ordered_sets, narrowed
+    return ordered_sets, narrowed, narrowed_pose(states, pose=params.pose)
 
 
 def _read_set(item: ResolvedSet) -> PoseAnnotationSet:
@@ -652,8 +655,8 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
         _ = claim_run_root(ds, ctx.execution_id, out, self.kind, _PREPARE_IDLE_SECONDS)
         empty_claimed_run_root(out)
 
-        ordered_sets, narrowed = _narrowed(params, sets)
-        reference = narrowed.sets[_set_label(ordered_sets[0])]
+        ordered_sets, narrowed, pose = _narrowed(params, sets)
+        reference = narrowed[_set_label(ordered_sets[0])]
         schema, categories = reference.schema, reference.categories
         class_ids = reference.category_ids()
 
@@ -663,7 +666,7 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
         gathered: list[tuple[AnnotationFrame, Path]] = []
         missing: list[str] = []
         for item in ordered_sets:
-            annotations = narrowed.sets[_set_label(item)]
+            annotations = narrowed[_set_label(item)]
             for frame in annotations.frames:
                 source = annotations.resolve(frame)
                 if not source.is_file():
@@ -681,7 +684,7 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
             )
             raise FileNotFoundError(msg)
 
-        name_by_frame, split_of = _split(params, ordered_sets, narrowed.sets)
+        name_by_frame, split_of = _split(params, ordered_sets, narrowed)
 
         def name_of(frame: AnnotationFrame, _source: Path) -> str:
             return name_by_frame[id(frame)]
@@ -718,7 +721,7 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
             )
             return _register(
                 ds, index, run_id, self.kind, params, sets, out, artifact,
-                pose=narrowed.pose, n_frames=len(ordered),
+                pose=pose, n_frames=len(ordered),
             )  # fmt: skip
         written, skipped = write_split_tree(
             ordered,
@@ -754,7 +757,7 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
 
         return _register(
             ds, index, run_id, self.kind, params, sets, out, data_yaml,
-            pose=narrowed.pose, n_frames=written,
+            pose=pose, n_frames=written,
         )  # fmt: skip
 
 

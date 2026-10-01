@@ -25,7 +25,6 @@ Three rules are what keep the result honest.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
 from typing import Literal
 
 from mosaic.core.annotations.bbox import BboxPolicy, derived_bbox
@@ -42,26 +41,10 @@ from mosaic.core.annotations.pose_annotations import (
     PoseFrame,
 )
 
-__all__ = ["AliasRole", "NarrowedSets", "narrow_pose_sets"]
+__all__ = ["AliasRole", "narrow_pose_sets", "narrowed_pose"]
 
 AliasRole = Literal["alias"]
 """What an object's alias can become: today only itself, as a class or a track."""
-
-
-@dataclass(frozen=True, slots=True)
-class NarrowedSets:
-    """The sets as one training run reads them, and the pose they were narrowed to.
-
-    Attributes:
-        sets: One single-schema set per label, holding the finished frames and
-            their objects of the chosen pose, with every box explicit.
-        pose: The first set's chosen pose, which names the result: every set
-            shares its layout, and its name is the one class when classes are
-            not taken from aliases.
-    """
-
-    sets: dict[str, AnnotationSet]
-    pose: PoseDefinition
 
 
 def narrow_pose_sets(
@@ -71,7 +54,7 @@ def narrow_pose_sets(
     class_by: AliasRole | None = None,
     track_by: AliasRole | None = None,
     bbox: BboxPolicy | None = None,
-) -> NarrowedSets:
+) -> dict[str, AnnotationSet]:
     """Each set narrowed to one pose's finished frames, with classes decided jointly.
 
     Args:
@@ -91,7 +74,9 @@ def narrow_pose_sets(
             uses each set's own policy: the box the annotator saw.
 
     Returns:
-        The narrowed sets, and the pose they were narrowed to.
+        One single-schema set per label, holding the finished frames and their
+        objects of the chosen pose, with every box explicit.
+        :func:`narrowed_pose` names the pose, by the same selection.
 
     Raises:
         ValueError: A set does not declare the pose, or declares it ambiguously;
@@ -100,17 +85,12 @@ def narrow_pose_sets(
             ``class_by`` meets an object without an alias, or two aliases share
             a name; or no set holds a finished frame.
     """
-    if not sets:
-        msg = "there are no annotation sets to narrow"
-        raise ValueError(msg)
-    chosen = {label: _select(label, state, pose) for label, state in sets.items()}
+    chosen = _chosen_poses(sets, pose)
     reference_label = next(iter(chosen))
     reference = chosen[reference_label]
-    # The pose first: two poses differ in layout because they differ, and the
-    # pose is the cause to name. One pose edited across revisions keeps its id,
-    # so a layout that changed still reaches the layout check.
-    for label, definition in chosen.items():
-        _check_pose(label, definition, reference_label, reference)
+    # The pose was checked first, as it was chosen: two poses differ in layout
+    # because they differ, and the pose is the cause to name. One pose edited
+    # across revisions keeps its id, so a layout that changed reaches this check.
     for label, definition in chosen.items():
         _check_layout(label, definition.schema, reference_label, reference.schema)
 
@@ -155,7 +135,42 @@ def narrow_pose_sets(
             image_root=state.image_root,
             source_format=FORMAT_NAME,
         )
-    return NarrowedSets(sets=narrowed, pose=reference)
+    return narrowed
+
+
+def narrowed_pose(
+    sets: Mapping[str, PoseAnnotationSet], *, pose: int | str | None = None
+) -> PoseDefinition:
+    """The pose that :func:`narrow_pose_sets` narrows *sets* to, given *pose*.
+
+    The first set's chosen pose. Every set shares its layout, and its name is the
+    one class when classes are not taken from aliases. Chosen by the same
+    selection, and refused for the same reasons of pose.
+
+    Raises:
+        ValueError: There are no sets; a set does not declare the pose, or
+            declares it ambiguously; or the sets chose poses of different ids.
+    """
+    return next(iter(_chosen_poses(sets, pose).values()))
+
+
+def _chosen_poses(
+    sets: Mapping[str, PoseAnnotationSet], pose: int | str | None
+) -> dict[str, PoseDefinition]:
+    """Each set's chosen pose, refused unless every set chose the first set's.
+
+    Raises:
+        ValueError: As :func:`narrowed_pose` raises.
+    """
+    if not sets:
+        msg = "there are no annotation sets to narrow"
+        raise ValueError(msg)
+    chosen = {label: _select(label, state, pose) for label, state in sets.items()}
+    reference_label = next(iter(chosen))
+    reference = chosen[reference_label]
+    for label, definition in chosen.items():
+        _check_pose(label, definition, reference_label, reference)
+    return chosen
 
 
 def _select(

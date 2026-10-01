@@ -353,6 +353,45 @@ def test_two_layouts_cannot_be_one_model(
         )
 
 
+def test_a_pose_renamed_between_sets_is_named_as_the_first_set_names_it(
+    tmp_path: Path,
+) -> None:
+    """One pose id under two definitions, as a pose renamed across revisions.
+
+    The sets are read in identity order, whatever order they are named in, and
+    the first set's definition names the prepared data.
+    """
+    library = make_dataset(tmp_path / "libraries" / "7", name="library")
+    _ = _save_set(library, "a-before", {"m01": 2, "m02": 2})
+    renamed = replace(MOUSE, name="rodent")
+    frames = [
+        pose_frame(
+            _image(library, sequence, index),
+            pose_object((10.0 + index, 12.0), (30.0 + index, 20.0)),
+            sequence=sequence,
+            frame_index=index,
+        )
+        for sequence in ("m03", "m04")
+        for index in range(2)
+    ]
+    _ = _save(
+        library,
+        "b-renamed",
+        pose_set(frames, poses=(renamed,), image_root=library.base_dir),
+    )
+
+    run_id = run_op(
+        library,
+        KIND,
+        {
+            "sets": [{"set_key": "b-renamed"}, {"set_key": "a-before"}],
+            "split_by": "frame",
+        },
+    )
+
+    assert _recorded_pose(library, run_id) == (str(MOUSE.id), MOUSE.name)
+
+
 def test_a_missing_annotated_image_is_refused(
     world: tuple[Dataset, Dataset, Dataset],
 ) -> None:

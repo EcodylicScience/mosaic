@@ -86,7 +86,7 @@ from tests.helpers.media import (
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.models import register_trained_model
 from tests.helpers.ops import minimal_op_params
-from tests.helpers.runlog import entry_error_lines
+from tests.helpers.runlog import entry_error_lines, latest_events, latest_snapshot
 from tests.helpers.scope import resolved_scope, scope_over
 from tests.helpers.source_scan import (
     functions_named,
@@ -177,6 +177,8 @@ __all__ = [
     "install_fake_trex",
     "install_fake_ultralytics",
     "is_section",
+    "latest_events",
+    "latest_snapshot",
     "make_dataset",
     "make_pair_df",
     "make_sequence_df",

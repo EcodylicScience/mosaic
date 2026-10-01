@@ -30,8 +30,9 @@ and reach this table through registration, not import.
 from __future__ import annotations
 
 import textwrap
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Final, Literal, Protocol
 
 from mosaic_media.transcode import TranscodeError
 
@@ -43,6 +44,8 @@ __all__ = [
     "TRACKING_ROOT",
     "TRACKING_ROOTS",
     "RetentionClass",
+    "StreamHeader",
+    "TailLoss",
     "ToolCodecError",
     "TrackingPhase",
     "TrackingRoot",
@@ -261,6 +264,50 @@ it, and its output ends with the reason.
 """
 
 
+class StreamHeader(Protocol):
+    """The two facts of a video file's header that decide how far a decoder reads it.
+
+    A probe's :class:`~mosaic_media.MediaFacts` carries both, and so does the
+    header that ``ffprobe`` reads without scanning a packet.
+    """
+
+    @property
+    def coded_reordering_depth(self) -> int:
+        """How many pictures the bitstream may hold back before presenting one."""
+        ...
+
+    @property
+    def declared_frame_count(self) -> int:
+        """The container's own frame count, or 0 when it records none."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class TailLoss:
+    """How many frames short of the end of one file a producer's tool stops reading.
+
+    Attributes:
+        of_file: The loss on one file, from its header.
+        most: The largest loss on any file. A table whose file's header was never
+            read is allowed this much, and its report says so.
+    """
+
+    of_file: Callable[[StreamHeader], int]
+    most: int
+
+
+def _trex_tail_loss(header: StreamHeader) -> int:
+    """How many frames short of the end of a file TREx stops reading it.
+
+    TREx counts a file's frames from the container's count less its decoder's
+    reorder delay, and never drains the decoder at the end of the file, so it
+    reads the file short by that delay. When the container records no count,
+    TREx reads one frame fewer again.
+    """
+    missing_count = 1 if header.declared_frame_count == 0 else 0
+    return header.coded_reordering_depth + missing_count
+
+
 @dataclass(frozen=True, slots=True)
 class TrackingRoot:
     """One tool's intermediate root, and what the sweeper needs to know about it.
@@ -298,6 +345,14 @@ class TrackingRoot:
     is the one such set. A variant of any other producer is named by each model's
     own identity, so a record of one that predates the recorded models is still
     decided by comparing a model's digest with the one it names.
+
+    ``tail_loss`` is how many frames short of the end of a file this producer's
+    tool is known to stop reading, as a rule of the file, or ``None`` for a tool
+    that reads every file to its end. A tracks row records what the rule gives
+    the file its tool read, and a shortfall within that is reported as a known
+    tail loss rather than as a frame-axis mismatch
+    (:func:`~mosaic.core.pipeline.tracks_index.frame_axis_verdict`). A count
+    cannot show where the missing frames were, so the report says so.
     """
 
     key: str
@@ -308,6 +363,7 @@ class TrackingRoot:
     output_schema: str = "trex_v1"
     decoder: ToolDecoder = CONSERVATIVE_DECODER
     model_sets: bool = False
+    tail_loss: TailLoss | None = None
 
     @property
     def phases(self) -> tuple[PhaseName, ...]:
@@ -353,6 +409,12 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 TrackingPhase("track", ("*.results", "data/*.npz")),
             ),
             path_columns=("video_abs_path", "pv_path"),
+            # Measured with TREx 4b4860187e on 26 H.264, HEVC and AV1 files of
+            # 60 to 6,000 frames and on joins of three clips: 2 frames for
+            # H.264 or HEVC with B-frames, 1 for one B-frame, none for AV1 or
+            # without B-frames, and 1 more in Matroska. No encoder measured
+            # reorders by more than 2, so no file loses more than 3.
+            tail_loss=TailLoss(of_file=_trex_tail_loss, most=3),
         ),
         # The shared conversion cache: one `.pv` per (detection settings, source
         # content), read by every tracker run whose convert-phase parameters and

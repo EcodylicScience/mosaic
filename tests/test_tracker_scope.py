@@ -186,6 +186,35 @@ class TestRefusals:
         with pytest.raises(JoinedSourceMismatchError, match="--kind preprocess"):
             _ = _items(ds, kind=TREX)
 
+    @pytest.mark.parametrize("kind", [TREX, SLEAP, "litpose", "ultralytics"])
+    def test_stores_at_one_rate_are_refused(self, tmp_path: Path, kind: str) -> None:
+        """A tool is handed one file, and export-joined does not join stores."""
+        clips = [
+            MediaClip(filename="a.mp4", video_uuid="uid-a", frame_count=40),
+            MediaClip(
+                filename="b.mp4", video_order=1, video_uuid="uid-b", frame_count=60
+            ),
+        ]
+        ds = _dataset(tmp_path, clips)
+        for clip in clips:
+            _ = point_at_a_store(
+                ds,
+                clip.sequence,
+                ds.get_root("media_raw") / f"{clip.video_order}.store",
+                video_order=clip.video_order,
+            )
+
+        with pytest.raises(JoinedSourceMismatchError) as refused:
+            _ = _items(ds, kind=kind)
+
+        message = str(refused.value)
+        assert f"[{kind}]" in message
+        assert "export-joined does not join stores" in message
+        assert (
+            '--kind preprocess --entries ":sess" --params '
+            """'{"steps":[{"step":"trim","start":0,"stop":100}]}'"""
+        ) in message
+
     def test_an_unidentified_clip_among_several_is_refused(
         self, tmp_path: Path
     ) -> None:

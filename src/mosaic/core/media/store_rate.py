@@ -15,7 +15,13 @@ a relative difference of the two rates, :data:`STORE_RATE_TOLERANCE`.
 
 The reader of a store sequence and the check that refuses one before any work
 starts (:func:`~mosaic.tracking.common.scope.refuse_unjoinable`) both apply
-:func:`store_rate_mismatch`, so a sequence that one accepts the other accepts.
+:func:`store_rate_mismatch`, so for a consumer that reads the stores itself, a
+sequence that one accepts the other accepts. A consumer that hands its tool a
+path refuses every sequence of several stores, since no file joins them. The
+timeline that times a table read from stores, directly or through a media
+variant (:func:`~mosaic.core.media.timeline.concatenated_timeline`), classifies
+their rate by the same rule, so stores that the reader reads as one rate keep the
+columns that one rate computes.
 """
 
 from __future__ import annotations

@@ -312,6 +312,12 @@ def run_litpose(
     )
 
     settings = litpose_settings(params, model_id=resolved_model.model_id)
+    scope_entries = scope.op_entries if scope is not None else None
+    media_scope = ds.resolve_media_scope(scope_entries)
+    # Before the mint, so a run refused for its media records no variant.
+    work_items = build_work_items(
+        ds, media_scope, kind=LITPOSE_KIND, media=params.media
+    )
     minted = mint_tracker_run(
         ds,
         kind=LITPOSE_KIND,
@@ -325,8 +331,6 @@ def run_litpose(
             **observed_model_source(resolved_model),
         },
     )
-    scope_entries = scope.op_entries if scope is not None else None
-    media_scope = ds.resolve_media_scope(scope_entries)
     if not media_scope:
         print("[run_litpose] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
@@ -457,9 +461,7 @@ def run_litpose(
         kind=LITPOSE_KIND,
         target="litpose-predict",
         minted=minted,
-        work_items=build_work_items(
-            ds, media_scope, kind=LITPOSE_KIND, media=params.media
-        ),
+        work_items=work_items,
         index=litpose_index(litpose_index_path(ds)),
         run_entry=predict_one,
         overwrite=overwrite,

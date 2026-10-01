@@ -37,9 +37,8 @@ from pathlib import Path
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from typing_extensions import TypeIs
 
-from ._utils import atomic_write, json_ready
+from ._utils import atomic_write, is_str_mapping, json_ready
 from .index_lock import index_lock
 from .op_identity import op_run_id, parse_op_run_id
 
@@ -424,12 +423,7 @@ def recorded_op_params(sidecar: VariantSidecar) -> Mapping[str, object]:
     named ``params``.
     """
     nested = sidecar.params.get("params")
-    return nested if _is_params(nested) else sidecar.params
-
-
-def _is_params(value: object) -> TypeIs[Mapping[str, object]]:
-    """Whether *value* is a mapping of parameter values by name."""
-    return isinstance(value, Mapping)
+    return nested if is_str_mapping(nested) else sidecar.params
 
 
 def tracks_variant_media(tracks_root: Path, run_id: str) -> str:

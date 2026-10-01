@@ -20,17 +20,21 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.scope import Scope
+from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_index import (
     DROPPED_LEGACY_COLUMNS,
     backfill_frame_extents,
     backfill_media_frames,
     frame_axis_mismatches,
+    frame_axis_verdict,
     frame_extent,
+    frame_tail_shortfalls,
     read_frame_extent,
     read_frame_extents,
     read_media_frames,
     TRACKS_INDEX_COLUMNS,
     TRACKS_INDEX_PATH_COLUMNS,
+    TailAllowance,
     TracksIndexRow,
     adopt_legacy_columns,
     consumed_roots_for,
@@ -1213,6 +1217,7 @@ def _entry_row(
     read: int | None,
     media: int | None,
     rows: int = 10,
+    known_tail_loss: int | None = None,
 ) -> None:
     """One row of a table of *rows* frames, whose tool read *read* of *media*."""
     out = ds.get_root("tracks") / f"g__{sequence}.parquet"
@@ -1228,6 +1233,7 @@ def _entry_row(
         n_rows=rows,
         media_frames=media,
         frames_read=read,
+        known_tail_loss=known_tail_loss,
     )
 
 
@@ -1268,6 +1274,126 @@ def test_a_mismatch_needs_both_cells(tmp_path: Path) -> None:
     _entry_row(ds, "unmeasured", read=10, media=None)
     _entry_row(ds, "unread", read=None, media=300)
     assert frame_axis_mismatches(ds) == ()
+    assert frame_tail_shortfalls(ds) == ()
+
+
+# --- a shortfall its producer declares at the end of a file ------------------
+#
+# TREx stops short of the end of every file it reads, by the frames its decoder
+# holds back to reorder and one more when the container carries no frame count.
+# Its root declares that rule, and the row records what the rule gives the file
+# its tool read. A shortfall within it is a known tail loss rather than a
+# mismatch. A row whose file's header was never read is allowed the most TREx
+# loses on any file, and says so.
+
+_TREX_MOST = 3
+
+
+def test_only_trex_declares_a_tail_it_reads_short() -> None:
+    declared = {key for key, root in TRACKING_ROOTS.items() if root.tail_loss}
+    assert declared == {"trex"}
+    trex_loss = TRACKING_ROOTS["trex"].tail_loss
+    assert trex_loss is not None
+    assert trex_loss.most == _TREX_MOST
+
+
+@pytest.mark.parametrize(
+    ("producer", "read", "media", "known", "verdict"),
+    [
+        ("trex", 300, 300, 2, None),
+        ("trex", 298, 300, 2, "tail_short"),
+        ("trex", 297, 300, 2, "mismatch"),
+        ("trex", 298, 300, 0, "mismatch"),
+        ("trex", 299, 300, 0, "mismatch"),
+        ("trex", 297, 300, 3, "tail_short"),
+        ("trex", 300 - _TREX_MOST, 300, None, "tail_short"),
+        ("trex", 299 - _TREX_MOST, 300, None, "mismatch"),
+        ("trex", 301, 300, 2, "mismatch"),
+        ("trex", 301, 300, None, "mismatch"),
+        ("sleap", 299, 300, None, "mismatch"),
+        ("ultralytics", 299, 300, None, "mismatch"),
+        ("convert-calms21_npy", 299, 300, None, "mismatch"),
+        ("", 299, 300, None, "mismatch"),
+    ],
+)
+def test_the_verdict_on_a_read_against_its_media(
+    producer: str, read: int, media: int, known: int | None, verdict: str | None
+) -> None:
+    assert (
+        frame_axis_verdict(producer, read=read, media=media, known_tail_loss=known)
+        == verdict
+    )
+
+
+def test_a_trex_table_short_within_its_file_s_tail_is_a_tail_shortfall(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    _entry_row(ds, "tail", read=1798, media=1800, known_tail_loss=2)
+
+    assert frame_axis_mismatches(ds) == ()
+    (found,) = frame_tail_shortfalls(ds)
+    assert (found.run_id, found.group, found.sequence) == ("v1", "g", "tail")
+    assert (found.producer, found.read, found.media) == ("trex", 1798, 1800)
+    assert found.allowance == TailAllowance(frames=2, known=True)
+
+
+def test_a_trex_table_short_where_its_file_loses_nothing_is_a_mismatch(
+    tmp_path: Path,
+) -> None:
+    """An AV1 file, or one without B-frames, gives TREx nothing to hold back."""
+    ds = _dataset(tmp_path)
+    _entry_row(ds, "av1", read=1798, media=1800, known_tail_loss=0)
+
+    assert frame_tail_shortfalls(ds) == ()
+    (found,) = frame_axis_mismatches(ds)
+    assert (found.read, found.media) == (1798, 1800)
+
+
+def test_a_trex_table_of_an_unread_file_is_allowed_the_most_and_says_so(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    _entry_row(ds, "unknown", read=1800 - _TREX_MOST, media=1800)
+
+    assert frame_axis_mismatches(ds) == ()
+    (found,) = frame_tail_shortfalls(ds)
+    assert found.allowance == TailAllowance(frames=_TREX_MOST, known=False)
+
+
+def test_a_trex_table_short_by_more_than_the_most_is_a_mismatch(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    _entry_row(ds, "beyond", read=1800 - _TREX_MOST - 1, media=1800)
+
+    assert frame_tail_shortfalls(ds) == ()
+    (found,) = frame_axis_mismatches(ds)
+    assert (found.read, found.media) == (1796, 1800)
+
+
+def test_a_table_of_a_producer_declaring_no_tail_short_by_one_is_a_mismatch(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    out = ds.get_root("tracks") / "g__s1.parquet"
+    _write_table(out, start=0, n_frames=10)
+    write_tracks_row(
+        ds,
+        run_id="v1",
+        group="g",
+        sequence="s1",
+        out_path=out,
+        producer="ultralytics",
+        std_format="mosaic_v1",
+        n_rows=10,
+        media_frames=300,
+        frames_read=299,
+    )
+
+    assert frame_tail_shortfalls(ds) == ()
+    (found,) = frame_axis_mismatches(ds)
+    assert (found.read, found.media) == (299, 300)
 
 
 def test_backfill_media_frames_fills_only_the_rows_that_lack_one(
@@ -1325,16 +1451,16 @@ def test_backfill_media_frames_fills_only_the_rows_that_lack_one(
     assert read_media_frames(read_tracks_index(ds).iloc[0]) is None
 
     would = backfill_media_frames(ds, dry_run=True)
-    assert len(would) == 1
+    assert len(would.written) == 1
     assert read_media_frames(read_tracks_index(ds).iloc[0]) is None, (
         "a dry run must not write"
     )
 
     filled = backfill_media_frames(ds, dry_run=False)
-    assert len(filled) == 1
+    assert len(filled.written) == 1
     assert read_media_frames(read_tracks_index(ds).iloc[0]) == 600
 
-    assert len(backfill_media_frames(ds, dry_run=False)) == 0, "not idempotent"
+    assert len(backfill_media_frames(ds, dry_run=False).written) == 0, "not idempotent"
 
     # Which is the whole point: the comparison is now answerable for a table
     # that was published before anyone was recording the second number.
@@ -1375,17 +1501,17 @@ def test_two_variants_of_one_entry_are_both_reported(tmp_path: Path) -> None:
     """
     ds = _dataset(tmp_path)
     _variant_row(ds, "trex.0.1-old", "s1", read=1782, media=1800)
-    _variant_row(ds, "trex.0.2-new", "s1", read=1798, media=1800)
+    _variant_row(ds, "trex.0.2-new", "s1", read=1790, media=1800)
 
     found = frame_axis_mismatches(ds)
 
     assert [(m.run_id, m.read) for m in found] == [
         ("trex.0.1-old", 1782),
-        ("trex.0.2-new", 1798),
+        ("trex.0.2-new", 1790),
     ]
     # And naming one variant answers for that one alone.
     (only,) = frame_axis_mismatches(ds, "trex.0.2-new")
-    assert only.read == 1798
+    assert only.read == 1790
 
 
 def test_select_variant_rows_still_refuses_to_choose(tmp_path: Path) -> None:

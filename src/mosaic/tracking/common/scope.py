@@ -40,6 +40,7 @@ refused.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -298,7 +299,8 @@ def build_work_items(
 
     Raises:
         JoinedSourceMismatchError: If an entry has clips that disagree on frame
-            geometry, or one whose frame rate is unknown.
+            geometry, one whose frame rate is unknown, or several clips of which
+            one is a store.
         JoinedExportMissingError: If an entry has several clips and one carries
             no content identity. No join of them can be addressed, and no marker
             can prove which clips earlier output was made from.
@@ -332,7 +334,7 @@ def build_work_items(
             continue
         paths = list(resolved.paths)
         facts = list(resolved.facts)
-        refuse_unjoinable(kind, group, sequence, paths, facts)
+        refuse_unjoinable(kind, group, sequence, paths, facts, hands_over_path=True)
         refuse_unidentified_clips(group, sequence, facts, asker=kind)
 
         items.append(
@@ -376,6 +378,8 @@ def refuse_unjoinable(
     sequence: str,
     paths: Sequence[Path],
     facts: Sequence[MediaFacts],
+    *,
+    hands_over_path: bool,
 ) -> None:
     """Raise unless *facts* describe clips that can be read as one video.
 
@@ -384,14 +388,18 @@ def refuse_unjoinable(
     naming the file and the field rather than inside a subprocess whose
     traceback names neither. One clip is its own video and passes.
 
-    Stores at different frame rates are refused too, by the rule the store
+    An entry of several clips that holds a store is refused for a consumer that
+    hands its tool a path (*hands_over_path*): the tool is handed one file, and
+    ``export-joined`` does not join stores. A consumer that reads the stores in
+    its own process reads them as one only at one rate, by the rule the store
     reader applies (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`).
-    The store reader needs one rate, and ``export-joined`` does not join stores.
+    Either refusal names the media variant that holds the entry as one file.
 
     Raises:
         JoinedSourceMismatchError: If the clips lack one set of facts each,
-            disagree on frame geometry, include one whose frame rate is
-            unknown, or are stores whose frame rates differ.
+            disagree on frame geometry, or include one whose frame rate is
+            unknown; if they include a store and *hands_over_path*; or if they
+            are stores whose frame rates differ.
     """
     if len(paths) < 2:
         return
@@ -424,19 +432,53 @@ def refuse_unjoinable(
                 f"session. Re-probe it with 'mosaic reprobe-media'."
             )
 
-    other = (
-        store_rate_mismatch([clip.fps for clip in facts])
-        if any(is_imgstore(path) for path in paths)
-        else None
-    )
+    stores = [path.name for path in paths if is_imgstore(path)]
+    if not stores:
+        return
+    if hands_over_path:
+        raise JoinedSourceMismatchError(
+            f"[{kind}] {entry} cannot be read as one video: {kind} is handed one "
+            f"file, and export-joined does not join stores, so no file holds "
+            f"{', '.join(stores)} with the entry's other clips. "
+            f"{_variant_remedy(group, sequence, facts)}"
+        )
+    other = store_rate_mismatch([clip.fps for clip in facts])
     if other is not None:
         raise JoinedSourceMismatchError(
             f"[{kind}] {entry} cannot be read as one video: "
             f"{paths[other].name} was recorded at {facts[other].fps:g} fps and "
             f"{paths[0].name} at {facts[0].fps:g}. Stores cannot be joined, so no "
             f"reader places their frames on one axis. Re-record the stores at one "
-            f"rate, or make a media variant of the entry, which reads each store "
-            f"at its own rate, and name it with the 'media' parameter:\n"
-            f"    mosaic run -m <manifest> --kind preprocess "
-            f'--entries "{group}:{sequence}" --params <steps>'
+            f"rate, or read them through a media variant. "
+            f"{_variant_remedy(group, sequence, facts)}"
         )
+
+
+def _variant_remedy(group: str, sequence: str, facts: Sequence[MediaFacts]) -> str:
+    """Say how to make the media variant that holds an entry of stores as one file.
+
+    The variant reads each store at its own rate, and a trim over every frame of
+    the entry keeps them all, since preprocess refuses a variant with no step.
+    The entry's frame count comes from *facts*, so a store of unknown length is
+    measured first.
+    """
+    counts = [int(clip.frame_count) for clip in facts]
+    if min(counts) <= 0:
+        return (
+            "Measure the stores with 'mosaic reprobe-media --apply'. Then make a "
+            "media variant of the entry, which reads each store at its own rate, "
+            "and name it with the 'media' parameter. A trim from frame 0 to the "
+            "entry's frame count keeps every frame."
+        )
+    total = sum(counts)
+    steps = json.dumps(
+        {"steps": [{"step": "trim", "start": 0, "stop": total}]},
+        separators=(",", ":"),
+    )
+    return (
+        f"Make a media variant of the entry, which reads each store at its own "
+        f"rate, and name it with the 'media' parameter. A trim over all {total} "
+        f"frames keeps every frame:\n"
+        f"    mosaic run -m <manifest> --kind preprocess "
+        f"--entries \"{group}:{sequence}\" --params '{steps}'"
+    )

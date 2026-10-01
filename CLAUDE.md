@@ -995,10 +995,16 @@ measured from the parquet, `media_frames` is how many frames the producer's tool
 should have read, and `frames_read` how many it did, both *passed* by the producer
 because only it knows what it resolved and what its tool reported. Blank means
 unknown on all four, and `frame_axis_mismatches()` compares `frames_read` with
-`media_frames` only when both are filled. The table's extent is never compared: a
-table with rows only at detections ends at its last one, however many frames the
-tool read. Every tracker and inference op publishes through
-`publish_tracks_table`, which takes the entry's `EntryAxis`
+`media_frames` only when both are filled. A shortfall within what the tool is
+known to lose at the end of the file it read is not a mismatch:
+`frame_tail_shortfalls()` reports it, and `frame_axis_verdict()` is the one rule
+deciding between the two. That loss is the `known_tail_loss` cell, what the
+producer's rule (`TrackingRoot.tail_loss`, TREx only) gives the header of the
+file its run recorded reading, 0 for several files, and blank, allowing the most
+the producer loses on any file, when the header was not read. The table's
+extent is never compared: a table with rows only at detections ends at its last
+one, however many frames the tool read. Every tracker and inference op publishes
+through `publish_tracks_table`, which takes the entry's `EntryAxis`
 ([`core/pipeline/placement.py`](src/mosaic/core/pipeline/placement.py)) and
 records its `media_frames`: the summed clips of an entry that the run read whole,
 one clip included, the source's length for a media variant that keeps every source
@@ -1006,11 +1012,16 @@ frame, and blank for a frame window or a trimmed or decimated variant.
 `frames_read` is the `.pv` count for TREx, the runner's count for Ultralytics and
 the three inference ops, and the frames predicted for Lightning Pose. SLEAP
 records none, because its analysis export does not say whether it spans the video.
-`backfill_media_frames` and `backfill_frames_read` (`mosaic measure-tracks`) fill
-past rows by the same rules. The first rebuilds the run's `EntryAxis` from its
-variant's record ([`tracks_axis.py`](src/mosaic/core/pipeline/tracks_axis.py)),
-and the second reads what the run left on disk, through a reader each producer
-registers.
+`backfill_media_frames` and `backfill_frames_read` (`mosaic measure-tracks`)
+rewrite past rows to what the same rules give. The first rebuilds the run's
+`EntryAxis` from its variant's record
+([`tracks_axis.py`](src/mosaic/core/pipeline/tracks_axis.py)), and the second
+reads what the run left on disk, through a reader each producer registers. A cell
+the rule leaves blank is cleared, and a row whose run cannot be established (a
+lost record, an unmounted or changed media root, a missing file) keeps its value
+and is reported as not established, never cleared. A tracker row in a process
+that has not imported `mosaic.tracking` keeps its value too, and is reported
+apart as unregistered, never as nothing to fill.
 
 Three invariants worth knowing:
 
@@ -1393,12 +1404,22 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   `mosaic measure-tracks` for tables published before the cells existed. What is
   compared is how many frames the tool read, never the table's last frame, which
   is the last frame an animal was seen in. A shortfall is not always a
-  misregistration. TREx reads every file it opens two frames short at its end (58
-  frames of a 60-frame clip, measured), which moves no frame of the table, while
-  frames lost earlier move every frame after them. Recorded, never refused: the
-  condition is deterministic and a table cannot be re-bridged without re-tracking,
-  so raising would fail the same entry forever and cost the analyses that never
-  depended on registration.
+  misregistration. TREx never reads the frames its decoder holds back to reorder
+  at the end of a file, 2 of an H.264 file with B-frames and none of an AV1 file,
+  and reads one fewer when the container carries no frame count. That moves no
+  frame of the table, while frames lost earlier move every frame after them. The
+  `trex` root declares the loss as a rule of the file (`tail_loss`), each row
+  records what it gives the file TREx read (`known_tail_loss`, from the source
+  its `.pv` records), and a shortfall within it is recorded apart as a known tail
+  loss: a `frame_tail_short` event, its own snapshot counter and inventory key,
+  and `frame_tail_shortfalls()`. Anything larger stays a mismatch, as does any
+  shortfall of a `.pv` made from several files, which loses frames at every
+  boundary. A row whose file's header was not read is allowed the most TREx
+  loses on any file, 3, and says so. A count cannot show that the missing frames
+  are at the end, so every report of a tail loss says that too. Recorded, never
+  refused: the condition is deterministic and a table cannot be re-bridged
+  without re-tracking, so raising would fail the same entry forever and cost the
+  analyses that never depended on registration.
 - **Tracks are pixels, and `X` is the body centre.** Both hold on every tracker,
   and neither did before: TREx reports centimetres and puts the *head* in `X`. A
   physical unit is obtained by the `scale-to-cm` feature, never stored in the

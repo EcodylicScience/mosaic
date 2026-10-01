@@ -46,6 +46,8 @@ from tests.helpers import (
     install_fake_pose_inference,
     install_fake_sleap,
     install_fake_ultralytics,
+    latest_events,
+    latest_snapshot,
     make_dataset,
     write_litpose_model,
     write_media_index,
@@ -58,7 +60,7 @@ _FRAMES = 30
 """How many frames the one clip of each dataset holds."""
 
 
-def _dataset(tmp_path: Path) -> Dataset:
+def _dataset(tmp_path: Path, frames: int = _FRAMES) -> Dataset:
     ds = make_dataset(tmp_path / "ds")
     write_media_index(
         ds,
@@ -67,7 +69,7 @@ def _dataset(tmp_path: Path) -> Dataset:
                 sequence="vid1",
                 filename="vid1.mp4",
                 video_uuid="uid-vid1",
-                frame_count=_FRAMES,
+                frame_count=frames,
             )
         ],
     )
@@ -205,6 +207,52 @@ class TestEachProducerRecordsWhatItsToolRead:
 
         assert _recorded(ds) == _FRAMES
 
+    def test_a_runner_one_frame_short_is_a_mismatch_not_a_tail_loss(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only TREx declares a shortfall at the end of a file."""
+        ds = _dataset(tmp_path)
+        ultralytics = install_fake_ultralytics(monkeypatch)
+        ultralytics.frames_read = _FRAMES - 1
+        model = tmp_path / "yolo" / "best.pt"
+        model.parent.mkdir(parents=True)
+        _ = model.write_bytes(b"weights")
+
+        _ = ultralytics_runs.run_ultralytics(
+            ds, UltralyticsParams.model_validate({"model_path": str(model)})
+        )
+
+        assert ds.frame_tail_shortfalls() == ()
+        (found,) = ds.frame_axis_mismatches()
+        assert (found.read, found.media) == (_FRAMES - 1, _FRAMES)
+        snapshot = latest_snapshot(ds)
+        assert snapshot["entries_frame_axis_mismatch"] == 1
+        assert snapshot["entries_frame_tail_short"] == 0
+
+    def test_a_runner_that_read_past_its_media_is_a_mismatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Frames past the end of the media are no tail loss and no agreement."""
+        ds = _dataset(tmp_path, frames=60)
+        ultralytics = install_fake_ultralytics(monkeypatch)
+        ultralytics.frames_read = 62
+        model = tmp_path / "yolo" / "best.pt"
+        model.parent.mkdir(parents=True)
+        _ = model.write_bytes(b"weights")
+
+        _ = ultralytics_runs.run_ultralytics(
+            ds, UltralyticsParams.model_validate({"model_path": str(model)})
+        )
+
+        reported = [
+            (event["key"], event["read"], event["media"])
+            for event in latest_events(ds, "frame_axis_mismatch")
+        ]
+        assert reported == [("vid1", 62, 60)]
+        assert latest_events(ds, "frame_tail_short") == []
+        (found,) = ds.frame_axis_mismatches()
+        assert (found.read, found.media) == (62, 60)
+
     def test_sleap_records_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -287,12 +335,12 @@ class TestAPastRowIsFilledFromWhatItsRunLeft:
         _blank_frames_read(ds)
 
         would = backfill_frames_read(ds, dry_run=True)
-        assert len(would) == 1
+        assert len(would.written) == 1
         assert _recorded(ds) is None, "a dry run must not write"
 
-        assert len(backfill_frames_read(ds)) == 1
+        assert len(backfill_frames_read(ds).written) == 1
         assert _recorded(ds) == 28
-        assert len(backfill_frames_read(ds)) == 0, "not idempotent"
+        assert len(backfill_frames_read(ds).written) == 0, "not idempotent"
 
     def test_trex_stays_blank_once_its_pv_is_gone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -306,7 +354,67 @@ class TestAPastRowIsFilledFromWhatItsRunLeft:
         for pv in ds.get_root("trex").rglob("*.pv"):
             pv.unlink()
 
-        assert len(backfill_frames_read(ds)) == 0
+        assert len(backfill_frames_read(ds).written) == 0
+        assert _recorded(ds) is None
+
+    def test_trex_keeps_its_count_once_its_pv_is_gone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing file establishes nothing, so the recorded count stays."""
+        ds = _dataset(tmp_path)
+        trex = install_fake_trex(monkeypatch)
+        trex.npz_frames, trex.pv_frames = 20, 28
+        _ = trex_runs.run_trex(ds, TrexParams())
+        for pv in ds.get_root("trex-convert").rglob("*.pv"):
+            pv.unlink()
+        for pv in ds.get_root("trex").rglob("*.pv"):
+            pv.unlink()
+
+        done = backfill_frames_read(ds)
+
+        assert _recorded(ds) == 28
+        assert (len(done.written), len(done.cleared)) == (0, 0)
+        assert len(done.not_established) == 1
+
+    def test_trex_count_that_disagrees_with_its_pv_is_rewritten(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ds = _dataset(tmp_path)
+        trex = install_fake_trex(monkeypatch)
+        trex.npz_frames, trex.pv_frames = 20, 28
+        _ = trex_runs.run_trex(ds, TrexParams())
+        index = tracks_index_path(ds)
+        rows = pd.read_csv(index, dtype=str, keep_default_na=False)
+        rows.assign(frames_read="5").to_csv(index, index=False)
+
+        done = backfill_frames_read(ds)
+
+        assert _recorded(ds) == 28
+        assert len(done.written) == 1
+
+    def test_a_table_made_from_another_table_is_cleared(self, tmp_path: Path) -> None:
+        """No tool read media to make it, so no count of frames read applies."""
+        ds = _dataset(tmp_path)
+        out = ds.get_root("tracks") / "convert-x.0.1-0123456789" / "vid1.parquet"
+        out.parent.mkdir(parents=True)
+        pd.DataFrame({"frame": [0, 1], "id": [0, 0]}).to_parquet(out)
+        write_tracks_row(
+            ds,
+            run_id="convert-x.0.1-0123456789",
+            group="",
+            sequence="vid1",
+            out_path=out,
+            producer="convert-x",
+            std_format="mosaic_v1",
+            n_rows=2,
+            frames_read=_FRAMES,
+        )
+
+        would = backfill_frames_read(ds, dry_run=True)
+        assert len(would.cleared) == 1
+        assert _recorded(ds) == _FRAMES, "a dry run must not write"
+
+        assert len(backfill_frames_read(ds).cleared) == 1
         assert _recorded(ds) is None
 
     def test_lightning_pose_from_its_table(
@@ -337,7 +445,8 @@ class TestAPastRowIsFilledFromWhatItsRunLeft:
             ds, UltralyticsParams.model_validate({"model_path": str(model)})
         )
         _blank_frames_read(ds)
-        assert len(backfill_frames_read(ds)) == 0, "the fake wrote no response"
+        _ = backfill_frames_read(ds)
+        assert _recorded(ds) == _FRAMES
 
         _write_response(_work_dir(ds) / TRACK_RESPONSE_NAME, n_frames=29, n_ids=2)
         _ = backfill_frames_read(ds)
@@ -370,7 +479,7 @@ class TestAPastRowIsFilledFromWhatItsRunLeft:
         model = write_sleap_model(tmp_path / "sleap_model")
         _ = sleap_runs.run_sleap(ds, SleapParams(model_paths=[str(model)]))
 
-        assert len(backfill_frames_read(ds)) == 0
+        assert len(backfill_frames_read(ds).written) == 0
         assert _recorded(ds) is None
 
 

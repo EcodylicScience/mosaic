@@ -226,6 +226,17 @@ class JobContext:
         if self.run_log is not None:
             self.run_log.frame_axis_mismatch(key, read=read, media=media)
 
+    def frame_tail_short(self, key: str, *, read: int, media: int) -> None:
+        """Record that one entry's tool read short by a loss its producer declares.
+
+        A report like :meth:`frame_axis_mismatch`, kept apart from it: the
+        shortfall is within what the producer loses at the end of a file. Nothing
+        is appended to ``failed_keys`` and no status moves. Without a run-log it
+        is a no-op.
+        """
+        if self.run_log is not None:
+            self.run_log.frame_tail_short(key, read=read, media=media)
+
     def columns_dropped(self, key: str, columns: Sequence[str]) -> None:
         """Record that one entry's table was published without *columns*.
 

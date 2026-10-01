@@ -579,6 +579,66 @@ def test_an_older_reader_folds_a_log_holding_the_event(tmp_path: Path) -> None:
     assert snap["entries_frame_axis_mismatch"] == 0
 
 
+# --- a known tail loss is counted apart from a mismatch ---------------------
+
+
+def test_a_tail_loss_accumulates_apart_from_a_mismatch(tmp_path: Path) -> None:
+    """Each event is one entry, and neither kind moves the status."""
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    log = JsonlRunLog(path, eid)
+    log.started(kind="trex", target="trex", owner="me", host="h", pid=1)
+    log.frame_tail_short("a", read=1798, media=1800)
+    log.frame_tail_short("b", read=597, media=600)
+    log.frame_axis_mismatch("c", read=590, media=600)
+    log.entries_written(3)
+    log.finished()
+    log.close()
+
+    snap = reduce_run_log(path)
+    assert snap is not None
+    assert snap["entries_frame_tail_short"] == 2
+    assert snap["entries_frame_axis_mismatch"] == 1
+    assert snap["entries_failed"] == 0
+    assert snap["status"] == "finished"
+
+
+def test_the_tail_loss_event_carries_both_numbers(tmp_path: Path) -> None:
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    log = JsonlRunLog(path, eid)
+    log.started(kind="trex", target="trex", owner="me", host="h", pid=1)
+    log.frame_tail_short("sess", read=1798, media=1800)
+    log.close()
+
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    events = [record for record in records if record.get("ev") == "frame_tail_short"]
+    assert events == [
+        {
+            "t": events[0]["t"],
+            "ev": "frame_tail_short",
+            "key": "sess",
+            "read": 1798,
+            "media": 1800,
+        }
+    ]
+
+
+def test_the_job_context_records_a_tail_loss_without_failing_the_entry(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path)
+    with job_context(ds, kind="trex", target="trex") as ctx:
+        ctx.frame_tail_short("sess", read=1798, media=1800)
+
+    snap = read_run(run_log_dir(ds.base_dir), ctx.execution_id)
+    assert snap is not None
+    assert snap["entries_frame_tail_short"] == 1
+    assert snap["entries_failed"] == 0
+    assert ctx.failed_keys == []
+    assert snap["status"] == "finished"
+
+
 # --- a dropped column is a report, never a status ---------------------------
 
 

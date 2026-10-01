@@ -48,6 +48,7 @@ from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 from tests.helpers import (
     ULTRALYTICS_KEYPOINTS,
     FakeUltralytics,
+    MediaClip,
     install_fake_ultralytics,
     point_at_a_store,
     register_trained_model,
@@ -155,13 +156,64 @@ def test_a_completed_run_reuses_the_tracking(
     assert len(ultralytics.tracked) == 1  # the marker proves the phase done
 
     # Everything the phase would have reported is re-derived from disk, so the
-    # reuse run does not overwrite a good row with zeros.
+    # reuse run does not overwrite a good row with zeros. The frames read come
+    # from the runner's response, as they do on the run that tracked.
     index = _index(ds)
     assert len(index) == 1
     assert int(index.iloc[0]["n_ids"]) == 2
-    assert int(index.iloc[0]["n_frames"]) == 4
+    assert int(index.iloc[0]["n_frames"]) == 100
     assert int(index.iloc[0]["n_keypoints"]) == ULTRALYTICS_KEYPOINTS
     assert str(index.iloc[0]["model_task"]) == "pose"
+
+
+def test_a_reuse_whose_response_is_gone_keeps_the_frames_read(
+    ds: Dataset, model: Path, ultralytics: FakeUltralytics
+) -> None:
+    """Only the runner's response says how many frames it read.
+
+    Without it the reuse knows nothing, and the row keeps the count the run that
+    tracked recorded rather than overwriting it with the zero that means unknown.
+    """
+    run_id = dr.run_ultralytics(ds, _params(model))
+    work_dir = dr.ultralytics_run_root(ds, run_id) / "vid1"
+    (work_dir / TRACK_RESPONSE_NAME).unlink()
+
+    _ = dr.run_ultralytics(ds, _params(model))
+
+    assert len(ultralytics.tracked) == 1
+    assert int(_index(ds).iloc[0]["n_frames"]) == 100
+
+
+def test_a_reuse_keeps_the_frames_read_of_its_own_run_and_entry(
+    ds: Dataset, tmp_path: Path, ultralytics: FakeUltralytics
+) -> None:
+    """Each entry of the reused run keeps its own count, not another's.
+
+    Two entries of different lengths, and another run over both that read
+    another number of frames, whose rows the index holds after the first run's.
+    """
+    write_media_index(ds, ["vid1", MediaClip(sequence="vid2", frame_count=50)])
+    first = _make_model(tmp_path / "a" / "best.pt", weights=b"weights-A")
+    other = _make_model(tmp_path / "b" / "best.pt", weights=b"weights-B")
+    run_id = dr.run_ultralytics(ds, _params(first))
+    ultralytics.frames_read = 7
+    other_run_id = dr.run_ultralytics(ds, _params(other))
+    for sequence in ("vid1", "vid2"):
+        work_dir = dr.ultralytics_run_root(ds, run_id) / sequence
+        (work_dir / TRACK_RESPONSE_NAME).unlink()
+
+    _ = dr.run_ultralytics(ds, _params(first))
+
+    assert len(ultralytics.tracked) == 4
+    assert _frames_read_by_entry(ds, run_id) == {"vid1": 100, "vid2": 50}
+    assert _frames_read_by_entry(ds, other_run_id) == {"vid1": 7, "vid2": 7}
+
+
+def _frames_read_by_entry(ds: Dataset, run_id: str) -> dict[str, int]:
+    """The ``n_frames`` of *run_id*'s latest row for each entry."""
+    rows = _index(ds)
+    latest = rows[rows["run_id"] == run_id].groupby("sequence").last()
+    return {str(sequence): int(n) for sequence, n in latest["n_frames"].items()}
 
 
 def test_overwrite_forces_a_recompute(
@@ -384,7 +436,9 @@ def test_a_re_run_clears_the_previous_attempts_request_and_response(
     write_media_index(ds, ["vid1"], uids={"vid1": "uid-bbb"})
     _ = dr.run_ultralytics(ds, _params(model))
 
-    assert [path for path in stale if path.exists()] == []
+    # The re-run's runner writes a response of its own, as the real one does.
+    left = [path for path in stale if path.exists() and path.read_text() == "{}"]
+    assert left == []
 
 
 # --- what path the tool is given, and what facts describe it ----------------

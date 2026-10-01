@@ -25,19 +25,64 @@ Three names moved with the meaning: the run-log event's `tracked` field is
 `mosaic measure-tracks --json` is `frames_read`. That command also reports
 `frames_read_measured`.
 
-**A TREx table now reports a small mismatch.** TREx reads each file it opens two
-frames short at its end, measured as 58 frames of a 60-frame clip, and the check
-now sees it on a single clip and on a join. Frames lost at the end move no frame
-of the table.
+The Ultralytics run index's `n_frames` is the frames the runner read on every
+run. A run that reused its tracking recorded the frames holding a detection
+instead, and now reads the count from the response the runner left beside its
+predictions, or keeps the count its row records when that response is gone.
+
+**A TREx table short by its known tail loss is reported apart from a mismatch.**
+TREx never reads the frames its decoder holds back to reorder at the end of a
+file, and reads one fewer when the container carries no frame count. Measured
+with the installed TREx on 26 files from 60 to 6,000 frames and on joins of
+three clips, that is 2 frames of an H.264 or HEVC file with B-frames, 1 with one
+B-frame, none of an AV1 file or of one without B-frames, and 1 more in Matroska.
+The `trex` tracking root declares the loss as that rule of the file
+(`TrackingRoot.tail_loss`), and each tracks row records what it gives the file
+TREx read in a new `known_tail_loss` cell, read from the header of the source
+its `.pv` records. A `.pv` made from several files is allowed none, because TREx
+loses frames at every boundary. So is a row of a `trex.0.1` run of several clips
+whose `.pv` is swept, from its TREx run index row, which counts and lists the
+clips it handed TREx. A row whose file's header was not read is allowed the most
+TREx loses on any file, 3, and every report says so. A shortfall within the
+allowance is a `frame_tail_short` run-log event, counted as
+`entries_frame_tail_short` on the snapshot, named under
+`extra["frame_tail_short"]` on the inventory record, and listed by
+`frame_tail_shortfalls()` and under `frame_tail_short` in `mosaic measure-tracks
+--json`, with the frames `allowed` and whether the allowance is the file's own
+(`allowance_known`). A larger shortfall, an overshoot, and any shortfall of
+another producer stay a `frame_axis_mismatch`. A count cannot show that the
+missing frames are at the end, and each report says so. `mosaic measure-tracks`
+fills `known_tail_loss` for older rows in a fourth pass,
+`backfill_known_tail_loss`, and its JSON adds `known_tail_loss_measured`,
+`known_tail_loss_cleared`, `known_tail_loss_not_established` and
+`known_tail_loss_unregistered`. A row whose media has changed since its run
+keeps its loss, because the file at the path its `.pv` records is then not the
+one TREx read.
 
 A row written before this change has no `frames_read`, and is not compared until
 `mosaic measure-tracks --apply` fills it from what its run left on disk: the
 `.pv` of a TREx conversion, the response the Ultralytics runner wrote for the
 tracker and for `infer-pose` and `infer-points`, or a Lightning Pose table.
 SLEAP and `infer-localizer` leave nothing that tells, so their older tables are
-no longer compared. An earlier `measure-tracks --apply` filled `media_frames`
-for runs under a frame window and for converted tables too, and those cells are
-not cleared.
+no longer compared.
+
+**`mosaic measure-tracks --apply` now rewrites `media_frames` and `frames_read`
+to what the rule gives each row.** An earlier `--apply` filled `media_frames`
+for runs under a frame window and for converted tables, which the rule leaves
+blank, and such a cell beside a filled `frames_read` reads as a mismatch that is
+not there. The pass clears those cells and rewrites a count that disagrees with
+the rule. A row whose run cannot be established keeps its value: an unmounted or
+moved media root, a lost variant record, media changed since the run, or files
+the run left that are gone. So does a tracker row in a process that has not
+imported `mosaic.tracking`, where no tracking op is registered, and it is
+reported apart as unregistered rather than as nothing to fill.
+`backfill_media_frames`, `backfill_frames_read`, `Dataset.measure_media_frames`
+and `Dataset.measure_frames_read` return a `CellBackfill` of the rows written,
+cleared, not established and unregistered, in place of a frame of the rows
+filled, and `mosaic measure-tracks --json` adds `media_frames_cleared`,
+`media_frames_not_established`, `media_frames_unregistered`,
+`frames_read_cleared`, `frames_read_not_established` and
+`frames_read_unregistered`.
 
 ## Unreleased: inference tables are timed in seconds and numbered by source frame
 
@@ -69,6 +114,17 @@ record the first clip's identity alone, so the next run replaces the table. An
 entry of several clips of which one carries no content identity is refused
 instead, until `mosaic reprobe-media --apply` mints one. TRex tables were
 already timed by each clip, and the inference ops predict again on every run.
+
+An entry of several clips that includes an imgstore recording is refused before
+any tool runs, for the four trackers, `infer-pose` and `infer-points`: each
+hands its tool one file, and `export-joined` does not join stores.
+`infer-localizer` reads stores in its own process and refuses them only at
+different frame rates. Either refusal names a `preprocess` command that makes a
+media variant of the entry, a trim over all of its frames, to name with the
+`media` parameter. Two stores whose estimated rates differ by at most 5 parts in
+10,000, such as 30.0 and 30.002 fps, hold one rate measured twice, at any
+length. The store reader reads them as one axis, and a table read from them,
+directly or through a media variant, keeps the columns that one rate computes.
 
 ## Unreleased — every inference table carries a body centre, and three inference identifiers move
 

@@ -33,6 +33,7 @@ from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.tracks_index import (
     drifted_media_entries,
     frame_axis_mismatches,
+    frame_tail_shortfalls,
     read_tracks_index,
     select_variant_rows,
     tracks_index_path,
@@ -383,9 +384,11 @@ def _variant_records(
     which is right: it opened no video.
 
     ``extra["frame_axis_mismatch"]`` names the entries whose tool read another
-    number of frames than their media holds, as TRex's under-count leaves them. It
-    rides in ``extra`` rather than in ``status`` deliberately: the status set is
-    five closed members crossing the CLI and mosaic-api's wire, and this is a
+    number of frames than their media holds. ``extra["frame_tail_short"]`` names
+    those whose tool read short by no more than it is allowed to lose at the end
+    of the file it read (``tail_allowance``), as TRex's under-count leaves them.
+    Both ride in ``extra`` rather than in ``status`` deliberately: the status set
+    is five closed members crossing the CLI and mosaic-api's wire, and each is a
     measurement two cells apart rather than a state of the artifact. The table is
     there, it is complete, and it is internally right.
     """
@@ -408,6 +411,10 @@ def _variant_records(
             make_entry_key(m.group, m.sequence)
             for m in frame_axis_mismatches(ds, run_id)
         )
+        tail_short = frozenset(
+            make_entry_key(m.group, m.sequence)
+            for m in frame_tail_shortfalls(ds, run_id)
+        )
         records.append(
             ArtifactRecord[Entry](
                 ref=TracksVariantRef(run_id=run_id),
@@ -422,7 +429,10 @@ def _variant_records(
                 drift=drift,
                 started_at=started,
                 finished_at=finished_at,
-                extra={"frame_axis_mismatch": mismatched},
+                extra={
+                    "frame_axis_mismatch": mismatched,
+                    "frame_tail_short": tail_short,
+                },
             )
         )
     return records

@@ -33,7 +33,7 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.media.read_target import verified_read_facts
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.entry_claim import claim, phase_activity
-from mosaic.core.pipeline.index_csv import IndexCSV
+from mosaic.core.pipeline.index_csv import IndexCSV, index_records
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext
 from mosaic.core.pipeline.markers import clear_phase_marker
 from mosaic.core.pipeline.media_input import media_identity_terms
@@ -42,6 +42,7 @@ from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.tracks_axis import register_frames_read_reader
 from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
+from mosaic.core.scope import Scope
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
@@ -140,9 +141,12 @@ class UltralyticsIndexRow(TrackerRunRowBase):
 
     ``model_task`` is the declared task rather than anything read off the
     weights, so a reuse run -- which never loads a model -- fills it correctly.
-    ``n_frames`` and ``n_keypoints`` are likewise re-derived from the recorded
-    parquet on reuse, because a reuse run reporting zeros would overwrite a good
-    row with an empty one.
+    ``n_frames`` is how many frames the runner read, from its result on a run
+    that tracks and from the response it left beside the predictions on reuse.
+    A reuse whose response is gone keeps what the row already records, and ``0``
+    means not known. ``n_keypoints`` is
+    re-derived from the recorded parquet on reuse, so a reuse run does not
+    overwrite a good row with zeros.
     """
 
     model_id: str = ""
@@ -289,12 +293,6 @@ def _keypoint_count_of(path: Path) -> int:
     return sum(1 for name in columns if str(name).startswith("kpx"))
 
 
-def _frame_count_of(path: Path) -> int:
-    """How many distinct frames a recorded predictions table covers."""
-    table = pd.read_parquet(path, columns=["frame"])
-    return int(table["frame"].nunique())
-
-
 def _context_token(ctx: JobContext | None) -> CancelToken | None:
     """The cancel token an already-open job carries, if a run was handed one.
 
@@ -399,6 +397,12 @@ def run_ultralytics(
     settings = ultralytics_settings(
         params, model_id=resolved_model.model_id, tracker_config=tracker_config
     )
+    scope_entries = scope.op_entries if scope is not None else None
+    media_scope = ds.resolve_media_scope(scope_entries)
+    # Before the mint, so a run refused for its media records no variant.
+    work_items = build_work_items(
+        ds, media_scope, kind=ULTRALYTICS_KIND, media=params.media
+    )
     minted = mint_tracker_run(
         ds,
         kind=ULTRALYTICS_KIND,
@@ -414,8 +418,6 @@ def run_ultralytics(
             **observed_model_source(resolved_model),
         },
     )
-    scope_entries = scope.op_entries if scope is not None else None
-    media_scope = ds.resolve_media_scope(scope_entries)
     if not media_scope:
         print(
             "[run_ultralytics] No media entries match the given scope.",
@@ -517,21 +519,28 @@ def run_ultralytics(
                 output=result.predictions_path,
             )
             out_path = result.predictions_path
-            n_frames, n_ids = result.n_frames, result.n_ids
+            n_ids = result.n_ids
             n_keypoints = _keypoint_count_of(out_path)
             frames_read: int | None = result.n_frames
+            n_frames = result.n_frames
             recomputed = True
         else:
             marker, out_path = reusable
             # Re-derived from disk: the phase that knew these did not run.
             counts = readable_tracks_table(out_path) if out_path.exists() else None
             n_ids = counts.n_ids if counts is not None else 0
-            n_frames = _frame_count_of(out_path)
             n_keypoints = _keypoint_count_of(out_path)
             # Only the runner knows how many frames it read, and its response is
             # beside the predictions until the phase runs again. The predictions
             # hold the frames with a detection, which is not that count.
             frames_read = _frames_read_of_table(job.ds, out_path, work_dir)
+            n_frames = (
+                frames_read
+                if frames_read is not None
+                else _recorded_n_frames(
+                    job.ds, minted.run_id, item.group, item.sequence
+                )
+            )
             recomputed = False
 
         row = UltralyticsIndexRow(
@@ -590,9 +599,7 @@ def run_ultralytics(
         kind=ULTRALYTICS_KIND,
         target="ultralytics-track",
         minted=minted,
-        work_items=build_work_items(
-            ds, media_scope, kind=ULTRALYTICS_KIND, media=params.media
-        ),
+        work_items=work_items,
         index=ultralytics_index(ultralytics_index_path(ds)),
         run_entry=track_one,
         overwrite=overwrite,
@@ -608,6 +615,30 @@ def run_ultralytics(
 def list_ultralytics_runs(ds: Dataset) -> pd.DataFrame:
     """Every recorded Ultralytics tracking run, as a dataframe."""
     return list_tracker_runs(ds, ULTRALYTICS_KIND, UltralyticsIndexRow)
+
+
+def _recorded_n_frames(ds: Dataset, run_id: str, group: str, sequence: str) -> int:
+    """The frames read that *run_id*'s row for the entry already records, or ``0``.
+
+    What a reuse keeps when the runner's response is gone: the run that tracked
+    recorded the count, and nothing the reuse reads can replace it.
+    """
+    path = ultralytics_index_path(ds)
+    if not path.exists():
+        return 0
+    try:
+        rows = ultralytics_index(path).read(
+            run_id=run_id, scope=Scope(entries=[(group, sequence)])
+        )
+    except FileNotFoundError:
+        return 0
+    recorded = index_records(rows)
+    if not recorded:
+        return 0
+    try:
+        return int(float(recorded[-1]["n_frames"]))
+    except ValueError:
+        return 0
 
 
 def _frames_read_of_table(

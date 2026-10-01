@@ -142,6 +142,9 @@ _VERDICT_COLUMN_BY_TARGET: dict[Target, str] = {
 TRANSCODE_REQUIRED = "required"
 """The verdict value meaning this row cannot be read without a derivative."""
 
+STORE_CONTAINER = "imgstore"
+"""The ``container`` of an imgstore recording's facts (:func:`store_facts`)."""
+
 
 def derivative_column_for_target(target: Target) -> str:
     """Return the media-index forward-link column for a transcode *target*."""
@@ -343,7 +346,7 @@ def store_facts(
     answer for a store whose metadata carries no uuid.
     """
     return MediaFacts(
-        container="imgstore",
+        container=STORE_CONTAINER,
         codec_name=codec,
         pixel_format="",
         color_range="",

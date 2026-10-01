@@ -61,6 +61,8 @@ from tests.helpers import (
     FakeTrex,
     MediaClip,
     install_fake_trex,
+    latest_events,
+    latest_snapshot,
     scope_over,
     stub_join,
     write_media_index,
@@ -427,7 +429,7 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
         producer_run_id: str,
         consumed_media: Sequence[Path],
         axis: object,
-        frames_read: int | None,
+        conversion: object,
         overwrite: bool,
     ) -> BridgeCounts | None:
         written.append(Path(f"{group}__{sequence}"))
@@ -883,16 +885,6 @@ def test_a_joined_session_reuses_a_slot_that_proves_its_composition(
 # and that reporting it costs the table nothing.
 
 
-def _latest_snapshot(ds: Dataset) -> dict[str, object]:
-    """The folded run-log of the most recent attempt in *ds*."""
-    from mosaic.runlog import reduce_run_log, run_log_dir
-
-    logs = sorted(run_log_dir(ds.base_dir).glob("*.jsonl"))
-    snapshot = reduce_run_log(max(logs, key=lambda p: p.stat().st_mtime))
-    assert snapshot is not None
-    return dict(snapshot)
-
-
 def _tracks_row(ds: Dataset) -> "pd.Series[object]":
     from mosaic.core.pipeline.tracks_index import read_tracks_index
 
@@ -913,7 +905,7 @@ def test_a_joined_session_records_the_length_of_its_media(
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
 
     assert read_media_frames(_tracks_row(ds)) == 600
-    assert _latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
+    assert latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
 
 
 def test_a_short_joined_conversion_records_both_numbers(
@@ -944,7 +936,7 @@ def test_a_short_joined_conversion_reports_itself_on_the_run_log(
 
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
 
-    assert _latest_snapshot(ds)["entries_frame_axis_mismatch"] == 1
+    assert latest_snapshot(ds)["entries_frame_axis_mismatch"] == 1
 
 
 def test_a_short_joined_conversion_still_publishes_a_usable_table(
@@ -966,7 +958,7 @@ def test_a_short_joined_conversion_still_publishes_a_usable_table(
     row = _tracks_row(ds)
     table = ds.resolve_path(str(row["abs_path"]))
     assert pd.read_parquet(table).shape[0] == 596
-    snapshot = _latest_snapshot(ds)
+    snapshot = latest_snapshot(ds)
     assert snapshot["entries_failed"] == 0
     assert snapshot["entries_written"] == 1
     assert snapshot["status"] == "finished"
@@ -982,8 +974,6 @@ def test_a_joined_session_reports_the_columns_its_retiming_dropped(
     """
     import numpy as np
 
-    from mosaic.runlog import run_log_dir
-
     trex.npz_frames = 600
     trex.extra_fields = {"timestamp": np.arange(600) / 30.0}
     _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
@@ -992,15 +982,10 @@ def test_a_joined_session_reports_the_columns_its_retiming_dropped(
 
     table = pd.read_parquet(ds.resolve_path(str(_tracks_row(ds)["abs_path"])))
     assert "timestamp" not in table.columns
-    snapshot = _latest_snapshot(ds)
+    snapshot = latest_snapshot(ds)
     assert snapshot["entries_columns_dropped"] == 1
     assert snapshot["status"] == "finished"
-    logs = sorted(run_log_dir(ds.base_dir).glob("*.jsonl"))
-    latest = max(logs, key=lambda path: path.stat().st_mtime)
-    records = [json.loads(line) for line in latest.read_text().splitlines()]
-    dropped = [
-        record["columns"] for record in records if record["ev"] == "columns_dropped"
-    ]
+    dropped = [record["columns"] for record in latest_events(ds, "columns_dropped")]
     assert dropped == [["timestamp"]]
 
 
@@ -1029,7 +1014,7 @@ def test_an_analysis_range_run_asks_no_question(
 
     assert read_media_frames(_tracks_row(ds)) is None
     assert ds.frame_axis_mismatches() == ()
-    assert _latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
+    assert latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
 
 
 def test_a_table_that_ends_early_is_not_a_short_conversion(
@@ -1054,18 +1039,65 @@ def test_a_table_that_ends_early_is_not_a_short_conversion(
     assert read_frame_extent(row) == (0, 279)
     assert read_media_frames(row) == 300
     assert ds.frame_axis_mismatches() == ()
-    assert _latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
+    assert latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
 
 
-def test_a_conversion_short_of_one_clip_is_reported(
+def _tail_events(ds: Dataset) -> list[tuple[object, object]]:
+    return [
+        (record["read"], record["media"])
+        for record in latest_events(ds, "frame_tail_short")
+    ]
+
+
+def _most_trex_loses() -> int:
+    """The most TREx leaves unread at the end of any file, as its root declares."""
+    from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
+
+    loss = TRACKING_ROOTS["trex"].tail_loss
+    assert loss is not None
+    return loss.most
+
+
+def test_a_conversion_short_within_the_declared_tail_is_a_tail_loss(
     ds: Dataset, trex: FakeTrex
 ) -> None:
-    """TREx reads a file only as far as it counted, and it counts short."""
-    trex.npz_frames, trex.pv_frames = 280, 298
+    """TREx reads a file only as far as it counted, and it counts short.
+
+    By no more than its root declares, so the shortfall is recorded as a known
+    tail loss, in its own event and counter, and not as a mismatch. The stub clip
+    has no header to read, so the most TREx loses on any file is allowed, and the
+    record says so.
+    """
+    tail = _most_trex_loses()
+    trex.npz_frames, trex.pv_frames = 280, 300 - tail
     _session(ds, "c0.mp4", frame_count=300)
 
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
 
+    assert ds.frame_axis_mismatches() == ()
+    (found,) = ds.frame_tail_shortfalls()
+    assert (found.read, found.media) == (300 - tail, 300)
+    assert (found.allowance.frames, found.allowance.known) == (tail, False)
+    assert _tail_events(ds) == [(300 - tail, 300)]
+    snapshot = latest_snapshot(ds)
+    assert snapshot["entries_frame_tail_short"] == 1
+    assert snapshot["entries_frame_axis_mismatch"] == 0
+    assert snapshot["status"] == "finished"
+
+
+def test_a_conversion_short_beyond_the_declared_tail_is_a_mismatch(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    tail = _most_trex_loses()
+    trex.npz_frames, trex.pv_frames = 280, 299 - tail
+    _session(ds, "c0.mp4", frame_count=300)
+
+    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
+
+    assert ds.frame_tail_shortfalls() == ()
     (found,) = ds.frame_axis_mismatches()
-    assert (found.read, found.media) == (298, 300)
-    assert _latest_snapshot(ds)["entries_frame_axis_mismatch"] == 1
+    assert (found.read, found.media) == (299 - tail, 300)
+    assert _tail_events(ds) == []
+    snapshot = latest_snapshot(ds)
+    assert snapshot["entries_frame_axis_mismatch"] == 1
+    assert snapshot["entries_frame_tail_short"] == 0

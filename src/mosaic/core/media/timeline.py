@@ -45,6 +45,9 @@ import numpy as np
 import numpy.typing as npt
 from mosaic_media import MediaFacts
 
+from mosaic.core.media.facts_columns import STORE_CONTAINER
+from mosaic.core.media.store_rate import store_rate_mismatch
+
 __all__ = [
     "ConcatenatedTimeline",
     "FrameIndices",
@@ -88,10 +91,12 @@ class TimelineSegment:
 class ConcatenatedTimeline:
     """A sequence's clips as one frame index and one time axis.
 
-    ``uniform_rate`` records whether one frame rate indexes every clip. It is a
-    *classification*, not a gate: a heterogeneous session is a legitimate thing
-    to track, and this is how a caller knows that a per-second quantity computed
-    against a single rate cannot be trusted.
+    ``uniform_rate`` records whether one frame rate indexes every clip, by the
+    rule of the reader that reads them: stores by the store rule, plain clips by
+    the plain reader's tolerance. It is a *classification*, not a gate: a
+    heterogeneous session is a legitimate thing to track, and this is how a
+    caller knows that a per-second quantity computed against a single rate
+    cannot be trusted.
     """
 
     segments: tuple[TimelineSegment, ...]
@@ -191,12 +196,25 @@ def concatenated_timeline(facts: Sequence[MediaFacts]) -> ConcatenatedTimeline:
         start_frame += int(clip.frame_count)
         start_time += int(clip.frame_count) / float(clip.fps)
 
+    return ConcatenatedTimeline(segments=tuple(segments), uniform_rate=_one_rate(facts))
+
+
+def _one_rate(facts: Sequence[MediaFacts]) -> bool:
+    """Whether one frame rate indexes every clip that *facts* describe.
+
+    Stores answer by the store reader's rule
+    (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`): the reader reads
+    them as one axis only at one rate, and takes two estimates of one rate for
+    one rate however long the stores are. Plain clips answer by the plain
+    reader's tolerance (:func:`~mosaic.core.media.uniformity.rate_uniform`). A
+    store is recognized by its facts' ``container``, so no file is read.
+    """
+    if any(clip.container == STORE_CONTAINER for clip in facts):
+        return store_rate_mismatch([clip.fps for clip in facts]) is None
     # Local: `uniformity` reaches `core.pipeline.media_index` for the ordering
     # ranker, and this module is imported from `core.media.__init__`. A
     # module-level import would pull the pipeline package into the media
     # package's own import, which is the cycle this deferral exists to avoid.
     from mosaic.core.media.uniformity import rate_uniform
 
-    return ConcatenatedTimeline(
-        segments=tuple(segments), uniform_rate=rate_uniform(facts)
-    )
+    return rate_uniform(facts)

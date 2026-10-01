@@ -131,6 +131,15 @@ def inventory_command(
                 "track frame may be off; see mosaic measure-tracks",
                 err=True,
             )
+        tail_short = record.extra.get("frame_tail_short", frozenset())
+        if tail_short:
+            typer.echo(
+                f"note: {len(tail_short)} entry(ies) of {record.run_id} were read "
+                "short by no more than their tool is known to leave unread at the "
+                "end of a file, which a count cannot confirm; see mosaic "
+                "measure-tracks",
+                err=True,
+            )
     for missing in sorted(found.unavailable_kinds):
         typer.echo(f"note: {missing} was not reported (no producer imported)", err=True)
     for message in found.errors:

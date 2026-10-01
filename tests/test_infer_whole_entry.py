@@ -45,6 +45,7 @@ from mosaic.tracking.pose_training.localizer_inference import (
 )
 from tests.helpers import (
     MediaClip,
+    install_fake_point_inference,
     install_fake_pose_inference,
     make_dataset,
     point_at_a_store,
@@ -233,9 +234,41 @@ def test_stores_at_two_rates_are_refused_before_a_model_loads(
         _ = _infer(ds, kind, model)
 
     message = str(refused.value)
-    assert "b.store" in message and "31" in message
+    assert "b.store" in message
     assert "--kind preprocess" in message
     assert localizer == [] and runner.videos == []
+
+
+@pytest.mark.parametrize("kind", ["infer-pose", "infer-points"])
+def test_stores_at_one_rate_are_refused_for_a_runner_handed_a_path(
+    tmp_path: Path, model: Path, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The runner is handed one file, and export-joined does not join stores."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(filename="a.mp4", video_uuid="uid-a", frame_count=40),
+            MediaClip(
+                filename="b.mp4", video_order=1, video_uuid="uid-b", frame_count=60
+            ),
+        ],
+    )
+    for order, name in enumerate(("a", "b")):
+        _ = point_at_a_store(
+            ds, "sess", ds.get_root("media_raw") / f"{name}.store", video_order=order
+        )
+    pose = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+    points = install_fake_point_inference(monkeypatch)
+
+    with pytest.raises(JoinedSourceMismatchError) as refused:
+        _ = _infer(ds, kind, model)
+
+    message = str(refused.value)
+    assert "export-joined does not join stores" in message
+    assert '"stop":100' in message
+    assert pose.videos == [] and points.videos == []
+    assert pose.probed == [] and points.probed == []
 
 
 def _two_clips(sequence: str) -> list[MediaClip]:

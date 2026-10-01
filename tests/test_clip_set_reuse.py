@@ -268,12 +268,38 @@ def test_several_clips_one_unidentified_are_refused_before_any_tool_runs(
     """
     tracker = _tracker(kind, monkeypatch, tmp_path)
     session("uid-a", "uid-b")
-    _ = tracker.run(ds)
+    run_id = tracker.run(ds)
+    work_dir = _work_dir(ds, tracker, run_id)
+    marker = read_phase_marker(work_dir, "track")
+    outputs = sorted(path.relative_to(ds.base_dir) for path in ds.base_dir.rglob("*"))
     session("uid-a", "")
 
     with pytest.raises(JoinedExportMissingError, match="reprobe-media"):
         _ = tracker.run(ds)
     assert tracker.calls() == 1
+    assert read_phase_marker(work_dir, "track") == marker, "the marker was cleared"
+    kept = {path.relative_to(ds.base_dir) for path in ds.base_dir.rglob("*")}
+    lost = [path for path in outputs if path not in kept]
+    assert lost == [], "the earlier run's outputs were cleared"
+
+
+@pytest.mark.parametrize("kind", TRACKERS)
+def test_a_run_refused_for_its_media_records_no_tracks_variant(
+    kind: TrackerKind,
+    ds: Dataset,
+    session: IndexSession,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The entries are refused before the run is minted, as the inference ops do."""
+    tracker = _tracker(kind, monkeypatch, tmp_path)
+    session("uid-a", "")
+
+    with pytest.raises(JoinedExportMissingError):
+        _ = tracker.run(ds)
+
+    assert list(ds.get_root("tracks").rglob("params.json")) == []
+    assert list(ds.base_dir.rglob("run_params.json")) == []
 
 
 @pytest.mark.parametrize(("clips", "adopted"), [(1, True), (2, False)])

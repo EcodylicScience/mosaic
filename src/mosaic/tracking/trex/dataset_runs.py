@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import pandas as pd
+from pydantic import TypeAdapter
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline._utils import hash_params
@@ -110,12 +111,16 @@ from mosaic.tracking.trex.conversion_cache import (
     slot_marker_is_usable,
     staging_dir,
 )
-from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
-from mosaic.core.pipeline.index_csv import IndexCSV
+from mosaic.tracking.trex.version import CLIP_LIST_VERSION, TREX_KIND, TREX_VERSION
+from mosaic.core.pipeline.index_csv import IndexCSV, index_records
 from mosaic.core.pipeline.job import CancelToken, JobContext
 from mosaic.core.pipeline.media_input import media_identity_terms
 from mosaic.core.pipeline.placement import EntryAxis
-from mosaic.core.pipeline.tracks_axis import register_frames_read_reader
+from mosaic.core.pipeline.tracks_axis import (
+    register_frames_read_reader,
+    register_tail_loss_reader,
+    tail_loss_of_files,
+)
 from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.core.pipeline.markers import (
     InflightMarker,
@@ -129,7 +134,7 @@ from mosaic.core.pipeline.markers import (
 )
 from mosaic.runlog import now_iso
 from mosaic.tracking.trex.params import TREX_DETECT_MODEL, TrexParams
-from mosaic.tracking.trex.pv import pv_frame_count
+from mosaic.tracking.trex.pv import PvHeader, read_pv_header
 
 from .run import run_trex_convert, run_trex_track
 
@@ -321,7 +326,7 @@ def _bridge_npz_to_tracks(
     producer_run_id: str,
     consumed_media: Sequence[Path],
     axis: EntryAxis,
-    frames_read: int | None,
+    conversion: PvHeader | None,
     overwrite: bool,
 ) -> BridgeCounts | None:
     """Merge per-individual TREx NPZ into ``tracks/<variant>/<group>__<seq>.parquet``.
@@ -338,7 +343,10 @@ def _bridge_npz_to_tracks(
     variant's table is mapped into source space.
 
     *consumed_media* are the media files that the table derives from, and
-    *frames_read* is how many frames TREx read (:func:`_recorded_frames_read`).
+    *conversion* is the header of the ``.pv`` that TREx tracked
+    (:func:`_recorded_conversion`), or ``None`` when it is gone. It gives how many
+    frames TREx read, and the file whose header says how many TREx is known to
+    leave unread at its end (:func:`_known_tail_loss`).
 
     Returns ``None`` when there was nothing to convert or the conversion failed.
     """
@@ -397,22 +405,33 @@ def _bridge_npz_to_tracks(
         source=npz_paths[0].parent,
         consumed=[npz_paths[0], *consumed_media],
         axis=axis,
-        frames_read=frames_read,
+        frames_read=None if conversion is None else conversion.frames,
+        known_tail_loss=None if conversion is None else _known_tail_loss(conversion),
     )
 
 
-def _recorded_frames_read(ds: Dataset, work_dir: Path) -> int | None:
-    """Return how many frames TREx read for the entry that *work_dir* tracked.
+def _recorded_conversion(ds: Dataset, work_dir: Path) -> PvHeader | None:
+    """Return the header of the ``.pv`` that the entry *work_dir* tracked.
 
-    It is the frame count of the ``.pv`` that the entry's convert marker records,
-    which counts every frame the conversion read. Each per-individual export runs
+    It is the ``.pv`` that the entry's convert marker records. Its frame count
+    counts every frame the conversion read, where each per-individual export runs
     only from that individual's first tracked frame to its last. ``None`` when the
     marker or the ``.pv`` is gone, as after the shared conversion is swept.
     """
     marker = read_phase_marker(work_dir, "convert")
     if marker is None or not marker.recorded_output:
         return None
-    return pv_frame_count(ds.resolve_path(marker.recorded_output))
+    return read_pv_header(ds.resolve_path(marker.recorded_output))
+
+
+def _known_tail_loss(conversion: PvHeader) -> int | None:
+    """How many frames short of the end of its source *conversion* is known to stop.
+
+    The rule of TREx's root, applied to the header of the file the ``.pv``
+    records as its source. Zero for several files, whose losses at each boundary
+    are no loss at the end, and ``None`` when the source's header cannot be read.
+    """
+    return tail_loss_of_files(TREX_KIND, conversion.sources)
 
 
 def _individual_exports(work_dir: Path) -> list[Path]:
@@ -491,7 +510,7 @@ def _republish_entry(
         producer_run_id=run_id,
         consumed_media=item.consumed_media,
         axis=axis,
-        frames_read=_recorded_frames_read(job.ds, work_dir),
+        conversion=_recorded_conversion(job.ds, work_dir),
         overwrite=True,
     )
 
@@ -828,6 +847,23 @@ def run_trex(
         vi_model_path = resolved_vi.path
         vi_model_id = resolved_vi.model_id
 
+    # Route each scoped entry through the transcode verdict: a clean entry
+    # resolves to its original, an analysis-required entry to its constant-rate
+    # analysis derivative (so tracks land in the same frame space as the rest of
+    # the pipeline), and a required-but-unlinked entry raises MediaProbeError
+    # here, before any TREx subprocess opens a known-defective original.
+    #
+    # TREx decodes the files itself, so the routed *paths* are what it is given.
+    # The routed facts are still read, for a different job: they are what the
+    # concatenated timeline is built from, and TREx cannot supply that. It
+    # takes one frame rate from the first clip and never checks the others.
+    # When `media` names a variant, TREx is given the variant file instead, and
+    # the routed facts time the table when it is mapped back to the entry.
+    scope_entries = scope.op_entries if scope is not None else None
+    media_scope = ds.resolve_media_scope(scope_entries)
+    # Before the mint, so a run refused for its media records no variant.
+    work_items = build_work_items(ds, media_scope, kind=TREX_KIND, media=params.media)
+
     # Settings that define the tracking result -> the content hash.
     settings = trex_settings(
         params, detect_model_id=detect_model_id, vi_model_id=vi_model_id
@@ -853,20 +889,6 @@ def run_trex(
     # run root's name and every convert marker's `params_hash` cannot disagree.
     convert_settings = phase_settings(settings, "convert")
 
-    # Route each scoped entry through the transcode verdict: a clean entry
-    # resolves to its original, an analysis-required entry to its constant-rate
-    # analysis derivative (so tracks land in the same frame space as the rest of
-    # the pipeline), and a required-but-unlinked entry raises MediaProbeError
-    # here -- before any TREx subprocess opens a known-defective original.
-    #
-    # TREx decodes the files itself, so the routed *paths* are what it is given.
-    # The routed facts are still read, for a different job: they are what the
-    # concatenated timeline is built from, and TREx cannot supply that -- it
-    # takes one frame rate from the first clip and never checks the others.
-    # When `media` names a variant, TREx is given the variant file instead, and
-    # the routed facts time the table when it is mapped back to the entry.
-    scope_entries = scope.op_entries if scope is not None else None
-    media_scope = ds.resolve_media_scope(scope_entries)
     if not media_scope:
         print("[run_trex] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
@@ -1165,7 +1187,7 @@ def run_trex(
                     producer_run_id=minted.run_id,
                     consumed_media=item.consumed_media,
                     axis=axis,
-                    frames_read=_recorded_frames_read(job.ds, work_dir),
+                    conversion=_recorded_conversion(job.ds, work_dir),
                     overwrite=job.overwrite or recomputed,
                 ),
                 kind=TREX_KIND,
@@ -1177,9 +1199,7 @@ def run_trex(
         kind=TREX_KIND,
         target="trex-republish" if republish else "trex-track",
         minted=minted,
-        work_items=build_work_items(
-            ds, media_scope, kind=TREX_KIND, media=params.media
-        ),
+        work_items=work_items,
         index=trex_index(trex_index_path(ds)),
         run_entry=convert_and_track,
         overwrite=overwrite,
@@ -1197,19 +1217,114 @@ def list_trex_runs(ds: Dataset) -> pd.DataFrame:
     return list_tracker_runs(ds, TREX_KIND, TRexIndexRow)
 
 
-def _frames_read_of_table(ds: Dataset, _table: Path, source: Path | None) -> int | None:
-    """Return how many frames TREx read for a published table, from its ``.pv``.
+def _conversion_of_table(ds: Dataset, source: Path | None) -> PvHeader | None:
+    """Return the header of the ``.pv`` that a published table was tracked from.
 
     The table was bridged from the per-individual exports in ``<entry>/data``, so
     *source* is that directory, and the entry's working directory is its parent.
     """
-    return None if source is None else _recorded_frames_read(ds, source.parent)
+    return None if source is None else _recorded_conversion(ds, source.parent)
+
+
+def _frames_read_of_table(ds: Dataset, _table: Path, source: Path | None) -> int | None:
+    """Return how many frames TREx read for a published table, from its ``.pv``."""
+    conversion = _conversion_of_table(ds, source)
+    return None if conversion is None else conversion.frames
+
+
+def _tail_loss_of_table(ds: Dataset, _table: Path, source: Path | None) -> int | None:
+    """Return TREx's known loss at the end of what it read for a published table.
+
+    The files it read are the sources its ``.pv`` records. When the ``.pv`` is
+    gone or records none, they are the clips the run index proves it handed
+    TREx as a list (:func:`_listed_clips`), and otherwise unknown.
+    """
+    conversion = _conversion_of_table(ds, source)
+    files = () if conversion is None else conversion.sources
+    if not files and source is not None:
+        files = _listed_clips(ds, source.parent)
+    return tail_loss_of_files(TREX_KIND, files)
+
+
+_VIDEO_SOURCES: Final = TypeAdapter(list[str])
+"""A run index row's ``video_sources``, the JSON array of the clips it read."""
+
+
+def _listed_clips(ds: Dataset, work_dir: Path) -> tuple[str, ...]:
+    """The clips that the run of *work_dir* handed TREx as a list, or ``()``.
+
+    Proven by the run index alone, which outlives a swept ``.pv``: the row naming
+    *work_dir* is a run of :data:`CLIP_LIST_VERSION`, which handed TREx a
+    multi-clip entry's clips as a list, and counts (``n_source_videos``) and lists
+    (``video_sources``) the same several clips. ``()`` when no row names
+    *work_dir*, or its row falls short.
+
+    One row at most names it: the index keeps one row per run and entry, and a
+    working directory is one of each. That row describes the latest run in the
+    directory, which need not be the run that published the table, because a
+    later run over changed clips can fail to publish. The entry's media
+    composition then differs from the one the table's row recorded, and where
+    both are recorded, :func:`~mosaic.core.pipeline.tracks_axis.recorded_tail_loss`
+    answers not established before it asks this reader.
+
+    A backfill asks this once for each row, so it reads as little as it can.
+    *work_dir* is the entry's directory under its run's root
+    (:func:`trex_run_root`), so its parent's name is the run's identifier: a run
+    of another version is answered without reading the index, and the index is
+    narrowed to the run and the entry before any path is resolved.
+    """
+    run_id = work_dir.parent.name
+    if not _is_clip_list_run(run_id):
+        return ()
+    path = trex_index_path(ds)
+    if not path.exists():
+        return ()
+    frame = trex_index(path).read()
+    narrowed = [
+        position
+        for position, (row_run, stored) in enumerate(
+            zip(frame["run_id"], frame["abs_path"], strict=True)
+        )
+        if str(row_run) == run_id and str(stored).endswith(work_dir.name)
+    ]
+    rows = [
+        row
+        for row in index_records(frame.iloc[narrowed])
+        if ds.resolve_path(row.get("abs_path", "")) == work_dir
+    ]
+    if not rows:
+        return ()
+    return tuple(str(ds.resolve_path(clip)) for clip in _several_clips(rows[-1]))
+
+
+def _is_clip_list_run(run_id: str) -> bool:
+    """Whether *run_id* names a TREx run of :data:`CLIP_LIST_VERSION`."""
+    parsed = parse_op_run_id(run_id)
+    if parsed is None:
+        return False
+    return (parsed.kind, parsed.version) == (TREX_KIND, CLIP_LIST_VERSION)
+
+
+def _several_clips(row: Mapping[str, str]) -> list[str]:
+    """The clips one TREx run index *row* lists, when it lists several.
+
+    ``[]`` for one clip, or cells that are missing or do not agree. An index that
+    no run has appended to since a column was added lacks that column, because a
+    read does not add it.
+    """
+    try:
+        count = int(row.get("n_source_videos", ""))
+        clips = _VIDEO_SOURCES.validate_json(row.get("video_sources", ""))
+    except ValueError:
+        return []
+    return clips if count > 1 and len(clips) == count else []
 
 
 # Item 6.1: the reconciler opens this root's index through the registry, so
 # ``core`` never imports ``tracking`` to reach a row class.
 register_reconcilable_index(TREX_KIND, trex_index)
 register_frames_read_reader(TREX_KIND, _frames_read_of_table)
+register_tail_loss_reader(TREX_KIND, _tail_loss_of_table)
 
 # The row class this root's index holds, so an inventory can ask about every
 # tracker generically. Registered rather than tabled in ``common``, which is

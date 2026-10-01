@@ -384,6 +384,20 @@ def test_a_short_frame_axis_is_named_on_the_variant(scenario_dataset: Dataset) -
     record = next(r for r in found.records if r.run_id == run_id)
 
     assert record.extra["frame_axis_mismatch"] == frozenset({"seq_m"})
+    assert record.extra["frame_tail_short"] == frozenset()
+    assert record.status == "complete"
+
+
+def test_a_known_tail_loss_is_named_apart_from_a_mismatch(
+    scenario_dataset: Dataset,
+) -> None:
+    run_id = _measured_variant(scenario_dataset, read=1798, media=1800)
+
+    found = inventory(scenario_dataset, kinds=["tracks-variant"])
+    record = next(r for r in found.records if r.run_id == run_id)
+
+    assert record.extra["frame_tail_short"] == frozenset({"seq_m"})
+    assert record.extra["frame_axis_mismatch"] == frozenset()
     assert record.status == "complete"
 
 
@@ -394,6 +408,7 @@ def test_an_agreeing_variant_names_nothing(scenario_dataset: Dataset) -> None:
     record = next(r for r in found.records if r.run_id == run_id)
 
     assert record.extra["frame_axis_mismatch"] == frozenset()
+    assert record.extra["frame_tail_short"] == frozenset()
 
 
 def test_an_unmeasured_variant_names_nothing(scenario_dataset: Dataset) -> None:

@@ -10,16 +10,26 @@ of rates and lengths pins that they agree.
 
 from __future__ import annotations
 
+import json
+import shlex
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
+from typer.testing import CliRunner
 
 import mosaic.core.media.video_io as video_io
 from mosaic.core.media.store_rate import STORE_RATE_TOLERANCE, store_rate_mismatch
 from mosaic.core.media.video_io import MultiVideoReader, VideoMetadata
-from mosaic.tracking.common.scope import JoinedSourceMismatchError, refuse_unjoinable
+from mosaic.cli import app
+from mosaic.core.dataset import Dataset
+from mosaic.tracking.common.scope import (
+    JoinedSourceMismatchError,
+    build_work_items,
+    refuse_unjoinable,
+)
 from tests.helpers import clip_facts
 
 
@@ -110,7 +120,9 @@ def test_the_reader_and_the_early_check_agree(
         MultiVideoReader(stores, target="analysis").close()
 
     def check() -> None:
-        refuse_unjoinable("infer-localizer", "", "sess", stores, facts)
+        refuse_unjoinable(
+            "infer-localizer", "", "sess", stores, facts, hands_over_path=False
+        )
 
     assert _accepted(read) is one_rate
     assert _accepted(check) is one_rate
@@ -122,12 +134,54 @@ def test_stores_at_two_rates_are_refused_as_unjoinable(tmp_path: Path) -> None:
     facts = [clip_facts(fps=30.0), clip_facts(fps=31.0)]
 
     with pytest.raises(JoinedSourceMismatchError) as refused:
-        refuse_unjoinable("trex", "", "sess", stores, facts)
+        refuse_unjoinable(
+            "infer-localizer", "", "sess", stores, facts, hands_over_path=False
+        )
 
     message = str(refused.value)
     assert "s1.store was recorded at 31 fps" in message
     assert "Stores cannot be joined" in message
     assert '--kind preprocess --entries ":sess"' in message
+
+
+def test_a_consumer_reading_stores_itself_takes_them_at_one_rate(
+    tmp_path: Path,
+) -> None:
+    """The localizer reads stores in its own process, as one reader."""
+    stores = _stores(tmp_path, 2)
+    facts = [clip_facts(fps=30.0), clip_facts(fps=30.0)]
+
+    refuse_unjoinable(
+        "infer-localizer", "", "sess", stores, facts, hands_over_path=False
+    )
+
+
+def test_a_consumer_handing_over_a_path_refuses_stores_at_one_rate(
+    tmp_path: Path,
+) -> None:
+    """Its tool is handed one file, and no file joins stores."""
+    stores = _stores(tmp_path, 2)
+    facts = [clip_facts(fps=30.0, frame_count=40), clip_facts(fps=30.0, frame_count=60)]
+
+    with pytest.raises(JoinedSourceMismatchError) as refused:
+        refuse_unjoinable("infer-pose", "g", "s", stores, facts, hands_over_path=True)
+
+    message = str(refused.value)
+    assert "export-joined does not join stores" in message
+    assert (
+        """--entries "g:s" --params '{"steps":[{"step":"trim","start":0,"stop":100}]}'"""
+        in message
+    )
+
+
+def test_the_remedy_for_stores_of_unmeasured_length_says_to_measure_them(
+    tmp_path: Path,
+) -> None:
+    stores = _stores(tmp_path, 2)
+    facts = [clip_facts(fps=30.0, frame_count=0), clip_facts(fps=30.0, frame_count=60)]
+
+    with pytest.raises(JoinedSourceMismatchError, match="reprobe-media --apply"):
+        refuse_unjoinable("trex", "", "s", stores, facts, hands_over_path=True)
 
 
 @pytest.mark.parametrize("fmt", ["npy"])
@@ -146,3 +200,42 @@ def test_long_real_stores_measured_apart_are_read_as_one(
 
     assert reader.total_frames == 16_000
     reader.close()
+
+
+@pytest.mark.media
+def test_the_variant_the_refusal_names_is_made_and_read(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: Callable[..., tuple[Path, list[np.ndarray]]],
+) -> None:
+    """Stores at 30 and 31 fps: the command runs, and a tracker reads its file."""
+    ds = make_media_dataset((tmp_path / "dataset").resolve())
+    search = ds.get_root("media_raw") / "recordings"
+    search.mkdir(parents=True)
+    for name, fps in (("a", 30.0), ("b", 31.0)):
+        _ = make_imgstore(
+            name=name, nframes=30, chunksize=5, parent=search, fill=True, fps=fps
+        )
+    ds.index_media([search])
+    index = ds.get_root("media_raw") / "index.csv"
+    table = pd.read_csv(index, keep_default_na=False).sort_values("abs_path")
+    table = table.assign(group="", sequence="sess", video_order=range(len(table)))
+    table.to_csv(index, index=False)
+
+    with pytest.raises(JoinedSourceMismatchError) as refused:
+        _ = build_work_items(ds, ds.resolve_media_scope(None), kind="sleap")
+    (command,) = [
+        line.strip()
+        for line in str(refused.value).splitlines()
+        if line.strip().startswith("mosaic run")
+    ]
+    argv = shlex.split(command.replace("<manifest>", str(ds.manifest_path)))[1:]
+
+    result = CliRunner().invoke(app, [*argv, "--json"])
+
+    assert result.exit_code == 0, result.output
+    variant = str(json.loads(result.stdout)["run_id"])
+    (item,) = build_work_items(
+        ds, ds.resolve_media_scope(None), kind="sleap", media=variant
+    ).items
+    assert item.source_facts[0].frame_count == 60

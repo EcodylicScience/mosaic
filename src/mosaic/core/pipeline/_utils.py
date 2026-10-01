@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from pydantic import BaseModel
+from typing_extensions import TypeIs
 
 from mosaic.core import scope as scope_module
 from mosaic.core.entry import Entry
@@ -298,6 +299,15 @@ def atomic_write(final_path: Path, write_fn: Callable[[Path], object]) -> None:
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
+
+
+def is_str_mapping(value: object) -> TypeIs[Mapping[str, object]]:
+    """Whether *value* is a mapping of values by name, as a JSON object decodes to.
+
+    Only the mapping is checked, not its keys: a decoded JSON object's keys are
+    strings.
+    """
+    return isinstance(value, Mapping)
 
 
 def coerce_np(obj: object) -> object:
