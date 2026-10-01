@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import dataclasses
 import subprocess
-from collections.abc import Callable, Sequence
+import hashlib
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
@@ -18,6 +19,7 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+import yaml
 
 from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 from mosaic_media.transcode import Target
@@ -439,6 +441,77 @@ MakeStore = Callable[..., tuple[Path, list[np.ndarray]]]
 
 MOTIF_SYNC_UUID: Final = "f064059f9ea046429f227bc7addab1eb"
 """The synchronization uuid that :func:`store_dataset` gives a recording's cameras."""
+
+
+def video_store_maker(
+    chunk_frames: Sequence[int],
+    *,
+    fps: float = 30.0,
+    size: tuple[int, int] = (64, 48),
+    paint: Callable[[int], npt.NDArray[np.uint8]] = paint_gray,
+) -> MakeStore:
+    """Return a ``make_imgstore``-shaped factory that writes H.264 video stores.
+
+    Each store has one chunk per count in *chunk_frames*, and store frame ``i`` is
+    ``paint(i)``. The layout is the one the imgstore package writes for
+    ``avc1/mp4``: ``metadata.yaml``, ``NNNNNN.mp4`` chunks and ``NNNNNN.npz``
+    indexes. The chunks are encoded by ffmpeg (:func:`write_h264_mp4`), because
+    the imgstore package encodes through OpenCV, whose Linux wheel cannot write
+    H.264.
+
+    The factory takes ``name``, ``parent`` and ``extra_metadata`` as
+    ``make_imgstore`` does, and ignores the rest of that fixture's arguments.
+    """
+    width, height = size
+
+    def make(
+        *,
+        name: str = "store",
+        parent: Path | None = None,
+        extra_metadata: Mapping[str, object] | None = None,
+        **_ignored: object,
+    ) -> tuple[Path, list[np.ndarray]]:
+        if parent is None:
+            message = "a video store is written under a parent directory"
+            raise ValueError(message)
+        store = parent / name
+        store.mkdir(parents=True)
+        descriptor: dict[str, object] = {
+            "chunksize": max(chunk_frames),
+            "class": "VideoImgStore",
+            "encoding": None,
+            "extension": ".mp4",
+            "format": "avc1/mp4",
+            "imgdtype": "uint8",
+            "imgshape": [height, width, 3],
+            "uuid": hashlib.sha256(name.encode()).hexdigest()[:32],
+            "version": 2,
+        }
+        metadata: dict[str, object] = {"__store": descriptor, **(extra_metadata or {})}
+        _ = (store / "metadata.yaml").write_text(yaml.safe_dump(metadata))
+        first = 0
+        for chunk, count in enumerate(chunk_frames):
+
+            def paint_chunk(frame: int, offset: int = first) -> npt.NDArray[np.uint8]:
+                return paint(offset + frame)
+
+            write_h264_mp4(
+                store / f"{chunk:06d}.mp4",
+                frames=count,
+                fps=fps,
+                size=size,
+                paint=paint_chunk,
+            )
+            numbers = np.arange(first, first + count, dtype=np.int64)
+            np.savez(
+                store / f"{chunk:06d}.npz",
+                frame_number=numbers,
+                frame_time=numbers / fps,
+            )
+            first += count
+        return store, [paint(frame) for frame in range(first)]
+
+    return make
 
 
 def store_dataset(

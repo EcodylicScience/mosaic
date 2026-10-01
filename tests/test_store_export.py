@@ -40,7 +40,7 @@ from mosaic.tracking.common.tool_input import (
     resolve_tool_input,
 )
 
-from tests.helpers import MakeStore, store_dataset
+from tests.helpers import MakeStore, store_dataset, video_store_maker
 
 # Only the fixtures that write real stores need the imgstore package. None of the
 # imports above loads it, so the skip can follow them.
@@ -641,9 +641,7 @@ def test_the_export_target_is_the_analysis_link() -> None:
 
 
 def test_a_video_store_is_copied_and_not_re_encoded(
-    tmp_path: Path,
-    make_media_dataset: Callable[[Path], Dataset],
-    make_imgstore: MakeStore,
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:
     """The store that made this op worth fixing.
 
@@ -656,7 +654,7 @@ def test_a_video_store_is_copied_and_not_re_encoded(
     remux: nothing encoded.
     """
     ds, group, sequence = _store_dataset(
-        tmp_path, make_media_dataset, make_imgstore, fmt="avc1/mp4"
+        tmp_path, make_media_dataset, video_store_maker([5, 5, 2])
     )
     _export(ds, group, sequence)
 
@@ -666,9 +664,7 @@ def test_a_video_store_is_copied_and_not_re_encoded(
 
 
 def test_a_copied_export_holds_every_frame_on_a_uniform_timeline(
-    tmp_path: Path,
-    make_media_dataset: Callable[[Path], Dataset],
-    make_imgstore: MakeStore,
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
 ) -> None:
     """Frame-exact against the store's own index, and seekable.
 
@@ -678,7 +674,7 @@ def test_a_copied_export_holds_every_frame_on_a_uniform_timeline(
     """
     frames = 12
     ds, group, sequence = _store_dataset(
-        tmp_path, make_media_dataset, make_imgstore, fmt="avc1/mp4", nframes=frames
+        tmp_path, make_media_dataset, video_store_maker([5, 5, 2])
     )
     _export(ds, group, sequence)
 

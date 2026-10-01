@@ -75,6 +75,7 @@ from tests.helpers import (
     published_table,
     store_dataset,
     stub_join,
+    video_store_maker,
     write_h264_mp4,
     write_media_index,
     write_painted_entry,
@@ -365,18 +366,28 @@ def test_the_runner_reads_the_clips_as_it_reads_their_join(
 # --- an imgstore, read as its chunk files ----------------------------------
 
 
+_VIDEO_STORE = video_store_maker(
+    [_STORE_CHUNK, _STORE_CHUNK, _STORE_FRAMES - 2 * _STORE_CHUNK]
+)
+"""Write a store of H.264 chunks of 5, 5 and 2 frames."""
+
+
 def _store_entry(
     tmp_path: Path,
     make_media_dataset: MakeMediaDataset,
-    make_imgstore: MakeStore,
+    make_store: MakeStore = _VIDEO_STORE,
     *,
-    fmt: str = "avc1/mp4",
+    fmt: str = "npy",
 ) -> tuple[Dataset, str, str, Path]:
-    """A dataset of one store of 12 frames in chunks of 5, its entry and the store."""
+    """A dataset of one store of 12 frames in chunks of 5, its entry and the store.
+
+    The store is H.264 video, unless *make_store* writes another kind. *fmt* is
+    the imgstore package's format, for a store that package writes.
+    """
     ds = store_dataset(
         tmp_path,
         make_media_dataset,
-        make_imgstore,
+        make_store,
         nframes=_STORE_FRAMES,
         chunksize=_STORE_CHUNK,
         fill=True,
@@ -408,11 +419,9 @@ def _nothing_copied(ds: Dataset) -> bool:
 
 
 def test_a_store_lists_its_chunks_with_their_frame_counts(
-    tmp_path: Path, make_media_dataset: MakeMediaDataset, make_imgstore: MakeStore
+    tmp_path: Path, make_media_dataset: MakeMediaDataset
 ) -> None:
-    _ds, _group, _sequence, store = _store_entry(
-        tmp_path, make_media_dataset, make_imgstore
-    )
+    _ds, _group, _sequence, store = _store_entry(tmp_path, make_media_dataset)
 
     spans = readable_chunks(store)
 
@@ -437,12 +446,9 @@ def test_the_runner_reads_a_stores_chunks_as_mosaic_reads_the_store(
     runner_module: ModuleType,
     tmp_path: Path,
     make_media_dataset: MakeMediaDataset,
-    make_imgstore: MakeStore,
 ) -> None:
     """Store frame ``i`` is entry frame ``i``, with the pixels mosaic's reader gives."""
-    ds, group, sequence, store = _store_entry(
-        tmp_path, make_media_dataset, make_imgstore
-    )
+    ds, group, sequence, store = _store_entry(tmp_path, make_media_dataset)
     files = _runner_files(ds, group, sequence)
     assert [file.path for file in files] == [path for path, _ in readable_chunks(store)]
 
@@ -480,12 +486,9 @@ def _install_ultralytics(
 def test_ultralytics_tracks_a_store_from_its_chunks_with_no_export(
     tmp_path: Path,
     make_media_dataset: MakeMediaDataset,
-    make_imgstore: MakeStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ds, _group, _sequence, store = _store_entry(
-        tmp_path, make_media_dataset, make_imgstore
-    )
+    ds, _group, _sequence, store = _store_entry(tmp_path, make_media_dataset)
     fake, params = _install_ultralytics(tmp_path, monkeypatch)
 
     _ = ultralytics_runs.run_ultralytics(ds, params)
@@ -497,13 +500,10 @@ def test_ultralytics_tracks_a_store_from_its_chunks_with_no_export(
 def test_infer_pose_reads_a_store_from_its_chunks_with_no_export(
     tmp_path: Path,
     make_media_dataset: MakeMediaDataset,
-    make_imgstore: MakeStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The table spans the store: each chunk's frames follow the chunks before it."""
-    ds, group, sequence, store = _store_entry(
-        tmp_path, make_media_dataset, make_imgstore
-    )
+    ds, group, sequence, store = _store_entry(tmp_path, make_media_dataset)
     fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
     model = tmp_path / "weights" / "best.pt"
     model.parent.mkdir()
@@ -547,7 +547,6 @@ def test_a_store_whose_chunks_are_not_video_is_read_through_its_export(
 def test_chunks_that_disagree_with_the_stores_index_need_its_export(
     tmp_path: Path,
     make_media_dataset: MakeMediaDataset,
-    make_imgstore: MakeStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A chunk measured short of its index cannot hold its frames on the store's axis.
@@ -555,9 +554,7 @@ def test_chunks_that_disagree_with_the_stores_index_need_its_export(
     Its export is read instead, as for a store whose chunks are not video, and
     without one the run refuses naming the command.
     """
-    ds, _group, _sequence, _store = _store_entry(
-        tmp_path, make_media_dataset, make_imgstore
-    )
+    ds, _group, _sequence, _store = _store_entry(tmp_path, make_media_dataset)
 
     def overcounted(store: Path) -> list[tuple[Path, int]]:
         return [(path, count + 1) for path, count in readable_chunks(store)]
@@ -576,14 +573,11 @@ def test_chunks_that_disagree_with_the_stores_index_need_its_export(
 def test_the_chunks_are_read_while_an_export_exists_and_a_tracked_entry_needs_neither(
     tmp_path: Path,
     make_media_dataset: MakeMediaDataset,
-    make_imgstore: MakeStore,
     monkeypatch: pytest.MonkeyPatch,
     requires_ffmpeg: None,
 ) -> None:
     """An export changes nothing the runner reads, and the reuse gate names neither."""
-    ds, group, sequence, store = _store_entry(
-        tmp_path, make_media_dataset, make_imgstore
-    )
+    ds, group, sequence, store = _store_entry(tmp_path, make_media_dataset)
     export = _export_store(ds, group, sequence)
     fake, params = _install_ultralytics(tmp_path, monkeypatch)
 
@@ -763,13 +757,10 @@ def test_a_superseded_join_is_built_again(tmp_path: Path) -> None:
 def test_a_video_store_needs_an_export_only_for_a_tool_that_opens_one_file(
     tmp_path: Path,
     make_media_dataset: MakeMediaDataset,
-    make_imgstore: MakeStore,
     kind: str,
     needed: Need | None,
 ) -> None:
-    ds, group, sequence, _store = _store_entry(
-        tmp_path, make_media_dataset, make_imgstore
-    )
+    ds, group, sequence, _store = _store_entry(tmp_path, make_media_dataset)
 
     expected = {(group, sequence): needed} if needed else {}
     assert _needs(ds, kind) == expected
@@ -800,12 +791,9 @@ def test_a_store_whose_chunks_are_not_video_needs_an_export_for_every_runner(
 def test_a_built_export_needs_nothing(
     tmp_path: Path,
     make_media_dataset: MakeMediaDataset,
-    make_imgstore: MakeStore,
     requires_ffmpeg: None,
 ) -> None:
-    ds, group, sequence, _store = _store_entry(
-        tmp_path, make_media_dataset, make_imgstore
-    )
+    ds, group, sequence, _store = _store_entry(tmp_path, make_media_dataset)
     _ = _export_store(ds, group, sequence)
 
     assert required_media_ops(ds, kind="trex") == []
