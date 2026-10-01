@@ -238,6 +238,10 @@ def run_localizer_inference(
         Radius of drawn detection points (for visualization).
     class_colors : dict, optional
         ``{class_id: (B, G, R)}`` color mapping for visualization.
+    facts : sequence of MediaFacts, optional
+        The probed facts of *video_paths*, parallel to them, as an index row or
+        a probe records them. They are gated for analysis before any frame is
+        read, and each file is probed for them when they are not given.
 
     Returns
     -------

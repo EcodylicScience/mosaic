@@ -342,10 +342,10 @@ def test_a_run_whose_outputs_are_not_parquet_is_not_called_damaged(
     )
 
 
-# --- a frame axis that is not its media's ----------------------------------
+# --- a tool that read another number of frames than its media holds -----------
 
 
-def _measured_variant(ds: Dataset, *, tracked: int, media: int | None) -> str:
+def _measured_variant(ds: Dataset, *, read: int, media: int | None) -> str:
     """One tracks variant over one entry, with both measurements recorded."""
     from mosaic.core.pipeline.tracks_index import write_tracks_row
     import pandas as pd
@@ -353,7 +353,7 @@ def _measured_variant(ds: Dataset, *, tracked: int, media: int | None) -> str:
     out = ds.get_root("tracks") / "measured" / "seq_m.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
-        {"frame": range(tracked), "id": [0] * tracked, "X": 0.0, "Y": 0.0}
+        {"frame": range(read), "id": [0] * read, "X": 0.0, "Y": 0.0}
     ).to_parquet(out)
     write_tracks_row(
         ds,
@@ -363,8 +363,9 @@ def _measured_variant(ds: Dataset, *, tracked: int, media: int | None) -> str:
         out_path=out,
         producer="trex",
         std_format="trex_v2",
-        n_rows=tracked,
+        n_rows=read,
         media_frames=media,
+        frames_read=read,
     )
     return "measured"
 
@@ -377,7 +378,7 @@ def test_a_short_frame_axis_is_named_on_the_variant(scenario_dataset: Dataset) -
     complete, and everything computed inside it is right. What it does not do is
     address the video its frames name.
     """
-    run_id = _measured_variant(scenario_dataset, tracked=1782, media=1800)
+    run_id = _measured_variant(scenario_dataset, read=1782, media=1800)
 
     found = inventory(scenario_dataset, kinds=["tracks-variant"])
     record = next(r for r in found.records if r.run_id == run_id)
@@ -387,7 +388,7 @@ def test_a_short_frame_axis_is_named_on_the_variant(scenario_dataset: Dataset) -
 
 
 def test_an_agreeing_variant_names_nothing(scenario_dataset: Dataset) -> None:
-    run_id = _measured_variant(scenario_dataset, tracked=1800, media=1800)
+    run_id = _measured_variant(scenario_dataset, read=1800, media=1800)
 
     found = inventory(scenario_dataset, kinds=["tracks-variant"])
     record = next(r for r in found.records if r.run_id == run_id)
@@ -397,7 +398,7 @@ def test_an_agreeing_variant_names_nothing(scenario_dataset: Dataset) -> None:
 
 def test_an_unmeasured_variant_names_nothing(scenario_dataset: Dataset) -> None:
     """Absence of an answer is not evidence that the two agree."""
-    run_id = _measured_variant(scenario_dataset, tracked=1782, media=None)
+    run_id = _measured_variant(scenario_dataset, read=1782, media=None)
 
     found = inventory(scenario_dataset, kinds=["tracks-variant"])
     record = next(r for r in found.records if r.run_id == run_id)

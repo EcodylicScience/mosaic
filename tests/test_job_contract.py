@@ -513,8 +513,8 @@ def test_a_frame_axis_mismatch_accumulates_and_leaves_the_status_alone(
     path = run_log_path(tmp_path, eid)
     log = JsonlRunLog(path, eid)
     log.started(kind="trex", target="trex", owner="me", host="h", pid=1)
-    log.frame_axis_mismatch("a", tracked=1782, media=1800)
-    log.frame_axis_mismatch("b", tracked=596, media=600)
+    log.frame_axis_mismatch("a", read=1782, media=1800)
+    log.frame_axis_mismatch("b", read=596, media=600)
     log.entries_written(2)
     log.finished()
     log.close()
@@ -530,7 +530,7 @@ def test_a_frame_axis_mismatch_accumulates_and_leaves_the_status_alone(
 def test_the_mismatch_event_carries_both_numbers(tmp_path: Path) -> None:
     """The gap is the content of the report, so it travels with the event.
 
-    "1782 against 1800" says how far a late crop is off; a bare flag says only
+    "read 1782 of 1800" says how far a late crop may be off; a bare flag says only
     that something is wrong somewhere, and the run-log is the only channel out
     of a queued job.
     """
@@ -538,7 +538,7 @@ def test_the_mismatch_event_carries_both_numbers(tmp_path: Path) -> None:
     path = run_log_path(tmp_path, eid)
     log = JsonlRunLog(path, eid)
     log.started(kind="trex", target="trex", owner="me", host="h", pid=1)
-    log.frame_axis_mismatch("sess", tracked=1782, media=1800)
+    log.frame_axis_mismatch("sess", read=1782, media=1800)
     log.close()
 
     events = [
@@ -551,7 +551,7 @@ def test_the_mismatch_event_carries_both_numbers(tmp_path: Path) -> None:
             "t": events[0]["t"],
             "ev": "frame_axis_mismatch",
             "key": "sess",
-            "tracked": 1782,
+            "read": 1782,
             "media": 1800,
         }
     ]

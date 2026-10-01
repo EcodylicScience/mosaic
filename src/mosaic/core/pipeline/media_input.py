@@ -13,11 +13,12 @@ are variant frames. :class:`MediaInputParams` therefore refuses the combination.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Annotated, ClassVar, Self
 
 from pydantic import model_validator
+from typing_extensions import TypeIs
 
-from mosaic.core.json_value import JsonValue
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.preprocess_layout import PREPROCESS_KIND
@@ -66,16 +67,28 @@ class MediaInputParams(Params):
         name is spelled as a refusal spells it. Empty when the op reads every
         frame.
         """
-        fields = type(self).model_fields
+        names = (*self.window_fields, *self.extra_settings_window_keys)
+        return type(self).frame_window_of({name: getattr(self, name) for name in names})
+
+    @classmethod
+    def frame_window_of(cls, values: Mapping[str, object]) -> tuple[str, ...]:
+        """Name every setting in *values* that narrows the frames the op reads.
+
+        The rule of :attr:`frame_window`, applied to parameter values by name, as
+        a run recorded them. A field absent from *values* is at its default. A
+        recorded value is compared with the default as it is, and every window
+        field's default is null or a number, which a record spells as the field
+        holds it.
+        """
+        fields = cls.model_fields
         named: list[str] = []
-        for name in self.window_fields:
-            value: object = getattr(self, name)
+        for name in cls.window_fields:
             default: object = fields[name].get_default(call_default_factory=True)
-            if value != default:
+            if values.get(name, default) != default:
                 named.append(f"`{name}`")
-        for settings_field, keys in self.extra_settings_window_keys.items():
-            settings: JsonValue = getattr(self, settings_field)
-            if not isinstance(settings, dict):
+        for settings_field, keys in cls.extra_settings_window_keys.items():
+            settings = values.get(settings_field)
+            if not _is_settings(settings):
                 continue
             named.extend(
                 f"`{key}` in `{settings_field}`"
@@ -112,6 +125,11 @@ class MediaInputParams(Params):
             f"`media_raw` with this frame range."
         )
         raise ValueError(refused)
+
+
+def _is_settings(value: object) -> TypeIs[Mapping[str, object]]:
+    """Whether *value* is a pass-through settings mapping."""
+    return isinstance(value, Mapping)
 
 
 def media_identity_terms(params: MediaInputParams) -> dict[str, str]:

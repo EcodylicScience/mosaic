@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from typing_extensions import TypeIs
 
 from ._utils import atomic_write, json_ready
 from .index_lock import index_lock
@@ -52,8 +53,10 @@ __all__ = [
     "observed_models",
     "read_tracks_variant",
     "read_variant_sidecar",
+    "recorded_media",
     "recorded_model_id",
     "recorded_models",
+    "recorded_op_params",
     "resample_variant_payload",
     "tracker_variant_payload",
     "tracks_run_id",
@@ -411,14 +414,40 @@ def read_tracks_variant(tracks_root: Path, run_id: str) -> VariantSidecar | None
     )
 
 
+def recorded_op_params(sidecar: VariantSidecar) -> Mapping[str, object]:
+    """Return the op parameters recorded in a variant's payload, by name.
+
+    A payload built by :func:`convert_variant_payload`,
+    :func:`infer_variant_payload` or :func:`resample_variant_payload` holds them
+    under ``params``. A tracker's payload is its settings
+    (:func:`tracker_variant_payload`), and no tracker declares a parameter
+    named ``params``.
+    """
+    nested = sidecar.params.get("params")
+    return nested if _is_params(nested) else sidecar.params
+
+
+def _is_params(value: object) -> TypeIs[Mapping[str, object]]:
+    """Whether *value* is a mapping of parameter values by name."""
+    return isinstance(value, Mapping)
+
+
 def tracks_variant_media(tracks_root: Path, run_id: str) -> str:
     """Return the media variant that tracks variant *run_id* was made from, or ``""``.
 
-    The value is read from the payload that :func:`write_tracks_variant` recorded,
-    which contains a tracker's or an inference op's ``media`` term when it names a
-    variant. The function returns ``""`` for a variant made from the entry media,
-    and for one whose sidecar is absent or unreadable.
+    The value is read from the payload that :func:`write_tracks_variant` recorded
+    (:func:`recorded_media`). The function returns ``""`` for a variant made from
+    the entry media, and for one whose sidecar is absent or unreadable.
     """
     sidecar = read_tracks_variant(tracks_root, run_id)
-    media = sidecar.params.get("media", "") if sidecar is not None else ""
+    return recorded_media(sidecar) if sidecar is not None else ""
+
+
+def recorded_media(sidecar: VariantSidecar) -> str:
+    """Return the media variant that a variant's payload names, or ``""``.
+
+    A tracker's or an inference op's payload contains its ``media`` term when it
+    names a variant, and none when the run read the entry media.
+    """
+    media = sidecar.params.get("media", "")
     return media if isinstance(media, str) else ""

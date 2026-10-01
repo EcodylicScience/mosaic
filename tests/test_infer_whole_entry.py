@@ -25,7 +25,12 @@ from mosaic_media import MediaFacts, probe_media
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.video_io import read_entry_frames
-from mosaic.core.pipeline.joined_export import JoinedExportMissingError
+from mosaic.core.pipeline.joined_export import (
+    JOINED_KIND_DIRECTORY,
+    JoinedExportMissingError,
+    current_joined_recipes,
+    joined_source_uid,
+)
 from mosaic.core.pipeline.markers import read_phase_marker
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.sequence_index import decode_consumed_roots
@@ -181,6 +186,7 @@ class TestAnOpThatHandsItsRunnerAPath:
         with pytest.raises(JoinedExportMissingError, match="--kind export-joined"):
             _ = _infer(ds, "infer-pose", model)
         assert fake.videos == []
+        assert fake.probed == [], "the model's environment was probed first"
 
 
 @pytest.mark.parametrize("kind", ["infer-pose", "infer-points", "infer-localizer"])
@@ -245,7 +251,7 @@ def _two_clips(sequence: str) -> list[MediaClip]:
 
 
 class TestEntriesWithNoFileBuilt:
-    """Every entry missing a join or a store export is named at once."""
+    """Every entry whose join or store export cannot be read is named at once."""
 
     def test_every_missing_join_is_named_before_a_model_runs(
         self, tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch
@@ -258,10 +264,54 @@ class TestEntriesWithNoFileBuilt:
             _ = run_op(ds, "infer-pose", {"model": str(model)})
 
         message = str(refused.value)
-        assert message.startswith("[infer-pose] 2 entries need a file built")
+        assert message.startswith("[infer-pose] 2 entries cannot be read yet")
         for sequence in ("a", "b"):
             assert f'--kind export-joined --entries ":{sequence}"' in message
         assert fake.videos == []
+        assert fake.probed == [], "the model's environment was probed first"
+
+    def test_every_missing_store_export_is_named_as_one(
+        self, tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refused as a missing store export, which is what a caller catches."""
+        ds = make_dataset(tmp_path / "ds")
+        write_media_index(ds, [MediaClip(sequence="s"), MediaClip(sequence="t")])
+        for sequence in ("s", "t"):
+            _ = point_at_a_store(
+                ds, sequence, ds.get_root("media_raw") / f"{sequence}.store"
+            )
+        fake = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+
+        with pytest.raises(StoreExportMissingError) as refused:
+            _ = run_op(ds, "infer-pose", {"model": str(model)})
+
+        message = str(refused.value)
+        for sequence in ("s", "t"):
+            assert f'--kind export-store --entries ":{sequence}"' in message
+        assert fake.videos == [] and fake.probed == []
+
+    def test_two_current_joins_are_named_beside_a_missing_one(
+        self, tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One entry needs a join built, and the other needs one of two deleted."""
+        ds = make_dataset(tmp_path / "ds")
+        write_media_index(ds, [*_two_clips("a"), *_two_clips("b")])
+        root = ds.get_root("media") / JOINED_KIND_DIRECTORY
+        root.mkdir(parents=True)
+        uid = joined_source_uid(ds.resolve_media("", "b").facts)
+        for recipe in sorted(current_joined_recipes()):
+            _ = (root / f"{uid}.{recipe}.joined.mp4").write_bytes(b"join")
+        fake = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+
+        with pytest.raises(JoinedExportMissingError) as refused:
+            _ = run_op(ds, "infer-pose", {"model": str(model)})
+
+        message = str(refused.value)
+        assert message.startswith("[infer-pose] 2 entries cannot be read yet")
+        assert "Each is named below with what to do" in message
+        assert '--kind export-joined --entries ":a"' in message
+        assert "2 current joins" in message and "delete the rest" in message
+        assert fake.videos == [] and fake.probed == []
 
     def test_a_missing_join_and_a_missing_export_are_named_together(
         self, tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch
@@ -280,7 +330,7 @@ class TestEntriesWithNoFileBuilt:
         message = str(refused.value)
         assert '--kind export-joined --entries ":a"' in message
         assert '--kind export-store --entries ":s"' in message
-        assert fake.videos == []
+        assert fake.videos == [] and fake.probed == []
 
 
 type Handed = list[tuple[Path, ...]]

@@ -163,6 +163,7 @@ def _publish(
         model_pt=model,
         timing=clip_facts(),
         axis=EntryAxis(),
+        frames_read=None,
     )
 
     rows = read_tracks_index(ds)
@@ -344,6 +345,7 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
         model_pt=model,
         timing=clip_facts(),
         axis=EntryAxis(),
+        frames_read=5,
     )
 
     out_path = ds.get_root("tracks") / variant / "g__s.parquet"
@@ -364,6 +366,7 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
         "consumed_source_roots": ("media_raw", "models"),
         "records_media": True,
         "media_frames": None,
+        "frames_read": 5,
     }
     pd.testing.assert_frame_equal(
         pd.read_parquet(out_path),
@@ -414,4 +417,5 @@ def test_a_table_with_no_position_at_all_is_refused(tmp_path: Path) -> None:
             model_pt=model,
             timing=clip_facts(),
             axis=EntryAxis(),
+            frames_read=None,
         )

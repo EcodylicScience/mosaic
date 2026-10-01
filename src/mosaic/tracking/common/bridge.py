@@ -40,7 +40,6 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
 from mosaic.core.pipeline.tracking_roots import tracking_root
-from mosaic.core.pipeline.types.data_config import COLUMNS
 from mosaic.core.schema import ensure_track_schema
 
 if TYPE_CHECKING:
@@ -51,7 +50,6 @@ __all__ = [
     "BridgeCounts",
     "readable_tracks_table",
     "frame_counts",
-    "frame_span",
     "publish_or_record",
     "publish_tracks_table",
     "tracks_table_path",
@@ -66,14 +64,11 @@ class BridgeCounts:
     maintains identities is not a count of animals -- see
     :class:`~mosaic.tracking.common.index.TrackerRunRowBase`.
 
-    ``frame_span`` and ``media_frames`` are the two ends of one comparison: how
-    far the table's own frame axis reaches, and how long the axis of the media it
-    came from was. Both default to ``None``, which means *not measured* and never
-    zero. A reused table makes no measurement. A published one has no second
-    axis to compare against when
-    :attr:`~mosaic.core.pipeline.placement.EntryAxis.media_frames` says so, or
-    when its producer writes rows only where it detects something
-    (:attr:`~mosaic.core.pipeline.tracking_roots.TrackingRoot.rows_every_frame`).
+    ``frames_read`` and ``media_frames`` are the two ends of one comparison: how
+    many frames the producer's tool read, and how many it should have read
+    (:attr:`~mosaic.core.pipeline.placement.EntryAxis.media_frames`). Both default
+    to ``None``, which means *not known* and never zero. A reused table makes no
+    measurement.
 
     ``dropped`` names the columns removed before the table was published because
     they do not map onto the source media's pixels, frames or clock, in the
@@ -83,22 +78,23 @@ class BridgeCounts:
 
     n_rows: int
     n_ids: int
-    frame_span: tuple[int, int] | None = None
+    frames_read: int | None = None
     media_frames: int | None = None
     dropped: tuple[str, ...] = ()
 
     @property
     def frame_axis_mismatch(self) -> tuple[int, int] | None:
-        """``(tracked, media)`` when the two axes disagree, else ``None``.
+        """``(read, media)`` when the tool read another number of frames, else ``None``.
 
         ``None`` when either is unknown as well as when they agree: the honest
         -empty rule the index comparison follows, because one measurement cannot
         disagree with an absent one.
         """
-        if self.frame_span is None or self.media_frames is None:
+        if self.frames_read is None or self.media_frames is None:
             return None
-        tracked = self.frame_span[1] + 1
-        return None if tracked == self.media_frames else (tracked, self.media_frames)
+        if self.frames_read == self.media_frames:
+            return None
+        return self.frames_read, self.media_frames
 
 
 def tracks_table_path(ds: Dataset, tracks_variant: str, key: str) -> Path:
@@ -110,28 +106,6 @@ def frame_counts(df: pd.DataFrame) -> BridgeCounts:
     """``(rows, distinct ids)`` for a tracks frame."""
     n_ids = int(df["id"].nunique()) if "id" in df.columns and len(df) else 0
     return BridgeCounts(n_rows=int(len(df)), n_ids=n_ids)
-
-
-def frame_span(df: pd.DataFrame) -> tuple[int, int] | None:
-    """The ``(min, max)`` of a frame's ``frame`` column, in memory.
-
-    The sibling of
-    :func:`~mosaic.core.pipeline.tracks_index.frame_extent`, which measures the
-    same thing off the parquet. Two spellings, deliberately: that one is what the
-    index writer uses, and its rule that the extent is *measured from the file
-    rather than passed in* is what keeps six call sites from each being able to
-    record a false one. This one answers for the caller that is holding the frame
-    anyway and wants the number before it is written.
-
-    ``None`` when the answer is unknown -- no ``frame`` column, or every value
-    null -- which is not the same claim as ``(0, 0)``.
-    """
-    if COLUMNS.frame_col not in df.columns:
-        return None
-    frames = pd.to_numeric(df[COLUMNS.frame_col], errors="coerce").dropna()
-    if frames.empty:
-        return None
-    return int(frames.min()), int(frames.max())
 
 
 def readable_tracks_table(path: Path) -> BridgeCounts | None:
@@ -177,14 +151,15 @@ def publish_tracks_table(
     source: Path,
     consumed: Sequence[Path],
     axis: EntryAxis,
+    frames_read: int | None,
     strict: bool = False,
 ) -> BridgeCounts:
     """Write one converted frame as this variant's table for one entry.
 
     Every tracker and inference op publishes through here, so every table is
-    placed on its entry's axes the same way, and every row records the media axis
-    that its frames address whenever a comparison with it means something. The
-    producer says only what it read, as *axis*, and cannot leave either out.
+    placed on its entry's axes the same way, and every row records how many
+    frames its tool read beside how many it should have read. The producer says
+    only what it read, as *axis* and *frames_read*, and cannot leave either out.
 
     Args:
         ds: The dataset.
@@ -206,11 +181,11 @@ def publish_tracks_table(
             table is mapped into source space, and a table from the join of
             several clips is timed by the clips. The table validated, written
             and counted is the placed one. The row records
-            :attr:`EntryAxis.media_frames` when *kind* writes rows at every frame
-            it reads (``TrackingRoot.rows_every_frame``), and a blank when it
-            does not or when the value is ``None``. A table with rows only
-            where something was detected ends at its last detection, which
-            says nothing about how much of the media was read.
+            :attr:`EntryAxis.media_frames`, or a blank when it is ``None``.
+        frames_read: How many frames the tool read for *df*, on the axis of the
+            file it read, or ``None`` when the producer cannot know. The row
+            records it. It is not the table's extent: a table with rows only
+            where something was detected ends at its last detection.
         strict: Raise when the table lacks a column that its schema requires,
             rather than printing the report and publishing it.
 
@@ -230,7 +205,7 @@ def publish_tracks_table(
     root = tracking_root(kind)
     placed = axis.place(df)
     df = placed.frame
-    media_frames = axis.media_frames if root.rows_every_frame else None
+    media_frames = axis.media_frames
     out_path = tracks_table_path(ds, tracks_variant, make_entry_key(group, sequence))
     std_format = root.output_schema
     ensure_track_schema(df, std_format, strict=strict, source=f"{group}/{sequence}")
@@ -251,6 +226,7 @@ def publish_tracks_table(
         source=source,
         consumed_source_roots=consumed_roots_for(ds, list(consumed)),
         media_frames=media_frames,
+        frames_read=frames_read,
         # A bridge opens the entry's media, so its row records what that
         # media was. The variant identity has no term for the pixels, so
         # this cell is the only thing that notices a re-transcode.
@@ -258,7 +234,7 @@ def publish_tracks_table(
     )
     return replace(
         counts,
-        frame_span=frame_span(df),
+        frames_read=frames_read,
         media_frames=media_frames,
         dropped=placed.dropped,
     )
@@ -295,12 +271,13 @@ def publish_or_record(
     bridge means the publication was lost, not the tracking.
 
     **A frame-axis mismatch is reported here too, and is not a failure.** When the
-    published table's frame axis is not as long as the media it was made from,
-    the entry succeeded: the table is schema-valid, its rows are dense, and every
-    quantity computed inside it is right. What is wrong is the correspondence
-    between a ``frame`` in that table and a frame of the video -- so `overlay`,
-    the crop features and frame extraction can read the wrong image. How far
-    out, and where, depends on what the tool did with the frames it missed, and
+    tool read another number of frames than the media it was given holds, the
+    entry succeeded: the table is schema-valid, and every quantity computed
+    inside it is right. What may be wrong is the correspondence between a
+    ``frame`` in that table and a frame of the video, so `overlay`, the crop
+    features and frame extraction can read the wrong image. How far out, and
+    where, depends on which frames the tool missed. Frames missed at the end
+    move nothing, and frames missed earlier move every frame after them.
     mosaic knows only the size of the gap. It reports that and says so.
 
     Raising instead was considered and rejected. It would be permanent: the
@@ -341,16 +318,16 @@ def publish_or_record(
         )
         return None
     if counts is not None and (mismatch := counts.frame_axis_mismatch) is not None:
-        tracked, media = mismatch
-        ctx.frame_axis_mismatch(key, tracked=tracked, media=media)
+        read, media = mismatch
+        ctx.frame_axis_mismatch(key, read=read, media=media)
         # Both the event and the line, for the reason `entry_failed` keeps both:
         # the event is the record that survives a queue sending stderr to
         # DEVNULL, and the line is what a person running this in a terminal sees.
         print(
-            f"[{kind}] {key}: this table spans {tracked} frames but its media "
-            f"holds {media}, so the two are not one axis and a frame read for "
-            f"this table may be up to {abs(media - tracked)} frames out. Check "
-            f"any overlay or crop from this entry before trusting it. "
+            f"[{kind}] {key}: the tool read {read} of {media} frames. Unless the "
+            f"difference is all at the end, a frame of this table may be up to "
+            f"{abs(media - read)} frames from the video frame of that number. "
+            f"Check any overlay or crop from this entry before trusting it. "
             f"Everything computed inside the table is unaffected.",
             file=sys.stderr,
         )

@@ -815,6 +815,7 @@ src/mosaic/
 │   │   ├── variant_source.py   # a variant's rows read once per scope, each entry resolved, drift refused
 │   │   ├── media_input.py      # MediaInputParams: the `media` parameter, frame windows refused
 │   │   ├── placement.py        # EntryAxis: a tool's table placed on its entry's axes (variant, join)
+│   │   ├── tracks_axis.py      # what a tracks row's run read, rebuilt for measure-tracks
 │   │   ├── inventory/          # what a dataset holds: coverage, status, params.json
 │   │   ├── graph/              # a pipeline as a file: recipe, plan, submit, run a step
 │   │   ├── writers.py          # parquet output writing, overlap trimming
@@ -963,7 +964,9 @@ variant's `params.json` has a `params.json.lock` beside it too, from the same
 lock, which `write_tracks_variant` takes to merge the record. Neither is data,
 nothing reads them, and deleting one while a writer holds it reintroduces the
 lost update the lock prevents. Anything that enumerates a root should expect
-them.
+them. The lock also creates the file it guards when that file is absent, so a
+variant's `params.json` is empty from the moment its first writer takes the lock
+until that writer replaces it, and reads as absent meanwhile.
 
 ## Important Conventions
 
@@ -986,22 +989,28 @@ variant* — which recipe produced the table, from
 the parquet** at write time rather than passed in, so no call site can record a
 false zero). Since keypoints are optional, "does this entry have any" would
 otherwise need a parquet open per entry; a blank cell means *unknown*, not zero,
-exactly as it does for `n_rows`. `frame_min`/`frame_max` and `media_frames` follow
-the same rule: the first pair is the table's own frame axis, measured from the
-parquet, and the third is the length of the **media axis** that table's frames are
-supposed to address, *passed* by the producer because only it knows what it
-resolved. Blank means unknown on all three, and
-`frame_axis_mismatches()` refuses to compare unless both sides are filled. Every
-tracker and inference op publishes through `publish_tracks_table`, which takes
-the entry's `EntryAxis`
+exactly as it does for `n_rows`. `frame_min`/`frame_max`, `media_frames` and
+`frames_read` follow the same rule: the first pair is the table's own frame axis,
+measured from the parquet, `media_frames` is how many frames the producer's tool
+should have read, and `frames_read` how many it did, both *passed* by the producer
+because only it knows what it resolved and what its tool reported. Blank means
+unknown on all four, and `frame_axis_mismatches()` compares `frames_read` with
+`media_frames` only when both are filled. The table's extent is never compared: a
+table with rows only at detections ends at its last one, however many frames the
+tool read. Every tracker and inference op publishes through
+`publish_tracks_table`, which takes the entry's `EntryAxis`
 ([`core/pipeline/placement.py`](src/mosaic/core/pipeline/placement.py)) and
-records its `media_frames`: the summed clips of a multi-clip entry that the
-run read whole, and blank for one clip, a frame window, or a trimmed or decimated
-media variant, whose table does not span its source axis. It is recorded only for
-a producer whose `TrackingRoot` declares `rows_every_frame` (TREx and Lightning
-Pose). The others write rows only where they detect something, so their tables
-end at the last detection. `backfill_media_frames` follows the same declaration
-and leaves every variant's row blank.
+records its `media_frames`: the summed clips of an entry that the run read whole,
+one clip included, the source's length for a media variant that keeps every source
+frame, and blank for a frame window or a trimmed or decimated variant.
+`frames_read` is the `.pv` count for TREx, the runner's count for Ultralytics and
+the three inference ops, and the frames predicted for Lightning Pose. SLEAP
+records none, because its analysis export does not say whether it spans the video.
+`backfill_media_frames` and `backfill_frames_read` (`mosaic measure-tracks`) fill
+past rows by the same rules. The first rebuilds the run's `EntryAxis` from its
+variant's record ([`tracks_axis.py`](src/mosaic/core/pipeline/tracks_axis.py)),
+and the second reads what the run left on disk, through a reader each producer
+registers.
 
 Three invariants worth knowing:
 
@@ -1379,13 +1388,17 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   shared bridge applies to every producer's table from a join).
 
   The axis is also **measured against the media and reported** rather than merely
-  asserted -- `media_frames` beside `frame_min`/`frame_max` on the tracks row, a
+  asserted: `frames_read` beside `media_frames` on the tracks row, a
   `frame_axis_mismatch` run-log event, an `extra` key on the inventory record, and
-  `mosaic measure-tracks` for tables published before the cell existed, except a
-  table tracked on a media variant, whose cell stays blank. Recorded,
-  never refused: the condition is deterministic and a table cannot be re-bridged
-  without re-tracking, so raising would fail the same entry forever and cost the
-  analyses that never depended on registration.
+  `mosaic measure-tracks` for tables published before the cells existed. What is
+  compared is how many frames the tool read, never the table's last frame, which
+  is the last frame an animal was seen in. A shortfall is not always a
+  misregistration. TREx reads every file it opens two frames short at its end (58
+  frames of a 60-frame clip, measured), which moves no frame of the table, while
+  frames lost earlier move every frame after them. Recorded, never refused: the
+  condition is deterministic and a table cannot be re-bridged without re-tracking,
+  so raising would fail the same entry forever and cost the analyses that never
+  depended on registration.
 - **Tracks are pixels, and `X` is the body centre.** Both hold on every tracker,
   and neither did before: TREx reports centimetres and puts the *head* in `X`. A
   physical unit is obtained by the `scale-to-cm` feature, never stored in the

@@ -13,6 +13,7 @@ and a test can compute the table that the bridge publishes from them.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -57,6 +58,27 @@ def write_ultralytics_predictions(
     table.to_parquet(path, index=False)
 
 
+def frames_in_window(
+    media_facts: Mapping[str, object],
+    start_frame: int,
+    end_frame: int | None,
+    frame_step: int,
+    max_frames: int | None = None,
+) -> int:
+    """Return how many frames a runner reads of a video under a frame window.
+
+    The reader stops at *end_frame*, exclusive, or at the video's frame count in
+    *media_facts*, whichever comes first, and a runner stops after *max_frames*.
+    A video whose facts report no count has none to read.
+    """
+    count = media_facts.get("frame_count")
+    last = count if isinstance(count, int) else 0
+    if end_frame is not None:
+        last = min(last, end_frame)
+    read = len(range(start_frame, last, frame_step))
+    return read if max_frames is None else min(read, max_frames)
+
+
 def ultralytics_probe_response(
     model_task: str = "pose",
     *,
@@ -93,7 +115,15 @@ class FakeUltralytics:
     work_dirs: list[Path] = field(default_factory=list)
     tracked: list[Path] = field(default_factory=list)
     n_frames: int = 4
+    """How many frames the predictions cover, each with a detection of every track."""
     n_ids: int = 2
+    frames_read: int | None = None
+    """How many frames the runner reports reading.
+
+    ``None`` reports the frames of the request's window of its video, which the
+    runner reads whether or not it detects anything in them
+    (:func:`frames_in_window`).
+    """
 
     def probe(self, model_path: Path | str, **_kwargs: object) -> ProbeResponse:
         self.events.append((str(model_path), "probe"))
@@ -110,8 +140,16 @@ class FakeUltralytics:
         write_ultralytics_predictions(
             out_parquet, n_frames=self.n_frames, n_ids=self.n_ids
         )
+        read = self.frames_read
+        if read is None:
+            read = frames_in_window(
+                request.media_facts,
+                request.start_frame,
+                request.end_frame,
+                request.frame_step,
+            )
         return UltralyticsTrackResult(
-            predictions_path=out_parquet, n_frames=self.n_frames, n_ids=self.n_ids
+            predictions_path=out_parquet, n_frames=read, n_ids=self.n_ids
         )
 
 

@@ -23,7 +23,7 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
 )
 from mosaic.tracking.pose_training.ultralytics_infer import InferenceOutcome
 
-from tests.helpers.ultralytics import ultralytics_probe_response
+from tests.helpers.ultralytics import frames_in_window, ultralytics_probe_response
 
 
 def pose_predictions() -> pd.DataFrame:
@@ -75,10 +75,20 @@ class FakeInference:
     Attributes:
         predictions: The table for each video, as a function of the video's path.
         videos: Every video that the runner was handed, in order.
+        probed: Every model whose environment was probed, in order. A run probes
+            before any model runs, after every entry's input is resolved.
     """
 
     predictions: PredictionsFor
     videos: list[Path] = field(default_factory=list)
+    probed: list[str] = field(default_factory=list)
+    frames_read: int | None = None
+    """How many frames the runner reports reading.
+
+    ``None`` reports the frames of the request's window of its video, which the
+    runner reads whether or not it detects anything in them
+    (:func:`~tests.helpers.ultralytics.frames_in_window`).
+    """
 
     def run(
         self,
@@ -93,33 +103,58 @@ class FakeInference:
         published = Path(request.output_parquet)
         published.parent.mkdir(parents=True, exist_ok=True)
         table.to_parquet(published, index=False)
+        read = self.frames_read
+        if read is None:
+            read = frames_in_window(
+                request.media_facts,
+                request.start_frame,
+                request.end_frame,
+                request.frame_step,
+                request.max_frames,
+            )
         return InferenceOutcome(
-            predictions_path=published,
-            n_frames=int(table["frame"].nunique()),
-            n_rows=len(table),
+            predictions_path=published, n_frames=read, n_rows=len(table)
         )
 
 
-def install_fake_pose_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stand in for the probe of ``infer-pose``'s environment: a two-keypoint model."""
+def install_fake_pose_probe(
+    monkeypatch: pytest.MonkeyPatch, probed: list[str] | None = None
+) -> list[str]:
+    """Stand in for the probe of ``infer-pose``'s environment: a two-keypoint model.
+
+    Returns the list that records each probed model path, *probed* when given.
+    """
     import mosaic.tracking.common.ultralytics_env as tool_env
 
-    def probe(_model_path: str, **_kwargs: object) -> ProbeResponse:
+    calls: list[str] = [] if probed is None else probed
+
+    def probe(model_path: str, **_kwargs: object) -> ProbeResponse:
+        calls.append(model_path)
         return ultralytics_probe_response("pose", n_keypoints=2)
 
     monkeypatch.setattr(tool_env, "probe_environment", probe)
+    return calls
 
 
-def install_fake_point_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stand in for the probe of ``infer-points``'s POLO environment."""
+def install_fake_point_probe(
+    monkeypatch: pytest.MonkeyPatch, probed: list[str] | None = None
+) -> list[str]:
+    """Stand in for the probe of ``infer-points``'s POLO environment.
+
+    Returns the list that records each probed model path, *probed* when given.
+    """
     import mosaic.tracking.common.ultralytics_env as tool_env
 
-    def probe(_model_path: str, **_kwargs: object) -> ProbeResponse:
+    calls: list[str] = [] if probed is None else probed
+
+    def probe(model_path: str, **_kwargs: object) -> ProbeResponse:
+        calls.append(model_path)
         return ultralytics_probe_response(
             "locate", has_locate=True, version="8.4.84", n_keypoints=1
         )
 
     monkeypatch.setattr(tool_env, "probe_environment", probe)
+    return calls
 
 
 def install_fake_pose_inference(
@@ -132,7 +167,7 @@ def install_fake_pose_inference(
     import mosaic.tracking.pose_training.ultralytics_infer as infer_run
 
     fake = FakeInference(predictions or (lambda _video: pose_predictions()))
-    install_fake_pose_probe(monkeypatch)
+    _ = install_fake_pose_probe(monkeypatch, fake.probed)
     monkeypatch.setattr(infer_run, "run_pose_inference_tool", fake.run)
     return fake
 
@@ -147,6 +182,6 @@ def install_fake_point_inference(
     import mosaic.tracking.pose_training.ultralytics_infer as infer_run
 
     fake = FakeInference(predictions or (lambda _video: point_predictions()))
-    install_fake_point_probe(monkeypatch)
+    _ = install_fake_point_probe(monkeypatch, fake.probed)
     monkeypatch.setattr(infer_run, "run_point_inference_tool", fake.run)
     return fake

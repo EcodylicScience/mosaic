@@ -87,13 +87,12 @@ class RunLogSnapshot(TypedDict):
     consumer can act on the difference and a tri-state would make every reader
     special-case it.
 
-    ``entries_frame_axis_mismatch`` counts the entries whose published table
-    numbers a different span of frames from the media it was made from. It
-    accumulates like ``entries_failed`` and, unlike it, says nothing about the
-    attempt's success: the entry published, and everything computed inside its
-    table is right. What is wrong is only the correspondence between a ``frame``
-    in that table and a frame of the video, which is what every consumer reading
-    pixels depends on.
+    ``entries_frame_axis_mismatch`` counts the entries whose tool read another
+    number of frames than the media it was made from holds. It accumulates like
+    ``entries_failed`` and, unlike it, says nothing about the attempt's success:
+    the entry published, and everything computed inside its table is right. What
+    may be wrong is only the correspondence between a ``frame`` in that table and
+    a frame of the video, which is what every consumer reading pixels depends on.
 
     ``entries_columns_dropped`` counts the entries whose table was published
     without some of its columns: columns that the mapping from a media variant
@@ -297,8 +296,8 @@ class JsonlRunLog:
         """
         self._emit("entry_error", key=key, error=error_json)
 
-    def frame_axis_mismatch(self, key: str, *, tracked: int, media: int) -> None:
-        """One entry's published frame axis is not the length of its media's.
+    def frame_axis_mismatch(self, key: str, *, read: int, media: int) -> None:
+        """One entry's tool read *read* frames of media that holds *media*.
 
         Recorded, never raised. The table is real and its own contents are
         sound -- dropout counts, neighbour distances, body size and coverage are
@@ -308,8 +307,8 @@ class JsonlRunLog:
         not a reason to throw the table away.
 
         The numbers travel with the event because the gap is the whole content of
-        the report: "1782 against 1800" says how far a late crop is off, where a
-        bare flag says only that something is wrong somewhere.
+        the report: "read 1782 of 1800" says how far a late crop may be off, where
+        a bare flag says only that something is wrong somewhere.
 
         An ordinary event kind, for the reason :meth:`entry_failed` gives at
         length -- an unrecognised ``ev`` falls off ``reduce_run_log``'s if/elif
@@ -317,7 +316,7 @@ class JsonlRunLog:
         not a status: this attempt is `finished`, and a run whose every entry
         mismatched is still a run that did what it was asked.
         """
-        self._emit("frame_axis_mismatch", key=key, tracked=tracked, media=media)
+        self._emit("frame_axis_mismatch", key=key, read=read, media=media)
 
     def columns_dropped(self, key: str, columns: Sequence[str]) -> None:
         """Record that one entry's table was published without *columns*.

@@ -357,8 +357,8 @@ def retime_joined_frame(
     frame, because the join holds the clips' frames back to back. A tool that
     reads fewer frames than a clip holds numbers its rows early, and
     :meth:`ConcatenatedTimeline.times` then places them in the wrong clip. The
-    bridge reports that shortfall against :attr:`EntryAxis.media_frames` and does
-    not correct it here.
+    bridge reports a shortfall in the frames the tool read against
+    :attr:`EntryAxis.media_frames` and does not correct it here.
 
     Args:
         df: The table, carrying the join's ``frame``.
@@ -423,31 +423,30 @@ class EntryAxis:
 
     @property
     def media_frames(self) -> int | None:
-        """The length of the entry's frame axis that the table is meant to span.
+        """Return how many frames the tool should have read, or ``None``.
 
-        ``None`` unless the axes can come apart and a shortfall means something.
-        The entry media must be several clips, because one clip's frame axis is
-        its own file's, with no boundary between clips to lose frames at. The run
-        must read every frame, because a frame window covers less on purpose. A
-        variant must keep every source frame, because the table of a trimmed or
-        decimated variant does not span its source axis.
+        The frames of the entry's clips, summed, when the tool read the entry media
+        without a frame window, whether it read one clip, several or their join.
+        The frames of the variant's source, when the tool read a variant that keeps
+        every source frame. The bridge records it beside the frames the tool
+        reported reading, and the two differ where the tool lost frames, as TRex
+        does at the end of every file it opens.
 
-        The bridge records it only for a producer whose table has rows at every
-        frame it reads
-        (:attr:`~mosaic.core.pipeline.tracking_roots.TrackingRoot.rows_every_frame`).
-        Any other table ends at its last detection.
+        ``None`` when the tool read less on purpose: a frame window, or a trimmed
+        or decimated variant. ``None`` too when a clip's frame count is unknown,
+        because a partial sum would read as a measurement.
         """
         if self.windowed:
             return None
         if self.mapping is not None:
             if not self.mapping.placement.is_frame_identity:
                 return None
-            timeline = self.mapping.timeline
-        elif len(self.clips) > 1:
-            timeline = concatenated_timeline(self.clips)
+            counts = [segment.frame_count for segment in self.mapping.timeline.segments]
         else:
+            counts = [int(clip.frame_count) for clip in self.clips]
+        if not counts or min(counts) <= 0:
             return None
-        return timeline.total_frames if len(timeline.segments) > 1 else None
+        return sum(counts)
 
     def place(self, df: pd.DataFrame) -> MappedTable:
         """Return *df* on the entry's axes, and the columns dropped from it.

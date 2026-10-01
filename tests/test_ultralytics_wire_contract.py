@@ -546,9 +546,9 @@ def test_a_windowed_run_publishes_the_frames_that_the_runner_read(
     model.parent.mkdir()
     _ = model.write_bytes(b"weights")
     if kind == "infer-pose":
-        install_fake_pose_probe(monkeypatch)
+        _ = install_fake_pose_probe(monkeypatch)
     else:
-        install_fake_point_probe(monkeypatch)
+        _ = install_fake_point_probe(monkeypatch)
 
     def loaded_for(_request: object) -> _FindsOneOfEach:
         return _FindsOneOfEach()

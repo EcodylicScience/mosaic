@@ -185,6 +185,7 @@ from .pipeline.tracks_index import (
     TRACKS_INDEX_PATH_COLUMNS,
     adopt_legacy_columns,
     backfill_frame_extents,
+    backfill_frames_read,
     backfill_media_frames,
     FrameAxisMismatch,
     frame_axis_mismatches,
@@ -966,21 +967,30 @@ class Dataset:
         return backfill_frame_extents(self, dry_run=dry_run)
 
     def measure_media_frames(self, *, dry_run: bool = False) -> "pd.DataFrame":
-        """Record the media-axis length of every tracks row that lacks one.
+        """Record how many frames the tool should have read, on every row lacking it.
 
-        The other half of :meth:`measure_frame_extents`, and the one way to
-        compare an already-tracked session against the video it addresses: only
-        TRex can re-bridge a table on disk without re-tracking (a republish). A
-        row whose producer writes rows only where it detects something is left
-        blank, as :func:`backfill_media_frames` says. Returns the rows filled,
-        with their measured values.
+        One half of the way to compare an already-tracked session against the
+        video it addresses: only TRex can re-bridge a table on disk without
+        re-tracking (a republish). A row is filled by the rule its producer
+        records it by, and a row whose run read less on purpose, or no media at
+        all, is left blank, as :func:`backfill_media_frames` says. Returns the
+        rows filled, with their measured values.
         """
         return backfill_media_frames(self, dry_run=dry_run)
+
+    def measure_frames_read(self, *, dry_run: bool = False) -> "pd.DataFrame":
+        """Record how many frames the tool read, on every row lacking it.
+
+        The other half, from what each run left on disk
+        (:func:`backfill_frames_read`). Returns the rows filled, with their
+        measured values.
+        """
+        return backfill_frames_read(self, dry_run=dry_run)
 
     def frame_axis_mismatches(
         self, run_id: str | None = None
     ) -> "tuple[FrameAxisMismatch, ...]":
-        """Tracks tables that do not address the length of their media.
+        """Tracks tables whose tool's frame count differs from their media's.
 
         One record per disagreeing table, naming its variant as well as its
         entry, from what the index already records -- a table measured on

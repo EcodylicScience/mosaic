@@ -115,6 +115,7 @@ from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
 from mosaic.core.pipeline.media_input import media_identity_terms
 from mosaic.core.pipeline.placement import EntryAxis
+from mosaic.core.pipeline.tracks_axis import register_frames_read_reader
 from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.core.pipeline.markers import (
     InflightMarker,
@@ -122,11 +123,13 @@ from mosaic.core.pipeline.markers import (
     PhaseName,
     clear_phase_markers,
     phase_fields,
+    read_phase_marker,
     refresh_inflight,
     write_phase_marker,
 )
 from mosaic.runlog import now_iso
 from mosaic.tracking.trex.params import TREX_DETECT_MODEL, TrexParams
+from mosaic.tracking.trex.pv import pv_frame_count
 
 from .run import run_trex_convert, run_trex_track
 
@@ -318,6 +321,7 @@ def _bridge_npz_to_tracks(
     producer_run_id: str,
     consumed_media: Sequence[Path],
     axis: EntryAxis,
+    frames_read: int | None,
     overwrite: bool,
 ) -> BridgeCounts | None:
     """Merge per-individual TREx NPZ into ``tracks/<variant>/<group>__<seq>.parquet``.
@@ -333,7 +337,8 @@ def _bridge_npz_to_tracks(
     instead of the single rate TREx took from the first of them, and a media
     variant's table is mapped into source space.
 
-    *consumed_media* are the media files that the table derives from.
+    *consumed_media* are the media files that the table derives from, and
+    *frames_read* is how many frames TREx read (:func:`_recorded_frames_read`).
 
     Returns ``None`` when there was nothing to convert or the conversion failed.
     """
@@ -354,13 +359,12 @@ def _bridge_npz_to_tracks(
         # caller records came from nowhere. An unreadable table falls through and
         # is reconverted.
         #
-        # A reused table makes no frame-axis comparison, and cannot: the reuse
-        # returns before the converter, before the table is placed on the
-        # entry's axes, and before anything opens the parquet's `frame` column.
-        # Its row keeps whatever it was written with, which for a table
-        # published before `media_frames` existed is a blank.
-        # `mosaic measure-tracks` fills those in, and a republish
-        # (`overwrite=True` here) re-bridges the table and records it.
+        # A reused table makes no frame-axis comparison, and cannot: the reuse returns
+        # before the converter, before the table is placed on the entry's axes, and
+        # before anything reads the `.pv`. Its row keeps whatever it was written with,
+        # which for a table published before `media_frames` and `frames_read` existed
+        # is a blank. `mosaic measure-tracks` fills those in, and a republish
+        # (`overwrite=True` here) re-bridges the table and records the two.
         reusable = readable_tracks_table(out_path)
         if reusable is not None:
             return reusable
@@ -393,7 +397,22 @@ def _bridge_npz_to_tracks(
         source=npz_paths[0].parent,
         consumed=[npz_paths[0], *consumed_media],
         axis=axis,
+        frames_read=frames_read,
     )
+
+
+def _recorded_frames_read(ds: Dataset, work_dir: Path) -> int | None:
+    """Return how many frames TREx read for the entry that *work_dir* tracked.
+
+    It is the frame count of the ``.pv`` that the entry's convert marker records,
+    which counts every frame the conversion read. Each per-individual export runs
+    only from that individual's first tracked frame to its last. ``None`` when the
+    marker or the ``.pv`` is gone, as after the shared conversion is swept.
+    """
+    marker = read_phase_marker(work_dir, "convert")
+    if marker is None or not marker.recorded_output:
+        return None
+    return pv_frame_count(ds.resolve_path(marker.recorded_output))
 
 
 def _individual_exports(work_dir: Path) -> list[Path]:
@@ -472,6 +491,7 @@ def _republish_entry(
         producer_run_id=run_id,
         consumed_media=item.consumed_media,
         axis=axis,
+        frames_read=_recorded_frames_read(job.ds, work_dir),
         overwrite=True,
     )
 
@@ -864,8 +884,8 @@ def run_trex(
         # Where the table sits on the entry's axes, which the shared bridge
         # applies. A joined entry's `time` goes onto the clips' own measured
         # rates, because TREx takes one rate from the first clip and never
-        # checks the others, and the row records the media axis wherever a
-        # comparison with it means something (`EntryAxis.media_frames`).
+        # checks the others, and the row records how many frames TREx should
+        # have read (`EntryAxis.media_frames`).
         axis = item.entry_axis(windowed=bool(params.frame_window))
 
         # The .results file is the only output TREx writes at the *end* of
@@ -1145,6 +1165,7 @@ def run_trex(
                     producer_run_id=minted.run_id,
                     consumed_media=item.consumed_media,
                     axis=axis,
+                    frames_read=_recorded_frames_read(job.ds, work_dir),
                     overwrite=job.overwrite or recomputed,
                 ),
                 kind=TREX_KIND,
@@ -1176,9 +1197,19 @@ def list_trex_runs(ds: Dataset) -> pd.DataFrame:
     return list_tracker_runs(ds, TREX_KIND, TRexIndexRow)
 
 
+def _frames_read_of_table(ds: Dataset, _table: Path, source: Path | None) -> int | None:
+    """Return how many frames TREx read for a published table, from its ``.pv``.
+
+    The table was bridged from the per-individual exports in ``<entry>/data``, so
+    *source* is that directory, and the entry's working directory is its parent.
+    """
+    return None if source is None else _recorded_frames_read(ds, source.parent)
+
+
 # Item 6.1: the reconciler opens this root's index through the registry, so
 # ``core`` never imports ``tracking`` to reach a row class.
 register_reconcilable_index(TREX_KIND, trex_index)
+register_frames_read_reader(TREX_KIND, _frames_read_of_table)
 
 # The row class this root's index holds, so an inventory can ask about every
 # tracker generically. Registered rather than tabled in ``common``, which is

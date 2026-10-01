@@ -112,6 +112,7 @@ def _publish(
         source=ds.get_root("tracks"),
         consumed=[],
         axis=EntryAxis() if axis is None else axis,
+        frames_read=None,
         strict=strict,
     )
 
@@ -144,7 +145,6 @@ def test_a_mapped_table_is_published_in_source_space(tmp_path: Path) -> None:
     assert not {"timestamp", "BORDER_DISTANCE"} & set(table.columns)
     assert counts.dropped == ("timestamp", "BORDER_DISTANCE")
     assert counts.n_rows == _ROWS
-    assert counts.frame_span == (_TRIM_START, _TRIM_START + _ROWS - 1)
 
 
 def test_without_a_mapping_the_table_is_published_unchanged(tmp_path: Path) -> None:

@@ -298,15 +298,6 @@ class TrackingRoot:
     is the one such set. A variant of any other producer is named by each model's
     own identity, so a record of one that predates the recorded models is still
     decided by comparing a model's digest with the one it names.
-
-    ``rows_every_frame`` is whether this producer's table has rows at every frame
-    the tool read, so that its last frame is the last frame read. TRex writes each
-    individual over the whole video, and Lightning Pose predicts every frame. The
-    others write rows only where they detect something, and a table from a
-    recording that ends without an animal in view ends early although the tool
-    read every frame. Only a table of the first kind is compared with the length
-    of its media: the bridge records ``media_frames`` for it and nothing for the
-    rest, and ``backfill_media_frames`` follows the same rule.
     """
 
     key: str
@@ -317,7 +308,6 @@ class TrackingRoot:
     output_schema: str = "trex_v1"
     decoder: ToolDecoder = CONSERVATIVE_DECODER
     model_sets: bool = False
-    rows_every_frame: bool = False
 
     @property
     def phases(self) -> tuple[PhaseName, ...]:
@@ -363,9 +353,6 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 TrackingPhase("track", ("*.results", "data/*.npz")),
             ),
             path_columns=("video_abs_path", "pv_path"),
-            # Each individual's export spans the whole video, with an empty row
-            # where TRex did not see it.
-            rows_every_frame=True,
         ),
         # The shared conversion cache: one `.pv` per (detection settings, source
         # content), read by every tracker run whose convert-phase parameters and
@@ -455,8 +442,6 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             outputs=("*.predictions.csv",),
             phase_outputs=(TrackingPhase("track", ("*.predictions.csv",)),),
             path_columns=("video_abs_path", "csv_path"),
-            # A prediction for every frame, even one without the animal in view.
-            rows_every_frame=True,
         ),
         # The tracker configuration this run used lives at the *run* root, beside
         # run_params.json, rather than in an entry directory -- it is one value

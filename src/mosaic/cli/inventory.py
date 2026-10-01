@@ -126,9 +126,9 @@ def inventory_command(
         mismatched = record.extra.get("frame_axis_mismatch", frozenset())
         if mismatched:
             typer.echo(
-                f"note: {len(mismatched)} entry(ies) of {record.run_id} have a "
-                "frame axis that is not their media's, so anything reading "
-                "pixels at a track frame is off; see mosaic measure-tracks",
+                f"note: {len(mismatched)} entry(ies) of {record.run_id} were read "
+                "short of or past their media, so anything reading pixels at a "
+                "track frame may be off; see mosaic measure-tracks",
                 err=True,
             )
     for missing in sorted(found.unavailable_kinds):

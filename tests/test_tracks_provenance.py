@@ -222,6 +222,7 @@ def test_the_tracker_bridge_records_the_run_and_a_portable_source(
         # This suite is about provenance, not the frame axis: one clip has no
         # second axis to compare against.
         axis=EntryAxis(),
+        frames_read=None,
         overwrite=True,
     )
 
@@ -260,6 +261,7 @@ def test_the_tracker_bridge_prefers_the_deepest_root_it_read(tmp_path: Path) -> 
         # This suite is about provenance, not the frame axis: one clip has no
         # second axis to compare against.
         axis=EntryAxis(),
+        frames_read=None,
         overwrite=True,
     )
 
@@ -305,6 +307,7 @@ def test_the_inference_bridge_points_back_at_its_predictions(tmp_path: Path) -> 
         model_pt=model,
         timing=clip_facts(),
         axis=EntryAxis(),
+        frames_read=None,
     )
 
     assert written.n_rows == 5
@@ -358,6 +361,7 @@ def test_a_second_producer_adds_a_row_rather_than_replacing_the_first(
         model_pt=ds.get_root("models") / "best.pt",
         timing=clip_facts(),
         axis=EntryAxis(),
+        frames_read=None,
     )
 
     rows = read_tracks_index(ds)

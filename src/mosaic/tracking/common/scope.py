@@ -47,10 +47,13 @@ from typing import TYPE_CHECKING
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.media.imgstore_io import is_imgstore
-from mosaic.core.media.uniformity import geometry_mismatch, rate_uniform
-from mosaic.core.pipeline.composition import MediaMember, media_composition
+from mosaic.core.media.store_rate import store_rate_mismatch
+from mosaic.core.media.uniformity import geometry_mismatch
 from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
-from mosaic.core.pipeline.joined_export import refuse_unidentified_clips
+from mosaic.core.pipeline.joined_export import (
+    entry_source_uid,
+    refuse_unidentified_clips,
+)
 from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.preprocess_index import (
     MediaVariantDriftedError,
@@ -191,16 +194,11 @@ class TrackerWorkItem:
         is refused by :func:`build_work_items` instead, because the fallback
         compares the first clip's path only, and no join of the clips can be
         addressed.
+
+        It is :func:`~mosaic.core.pipeline.joined_export.entry_source_uid`, the
+        identity an inference op records for the same media.
         """
-        if not self.source_facts:
-            return ""
-        if len(self.source_facts) == 1:
-            return self.source_facts[0].video_uuid
-        members = [
-            MediaMember(camera="", video_order=order, uid=clip.video_uuid)
-            for order, clip in enumerate(self.source_facts)
-        ]
-        return media_composition(members).digest
+        return entry_source_uid(self.source_facts)
 
     @property
     def media(self) -> str:
@@ -386,8 +384,9 @@ def refuse_unjoinable(
     naming the file and the field rather than inside a subprocess whose
     traceback names neither. One clip is its own video and passes.
 
-    Stores at different frame rates are refused too. The store reader needs one
-    rate, and ``export-joined`` does not join stores.
+    Stores at different frame rates are refused too, by the rule the store
+    reader applies (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`).
+    The store reader needs one rate, and ``export-joined`` does not join stores.
 
     Raises:
         JoinedSourceMismatchError: If the clips lack one set of facts each,
@@ -425,16 +424,16 @@ def refuse_unjoinable(
                 f"session. Re-probe it with 'mosaic reprobe-media'."
             )
 
-    if any(is_imgstore(path) for path in paths) and not rate_uniform(facts):
-        other = next(
-            position
-            for position in range(1, len(facts))
-            if not rate_uniform((facts[0], facts[position]))
-        )
+    other = (
+        store_rate_mismatch([clip.fps for clip in facts])
+        if any(is_imgstore(path) for path in paths)
+        else None
+    )
+    if other is not None:
         raise JoinedSourceMismatchError(
             f"[{kind}] {entry} cannot be read as one video: "
             f"{paths[other].name} was recorded at {facts[other].fps:g} fps and "
-            f"{paths[0].name} at {facts[0].fps:g}. Stores are not joined, so no "
+            f"{paths[0].name} at {facts[0].fps:g}. Stores cannot be joined, so no "
             f"reader places their frames on one axis. Re-record the stores at one "
             f"rate, or make a media variant of the entry, which reads each store "
             f"at its own rate, and name it with the 'media' parameter:\n"

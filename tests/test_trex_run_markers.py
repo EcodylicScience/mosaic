@@ -427,6 +427,7 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
         producer_run_id: str,
         consumed_media: Sequence[Path],
         axis: object,
+        frames_read: int | None,
         overwrite: bool,
     ) -> BridgeCounts | None:
         written.append(Path(f"{group}__{sequence}"))
@@ -931,7 +932,7 @@ def test_a_short_joined_conversion_records_both_numbers(
     assert read_frame_extent(row) == (0, 595)
     (found,) = ds.frame_axis_mismatches()
     assert (found.group, found.sequence) == ("", "sess")
-    assert (found.tracked, found.media) == (596, 600)
+    assert (found.read, found.media) == (596, 600)
 
 
 def test_a_short_joined_conversion_reports_itself_on_the_run_log(
@@ -1031,14 +1032,40 @@ def test_an_analysis_range_run_asks_no_question(
     assert _latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
 
 
-def test_a_single_clip_entry_asks_no_question(ds: Dataset, trex: FakeTrex) -> None:
-    """One file has no concatenation to lose frames at, so there is nothing to catch."""
-    from mosaic.core.pipeline.tracks_index import read_media_frames
+def test_a_table_that_ends_early_is_not_a_short_conversion(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """Nobody is tracked in the last twenty frames, and the ``.pv`` holds them all.
 
-    trex.npz_frames = 40
+    ``frame_max`` is the last frame carrying a row, not the last frame the tracker
+    saw: TREx exports each individual from its first tracked frame to its last.
+    Compared with the media, it would report an animal that leaves before the end
+    as a broken frame axis on every ordinary run. What TREx read is the ``.pv``'s
+    frame count, and that is what the media is compared with.
+    """
+    from mosaic.core.pipeline.tracks_index import read_frame_extent, read_media_frames
+
+    trex.npz_frames, trex.pv_frames = 280, 300
     _session(ds, "c0.mp4", frame_count=300)
 
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
 
-    assert read_media_frames(_tracks_row(ds)) is None
+    row = _tracks_row(ds)
+    assert read_frame_extent(row) == (0, 279)
+    assert read_media_frames(row) == 300
     assert ds.frame_axis_mismatches() == ()
+    assert _latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
+
+
+def test_a_conversion_short_of_one_clip_is_reported(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """TREx reads a file only as far as it counted, and it counts short."""
+    trex.npz_frames, trex.pv_frames = 280, 298
+    _session(ds, "c0.mp4", frame_count=300)
+
+    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
+
+    (found,) = ds.frame_axis_mismatches()
+    assert (found.read, found.media) == (298, 300)
+    assert _latest_snapshot(ds)["entries_frame_axis_mismatch"] == 1

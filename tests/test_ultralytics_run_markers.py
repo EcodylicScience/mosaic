@@ -136,7 +136,9 @@ def test_a_fresh_run_tracks_and_bridges(
     assert str(index.iloc[0]["tracker"]) == "bytetrack"
     assert str(index.iloc[0]["model_task"]) == "pose"
     assert int(index.iloc[0]["n_keypoints"]) == ULTRALYTICS_KEYPOINTS
-    assert int(index.iloc[0]["n_frames"]) == 4
+    # What the runner reported reading: every frame of the one-hundred-frame
+    # clip, of which the predictions hold four.
+    assert int(index.iloc[0]["n_frames"]) == 100
     assert str(index.iloc[0]["model_id"]) != ""
 
 

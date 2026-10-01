@@ -8,6 +8,7 @@ binary: identity, markers, reuse, the conversion cache and the bridge.
 
 from __future__ import annotations
 
+import struct
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,13 @@ class FakeTrex:
 
     A user adds them to TREx's ``output_fields``. Each array has one value per
     frame.
+    """
+    pv_frames: int | None = None
+    """How many frames each conversion's ``.pv`` header records.
+
+    ``None`` records :attr:`npz_frames`, as though each export spanned every
+    frame that TREx read. A test sets it apart from :attr:`npz_frames` to state
+    what TREx read separately from what its exports hold.
     """
     write_settings: bool = True
     """Whether a conversion writes its ``.settings`` file, as TREx always does."""
@@ -91,7 +99,9 @@ class FakeTrex:
         )
         home.mkdir(parents=True, exist_ok=True)
         pv_path = home / f"{stem}.pv"
-        _ = pv_path.write_bytes(b"pv")
+        write_pv_header(
+            pv_path, self.npz_frames if self.pv_frames is None else self.pv_frames
+        )
         # TREx writes a settings file beside every conversion, and it is not
         # decorative: re-opening a `.pv` recovers only seven fields from the file
         # itself, so this is the only thing carrying the detection parameters
@@ -150,6 +160,27 @@ class FakeTrex:
             stdout="",
             stderr="",
         )
+
+
+def write_pv_header(path: Path, frames: int, *, version: int = 15) -> None:
+    """Write the header of a ``.pv`` that records *frames* frames, and nothing after it.
+
+    The fields and their order are those of ``Header::write`` in TREx's
+    ``Application/src/ProcessedVideo/pv.cpp`` for *version*, which each version
+    extends. An older *version* writes what that version's reader expects.
+    """
+    header = bytearray(f"PV{version}".encode() + b"\0")
+    if version >= 14:
+        header += b"gray\0"
+    else:
+        header += bytes([1] if version < 12 else [1, 0])
+    header += struct.pack("<HH", 64, 48)
+    if version >= 3:
+        header += struct.pack("<4H", 0, 0, 8000, 8000)
+    if version >= 15:
+        header += struct.pack("<qq", -1, -1) + b"clip.mp4\0"
+    header += struct.pack("<BIQQ", 4, frames, 0, 0) + b"clip\0"
+    _ = path.write_bytes(bytes(header))
 
 
 def install_fake_trex(

@@ -953,6 +953,8 @@ def test_measure_tracks_is_a_dry_run_by_default(dataset: tuple[Path, Dataset]) -
 
     assert payload["applied"] is False
     assert payload["frame_extents_measured"] == 2
+    # The fixture's rows name no producer, so no tool's read is rebuilt.
+    assert (payload["media_frames_measured"], payload["frames_read_measured"]) == (0, 0)
     from mosaic.core.pipeline.tracks_index import read_frame_extents
 
     assert read_frame_extents(ds) == {}, "a dry run must not write"
@@ -992,6 +994,7 @@ def test_measure_tracks_names_a_frame_axis_that_is_not_its_media(
         std_format="trex_v2",
         n_rows=12,
         media_frames=20,
+        frames_read=18,
     )
     # The fixture's hand-written rows carry no run_id, so drop them: an
     # unlabelled row and a labelled one for the same entry is a resolution
@@ -1006,7 +1009,7 @@ def test_measure_tracks_names_a_frame_axis_that_is_not_its_media(
             "run_id": "v1",
             "group": "g",
             "sequence": "s1",
-            "tracked_frames": 12,
+            "frames_read": 18,
             "media_frames": 20,
         }
     ]

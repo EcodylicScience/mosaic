@@ -500,9 +500,11 @@ def needs_join(paths: Sequence[Path], facts: Sequence[MediaFacts]) -> bool:
     a marginal session.
 
     ``False`` for one clip, which is its own timeline, and for an imgstore
-    sequence. The store reader reads the stores natively and compares their
-    rates with the same tolerance, and ``export-joined`` does not join stores,
-    so stores whose rates differ beyond it are refused, by the trackers and the
+    sequence. ``export-joined`` does not join stores, and the store reader reads
+    them natively. It compares their rates by the stores' own rule
+    (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`), a relative
+    difference, because a store's rate is estimated from its timestamps. Stores
+    that the rule finds at two rates are refused by it, by the trackers and the
     inference ops before they start and by the reader.
     """
     # Local: `uniformity` reaches `core.pipeline.media_index`, and this module is

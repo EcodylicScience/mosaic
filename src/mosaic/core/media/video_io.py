@@ -24,6 +24,7 @@ from mosaic_media.io import SeekIndex
 from mosaic_media.io import VideoReader
 
 from .read_target import ReadTarget, verified_read_facts
+from .store_rate import store_rate_mismatch
 
 # Downscale filter for candidate-feature frames. Read at call time so it stays
 # monkeypatchable. INTER_AREA is the area-averaging filter suited to downscaling
@@ -440,16 +441,13 @@ class _ImgStoreMultiReader:
         self._closed: bool = False
         self._current_cap: Optional[SupportsSeekRead] = None
 
-        if isinstance(video_paths, (str, Path)):
-            video_paths = [Path(video_paths)]
-        else:
-            video_paths = [Path(p) for p in video_paths]
-        if not video_paths:
+        paths = entry_paths(video_paths)
+        if not paths:
             raise ValueError("At least one video path is required.")
 
         self._segments: list[VideoSegment] = []
         self._seg_starts: list[int] = []  # for bisect lookup
-        self._build_segments(video_paths)
+        self._build_segments(paths)
 
         self._current_seg_idx: int = 0
         self._current_local_frame: int = 0
@@ -473,29 +471,35 @@ class _ImgStoreMultiReader:
             self._seg_starts.append(cumulative)
             cumulative += meta.frame_count
 
-        # The plain multi-video reader's check, with its tolerance. A store's
-        # rate is measured from its timestamps, so two stores recorded at one
-        # rate differ in the last digits, and exact equality would refuse them.
-        # Stores cannot be joined, so a store sequence refused here cannot be
-        # read another way.
-        mismatch = uniform_properties(
+        # The plain multi-video reader's geometry check, asked with one rate
+        # substituted, and the stores' own rate rule. A store's rate is measured
+        # from its timestamps, so one rate measured twice differs in the last
+        # digits, by an amount that does not grow with the store. Stores cannot be
+        # joined, so a store sequence refused here cannot be read another way,
+        # and every consumer refuses it first by the same rule.
+        geometry = uniform_properties(
             [
                 MeasuredVideoProperties(
-                    fps=segment.fps,
+                    fps=1.0,
                     width=segment.width,
                     height=segment.height,
                     frame_count=segment.frame_count,
-                    duration=segment.frame_count / segment.fps
-                    if segment.fps > 0
-                    else 0.0,
+                    duration=float(segment.frame_count),
                 )
                 for segment in self._segments
             ]
         )
-        if mismatch is not None:
+        if geometry is not None:
             message = (
-                f"property mismatch across sequence: {mismatch.field} "
-                f"{mismatch.first} vs {mismatch.other}"
+                f"property mismatch across sequence: {geometry.field} "
+                f"{geometry.first} vs {geometry.other}"
+            )
+            raise ValueError(message)
+        other = store_rate_mismatch([segment.fps for segment in self._segments])
+        if other is not None:
+            message = (
+                f"property mismatch across sequence: fps {self._segments[0].fps} "
+                f"vs {self._segments[other].fps}"
             )
             raise ValueError(message)
 
@@ -668,11 +672,7 @@ def open_multi_video_reader(
         is_imgstore,
     )  # local: breaks the video_io <-> imgstore_io cycle
 
-    paths = (
-        [Path(video_paths)]
-        if isinstance(video_paths, (str, Path))
-        else [Path(p) for p in video_paths]
-    )
+    paths = entry_paths(video_paths)
     stores = [is_imgstore(p) for p in paths]
     if any(stores) and not all(stores):
         raise ValueError("mixed video-plus-imgstore sequences are not supported")

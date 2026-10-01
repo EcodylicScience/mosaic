@@ -382,8 +382,8 @@ def _variant_records(
     converted variant records no media composition and so never drifts here,
     which is right: it opened no video.
 
-    ``extra["frame_axis_mismatch"]`` names the entries whose table does not span
-    as many frames as its media -- what a joined conversion leaves behind. It
+    ``extra["frame_axis_mismatch"]`` names the entries whose tool read another
+    number of frames than their media holds, as TRex's under-count leaves them. It
     rides in ``extra`` rather than in ``status`` deliberately: the status set is
     five closed members crossing the CLI and mosaic-api's wire, and this is a
     measurement two cells apart rather than a state of the artifact. The table is

@@ -47,9 +47,11 @@ from mosaic.tracking.common.toolenv import (
 )
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     EpochEvent,
+    InferResponse,
     ProbeRequest,
     ProbeResponse,
     ProgressEvent,
+    TrackResponse,
 )
 
 if TYPE_CHECKING:
@@ -471,6 +473,21 @@ def training_activity(
     return on_line
 
 
+def reported_frames_read(
+    response: Path, model: type[TrackResponse] | type[InferResponse]
+) -> int | None:
+    """Return how many frames the runner reported reading in *response*, or ``None``.
+
+    The runner writes its response beside the predictions it publishes, and the
+    response stays until its phase runs again. ``None`` when the file is gone or
+    does not hold a *model*.
+    """
+    try:
+        return model.model_validate_json(response.read_text()).n_frames
+    except (OSError, ValidationError):
+        return None
+
+
 __all__ = [
     "POLO_BOOTSTRAP",
     "POLO_ENV",
@@ -487,6 +504,7 @@ __all__ = [
     "progress_activity",
     "refuse_unloadable_model",
     "reported_epoch",
+    "reported_frames_read",
     "reported_progress",
     "run_runner",
     "runner_invocation",

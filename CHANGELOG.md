@@ -8,6 +8,37 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: the frame-axis check compares the frames each tool read
+
+**The tracks index gains a `frames_read` cell, and the frame-axis comparison
+reads it instead of a table's last frame.** A table's last frame is the last
+frame an animal was seen in, so a recording that ended with nobody in view read
+as a short axis. `frame_axis_mismatches()`, the bridge's `frame_axis_mismatch`
+run-log event and `mosaic measure-tracks` now compare how many frames the tool
+read with `media_frames`, the frames it should have read. `media_frames` is now
+recorded for every run that read its whole entry, one clip included, and for a
+media variant that keeps every source frame. No identifier moves and no table
+changes.
+
+Three names moved with the meaning: the run-log event's `tracked` field is
+`read`, `FrameAxisMismatch.tracked` is `read`, and the `tracked_frames` key of
+`mosaic measure-tracks --json` is `frames_read`. That command also reports
+`frames_read_measured`.
+
+**A TREx table now reports a small mismatch.** TREx reads each file it opens two
+frames short at its end, measured as 58 frames of a 60-frame clip, and the check
+now sees it on a single clip and on a join. Frames lost at the end move no frame
+of the table.
+
+A row written before this change has no `frames_read`, and is not compared until
+`mosaic measure-tracks --apply` fills it from what its run left on disk: the
+`.pv` of a TREx conversion, the response the Ultralytics runner wrote for the
+tracker and for `infer-pose` and `infer-points`, or a Lightning Pose table.
+SLEAP and `infer-localizer` leave nothing that tells, so their older tables are
+no longer compared. An earlier `measure-tracks --apply` filled `media_frames`
+for runs under a frame window and for converted tables too, and those cells are
+not cleared.
+
 ## Unreleased: inference tables are timed in seconds and numbered by source frame
 
 **`infer-pose` and `infer-points` re-address from `0.3` to `0.4`, and

@@ -49,6 +49,7 @@ from mosaic.core.pipeline.markers import (
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.tracking_roots import tracking_root_default
+from mosaic.core.pipeline.tracks_axis import register_frames_read_reader
 from mosaic.core.pipeline.tracks_identity import (
     infer_variant_payload,
     tracks_run_id,
@@ -85,7 +86,10 @@ from mosaic.tracking.common.tool_input import (
     entry_tool_input,
     refuse_undecodable_codec,
 )
-from mosaic.tracking.common.ultralytics_env import progress_activity
+from mosaic.tracking.common.ultralytics_env import (
+    progress_activity,
+    reported_frames_read,
+)
 from mosaic.tracking.model_refs import (
     model_kind_for,
     observed_model_source,
@@ -180,9 +184,14 @@ class VideoPredictions:
 
     ``frame`` without a row is a result, from a video in which the model did not
     detect anything, and its empty table is published.
+
+    ``frames_read`` is how many frames the model read, which the table cannot say:
+    a frame without a detection has no row. ``None`` when the runner does not
+    report it.
     """
 
     frame: pd.DataFrame
+    frames_read: int | None
     published_path: Path | None = None
 
 
@@ -405,6 +414,7 @@ def _bridge_df_to_tracks(
     model_pt: Path,
     timing: MediaFacts,
     axis: EntryAxis,
+    frames_read: int | None,
 ) -> BridgeCounts:
     """Publish an inference DataFrame as a standardized ``tracks/`` parquet.
 
@@ -447,6 +457,8 @@ def _bridge_df_to_tracks(
             the clips that the localizer read. Its frame rate times the table.
         axis: What the model read of the entry's media, which places the table
             on the entry's axes.
+        frames_read: How many frames the model read, or ``None`` when its runner
+            does not report it.
 
     Returns:
         Counts of the published table, which are ``(0, 0)`` for an empty one.
@@ -474,6 +486,7 @@ def _bridge_df_to_tracks(
         source=seq_dir,
         consumed=[*consumed_media, model_pt],
         axis=axis,
+        frames_read=frames_read,
         # Strict here alone. Every *tracker* write path validates leniently,
         # because a missing required column is merely an incomplete table, and
         # whether that should still be true is a separate question with a wider
@@ -657,12 +670,15 @@ def _inference_entry(
 def _refuse_unbuilt(
     kind: str, unbuilt: Sequence[JoinedExportMissingError | StoreExportMissingError]
 ) -> None:
-    """Raise one refusal naming every entry whose join or store export is missing.
+    """Raise one refusal naming every entry whose join or store export cannot be read.
 
-    Building either is an op of its own, run once per entry, so the refusal names
-    each entry with its command, before any model is loaded. A single entry's
-    error is raised as it is. Several of one kind are raised as that kind, and a
-    mix as ``FileNotFoundError``, the base that both share.
+    Such an entry lacks its store export or its join, holds two current joins of
+    its clips, or has a clip without the content identity that names a join. Each
+    has its own remedy, an op run once per entry or a choice only the user can
+    make, so the refusal names each entry with what to do, before any model is
+    loaded. A single entry's error is raised as it is. Several of one kind are
+    raised as that kind, and a mix as ``FileNotFoundError``, the base that both
+    share.
 
     Raises:
         JoinedExportMissingError: If every entry lacks a join.
@@ -675,9 +691,8 @@ def _refuse_unbuilt(
         raise unbuilt[0]
     reasons = "\n".join(str(error) for error in unbuilt)
     message = (
-        f"[{kind}] {len(unbuilt)} entries need a file built before the model can "
-        f"read them, and no model was run. Each is named below with the command "
-        f"that builds its file:\n{reasons}"
+        f"[{kind}] {len(unbuilt)} entries cannot be read yet, and no model was "
+        f"run. Each is named below with what to do:\n{reasons}"
     )
     kinds = {type(error) for error in unbuilt}
     if kinds == {JoinedExportMissingError}:
@@ -740,7 +755,7 @@ def _run_inference_op(
     # Entries whose variant could not be read, by key. Each is recorded as
     # failed here, and counts as attempted and lost below.
     unresolved: dict[str, Entry] = {}
-    # Entries whose join or store export has not been built. They fail the run
+    # Entries whose join or store export cannot be read. They fail the run
     # together, before any model runs.
     unbuilt: list[JoinedExportMissingError | StoreExportMissingError] = []
     kept = one_camera_per_entry(kind, media_scope)
@@ -901,6 +916,7 @@ def _run_inference_op(
                             model_pt=model.path,
                             timing=item.facts[0],
                             axis=item.axis,
+                            frames_read=outcome.frames_read,
                         ),
                         kind=kind,
                     )
@@ -1076,7 +1092,9 @@ class InferPoseOp(Op[PoseInferParams]):
                     on_output=item.on_output,
                 )
                 return VideoPredictions(
-                    pd.read_parquet(outcome.predictions_path), outcome.predictions_path
+                    pd.read_parquet(outcome.predictions_path),
+                    outcome.n_frames,
+                    outcome.predictions_path,
                 )
 
             return per_video
@@ -1188,7 +1206,9 @@ class InferPointsOp(Op[PointInferParams]):
                     on_output=item.on_output,
                 )
                 return VideoPredictions(
-                    pd.read_parquet(outcome.predictions_path), outcome.predictions_path
+                    pd.read_parquet(outcome.predictions_path),
+                    outcome.n_frames,
+                    outcome.predictions_path,
                 )
 
             return per_video
@@ -1266,7 +1286,10 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
                     facts=item.facts,
                 )
                 # No published path: this one ran here, so the scaffold writes it.
-                return VideoPredictions(localizer_detections_to_dataframe(detections))
+                # One element per frame read, detections or none.
+                return VideoPredictions(
+                    localizer_detections_to_dataframe(detections), len(detections)
+                )
 
             return per_video
 
@@ -1282,3 +1305,24 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
             opens_by_path=False,
             per_video_for=per_video_for,
         )
+
+
+def _frames_read_of_table(
+    _ds: Dataset, _table: Path, source: Path | None
+) -> int | None:
+    """Return how many frames the runner read for a table, from its response.
+
+    *source* is the entry's prediction directory, where the runner of
+    ``infer-pose`` and ``infer-points`` wrote its predictions and its response.
+    The localizer runs in this process and writes no response.
+    """
+    from mosaic.tracking.external.runner.ultralytics_protocol import InferResponse
+    from mosaic.tracking.pose_training.ultralytics_infer import INFER_RESPONSE_NAME
+
+    if source is None:
+        return None
+    return reported_frames_read(source / INFER_RESPONSE_NAME, InferResponse)
+
+
+register_frames_read_reader(InferPoseOp.kind, _frames_read_of_table)
+register_frames_read_reader(InferPointsOp.kind, _frames_read_of_table)

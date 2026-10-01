@@ -231,6 +231,10 @@ def _bridge_analysis_h5_to_tracks(
         source=h5_path.parent,
         consumed=[h5_path, *consumed_media, *model_checkpoints],
         axis=axis,
+        # Unknown. The analysis export's frame axis runs to the video's length
+        # when sleap-io can measure the video, and otherwise to the last frame
+        # with an instance, and the file does not say which.
+        frames_read=None,
     )
 
 

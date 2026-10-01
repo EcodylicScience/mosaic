@@ -1206,9 +1206,17 @@ def test_a_row_written_without_a_media_length_records_a_blank(tmp_path: Path) ->
     assert frame_axis_mismatches(ds) == ()
 
 
-def _entry_row(ds: Dataset, sequence: str, *, tracked: int, media: int | None) -> None:
+def _entry_row(
+    ds: Dataset,
+    sequence: str,
+    *,
+    read: int | None,
+    media: int | None,
+    rows: int = 10,
+) -> None:
+    """One row of a table of *rows* frames, whose tool read *read* of *media*."""
     out = ds.get_root("tracks") / f"g__{sequence}.parquet"
-    _write_table(out, start=0, n_frames=tracked)
+    _write_table(out, start=0, n_frames=rows)
     write_tracks_row(
         ds,
         run_id="v1",
@@ -1217,19 +1225,27 @@ def _entry_row(ds: Dataset, sequence: str, *, tracked: int, media: int | None) -
         out_path=out,
         producer="trex",
         std_format="trex_v2",
-        n_rows=tracked,
+        n_rows=rows,
         media_frames=media,
+        frames_read=read,
     )
 
 
 def test_a_mismatch_is_reported_with_both_numbers(tmp_path: Path) -> None:
     ds = _dataset(tmp_path)
-    _entry_row(ds, "short", tracked=1782, media=1800)
-    _entry_row(ds, "exact", tracked=300, media=300)
+    _entry_row(ds, "short", read=1782, media=1800)
+    _entry_row(ds, "exact", read=300, media=300)
     (found,) = frame_axis_mismatches(ds)
     assert (found.group, found.sequence) == ("g", "short")
-    assert (found.tracked, found.media) == (1782, 1800)
+    assert (found.read, found.media) == (1782, 1800)
     assert found.run_id == "v1", "the variant is named, not resolved away"
+
+
+def test_a_table_that_ends_early_is_not_a_mismatch(tmp_path: Path) -> None:
+    """The table's extent is not compared: its last row is the last sighting."""
+    ds = _dataset(tmp_path)
+    _entry_row(ds, "left-early", read=1800, media=1800, rows=1200)
+    assert frame_axis_mismatches(ds) == ()
 
 
 def test_an_overshoot_is_reported_too(tmp_path: Path) -> None:
@@ -1241,15 +1257,16 @@ def test_an_overshoot_is_reported_too(tmp_path: Path) -> None:
     by dropping the row.
     """
     ds = _dataset(tmp_path)
-    _entry_row(ds, "long", tracked=302, media=300)
+    _entry_row(ds, "long", read=302, media=300)
     (found,) = frame_axis_mismatches(ds)
-    assert (found.tracked, found.media) == (302, 300)
+    assert (found.read, found.media) == (302, 300)
 
 
 def test_a_mismatch_needs_both_cells(tmp_path: Path) -> None:
     """The honest-empty rule: one measurement cannot disagree with an absent one."""
     ds = _dataset(tmp_path)
-    _entry_row(ds, "unmeasured", tracked=10, media=None)
+    _entry_row(ds, "unmeasured", read=10, media=None)
+    _entry_row(ds, "unread", read=None, media=300)
     assert frame_axis_mismatches(ds) == ()
 
 
@@ -1260,10 +1277,14 @@ def test_backfill_media_frames_fills_only_the_rows_that_lack_one(
 
     It is the only route for such a table: a published parquet cannot be
     re-bridged without re-tracking, because the bridge serves an existing table
-    before it converts anything.
+    before it converts anything. The row's variant records that its run read the
+    whole entry, and the tracking ops are registered to read that record.
     """
+    from mosaic.core.pipeline.tracks_identity import write_tracks_variant
+    from mosaic.tracking import register_ops
     from tests.helpers import MediaClip, write_media_index
 
+    register_ops()
     ds = _dataset(
         tmp_path,
         roots={
@@ -1283,11 +1304,23 @@ def test_backfill_media_frames_fills_only_the_rows_that_lack_one(
             MediaClip(sequence="s1", filename="c1.mp4", video_order=1, frame_count=300),
         ],
     )
-    out = ds.get_root("tracks") / "s1.parquet"
-    _write_table(out, start=0, n_frames=596)
-    pd.DataFrame(
-        [{"group": "", "sequence": "s1", "abs_path": str(out), "n_rows": 596}]
-    ).to_csv(tracks_index_path(ds), index=False)
+    variant = "trex.0.2-0123456789"
+    _ = write_tracks_variant(
+        ds.get_root("tracks"), variant, "trex", "0.2", {"analysis_range": None}
+    )
+    out = ds.get_root("tracks") / variant / "s1.parquet"
+    _write_table(out, start=0, n_frames=580)
+    write_tracks_row(
+        ds,
+        run_id=variant,
+        group="",
+        sequence="s1",
+        out_path=out,
+        producer="trex",
+        std_format="trex_v2",
+        n_rows=580,
+        frames_read=596,
+    )
 
     assert read_media_frames(read_tracks_index(ds).iloc[0]) is None
 
@@ -1305,65 +1338,17 @@ def test_backfill_media_frames_fills_only_the_rows_that_lack_one(
 
     # Which is the whole point: the comparison is now answerable for a table
     # that was published before anyone was recording the second number.
-    _ = backfill_frame_extents(ds)
     (found,) = frame_axis_mismatches(ds)
     assert (found.group, found.sequence) == ("", "s1")
-    assert (found.tracked, found.media) == (596, 600)
-
-
-@pytest.mark.parametrize(
-    ("producer", "measured"),
-    [("litpose", 600), ("trex", 600), ("convert-x", 600), ("sleap", None)],
-)
-def test_backfill_media_frames_follows_the_producer_s_declaration(
-    tmp_path: Path, producer: str, measured: int | None
-) -> None:
-    """A table with rows only at detections ends at its last one, and stays blank.
-
-    A converted table's producer is not a tracking root, and is measured.
-    """
-    from tests.helpers import MediaClip, write_media_index
-
-    ds = _dataset(
-        tmp_path,
-        roots={
-            "tracks": str(tmp_path / "tracks"),
-            "tracks_raw": str(tmp_path / "tracks_raw"),
-            "media_raw": str(tmp_path / "media_raw"),
-            "media": str(tmp_path / "media"),
-        },
-    )
-    write_media_index(
-        ds,
-        [
-            MediaClip(sequence="s1", filename="c0.mp4", video_order=0, frame_count=300),
-            MediaClip(sequence="s1", filename="c1.mp4", video_order=1, frame_count=300),
-        ],
-    )
-    out = ds.get_root("tracks") / "s1.parquet"
-    _write_table(out, start=0, n_frames=596)
-    write_tracks_row(
-        ds,
-        run_id="",
-        group="",
-        sequence="s1",
-        out_path=out,
-        producer=producer,
-        std_format="mosaic_v1",
-        n_rows=596,
-    )
-
-    _ = backfill_media_frames(ds)
-
-    assert read_media_frames(read_tracks_index(ds).iloc[0]) == measured
+    assert (found.read, found.media) == (596, 600)
 
 
 def _variant_row(
-    ds: Dataset, run_id: str, sequence: str, *, tracked: int, media: int
+    ds: Dataset, run_id: str, sequence: str, *, read: int, media: int
 ) -> None:
     out = ds.get_root("tracks") / run_id / f"g__{sequence}.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
-    _write_table(out, start=0, n_frames=tracked)
+    _write_table(out, start=0, n_frames=read)
     write_tracks_row(
         ds,
         run_id=run_id,
@@ -1372,8 +1357,9 @@ def _variant_row(
         out_path=out,
         producer="trex",
         std_format="trex_v2",
-        n_rows=tracked,
+        n_rows=read,
         media_frames=media,
+        frames_read=read,
     )
 
 
@@ -1388,25 +1374,25 @@ def test_two_variants_of_one_entry_are_both_reported(tmp_path: Path) -> None:
     which tables are wrong.
     """
     ds = _dataset(tmp_path)
-    _variant_row(ds, "trex.0.1-old", "s1", tracked=1782, media=1800)
-    _variant_row(ds, "trex.0.2-new", "s1", tracked=1798, media=1800)
+    _variant_row(ds, "trex.0.1-old", "s1", read=1782, media=1800)
+    _variant_row(ds, "trex.0.2-new", "s1", read=1798, media=1800)
 
     found = frame_axis_mismatches(ds)
 
-    assert [(m.run_id, m.tracked) for m in found] == [
+    assert [(m.run_id, m.read) for m in found] == [
         ("trex.0.1-old", 1782),
         ("trex.0.2-new", 1798),
     ]
     # And naming one variant answers for that one alone.
     (only,) = frame_axis_mismatches(ds, "trex.0.2-new")
-    assert only.tracked == 1798
+    assert only.read == 1798
 
 
 def test_select_variant_rows_still_refuses_to_choose(tmp_path: Path) -> None:
     """The refusal this deliberately routes around is unchanged elsewhere."""
     ds = _dataset(tmp_path)
-    _variant_row(ds, "trex.0.1-old", "s1", tracked=1782, media=1800)
-    _variant_row(ds, "trex.0.2-new", "s1", tracked=1798, media=1800)
+    _variant_row(ds, "trex.0.1-old", "s1", read=1782, media=1800)
+    _variant_row(ds, "trex.0.2-new", "s1", read=1798, media=1800)
 
     with pytest.raises(ValueError, match="no defensible default"):
         _ = select_variant_rows(read_tracks_index(ds))

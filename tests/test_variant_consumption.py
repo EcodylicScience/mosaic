@@ -47,6 +47,7 @@ from mosaic.core.pipeline.tracks_index import (
     backfill_media_frames,
     read_media_frames,
     read_tracks_index,
+    tracks_index_path,
 )
 from mosaic.core.pipeline.tracking_roots import ToolCodecError
 from mosaic.core.scope import Scope
@@ -885,10 +886,11 @@ def test_an_inference_rerun_on_unchanged_media_republishes_the_same_table(
 def test_backfill_leaves_a_variant_table_media_frames_blank(
     tmp_path: Path, litpose_model: Path, litpose: FakeLitpose
 ) -> None:
-    """A variant table does not span its source axis, and its length stays blank.
+    """A trimmed variant's table does not span its source axis, and stays blank.
 
-    The entry-media table beside it is filled as before. Lightning Pose writes a
-    row at every frame it reads, so its tables are the ones measured.
+    The bridge left it blank, and the backfill rebuilds the variant's placement
+    and leaves it blank too. The entry-media table beside it is filled with its
+    entry's length, as the bridge filled it.
     """
     ds = _dataset(tmp_path)
     variant = _variant(ds, codec="h264")
@@ -898,6 +900,9 @@ def test_backfill_leaves_a_variant_table_media_frames_blank(
     on_entry = litpose_runs.run_litpose(
         ds, LitposeParams(model_path=str(litpose_model))
     )
+    index = tracks_index_path(ds)
+    rows = pd.read_csv(index, dtype=str, keep_default_na=False)
+    rows.assign(media_frames="").to_csv(index, index=False)
 
     filled = backfill_media_frames(ds)
 
@@ -907,6 +912,59 @@ def test_backfill_leaves_a_variant_table_media_frames_blank(
         for _, row in _tracks(ds, "litpose").iterrows()
     }
     assert recorded == {on_variant: None, on_entry: _FRAMES}
+
+
+@pytest.mark.parametrize("kind", ["infer-pose", "infer-localizer"])
+def test_an_inference_marker_records_the_variant_file_s_identity(
+    tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """The identity a tracker's work item gives the variant, not the entry's.
+
+    The variant's file is what the model read, so it is what a changed input
+    would show in.
+    """
+    _ = _BLIND_WHEN_BRIGHT[kind](monkeypatch)
+    ds = _dataset(tmp_path)
+    variant = _variant(ds)
+
+    run_id = _infer(ds, kind, model, variant)
+
+    marker = read_phase_marker(infer_run_root(ds, kind, run_id) / "s", "infer")
+    assert marker is not None
+    scope = ds.resolve_media_scope(None)
+    (item,) = build_work_items(ds, scope, kind="trex", media=variant).items
+    (plain,) = build_work_items(ds, scope, kind="trex").items
+    assert marker.source_uid == item.source_uid
+    assert marker.source_uid != plain.source_uid
+
+
+def test_a_variant_that_keeps_every_frame_records_its_source_length(
+    tmp_path: Path, model: Path, ultralytics: FakeUltralytics
+) -> None:
+    """Cropped and not trimmed, so the tool should have read every source frame.
+
+    The bridge records the source's length, and the backfill, rebuilding the
+    variant's placement, records the same.
+    """
+    ds = _dataset(tmp_path)
+    variant = run_op(
+        ds,
+        "preprocess",
+        {"steps": _STEPS[:1], "codec": "av1"},
+        scope=Scope(entries=[("", "s")]),
+    )
+
+    _ = ultralytics_runs.run_ultralytics(ds, _ultralytics_params(model, variant))
+
+    (row,) = [row for _, row in _tracks(ds, "ultralytics").iterrows()]
+    assert read_media_frames(row) == _FRAMES
+    assert ds.frame_axis_mismatches() == ()
+    index = tracks_index_path(ds)
+    rows = pd.read_csv(index, dtype=str, keep_default_na=False)
+    rows.assign(media_frames="").to_csv(index, index=False)
+    _ = backfill_media_frames(ds)
+    (row,) = [row for _, row in _tracks(ds, "ultralytics").iterrows()]
+    assert read_media_frames(row) == _FRAMES
 
 
 def _predictions(ds: Dataset, run_id: str) -> Path:

@@ -31,15 +31,17 @@ from mosaic.core.pipeline.markers import (
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.ops import OPS
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
+from mosaic.tracking.common.scope import TrackerWorkItem
 from mosaic.tracking.trex.conversion_cache import (
     CONVERSION_STEM,
     CONVERT_KIND,
     conversion_run_id,
+    conversion_slot,
 )
 from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.trex.version import TREX_VERSION
 
-from tests.helpers import FakeTrex, install_fake_trex, write_media_index
+from tests.helpers import FakeTrex, clip_facts, install_fake_trex, write_media_index
 
 # --- fixtures --------------------------------------------------------------
 
@@ -102,6 +104,49 @@ def test_the_slot_name_carries_the_source_and_the_recipe(
     slot = slot_of(ds)
     assert slot.name == "uid-vid1"
     assert slot.parent.name.startswith(f"{CONVERT_KIND}.{TREX_VERSION}-")
+
+
+@pytest.mark.parametrize(
+    ("uids", "slot"),
+    [
+        (("uid-a",), "uid-a"),
+        (("uid-a", "uid-b"), "bc66dddc23"),
+        (("uid-b", "uid-a"), "4ed357de65"),
+        (("uid-a", "uid-b", "uid-c"), "69075df7d1"),
+        (("uid-a", ""), None),
+        (("",), None),
+        ((), None),
+    ],
+    ids=[
+        "one",
+        "two",
+        "two-reordered",
+        "three",
+        "one-unidentified",
+        "none",
+        "no-facts",
+    ],
+)
+def test_a_slot_is_addressed_as_it_was(
+    ds: Dataset, uids: tuple[str, ...], slot: str | None
+) -> None:
+    """Pinned, because a moved address converts every cached session again.
+
+    One clip is its own identity, several are their ordered composition, and a
+    clip without an identity leaves nothing to address a slot by.
+    """
+    item = TrackerWorkItem(
+        group="",
+        sequence="s",
+        key="s",
+        video_paths=tuple(Path(f"c{order}.mp4") for order in range(max(len(uids), 1))),
+        fps=30.0,
+        source_facts=tuple(clip_facts(video_uuid=uid) for uid in uids),
+    )
+
+    found = conversion_slot(ds, {}, item)
+
+    assert (None if found is None else found.name) == slot
 
 
 def test_a_track_only_change_reuses_the_conversion(ds: Dataset, trex: FakeTrex) -> None:

@@ -46,7 +46,9 @@ from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.entry_claim import claim, phase_activity
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.placement import EntryAxis
+from mosaic.core.pipeline.tracks_axis import register_frames_read_reader
 from mosaic.core.pipeline.tracks_index import media_composition_for
+from mosaic.core.pipeline.types.data_config import COLUMNS
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
     publish_or_record,
@@ -217,7 +219,35 @@ def _bridge_csv_to_tracks(
         source=csv_path.parent,
         consumed=[csv_path, *consumed_media, *model_files],
         axis=axis,
+        frames_read=_frames_predicted(df),
     )
+
+
+def _frames_predicted(table: pd.DataFrame) -> int | None:
+    """Return how many frames Lightning Pose read to make *table*, or ``None``.
+
+    Lightning Pose predicts every frame it reads, animal in view or not, so the
+    distinct frames of its table are the frames it read. A frame mapped from a
+    media variant is still one frame. ``None`` for a table without frames.
+    """
+    if COLUMNS.frame_col not in table.columns or table.empty:
+        return None
+    return int(table[COLUMNS.frame_col].nunique())
+
+
+def _frames_read_of_table(
+    _ds: Dataset, table: Path, _source: Path | None
+) -> int | None:
+    """Return how many frames Lightning Pose read for a published *table*.
+
+    Its frames are one per frame read (:func:`_frames_predicted`). ``None`` when
+    the table cannot be read.
+    """
+    try:
+        frames = pd.read_parquet(table, columns=[COLUMNS.frame_col])
+    except (OSError, ValueError, KeyError):
+        return None
+    return _frames_predicted(frames)
 
 
 # --- Public entry point ---------------------------------------------------
@@ -450,6 +480,7 @@ def list_litpose_runs(ds: Dataset) -> pd.DataFrame:
 # Item 6.1: the reconciler opens this root's index through the registry, so
 # ``core`` never imports ``tracking`` to reach a row class.
 register_reconcilable_index(LITPOSE_KIND, litpose_index)
+register_frames_read_reader(LITPOSE_KIND, _frames_read_of_table)
 
 # The row class this root's index holds, so an inventory can ask about every
 # tracker generically. Registered rather than tabled in ``common``, which is

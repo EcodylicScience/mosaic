@@ -38,7 +38,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, cast, get_args
+from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, get_args
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -61,12 +61,12 @@ from mosaic.core.pipeline.index_csv import (
 from mosaic.core.pipeline.index_lock import index_lock
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
+from mosaic.core.pipeline.tracks_axis import recorded_axis, recorded_frames_read
 from mosaic.core.pipeline.tracks_identity import (
     names_model_by_path,
     read_tracks_variant,
     recorded_model_id,
     recorded_models,
-    tracks_variant_media,
 )
 from mosaic.core.pipeline.sequence_index import (
     SourceRoot,
@@ -81,18 +81,20 @@ __all__ = [
     "DROPPED_LEGACY_COLUMNS",
     "TRACKS_INDEX_COLUMNS",
     "TRACKS_INDEX_PATH_COLUMNS",
+    "CellRow",
     "TracksIndexRow",
     "TracksMadeWith",
     "TracksMadeWithEntry",
     "adopt_legacy_columns",
+    "backfill_frames_read",
     "backfill_media_frames",
     "consumed_composition_for",
     "consumed_roots_for",
     "encode_source_roots",
     "FrameAxisMismatch",
     "frame_axis_mismatches",
-    "resolved_media_frames",
     "legacy_view",
+    "read_frames_read",
     "read_media_frames",
     "read_tracks_index",
     "select_variant_rows",
@@ -180,21 +182,31 @@ class TracksIndexRow(RunIndexRowBase):
     substituting a value that reads as a measurement. :func:`read_frame_extent`
     is the only reader; it parses, and returns ``None`` for a blank.
 
-    ``media_frames`` is how long the *media* axis was -- the number of frames
-    ``MultiVideoReader`` will hand a consumer that reads pixels at this table's
-    frames. Text, blank-is-unknown and read by :func:`read_media_frames`, under
-    exactly the rules above.
+    ``media_frames`` is how many frames the producer's tool should have read:
+    the entry's media, summed over its clips, when the run read the whole entry,
+    and the source's when it read a media variant that keeps every source frame
+    (:attr:`~mosaic.core.pipeline.placement.EntryAxis.media_frames`). Blank for
+    a run that read less on purpose, under a frame window or from a trimmed or
+    decimated variant, and for a table that no tool made from media: a
+    conversion, a resampling. Text, blank-is-unknown and read by
+    :func:`read_media_frames`, under exactly the rules above.
 
-    **It is a second measurement, not a second spelling of the first.** A
-    tracker's frame axis and its media's are two different things, and a joined
-    conversion is where they come apart: TRex under-counts every file it opens
-    and reads only as many frames as it counted, so a session's clips convert
-    into a ``.pv`` that drops the tail of each one. The result is a table whose
-    ``frame`` column is on the tracker's axis while every consumer reading
-    pixels is on the media's -- correct at the start of a sequence and
-    progressively wrong after each clip. Measured on a six-clip fixture: the
-    published table held 1,782 frames where the media held 1,800, and the offset
-    stepped by two at every boundary.
+    ``frames_read`` is how many frames the producer's tool did read for this
+    table, on the axis of the file it read: the frames of a TRex ``.pv``, the
+    frames a runner decoded. Text, blank-is-unknown and read by
+    :func:`read_frames_read`. It is passed by the producer, because only the tool
+    knows it, and it is not the table's extent: a table with rows only where an
+    animal was seen ends at the last sighting, however many frames the tool read
+    after it.
+
+    **The two come apart where a tool loses frames.** TRex under-counts every
+    file it opens and reads only as many frames as it counted, which was two
+    frames short of a 60-frame clip in a measured conversion. Handed a session's
+    clips, it dropped the tail of each one, and the table's ``frame`` column was
+    on the tracker's axis while every consumer reading pixels was on the
+    media's: correct at the start of a sequence and progressively wrong after
+    each clip. Measured on a six-clip fixture: 1,782 frames read where the media
+    held 1,800, the offset stepping by two at every boundary.
 
     Recording both is what makes that visible;
     :func:`frame_axis_mismatches` is the comparison. Deliberately *recorded and
@@ -218,6 +230,7 @@ class TracksIndexRow(RunIndexRowBase):
     frame_min: str = ""
     frame_max: str = ""
     media_frames: str = ""
+    frames_read: str = ""
 
 
 TRACKS_INDEX_COLUMNS: Final[list[str]] = [
@@ -231,6 +244,9 @@ _FRAME_MAX: Final = "frame_max"
 
 _MEDIA_FRAMES: Final = "media_frames"
 """The media-axis length cell, named once for the same reason."""
+
+_FRAMES_READ: Final = "frames_read"
+"""The cell of the frames the producer's tool read, named once for the same reason."""
 
 TRACKS_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("source_abs_path",)
 """Path-bearing columns beyond ``abs_path``.
@@ -851,7 +867,15 @@ def frame_extent(path: Path) -> tuple[int, int] | None:
     return int(frames.min()), int(frames.max())
 
 
-def read_frame_extent(row: "pd.Series[object]") -> tuple[int, int] | None:
+class CellRow(Protocol):
+    """One index row whose cells are read by column name, as a pandas row is."""
+
+    def get(self, key: str, /) -> object:
+        """Return the cell in column *key*, or ``None`` when the row has none."""
+        ...
+
+
+def read_frame_extent(row: CellRow) -> tuple[int, int] | None:
     """The recorded ``(frame_min, frame_max)`` of one index row, or ``None``.
 
     The only reader of those two cells, so the blank-is-unknown rule is applied
@@ -870,7 +894,7 @@ def read_frame_extent(row: "pd.Series[object]") -> tuple[int, int] | None:
         return None
 
 
-def read_media_frames(row: "pd.Series[object]") -> int | None:
+def read_media_frames(row: CellRow) -> int | None:
     """The recorded length of one row's media axis, or ``None`` when unknown.
 
     The only reader of the cell, so blank-is-unknown is applied once rather than
@@ -878,7 +902,22 @@ def read_media_frames(row: "pd.Series[object]") -> int | None:
     reason. ``None`` covers a legacy row, a producer that did not ask the
     question, and a value that will not parse.
     """
-    raw = text_cell(row.get(_MEDIA_FRAMES))
+    return _count_cell(row.get(_MEDIA_FRAMES))
+
+
+def read_frames_read(row: CellRow) -> int | None:
+    """The recorded number of frames one row's tool read, or ``None`` when unknown.
+
+    The only reader of the cell, under the rule :func:`read_media_frames` applies.
+    ``None`` covers a legacy row, a producer that cannot know the count, and a
+    value that will not parse.
+    """
+    return _count_cell(row.get(_FRAMES_READ))
+
+
+def _count_cell(value: object) -> int | None:
+    """Parse the count in one cell, or ``None`` for a blank or bad one."""
+    raw = text_cell(value)
     if not raw:
         return None
     try:
@@ -889,32 +928,34 @@ def read_media_frames(row: "pd.Series[object]") -> int | None:
 
 @dataclass(frozen=True, slots=True)
 class FrameAxisMismatch:
-    """One table whose frame axis is not the length of its media's.
+    """One table whose tool read another number of frames than its media holds.
 
     Carries the variant as well as the entry, because an entry legitimately
     holds several and they need not agree: re-tracking under a new recipe leaves
     the old table in place, and "which of these is off, and by how much" is the
     question being asked.
+
+    ``read`` is the row's ``frames_read`` and ``media`` its ``media_frames``.
     """
 
     run_id: str
     group: str
     sequence: str
-    tracked: int
+    read: int
     media: int
 
 
 def frame_axis_mismatches(
     ds: Dataset, run_id: str | None = None
 ) -> tuple[FrameAxisMismatch, ...]:
-    """Every recorded table whose frame axis is not as long as its media's.
+    """Every table whose tool read a different number of frames than its media holds.
 
-    The comparison the two measurements exist for. A tracker that joins a
-    session's clips can number fewer frames than the media holds -- TRex does,
-    dropping the tail of every clip -- and the result is a table whose ``frame``
-    column no longer addresses the video. Nothing else in the toolkit notices:
-    the table is schema-valid, its rows are dense, and every quantity computed
-    *inside* it is right.
+    The comparison the two measurements exist for. A tool can read fewer frames
+    than the media holds, as TRex does at the end of every file it opens. When
+    the frames it misses are not all at the end, the result is a table whose
+    ``frame`` column no longer addresses the video. Nothing else in the toolkit
+    notices: the table is schema-valid, and every quantity computed *inside* it
+    is right.
 
     **Rows are reported, never resolved between.** This deliberately does not go
     through :func:`select_variant_rows`, which refuses to choose between two
@@ -928,10 +969,11 @@ def frame_axis_mismatches(
     :func:`drifted_media_entries` follows. A blank on either side is the absence
     of an answer and never evidence of agreement or of disagreement.
 
-    ``tracked`` is ``frame_max + 1``, which is how many frames the axis spans
-    rather than how many carry rows. The two differ for a tracker that leaves
-    gaps, so this reports a *measurement* and not a verdict: a caller deciding
-    what to do has both numbers, the variant and the producer.
+    The table's own extent is not compared. ``frame_max`` is the last frame
+    carrying a row, not the last frame the tool read, so a recording that ends
+    with no animal in view would read as a short axis on every ordinary run.
+    This reports a *measurement* and not a verdict: a caller deciding what to do
+    has both numbers, the variant and the producer.
 
     An overshoot is reported too, and in the same shape. A container frame count
     that disagrees with what a tool decoded by a frame or two is mundane --
@@ -955,18 +997,17 @@ def frame_axis_mismatches(
         df = df[df["run_id"].astype(str) == run_id]
     found: list[FrameAxisMismatch] = []
     for _, series in df.iterrows():
-        extent = read_frame_extent(series)
+        read = read_frames_read(series)
         media = read_media_frames(series)
-        if extent is None or media is None:
+        if read is None or media is None:
             continue
-        tracked = extent[1] + 1
-        if tracked != media:
+        if read != media:
             found.append(
                 FrameAxisMismatch(
                     run_id=str(series.get("run_id", "")),
                     group=str(series["group"]),
                     sequence=str(series["sequence"]),
-                    tracked=tracked,
+                    read=read,
                     media=media,
                 )
             )
@@ -1047,34 +1088,32 @@ def backfill_frame_extents(ds: Dataset, *, dry_run: bool = False) -> pd.DataFram
 def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> pd.DataFrame:
     """Record the media-axis length of every row that lacks one.
 
-    The migration path for tables published before the column existed, and for
-    most trackers the only way an already-tracked session can be compared
-    against its media at all: a tracker run records the number at bridge time,
-    and the bridge serves an existing parquet before it converts anything. TRex
-    alone can re-bridge a table without re-tracking, through a republish.
+    The migration path for tables published before the column existed. A run
+    records the number as it publishes, and the bridge serves an existing parquet
+    before it converts anything, so a table already on disk gains the cell here
+    or not at all, unless TRex publishes it again through a republish. The
+    comparison needs the frames the tool read as well, which
+    :func:`backfill_frames_read` fills.
 
     **Its own pass, not an extension of :func:`backfill_frame_extents`.** The two
     read different sources of truth: that one opens a column of each parquet,
     this one asks the media index what the entry resolves to. Folding them
     together would put one function's failure mode on the other's.
 
+    **A row is filled by the rule a producer fills it by.** The axis of what the
+    row's run read is rebuilt from the variant's record and the media index
+    (:func:`~mosaic.core.pipeline.tracks_axis.recorded_axis`), and its
+    :attr:`~mosaic.core.pipeline.placement.EntryAxis.media_frames` is recorded.
+    So a row stays blank where its producer would have left it blank: a run under
+    a frame window, a run on a trimmed or decimated media variant, a converted or
+    resampled table, which no tool made from media. A row whose run cannot be
+    established stays blank too, including every tracker row when the tracking
+    ops are not registered (``mosaic.tracking.register_ops``).
+
     What it records is what the entry's media holds **today**. For a row whose
     ``consumed_media_composition`` has since drifted that is not the number the
     run read, which is honest rather than wrong -- the drift cell is what says
     so, and inventing the old number is not available to anyone.
-
-    A row whose tracks variant was made from a media variant is left blank. The
-    tool read one file, and a trimmed or decimated variant's table does not span
-    its source axis. The producer records the source axis when the variant kept
-    every source frame (:attr:`~mosaic.core.pipeline.placement.EntryAxis.media_frames`),
-    and this pass does not read the variant's placement to tell. A blank cell
-    keeps such a run out of the frame-axis comparison.
-
-    A row from a tracker or inference op whose table has rows only where it
-    detected something is left blank too, as its producer left it
-    (:attr:`~mosaic.core.pipeline.tracking_roots.TrackingRoot.rows_every_frame`).
-    Such a table ends at its last detection. A converted table's producer is not
-    a tracking root and declares nothing, and its row is measured.
 
     Locked for the whole read-measure-write, and a dry run holds the lock too,
     for the reasons :func:`backfill_frame_extents` gives.
@@ -1089,22 +1128,17 @@ def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> pd.DataFrame
         if df.empty:
             return df.iloc[0:0]
         filled: list[int] = []
-        tracks_root = ds.get_root("tracks")
-        media_of: dict[str, str] = {}
         for position, row in df.iterrows():
             if read_media_frames(row) is not None:
                 continue
-            producer = TRACKING_ROOTS.get(str(row["producer"]))
-            if producer is not None and not producer.rows_every_frame:
-                continue
-            variant = str(row["run_id"])
-            if variant not in media_of:
-                media_of[variant] = (
-                    tracks_variant_media(tracks_root, variant) if variant else ""
-                )
-            if media_of[variant]:
-                continue
-            total = resolved_media_frames(ds, str(row["group"]), str(row["sequence"]))
+            axis = recorded_axis(
+                ds,
+                producer=str(row["producer"]),
+                variant=str(row["run_id"]),
+                group=str(row["group"]),
+                sequence=str(row["sequence"]),
+            )
+            total = None if axis is None else axis.media_frames
             if total is None:
                 continue
             df.at[position, _MEDIA_FRAMES] = str(total)
@@ -1115,30 +1149,49 @@ def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> pd.DataFrame
         return measured
 
 
-def resolved_media_frames(ds: Dataset, group: str, sequence: str) -> int | None:
-    """How many frames one entry's media holds, summed over its clips.
+def backfill_frames_read(ds: Dataset, *, dry_run: bool = False) -> pd.DataFrame:
+    """Record how many frames the tool read, on every row that lacks the count.
 
-    Routed the way a *producer* resolves the entry, so the answer is the length
-    of the axis a consumer reading pixels will see -- a transcode derivative
-    where the routing verdict sends one, the originals otherwise.
+    The count is the tool's, so only something the run left on disk can tell it
+    after the fact (:func:`~mosaic.core.pipeline.tracks_axis.recorded_frames_read`):
+    the ``.pv`` a TRex conversion wrote, the response a runner wrote beside its
+    predictions, or a Lightning Pose table, which has a row at every frame read.
+    A row stays blank when its producer leaves nothing that tells, as SLEAP and
+    the localizer do, when what it left is gone, and when the producer's module
+    is not imported (``mosaic.tracking.register_ops`` imports them all).
 
-    ``None`` when the question cannot be answered: no media resolves, or a clip
-    reports no frame count. A partial sum would be a plausible number recorded
-    nowhere, which is the one thing a blank-is-unknown cell exists to avoid.
+    Its own pass, for the reason :func:`backfill_media_frames` is: it reads
+    another source of truth. Locked for the whole read-measure-write, and a dry
+    run holds the lock too, for the reasons :func:`backfill_frame_extents` gives.
+
+    Returns the rows it filled (or would fill), with the measured values.
     """
-    try:
-        resolved = ds.resolve_media(group, sequence)
-    except (FileNotFoundError, KeyError, ValueError):
-        return None
-    if not resolved.facts:
-        return None
-    total = 0
-    for clip in resolved.facts:
-        count = int(clip.frame_count)
-        if count <= 0:
-            return None
-        total += count
-    return total
+    path = tracks_index_path(ds)
+    if not path.exists():
+        return empty_tracks_frame()
+    with index_lock(path):
+        df = read_tracks_index(ds)
+        if df.empty:
+            return df.iloc[0:0]
+        filled: list[int] = []
+        for position, row in df.iterrows():
+            if read_frames_read(row) is not None:
+                continue
+            source = text_cell(row.get("source_abs_path"))
+            read = recorded_frames_read(
+                ds,
+                producer=str(row["producer"]),
+                table=ds.resolve_path(str(row["abs_path"])),
+                source=ds.resolve_path(source) if source else None,
+            )
+            if read is None:
+                continue
+            df.at[position, _FRAMES_READ] = str(read)
+            filled.append(cast("int", position))
+        measured = df.loc[filled].reset_index(drop=True)
+        if filled and not dry_run:
+            atomic_write(path, lambda p: df.to_csv(p, index=False))
+        return measured
 
 
 def write_tracks_row(
@@ -1157,6 +1210,7 @@ def write_tracks_row(
     consumed_source_roots: Sequence[str] = (),
     records_media: bool = False,
     media_frames: int | None = None,
+    frames_read: int | None = None,
 ) -> None:
     """Record one standardized-tracks table. The only way to write this index.
 
@@ -1185,6 +1239,8 @@ def write_tracks_row(
     the honest cell for a producer that never asked -- a conversion reading an
     uploaded table, or a run deliberately covering less than the whole video.
     :func:`frame_axis_mismatches` compares it against the extent measured above.
+    ``frames_read`` is how many frames the producer's tool read, passed for the
+    same reason, and ``None`` records a blank for a producer that cannot know it.
 
     ``records_media`` says whether this producer read video. A **bridge** did --
     a tracker or an inference run opens the entry's media -- so its row records
@@ -1232,6 +1288,7 @@ def write_tracks_row(
         frame_min="" if extent is None else str(extent[0]),
         frame_max="" if extent is None else str(extent[1]),
         media_frames="" if media_frames is None else str(int(media_frames)),
+        frames_read="" if frames_read is None else str(int(frames_read)),
     )
     tracks_index(tracks_index_path(ds)).append([row])
 

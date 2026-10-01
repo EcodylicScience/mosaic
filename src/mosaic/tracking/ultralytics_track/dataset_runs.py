@@ -39,6 +39,7 @@ from mosaic.core.pipeline.markers import clear_phase_marker
 from mosaic.core.pipeline.media_input import media_identity_terms
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.placement import EntryAxis
+from mosaic.core.pipeline.tracks_axis import register_frames_read_reader
 from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
@@ -65,8 +66,14 @@ from mosaic.tracking.common.index import (
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_input
-from mosaic.tracking.common.ultralytics_env import progress_activity
-from mosaic.tracking.external.runner.ultralytics_protocol import TrackRequest
+from mosaic.tracking.common.ultralytics_env import (
+    progress_activity,
+    reported_frames_read,
+)
+from mosaic.tracking.external.runner.ultralytics_protocol import (
+    TrackRequest,
+    TrackResponse,
+)
 from mosaic.tracking.model_refs import (
     model_kind_for,
     observed_model_source,
@@ -86,6 +93,7 @@ from mosaic.tracking.ultralytics_track.version import (
 )
 
 from .run import (
+    TRACK_RESPONSE_NAME,
     UnsupportedTaskError,
     effective_tracker_table,
     probe_ultralytics,
@@ -228,11 +236,13 @@ def _bridge_predictions_to_tracks(
     fps: float,
     overwrite: bool,
     axis: EntryAxis,
+    frames_read: int | None,
 ) -> BridgeCounts | None:
     """Convert one entry's raw predictions into its standardized table.
 
     *consumed_media* are the media files that the table derives from, and *axis*
-    places the table on the entry's axes.
+    places the table on the entry's axes. *frames_read* is how many frames the
+    runner reported reading, or ``None`` when it did not run in this attempt.
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
     from mosaic.core.track_library.ultralytics_tracks import UltralyticsTracksParams
@@ -269,6 +279,7 @@ def _bridge_predictions_to_tracks(
         source=predictions_path.parent,
         consumed=[predictions_path, *consumed_media, *model_files],
         axis=axis,
+        frames_read=frames_read,
     )
 
 
@@ -508,6 +519,7 @@ def run_ultralytics(
             out_path = result.predictions_path
             n_frames, n_ids = result.n_frames, result.n_ids
             n_keypoints = _keypoint_count_of(out_path)
+            frames_read: int | None = result.n_frames
             recomputed = True
         else:
             marker, out_path = reusable
@@ -516,6 +528,10 @@ def run_ultralytics(
             n_ids = counts.n_ids if counts is not None else 0
             n_frames = _frame_count_of(out_path)
             n_keypoints = _keypoint_count_of(out_path)
+            # Only the runner knows how many frames it read, and its response is
+            # beside the predictions until the phase runs again. The predictions
+            # hold the frames with a detection, which is not that count.
+            frames_read = _frames_read_of_table(job.ds, out_path, work_dir)
             recomputed = False
 
         row = UltralyticsIndexRow(
@@ -563,6 +579,7 @@ def run_ultralytics(
                 fps=item.fps,
                 overwrite=job.overwrite or recomputed,
                 axis=item.entry_axis(windowed=bool(params.frame_window)),
+                frames_read=frames_read,
             ),
             kind=ULTRALYTICS_KIND,
         )
@@ -593,7 +610,21 @@ def list_ultralytics_runs(ds: Dataset) -> pd.DataFrame:
     return list_tracker_runs(ds, ULTRALYTICS_KIND, UltralyticsIndexRow)
 
 
+def _frames_read_of_table(
+    _ds: Dataset, _table: Path, source: Path | None
+) -> int | None:
+    """Return how many frames the runner read for a table, from its response.
+
+    *source* is the entry's working directory, where the runner wrote its
+    predictions and its response.
+    """
+    if source is None:
+        return None
+    return reported_frames_read(source / TRACK_RESPONSE_NAME, TrackResponse)
+
+
 register_reconcilable_index(ULTRALYTICS_KIND, ultralytics_index)
+register_frames_read_reader(ULTRALYTICS_KIND, _frames_read_of_table)
 
 # The row class this root's index holds, so an inventory can ask about every
 # tracker generically. Registered rather than tabled in ``common``, which is

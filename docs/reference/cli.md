@@ -450,33 +450,39 @@ $ mosaic sweep-tracking [OPTIONS]
 
 Measure the frame axis of this dataset's tracks tables, and their media's.
 
-Two passes over ``tracks/index.csv``, both filling only the cells that are
-blank and neither touching a table:
+Three passes over ``tracks/index.csv``, each filling only the cells that are
+blank and none touching a table:
 
 * the **frame extent** (``frame_min`` / ``frame_max``), read from each
   parquet. Blank refuses ``overlap_frames``, so a dataset converted before
   the columns existed has to be measured once before it can use overlap.
-* the **media length** (``media_frames``), read from the media index by the
-  same routing a producer resolves the entry through. A table tracked on a
-  media variant keeps a blank cell. Its frames are the variant's selection
-  of the source, and the source's length is not the axis that it spans. So
-  does a table from a producer that writes rows only where it detects
-  something, which ends at its last detection however much it read.
+* the **media length** (``media_frames``): how many frames the tool should
+  have read, from the media index, by the rule a producer records it by. A
+  table whose run read less on purpose keeps a blank cell: a frame window,
+  or a trimmed or decimated media variant. So does a converted or resampled
+  table, which no tool made from media.
+* the **frames read** (``frames_read``): how many frames the tool did read,
+  from what the run left on disk. That is the ``.pv`` of a TRex
+  conversion, the response the Ultralytics runner wrote beside its
+  predictions, or a Lightning Pose table, which has a row at every frame
+  read. A SLEAP or ``infer-localizer`` table, or one whose run's files are
+  gone, keeps a blank cell.
 
-Then it reports every table where the two disagree, naming its variant:
-an entry re-tracked under a new recipe holds the old table too, and each is
-reported for itself rather than one being resolved to. A tracker that joins a
-session's clips can number fewer frames than the media holds -- TRex does,
-dropping the tail of every clip -- and the result is a table whose ``frame``
-column no longer addresses the video: correct at the start of a sequence and
-progressively wrong through it. Everything computed *inside* such a table is
-unaffected; what breaks is anything that reads a pixel at a track frame.
+Then it reports every table whose tool read another number of frames than
+its media holds (``frames_read`` against ``media_frames``), naming its
+variant: an entry re-tracked under a new recipe holds the old table too, and
+each is reported for itself rather than one being resolved to. A tool can
+read fewer frames than the media holds, as TRex does at the end of every
+file it opens. Where the missing frames are not all at the end, the table's
+``frame`` column no longer addresses the video. Everything computed
+*inside* such a table is unaffected; what breaks is anything that reads a
+pixel at a track frame.
 
 This is the one way to ask that question of any table already on disk. A run
-records the comparison as it publishes, and only TRex can re-bridge a
-published table without re-tracking (``mosaic track trex --republish``), so
-for the other trackers a session tracked before that existed can be measured
-and never re-reported.
+records both cells and the comparison as it publishes, and only TRex can
+publish a table again without tracking again (``mosaic track trex
+--republish``). A table published before the cells existed is measured here,
+and reported here, or not at all.
 
 Dry-run by default. A disagreement it finds is a measurement, not a verdict:
 nothing is rewritten and no table is refused.
