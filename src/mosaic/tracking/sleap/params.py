@@ -164,14 +164,16 @@ class SleapParams(TrackerOpParams, MediaInputParams):
         Declared(_DEVICE_DESCRIPTION),
     ] = None
 
-    @field_validator("device")
+    @field_validator("device", check_fields=False)
     @classmethod
     def _device_is_usable(cls, value: str | None) -> str | None:
         """Refuse a device sleap-nn cannot be given, at submit time.
 
         :func:`~mosaic.tracking.sleap.run.sleap_track_device_args` is the
         translation, and calling it here refuses an unusable spelling before the
-        job is scheduled rather than on a GPU node once it runs.
+        job is scheduled rather than on a GPU node once it runs. ``check_fields``
+        is off so that a consumer that sets the device itself can declare a
+        subclass without the field, as the training ops' validators allow.
         """
         _ = sleap_track_device_args(value)
         return value

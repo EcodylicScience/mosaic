@@ -105,8 +105,11 @@ class MediaInputParams(Params):
         identifier. A recipe step that refers to another step's variant is checked
         with a stand-in identifier in place of a preprocess run id. The refusal
         then describes ``media`` as the output of a preprocess step.
+
+        A subclass without ``media`` names no variant. A control plane that sets
+        ``media`` itself removes the field from the model that it exposes.
         """
-        if not self.media:
+        if "media" not in type(self).model_fields or not self.media:
             return self
         offending = self.frame_window
         if not offending:

@@ -1590,3 +1590,41 @@ def test_register_ops_populates_registry_in_a_fresh_interpreter():
         [sys.executable, "-c", script], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
+
+
+def _model_running_kinds() -> list[str]:
+    from mosaic.core.pipeline.ops import OPS
+    from mosaic.tracking import register_ops
+
+    register_ops()
+    return sorted(kind for kind, op in OPS.items() if op.model_reference is not None)
+
+
+@pytest.mark.parametrize("kind", _model_running_kinds())
+def test_a_consumer_can_own_a_trackers_model_and_execution_knobs(kind: str) -> None:
+    """A control plane sets the model and every execution knob of a tracker itself.
+
+    mosaic-api removes those fields from a subclass of the op's params and rebuilds
+    it. A validator naming a removed field without ``check_fields=False`` refuses
+    that rebuild, so every such field must leave the subclass buildable.
+    """
+    from pydantic import create_model
+
+    from mosaic.core.params import HashExclude
+    from mosaic.core.pipeline.ops import OPS
+
+    op = OPS[kind]
+    reference = op.model_reference
+    assert reference is not None
+    owned = {reference.field} | {
+        name
+        for name, field in op.Params.model_fields.items()
+        if any(isinstance(meta, HashExclude) for meta in field.metadata)
+    }
+
+    exposed = create_model(f"Exposed{op.Params.__name__}", __base__=op.Params)
+    for name in owned:
+        _ = exposed.model_fields.pop(name)
+    _ = exposed.model_rebuild(force=True)
+
+    assert not owned & set(exposed.model_validate({}).model_dump())
