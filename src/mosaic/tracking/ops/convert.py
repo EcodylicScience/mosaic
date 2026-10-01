@@ -294,7 +294,6 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
         make_polo_data_yaml(out, schema.names, schema.radii)
 
         idx = converted_dataset_index(model_index_path(ds, self.kind))
-        idx.ensure()
         idx.append(
             [
                 ConvertedDatasetIndexRow(

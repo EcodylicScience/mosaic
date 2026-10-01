@@ -395,7 +395,6 @@ def write_series_revision(
     key_root = root / key
 
     index = label_series_index(series_index_path(ds, spec.name))
-    index.ensure()
     with index_lock(index.path):
         committed = index.read_holding_lock()
         latest = latest_revision(committed, origin_uuid=origin_uuid, key=key)

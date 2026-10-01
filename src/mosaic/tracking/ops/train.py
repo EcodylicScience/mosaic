@@ -447,7 +447,6 @@ def finalize_training(
         base_origin=base_origin,
     )
     idx = trained_model_index(model_index_path(ds, kind))
-    idx.ensure()
     idx.append(
         [
             TrainedModelIndexRow(

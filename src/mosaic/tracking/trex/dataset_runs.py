@@ -748,7 +748,6 @@ def _record_conversion_row(
     )
     try:
         index = conversion_index(conversion_index_path(job.ds))
-        index.ensure()
         index.append([row])
         index.mark_finished(slot.parent.name)
     except OSError as exc:

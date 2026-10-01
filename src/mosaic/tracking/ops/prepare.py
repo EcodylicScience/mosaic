@@ -775,7 +775,6 @@ def _register(
     n_frames: int,
 ) -> str:
     """Record a finished preparation, naming what a trainer is to be handed."""
-    index.ensure()
     index.append(
         [
             PreparedDatasetIndexRow(

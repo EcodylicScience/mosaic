@@ -23,6 +23,7 @@ import tempfile
 import textwrap
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -604,10 +605,17 @@ class _Row(IndexRowBase):
     key: str
 
 
-def test_concurrent_index_appends_do_not_lose_rows(tmp_path: Path) -> None:
-    """Two writers whose reads interleave must not silently drop one's write."""
+@pytest.mark.parametrize("existing", [True, False], ids=["existing", "absent"])
+def test_concurrent_index_appends_do_not_lose_rows(
+    tmp_path: Path, existing: bool
+) -> None:
+    """Two writers whose reads interleave must not silently drop one's write.
+
+    Also run on an absent index, where the first write creates the file.
+    """
     index: IndexCSV[_Row] = IndexCSV(tmp_path / "index.csv", _Row)
-    index.ensure()
+    if existing:
+        index.ensure()
 
     ready = threading.Barrier(2)
 
@@ -642,8 +650,10 @@ path, name, barrier = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
 index = IndexCSV(path, Row)
 # Read the whole file first and only then append, which is the interleaving a
 # lock has to prevent -- without one, both writers compute a merged frame from
-# the same starting state and the second erases the first.
-_ = index.read()
+# the same starting state and the second erases the first. An absent index has
+# nothing to read, and the first write creates it.
+if path.exists():
+    _ = index.read()
 barrier.write_text("ready")
 while len(list(barrier.parent.glob("*.ready"))) < 2:
     pass
@@ -651,8 +661,9 @@ index.append([Row(abs_path=Path(name + ".parquet"), key=name)])
 """
 
 
+@pytest.mark.parametrize("existing", [True, False], ids=["existing", "absent"])
 def test_concurrent_index_appends_across_processes_do_not_lose_rows(
-    tmp_path: Path,
+    tmp_path: Path, existing: bool
 ) -> None:
     """The real contention is between processes, not threads.
 
@@ -663,7 +674,8 @@ def test_concurrent_index_appends_across_processes_do_not_lose_rows(
     """
     index_path = tmp_path / "index.csv"
     index: IndexCSV[_Row] = IndexCSV(index_path, _Row)
-    index.ensure()
+    if existing:
+        index.ensure()
 
     gate = tmp_path / "gate"
     gate.mkdir()
@@ -690,6 +702,78 @@ def test_concurrent_index_appends_across_processes_do_not_lose_rows(
     with index_path.open(newline="") as handle:
         written = {row["key"] for row in csv.DictReader(handle)}
     assert written == {"first", "second"}, f"a concurrent append was lost: {written}"
+
+
+_RIVAL_APPEND = """
+import sys
+from pathlib import Path
+from dataclasses import dataclass
+from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
+from mosaic.core.pipeline.index_lock import IndexLockTimeout, index_lock
+
+@dataclass(frozen=True)
+class Row(IndexRowBase):
+    key: str
+
+path = Path(sys.argv[1])
+# One line tells the writer that started this one when to resume: "waiting" when
+# the lock is held, else "appended" once the row is written.
+try:
+    with index_lock(path, timeout=0):
+        pass
+except IndexLockTimeout:
+    print("waiting", flush=True)
+IndexCSV(path, Row).append([Row(abs_path=Path("rival.parquet"), key="rival")])
+print("appended", flush=True)
+"""
+
+
+@pytest.mark.parametrize(
+    "ensure_first", [False, True], ids=["append", "ensure-then-append"]
+)
+def test_a_first_write_cannot_erase_a_racing_writers_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ensure_first: bool
+) -> None:
+    """Creating an index is a write, and the lock serializes it with the rest.
+
+    The first write to a fresh index starts a rival writer in another process
+    and resumes on the rival's first line: it is waiting for the lock, or it has
+    appended. The interleaving therefore does not depend on timing. A creation
+    outside the lock lets the rival append inside that window, and the header
+    written afterwards replaces the rival's row.
+    """
+    index_path = tmp_path / "index.csv"
+    index: IndexCSV[_Row] = IndexCSV(index_path, _Row)
+    rivals: list[subprocess.Popen[str]] = []
+
+    def write_after_a_rival(
+        final_path: Path, write_fn: Callable[[Path], object]
+    ) -> None:
+        if not rivals:
+            rival = subprocess.Popen(
+                [sys.executable, "-c", _RIVAL_APPEND, str(index_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            rivals.append(rival)
+            assert rival.stdout is not None
+            _ = rival.stdout.readline()
+        atomic_write(final_path, write_fn)
+
+    monkeypatch.setattr(
+        "mosaic.core.pipeline.index_csv.atomic_write", write_after_a_rival
+    )
+    if ensure_first:
+        index.ensure()
+    index.append([_Row(abs_path=Path("first.parquet"), key="first")])
+
+    (rival,) = rivals
+    _, err = rival.communicate(timeout=60)
+    assert rival.returncode == 0, err[-800:]
+    with index_path.open(newline="") as handle:
+        written = {row["key"] for row in csv.DictReader(handle)}
+    assert written == {"first", "rival"}, f"the first write erased a row: {written}"
 
 
 def test_a_failed_lock_acquisition_raises_rather_than_writing_unlocked(
@@ -833,14 +917,15 @@ def test_the_lock_file_is_created_once_and_never_removed(tmp_path: Path) -> None
 
 
 def test_acquiring_still_creates_the_index_empty(tmp_path: Path) -> None:
-    """The side effect three readers are written around.
+    """The side effect that index readers and writers are built around.
 
-    ``IndexCSV.append`` and ``mark_finished`` order ``ensure()`` or an existence
-    check before the lock precisely because acquiring materializes the file;
+    ``mark_finished`` checks for the index before the lock because acquiring
+    creates the file. ``IndexCSV`` reads a zero-byte index as empty, and
+    ``IndexCSV.ensure`` writes its header under the lock.
     ``load_media_index_frame`` and ``Dataset._read_media_index`` read a zero-byte
     index as empty rather than raising. Moving the lock off the index inode
-    removed the ``O_CREAT`` that produced it, so it is now deliberate -- and a
-    deliberate side effect three modules depend on has to be pinned.
+    removed the ``O_CREAT`` that produced it. The side effect is now deliberate,
+    and this test pins it.
     """
     index_path = tmp_path / "nested" / "index.csv"
     assert not index_path.exists()

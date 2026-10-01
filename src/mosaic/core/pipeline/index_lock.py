@@ -132,13 +132,15 @@ def _open_lock_fd(resolved: Path) -> int:
     Two side effects, both load-bearing.
 
     **The index is created empty if it is absent.** That was a by-product of
-    locking the index inode with ``O_CREAT``, and three call sites are written
-    around it: ``IndexCSV.append`` and ``mark_finished`` order ``ensure()`` or an
-    existence check *before* acquiring because of it, ``load_media_index_frame``
-    reads a zero-byte index as an empty frame because of it, and
-    ``Dataset._read_media_index`` uses ``csv.DictReader`` rather than pandas
-    inside a locked block for the same reason. Moving the lock off the index
-    removed the mechanism, so the side effect is now deliberate and is kept.
+    locking the index inode with ``O_CREAT``, and index readers and writers are
+    built around it. ``IndexCSV`` reads a zero-byte index as an empty frame, and
+    ``IndexCSV.ensure`` writes the header to one under the lock.
+    ``mark_finished`` checks for the index before acquiring, so that a run that
+    recorded no rows does not create one. ``load_media_index_frame`` reads a
+    zero-byte index as an empty frame, and ``Dataset._read_media_index`` uses
+    ``csv.DictReader`` rather than pandas inside a locked block for the same
+    reason. Moving the lock off the index removed the mechanism. The side effect
+    is now deliberate and is kept.
 
     **The sidecar is created if absent and never removed** -- not here, not on
     release, not by a later cleanup. Unlinking a held lock file is the same
@@ -201,8 +203,8 @@ class IndexLockTimeout(RuntimeError):
 # Thread-level serialization, keyed by resolved path. The OS file lock is held
 # per open file handle, so two threads in one process would each open their own
 # fd and neither would block on the other -- the file lock alone is not
-# thread-safe. RLock also makes nesting safe: `IndexCSV.append` calls `ensure`,
-# and both take the lock.
+# thread-safe. RLock also makes nesting safe: a caller that has acquired the
+# lock may call `IndexCSV.ensure`, which acquires it again.
 _thread_locks: dict[Path, threading.RLock] = {}
 _registry_guard = threading.Lock()
 
@@ -241,11 +243,11 @@ def index_lock(path: Path, timeout: float = DEFAULT_TIMEOUT_S) -> Generator[None
     Args:
         path: The index file. **Created empty if absent** -- a by-product of the
             old design that callers depend on and that is now kept on purpose
-            (see ``_open_lock_fd``). Callers that distinguish "missing" from
-            "empty" must therefore check existence, or call ``ensure()``,
-            *before* acquiring -- both ``IndexCSV.append`` and ``mark_finished``
-            do, and getting that order wrong leaves a headerless file that reads
-            back as ``EmptyDataError``.
+            (see ``_open_lock_fd``). A caller that distinguishes "missing" from
+            "empty" checks existence before acquiring, as ``mark_finished``
+            does. ``IndexCSV`` reads the zero-byte file as an empty index, and
+            ``IndexCSV.ensure`` writes its header under the lock. A plain
+            ``pd.read_csv`` of the zero-byte file raises ``EmptyDataError``.
         timeout: Seconds to wait before giving up.
 
     Raises:

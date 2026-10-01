@@ -226,13 +226,32 @@ class IndexCSV(Generic[RowT]):
         except pd.errors.EmptyDataError:
             return self._empty_frame()
 
+    def _has_header(self) -> bool:
+        """Whether the index file has content: a header, and possibly rows.
+
+        Returns ``False`` for a missing file.
+        """
+        try:
+            return self.path.stat().st_size > 0
+        except FileNotFoundError:
+            return False
+
     def ensure(self) -> None:
-        """Create the CSV with column headers if it doesn't exist."""
-        if self.path.exists():
+        """Write the column header to an absent or zero-byte index.
+
+        An index with content is left untouched. The check and the write take
+        ``index_lock``, which serializes them with every other write to the
+        index. The header therefore never replaces a row that another writer
+        appended after the check. A zero-byte index is the file that
+        ``index_lock`` creates when it locks an absent one.
+        """
+        if self._has_header():
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        df = self._empty_frame()
-        atomic_write(self.path, lambda p: df.to_csv(p, index=False))
+        with index_lock(self.path):
+            if self._has_header():
+                return
+            df = self._empty_frame()
+            atomic_write(self.path, lambda p: df.to_csv(p, index=False))
 
     def read(
         self,
@@ -321,14 +340,11 @@ class IndexCSV(Generic[RowT]):
 
         Rows are dataclass instances. pandas handles them
         natively in pd.DataFrame().
+
+        A first append creates the index. The lock creates it empty, the read
+        returns the empty frame for a zero-byte file, and the write includes the
+        header.
         """
-        # ensure() runs *before* the lock, not inside it. Acquiring the lock
-        # creates the index if it is absent, so on a first write it materializes
-        # a zero-byte file -- after which ensure()'s "already exists" early return
-        # would leave it headerless and the read below would raise
-        # EmptyDataError. ensure() is itself atomic and idempotent, so two
-        # writers racing here both write the same header harmlessly.
-        self.ensure()
         with index_lock(self.path):
             self._append_locked(rows)
 
@@ -341,9 +357,6 @@ class IndexCSV(Generic[RowT]):
         decide, act and append inside one locked block, or a second writer's row
         lands between its read and its append. Taking the lock twice is not an
         option: it is not re-entrant.
-
-        The caller must have called :meth:`ensure` before taking the lock, for
-        the reason :meth:`append` gives.
         """
         self._append_locked(rows)
 
@@ -420,11 +433,8 @@ class IndexCSV(Generic[RowT]):
         that has gone away must leave, and dedup keys can only ever add. A caller
         that wants to add one row still calls ``append``.
 
-        ``ensure()`` runs before the lock for the reason ``append`` gives: the
-        lock's file creation would otherwise materialize a zero-byte file that
-        ``ensure`` then declines to header. The frame is projected onto the
-        schema, so column order is fixed and an extra key is dropped rather than
-        widening the file.
+        The frame is projected onto the schema, so column order is fixed and an
+        extra key is dropped rather than widening the file.
 
         **What the lock here does and does not buy**, because the difference
         matters and is easy to assume away. It serializes the writes, so the file
@@ -443,7 +453,6 @@ class IndexCSV(Generic[RowT]):
         comparison, and the next write heals it. Anything needing a merge under
         contention wants ``append``.
         """
-        self.ensure()
         with index_lock(self.path):
             frame = pd.DataFrame(rows) if rows else self._empty_frame()
             projected = frame[list(self.schema)]
@@ -636,8 +645,8 @@ class IndexCSV(Generic[RowT]):
     def mark_finished(self, run_id: str) -> None:
         """Set finished_at to now on all rows matching run_id where it is empty."""
         self._assert_run_index()
-        # Checked before the lock, which would otherwise create the file (see
-        # the note in append) and turn a missing index into an EmptyDataError.
+        # Checked before the lock, which would otherwise create an empty index
+        # for a run that recorded no rows.
         if not self.path.exists():
             return
         with index_lock(self.path):

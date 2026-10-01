@@ -66,6 +66,23 @@ class TestEnsure:
         idx.ensure()
         assert deep.exists()
 
+    def test_headers_the_zero_byte_file_the_lock_creates(self, tmp_csv: Path) -> None:
+        """``index_lock`` creates an absent index empty, and ``ensure`` headers it."""
+        tmp_csv.touch()
+        idx = IndexCSV(tmp_csv, SampleRow)
+        idx.ensure()
+        assert list(pd.read_csv(tmp_csv, nrows=0).columns) == list(idx.schema)
+
+    def test_leaves_an_index_with_content_untouched(
+        self, tmp_csv: Path, tmp_path: Path
+    ) -> None:
+        """A rewrite replaces the inode even when the bytes come out the same."""
+        idx = IndexCSV(tmp_csv, SampleRow)
+        idx.append([_sample_row(tmp_path, name="kept")])
+        inode, content = tmp_csv.stat().st_ino, tmp_csv.read_bytes()
+        idx.ensure()
+        assert (tmp_csv.stat().st_ino, tmp_csv.read_bytes()) == (inode, content)
+
 
 class TestAppend:
     def test_append_creates_if_missing(self, tmp_csv: Path, tmp_path: Path) -> None:
