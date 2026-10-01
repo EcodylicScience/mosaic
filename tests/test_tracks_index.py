@@ -1311,6 +1311,53 @@ def test_backfill_media_frames_fills_only_the_rows_that_lack_one(
     assert (found.tracked, found.media) == (596, 600)
 
 
+@pytest.mark.parametrize(
+    ("producer", "measured"),
+    [("litpose", 600), ("trex", 600), ("convert-x", 600), ("sleap", None)],
+)
+def test_backfill_media_frames_follows_the_producer_s_declaration(
+    tmp_path: Path, producer: str, measured: int | None
+) -> None:
+    """A table with rows only at detections ends at its last one, and stays blank.
+
+    A converted table's producer is not a tracking root, and is measured.
+    """
+    from tests.helpers import MediaClip, write_media_index
+
+    ds = _dataset(
+        tmp_path,
+        roots={
+            "tracks": str(tmp_path / "tracks"),
+            "tracks_raw": str(tmp_path / "tracks_raw"),
+            "media_raw": str(tmp_path / "media_raw"),
+            "media": str(tmp_path / "media"),
+        },
+    )
+    write_media_index(
+        ds,
+        [
+            MediaClip(sequence="s1", filename="c0.mp4", video_order=0, frame_count=300),
+            MediaClip(sequence="s1", filename="c1.mp4", video_order=1, frame_count=300),
+        ],
+    )
+    out = ds.get_root("tracks") / "s1.parquet"
+    _write_table(out, start=0, n_frames=596)
+    write_tracks_row(
+        ds,
+        run_id="",
+        group="",
+        sequence="s1",
+        out_path=out,
+        producer=producer,
+        std_format="mosaic_v1",
+        n_rows=596,
+    )
+
+    _ = backfill_media_frames(ds)
+
+    assert read_media_frames(read_tracks_index(ds).iloc[0]) == measured
+
+
 def _variant_row(
     ds: Dataset, run_id: str, sequence: str, *, tracked: int, media: int
 ) -> None:

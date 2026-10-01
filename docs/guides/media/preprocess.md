@@ -170,11 +170,6 @@ from the original recording. Overlays, egocentric crops, `scale-to-cm` and the
 `filter_start_frame` and `filter_end_frame` of `run_feature` work on these tracks as on
 tracks of the original video, and tracks from two variants of one entry line up.
 
-An `infer-*` table from a variant that trims, decimates, sets `fps` or covers an
-entry of several clips records `time` in seconds. An `infer-*` table from the
-original video keeps its frame-valued `time`, a known limit until the inference ops
-number their frames on the video's frame axis.
-
 A column that describes the variant image itself, such as TREx's distance to the
 image border, cannot be mapped back. It is dropped, and the run-log records the
 dropped columns for each entry.

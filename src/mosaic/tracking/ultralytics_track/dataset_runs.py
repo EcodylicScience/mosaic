@@ -38,7 +38,7 @@ from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext
 from mosaic.core.pipeline.markers import clear_phase_marker
 from mosaic.core.pipeline.media_input import media_identity_terms
 from mosaic.core.pipeline.op_identity import op_run_id
-from mosaic.core.pipeline.placement import SourceMapping
+from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
@@ -227,13 +227,12 @@ def _bridge_predictions_to_tracks(
     model_files: Sequence[Path],
     fps: float,
     overwrite: bool,
-    mapping: SourceMapping | None,
+    axis: EntryAxis,
 ) -> BridgeCounts | None:
     """Convert one entry's raw predictions into its standardized table.
 
-    *consumed_media* are the media files that the table derives from, and
-    *mapping* maps a table tracked on a media variant into source space, or is
-    ``None``.
+    *consumed_media* are the media files that the table derives from, and *axis*
+    places the table on the entry's axes.
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
     from mosaic.core.track_library.ultralytics_tracks import UltralyticsTracksParams
@@ -269,7 +268,7 @@ def _bridge_predictions_to_tracks(
         producer_run_id=producer_run_id,
         source=predictions_path.parent,
         consumed=[predictions_path, *consumed_media, *model_files],
-        mapping=mapping,
+        axis=axis,
     )
 
 
@@ -565,7 +564,7 @@ def run_ultralytics(
                 model_files=list(resolved_model.significant_files),
                 fps=item.fps,
                 overwrite=job.overwrite or recomputed,
-                mapping=item.source_mapping,
+                axis=item.entry_axis(windowed=bool(params.frame_window)),
             ),
             kind=ULTRALYTICS_KIND,
         )

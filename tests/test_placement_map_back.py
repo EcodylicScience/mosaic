@@ -58,6 +58,7 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
 )
 from mosaic.tracking.pose_training.localizer_inference import (
     LocalizerDetection,
+    LocalizerFrame,
     localizer_detections_to_dataframe,
 )
 
@@ -607,6 +608,8 @@ def test_every_localizer_column_is_classified() -> None:
         "confidence": 0.9,
         "class_id": 0,
     }
-    table = localizer_detections_to_dataframe([[detection], [detection]])
+    table = localizer_detections_to_dataframe(
+        [LocalizerFrame(0, (detection,)), LocalizerFrame(1, (detection,))]
+    )
 
     _assert_maps(_bridged(table), labels=("class_name",))

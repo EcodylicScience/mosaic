@@ -49,6 +49,7 @@ from tests.helpers import (
     ULTRALYTICS_KEYPOINTS,
     FakeUltralytics,
     install_fake_ultralytics,
+    point_at_a_store,
     register_trained_model,
     scope_over,
     ultralytics_probe_response,
@@ -387,29 +388,11 @@ def test_a_re_run_clears_the_previous_attempts_request_and_response(
 # --- what path the tool is given, and what facts describe it ----------------
 
 
-def _point_at_a_store(ds: Dataset, sequence: str, store: Path) -> Path:
-    """Re-address *sequence*'s indexed media at an imgstore recording.
-
-    A store is a directory holding a ``metadata.yaml`` naming ``__store``, which
-    is all ``is_imgstore`` reads -- so this needs no chunk files and no imgstore
-    package.
-    """
-    store.mkdir(parents=True, exist_ok=True)
-    _ = (store / "metadata.yaml").write_text("__store: {}\n")
-    index_path = ds.get_root(ds.resolve_media_root()) / "index.csv"
-    table = pd.read_csv(index_path)
-    is_entry = table["sequence"] == sequence
-    table.loc[is_entry, "abs_path"] = ds.relative_to_root(store)
-    table.loc[is_entry, "media_type"] = "imgstore"
-    table.to_csv(index_path, index=False)
-    return store
-
-
 def test_a_store_with_no_export_refuses_and_names_the_command(
     ds: Dataset, model: Path, ultralytics: FakeUltralytics
 ) -> None:
     """The tool opens a path, and no tool opens a directory of chunk files."""
-    _ = _point_at_a_store(ds, "vid1", ds.get_root("media_raw") / "vid1.store")
+    _ = point_at_a_store(ds, "vid1", ds.get_root("media_raw") / "vid1.store")
 
     with pytest.raises(StoreExportMissingError, match="export-store"):
         _ = dr.run_ultralytics(ds, _params(model))

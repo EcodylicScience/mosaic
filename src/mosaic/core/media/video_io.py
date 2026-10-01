@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import bisect
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional, Protocol, Sequence
 
 import cv2
 import numpy as np
-from mosaic_media import MediaFacts, MediaProbeError, probe_media
+from mosaic_media import (
+    MeasuredVideoProperties,
+    MediaFacts,
+    MediaProbeError,
+    probe_media,
+    uniform_properties,
+)
 from mosaic.user_paths import user_path
 from mosaic_media.io import FFmpegVideoWriter as FFmpegVideoWriter
 from mosaic_media.io import MultiVideoReader as _PlainMultiReader
@@ -466,22 +473,29 @@ class _ImgStoreMultiReader:
             self._seg_starts.append(cumulative)
             cumulative += meta.frame_count
 
-        # Validate resolution consistency
-        dims = {(s.width, s.height) for s in self._segments}
-        if len(dims) > 1:
-            raise ValueError(
-                f"Resolution mismatch across videos in sequence: {dims}. "
-                "All videos must have the same resolution."
-            )
-
-        # Property mismatch (fps) raises the same way the plain multi-video
-        # reader does (mosaic_media.io.multi.uniform_properties), so callers
-        # see one consistent failure mode across both backends instead of a
-        # silent fall-back to the first video's rate.
-        fps_vals = sorted({round(s.fps, 4) for s in self._segments})
-        if len(fps_vals) > 1:
+        # The plain multi-video reader's check, with its tolerance. A store's
+        # rate is measured from its timestamps, so two stores recorded at one
+        # rate differ in the last digits, and exact equality would refuse them.
+        # Stores cannot be joined, so a store sequence refused here cannot be
+        # read another way.
+        mismatch = uniform_properties(
+            [
+                MeasuredVideoProperties(
+                    fps=segment.fps,
+                    width=segment.width,
+                    height=segment.height,
+                    frame_count=segment.frame_count,
+                    duration=segment.frame_count / segment.fps
+                    if segment.fps > 0
+                    else 0.0,
+                )
+                for segment in self._segments
+            ]
+        )
+        if mismatch is not None:
             message = (
-                f"property mismatch across sequence: fps {fps_vals[0]} vs {fps_vals[1]}"
+                f"property mismatch across sequence: {mismatch.field} "
+                f"{mismatch.first} vs {mismatch.other}"
             )
             raise ValueError(message)
 
@@ -717,6 +731,81 @@ def open_frame_reader(
         hwaccel=hwaccel,
         facts=verified_read_facts(video_path, facts, target)[0],
     )
+
+
+def entry_paths(video_paths: str | Path | Sequence[Path]) -> list[Path]:
+    """Return an entry's clips as a list: *video_paths*, or one bare path in a list.
+
+    A ``str`` is a sequence of its characters and a ``Path`` is not a sequence,
+    so a caller naming one file without a list around it is read as that file.
+    """
+    if isinstance(video_paths, (str, Path)):
+        return [Path(video_paths)]
+    return [Path(path) for path in video_paths]
+
+
+def read_entry_frames(
+    video_paths: str | Path | Sequence[Path],
+    *,
+    facts: Sequence[MediaFacts] | None = None,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+    frame_step: int = 1,
+    target: ReadTarget,
+) -> Generator[tuple[int, np.ndarray], None, None]:
+    """Yield ``(frame, image)`` for an entry's clips, read as one frame axis.
+
+    Frame ``i`` is frame ``i`` of the entry, counted across its clips in order,
+    which is the axis that ``MultiVideoReader`` and
+    :class:`~mosaic.core.media.timeline.ConcatenatedTimeline` define. One file is
+    read by :func:`open_frame_reader`, exactly as a caller with one path reads it.
+    Several are read through :func:`open_multi_video_reader`, which refuses clips
+    whose frame rates differ; a caller holding such clips reads their join
+    instead.
+
+    The window is the one :func:`open_frame_reader` takes: from *start_frame*, up
+    to *end_frame* exclusive, every *frame_step*-th frame. The reader is closed
+    when the iteration ends or is abandoned.
+
+    Args:
+        video_paths: The clips in order, or one file. One file may be given as
+            a bare path (:func:`entry_paths`).
+        facts: The clips' facts, parallel to *video_paths*, or ``None`` to probe.
+        start_frame: The first frame read.
+        end_frame: The frame the window stops before, or ``None`` for the end.
+        frame_step: The stride between frames read.
+        target: The read target the facts are gated against.
+    """
+    paths = entry_paths(video_paths)
+    if len(paths) == 1:
+        single = open_frame_reader(
+            paths[0],
+            start_frame=start_frame,
+            end_frame=end_frame,
+            frame_step=frame_step,
+            facts=facts[0] if facts else None,
+            target=target,
+        )
+        try:
+            yield from single
+        finally:
+            single.close()
+        return
+    reader = open_multi_video_reader(paths, facts=facts, target=target)
+    try:
+        total = reader.total_frames
+        stop = total if end_frame is None else min(end_frame, total)
+        if start_frame >= stop:
+            return
+        reader.seek(start_frame)
+        for frame in range(start_frame, stop):
+            ok, image = reader.read()
+            if not ok or image is None:
+                return
+            if (frame - start_frame) % frame_step == 0:
+                yield frame, image
+    finally:
+        reader.close()
 
 
 def prefetch_batches(

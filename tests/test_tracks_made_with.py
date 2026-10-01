@@ -7,6 +7,7 @@ own settings function, so a tool that renames its model key is still found.
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 
@@ -26,7 +27,9 @@ from mosaic.core.pipeline.tracks_index import (
     tracks_made_with,
 )
 from mosaic.tracking.common.mint import mint_tracker_run
-from mosaic.tracking.model_refs import resolve_model
+from mosaic.tracking.litpose.dataset_runs import run_litpose
+from mosaic.tracking.litpose.params import LitposeParams
+from mosaic.tracking.model_refs import observed_model_source, resolve_model
 from mosaic.tracking.ops.infer import InferPoseOp, PoseInferParams
 from mosaic.tracking.sleap.dataset_runs import run_sleap, sleap_settings
 from mosaic.tracking.sleap.params import SleapParams
@@ -40,11 +43,14 @@ from tests.helpers import (
     add_tracks_variant,
     make_dataset,
     register_trained_model,
+    write_litpose_model,
     write_sleap_model,
 )
 
 MODEL = "train-sleap.0.2-abcdef0123"
 OTHER = "train-sleap.0.2-0123456789"
+DIGEST = "feedfacefeedface"
+"""The digest asked about for a model that no test registers, which nothing names."""
 
 
 def _sleap_variant(ds: Dataset, model: str, *sequences: str) -> tuple[str, str]:
@@ -71,7 +77,7 @@ def test_every_entry_of_a_variant_made_with_the_model_is_found(
     ds = make_dataset(tmp_path)
     variant, run_id = _sleap_variant(ds, MODEL, "s1", "s2")
 
-    found = tracks_made_with(ds, MODEL)
+    found = tracks_made_with(ds, MODEL, digest=DIGEST)
 
     assert found.entries == (
         TracksMadeWithEntry(variant, "", "s1", SLEAP_KIND, run_id),
@@ -85,7 +91,7 @@ def test_a_variant_made_with_another_model_is_not_found(tmp_path: Path) -> None:
     mine, _ = _sleap_variant(ds, MODEL, "s1")
     _ = _sleap_variant(ds, OTHER, "s2")
 
-    found = tracks_made_with(ds, MODEL)
+    found = tracks_made_with(ds, MODEL, digest=DIGEST)
 
     assert [entry.variant for entry in found.entries] == [mine]
     assert [entry.sequence for entry in found.entries] == ["s1"]
@@ -106,7 +112,7 @@ def test_both_of_trexs_models_are_found(tmp_path: Path) -> None:
     add_tracks_variant(ds, minted.tracks_variant, "s1")
 
     for model in (detect, identify):
-        (entry,) = tracks_made_with(ds, model).entries
+        (entry,) = tracks_made_with(ds, model, digest=DIGEST).entries
         assert entry.variant == minted.tracks_variant
         assert entry.producer == TREX_KIND
 
@@ -136,10 +142,10 @@ def test_a_model_served_by_a_linked_library_is_found(tmp_path: Path) -> None:
     )
     add_tracks_variant(project, identity.tracks_variant, "s1")
 
-    (entry,) = tracks_made_with(project, model).entries
+    (entry,) = tracks_made_with(project, model, digest=resolved.digest).entries
 
     assert entry.variant == identity.tracks_variant
-    assert tracks_made_with(library, model).entries == (), (
+    assert tracks_made_with(library, model, digest=resolved.digest).entries == (), (
         "the tracks are the project's"
     )
 
@@ -156,7 +162,7 @@ def test_a_variant_whose_record_is_absent_or_unreadable_is_reported(
         tracks_variant_root(ds.get_root("tracks"), corrupt) / "params.json"
     ).write_text("{not json")
 
-    found = tracks_made_with(ds, MODEL)
+    found = tracks_made_with(ds, MODEL, digest=DIGEST)
 
     assert found.entries == ()
     assert found.unreadable_variants == tuple(sorted((absent, corrupt)))
@@ -168,14 +174,14 @@ def test_unlabelled_tables_are_reported_as_the_empty_variant(tmp_path: Path) -> 
     add_track_sequences(ds, "old")
     _ = _sleap_variant(ds, OTHER, "s1")
 
-    found = tracks_made_with(ds, MODEL)
+    found = tracks_made_with(ds, MODEL, digest=DIGEST)
 
     assert found.entries == ()
     assert found.unreadable_variants == ("",)
 
 
 def test_a_dataset_without_tracks_refers_to_nothing(tmp_path: Path) -> None:
-    found = tracks_made_with(make_dataset(tmp_path), MODEL)
+    found = tracks_made_with(make_dataset(tmp_path), MODEL, digest=DIGEST)
 
     assert found == TracksMadeWith(
         entries=(), unreadable_variants=(), unconfirmed_variants=()
@@ -188,7 +194,7 @@ def test_a_reference_that_is_not_a_run_id_is_refused(
 ) -> None:
     """A match anywhere in a payload is exact only for a string as distinct as a run id."""
     with pytest.raises(ValueError, match="not a run id"):
-        _ = tracks_made_with(make_dataset(tmp_path), reference)
+        _ = tracks_made_with(make_dataset(tmp_path), reference, digest=DIGEST)
 
 
 # --- models named by their content ---------------------------------------------
@@ -244,9 +250,10 @@ def test_each_member_of_a_sleap_model_set_is_found(tmp_path: Path) -> None:
     assert sidecar is not None
     assert centroid not in repr(sidecar.params), "the set is named by its digest"
     for model in (centroid, instance):
-        (entry,) = tracks_made_with(ds, model).entries
+        digest = resolve_model(ds, model, "train-sleap").digest
+        (entry,) = tracks_made_with(ds, model, digest=digest).entries
         assert (entry.variant, entry.sequence) == (variant, "s1")
-    assert tracks_made_with(ds, OTHER).entries == ()
+    assert tracks_made_with(ds, OTHER, digest=DIGEST).entries == ()
 
 
 def test_a_set_run_again_by_path_is_still_found_by_its_members(
@@ -265,14 +272,15 @@ def test_a_set_run_again_by_path_is_still_found_by_its_members(
 
     assert _variants(ds) == [variant]
     for model in (centroid, instance):
-        (entry,) = tracks_made_with(ds, model).entries
+        digest = resolve_model(ds, model, "train-sleap").digest
+        (entry,) = tracks_made_with(ds, model, digest=digest).entries
         assert entry.variant == variant
 
 
-def test_a_sleap_set_recorded_without_its_member_runs_is_unconfirmed(
+def test_a_sleap_set_recorded_without_its_models_is_unconfirmed(
     tmp_path: Path,
 ) -> None:
-    """A set's record from before member runs were kept names only its digest.
+    """A set's record from before models were recorded names only its digest.
 
     That digest covers every member and equals no one model's, so the record can
     neither confirm nor rule out a member, and says so rather than finding
@@ -283,19 +291,14 @@ def test_a_sleap_set_recorded_without_its_member_runs_is_unconfirmed(
     _ = _registered_sleap_model(ds, centroid, b"centroid")
     _ = _registered_sleap_model(ds, instance, b"instance")
     variant = _sleap_run_variant(ds, [centroid, instance])
-    record = tracks_variant_root(ds.get_root("tracks"), variant) / "params.json"
-    sidecar = json.loads(record.read_text())
-    del sidecar["observed"]["model_run_ids"]
-    _ = record.write_text(json.dumps(sidecar))
+    _without_models(ds, variant)
     digest = resolve_model(ds, centroid, "train-sleap").digest
 
-    for found in (
-        tracks_made_with(ds, centroid),
-        tracks_made_with(ds, centroid, digest=digest),
-    ):
-        assert found.entries == ()
-        assert found.unconfirmed_variants == (variant,)
-        assert found.unreadable_variants == ()
+    found = tracks_made_with(ds, centroid, digest=digest)
+
+    assert found.entries == ()
+    assert found.unconfirmed_variants == (variant,)
+    assert found.unreadable_variants == ()
 
 
 def test_a_variant_that_names_another_model_by_run_id_is_ruled_out(
@@ -305,7 +308,7 @@ def test_a_variant_that_names_another_model_by_run_id_is_ruled_out(
     _ = _registered_sleap_model(ds, OTHER, b"other")
     _ = _sleap_run_variant(ds, [OTHER])
 
-    found = tracks_made_with(ds, MODEL)
+    found = tracks_made_with(ds, MODEL, digest=DIGEST)
 
     assert (found.entries, found.unconfirmed_variants) == ((), ())
 
@@ -320,9 +323,6 @@ def test_a_sleap_model_handed_in_by_path_is_found_by_its_digest(
     variant = _sleap_run_variant(ds, [str(copy)])
     digest = resolve_model(ds, MODEL, "train-sleap").digest
 
-    unasked = tracks_made_with(ds, MODEL)
-    assert unasked.entries == ()
-    assert unasked.unconfirmed_variants == (variant,), "the same bytes, or not"
     found = tracks_made_with(ds, MODEL, digest=digest)
     (entry,) = found.entries
     assert entry.variant == variant
@@ -357,7 +357,6 @@ def test_a_weights_file_handed_in_by_path_is_found_by_its_digest(
     add_tracks_variant(ds, identity.tracks_variant, "s1")
     digest = resolve_model(ds, model, "train-pose").digest
 
-    assert tracks_made_with(ds, model).entries == ()
     (entry,) = tracks_made_with(ds, model, digest=digest).entries
     assert entry.variant == identity.tracks_variant
     other = resolve_model(ds, str(weights), "train-pose").digest.replace("0", "1")
@@ -395,7 +394,7 @@ def test_a_scheme_one_inference_variant_of_a_path_is_unconfirmed(
     path_named = _scheme_one_infer_variant(ds, "0123456789abcdef", "0123456789")
     by_run = _scheme_one_infer_variant(ds, MODEL, "abcdef0123")
 
-    found = tracks_made_with(ds, MODEL)
+    found = tracks_made_with(ds, MODEL, digest=DIGEST)
 
     assert [entry.variant for entry in found.entries] == [by_run]
     assert found.unconfirmed_variants == (path_named,)
@@ -430,3 +429,120 @@ def test_a_digest_of_ten_or_sixteen_lowercase_hex_is_accepted(
     found = tracks_made_with(make_dataset(tmp_path), MODEL, digest=digest)
 
     assert found.entries == ()
+
+
+def test_the_digest_is_required() -> None:
+    """A variant made from the model's bytes handed in by path names it by nothing else."""
+    parameter = inspect.signature(tracks_made_with).parameters["digest"]
+
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is inspect.Parameter.empty
+
+
+def test_a_set_member_handed_in_by_path_is_found_by_its_digest(tmp_path: Path) -> None:
+    """One member named by its run and one by a path to the other's bytes."""
+    ds = make_dataset(tmp_path)
+    centroid, instance = MODEL, "train-sleap.0.2-fedcba9876"
+    _ = _registered_sleap_model(ds, centroid, b"centroid")
+    _ = _registered_sleap_model(ds, instance, b"instance")
+    copy = write_sleap_model(tmp_path / "copy", b"instance")
+
+    variant = _sleap_run_variant(ds, [centroid, str(copy)])
+
+    for model in (centroid, instance):
+        digest = resolve_model(ds, model, "train-sleap").digest
+        found = tracks_made_with(ds, model, digest=digest)
+        assert [entry.variant for entry in found.entries] == [variant], model
+        assert found.unconfirmed_variants == ()
+
+
+def test_runs_of_other_weights_by_path_are_ruled_out(tmp_path: Path) -> None:
+    """Each records the digest of the one model it ran, which is not this one's."""
+    ds = make_dataset(tmp_path)
+    _ = ds.index_media([ds.get_root(ds.resolve_media_root())])
+    model = "train-litpose.0.1-abcdef0123"
+    directory = write_litpose_model(
+        ds.get_root("models") / "train-litpose" / model / "model", weights=b"mine"
+    )
+    register_trained_model(
+        ds,
+        "train-litpose",
+        model,
+        next(directory.rglob("best.ckpt")),
+        directory=directory,
+    )
+    for weights in (b"other", b"another"):
+        other = write_litpose_model(tmp_path / weights.decode(), weights=weights)
+        _ = run_litpose(ds, LitposeParams(model_path=str(other)))
+    for variant in _variants(ds):
+        add_tracks_variant(ds, variant, "s-" + variant[-4:])
+    digest = resolve_model(ds, model, "train-litpose").digest
+
+    found = tracks_made_with(ds, model, digest=digest)
+
+    assert len(_variants(ds)) == 2
+    assert found == TracksMadeWith(
+        entries=(), unreadable_variants=(), unconfirmed_variants=()
+    )
+
+
+def _without_models(ds: Dataset, variant: str) -> None:
+    """Make *variant*'s record one written before models were recorded in it."""
+    record = tracks_variant_root(ds.get_root("tracks"), variant) / "params.json"
+    sidecar = json.loads(record.read_text())
+    del sidecar["observed"]["models"]
+    _ = record.write_text(json.dumps(sidecar))
+
+
+def test_an_older_record_of_other_weights_by_path_is_ruled_out(
+    tmp_path: Path,
+) -> None:
+    """Lightning Pose runs one model, so a digest that differs names another.
+
+    Only SLEAP runs a set of models under one digest that equals no member's.
+    """
+    ds = make_dataset(tmp_path)
+    _ = ds.index_media([ds.get_root(ds.resolve_media_root())])
+    model = "train-litpose.0.1-abcdef0123"
+    directory = write_litpose_model(
+        ds.get_root("models") / "train-litpose" / model / "model", weights=b"mine"
+    )
+    register_trained_model(
+        ds,
+        "train-litpose",
+        model,
+        next(directory.rglob("best.ckpt")),
+        directory=directory,
+    )
+    other = write_litpose_model(tmp_path / "other", weights=b"other")
+    _ = run_litpose(ds, LitposeParams(model_path=str(other)))
+    (variant,) = _variants(ds)
+    add_tracks_variant(ds, variant, "s1")
+    _without_models(ds, variant)
+    digest = resolve_model(ds, model, "train-litpose").digest
+
+    found = tracks_made_with(ds, model, digest=digest)
+
+    assert found == TracksMadeWith(
+        entries=(), unreadable_variants=(), unconfirmed_variants=()
+    )
+
+
+def test_both_of_trexs_models_are_recorded_in_order(tmp_path: Path) -> None:
+    """The detection model, then the identification model, each as it was named."""
+    ds = make_dataset(tmp_path)
+    detect = "train-pose.0.2-abcdef0123"
+    weights = ds.get_root("models") / "train-pose" / detect / "best.pt"
+    weights.parent.mkdir(parents=True)
+    _ = weights.write_bytes(b"detect")
+    register_trained_model(ds, "train-pose", detect, weights)
+    # TREx is handed an identification model as the stem beside its weights.
+    _ = (tmp_path / "identity_model.pth").write_bytes(b"identity")
+    by_run = resolve_model(ds, detect, "train-pose")
+    by_path = resolve_model(ds, str(tmp_path / "identity_model"), "train-identity")
+
+    assert observed_model_source(by_run, by_path) == {
+        "models": f"{detect},{by_path.digest}"
+    }
+    assert observed_model_source(None, by_path) == {"models": by_path.digest}
+    assert observed_model_source(None, None) == {"models": ""}

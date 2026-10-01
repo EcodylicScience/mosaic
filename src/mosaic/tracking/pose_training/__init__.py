@@ -56,6 +56,7 @@ from .inference import (
 )
 from .localizer_train import train_localizer, TrainingResult
 from .localizer_inference import (
+    LocalizerFrame,
     detect_locations,
     run_localizer_inference,
     localizer_detections_to_dataframe,
@@ -75,6 +76,7 @@ __all__ = [
     "YOLO_AUGMENTATION_PRESETS",
     "KeypointSchema",
     "LocalizerAugmentConfig",
+    "LocalizerFrame",
     "LocalizerSchema",
     "PointDetectionSchema",
     "TrainingResult",

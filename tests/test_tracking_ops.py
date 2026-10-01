@@ -647,7 +647,9 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
 # --- infer under the marker protocol (items 8.2 / 8.3, via 8.7) ------------
 
 
-def test_infer_points_runs_and_bridges(tmp_path, monkeypatch):
+def test_infer_points_runs_and_bridges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The whole op over the POLO seam: identity, claim, parquet, bridge, marker."""
     ds = _make_dataset(tmp_path)
     _ = install_fake_point_inference(monkeypatch)
@@ -659,7 +661,7 @@ def test_infer_points_runs_and_bridges(tmp_path, monkeypatch):
     from mosaic.core.pipeline.tracks_index import read_tracks_index
     from mosaic.tracking.ops.infer import infer_run_root
 
-    assert run_id.startswith("infer-points.0.3-"), run_id
+    assert run_id.startswith("infer-points.0.4-"), run_id
     run_root = infer_run_root(ds, "infer-points", run_id)
     for sequence in ("vid1", "vid2"):
         # Published by the runner at the path the request named, and read back
@@ -670,6 +672,20 @@ def test_infer_points_runs_and_bridges(tmp_path, monkeypatch):
     assert set(rows["sequence"]) == {"vid1", "vid2"}
     assert set(rows["producer"]) == {"infer-points"}
     assert set(rows["producer_run_id"]) == {run_id}
+
+    # The variant records the model it was made with, by the digest of the
+    # weights handed in by path, which a search for a model's tracks reads.
+    from mosaic.core.pipeline.index_csv import index_records
+    from mosaic.core.pipeline.tracks_identity import (
+        read_tracks_variant,
+        recorded_models,
+    )
+
+    (variant,) = {record["run_id"] for record in index_records(rows)}
+    sidecar = read_tracks_variant(ds.get_root("tracks"), variant)
+    assert sidecar is not None
+    digest = resolve_model(ds, str(model), "train-points").digest
+    assert recorded_models(sidecar) == (digest,)
 
     # A point detector already reports the body centre; only its name was
     # wrong. The bridge renames rather than copies, so the lowercase pair the

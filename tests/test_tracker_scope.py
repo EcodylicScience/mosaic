@@ -4,10 +4,9 @@ This path had no direct coverage at all, which is how it stayed true for years
 that a sequence a recorder split into clips was tracked from its first clip and
 the rest were dropped with a line on stderr.
 
-Two collapses are asserted here, and they are different things. A tracker that
-can read several clips as one video gets all of them; one that cannot is
-truncated *and says so*. Cameras collapse regardless, because the working
-directory is keyed without a camera.
+Two collapses are asserted here, and they are different things. Every tracker
+gets all of an entry's clips, whose join it is handed as one video. Cameras
+collapse, because the working directory is keyed without a camera.
 """
 
 from __future__ import annotations
@@ -29,23 +28,7 @@ from mosaic.tracking.common.scope import (
 from tests.helpers import MediaClip, write_media_index
 
 TREX = "trex"
-"""A tracker that declares ``joins_sources``."""
-
 SLEAP = "sleap"
-"""Another. It did not, until mosaic began joining an entry's clips itself.
-
-Kept as a second name rather than collapsed into ``TREX``, because what the two
-select is still a lookup in ``TRACKING_ROOTS`` and the point of these cases is
-that the behaviour follows the declaration rather than the tool's name.
-"""
-
-INFER = "infer-pose"
-"""A producer that still declares ``joins_sources=False``.
-
-Inference walks a media scope and reads one file, so the truncating branch is
-live and has to keep being tested -- it is what any future producer that cannot
-cover a whole entry will take.
-"""
 
 
 def _dataset(tmp_path: Path, clips: list[MediaClip]) -> Dataset:
@@ -105,28 +88,17 @@ class TestSeveralClips:
         _ = _items(ds, kind=TREX)
         assert capsys.readouterr().err == ""
 
-    def test_a_non_joining_producer_is_truncated_and_says_so(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """The branch every producer that cannot cover a whole entry still takes."""
-        ds = _dataset(tmp_path, SESSION)
-        (item,) = _items(ds, kind=INFER)
-        assert item.n_sources == 1
-        assert item.video_path.name == "c0.mp4"
-        assert item.source_uid == "uid-0"
-        assert "3 videos" in capsys.readouterr().err
-
     def test_every_tracker_now_covers_the_whole_entry(self, tmp_path: Path) -> None:
         """The four tools no longer differ on this, and none of them joins.
 
         SLEAP, Lightning Pose and Ultralytics used to be truncated to clip 0 and
         track none of the rest of a recording; TREx was handed the list and lost
         the tail of every clip to its own under-counting. Both are gone: every
-        tracker declares that it covers the entry, and mosaic hands each of them
+        work item covers the entry, whatever the tool, and mosaic hands each tool
         one already-joined video.
         """
         ds = _dataset(tmp_path, SESSION)
-        for kind in (TREX, SLEAP, "litpose", "ultralytics"):
+        for kind in (TREX, SLEAP, "litpose", "ultralytics", "unregistered-tool"):
             (item,) = _items(ds, kind=kind)
             assert item.n_sources == 3, kind
 
@@ -197,15 +169,6 @@ class TestRefusals:
         )
         with pytest.raises(JoinedSourceMismatchError, match="no frame rate"):
             _ = _items(ds, kind=TREX)
-
-    def test_a_non_joining_producer_is_not_refused(self, tmp_path: Path) -> None:
-        """It only ever sees clip 0, so the others cannot make it fail."""
-        ds = _dataset(
-            tmp_path,
-            [SESSION[0], dataclasses.replace(SESSION[1], width=1280)],
-        )
-        (item,) = _items(ds, kind=INFER)
-        assert item.n_sources == 1
 
 
 class TestCameras:

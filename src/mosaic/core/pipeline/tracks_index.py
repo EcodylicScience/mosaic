@@ -60,11 +60,12 @@ from mosaic.core.pipeline.index_csv import (
 )
 from mosaic.core.pipeline.index_lock import index_lock
 from mosaic.core.pipeline.op_identity import parse_op_run_id
+from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_identity import (
     names_model_by_path,
     read_tracks_variant,
     recorded_model_id,
-    recorded_model_runs,
+    recorded_models,
     tracks_variant_media,
 )
 from mosaic.core.pipeline.sequence_index import (
@@ -509,15 +510,14 @@ class TracksMadeWith:
             unlabelled tables, as it does for :func:`select_variant_rows`: they
             were written before variants existed, and no record says what made
             them.
-        unconfirmed_variants: The variants whose record names a model only by a
-            digest that does not match, sorted. Any of them might have been made
-            with the model: from the same bytes handed in by path when no
-            digest was asked about, as a member of a SLEAP model set recorded
-            before member runs were, whose digest covers every member and
-            equals none of them, or by an inference run recorded under tracks
-            identity scheme 1 from a model handed in by path, whose digest is of
-            the path string. The record cannot tell the first two apart from a
-            different model handed in by path.
+        unconfirmed_variants: The variants whose record was written before
+            models were recorded in it and names a model only by a digest that
+            does not match, sorted. Any of them might have been made with the
+            model: as a member of a SLEAP model set, whose digest covers every
+            member and equals none of them, or by an inference run recorded
+            under tracks identity scheme 1 from a model handed in by path, whose
+            digest is of the path string. The record cannot tell the first apart
+            from a different SLEAP model handed in by path.
     """
 
     entries: tuple[TracksMadeWithEntry, ...]
@@ -542,31 +542,32 @@ setting.
 """
 
 
-def tracks_made_with(
-    ds: Dataset, model_run_id: str, *, digest: str | None = None
-) -> TracksMadeWith:
+def tracks_made_with(ds: Dataset, model_run_id: str, *, digest: str) -> TracksMadeWith:
     """Which of *ds*'s tracks entries were made with the trained model *model_run_id*.
 
-    A tracker or an inference op records the model it ran in its variant's
-    identity payload, by the training run id when the model was named by one.
-    The run id is matched as an exact string anywhere in the payload, through
-    nested mappings and lists, rather than under a known key. Each tool names its
-    model under a key of its own, such as ``model``, or TREx's ``detect_model``
-    and ``visual_identification_model_path``, and ``core`` cannot import the
-    tools that declare them. A run id is distinctive enough that an exact match
-    is a reference to it. A variant made through a linked library is found the
-    same way, because the payload names the run and not where it was stored.
+    A tracker or an inference op records every model it ran in its variant's
+    ``observed`` provenance
+    (:func:`~mosaic.core.pipeline.tracks_identity.observed_models`): by the
+    training run id when the model was named by one, and by its content digest
+    when it was handed in by path. The model is found when *model_run_id* or
+    *digest* is among them. That covers each member of a SLEAP model set, whose
+    payload names the set by one digest over all its members, and a model served
+    by a linked library, because the record names the run and not where it was
+    stored.
 
-    Two uses of a model are named by content, and are found through other
-    records. A SLEAP model set of more than one reference is named by one digest
-    over its artifacts, and the variant's ``observed`` provenance records each
-    member's run id, which *model_run_id* is matched against. A model handed in
-    as a weights path is named by its content digest, which *digest* is matched
-    against, as an exact value anywhere in the payload. Neither finds a member of
-    a set that was handed in as a path, or a member of a set recorded before
-    member runs were, or a model handed in by path to an inference run recorded
-    under tracks identity scheme 1. A variant whose record names its model only
-    by a digest that does not match is reported as unconfirmed.
+    A record written before models were recorded in it is judged by its identity
+    payload. The run id and the digest are matched as exact strings anywhere in
+    the payload, through nested mappings and lists, rather than under a known
+    key. Each tool names its model under a key of its own, such as ``model``, or
+    TREx's ``detect_model`` and ``visual_identification_model_path``, and
+    ``core`` cannot import the tools that declare them. A run id or a digest is
+    distinctive enough that an exact match is a reference to it. A producer that
+    runs one model names it by that model's own digest, so a digest that differs
+    rules the model out. Such a payload cannot rule out a member of a SLEAP model
+    set, whose digest covers every member and equals none of them, or a model
+    handed in by path to an inference run recorded under tracks identity scheme
+    1, whose digest is of the path string. A variant whose record names its
+    model only by such a digest is reported as unconfirmed.
 
     Reads the tracks index and the variants' records. Writes nothing.
 
@@ -574,8 +575,8 @@ def tracks_made_with(
         ds: The dataset whose tracks are searched.
         model_run_id: The training run identifier.
         digest: The content digest of the model's artifact, as model resolution
-            reports it, which also finds the variants made from the same bytes
-            handed in by path. ``None`` matches the run id alone.
+            reports it for *model_run_id*. A variant made from the same bytes
+            handed in by path names the model by this digest alone.
 
     Returns:
         The entries found, the variants whose record could not be read, and
@@ -591,21 +592,21 @@ def tracks_made_with(
             "id of the training that made it."
         )
         raise ValueError(message)
-    if digest is not None and not _is_model_digest(digest):
+    if not _is_model_digest(digest):
         lengths = " or ".join(str(n) for n in sorted(_DIGEST_HEX_LENGTHS))
         message = (
             f"{digest!r} is not a model digest, which is lowercase hex of "
             f"{lengths} characters."
         )
         raise ValueError(message)
-    named = frozenset({model_run_id} if digest is None else {model_run_id, digest})
+    named = frozenset({model_run_id, digest})
     tracks_root = ds.get_root("tracks")
     verdicts: dict[str, _Verdict] = {}
     entries: set[TracksMadeWithEntry] = set()
     for record in index_records(read_tracks_index(ds)):
         variant = record["run_id"]
         if variant not in verdicts:
-            verdicts[variant] = _verdict(tracks_root, variant, model_run_id, named)
+            verdicts[variant] = _verdict(tracks_root, variant, named)
         if verdicts[variant] == "made":
             entries.add(
                 TracksMadeWithEntry(
@@ -639,29 +640,37 @@ def _is_model_digest(value: str) -> bool:
     )
 
 
-def _verdict(
-    tracks_root: Path, variant: str, run_id: str, values: frozenset[str]
-) -> _Verdict:
+def _verdict(tracks_root: Path, variant: str, named: frozenset[str]) -> _Verdict:
     """What *variant*'s record says about whether it was made with the model.
 
-    Made when its payload holds one of *values*, or its provenance records
-    *run_id* as a member of a model set. Unconfirmed when neither holds and the
-    provenance names the model by a content digest with no member runs, or the
-    payload names it by a digest of its path.
+    *named* holds the model's run id and its digest. A record that names its
+    variant's models decides: made when one of them is in *named*. A record
+    written before that is made when its payload holds one of *named*, and
+    unconfirmed when its provenance names a model set by a content digest
+    (:attr:`~mosaic.core.pipeline.tracking_roots.TrackingRoot.model_sets`), or
+    its payload names the model by a digest of its path.
     """
     if not variant:
         return "unreadable"
     sidecar = read_tracks_variant(tracks_root, variant)
     if sidecar is None:
         return "unreadable"
-    members = recorded_model_runs(sidecar)
-    if run_id in members or _holds(sidecar.params, values):
+    models = recorded_models(sidecar)
+    if models is not None:
+        return "made" if named.intersection(models) else "not_made"
+    if _holds(sidecar.params, named):
         return "made"
     model_id = recorded_model_id(sidecar)
     by_content = bool(model_id) and parse_op_run_id(model_id) is None
-    if (by_content and not members) or names_model_by_path(sidecar):
+    if (by_content and _runs_model_sets(sidecar.op)) or names_model_by_path(sidecar):
         return "unconfirmed"
     return "not_made"
+
+
+def _runs_model_sets(op: str) -> bool:
+    """Whether the producer *op* runs a set of models under one digest."""
+    root = TRACKING_ROOTS.get(op)
+    return root is not None and root.model_sets
 
 
 def _holds(node: object, values: frozenset[str]) -> bool:
@@ -1046,10 +1055,18 @@ def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> pd.DataFrame
     run read, which is honest rather than wrong -- the drift cell is what says
     so, and inventing the old number is not available to anyone.
 
-    A row whose tracks variant was made from a media variant is left blank, as
-    its producer left it. The tool read one file, and a trimmed or decimated
-    variant's table does not span its source axis. A blank cell keeps such a run
-    out of the frame-axis comparison.
+    A row whose tracks variant was made from a media variant is left blank. The
+    tool read one file, and a trimmed or decimated variant's table does not span
+    its source axis. The producer records the source axis when the variant kept
+    every source frame (:attr:`~mosaic.core.pipeline.placement.EntryAxis.media_frames`),
+    and this pass does not read the variant's placement to tell. A blank cell
+    keeps such a run out of the frame-axis comparison.
+
+    A row from a tracker or inference op whose table has rows only where it
+    detected something is left blank too, as its producer left it
+    (:attr:`~mosaic.core.pipeline.tracking_roots.TrackingRoot.rows_every_frame`).
+    Such a table ends at its last detection. A converted table's producer is not
+    a tracking root and declares nothing, and its row is measured.
 
     Locked for the whole read-measure-write, and a dry run holds the lock too,
     for the reasons :func:`backfill_frame_extents` gives.
@@ -1068,6 +1085,9 @@ def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> pd.DataFrame
         media_of: dict[str, str] = {}
         for position, row in df.iterrows():
             if read_media_frames(row) is not None:
+                continue
+            producer = TRACKING_ROOTS.get(str(row["producer"]))
+            if producer is not None and not producer.rows_every_frame:
                 continue
             variant = str(row["run_id"])
             if variant not in media_of:

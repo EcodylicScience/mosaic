@@ -30,17 +30,24 @@ from mosaic_media import MediaFacts
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.media.read_target import verified_read_facts
+from mosaic.core.media.timeline import concatenated_timeline
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pose_columns import (
     frame_keypoint_centroid,
     pose_column_pairs,
 )
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
+from mosaic.core.pipeline.joined_export import (
+    JoinedExportMissingError,
+    entry_source_uid,
+    join_to_read,
+)
 from mosaic.core.pipeline.markers import (
     PhaseMarker,
     write_phase_marker,
 )
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
+from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.tracking_roots import tracking_root_default
 from mosaic.core.pipeline.tracks_identity import (
     infer_variant_payload,
@@ -60,6 +67,7 @@ from mosaic.core.pipeline.preprocess_index import (
     MediaVariantMissingError,
 )
 from mosaic.core.pipeline.run import AllEntriesFailed
+from mosaic.core.track_library.helpers import column_array
 from mosaic.core.pipeline.variant_source import (
     VariantLookup,
     unreadable_variant_refusal,
@@ -71,9 +79,11 @@ from mosaic.tracking.common.bridge import (
     publish_tracks_table,
 )
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
+from mosaic.tracking.common.scope import refuse_unjoinable
 from mosaic.tracking.common.tool_input import (
+    StoreExportMissingError,
+    entry_tool_input,
     refuse_undecodable_codec,
-    resolve_entry_input,
 )
 from mosaic.tracking.common.ultralytics_env import progress_activity
 from mosaic.tracking.model_refs import (
@@ -87,7 +97,6 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
     from mosaic.core.entry import Entry
     from mosaic.core.pipeline._utils import ResolvedScope
-    from mosaic.core.pipeline.placement import SourceMapping
 
 
 # --- Where inference output lands ----------------------------------------
@@ -139,16 +148,22 @@ import this module."""
 class VideoInput:
     """One entry's video, and what running a model over it is given.
 
-    *facts* are **gated**: the caller has already derived the read-target verdict
-    and refused a file that needs an analysis transcode first. That check used to
-    happen a layer down, inside ``open_frame_reader``; two of the three ops no
-    longer open the video in this process at all, so it moved up here where every
-    op passes through it.
+    *video_paths* is one file for an op that hands its runner a path: the entry's
+    clip, its export, its join or a media variant's file. For the localizer, which
+    reads in this process, it is the entry's clips in order, or their join when
+    their frame rates differ. Either way frame ``i`` of what is read is frame
+    ``i`` of the entry.
+
+    *facts* are parallel to *video_paths* and **gated**: the caller has already
+    derived the read-target verdict and refused a file that needs an analysis
+    transcode first. That check used to happen a layer down, inside
+    ``open_frame_reader``; two of the three ops no longer open the video in this
+    process at all, so it moved up here where every op passes through it.
     """
 
-    video_path: Path
+    video_paths: tuple[Path, ...]
     work_dir: Path
-    facts: MediaFacts
+    facts: tuple[MediaFacts, ...]
     on_output: Callable[[str], None]
     cancel_check: Callable[[], bool] | None
 
@@ -200,7 +215,7 @@ _FRAME_STEP_DESCRIPTION = (
 _START_FRAME_DESCRIPTION = "First frame to predict on, inclusive."
 
 _END_FRAME_DESCRIPTION = (
-    "Last frame to predict on, inclusive. Unset runs to the end of the video."
+    "The frame that prediction stops before. Unset runs to the end of the video."
 )
 
 _MAX_FRAMES_DESCRIPTION = (
@@ -388,13 +403,19 @@ def _bridge_df_to_tracks(
     seq_dir: Path,
     consumed_media: Sequence[Path],
     model_pt: Path,
-    mapping: SourceMapping | None = None,
+    timing: MediaFacts,
+    axis: EntryAxis,
 ) -> BridgeCounts:
     """Publish an inference DataFrame as a standardized ``tracks/`` parquet.
 
     Names the columns that the schema requires, then publishes through the bridge
     that every tracker shares. ``tracks_variant`` names the directory as well as the
     row, and two models (or two parameter sets) never write to one path.
+
+    No runner reports a time, so ``time`` is each frame's time in seconds on a
+    single clip at the rate of *timing*. The shared bridge then retimes a table
+    from several clips, or from a variant that is not its source, by the clips' own
+    rates, as it retimes a tracker's.
 
     The table replaces the one that the variant already has for the entry, and
     always comes from the predictions just made. An inference run predicts on every
@@ -422,19 +443,23 @@ def _bridge_df_to_tracks(
             that the model read and, for a media variant, the entry media that it
             was made from.
         model_pt: The weights that the model loaded.
-        mapping: The placement in the entry's media of the media variant that
-            the model read, or ``None`` when it read the entry media itself.
+        timing: The facts of the file that the model read, or of the first of
+            the clips that the localizer read. Its frame rate times the table.
+        axis: What the model read of the entry's media, which places the table
+            on the entry's axes.
 
     Returns:
         Counts of the published table, which are ``(0, 0)`` for an empty one.
+
+    Raises:
+        ValueError: If *timing* reports a frame rate that is not positive.
     """
     df = df.copy()
     df["group"] = group
     df["sequence"] = sequence
     if "id" not in df.columns:
         df["id"] = 0
-    if "time" not in df.columns:
-        df["time"] = df["frame"] if "frame" in df.columns else range(len(df))
+    df["time"] = concatenated_timeline((timing,)).times(column_array(df, "frame"))
     _name_the_body_centre(df)
     return publish_tracks_table(
         ds,
@@ -448,7 +473,7 @@ def _bridge_df_to_tracks(
         # tracks table back to the predictions that produced it.
         source=seq_dir,
         consumed=[*consumed_media, model_pt],
-        mapping=mapping,
+        axis=axis,
         # Strict here alone. Every *tracker* write path validates leniently,
         # because a missing required column is merely an incomplete table, and
         # whether that should still be true is a separate question with a wider
@@ -498,25 +523,32 @@ def infer_identity(
 
 @dataclass(frozen=True, slots=True)
 class _InferenceEntry:
-    """One entry to predict on, with the file that the model reads and its mapping.
+    """One entry to predict on, with the files that the model reads and their axis.
 
     Attributes:
         group: The entry's group.
         sequence: The entry's sequence.
-        video_path: The file that the model reads.
-        facts: *video_path*'s facts, gated for analysis.
+        video_paths: The files that the model reads, as :class:`VideoInput`
+            describes them.
+        facts: The facts of *video_paths*, parallel to them and gated for
+            analysis.
         consumed_media: The media files that a table from this entry derives
             from.
-        mapping: The placement of a media variant's file in the entry media, or
-            ``None`` when the model reads the entry media.
+        axis: Where a table from this entry sits on the entry's axes.
+        source_uid: The identity of the entry's media, or of the variant's
+            file, as a tracker's work item records it
+            (:func:`~mosaic.core.pipeline.joined_export.entry_source_uid`). It
+            is the clips' identity, not the identity of the join or the export
+            that the model may read instead.
     """
 
     group: str
     sequence: str
-    video_path: Path
-    facts: MediaFacts
+    video_paths: tuple[Path, ...]
+    facts: tuple[MediaFacts, ...]
     consumed_media: tuple[Path, ...]
-    mapping: SourceMapping | None
+    axis: EntryAxis
+    source_uid: str
 
     @property
     def key(self) -> str:
@@ -530,62 +562,128 @@ def _inference_entry(
     kind: str,
     variants: VariantLookup | None,
     opens_by_path: bool,
+    windowed: bool,
 ) -> _InferenceEntry:
-    """Return the file that the model reads for *entry*: its media, or a variant's.
+    """Return the files that the model reads for *entry*: its media, or a variant's.
 
     A variant is a plain video that mosaic wrote. It is never an imgstore to
     export, and its index row's stored facts describe it without a probe.
     *variants* is ``None`` when the run reads the entry media.
 
+    The entry media is read whole. An op that hands its runner a path hands it one
+    file: the entry's clip, the export of a store, or the join of several clips,
+    as the trackers are handed. The localizer reads the clips in this process on
+    the entry's frame axis, and reads their join only when their frame rates
+    differ, which is the rule that mosaic's own reader follows everywhere
+    (:func:`~mosaic.core.pipeline.joined_export.join_to_read`). Either way, clips
+    that cannot be read as one video are refused first, as a tracker refuses
+    them (:func:`~mosaic.tracking.common.scope.refuse_unjoinable`).
+
+    *windowed* says whether the run's frame window narrows what the model reads,
+    which the entry's :class:`EntryAxis` needs to know.
+
     Raises:
         MediaVariantMissingError: If the variant lacks a file for the entry.
         MediaVariantDriftedError: If the entry's media changed after the
             variant's file was written.
+        JoinedSourceMismatchError: If the entry's clips differ in frame
+            geometry, or one reports no frame rate.
+        StoreExportMissingError: If an op that opens by path is handed a store
+            with no export.
+        JoinedExportMissingError: If the entry's clips must be read through a
+            join and there is no single current one.
         ToolCodecError: If the op hands its model's runner a file whose codec
             that runner's decoder cannot be expected to open.
     """
     group, sequence, resolved = entry.group, entry.sequence, entry.resolved
-    mapping: SourceMapping | None = None
     media = variants.run_id if variants is not None else ""
+    targets: tuple[Path, ...]
+    # The facts must describe the files that will be read. Where that is not
+    # the file the index measured (an export or a join), it is probed.
+    stored: tuple[MediaFacts, ...] | None
     if variants is not None:
         variant = variants.resolve(ds, entry)
-        target, stored = variant.path, variant.facts
+        targets, stored = (variant.path,), (variant.facts,)
         consumed_media = variant.consumed_media
-        mapping = variant.mapping()
+        axis = EntryAxis.of_variant(variant.mapping())
+        source_uid = entry_source_uid(stored)
     else:
-        # The op reads the first path. A required-but-unlinked entry already
-        # raised in resolve_media_scope, before any defective original was opened.
-        source = resolved.paths[0]
-        # An op that hands a tool a path cannot hand it an imgstore, which is a
-        # directory of chunk files -- so a store resolves to the video
-        # ``export-store`` wrote for it, or raises naming that command.
-        target = (
-            resolve_entry_input(ds, group, sequence, source, kind=kind)
-            if opens_by_path
-            else source
-        )
-        # The facts must describe the file that will be read: for an export
-        # that is not the file the index measured, so it is probed on its own.
-        stored = resolved.facts[0] if target == source else None
-        consumed_media = (target,)
+        # Before a join is looked up, so that clips no join can hold are named
+        # for what is wrong with them rather than reported as unjoined.
+        refuse_unjoinable(kind, group, sequence, resolved.paths, resolved.facts)
+        axis = EntryAxis.of_entry_media(resolved.facts, windowed=windowed)
+        source_uid = entry_source_uid(resolved.facts)
+        if opens_by_path:
+            # An op that hands a tool a path cannot hand it an imgstore, which
+            # is a directory of chunk files, nor several clips, which a tool
+            # that joins them itself loses frames at. A required-but-unlinked
+            # entry already raised in resolve_media_scope, before any defective
+            # original was opened.
+            target = entry_tool_input(
+                ds, group, sequence, resolved.paths, resolved.facts, kind=kind
+            )
+            targets = (target,)
+            stored = tuple(resolved.facts) if targets == tuple(resolved.paths) else None
+            consumed_media = (
+                tuple(resolved.paths) if len(resolved.paths) > 1 else targets
+            )
+        else:
+            joined = join_to_read(ds, entry, asker=kind)
+            targets = (joined,) if joined is not None else tuple(resolved.paths)
+            stored = None if joined is not None else tuple(resolved.facts)
+            consumed_media = tuple(resolved.paths)
     if opens_by_path:
         # Only for an op that hands the path over. The localizer reads the
         # file in this process with mosaic's own decoder, so what a foreign
         # stack can open says nothing about it.
         refuse_undecodable_codec(
-            ds, target, kind=kind, group=group, sequence=sequence, variant=media
+            ds, targets[0], kind=kind, group=group, sequence=sequence, variant=media
         )
     # The gate, run here rather than inside the reader, because two of the
     # three ops no longer open the video in this process.
-    facts = verified_read_facts(target, stored, "analysis")[0]
+    facts = tuple(verified_read_facts(list(targets), stored, "analysis"))
     return _InferenceEntry(
         group=group,
         sequence=sequence,
-        video_path=target,
+        video_paths=targets,
         facts=facts,
         consumed_media=consumed_media,
-        mapping=mapping,
+        axis=axis,
+        source_uid=source_uid,
     )
+
+
+def _refuse_unbuilt(
+    kind: str, unbuilt: Sequence[JoinedExportMissingError | StoreExportMissingError]
+) -> None:
+    """Raise one refusal naming every entry whose join or store export is missing.
+
+    Building either is an op of its own, run once per entry, so the refusal names
+    each entry with its command, before any model is loaded. A single entry's
+    error is raised as it is. Several of one kind are raised as that kind, and a
+    mix as ``FileNotFoundError``, the base that both share.
+
+    Raises:
+        JoinedExportMissingError: If every entry lacks a join.
+        StoreExportMissingError: If every entry lacks a store export.
+        FileNotFoundError: If some entries lack a join and others a store export.
+    """
+    if not unbuilt:
+        return
+    if len(unbuilt) == 1:
+        raise unbuilt[0]
+    reasons = "\n".join(str(error) for error in unbuilt)
+    message = (
+        f"[{kind}] {len(unbuilt)} entries need a file built before the model can "
+        f"read them, and no model was run. Each is named below with the command "
+        f"that builds its file:\n{reasons}"
+    )
+    kinds = {type(error) for error in unbuilt}
+    if kinds == {JoinedExportMissingError}:
+        raise JoinedExportMissingError(message)
+    if kinds == {StoreExportMissingError}:
+        raise StoreExportMissingError(message)
+    raise FileNotFoundError(message)
 
 
 def _run_inference_op(
@@ -641,6 +739,9 @@ def _run_inference_op(
     # Entries whose variant could not be read, by key. Each is recorded as
     # failed here, and counts as attempted and lost below.
     unresolved: dict[str, Entry] = {}
+    # Entries whose join or store export has not been built. They fail the run
+    # together, before any model runs.
+    unbuilt: list[JoinedExportMissingError | StoreExportMissingError] = []
     kept = one_camera_per_entry(kind, media_scope)
     variants = (
         VariantLookup.read(
@@ -658,12 +759,16 @@ def _run_inference_op(
                     kind=kind,
                     variants=variants,
                     opens_by_path=opens_by_path,
+                    windowed=bool(params.frame_window),
                 )
             )
         except (MediaVariantMissingError, MediaVariantDriftedError) as exc:
             key = make_entry_key(entry.group, entry.sequence)
             ctx.entry_failed(key, exc)
             unresolved[key] = (entry.group, entry.sequence)
+        except (JoinedExportMissingError, StoreExportMissingError) as exc:
+            unbuilt.append(exc)
+    _refuse_unbuilt(kind, unbuilt)
 
     # When every entry is lost before a model runs, the variant that the run
     # names is unreadable for all of them. The run then raises before it probes
@@ -701,7 +806,7 @@ def _run_inference_op(
         kind,
         version,
         infer_variant_payload(params.identity_dump(), model_id, media=params.media),
-        observed=observed_model_source(model) or None,
+        observed=observed_model_source(model),
     )
 
     ctx.set_total(len(work))
@@ -747,7 +852,7 @@ def _run_inference_op(
             try:
                 outcome = per_video(
                     VideoInput(
-                        video_path=item.video_path,
+                        video_paths=item.video_paths,
                         work_dir=seq_dir,
                         facts=item.facts,
                         # Every line the model's runner writes refreshes the claim and
@@ -793,7 +898,8 @@ def _run_inference_op(
                             seq_dir=seq_dir,
                             consumed_media=item.consumed_media,
                             model_pt=model.path,
-                            mapping=item.mapping,
+                            timing=item.facts[0],
+                            axis=item.axis,
                         ),
                         kind=kind,
                     )
@@ -813,8 +919,8 @@ def _run_inference_op(
                             run_id=run_id,
                             execution_id=ctx.execution_id,
                             completed_at=now_iso(),
-                            source=str(ds.relative_to_root(item.video_path)),
-                            source_uid=item.facts.video_uuid,
+                            source=str(ds.relative_to_root(item.video_paths[0])),
+                            source_uid=item.source_uid,
                             recorded_output=str(ds.relative_to_root(pred_path))
                             if pred_path.exists()
                             else "",
@@ -885,7 +991,12 @@ class InferPoseOp(Op[PoseInferParams]):
     # centre can use them and they should be re-run. The version is a visible
     # segment and not a hash term, so a variant directory now holds one table
     # shape rather than a mix of the two.
-    version = "0.3"
+    # 0.4 because two columns changed meaning. `time` was a frame number on a
+    # table from one clip and is now seconds, and under `start_frame` or
+    # `frame_step` a row's `frame` is now the frame that the model read, not its
+    # place among the frames read. New runs mint new identifiers, and tables
+    # written before keep theirs.
+    version = "0.4"
     scope_takes = "any"
     scope_dependent = False
     model_reference = _POSE_MODEL
@@ -936,9 +1047,10 @@ class InferPoseOp(Op[PoseInferParams]):
 
             def per_video(item: VideoInput) -> VideoPredictions:
                 published = item.work_dir / _PREDICTIONS_NAME
+                (video_path,), (facts,) = item.video_paths, item.facts
                 request = InferPoseRequest(
                     model_path=model_path,
-                    video_path=str(item.video_path),
+                    video_path=str(video_path),
                     output_parquet=str(published),
                     annotated_dir=str(item.work_dir) if params.save_images else "",
                     columns=pose_columns(n_keypoints),
@@ -952,7 +1064,7 @@ class InferPoseOp(Op[PoseInferParams]):
                     max_frames=params.max_frames,
                     batch_size=params.batch_size,
                     prefetch=True,
-                    media_facts=dataclasses.asdict(item.facts),
+                    media_facts=dataclasses.asdict(facts),
                     n_keypoints=n_keypoints,
                 )
                 outcome = run_pose_inference_tool(
@@ -994,7 +1106,8 @@ class InferPointsOp(Op[PointInferParams]):
     # centre can use them and they should be re-run. The version is a visible
     # segment and not a hash term, so a variant directory now holds one table
     # shape rather than a mix of the two.
-    version = "0.3"
+    # 0.4 for the reason `infer-pose` gives above: `time` and `frame` changed.
+    version = "0.4"
     scope_takes = "any"
     scope_dependent = False
     model_reference = _POINTS_MODEL
@@ -1041,9 +1154,10 @@ class InferPointsOp(Op[PointInferParams]):
 
             def per_video(item: VideoInput) -> VideoPredictions:
                 published = item.work_dir / _PREDICTIONS_NAME
+                (video_path,), (facts,) = item.video_paths, item.facts
                 request = InferPointsRequest(
                     model_path=model_path,
-                    video_path=str(item.video_path),
+                    video_path=str(video_path),
                     output_parquet=str(published),
                     annotated_dir=str(item.work_dir) if params.save_images else "",
                     columns=list(POINT_COLUMNS),
@@ -1057,7 +1171,7 @@ class InferPointsOp(Op[PointInferParams]):
                     max_frames=params.max_frames,
                     batch_size=params.batch_size,
                     prefetch=True,
-                    media_facts=dataclasses.asdict(item.facts),
+                    media_facts=dataclasses.asdict(facts),
                     # `params.dor` is deliberately not sent. It reaches no
                     # Ultralytics argument on the in-process path either, so
                     # forwarding it would change what this op computes rather than
@@ -1102,7 +1216,8 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
     # mosaic's own PyTorch, it never resized at decode time, and its coordinates
     # were already in source pixels. 0.2 is the body-centre column, which it was
     # missing exactly as they were.
-    version = "0.2"
+    # 0.3 for the reason `infer-pose` gives above: `time` and `frame` changed.
+    version = "0.3"
     scope_takes = "any"
     scope_dependent = False
     model_reference = _LOCALIZER_MODEL
@@ -1136,7 +1251,7 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
             def per_video(item: VideoInput) -> VideoPredictions:
                 detections = run_localizer_inference(
                     model_path,
-                    item.video_path,
+                    item.video_paths,
                     output_dir=item.work_dir if params.save_images else None,
                     num_classes=params.num_classes,
                     initial_channels=params.initial_channels,

@@ -40,7 +40,9 @@ def measure_tracks_command(
     * the **media length** (``media_frames``), read from the media index by the
       same routing a producer resolves the entry through. A table tracked on a
       media variant keeps a blank cell. Its frames are the variant's selection
-      of the source, and the source's length is not the axis that it spans.
+      of the source, and the source's length is not the axis that it spans. So
+      does a table from a producer that writes rows only where it detects
+      something, which ends at its last detection however much it read.
 
     Then it reports every table where the two disagree, naming its variant:
     an entry re-tracked under a new recipe holds the old table too, and each is

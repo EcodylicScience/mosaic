@@ -39,6 +39,7 @@ from typing import Final
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ._utils import atomic_write, json_ready
+from .index_lock import index_lock
 from .op_identity import op_run_id, parse_op_run_id
 
 __all__ = [
@@ -48,11 +49,11 @@ __all__ = [
     "converter_op",
     "infer_variant_payload",
     "names_model_by_path",
-    "observed_model_runs",
+    "observed_models",
     "read_tracks_variant",
     "read_variant_sidecar",
     "recorded_model_id",
-    "recorded_model_runs",
+    "recorded_models",
     "resample_variant_payload",
     "tracker_variant_payload",
     "tracks_run_id",
@@ -241,12 +242,19 @@ def write_tracks_variant(
     Idempotent: one variant is described once, however many sequences it covers,
     and re-running a conversion rewrites the same content.
 
-    A rewrite replaces what was observed, except the member runs of a model set
-    (:func:`observed_model_runs`), which it keeps as a union, those recorded
-    first. One set named once by run ids and once by the paths of the same
-    artifacts is one variant, because its digest covers the artifacts only, and
-    the second record names no runs. Replacing the first would forget the runs
-    that :func:`~mosaic.core.pipeline.tracks_index.tracks_made_with` reads.
+    A rewrite replaces what was observed, except the models that made the
+    variant (:func:`observed_models`), which it keeps as a union, those recorded
+    first. One SLEAP model set named once by run ids and once by the paths of the
+    same artifacts is one variant, because its digest covers the artifacts only,
+    and the second record names each member by its digest. Replacing the first
+    would forget the runs that
+    :func:`~mosaic.core.pipeline.tracks_index.tracks_made_with` reads.
+
+    The read, the merge and the write happen under the record's own
+    :func:`~mosaic.core.pipeline.index_lock.index_lock`, so two runs minting one
+    variant at once keep the models of both. The lock creates the record empty
+    when it is absent, and an empty record reads as an absent one until the
+    write replaces it.
 
     Args:
         tracks_root: The dataset's ``tracks`` root.
@@ -267,20 +275,22 @@ def write_tracks_variant(
     root = tracks_variant_root(tracks_root, run_id)
     root.mkdir(parents=True, exist_ok=True)
     path = root / "params.json"
-    recorded = read_variant_sidecar(path)
     kept = dict(observed or {})
-    if recorded is not None:
-        given = _split_runs(kept.get(_MODEL_RUNS, ""))
-        runs = recorded_model_runs(recorded)
-        kept.update(observed_model_runs([*runs, *(r for r in given if r not in runs)]))
-    record: dict[str, object] = {
-        "identity_scheme": TRACKS_IDENTITY_SCHEME,
-        "op": op,
-        "version": version,
-        "params": json_ready(dict(params_identity)),
-        "observed": kept,
-    }
-    atomic_write(path, lambda p: p.write_text(json.dumps(record, indent=2)))
+    with index_lock(path):
+        recorded = read_variant_sidecar(path)
+        before = recorded_models(recorded) if recorded is not None else None
+        if before is not None:
+            given = _split_models(kept.get(_MODELS, ""))
+            merged = [*before, *(model for model in given if model not in before)]
+            kept.update(observed_models(merged))
+        record: dict[str, object] = {
+            "identity_scheme": TRACKS_IDENTITY_SCHEME,
+            "op": op,
+            "version": version,
+            "params": json_ready(dict(params_identity)),
+            "observed": kept,
+        }
+        atomic_write(path, lambda p: p.write_text(json.dumps(record, indent=2)))
     return path
 
 
@@ -312,24 +322,31 @@ def read_variant_sidecar(path: Path) -> VariantSidecar | None:
         return None
 
 
-_MODEL_RUNS: Final = "model_run_ids"
-"""The ``observed`` key that records the training runs of a model set of several.
+_MODELS: Final = "models"
+"""The ``observed`` key that records every model a variant was made with.
 
-A set of several references has no one run to name it, so the payload names it
-by a digest over its artifacts, and no member's run id reaches the identity. The
-members' run ids are recorded here, comma-joined in reference order.
+Each model is named by its training run id, or, when it was handed in by path, by
+the content digest that model resolution reports for it alone. The names are
+comma-joined in the order the run gave the models: each member of a SLEAP model
+set, the one model of any other tracker or inference op, and TREx's detection
+model before its identification model. A set of several references has no one
+run to name it, and its payload names it by a digest over all its artifacts,
+which equals no member's. A record written before the key existed has none.
 """
 
 
-def observed_model_runs(run_ids: Sequence[str]) -> dict[str, str]:
-    """Return the ``observed`` entry that records *run_ids*, or none when empty.
+def observed_models(models: Sequence[str]) -> dict[str, str]:
+    """Return the ``observed`` entry that records the *models* a run used.
 
-    Provenance and never identity, so recording the runs moves no identifier.
+    Provenance and never identity, so recording the models moves no identifier.
+    A run that used no model records the key empty, which a search reads as
+    made with no model rather than as a record from before the key.
 
     Args:
-        run_ids: The training runs of a model set's members, in reference order.
+        models: Each model's training run id or content digest, in the order
+            the run gave them.
     """
-    return {_MODEL_RUNS: ",".join(run_ids)} if run_ids else {}
+    return {_MODELS: ",".join(models)}
 
 
 def names_model_by_path(sidecar: VariantSidecar) -> bool:
@@ -350,14 +367,19 @@ def names_model_by_path(sidecar: VariantSidecar) -> bool:
     )
 
 
-def recorded_model_runs(sidecar: VariantSidecar) -> tuple[str, ...]:
-    """Return the member runs that :func:`observed_model_runs` recorded in *sidecar*."""
-    return _split_runs(sidecar.observed.get(_MODEL_RUNS, ""))
+def recorded_models(sidecar: VariantSidecar) -> tuple[str, ...] | None:
+    """Return the models that :func:`observed_models` recorded in *sidecar*.
+
+    ``None`` when the record has no such entry, because it was written before
+    the entry was.
+    """
+    joined = sidecar.observed.get(_MODELS)
+    return None if joined is None else _split_models(joined)
 
 
-def _split_runs(joined: str) -> tuple[str, ...]:
-    """The runs in one ``observed`` value that :func:`observed_model_runs` joined."""
-    return tuple(run for run in joined.split(",") if run)
+def _split_models(joined: str) -> tuple[str, ...]:
+    """The models in one ``observed`` value that :func:`observed_models` joined."""
+    return tuple(model for model in joined.split(",") if model)
 
 
 _MODEL_ID: Final = "model_id"

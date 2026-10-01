@@ -47,7 +47,7 @@ from mosaic.core.pipeline.markers import (
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.entry_claim import claim, phase_activity
 from mosaic.core.pipeline.op_identity import op_run_id
-from mosaic.core.pipeline.placement import SourceMapping
+from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
@@ -188,16 +188,15 @@ def _bridge_analysis_h5_to_tracks(
     model_checkpoints: Sequence[Path],
     fps: float,
     overwrite: bool,
-    mapping: SourceMapping | None,
+    axis: EntryAxis,
 ) -> BridgeCounts | None:
     """Bridge a SLEAP analysis HDF5 into ``tracks/<variant>/<group>__<seq>.parquet``.
 
     Uses the registered ``sleap_analysis_h5`` converter with the authoritative
     (group, sequence) known from the media index, so no name is guessed from a
     filename. *consumed_media* are the media files that the table derives from,
-    and *mapping* maps a table tracked on a media variant into source space, or is
-    ``None``. Returns ``None`` when the conversion failed and did not publish a
-    table.
+    and *axis* places the table on the entry's axes. Returns ``None`` when the
+    conversion failed and did not publish a table.
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
     from mosaic.core.track_library.sleap import SleapConvertParams
@@ -231,7 +230,7 @@ def _bridge_analysis_h5_to_tracks(
         producer_run_id=producer_run_id,
         source=h5_path.parent,
         consumed=[h5_path, *consumed_media, *model_checkpoints],
-        mapping=mapping,
+        axis=axis,
     )
 
 
@@ -479,7 +478,7 @@ def run_sleap(
                 model_checkpoints=list(resolved_models.significant_files),
                 fps=item.fps,
                 overwrite=job.overwrite or recomputed,
-                mapping=item.source_mapping,
+                axis=item.entry_axis(windowed=bool(params.frame_window)),
             ),
             kind=SLEAP_KIND,
         )

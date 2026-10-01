@@ -37,7 +37,7 @@ from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.ops import registered_op
-from mosaic.core.pipeline.tracks_identity import observed_model_runs
+from mosaic.core.pipeline.tracks_identity import observed_models
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -326,19 +326,22 @@ class ResolvedModel:
     provenance and never reach identity: the run identifier already names the
     model, and naming where it was found would make one model two.
 
-    ``member_run_ids`` are the training runs that a set of several references
-    named, in reference order. Such a set has no ``run_id`` and is named by its
-    digest, so they are recorded as provenance, where a search for the tracks a
-    model made finds them. Empty for a single reference.
+    ``members`` names each model that the references named, in reference order:
+    by its training run id, or, for a model handed in by path, by the digest that
+    resolving it alone reports. One reference has one member, named as
+    ``model_id`` names it. A set of several has no ``run_id`` and is named by a
+    digest over all its artifacts, which equals no member's, so the members are
+    recorded as provenance, where a search for the tracks a model made finds
+    them.
     """
 
     artifacts: tuple[ModelArtifact, ...]
     run_id: str
     digest: str
+    members: tuple[str, ...]
     model_type: str = ""
     library_id: str = ""
     library_uuid: str = ""
-    member_run_ids: tuple[str, ...] = ()
 
     @property
     def path(self) -> Path:
@@ -696,10 +699,12 @@ def resolve_model(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
     # A prefix never exists, so the spec decides before the filesystem does.
     if spec.shape == "prefix" or reference.exists():
         artifact = _resolve_artifact(reference, spec)
+        digest = _identity((artifact,), spec)
         return ResolvedModel(
             artifacts=(artifact,),
             run_id="",
-            digest=_identity((artifact,), spec),
+            digest=digest,
+            members=(digest,),
             model_type=_model_type_of(artifact, spec),
         )
     return _resolve_registered(ds, ref, kind)
@@ -720,6 +725,7 @@ def _resolve_registered(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
         artifacts=(artifact,),
         run_id=ref,
         digest=_identity((artifact,), spec),
+        members=(ref,),
         model_type=_model_type_of(artifact, spec),
         library_id=registered.library_id,
         library_uuid=registered.library_uuid,
@@ -727,20 +733,18 @@ def _resolve_registered(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
 
 
 def observed_model_source(*resolved: ResolvedModel | None) -> dict[str, str]:
-    """Where a run's models came from, as variant provenance.
+    """Which models a run used and where they came from, as variant provenance.
 
-    Merged into the ``observed`` mapping a variant sidecar records. It holds the
-    linked libraries that served the models, and the member runs of a model set
-    of several references. Empty when every model came from this dataset's own
-    index or from a bare path, and was named by one reference, so a sidecar
-    written before libraries existed and one written now for a local model are
-    byte-identical.
+    Merged into the ``observed`` mapping a variant sidecar records. It names
+    every member of every model given, in order (:func:`observed_models`), and
+    the linked libraries that served any of them. A ``None`` is a model the run
+    was not given, such as TREx's identification model on a run without one.
 
     Provenance and never identity. The run identifier already names the model;
     which dataset happened to hold it is what a later export needs to find the
-    weights, and must not make one model mint two variants. A set of several is
-    named by its digest, and its member runs are what a search for the tracks a
-    model made looks for.
+    weights, and must not make one model mint two variants. The members are what
+    a search for the tracks a model made reads, and they name a set's members,
+    which its digest does not.
     """
     present = [model for model in resolved if model is not None]
     sources = sorted(
@@ -751,8 +755,8 @@ def observed_model_source(*resolved: ResolvedModel | None) -> dict[str, str]:
         }
     )
     served = {"model_source": ",".join(sources)} if sources else {}
-    members = [run for model in present for run in model.member_run_ids]
-    return {**served, **observed_model_runs(members)}
+    members = [member for model in present for member in model.members]
+    return {**served, **observed_models(members)}
 
 
 def resolve_model_set(
@@ -788,12 +792,14 @@ def resolve_model_set(
         raise ValueError(f"resolving a {spec.label} requires at least one reference")
 
     artifacts: list[ModelArtifact] = []
+    members: list[str] = []
     registered: list[str] = []
     served: list[_RegisteredArtifact] = []
     model_type = ""
     for ref in refs:
         reference = user_path(ref)
-        if spec.shape != "prefix" and not reference.exists():
+        by_run = spec.shape != "prefix" and not reference.exists()
+        if by_run:
             if ds is None:
                 raise FileNotFoundError(
                     f"{spec.label} directory does not exist: {reference}"
@@ -804,6 +810,8 @@ def resolve_model_set(
             served.append(found)
         artifact = _resolve_artifact(reference, spec)
         artifacts.append(artifact)
+        # Named as resolving this reference alone names it.
+        members.append(ref if by_run else _identity((artifact,), spec))
         if not model_type:
             model_type = _model_type_of(artifact, spec)
 
@@ -816,10 +824,10 @@ def resolve_model_set(
         artifacts=tuple(artifacts),
         run_id=run_id,
         digest=_identity(artifacts, spec),
+        members=tuple(members),
         model_type=model_type,
         library_id=served[0].library_id if single else "",
         library_uuid=served[0].library_uuid if single else "",
-        member_run_ids=() if len(refs) == 1 else tuple(registered),
     )
 
 

@@ -38,7 +38,9 @@ from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 import mosaic.tracking.ultralytics_track.run as ultralytics_run
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.read_target import verified_read_facts
+from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.scope import Scope
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
 from mosaic.tracking.external import runner as runner_package
 from mosaic.tracking.external.runner.ultralytics_protocol import (
@@ -52,7 +54,13 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
 )
 from mosaic.tracking.ultralytics_track.tracker_defaults import TRACKER_NAMES
 
-from tests.helpers import write_media_index
+from tests.helpers import (
+    install_fake_point_probe,
+    install_fake_pose_probe,
+    make_dataset,
+    write_media_index,
+    write_painted_entry,
+)
 from tests.test_ultralytics_rows import FakeDetections, FakeResult
 
 # Selected by CI's `tracking` job with `-m tracker` rather than by a filename
@@ -484,3 +492,92 @@ def test_gated_media_facts_survive_the_crossing(
     # Flattened rather than pickled: what crossed is JSON a reader can inspect.
     request = TrackRequest.model_validate_json(stand_in.payloads[1])
     assert request.media_facts == dataclasses.asdict(measured)
+
+
+# --- a frame window, read by the runner's own loop ---------------------------
+
+
+@dataclasses.dataclass
+class _Found:
+    """One frame's result from weights that find one pose and one point in it."""
+
+    keypoints: FakeDetections
+    locations: FakeDetections
+    names: dict[int, str]
+
+    def plot(self) -> np.ndarray:
+        return np.zeros((1, 1, 3), np.uint8)
+
+
+class _FindsOneOfEach:
+    """Weights that find one two-keypoint pose and one point in every frame."""
+
+    def predict(self, source: list[np.ndarray], **_kwargs: object) -> list[_Found]:
+        pose = np.array([[[1.0, 2.0, 0.9], [5.0, 8.0, 0.8]]])
+        point = np.array([[3.0, 4.0, 0.9, 0.0]])
+        return [
+            _Found(FakeDetections(pose), FakeDetections(point), {0: "bee"})
+            for _ in source
+        ]
+
+
+def _gray(_frame: int) -> np.ndarray:
+    return np.full((48, 64, 3), 100, np.uint8)
+
+
+@pytest.mark.media
+@pytest.mark.parametrize("kind", ["infer-pose", "infer-points"])
+def test_a_windowed_run_publishes_the_frames_that_the_runner_read(
+    runner_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kind: str,
+    requires_ffmpeg: None,
+) -> None:
+    """``start_frame`` 5 and ``frame_step`` 2 publish frames 5, 7, 9 and so on.
+
+    The runner program runs in this process on a real clip of twenty frames at
+    25 fps, through its own parser, request models, reader and frame loop. Only
+    the probe and the weights are stood in for.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    _ = write_painted_entry(ds, "sess", [(20, 25.0)], _gray)
+    model = tmp_path / "weights" / "best.pt"
+    model.parent.mkdir()
+    _ = model.write_bytes(b"weights")
+    if kind == "infer-pose":
+        install_fake_pose_probe(monkeypatch)
+    else:
+        install_fake_point_probe(monkeypatch)
+
+    def loaded_for(_request: object) -> _FindsOneOfEach:
+        return _FindsOneOfEach()
+
+    monkeypatch.setattr(runner_module, "_loaded_for", loaded_for)
+
+    def run_runner(
+        _env: object,
+        _failure: object,
+        subcommand: str,
+        request_path: Path,
+        response_path: Path,
+        **_kwargs: object,
+    ) -> tuple[str, str]:
+        argv = [subcommand, "--request", str(request_path), "--out", str(response_path)]
+        assert runner_module.main(argv) == 0
+        return "", ""
+
+    monkeypatch.setattr(ultralytics_infer, "run_runner", run_runner)
+
+    _ = run_op(
+        ds,
+        kind,
+        {"model": str(model), "start_frame": 5, "frame_step": 2},
+        scope=Scope(entries=[("", "sess")]),
+    )
+
+    (path,) = read_tracks_index(ds)["abs_path"].tolist()
+    table = pd.read_parquet(ds.resolve_path(str(path)))
+    read = list(range(5, 20, 2))
+    assert table["frame"].tolist() == read
+    assert table["time"].tolist() == pytest.approx([frame / 25.0 for frame in read])

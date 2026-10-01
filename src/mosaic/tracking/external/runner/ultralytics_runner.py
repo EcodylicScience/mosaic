@@ -679,9 +679,8 @@ def _write_annotated(
 ) -> None:
     """Draw one frame the way Ultralytics draws it, and save it.
 
-    Named for the **source** frame index, not the run's position, which is what
-    the in-process path wrote and the one place the two numbers differ visibly:
-    a windowed or stepped run's images stay addressable against the video they
+    Named for the frame's index in the video, as its rows are numbered, so a
+    windowed or stepped run's images stay addressable against the video they
     came from.
 
     ``cv2`` is imported here rather than at module scope so a run with no
@@ -709,6 +708,10 @@ def _infer_frames(
     rows: Callable[[ResultT, int], np.ndarray | None],
 ) -> _InferOutcome:
     """Read *request*'s window in batches, predict each, and keep only the rows.
+
+    Each frame's rows are numbered by the frame's index in the video, which the
+    reader returns with it, so a run with ``start_frame`` or ``frame_step`` set
+    publishes the frames that it read. The tracker numbers its rows the same way.
 
     The results themselves are dropped as each batch is converted. That is the
     one thing this loop does that the in-process path did not: it accumulated
@@ -755,7 +758,7 @@ def _infer_frames(
                 for offset, result in enumerate(results):
                     if not outcome.names:
                         outcome.names = dict(result.names)
-                    block = rows(result, outcome.n_frames + offset)
+                    block = rows(result, int(indices[offset]))
                     if block is not None:
                         outcome.blocks.append(block)
                     if annotated is not None:
@@ -821,8 +824,8 @@ def run_infer_pose(request: InferPoseRequest) -> InferResponse:
         request,
         model,
         _infer_kwargs(request),
-        lambda result, position: pose_rows_from_result(
-            result, position, n_keypoints=request.n_keypoints
+        lambda result, frame_index: pose_rows_from_result(
+            result, frame_index, n_keypoints=request.n_keypoints
         ),
     )
     table, n_rows = _numeric_frame(outcome.blocks, request.columns)

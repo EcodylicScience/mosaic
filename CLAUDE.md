@@ -814,7 +814,7 @@ src/mosaic/
 │   │   ├── preprocess_index.py # MediaVariantRow, its one writer and reader, missing/drifted errors
 │   │   ├── variant_source.py   # a variant's rows read once per scope, each entry resolved, drift refused
 │   │   ├── media_input.py      # MediaInputParams: the `media` parameter, frame windows refused
-│   │   ├── placement.py        # to_source_space: a variant's table mapped back to source space
+│   │   ├── placement.py        # EntryAxis: a tool's table placed on its entry's axes (variant, join)
 │   │   ├── inventory/          # what a dataset holds: coverage, status, params.json
 │   │   ├── graph/              # a pipeline as a file: recipe, plan, submit, run a step
 │   │   ├── writers.py          # parquet output writing, overlap trimming
@@ -958,9 +958,12 @@ mosaic run --graph-request <rid> --step <id>
 ```
 
 Every `index.csv` has a zero-byte `index.csv.lock` beside it — `index_lock`'s
-sidecar, created on the first locked write and **never removed**. It is not
-data, nothing reads it, and deleting it while a writer holds it reintroduces the
-lost update the lock prevents. Anything that enumerates a root should expect it.
+sidecar, created on the first locked write and **never removed**. A tracks
+variant's `params.json` has a `params.json.lock` beside it too, from the same
+lock, which `write_tracks_variant` takes to merge the record. Neither is data,
+nothing reads them, and deleting one while a writer holds it reintroduces the
+lost update the lock prevents. Anything that enumerates a root should expect
+them.
 
 ## Important Conventions
 
@@ -988,10 +991,17 @@ the same rule: the first pair is the table's own frame axis, measured from the
 parquet, and the third is the length of the **media axis** that table's frames are
 supposed to address, *passed* by the producer because only it knows what it
 resolved. Blank means unknown on all three, and
-`frame_axis_mismatches()` refuses to compare unless both sides are filled. A table
-tracked on a media variant records a blank `media_frames`, and
-`backfill_media_frames` leaves it blank, because a trimmed or decimated variant's
-table does not span its source axis.
+`frame_axis_mismatches()` refuses to compare unless both sides are filled. Every
+tracker and inference op publishes through `publish_tracks_table`, which takes
+the entry's `EntryAxis`
+([`core/pipeline/placement.py`](src/mosaic/core/pipeline/placement.py)) and
+records its `media_frames`: the summed clips of a multi-clip entry that the
+run read whole, and blank for one clip, a frame window, or a trimmed or decimated
+media variant, whose table does not span its source axis. It is recorded only for
+a producer whose `TrackingRoot` declares `rows_every_frame` (TREx and Lightning
+Pose). The others write rows only where they detect something, so their tables
+end at the last detection. `backfill_media_frames` follows the same declaration
+and leaves every variant's row blank.
 
 Three invariants worth knowing:
 
@@ -1296,10 +1306,10 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   `(run_id, group, sequence)`. The second says what `frame` counts *from*, and it
   applies at two levels. In a **discrete** dataset the enclosing unit is the
   sequence: a multi-clip sequence numbers frames across its ordered clips, which is
-  what `ConcatenatedTimeline` and `MultiVideoReader` already build and what
-  `joins_sources=True` makes a tracker deliver. In a **continuous** group -- one
-  declared in `continuous_groups`, whose sequences are time divisions of one
-  recording -- the enclosing unit is the group: frames are numbered across the whole
+  what `ConcatenatedTimeline` and `MultiVideoReader` already build and what a
+  tracker delivers by reading the entry's join. In a **continuous** group, one
+  declared in `continuous_groups` because its sequences are time divisions of one
+  recording, the enclosing unit is the group: frames are numbered across the whole
   recording, and its media resolves as one shared timeline for the same reason.
   Never a group of independent divisions each restarting at zero; that makes one
   frame number name a different moment in each, which is exactly what
@@ -1324,9 +1334,12 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   clips differ in frame rate: `MultiVideoReader` refuses such clips and stays strict,
   and both consumers find the join through `current_join`.
   Measured through the pipeline: the `.pv` index then equals the media index at
-  every former boundary. So `joins_sources` no longer means "this tool accepts a
-  list of files" but "this producer covers the whole entry", and all four
-  trackers declare it.
+  every former boundary. So every tracker and inference op covers the whole
+  entry, and clips that cannot be one video (`refuse_unjoinable`) are refused
+  before any of them runs. `infer-pose` and `infer-points` are handed the join as
+  the trackers are; `infer-localizer` reads in process, so it reads the clips on
+  the entry's axis (`read_entry_frames`) and their join only when `join_to_read`
+  says so.
 
   **A tracker reads a join only under a current recipe.** A join is named
   `<clip-set digest>.<recipe>.joined.mp4`, and the recipe folds the op version.
@@ -1362,7 +1375,8 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   1.5 is refused before publishing, keeping the partial. 1.5 is where mosaic's
   own reader stops checking for missing frames. The grid is not a clock: a
   mixed-rate session is labelled at its first clip's rate, and real time per
-  frame still comes from the clips' own facts (`retime_joined_frame`).
+  frame still comes from the clips' own facts (`retime_joined_frame`, which the
+  shared bridge applies to every producer's table from a join).
 
   The axis is also **measured against the media and reported** rather than merely
   asserted -- `media_frames` beside `frame_min`/`frame_max` on the tracks row, a

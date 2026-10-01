@@ -54,7 +54,7 @@ from mosaic.runlog import reduce_run_log, run_log_path
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.ops.infer import infer_run_root
-from mosaic.tracking.pose_training.localizer_inference import LocalizerDetection
+from mosaic.tracking.pose_training.localizer_inference import LocalizerFrame
 from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.sleap.run import SLEAP_ENV
 from mosaic.tracking.trex.conversion_cache import conversion_slot
@@ -230,7 +230,8 @@ def test_a_variant_item_describes_the_file_the_tool_reads(tmp_path: Path) -> Non
     assert item.media == variant
     assert item.consumed_media == (path, plain.video_path)
     assert plain.media == ""
-    assert plain.source_mapping is None
+    assert item.entry_axis(windowed=False).mapping is not None
+    assert plain.entry_axis(windowed=False).mapping is None
 
 
 # --- Ultralytics --------------------------------------------------------------
@@ -515,14 +516,19 @@ def _install_fake_localizer(
     videos: list[Path] = []
 
     def run(
-        _model_path: str, video_path: Path, **_kwargs: object
-    ) -> list[list[LocalizerDetection]]:
-        videos.append(Path(video_path))
-        if blind is not None and blind(Path(video_path)):
-            return [[], []]
+        _model_path: str, video_paths: Sequence[Path], **_kwargs: object
+    ) -> list[LocalizerFrame]:
+        (video_path,) = video_paths
+        videos.append(video_path)
+        if blind is not None and blind(video_path):
+            return [LocalizerFrame(0, ()), LocalizerFrame(1, ())]
         return [
-            [{"x": 1.0, "y": 4.0, "confidence": 0.9, "class_id": 0}],
-            [{"x": 3.0, "y": 6.0, "confidence": 0.8, "class_id": 0}],
+            LocalizerFrame(
+                0, ({"x": 1.0, "y": 4.0, "confidence": 0.9, "class_id": 0},)
+            ),
+            LocalizerFrame(
+                1, ({"x": 3.0, "y": 6.0, "confidence": 0.8, "class_id": 0},)
+            ),
         ]
 
     monkeypatch.setattr(localizer, "run_localizer_inference", run)
@@ -877,25 +883,28 @@ def test_an_inference_rerun_on_unchanged_media_republishes_the_same_table(
 
 
 def test_backfill_leaves_a_variant_table_media_frames_blank(
-    tmp_path: Path, model: Path, ultralytics: FakeUltralytics
+    tmp_path: Path, litpose_model: Path, litpose: FakeLitpose
 ) -> None:
     """A variant table does not span its source axis, and its length stays blank.
 
-    The entry-media table beside it is filled as before.
+    The entry-media table beside it is filled as before. Lightning Pose writes a
+    row at every frame it reads, so its tables are the ones measured.
     """
     ds = _dataset(tmp_path)
-    variant = _variant(ds)
-    on_variant = ultralytics_runs.run_ultralytics(
-        ds, _ultralytics_params(model, variant)
+    variant = _variant(ds, codec="h264")
+    on_variant = litpose_runs.run_litpose(
+        ds, LitposeParams(model_path=str(litpose_model), media=variant)
     )
-    on_entry = ultralytics_runs.run_ultralytics(ds, _ultralytics_params(model, ""))
+    on_entry = litpose_runs.run_litpose(
+        ds, LitposeParams(model_path=str(litpose_model))
+    )
 
     filled = backfill_media_frames(ds)
 
     assert filled["producer_run_id"].tolist() == [on_entry]
     recorded = {
         str(row["producer_run_id"]): read_media_frames(row)
-        for _, row in _tracks(ds, "ultralytics").iterrows()
+        for _, row in _tracks(ds, "litpose").iterrows()
     }
     assert recorded == {on_variant: None, on_entry: _FRAMES}
 

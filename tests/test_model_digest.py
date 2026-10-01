@@ -117,6 +117,7 @@ def test_the_model_id_is_never_the_path() -> None:
         ),
         run_id="",
         digest="abc123",
+        members=("abc123",),
     )
     assert resolved.model_id == "abc123"
     assert "best.pt" not in resolved.model_id

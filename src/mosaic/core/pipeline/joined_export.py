@@ -6,15 +6,14 @@ continuous axis spread over several files. mosaic reads that natively --
 present the clips as one timeline, so every in-process consumer sees the whole
 recording. An external binary cannot: it is handed a path and opens it itself.
 
-**Both ways of coping with that were wrong, in opposite directions.** SLEAP,
-Lightning Pose and Ultralytics declared ``joins_sources=False``, so the scope
-builder truncated the entry to clip 0 and tracked none of the rest. TREx declared
-``True`` and was handed the whole list -- and its ``FFmpegVideoCapture``
-under-counts every file it opens, then reads only as many frames as it counted,
-so each clip lost its tail and the published table's ``frame`` column stopped
-addressing the video. Measured on a six-clip fixture carrying its own frame
-numbers: 1,800 media frames converted to 1,788, the offset constant inside each
-clip and stepping by two at every boundary.
+**Both ways of coping with that were wrong, in opposite directions.** For SLEAP,
+Lightning Pose and Ultralytics the scope builder truncated the entry to clip 0,
+and they tracked none of the rest. TREx was handed the whole list, and its
+``FFmpegVideoCapture`` under-counts every file it opens, then reads only as many
+frames as it counted, so each clip lost its tail and the published table's
+``frame`` column stopped addressing the video. Measured on a six-clip fixture
+carrying its own frame numbers: 1,800 media frames converted to 1,788, the
+offset constant inside each clip and stepping by two at every boundary.
 
 ``JoinedExportOp`` (``kind="export-joined"``, ``domain="media"``) removes the
 choice by removing the premise. It writes **one** video holding the entry's clips
@@ -131,6 +130,7 @@ __all__ = [
     "MissingJoin",
     "current_join",
     "current_joined_recipes",
+    "entry_source_uid",
     "joined_export_path",
     "joined_recipe_hash",
     "joined_source_uid",
@@ -317,6 +317,23 @@ def joined_source_uid(facts: Sequence[MediaFacts]) -> str:
     return media_composition(members).digest
 
 
+def entry_source_uid(facts: Sequence[MediaFacts]) -> str:
+    """The identity of an entry's media, whichever file a consumer reads of it.
+
+    One clip's ``video_uuid``, and several clips' ordered composition digest
+    (:func:`joined_source_uid`): the value that
+    :attr:`~mosaic.tracking.common.scope.TrackerWorkItem.source_uid` gives the
+    same facts. An inference op handed the clips' join or a store's export, or
+    reading the clips themselves, records this value, so one entry has one
+    identity whatever path read it.
+
+    ``""`` for no facts, and for several clips when any carries no identity.
+    """
+    if len(facts) == 1:
+        return facts[0].video_uuid
+    return joined_source_uid(facts)
+
+
 def joined_export_path(ds: "Dataset", source_uid: str, recipe_hash: str) -> Path:
     """Where the join of one clip set by one recipe lives."""
     root = ds.get_root("media") / JOINED_KIND_DIRECTORY
@@ -450,7 +467,9 @@ def needs_join(paths: Sequence[Path], facts: Sequence[MediaFacts]) -> bool:
     a marginal session.
 
     ``False`` for one clip, which is its own timeline, and for an imgstore
-    sequence, whose reader compares no rate and reads the stores natively.
+    sequence. The store reader reads the stores natively and compares their
+    rates with the same tolerance, and ``export-joined`` does not join stores,
+    so stores whose rates differ beyond it are refused by the reader.
     """
     # Local: `uniformity` reaches `core.pipeline.media_index`, and this module is
     # imported from `core.pipeline.__init__`. A module-level import would make

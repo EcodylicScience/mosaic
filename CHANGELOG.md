@@ -8,6 +8,16 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a table from several clips is timed by each clip's rate
+
+**Track a SLEAP, Lightning Pose or Ultralytics entry of several clips again, with
+`--overwrite`.** A table of such an entry made before this change may cover only
+its first clip. One that covers every clip times each frame at the first clip's
+rate, which is wrong when the clips were recorded at different frame rates. A run
+that resolves to the same run id reuses the table, so only `--overwrite` replaces
+it. TRex tables were already timed by each clip, and the inference ops predict
+again on every run.
+
 ## Unreleased — every inference table carries a body centre, and three inference identifiers move
 
 **`infer-pose`, `infer-points` and `infer-localizer` re-address: `0.2 → 0.3`,

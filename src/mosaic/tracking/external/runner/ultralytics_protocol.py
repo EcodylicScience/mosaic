@@ -493,16 +493,13 @@ class PointResult(InferenceResult, Protocol):
 
 
 def pose_rows_from_result(
-    result: PoseResult, position: int, *, n_keypoints: int
+    result: PoseResult, frame_index: int, *, n_keypoints: int
 ) -> np.ndarray | None:
     """One frame's pose detections as a ``(n, 2 + 3K)`` block, or None.
 
-    *position* is how many frames the run has already processed, **not** the
-    source frame index. That is what the column has always held -- the in-process
-    converter numbered rows by their place in the results list -- and a run with
-    ``start_frame`` or ``frame_step`` set therefore numbers from zero by ones
-    whatever it read. Preserved here rather than corrected, so this move changes
-    the coordinate space and nothing else.
+    *frame_index* is the frame's index in the video, as :func:`rows_from_result`
+    takes it. A run with ``start_frame`` or ``frame_step`` set numbers its rows by
+    the frames it read, not by their places among them.
     """
     keypoints = result.keypoints
     if keypoints is None:
@@ -520,7 +517,7 @@ def pose_rows_from_result(
 
     n = data.shape[0]
     block = np.empty((n, 2 + 3 * n_keypoints), dtype=np.float64)
-    block[:, 0] = float(position)
+    block[:, 0] = float(frame_index)
     block[:, 1] = np.arange(n, dtype=np.float64)
     kp = np.empty((n, n_keypoints, 3), dtype=np.float64)
     kp[:, :, 0:2] = data[:, :, 0:2]
@@ -529,12 +526,12 @@ def pose_rows_from_result(
     return block
 
 
-def point_rows_from_result(result: PointResult, position: int) -> np.ndarray | None:
+def point_rows_from_result(result: PointResult, frame_index: int) -> np.ndarray | None:
     """One frame's point detections as a ``(n, 6)`` numeric block, or None.
 
     Six columns, not seven: ``class_name`` is a string and is mapped from
-    ``class_id`` once, when the table is assembled. *position* means what it does
-    in :func:`pose_rows_from_result`.
+    ``class_id`` once, when the table is assembled. *frame_index* means what it
+    does in :func:`pose_rows_from_result`.
 
     POLO writes a location as ``[x, y, conf, cls]`` or, when it also tracked it,
     ``[x, y, track_id, conf, cls]``. Both shapes are read, and the track id is
@@ -551,7 +548,7 @@ def point_rows_from_result(result: PointResult, position: int) -> np.ndarray | N
     n = data.shape[0]
     tracked = data.shape[1] >= _POINT_TRACKED_COLUMNS
     block = np.empty((n, 6), dtype=np.float64)
-    block[:, 0] = float(position)
+    block[:, 0] = float(frame_index)
     block[:, 1] = np.arange(n, dtype=np.float64)
     block[:, 2:4] = data[:, 0:2].astype(np.float64)
     block[:, 4] = data[:, 3 if tracked else 2].astype(np.float64)

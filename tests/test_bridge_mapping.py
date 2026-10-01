@@ -1,9 +1,10 @@
-"""Test the shared bridge's publishing of a table tracked on a media variant.
+"""Test the shared bridge's placing of a table on its entry's axes.
 
-``publish_tracks_table`` maps a table into its entry's source space when it is
-given a mapping, before the schema is checked, and reports the columns that the
-mapping dropped. ``publish_or_record`` turns that report into a run-log event,
-and a table the mapping refuses into a failed entry.
+``publish_tracks_table`` maps a table tracked on a media variant into its entry's
+source space, and times a table tracked on the join of an entry's clips by the
+clips, before the schema is checked. It reports the columns that either dropped.
+``publish_or_record`` turns that report into a run-log event, and a table the
+mapping refuses into a failed entry.
 """
 
 from __future__ import annotations
@@ -20,7 +21,11 @@ from mosaic.core.media.facts_columns import store_facts
 from mosaic.core.media.preprocess import CropStep, Placement, TrimStep
 from mosaic.core.media.timeline import concatenated_timeline
 from mosaic.core.pipeline.job import job_context
-from mosaic.core.pipeline.placement import SourceMapping, UnclassifiedColumnError
+from mosaic.core.pipeline.placement import (
+    EntryAxis,
+    SourceMapping,
+    UnclassifiedColumnError,
+)
 from mosaic.core.pipeline.run_log import read_run, run_log_dir, run_log_path
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.schema import TrackSchemaError
@@ -29,7 +34,7 @@ from mosaic.tracking.common.bridge import (
     publish_or_record,
     publish_tracks_table,
 )
-from tests.helpers import make_dataset
+from tests.helpers import clip_facts, make_dataset
 
 _KIND = "sleap"
 _VARIANT = "sleap.9.9-aaaaaaaaaa"
@@ -52,6 +57,16 @@ def _crop_and_trim() -> SourceMapping:
     ):
         placement = step.place(placement)
     return SourceMapping(placement, concatenated_timeline([clip]))
+
+
+def _variant_axis() -> EntryAxis:
+    return EntryAxis.of_variant(_crop_and_trim())
+
+
+def _joined_axis(*rates: float) -> EntryAxis:
+    """Return the axis of a join of one clip of ``_SOURCE_FRAMES`` per rate."""
+    clips = [clip_facts(fps=rate, frame_count=_SOURCE_FRAMES) for rate in rates]
+    return EntryAxis.of_entry_media(clips, windowed=False)
 
 
 def _variant_table() -> pd.DataFrame:
@@ -83,8 +98,7 @@ def _publish(
     ds: Dataset,
     table: pd.DataFrame,
     *,
-    mapping: SourceMapping | None = None,
-    dropped: tuple[str, ...] = (),
+    axis: EntryAxis | None = None,
     strict: bool = False,
 ) -> BridgeCounts:
     return publish_tracks_table(
@@ -97,8 +111,7 @@ def _publish(
         producer_run_id="sleap.9.9-bbbbbbbbbb",
         source=ds.get_root("tracks"),
         consumed=[],
-        mapping=mapping,
-        dropped=dropped,
+        axis=EntryAxis() if axis is None else axis,
         strict=strict,
     )
 
@@ -118,7 +131,7 @@ def _published(ds: Dataset) -> pd.DataFrame:
 def test_a_mapped_table_is_published_in_source_space(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path)
 
-    counts = _publish(ds, _variant_table(), mapping=_crop_and_trim())
+    counts = _publish(ds, _variant_table(), axis=_variant_axis())
 
     table = _published(ds)
     source_frames = _TRIM_START + np.arange(_ROWS)
@@ -155,7 +168,7 @@ def test_validation_reads_the_mapped_table(tmp_path: Path) -> None:
 
     with pytest.raises(TrackSchemaError, match="time"):
         _ = _publish(ds, untimed, strict=True)
-    counts = _publish(ds, untimed, mapping=_crop_and_trim(), strict=True)
+    counts = _publish(ds, untimed, axis=_variant_axis(), strict=True)
 
     assert counts.n_rows == _ROWS
     assert "time" in _published(ds).columns
@@ -185,7 +198,7 @@ def test_dropped_columns_reach_the_run_log(
         counts = publish_or_record(
             ctx,
             "g__s",
-            lambda: _publish(ds, _variant_table(), mapping=_crop_and_trim()),
+            lambda: _publish(ds, _variant_table(), axis=_variant_axis()),
             kind=_KIND,
         )
 
@@ -210,55 +223,63 @@ def test_dropped_columns_reach_the_run_log(
 def test_one_column_a_joined_retime_dropped_is_reported_in_the_singular(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """TREx's retiming of a joined conversion drops ``timestamp`` outside a variant."""
+    """A join's retiming drops ``timestamp``, which a tool mints from one rate."""
     ds = make_dataset(tmp_path)
-    table = _variant_table().drop(columns=["timestamp", "BORDER_DISTANCE"])
+    table = _variant_table().drop(columns=["BORDER_DISTANCE"])
 
     with job_context(ds, kind=_KIND, target=_KIND) as ctx:
         _ = publish_or_record(
-            ctx, "g__s", lambda: _publish(ds, table, dropped=("timestamp",)), kind=_KIND
+            ctx,
+            "g__s",
+            lambda: _publish(ds, table, axis=_joined_axis(30.0, 30.0)),
+            kind=_KIND,
         )
 
-    assert capsys.readouterr().err == (
+    # After the line that reports the four-row table against its 600 frames.
+    assert capsys.readouterr().err.endswith(
         f"[{_KIND}] g__s: published without timestamp, which does not map onto the "
         "source media's pixels, frames or clock.\n"
     )
 
 
-def test_columns_the_producer_dropped_are_reported_before_the_mappings(
-    tmp_path: Path,
-) -> None:
-    """TREx's retiming of a joined conversion drops columns before publishing."""
+def test_a_join_of_two_rates_drops_what_one_rate_spoiled(tmp_path: Path) -> None:
+    """Per-second columns computed against one rate go, in the table's order.
+
+    ``mosaic_v1`` forbids ``SPEED`` and ``VX`` whatever else happens, so the
+    table publishes only because the retiming dropped them before validation.
+    """
     ds = make_dataset(tmp_path)
-    table = _variant_table()
+    table = (
+        _variant_table()
+        .drop(columns=["BORDER_DISTANCE"])
+        .assign(SPEED=np.ones(_ROWS), VX=np.ones(_ROWS))
+    )
 
     with job_context(ds, kind=_KIND, target=_KIND) as ctx:
         counts = publish_or_record(
             ctx,
             "g__s",
-            lambda: _publish(
-                ds, table, mapping=_crop_and_trim(), dropped=("SPEED", "VX")
-            ),
+            lambda: _publish(ds, table, axis=_joined_axis(30.0, 31.0)),
             kind=_KIND,
         )
 
     assert counts is not None
-    assert counts.dropped == ("SPEED", "VX", "timestamp", "BORDER_DISTANCE")
+    assert counts.dropped == ("timestamp", "SPEED", "VX")
+    assert not {"timestamp", "SPEED", "VX"} & set(_published(ds).columns)
     assert [
         record["columns"]
         for record in _events(ds, ctx.execution_id)
         if record["ev"] == "columns_dropped"
-    ] == [["SPEED", "VX", "timestamp", "BORDER_DISTANCE"]]
+    ] == [["timestamp", "SPEED", "VX"]]
 
 
-def test_columns_the_producer_dropped_are_reported_without_a_mapping(
-    tmp_path: Path,
-) -> None:
+def test_a_table_from_one_clip_keeps_its_columns(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path)
 
-    counts = _publish(ds, _variant_table(), dropped=("SPEED",))
+    counts = _publish(ds, _variant_table(), axis=_joined_axis(30.0))
 
-    assert counts.dropped == ("SPEED",)
+    assert counts.dropped == ()
+    pd.testing.assert_frame_equal(_published(ds), _variant_table())
 
 
 def test_a_table_that_keeps_every_column_records_no_event(
@@ -285,7 +306,7 @@ def test_a_table_the_mapping_refuses_is_a_failed_entry(tmp_path: Path) -> None:
         counts = publish_or_record(
             ctx,
             "g__s",
-            lambda: _publish(ds, table, mapping=_crop_and_trim()),
+            lambda: _publish(ds, table, axis=_variant_axis()),
             kind=_KIND,
         )
 

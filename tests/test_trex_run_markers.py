@@ -452,10 +452,8 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
         tracks_variant: str,
         producer_run_id: str,
         consumed_media: Sequence[Path],
-        timeline: object,
-        media_frames: int | None,
+        axis: object,
         overwrite: bool,
-        mapping: object,
     ) -> BridgeCounts | None:
         written.append(Path(f"{group}__{sequence}"))
         assert overwrite is True, "a recomputed entry must overwrite its parquet"
@@ -1031,14 +1029,28 @@ def test_a_joined_session_reports_the_columns_its_retiming_dropped(
     assert dropped == [["timestamp"]]
 
 
-def test_an_analysis_range_run_asks_no_question(ds: Dataset, trex: FakeTrex) -> None:
-    """A run told to cover part of the video is not a run that lost the rest."""
+@pytest.mark.parametrize(
+    "window",
+    [
+        {"analysis_range": (0, 100)},
+        {"track_extra_settings": {"analysis_range": [0, 100]}},
+        {"convert_extra_settings": {"video_conversion_range": [0, 100]}},
+    ],
+    ids=["field", "track-setting", "convert-setting"],
+)
+def test_an_analysis_range_run_asks_no_question(
+    ds: Dataset, trex: FakeTrex, window: dict[str, object]
+) -> None:
+    """A run told to cover part of the video is not a run that lost the rest.
+
+    The range may be the field or a frame setting passed through to TREx.
+    """
     from mosaic.core.pipeline.tracks_index import read_media_frames
 
     trex.npz_frames = 100
     _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
 
-    _ = dr.run_trex(ds, TrexParams(analysis_range=(0, 100)), scope_over(("", "sess")))
+    _ = dr.run_trex(ds, TrexParams.model_validate(window), scope_over(("", "sess")))
 
     assert read_media_frames(_tracks_row(ds)) is None
     assert ds.frame_axis_mismatches() == ()
@@ -1046,13 +1058,7 @@ def test_an_analysis_range_run_asks_no_question(ds: Dataset, trex: FakeTrex) -> 
 
 
 def test_a_single_clip_entry_asks_no_question(ds: Dataset, trex: FakeTrex) -> None:
-    """One file has no concatenation to lose frames at, so there is nothing to catch.
-
-    And a great deal to get wrong: ``frame_max`` is the last frame carrying a
-    row, not the last frame the tracker saw, so an animal that leaves before the
-    end of a single-clip video would otherwise be reported as a broken frame
-    axis on every ordinary run.
-    """
+    """One file has no concatenation to lose frames at, so there is nothing to catch."""
     from mosaic.core.pipeline.tracks_index import read_media_frames
 
     trex.npz_frames = 40

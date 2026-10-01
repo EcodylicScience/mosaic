@@ -22,10 +22,16 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.op_identity import parse_op_run_id
+from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.tracks_index import read_tracks_index, tracks_index_path
 from mosaic.core.scope import Scope
 
-from tests.helpers import write_dlc_csv, write_sleap_analysis_h5, write_trex_npz
+from tests.helpers import (
+    clip_facts,
+    write_dlc_csv,
+    write_sleap_analysis_h5,
+    write_trex_npz,
+)
 
 
 def _dataset(base: Path) -> Dataset:
@@ -213,12 +219,10 @@ def test_the_tracker_bridge_records_the_run_and_a_portable_source(
         tracks_variant="trex.0.1-bbbbbbbbbb",
         producer_run_id="trex.0.1-cccccccccc",
         consumed_media=[video],
-        timeline=None,
-        # This suite is about provenance, not the frame axis: no timeline means
-        # no joined conversion, so there is no second axis to compare against.
-        media_frames=None,
+        # This suite is about provenance, not the frame axis: one clip has no
+        # second axis to compare against.
+        axis=EntryAxis(),
         overwrite=True,
-        mapping=None,
     )
 
     assert written is not None
@@ -253,12 +257,10 @@ def test_the_tracker_bridge_prefers_the_deepest_root_it_read(tmp_path: Path) -> 
         tracks_variant="trex.0.1-bbbbbbbbbb",
         producer_run_id="trex.0.1-cccccccccc",
         consumed_media=[video],
-        timeline=None,
-        # This suite is about provenance, not the frame axis: no timeline means
-        # no joined conversion, so there is no second axis to compare against.
-        media_frames=None,
+        # This suite is about provenance, not the frame axis: one clip has no
+        # second axis to compare against.
+        axis=EntryAxis(),
         overwrite=True,
-        mapping=None,
     )
 
     roots = set(str(_one_row(ds)["consumed_source_roots"]).split(","))
@@ -301,6 +303,8 @@ def test_the_inference_bridge_points_back_at_its_predictions(tmp_path: Path) -> 
         seq_dir=seq_dir,
         consumed_media=[video],
         model_pt=model,
+        timing=clip_facts(),
+        axis=EntryAxis(),
     )
 
     assert written.n_rows == 5
@@ -352,6 +356,8 @@ def test_a_second_producer_adds_a_row_rather_than_replacing_the_first(
         seq_dir=seq_dir,
         consumed_media=[ds.get_root("media_raw") / "vid1.mp4"],
         model_pt=ds.get_root("models") / "best.pt",
+        timing=clip_facts(),
+        axis=EntryAxis(),
     )
 
     rows = read_tracks_index(ds)
@@ -784,7 +790,7 @@ def test_the_sleap_bridge_records_the_run_and_a_portable_source(
         model_checkpoints=[],
         fps=30.0,
         overwrite=True,
-        mapping=None,
+        axis=EntryAxis(),
     )
 
     assert written is not None
@@ -829,7 +835,7 @@ def test_the_litpose_bridge_records_the_run_and_a_portable_source(
         model_files=[],
         fps=30.0,
         overwrite=True,
-        mapping=None,
+        axis=EntryAxis(),
     )
 
     assert written is not None

@@ -281,8 +281,9 @@ def run_trex_convert(
         per-second quantity T-Rex then reports, and its own ``time`` array, is
         wrong for the rest. See
         :func:`mosaic.core.media.timeline.concatenated_timeline` for the
-        reconstruction, and :func:`mosaic.tracking.trex.joined.retime_joined_frame`
-        for what mosaic does with it.
+        reconstruction, and
+        :func:`mosaic.core.pipeline.placement.retime_joined_frame` for what
+        mosaic does with it.
     output_dir : path
         Directory for output files (``.pv``, ``.settings``, background).
     params : TrexParams

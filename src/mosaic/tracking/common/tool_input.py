@@ -32,12 +32,12 @@ import os
 import subprocess
 import sys
 import textwrap
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from mosaic_media import SOFTWARE_DECODABLE_CODECS
+from mosaic_media import SOFTWARE_DECODABLE_CODECS, MediaFacts
 from mosaic_media.ffmpeg import run_to_completion
 from mosaic_media.transcode import TranscodeError
 
@@ -69,6 +69,7 @@ __all__ = [
     "DecodeProbe",
     "ProbeVerdict",
     "StoreExportMissingError",
+    "entry_tool_input",
     "refuse_undecodable_codec",
     "resolve_entry_input",
     "resolve_tool_input",
@@ -432,32 +433,29 @@ def resolve_tool_inputs(
         JoinedExportMissingError: If the entry has several clips and no joined
             export has been built for exactly that clip set.
     """
-    handed: tuple[Path, ...]
-    if item.variant is not None:
-        handed = (item.variant.path,)
-    else:
-        clips = tuple(
-            resolve_entry_input(ds, item.group, item.sequence, source, kind=kind)
-            for source in item.video_paths
-        )
-        # Several clips resolve to their join and the clips themselves are
-        # dropped, so the codec gate runs over what is returned rather than
-        # inside the comprehension above: an AV1 derivative about to be
-        # re-encoded into a uniform join is not a file any tool will open, and
-        # refusing it here would block a run that would have worked.
-        handed = clips if len(clips) < 2 else (_joined_input(ds, item, kind=kind),)
-    for target in handed:
-        refuse_undecodable_codec(
+    handed = (
+        item.variant.path
+        if item.variant is not None
+        else entry_tool_input(
             ds,
-            target,
+            item.group,
+            item.sequence,
+            item.video_paths,
+            item.source_facts,
             kind=kind,
-            group=item.group,
-            sequence=item.sequence,
-            variant=item.media,
-            decode_probe=decode_probe,
-            cancel_check=cancel_check,
         )
-    return handed
+    )
+    refuse_undecodable_codec(
+        ds,
+        handed,
+        kind=kind,
+        group=item.group,
+        sequence=item.sequence,
+        variant=item.media,
+        decode_probe=decode_probe,
+        cancel_check=cancel_check,
+    )
+    return (handed,)
 
 
 def resolve_tool_input(
@@ -501,8 +499,8 @@ def resolve_entry_input(
             f"[{kind}] ({group}, {sequence}) is an imgstore recording, "
             f"which {kind} cannot open -- it reads a video file, not a store "
             f"directory. Export it first:\n"
-            f"    mosaic run -m <manifest> --kind export-store --params "
-            f'\'{{"entry": ["{group}", "{sequence}"]}}\''
+            f"    mosaic run -m <manifest> --kind export-store "
+            f'--entries "{group}:{sequence}"'
         )
         raise StoreExportMissingError(message)
     if not export.is_file():
@@ -515,20 +513,51 @@ def resolve_entry_input(
     return export
 
 
-def _joined_input(ds: "Dataset", item: "TrackerWorkItem", *, kind: str) -> Path:
-    """The one video holding *item*'s clips, or a refusal naming how to build it.
+def entry_tool_input(
+    ds: "Dataset",
+    group: str,
+    sequence: str,
+    sources: Sequence[Path],
+    facts: Sequence[MediaFacts],
+    *,
+    kind: str,
+) -> Path:
+    """The one file that *kind*'s tool opens for an entry's media.
 
-    The lookup is :func:`~mosaic.core.pipeline.joined_export.current_join`'s,
-    over the clips whose composition ``item.source_uid`` digests for the reuse
-    gate.
+    Each clip is resolved first, so a store without an export is refused before
+    the join is looked up. One clip is the file itself, or its export. Several
+    clips are their current join, found by
+    :func:`~mosaic.core.pipeline.joined_export.current_join` over the clips'
+    routed facts, and the clips themselves are not handed over.
+
+    The codec gate is not run here. A clip that is joined may be in any codec,
+    because the tool opens the join, and the caller gates the file returned.
+
+    Args:
+        ds: The dataset, read for the media index and the ``media`` root.
+        group: The entry's group.
+        sequence: The entry's sequence.
+        sources: The entry's clips, in ``video_order``.
+        facts: The clips' routed facts, parallel to *sources*.
+        kind: The op that hands the file over, named in a refusal.
+
+    Raises:
+        StoreExportMissingError: If a clip is a store with no export registered,
+            or with a link pointing at a file that is gone.
+        JoinedExportMissingError: If the entry has several clips and no single
+            current join of exactly those clips.
     """
+    clips = [
+        resolve_entry_input(ds, group, sequence, source, kind=kind)
+        for source in sources
+    ]
+    if len(clips) < 2:
+        return clips[0]
     why = (
         f"{kind} is handed one video file, and a tool that joins clips itself "
         f"loses frames at every boundary, so mosaic joins them first."
     )
-    return current_join(
-        ds, item.group, item.sequence, item.source_facts, asker=kind, why=why
-    )
+    return current_join(ds, group, sequence, facts, asker=kind, why=why)
 
 
 def _registered_export(

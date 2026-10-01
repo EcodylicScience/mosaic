@@ -9,10 +9,12 @@ Requires: ``torch >= 2.0``
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from types import ModuleType
 
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import cv2
 import numpy as np
@@ -20,12 +22,15 @@ import pandas as pd
 from mosaic_media import MediaFacts
 from scipy.ndimage import maximum_filter
 
-from mosaic.core.media.video_io import open_frame_reader
+from mosaic.core.media.video_io import entry_paths, read_entry_frames
 from mosaic.optional_dependency import require
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     POINT_COLUMNS,
     POINT_DTYPES,
 )
+
+if TYPE_CHECKING:
+    from .localizer_model import LocalizerEncoder
 
 
 class LocalizerDetection(TypedDict):
@@ -35,6 +40,20 @@ class LocalizerDetection(TypedDict):
     y: float
     confidence: float
     class_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class LocalizerFrame:
+    """The locations that the localizer detected in one frame that it read.
+
+    Attributes:
+        frame: The frame's index in the video, or across an entry's clips when
+            it read several.
+        detections: The locations detected in the frame, which may be none.
+    """
+
+    frame: int
+    detections: tuple[LocalizerDetection, ...]
 
 
 def _require_torch() -> ModuleType:
@@ -168,7 +187,7 @@ def detect_locations(
 
 def run_localizer_inference(
     model_path: str | Path,
-    video_path: str | Path,
+    video_paths: str | Path | Sequence[Path],
     output_dir: str | Path | None = None,
     *,
     num_classes: int = 4,
@@ -184,16 +203,17 @@ def run_localizer_inference(
     refine_window: int = 7,
     point_radius: int = 4,
     class_colors: dict[int, tuple[int, int, int]] | None = None,
-    facts: MediaFacts | None = None,
-) -> list[list[LocalizerDetection]]:
-    """Run localizer inference on a video.
+    facts: Sequence[MediaFacts] | None = None,
+) -> list[LocalizerFrame]:
+    """Run localizer inference on a video, or on an entry's clips as one video.
 
     Parameters
     ----------
     model_path : path
         Path to trained ``.pt`` or ``.h5`` model weights.
-    video_path : path
-        Path to input video.
+    video_paths : path or sequence of path
+        The input video, or an entry's clips in order. A frame is numbered by its
+        index counted across them (:func:`read_entry_frames`).
     output_dir : path, optional
         Where to save annotated frames.
     num_classes : int
@@ -221,37 +241,28 @@ def run_localizer_inference(
 
     Returns
     -------
-    list of list of dict
-        Per-frame detection lists.
+    list of LocalizerFrame
+        The detections of each frame read, in order, each with the frame's index.
+        Under ``start_frame`` or ``frame_step`` that is the index of the frame
+        read, not its place among the frames read.
     """
-    torch = _require_torch()
-    from .localizer_model import LocalizerEncoder
-    from .localizer_weights import load_localizer_weights
-
-    # Load model
-    encoder = LocalizerEncoder(
-        num_classes=num_classes, initial_channels=initial_channels
+    encoder = _load_encoder(
+        model_path,
+        num_classes=num_classes,
+        initial_channels=initial_channels,
+        device=device,
     )
-    load_localizer_weights(encoder, model_path)
 
-    if device == "cpu":
-        dev = torch.device("cpu")
-    else:
-        dev = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
-
-    encoder.to(dev)
-    encoder.eval()
-
-    # Open video (imgstore-aware)
-    reader = open_frame_reader(
-        video_path,
+    # Imgstore-aware, and one frame axis over several clips.
+    paths = entry_paths(video_paths)
+    frames = read_entry_frames(
+        paths,
+        facts=facts,
         start_frame=start_frame,
         end_frame=end_frame,
         frame_step=frame_step,
-        facts=facts,
         target="analysis",
     )
-    total_str = str(reader.frame_count)
 
     if output_dir is not None:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -261,11 +272,11 @@ def run_localizer_inference(
         palette = [(0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255)]
         class_colors = {i: palette[i % len(palette)] for i in range(num_classes)}
 
-    all_results: list[list[LocalizerDetection]] = []
+    all_results: list[LocalizerFrame] = []
     processed = 0
 
     try:
-        for frame_idx, frame in reader:
+        for frame_idx, frame in frames:
             detections = detect_locations(
                 encoder,
                 frame,
@@ -274,7 +285,7 @@ def run_localizer_inference(
                 min_distance=min_distance,
                 refine_window=refine_window,
             )
-            all_results.append(detections)
+            all_results.append(LocalizerFrame(frame_idx, tuple(detections)))
 
             if save_images and output_dir is not None:
                 annotated = frame.copy()
@@ -290,14 +301,39 @@ def run_localizer_inference(
             if max_frames is not None and processed >= max_frames:
                 break
     finally:
-        reader.close()
+        frames.close()
 
-    print(
-        f"[localizer_inference] Processed {processed}/{total_str} "
-        f"frames from {video_path}"
-    )
+    names = ", ".join(path.name for path in paths)
+    print(f"[localizer_inference] Processed {processed} frames from {names}")
 
     return all_results
+
+
+def _load_encoder(
+    model_path: str | Path, *, num_classes: int, initial_channels: int, device: str
+) -> LocalizerEncoder:
+    """Return the localizer network with *model_path*'s weights, ready to run.
+
+    The network is on *device*, a GPU index or ``"cpu"``, and in eval mode. A GPU
+    index falls back to the CPU when CUDA is not available.
+    """
+    torch = _require_torch()
+    from .localizer_model import LocalizerEncoder
+    from .localizer_weights import load_localizer_weights
+
+    encoder = LocalizerEncoder(
+        num_classes=num_classes, initial_channels=initial_channels
+    )
+    load_localizer_weights(encoder, model_path)
+
+    if device == "cpu":
+        dev = torch.device("cpu")
+    else:
+        dev = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
+
+    encoder.to(dev)
+    encoder.eval()
+    return encoder
 
 
 # --------------------------------------------------------------------------- #
@@ -306,15 +342,16 @@ def run_localizer_inference(
 
 
 def localizer_detections_to_dataframe(
-    results: list[list[LocalizerDetection]],
+    results: Sequence[LocalizerFrame],
     class_names: list[str] | None = None,
 ) -> pd.DataFrame:
     """Convert localizer detection results to a DataFrame.
 
     Parameters
     ----------
-    results : list of list of dict
-        Per-frame detection lists from :func:`run_localizer_inference`.
+    results : sequence of LocalizerFrame
+        Per-frame detections from :func:`run_localizer_inference`. Each row's
+        ``frame`` is the frame index that they carry.
     class_names : list of str, optional
         Human-readable class names.
 
@@ -326,12 +363,12 @@ def localizer_detections_to_dataframe(
         give an empty table that still names every column.
     """
     rows: list[dict[str, float | int | str]] = []
-    for frame_idx, detections in enumerate(results):
-        for det_idx, det in enumerate(detections):
+    for result in results:
+        for det_idx, det in enumerate(result.detections):
             class_id = det["class_id"]
             rows.append(
                 {
-                    "frame": frame_idx,
+                    "frame": result.frame,
                     "detection_id": det_idx,
                     "x": det["x"],
                     "y": det["y"],

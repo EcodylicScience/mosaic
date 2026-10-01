@@ -35,11 +35,11 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline.placement import SourceMapping, to_source_space
+from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import consumed_roots_for, write_tracks_row
-from mosaic.core.pipeline.tracking_roots import tracking_output_schema
+from mosaic.core.pipeline.tracking_roots import tracking_root
 from mosaic.core.pipeline.types.data_config import COLUMNS
 from mosaic.core.schema import ensure_track_schema
 
@@ -69,14 +69,16 @@ class BridgeCounts:
     ``frame_span`` and ``media_frames`` are the two ends of one comparison: how
     far the table's own frame axis reaches, and how long the axis of the media it
     came from was. Both default to ``None``, which means *not measured* and never
-    zero -- a reused table makes no measurement, and a producer that does not
-    join a session's clips has no second axis to compare against.
+    zero. A reused table makes no measurement. A published one has no second
+    axis to compare against when
+    :attr:`~mosaic.core.pipeline.placement.EntryAxis.media_frames` says so, or
+    when its producer writes rows only where it detects something
+    (:attr:`~mosaic.core.pipeline.tracking_roots.TrackingRoot.rows_every_frame`).
 
     ``dropped`` names the columns removed before the table was published because
-    they do not map onto the source media's pixels, frames or clock: those that
-    the producer's retiming removed, then those that a mapping from a media
-    variant removed, each in the table's column order. It is empty when the table
-    kept every column.
+    they do not map onto the source media's pixels, frames or clock, in the
+    table's column order: those that a joined entry's retiming or a media
+    variant's mapping removed. It is empty when the table kept every column.
     """
 
     n_rows: int
@@ -174,18 +176,20 @@ def publish_tracks_table(
     producer_run_id: str,
     source: Path,
     consumed: Sequence[Path],
-    media_frames: int | None = None,
-    mapping: SourceMapping | None = None,
-    dropped: Sequence[str] = (),
+    axis: EntryAxis,
     strict: bool = False,
 ) -> BridgeCounts:
     """Write one converted frame as this variant's table for one entry.
 
+    Every tracker and inference op publishes through here, so every table is
+    placed on its entry's axes the same way, and every row records the media axis
+    that its frames address whenever a comparison with it means something. The
+    producer says only what it read, as *axis*, and cannot leave either out.
+
     Args:
         ds: The dataset.
-        df: The converted frame, already in standardized columns. When
-            *mapping* is given, its positions and frames are the media
-            variant's.
+        df: The converted frame, already in standardized columns, on the axes
+            of the file that the tool read.
         kind: The producing tracker, recorded as the row's ``producer``.
         group: The entry's group, which may be empty.
         sequence: The entry's sequence.
@@ -197,24 +201,16 @@ def publish_tracks_table(
             the video, and any model files. Only those under a dataset root
             contribute; an external model directory sits under none, which is
             correct, because its identity is already in the run identifier.
-        media_frames: How long the media axis this table's frames are supposed to
-            address was. ``None`` -- the default every producer takes until it
-            says otherwise -- records a blank cell and makes no comparison.
-
-            The producer's to supply, not this function's to derive, for the same
-            reason ``records_media`` is: only the caller knows what it resolved
-            and how much of it the tool was asked to read. Which producers can
-            answer is declared knowledge --
-            :attr:`~mosaic.core.pipeline.tracking_roots.TrackingRoot.joins_sources`
-            marks the ones whose tool is handed a whole session, and those are
-            the ones where the two axes can come apart.
-        mapping: The placement in the entry's media of the media variant that
-            the tool read. When given, *df* is mapped into source space first,
-            and the table validated, written and counted is the mapped one.
-            ``None`` publishes *df* as it is.
-        dropped: The columns that the producer removed from *df* before passing
-            it on, such as those that TREx's retiming of a joined conversion
-            drops. They are reported with the ones that the mapping drops.
+        axis: What the tool read of the entry's media. *df* is placed on the
+            entry's axes first (:meth:`EntryAxis.place`): a media variant's
+            table is mapped into source space, and a table from the join of
+            several clips is timed by the clips. The table validated, written
+            and counted is the placed one. The row records
+            :attr:`EntryAxis.media_frames` when *kind* writes rows at every frame
+            it reads (``TrackingRoot.rows_every_frame``), and a blank when it
+            does not or when the value is ``None``. A table with rows only
+            where something was detected ends at its last detection, which
+            says nothing about how much of the media was read.
         strict: Raise when the table lacks a column that its schema requires,
             rather than printing the report and publishing it.
 
@@ -222,20 +218,21 @@ def publish_tracks_table(
         Counts of the published table, and every column dropped from it.
 
     Raises:
-        UnclassifiedColumnError: If *mapping* is given and the table has a
+        UnclassifiedColumnError: If *axis* reads a variant and the table has a
             numeric column that the mapping cannot classify.
-        ValueError: If *mapping* is given and a frame column contains a value
-            that is not a whole frame number.
+        ValueError: If *axis* reads a variant and a frame column contains a
+            value that is not a whole frame number, or a clip of *axis* reports
+            no frame rate.
         ForbiddenTrackColumnError: If the table has a column that its schema
             forbids, whatever *strict* says.
         TrackSchemaError: If *strict* and the table lacks a required column.
     """
-    removed = tuple(dropped)
-    if mapping is not None:
-        mapped = to_source_space(df, mapping)
-        df, removed = mapped.frame, (*removed, *mapped.dropped)
+    root = tracking_root(kind)
+    placed = axis.place(df)
+    df = placed.frame
+    media_frames = axis.media_frames if root.rows_every_frame else None
     out_path = tracks_table_path(ds, tracks_variant, make_entry_key(group, sequence))
-    std_format = tracking_output_schema(kind)
+    std_format = root.output_schema
     ensure_track_schema(df, std_format, strict=strict, source=f"{group}/{sequence}")
 
     _ = write_parquet_atomic(df, out_path)
@@ -260,7 +257,10 @@ def publish_tracks_table(
         records_media=True,
     )
     return replace(
-        counts, frame_span=frame_span(df), media_frames=media_frames, dropped=removed
+        counts,
+        frame_span=frame_span(df),
+        media_frames=media_frames,
+        dropped=placed.dropped,
     )
 
 
@@ -313,9 +313,9 @@ def publish_or_record(
 
     **Dropped columns are reported the same way.** A table mapped from a media
     variant into source space publishes without the columns that the mapping
-    cannot correct, and a joined TREx conversion without the columns computed
-    against its single frame rate. The entry succeeded, and the names go to the
-    run-log as a ``columns_dropped`` event and to stderr.
+    cannot correct, and a table from the join of an entry's clips without the
+    columns computed against its single frame rate. The entry succeeded, and the
+    names go to the run-log as a ``columns_dropped`` event and to stderr.
 
     Args:
         ctx: The attempt's Job Contract, which owns the run-log.

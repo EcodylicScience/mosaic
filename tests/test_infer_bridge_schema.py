@@ -31,6 +31,7 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline import tracks_index
+from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.tracking_roots import tracking_output_schema
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.schema import ensure_track_schema
@@ -44,11 +45,14 @@ from mosaic.tracking.ops import infer as infer_module
 from mosaic.tracking.ops.infer import _bridge_df_to_tracks
 from mosaic.tracking.pose_training.localizer_inference import (
     LocalizerDetection,
+    LocalizerFrame,
     localizer_detections_to_dataframe,
 )
+from tests.helpers import clip_facts
 
 _N_KEYPOINTS = 3
 _N_ROWS = 4
+_TWO_BLIND_FRAMES = (LocalizerFrame(0, ()), LocalizerFrame(1, ()))
 
 
 def _dataset(base: Path, kind: str) -> Dataset:
@@ -104,7 +108,9 @@ def _localizer_predictions() -> pd.DataFrame:
     """What mosaic's own heatmap localizer emits, through its real builder."""
     return localizer_detections_to_dataframe(
         [
-            [{"x": 1.0 + i, "y": 5.0 + i, "confidence": 0.9, "class_id": 0}]
+            LocalizerFrame(
+                i, ({"x": 1.0 + i, "y": 5.0 + i, "confidence": 0.9, "class_id": 0},)
+            )
             for i in range(_N_ROWS)
         ],
         class_names=["bee"],
@@ -121,7 +127,7 @@ _PRODUCERS = {
 _NO_DETECTIONS = {
     "infer-pose": lambda: _pose_predictions().iloc[0:0],
     "infer-points": lambda: _point_predictions().iloc[0:0],
-    "infer-localizer": lambda: localizer_detections_to_dataframe([[], []]),
+    "infer-localizer": lambda: localizer_detections_to_dataframe(_TWO_BLIND_FRAMES),
 }
 """Each producer's predictions for a video without a detection.
 
@@ -155,6 +161,8 @@ def _publish(
         seq_dir=seq_dir,
         consumed_media=[video],
         model_pt=model,
+        timing=clip_facts(),
+        axis=EntryAxis(),
     )
 
     rows = read_tracks_index(ds)
@@ -263,8 +271,10 @@ def test_the_localizer_table_has_the_same_types_with_and_without_a_row() -> None
         "confidence": 0.9,
         "class_id": 0,
     }
-    full = localizer_detections_to_dataframe([[detection]], class_names=["bee"])
-    empty = localizer_detections_to_dataframe([[], []], class_names=["bee"])
+    full = localizer_detections_to_dataframe(
+        [LocalizerFrame(0, (detection,))], class_names=["bee"]
+    )
+    empty = localizer_detections_to_dataframe(_TWO_BLIND_FRAMES, class_names=["bee"])
 
     assert empty.empty
     assert list(full.columns) == list(POINT_COLUMNS)
@@ -297,8 +307,9 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
 ) -> None:
     """Pin every argument of the tracks row and every cell of the table.
 
-    The frame lacks ``id`` and ``time``, and both fallbacks run. It has two
-    keypoints, and the body center is derived from them.
+    The frame lacks ``id``, whose fallback runs, and ``time``, which is each
+    frame's time at the 30 fps of *timing*. It has two keypoints, and the body
+    center is derived from them.
     """
     kind = "infer-pose"
     ds = _dataset(tmp_path, kind)
@@ -331,6 +342,8 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
         seq_dir=seq_dir,
         consumed_media=[video],
         model_pt=model,
+        timing=clip_facts(),
+        axis=EntryAxis(),
     )
 
     out_path = ds.get_root("tracks") / variant / "g__s.parquet"
@@ -361,7 +374,7 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
                 "group": ["g"] * 3,
                 "sequence": ["s"] * 3,
                 "id": [0, 0, 0],
-                "time": [0, 1, 2],
+                "time": [0.0, 1 / 30, 2 / 30],
                 "X": [3.0, 4.0, 5.0],
                 "Y": [12.0, 22.0, 32.0],
             }
@@ -399,4 +412,6 @@ def test_a_table_with_no_position_at_all_is_refused(tmp_path: Path) -> None:
             seq_dir=seq_dir,
             consumed_media=[video],
             model_pt=model,
+            timing=clip_facts(),
+            axis=EntryAxis(),
         )

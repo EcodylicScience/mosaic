@@ -15,17 +15,19 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path
 
+from mosaic.core.pipeline.index_lock import index_lock
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracks_identity import (
     TRACKS_IDENTITY_SCHEME,
     convert_variant_payload,
     converter_op,
     infer_variant_payload,
-    observed_model_runs,
+    observed_models,
     read_tracks_variant,
-    recorded_model_runs,
+    recorded_models,
     tracks_run_id,
     tracks_variant_root,
     tracker_variant_payload,
@@ -159,27 +161,76 @@ def test_recording_a_variant_twice_is_idempotent(tmp_path: Path) -> None:
     assert second.read_text() == before
 
 
-def test_a_rewrite_keeps_the_member_runs_recorded_before_it(tmp_path: Path) -> None:
-    """The union of the member runs, those recorded first, in their order.
+def test_a_rewrite_keeps_the_models_recorded_before_it(tmp_path: Path) -> None:
+    """The union of the models, those recorded first, in their order.
 
     One set named by run ids and then by paths is one variant, and the second
-    record names no runs. Replacing the first would forget the runs a search for
-    a model's tracks reads.
+    record names each member by its digest. Replacing the first would forget the
+    runs a search for a model's tracks reads.
     """
     run_id = tracks_run_id("sleap", "1.6", {"model": "0e1d0e190f"})
     payload = {"model": "0e1d0e190f"}
 
     _ = write_tracks_variant(
-        tmp_path, run_id, "sleap", "1.6", payload, observed_model_runs(["a", "b"])
+        tmp_path, run_id, "sleap", "1.6", payload, observed_models(["a", "b"])
     )
     _ = write_tracks_variant(tmp_path, run_id, "sleap", "1.6", payload, {"x": "1"})
     _ = write_tracks_variant(
-        tmp_path, run_id, "sleap", "1.6", payload, observed_model_runs(["c", "a"])
+        tmp_path, run_id, "sleap", "1.6", payload, observed_models(["c", "a"])
     )
 
     sidecar = read_tracks_variant(tmp_path, run_id)
     assert sidecar is not None
-    assert recorded_model_runs(sidecar) == ("a", "b", "c")
+    assert recorded_models(sidecar) == ("a", "b", "c")
+
+
+def test_a_rewrite_waits_for_one_in_progress(tmp_path: Path) -> None:
+    """A record is read, merged and written under its own lock.
+
+    A second writer that read the record while the first was between its read
+    and its write would write back what it read, and lose the first's models.
+    """
+    run_id = tracks_run_id("sleap", "1.6", {"model": "0e1d0e190f"})
+    payload = {"model": "0e1d0e190f"}
+    path = write_tracks_variant(
+        tmp_path, run_id, "sleap", "1.6", payload, observed_models(["a"])
+    )
+
+    def rewrite(model: str) -> None:
+        _ = write_tracks_variant(
+            tmp_path, run_id, "sleap", "1.6", payload, observed_models([model])
+        )
+
+    with index_lock(path):
+        second = threading.Thread(target=rewrite, args=("c",))
+        second.start()
+        second.join(timeout=0.5)
+        waited = second.is_alive()
+        rewrite("b")
+    second.join()
+
+    sidecar = read_tracks_variant(tmp_path, run_id)
+    assert waited, "the second writer did not wait for the lock"
+    assert sidecar is not None
+    assert recorded_models(sidecar) == ("a", "b", "c")
+
+
+def test_a_record_without_the_models_says_so(tmp_path: Path) -> None:
+    """A record written before models were recorded is told apart from one of none."""
+    payload = {"model": "0e1d0e190f"}
+    before = tracks_run_id("sleap", "1.6", payload)
+    none = tracks_run_id("trex", "2.0", payload)
+    _ = write_tracks_variant(tmp_path, before, "sleap", "1.6", payload)
+    _ = write_tracks_variant(
+        tmp_path, none, "trex", "2.0", payload, observed_models([])
+    )
+
+    recorded = [read_tracks_variant(tmp_path, run_id) for run_id in (before, none)]
+
+    assert [
+        recorded_models(sidecar) if sidecar is not None else "unreadable"
+        for sidecar in recorded
+    ] == [None, ()]
 
 
 # --- The dataset seam ---------------------------------------------------------

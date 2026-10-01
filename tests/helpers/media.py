@@ -392,6 +392,24 @@ def write_media_index(
     pd.DataFrame(written).to_csv(media_root / "index.csv", index=False)
 
 
+def point_at_a_store(dataset: Dataset, sequence: str, store: Path) -> Path:
+    """Re-address *sequence*'s indexed media at an imgstore recording, *store*.
+
+    A store is a directory holding a ``metadata.yaml`` naming ``__store``, which
+    is all ``is_imgstore`` reads, so this needs no chunk files and no imgstore
+    package. Returns *store*.
+    """
+    store.mkdir(parents=True, exist_ok=True)
+    _ = (store / "metadata.yaml").write_text("__store: {}\n")
+    index_path = dataset.get_root(dataset.resolve_media_root()) / "index.csv"
+    table = pd.read_csv(index_path)
+    is_entry = table["sequence"] == sequence
+    table.loc[is_entry, "abs_path"] = dataset.relative_to_root(store)
+    table.loc[is_entry, "media_type"] = "imgstore"
+    table.to_csv(index_path, index=False)
+    return store
+
+
 def add_transcode_derivative(
     dataset: Dataset,
     sequence: str,

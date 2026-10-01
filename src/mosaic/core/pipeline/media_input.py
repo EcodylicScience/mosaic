@@ -56,13 +56,37 @@ class MediaInputParams(Params):
     op_kind: ClassVar[str] = ""
     """The op these parameters belong to, named in a refusal."""
 
-    @model_validator(mode="after")
-    def _refuse_a_frame_window_on_derived_media(self) -> Self:
-        """Refuse a frame window when ``media`` names a variant.
+    @property
+    def frame_window(self) -> tuple[str, ...]:
+        """Name every setting that narrows the frames the op reads, in declared order.
 
         A field counts as set when it differs from its default. Restating a
-        default is not refused. A settings key counts as set when its value is not
-        null. The tools read null as the setting left unset.
+        default does not narrow anything. A settings key counts as set when its
+        value is not null. The tools read null as the setting left unset. Each
+        name is spelled as a refusal spells it. Empty when the op reads every
+        frame.
+        """
+        fields = type(self).model_fields
+        named: list[str] = []
+        for name in self.window_fields:
+            value: object = getattr(self, name)
+            default: object = fields[name].get_default(call_default_factory=True)
+            if value != default:
+                named.append(f"`{name}`")
+        for settings_field, keys in self.extra_settings_window_keys.items():
+            settings: JsonValue = getattr(self, settings_field)
+            if not isinstance(settings, dict):
+                continue
+            named.extend(
+                f"`{key}` in `{settings_field}`"
+                for key in keys
+                if settings.get(key) is not None
+            )
+        return tuple(named)
+
+    @model_validator(mode="after")
+    def _refuse_a_frame_window_on_derived_media(self) -> Self:
+        """Refuse a frame window (:attr:`frame_window`) when ``media`` names a variant.
 
         The refusal names the variant only when ``media`` is a preprocess run
         identifier. A recipe step that refers to another step's variant is checked
@@ -71,22 +95,7 @@ class MediaInputParams(Params):
         """
         if not self.media:
             return self
-        fields = type(self).model_fields
-        offending: list[str] = []
-        for name in self.window_fields:
-            value: object = getattr(self, name)
-            default: object = fields[name].get_default(call_default_factory=True)
-            if value != default:
-                offending.append(f"`{name}`")
-        for settings_field, keys in self.extra_settings_window_keys.items():
-            settings: JsonValue = getattr(self, settings_field)
-            if not isinstance(settings, dict):
-                continue
-            offending.extend(
-                f"`{key}` in `{settings_field}`"
-                for key in keys
-                if settings.get(key) is not None
-            )
+        offending = self.frame_window
         if not offending:
             return self
         parsed = parse_op_run_id(self.media)

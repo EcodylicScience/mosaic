@@ -7,13 +7,10 @@ is identical, and was written three times.
 
 Two collapses happen here, and both are load-bearing rather than tidy-up:
 
-* **Several videos under one entry** are handed over whole to a tracker that
-  declares ``joins_sources``, and **truncated to the first** for one that does
-  not. A recorder that chops a session into clips leaves a boundary that is a
-  filesystem artifact, not an event, so a tool able to read the clips as one
-  video should not be made to see only the first of them. A tool that cannot is
-  told, on stderr, that the rest were dropped -- silently tracking part of a
-  sequence would be worse than saying so.
+* **Several videos under one entry** stay on one work item, which covers them
+  all. A recorder that chops a session into clips leaves a boundary that is a
+  filesystem artifact, not an event, and every tool is handed the clips' join as
+  one video (:mod:`mosaic.core.pipeline.joined_export`).
 * **Several cameras under one entry** collapse onto one work item. The working
   directory is keyed on ``(group, sequence)`` with no camera, so a multi-camera
   sequence's entries all resolve to one directory. Left as several, the second
@@ -42,7 +39,7 @@ instead, and the consumer reconstructs time per clip through
 
 from __future__ import annotations
 
-import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -51,12 +48,11 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.media.uniformity import geometry_mismatch
 from mosaic.core.pipeline.composition import MediaMember, media_composition
 from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
-from mosaic.core.pipeline.placement import SourceMapping
+from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.preprocess_index import (
     MediaVariantDriftedError,
     MediaVariantMissingError,
 )
-from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.variant_source import VariantLookup, VariantSource
 
 if TYPE_CHECKING:
@@ -70,6 +66,7 @@ __all__ = [
     "UnresolvedEntry",
     "WorkItems",
     "build_work_items",
+    "refuse_unjoinable",
 ]
 
 
@@ -104,12 +101,11 @@ class TrackerWorkItem:
     fps: float
     """The frame rate of ``video_path``, i.e. of the **first** clip.
 
-    Deliberately not a mean over the clips. The three trackers that read this
-    pass it to their converter and track only the first clip anyway, so a
-    session-wide average would mistime exactly the output it reached. A consumer
-    that joins the clips must ignore it and build a
-    :class:`~mosaic.core.media.timeline.ConcatenatedTimeline` instead, because no
-    single rate indexes a session whose clips disagree.
+    Deliberately not a mean over the clips, because a mean describes none of
+    them. It is the rate a tool reads the clips' join at, since the join is
+    labeled at its first clip's rate. No single rate indexes a session whose
+    clips disagree, so the shared bridge retimes a table from several clips by
+    each clip's own rate (:meth:`entry_axis`).
     """
 
     source_facts: tuple[MediaFacts, ...] = ()
@@ -224,14 +220,22 @@ class TrackerWorkItem:
             return self.variant.consumed_media
         return self.video_paths
 
-    @property
-    def source_mapping(self) -> SourceMapping | None:
-        """The mapping of a table tracked on this item into source space, if needed.
+    def entry_axis(self, *, windowed: bool) -> EntryAxis:
+        """Where a table tracked on this item sits on its entry's axes.
 
-        It is ``None`` when the item reads the entry media, whose table is already
-        in source space.
+        Args:
+            windowed: Whether the run reads fewer than every frame, as
+                :attr:`~mosaic.core.pipeline.media_input.MediaInputParams.frame_window`
+                says. A variant item ignores it, because a frame window is
+                refused beside a variant.
+
+        Returns:
+            The variant's mapping for a variant item, and otherwise the entry's
+            clips, whose join a tool read when there are several.
         """
-        return self.variant.mapping() if self.variant is not None else None
+        if self.variant is not None:
+            return EntryAxis.of_variant(self.variant.mapping())
+        return EntryAxis.of_entry_media(self.source_facts, windowed=windowed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,9 +288,9 @@ def build_work_items(
         ds: The dataset, read for its default frame rate when an entry's media
             index carries none.
         scope: What ``Dataset.resolve_media_scope`` returned.
-        kind: The tracker's kind. It selects the tool's ``joins_sources``
-            capability and prefixes warnings, so a message names the tool the
-            user invoked rather than the shared machinery.
+        kind: The tracker's kind. It prefixes warnings and refusals, so a
+            message names the tool the user invoked rather than the shared
+            machinery.
         media: The media variant that each entry is read from, or ``""`` to read
             the entry media. A variant's file is resolved for the camera that each
             entry keeps.
@@ -297,14 +301,12 @@ def build_work_items(
         The work items, and each entry whose variant is missing or out of date.
 
     Raises:
-        JoinedSourceMismatchError: If a joining tracker's entry has clips that
-            disagree on frame geometry, or one whose frame rate is unknown.
+        JoinedSourceMismatchError: If an entry has clips that disagree on frame
+            geometry, or one whose frame rate is unknown.
     """
     fallback_fps = (
         ds.meta_float("fps_default", 30.0) if fps_default is None else fps_default
     )
-    root = TRACKING_ROOTS.get(kind)
-    joins = root is not None and root.joins_sources
     items: list[TrackerWorkItem] = []
     failures: list[UnresolvedEntry] = []
 
@@ -331,17 +333,7 @@ def build_work_items(
             continue
         paths = list(resolved.paths)
         facts = list(resolved.facts)
-        if len(paths) > 1 and not joins:
-            print(
-                f"[{kind}] ({group}, {sequence}) has {len(paths)} videos; using "
-                f"the first ({paths[0].name}). {kind} reads one video file, so "
-                f"the rest are not tracked.",
-                file=sys.stderr,
-            )
-            paths, facts = paths[:1], facts[:1]
-
-        if len(paths) > 1:
-            _refuse_unjoinable(kind, group, sequence, paths, facts)
+        refuse_unjoinable(kind, group, sequence, paths, facts)
 
         items.append(
             TrackerWorkItem(
@@ -378,18 +370,27 @@ def _variant_item(
     )
 
 
-def _refuse_unjoinable(
+def refuse_unjoinable(
     kind: str,
     group: str,
     sequence: str,
-    paths: list[Path],
-    facts: list[MediaFacts],
+    paths: Sequence[Path],
+    facts: Sequence[MediaFacts],
 ) -> None:
     """Raise unless *facts* describe clips that can be read as one video.
 
-    Checked here, before a work item exists, so a run dies naming the file and
-    the field rather than inside a subprocess whose traceback names neither.
+    Checked before any work starts, by the trackers as they build their work
+    items and by the inference ops as they resolve their entries, so a run dies
+    naming the file and the field rather than inside a subprocess whose
+    traceback names neither. One clip is its own video and passes.
+
+    Raises:
+        JoinedSourceMismatchError: If the clips lack one set of facts each,
+            disagree on frame geometry, or include one whose frame rate is
+            unknown.
     """
+    if len(paths) < 2:
+        return
     entry = f"({group}, {sequence})"
     if len(facts) != len(paths):
         raise JoinedSourceMismatchError(
@@ -401,7 +402,7 @@ def _refuse_unjoinable(
     mismatch = geometry_mismatch(facts)
     if mismatch is not None:
         raise JoinedSourceMismatchError(
-            f"[{kind}] {entry} cannot be tracked as one video: "
+            f"[{kind}] {entry} cannot be read as one video: "
             f"{paths[mismatch.index].name} has {mismatch.field} "
             f"{mismatch.other} where {paths[0].name} has {mismatch.first}. "
             f"Clips of one sequence must decode to the same frame. "
@@ -412,7 +413,7 @@ def _refuse_unjoinable(
     for position, clip in enumerate(facts):
         if clip.fps <= 0:
             raise JoinedSourceMismatchError(
-                f"[{kind}] {entry} cannot be tracked as one video: "
+                f"[{kind}] {entry} cannot be read as one video: "
                 f"{paths[position].name} reports no frame rate, so its frames "
                 f"cannot be placed on the sequence's time axis. A default would "
                 f"put a wrong slope on one clip of an otherwise measured "

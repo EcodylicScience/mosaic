@@ -100,6 +100,28 @@ class FakeInference:
         )
 
 
+def install_fake_pose_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand in for the probe of ``infer-pose``'s environment: a two-keypoint model."""
+    import mosaic.tracking.common.ultralytics_env as tool_env
+
+    def probe(_model_path: str, **_kwargs: object) -> ProbeResponse:
+        return ultralytics_probe_response("pose", n_keypoints=2)
+
+    monkeypatch.setattr(tool_env, "probe_environment", probe)
+
+
+def install_fake_point_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand in for the probe of ``infer-points``'s POLO environment."""
+    import mosaic.tracking.common.ultralytics_env as tool_env
+
+    def probe(_model_path: str, **_kwargs: object) -> ProbeResponse:
+        return ultralytics_probe_response(
+            "locate", has_locate=True, version="8.4.84", n_keypoints=1
+        )
+
+    monkeypatch.setattr(tool_env, "probe_environment", probe)
+
+
 def install_fake_pose_inference(
     monkeypatch: pytest.MonkeyPatch, predictions: PredictionsFor | None = None
 ) -> FakeInference:
@@ -107,15 +129,10 @@ def install_fake_pose_inference(
 
     Without *predictions*, every video gets :func:`pose_predictions`.
     """
-    import mosaic.tracking.common.ultralytics_env as tool_env
     import mosaic.tracking.pose_training.ultralytics_infer as infer_run
 
     fake = FakeInference(predictions or (lambda _video: pose_predictions()))
-
-    def probe(_model_path: str, **_kwargs: object) -> ProbeResponse:
-        return ultralytics_probe_response("pose", n_keypoints=2)
-
-    monkeypatch.setattr(tool_env, "probe_environment", probe)
+    install_fake_pose_probe(monkeypatch)
     monkeypatch.setattr(infer_run, "run_pose_inference_tool", fake.run)
     return fake
 
@@ -127,16 +144,9 @@ def install_fake_point_inference(
 
     Without *predictions*, every video gets :func:`point_predictions`.
     """
-    import mosaic.tracking.common.ultralytics_env as tool_env
     import mosaic.tracking.pose_training.ultralytics_infer as infer_run
 
     fake = FakeInference(predictions or (lambda _video: point_predictions()))
-
-    def probe(_model_path: str, **_kwargs: object) -> ProbeResponse:
-        return ultralytics_probe_response(
-            "locate", has_locate=True, version="8.4.84", n_keypoints=1
-        )
-
-    monkeypatch.setattr(tool_env, "probe_environment", probe)
+    install_fake_point_probe(monkeypatch)
     monkeypatch.setattr(infer_run, "run_point_inference_tool", fake.run)
     return fake

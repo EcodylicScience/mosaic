@@ -16,7 +16,7 @@ import pytest
 from mosaic_media import MediaFacts
 
 from mosaic.core.media.timeline import concatenated_timeline
-from mosaic.tracking.trex.joined import retime_joined_frame
+from mosaic.core.pipeline.placement import retime_joined_frame
 from tests.helpers import clip_facts
 
 

@@ -16,22 +16,27 @@ source-space value. This follows
 :func:`~mosaic.core.track_library.trex.unscale_to_pixels`, which refuses an
 unclassified column when it has a unit to convert.
 
-The retiming rule (:func:`retime`) is shared with the joined TRex conversion,
-which times a session of clips recorded at different rates.
+The retiming rule (:func:`retime`) also times a table tracked on the join of an
+entry's clips (:func:`retime_joined_frame`), whose clips may have been recorded at
+different rates. :class:`EntryAxis` says which of the two a tool's table needs,
+and how long the entry's frame axis is that the table is meant to span. The shared
+bridge applies it to every producer's table.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+from mosaic_media import MediaFacts
 
 from mosaic.core.media.preprocess.geometry import FrameMap, Placement
-from mosaic.core.media.timeline import ConcatenatedTimeline
+from mosaic.core.media.timeline import ConcatenatedTimeline, concatenated_timeline
 from mosaic.core.track_library.helpers import column_array, column_names
 from mosaic.core.track_library.trex import base_field
 
@@ -40,11 +45,13 @@ __all__ = [
     "INVARIANT_BASES",
     "RATE_DEPENDENT_BASES",
     "ColumnKind",
+    "EntryAxis",
     "MappedTable",
     "SourceMapping",
     "UnclassifiedColumnError",
     "classify_column",
     "retime",
+    "retime_joined_frame",
     "to_source_space",
 ]
 
@@ -331,6 +338,134 @@ def retime(
         doomed.add("rate_dependent")
     dropped = tuple(name for name in names if classify_column(name) in doomed)
     return MappedTable(out.drop(columns=list(dropped)) if dropped else out, dropped)
+
+
+def retime_joined_frame(
+    df: pd.DataFrame, timeline: ConcatenatedTimeline
+) -> MappedTable:
+    """Return *df*, tracked on the join of *timeline*'s clips, timed by the clips.
+
+    A tool reads a join, or a list of clips, at one frame rate. TRex takes it from
+    the first clip and never compares it with the others, and its ``time`` is a
+    frame index divided by that rate, because it loads no timestamps for a video
+    file. One real session measures 30 fps, then 29.95, then 31 across seventeen
+    clips. The error accumulates across the session, and every per-second
+    quantity was computed against the wrong denominator. :func:`retime` puts
+    ``time`` on the clips' own measured rates and drops what one rate spoiled.
+
+    ``frame`` is left as the tool numbered it. On a join that is the entry's
+    frame, because the join holds the clips' frames back to back. A tool that
+    reads fewer frames than a clip holds numbers its rows early, and
+    :meth:`ConcatenatedTimeline.times` then places them in the wrong clip. The
+    bridge reports that shortfall against :attr:`EntryAxis.media_frames` and does
+    not correct it here.
+
+    Args:
+        df: The table, carrying the join's ``frame``.
+        timeline: The entry's clips, in the order they were joined.
+
+    Returns:
+        The retimed table and the names of the columns dropped from it. A
+        single-segment timeline, or a table without ``frame``, returns *df*
+        unchanged: one clip has one rate, and nothing was mistimed.
+    """
+    if len(timeline.segments) < 2 or "frame" not in column_names(df):
+        return MappedTable(df, ())
+    frames = column_array(df, "frame").astype(np.int64, copy=False)
+    return retime(df, timeline, frames)
+
+
+@dataclass(frozen=True, slots=True)
+class EntryAxis:
+    """Place a tool's table on the frame and time axes of its entry's media.
+
+    A tool reads one file: the entry's one clip, the join of its clips, or a media
+    variant's file. The localizer reads the clips themselves on the same axis as
+    their join. The tool's table is on the axis of what it read, and
+    :meth:`place` moves it onto the entry's. Build one with
+    :meth:`of_entry_media` or :meth:`of_variant`.
+
+    Attributes:
+        clips: The facts of the entry's clips, in order, when the tool read the
+            entry media. Empty when it read a variant, or when the facts are
+            absent, which leaves the table as the tool timed it.
+        mapping: The placement of the variant's file in the entry media, or
+            ``None`` when the tool read the entry media.
+        windowed: Whether the run read fewer than every frame of its file, under
+            a frame window. A variant cannot be read under one.
+    """
+
+    clips: tuple[MediaFacts, ...] = ()
+    mapping: SourceMapping | None = None
+    windowed: bool = False
+
+    def __post_init__(self) -> None:
+        """Refuse an axis that is both the entry media and a variant.
+
+        Raises:
+            ValueError: If both *clips* and *mapping* are given.
+        """
+        if self.clips and self.mapping is not None:
+            message = "an entry axis reads the entry media or a variant, not both"
+            raise ValueError(message)
+
+    @classmethod
+    def of_entry_media(
+        cls, clips: Sequence[MediaFacts], *, windowed: bool
+    ) -> EntryAxis:
+        """Return the axis of a tool that read the entry media: a clip, or a join."""
+        return cls(clips=tuple(clips), windowed=windowed)
+
+    @classmethod
+    def of_variant(cls, mapping: SourceMapping) -> EntryAxis:
+        """Return the axis of a tool that read a media variant's file."""
+        return cls(mapping=mapping)
+
+    @property
+    def media_frames(self) -> int | None:
+        """The length of the entry's frame axis that the table is meant to span.
+
+        ``None`` unless the axes can come apart and a shortfall means something.
+        The entry media must be several clips, because one clip's frame axis is
+        its own file's, with no boundary between clips to lose frames at. The run
+        must read every frame, because a frame window covers less on purpose. A
+        variant must keep every source frame, because the table of a trimmed or
+        decimated variant does not span its source axis.
+
+        The bridge records it only for a producer whose table has rows at every
+        frame it reads
+        (:attr:`~mosaic.core.pipeline.tracking_roots.TrackingRoot.rows_every_frame`).
+        Any other table ends at its last detection.
+        """
+        if self.windowed:
+            return None
+        if self.mapping is not None:
+            if not self.mapping.placement.is_frame_identity:
+                return None
+            timeline = self.mapping.timeline
+        elif len(self.clips) > 1:
+            timeline = concatenated_timeline(self.clips)
+        else:
+            return None
+        return timeline.total_frames if len(timeline.segments) > 1 else None
+
+    def place(self, df: pd.DataFrame) -> MappedTable:
+        """Return *df* on the entry's axes, and the columns dropped from it.
+
+        A variant's table is mapped to source space (:func:`to_source_space`). A
+        table from the entry's several clips is timed by the clips
+        (:func:`retime_joined_frame`). A table from one clip is returned as it is.
+
+        Raises:
+            UnclassifiedColumnError: As :func:`to_source_space` raises it.
+            ValueError: As :func:`to_source_space` raises it, or when a clip
+                reports no frame rate.
+        """
+        if self.mapping is not None:
+            return to_source_space(df, self.mapping)
+        if len(self.clips) < 2:
+            return MappedTable(df, ())
+        return retime_joined_frame(df, concatenated_timeline(self.clips))
 
 
 def to_source_space(df: pd.DataFrame, mapping: SourceMapping) -> MappedTable:

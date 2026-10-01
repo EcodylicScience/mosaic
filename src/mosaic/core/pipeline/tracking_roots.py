@@ -48,6 +48,7 @@ __all__ = [
     "TrackingRoot",
     "is_under_tracking_root",
     "tracking_output_schema",
+    "tracking_root",
     "tracking_root_default",
 ]
 
@@ -292,23 +293,20 @@ class TrackingRoot:
     tracked table and a tracker whose columns genuinely differed had nowhere to
     say so. One row per producer, and the bridge reads it.
 
-    ``joins_sources`` is whether this producer covers an entry's several clips
-    rather than just the first. It lives here, beside the other producer
-    knowledge, rather than as a check against the tool's name in the scope
-    builder: "what can this tool do" is exactly what this table is for, and a
-    fifth tracker copying a row has to answer it rather than inherit someone
-    else's answer by matching a string. ``False`` means the scope builder
-    truncates an entry to its first clip and says so, which is what every
-    tracker did before any of them could join.
+    ``model_sets`` is whether this producer runs several models as one set, named
+    by a digest over all of them that equals no member's. SLEAP's top-down pair
+    is the one such set. A variant of any other producer is named by each model's
+    own identity, so a record of one that predates the recorded models is still
+    decided by comparing a model's digest with the one it names.
 
-    **It no longer means "this tool accepts a list of files".** It did, and that
-    was the whole difficulty: TREx accepted one and lost the tail of every clip
-    to its own under-counting, while the three that did not accept one tracked
-    clip 0 and dropped the rest of the recording. Every tool is now handed a
-    single video -- the entry's clips already joined, by
-    :mod:`mosaic.core.pipeline.joined_export` -- so what this flag declares is
-    that the producer covers the whole entry, and no tool is trusted with the
-    arrangement.
+    ``rows_every_frame`` is whether this producer's table has rows at every frame
+    the tool read, so that its last frame is the last frame read. TRex writes each
+    individual over the whole video, and Lightning Pose predicts every frame. The
+    others write rows only where they detect something, and a table from a
+    recording that ends without an animal in view ends early although the tool
+    read every frame. Only a table of the first kind is compared with the length
+    of its media: the bridge records ``media_frames`` for it and nothing for the
+    rest, and ``backfill_media_frames`` follows the same rule.
     """
 
     key: str
@@ -317,8 +315,9 @@ class TrackingRoot:
     phase_outputs: tuple[TrackingPhase, ...]
     path_columns: tuple[str, ...] = ()
     output_schema: str = "trex_v1"
-    joins_sources: bool = False
     decoder: ToolDecoder = CONSERVATIVE_DECODER
+    model_sets: bool = False
+    rows_every_frame: bool = False
 
     @property
     def phases(self) -> tuple[PhaseName, ...]:
@@ -364,11 +363,9 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 TrackingPhase("track", ("*.results", "data/*.npz")),
             ),
             path_columns=("video_abs_path", "pv_path"),
-            # TRex's `source` is a PathArray, and its VideoSource sums the frame
-            # counts of every file it names into one length -- so a session's
-            # clips convert into a single `.pv` with one continuous frame index,
-            # and identities never break at a clip boundary.
-            joins_sources=True,
+            # Each individual's export spans the whole video, with an empty row
+            # where TRex did not see it.
+            rows_every_frame=True,
         ),
         # The shared conversion cache: one `.pv` per (detection settings, source
         # content), read by every tracker run whose convert-phase parameters and
@@ -411,9 +408,6 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 ),
             ),
             path_columns=("video_abs_path", "pv_path", "settings_path"),
-            # Mirrors the `trex` row: a joined session converts once, into one
-            # slot addressed by the composition digest of its ordered clips.
-            joins_sources=True,
         ),
         # The analysis export has no phase of its own -- it is ensured rather
         # than gated -- so the `.h5` is cleared with the inference it derives
@@ -441,10 +435,8 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 TrackingPhase("track", ("*.predictions.slp", "*.analysis.h5")),
             ),
             path_columns=("video_abs_path", "slp_path", "analysis_h5_path"),
-            # The whole entry, as one joined video. SLEAP opens one file, which
-            # is why this was False and why a multi-clip session used to track
-            # its first clip and nothing else.
-            joins_sources=True,
+            # A top-down pair: the centroid model, then the centered-instance one.
+            model_sets=True,
         ),
         TrackingRoot(
             key="litpose",
@@ -463,8 +455,8 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             outputs=("*.predictions.csv",),
             phase_outputs=(TrackingPhase("track", ("*.predictions.csv",)),),
             path_columns=("video_abs_path", "csv_path"),
-            # As SLEAP: one joined video, so the whole entry is covered.
-            joins_sources=True,
+            # A prediction for every frame, even one without the animal in view.
+            rows_every_frame=True,
         ),
         # The tracker configuration this run used lives at the *run* root, beside
         # run_params.json, rather than in an entry directory -- it is one value
@@ -493,8 +485,6 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 ),
             ),
             path_columns=("video_abs_path", "predictions_path"),
-            # As SLEAP: one joined video, so the whole entry is covered.
-            joins_sources=True,
         ),
         # Model inference (item 8.7). Audit-only: the parquet is what a detector
         # emitted *before* schema coercion, which is what you want when debugging
@@ -568,6 +558,21 @@ inference op alike and no caller has to know which it is holding.
 """
 
 
+def tracking_root(key: str) -> TrackingRoot:
+    """The registered root of producer *key*.
+
+    Raises:
+        KeyError: If *key* is not registered, naming the keys that are. A
+            producer that never joined the table has declared nothing, and a
+            guess at its root, schema or table shape would be recorded as its
+            declaration.
+    """
+    if key not in TRACKING_ROOTS:
+        known = ", ".join(sorted(TRACKING_ROOTS))
+        raise KeyError(f"unknown tracking root {key!r}; registered roots are {known}")
+    return TRACKING_ROOTS[key]
+
+
 def tracking_root_default(key: str) -> str:
     """The default location of tracker root *key*, relative to ``base_dir``.
 
@@ -575,10 +580,7 @@ def tracking_root_default(key: str) -> str:
     that has not joined the table is one the sweeper cannot see, and minting its
     root here would put output somewhere nothing reclaims.
     """
-    if key not in TRACKING_ROOTS:
-        known = ", ".join(sorted(TRACKING_ROOTS))
-        raise KeyError(f"unknown tracking root {key!r}; registered roots are {known}")
-    return TRACKING_ROOTS[key].default_path
+    return tracking_root(key).default_path
 
 
 def tracking_output_schema(key: str) -> str:
@@ -589,10 +591,7 @@ def tracking_output_schema(key: str) -> str:
     never joined the table would validate its tables against a contract nobody
     declared for them, and record that guess on every row.
     """
-    if key not in TRACKING_ROOTS:
-        known = ", ".join(sorted(TRACKING_ROOTS))
-        raise KeyError(f"unknown tracking root {key!r}; registered roots are {known}")
-    return TRACKING_ROOTS[key].output_schema
+    return tracking_root(key).output_schema
 
 
 def is_under_tracking_root(parts: tuple[str, ...]) -> bool:

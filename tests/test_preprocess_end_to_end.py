@@ -12,6 +12,7 @@ same source frames.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,7 +32,7 @@ from mosaic.core.pipeline.preprocess_layout import media_variant_path
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
-from mosaic.tracking.pose_training.localizer_inference import LocalizerDetection
+from mosaic.tracking.pose_training.localizer_inference import LocalizerFrame
 
 from tests.helpers import dot_image, make_dataset, write_painted_entry
 
@@ -80,15 +81,20 @@ class _BrightestPixel:
     def run(
         self,
         _model_path: str,
-        video_path: Path,
+        video_paths: Sequence[Path],
         *,
-        facts: MediaFacts | None = None,
+        facts: Sequence[MediaFacts] | None = None,
         **_kwargs: object,
-    ) -> list[list[LocalizerDetection]]:
-        self.videos.append(Path(video_path))
+    ) -> list[LocalizerFrame]:
+        (video_path,) = video_paths
+        self.videos.append(video_path)
+        brightest = _brightest_pixels(video_path, facts[0] if facts else None)
         return [
-            [{"x": float(x), "y": float(y), "confidence": 1.0, "class_id": 0}]
-            for x, y in _brightest_pixels(Path(video_path), facts)
+            LocalizerFrame(
+                frame,
+                ({"x": float(x), "y": float(y), "confidence": 1.0, "class_id": 0},),
+            )
+            for frame, (x, y) in enumerate(brightest)
         ]
 
 

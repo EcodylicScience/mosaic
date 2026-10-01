@@ -349,7 +349,7 @@ Sample representative video frames as PNGs for annotation.
 
 #### `infer-localizer`
 
-Version `0.2` &middot; `mosaic.tracking.ops.infer.InferLocalizerOp`
+Version `0.3` &middot; `mosaic.tracking.ops.infer.InferLocalizerOp`
 
 Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 
@@ -361,7 +361,7 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 | `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
 | `frame_step` | `integer` | `1` |  | Stride between the frames predicted on. A wider stride covers a long recording without predicting on every frame of it. |
 | `start_frame` | `integer` | `0` |  | First frame to predict on, inclusive. |
-| `end_frame` | `integer` \| `None` | `null` |  | Last frame to predict on, inclusive. Unset runs to the end of the video. |
+| `end_frame` | `integer` \| `None` | `null` |  | The frame that prediction stops before. Unset runs to the end of the video. |
 | `max_frames` | `integer` \| `None` | `null` |  | Ceiling on how many frames are predicted on per entry. Unset predicts on the whole range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Bridge the predictions into a standardized tracks table once inference finishes, instead of leaving them in the run directory alone. |
 | `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
@@ -373,7 +373,7 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 
 #### `infer-points`
 
-Version `0.3` &middot; `mosaic.tracking.ops.infer.InferPointsOp`
+Version `0.4` &middot; `mosaic.tracking.ops.infer.InferPointsOp`
 
 Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 
@@ -385,7 +385,7 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 | `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
 | `frame_step` | `integer` | `1` |  | Stride between the frames predicted on. A wider stride covers a long recording without predicting on every frame of it. |
 | `start_frame` | `integer` | `0` |  | First frame to predict on, inclusive. |
-| `end_frame` | `integer` \| `None` | `null` |  | Last frame to predict on, inclusive. Unset runs to the end of the video. |
+| `end_frame` | `integer` \| `None` | `null` |  | The frame that prediction stops before. Unset runs to the end of the video. |
 | `max_frames` | `integer` \| `None` | `null` |  | Ceiling on how many frames are predicted on per entry. Unset predicts on the whole range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Bridge the predictions into a standardized tracks table once inference finishes, instead of leaving them in the run directory alone. |
 | `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
@@ -395,7 +395,7 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 
 #### `infer-pose`
 
-Version `0.3` &middot; `mosaic.tracking.ops.infer.InferPoseOp`
+Version `0.4` &middot; `mosaic.tracking.ops.infer.InferPoseOp`
 
 Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 
@@ -407,7 +407,7 @@ Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 | `imgsz` | `integer` | `640` |  | Longest side a frame is resized to before the model reads it. It must match what the model was trained at. [px] |
 | `frame_step` | `integer` | `1` |  | Stride between the frames predicted on. A wider stride covers a long recording without predicting on every frame of it. |
 | `start_frame` | `integer` | `0` |  | First frame to predict on, inclusive. |
-| `end_frame` | `integer` \| `None` | `null` |  | Last frame to predict on, inclusive. Unset runs to the end of the video. |
+| `end_frame` | `integer` \| `None` | `null` |  | The frame that prediction stops before. Unset runs to the end of the video. |
 | `max_frames` | `integer` \| `None` | `null` |  | Ceiling on how many frames are predicted on per entry. Unset predicts on the whole range. |
 | `convert_to_tracks` | `boolean` | `true` |  | Bridge the predictions into a standardized tracks table once inference finishes, instead of leaving them in the run directory alone. |
 | `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |

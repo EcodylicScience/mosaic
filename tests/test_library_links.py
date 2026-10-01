@@ -116,7 +116,7 @@ def test_a_models_own_index_wins_over_a_library(tmp_path: Path) -> None:
     assert resolved.library_id == "", "served locally, so no library is recorded"
 
 
-def test_provenance_names_the_library_and_nothing_when_local(tmp_path: Path) -> None:
+def test_provenance_names_the_library_only_when_one_served(tmp_path: Path) -> None:
     library, project = _library_and_project(tmp_path)
     _ = _register(library)
     _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
@@ -124,9 +124,12 @@ def test_provenance_names_the_library_and_nothing_when_local(tmp_path: Path) -> 
     served = resolve_model(project, RUN_ID, KIND)
     local = resolve_model(library, RUN_ID, KIND)
 
-    assert observed_model_source(served) == {"model_source": f"group@{library.uuid}"}
-    assert observed_model_source(local) == {}, "a local model writes no new key"
-    assert observed_model_source(None, local) == {}
+    assert observed_model_source(served) == {
+        "model_source": f"group@{library.uuid}",
+        "models": RUN_ID,
+    }
+    assert observed_model_source(local) == {"models": RUN_ID}
+    assert observed_model_source(None, local) == {"models": RUN_ID}
 
 
 def test_a_run_nobody_registers_says_where_it_looked(tmp_path: Path) -> None:

@@ -330,7 +330,8 @@ beside them are centimetres -- verified in ``Export.cpp`` and on real data, wher
 ``tracklet_vxys[:, 3] * cm_per_pixel`` reproduces ``SPEED#wcentroid`` exactly. And
 they are computed against the ``.pv``'s single frame rate, which a joined
 multi-clip session gets from its *first* clip alone; that is precisely why
-:mod:`mosaic.tracking.trex.joined` drops the other rate-dependent columns, and
+:func:`~mosaic.core.pipeline.placement.retime_joined_frame` drops the other
+rate-dependent columns, and
 carrying these would smuggle the same error back in under a name it does not
 check.
 

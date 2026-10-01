@@ -288,6 +288,31 @@ def test_other_settings_pass_through_beside_media(
     assert params.media == VARIANT
 
 
+# --- the frame window a run reads ---------------------------------------------
+
+
+@pytest.mark.parametrize(("kind", "field", "value"), WINDOW_CASES)
+def test_a_window_field_narrows_the_frames_read(
+    kind: str, field: str, value: JsonValue
+) -> None:
+    assert _params(kind, **{field: value}).frame_window == (f"`{field}`",)
+
+
+@pytest.mark.parametrize(("kind", "settings_field", "key"), EXTRA_SETTINGS_CASES)
+def test_a_frame_setting_passed_through_narrows_the_frames_read(
+    kind: str, settings_field: str, key: str
+) -> None:
+    settings: dict[str, JsonValue] = {key: SETTING_VALUES[key]}
+    params = _params(kind, **{settings_field: settings})
+
+    assert params.frame_window == (f"`{key}` in `{settings_field}`",)
+
+
+@pytest.mark.parametrize("kind", sorted(CONSUMERS))
+def test_every_window_at_its_default_reads_every_frame(kind: str) -> None:
+    assert _params(kind, **WINDOW_DEFAULTS[kind]).frame_window == ()
+
+
 # --- the identity term --------------------------------------------------------
 
 

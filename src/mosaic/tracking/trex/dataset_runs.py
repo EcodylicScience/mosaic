@@ -93,7 +93,6 @@ from mosaic.tracking.common.index import (
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import TrackerWorkItem, build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_inputs
-from mosaic.core.media.timeline import ConcatenatedTimeline, concatenated_timeline
 from mosaic.tracking.trex.conversion_cache import (
     CONVERSION_STEM,
     CONVERT_KIND,
@@ -111,12 +110,11 @@ from mosaic.tracking.trex.conversion_cache import (
     slot_marker_is_usable,
     staging_dir,
 )
-from mosaic.tracking.trex.joined import retime_joined_frame
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import CancelToken, JobContext
 from mosaic.core.pipeline.media_input import media_identity_terms
-from mosaic.core.pipeline.placement import SourceMapping
+from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.core.pipeline.markers import (
     InflightMarker,
@@ -319,10 +317,8 @@ def _bridge_npz_to_tracks(
     tracks_variant: str,
     producer_run_id: str,
     consumed_media: Sequence[Path],
-    timeline: ConcatenatedTimeline | None,
-    media_frames: int | None,
+    axis: EntryAxis,
     overwrite: bool,
-    mapping: SourceMapping | None,
 ) -> BridgeCounts | None:
     """Merge per-individual TREx NPZ into ``tracks/<variant>/<group>__<seq>.parquet``.
 
@@ -332,22 +328,12 @@ def _bridge_npz_to_tracks(
     dropping the column. The conversion stays here rather than in the shared
     publisher because the publisher takes one frame, not a set of them.
 
-    *timeline* is the concatenation the conversion was built from, and is what
-    puts a joined entry's ``time`` on the clips' own measured rates instead of
-    the single rate TREx took from the first of them. ``None`` (or a
-    single-segment timeline) leaves the export exactly as it was.
+    *axis* places the merged table on the entry's axes, as it does every
+    tracker's: a joined entry's ``time`` goes onto the clips' own measured rates
+    instead of the single rate TREx took from the first of them, and a media
+    variant's table is mapped into source space.
 
-    *media_frames* is how long that media axis was, recorded on the index row so
-    the published table can be compared against the video it is supposed to
-    address. ``None`` records a blank and makes no comparison -- see
-    :func:`~mosaic.tracking.common.bridge.publish_tracks_table`. Separate from
-    *timeline* rather than derived from it here, because whether the number is
-    answerable is a property of the *run* (an ``analysis_range`` covers less on
-    purpose) and the caller is what knows.
-
-    *consumed_media* are the media files that the table derives from. *mapping*
-    maps a table tracked on a media variant into source space and retimes it on
-    the entry's timeline. A caller that passes *mapping* does not pass *timeline*.
+    *consumed_media* are the media files that the table derives from.
 
     Returns ``None`` when there was nothing to convert or the conversion failed.
     """
@@ -369,11 +355,12 @@ def _bridge_npz_to_tracks(
         # is reconverted.
         #
         # A reused table makes no frame-axis comparison, and cannot: the reuse
-        # returns before the converter, before `retime_joined_frame`, and before
-        # anything opens the parquet's `frame` column. Its row keeps whatever it
-        # was written with, which for a table published before `media_frames`
-        # existed is a blank. `mosaic measure-tracks` fills those in, and a
-        # republish (`overwrite=True` here) re-bridges the table and records it.
+        # returns before the converter, before the table is placed on the
+        # entry's axes, and before anything opens the parquet's `frame` column.
+        # Its row keeps whatever it was written with, which for a table
+        # published before `media_frames` existed is a blank.
+        # `mosaic measure-tracks` fills those in, and a republish
+        # (`overwrite=True` here) re-bridges the table and records it.
         reusable = readable_tracks_table(out_path)
         if reusable is not None:
             return reusable
@@ -395,15 +382,9 @@ def _bridge_npz_to_tracks(
     if not frames:
         return None
 
-    merged = merge_on_column_union(frames)
-    retimed: tuple[str, ...] = ()
-    if timeline is not None:
-        joined = retime_joined_frame(merged, timeline)
-        merged, retimed = joined.frame, joined.dropped
-
     return publish_tracks_table(
         ds,
-        merged,
+        merge_on_column_union(frames),
         kind=TREX_KIND,
         group=group,
         sequence=sequence,
@@ -411,9 +392,7 @@ def _bridge_npz_to_tracks(
         producer_run_id=producer_run_id,
         source=npz_paths[0].parent,
         consumed=[npz_paths[0], *consumed_media],
-        media_frames=media_frames,
-        mapping=mapping,
-        dropped=retimed,
+        axis=axis,
     )
 
 
@@ -447,8 +426,7 @@ def _republish_entry(
     job: EntryJob,
     *,
     track_hash: str,
-    timeline: ConcatenatedTimeline | None,
-    media_frames: int | None,
+    axis: EntryAxis,
 ) -> BridgeCounts | None:
     """Rebuild one entry's tracks table from TRex's existing per-individual NPZ.
 
@@ -494,10 +472,8 @@ def _republish_entry(
         tracks_variant=job.minted.tracks_variant,
         producer_run_id=run_id,
         consumed_media=item.consumed_media,
-        timeline=timeline,
-        media_frames=media_frames,
+        axis=axis,
         overwrite=True,
-        mapping=item.source_mapping,
     )
 
 
@@ -842,9 +818,9 @@ def run_trex(
         kind=TREX_KIND,
         version=TREX_VERSION,
         settings=settings,
-        # Absent unless a linked library served a model, so a run over local
-        # weights writes the sidecar it always did.
-        observed=observed_model_source(resolved_model, resolved_vi) or None,
+        # Both models, and a linked library that served either. A run without
+        # a model records that it used none.
+        observed=observed_model_source(resolved_model, resolved_vi),
     )
 
     # TREx alone gates two phases on different parameter subsets, so it projects
@@ -886,38 +862,12 @@ def run_trex(
         item, work_dir, seq_ctx = job.item, job.work_dir, job.ctx
         cancel_check = seq_ctx.cancel_token.is_cancelled
         joined = item.n_sources > 1
-        # Built from the routed facts, which is what TREx will actually read.
-        # It is what puts a joined entry's `time` on the clips' own measured
-        # rates -- TREx takes one rate from the first clip and never checks the
-        # others. `None` when the facts are absent, which leaves the export as
-        # it is rather than guessing at a timeline, and for a media variant,
-        # whose table the bridge maps back and retimes on the entry's clips.
-        timeline = (
-            concatenated_timeline(item.source_facts)
-            if item.source_facts and item.variant is None
-            else None
-        )
-        # What the tracker was pointed at, for the runs where the question has
-        # an answer worth recording.
-        #
-        # Joined entries only. A single-clip entry's frame axis IS the media's
-        # -- there is no concatenation to lose frames at -- so the comparison
-        # can catch nothing there and would false-positive on the ordinary case
-        # of a tracker writing no rows for the frames after the animal left:
-        # `frame_max` is the last frame carrying a row, not the last frame seen.
-        #
-        # `analysis_range` is excluded for the opposite reason: it narrows the
-        # tracking phase on purpose, so a short span is the run working as
-        # asked. Blank says "the producer did not ask this question", and
-        # `mosaic measure-tracks` fills the cell afterwards for anyone who wants
-        # the comparison anyway.
-        media_frames = (
-            timeline.total_frames
-            if timeline is not None
-            and len(timeline.segments) > 1
-            and params.analysis_range is None
-            else None
-        )
+        # Where the table sits on the entry's axes, which the shared bridge
+        # applies. A joined entry's `time` goes onto the clips' own measured
+        # rates, because TREx takes one rate from the first clip and never
+        # checks the others, and the row records the media axis wherever a
+        # comparison with it means something (`EntryAxis.media_frames`).
+        axis = item.entry_axis(windowed=bool(params.frame_window))
 
         # The .results file is the only output TREx writes at the *end* of
         # tracking; the .pv and the per-individual files appear as processing
@@ -952,10 +902,7 @@ def run_trex(
                 job.ctx,
                 item.key,
                 lambda: _republish_entry(
-                    job,
-                    track_hash=phase_hashes["track"],
-                    timeline=timeline,
-                    media_frames=media_frames,
+                    job, track_hash=phase_hashes["track"], axis=axis
                 ),
                 kind=TREX_KIND,
             )
@@ -1209,10 +1156,8 @@ def run_trex(
                     tracks_variant=minted.tracks_variant,
                     producer_run_id=minted.run_id,
                     consumed_media=item.consumed_media,
-                    timeline=timeline,
-                    media_frames=media_frames,
+                    axis=axis,
                     overwrite=job.overwrite or recomputed,
-                    mapping=item.source_mapping,
                 ),
                 kind=TREX_KIND,
             )

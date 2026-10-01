@@ -45,7 +45,7 @@ from mosaic.core.pipeline.markers import (
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.entry_claim import claim, phase_activity
 from mosaic.core.pipeline.op_identity import op_run_id
-from mosaic.core.pipeline.placement import SourceMapping
+from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.tracking.common.bridge import (
     BridgeCounts,
@@ -177,17 +177,16 @@ def _bridge_csv_to_tracks(
     model_files: Sequence[Path],
     fps: float,
     overwrite: bool,
-    mapping: SourceMapping | None,
+    axis: EntryAxis,
 ) -> BridgeCounts | None:
     """Bridge a Lightning Pose CSV into ``tracks/<variant>/<group>__<seq>.parquet``.
 
     Reuses the registered ``deeplabcut`` converter -- Lightning Pose exports the
     same ``(scorer, bodypart, coord)`` layout -- with the authoritative (group,
     sequence) known from the media index, so no name is guessed from a filename.
-    *consumed_media* are the media files that the table derives from, and
-    *mapping* maps a table tracked on a media variant into source space, or is
-    ``None``. Returns ``None`` when the conversion failed and did not publish a
-    table.
+    *consumed_media* are the media files that the table derives from, and *axis*
+    places the table on the entry's axes. Returns ``None`` when the conversion
+    failed and did not publish a table.
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
     from mosaic.core.track_library.deeplabcut import DlcParams
@@ -217,7 +216,7 @@ def _bridge_csv_to_tracks(
         producer_run_id=producer_run_id,
         source=csv_path.parent,
         consumed=[csv_path, *consumed_media, *model_files],
-        mapping=mapping,
+        axis=axis,
     )
 
 
@@ -419,7 +418,7 @@ def run_litpose(
                 model_files=list(resolved_model.significant_files),
                 fps=item.fps,
                 overwrite=job.overwrite or recomputed,
-                mapping=item.source_mapping,
+                axis=item.entry_axis(windowed=bool(params.frame_window)),
             ),
             kind=LITPOSE_KIND,
         )

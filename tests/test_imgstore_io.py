@@ -202,6 +202,21 @@ def test_mvr_rejects_fps_mismatch(make_imgstore):
         MultiVideoReader([s1, s2], target="analysis")
 
 
+def test_mvr_reads_stores_whose_measured_rates_differ_in_the_last_digits(
+    make_imgstore: Callable[..., tuple[Path, list[np.ndarray]]],
+) -> None:
+    """A store's rate is fitted to its timestamps, so one rig measures 30.002.
+
+    The tolerance is the plain multi-video reader's: under half a frame of drift
+    across the shorter store.
+    """
+    s1, _ = make_imgstore(name="a", nframes=60, fps=30.0)
+    s2, _ = make_imgstore(name="b", nframes=60, fps=30.002)
+    reader = MultiVideoReader([s1, s2], target="analysis")
+    assert reader.total_frames == 120
+    reader.close()
+
+
 def test_mvr_rejects_mixed_sequence(make_imgstore, tmp_path):
     store_dir, _ = make_imgstore(nframes=4)
     mp4 = tmp_path / "v.mp4"
