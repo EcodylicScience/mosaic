@@ -104,10 +104,12 @@ capability 6.1) and an RTX 4000 Ada (8.9), and TRex on the GTX 1080 Ti. The vers
 were SLEAP 1.6, Lightning Pose 2.3.1 and 2.4.2, DALI 1.50.0 and 2.3.0, and TRex 2.0.
 The `infer-*` ops read through the same PyAV reader as Ultralytics.
 
-Before SLEAP or Lightning Pose is handed an AV1 file, mosaic reads one frame of it
-with the tool's reader in the tool's environment, once per run. The tool is handed
-the file when the frame decodes. Otherwise the run is refused with the reader's
-error. `MOSAIC_ALLOW_TOOL_CODECS=av1` skips the test.
+Before SLEAP is handed an AV1 file, mosaic reads one frame of it with SLEAP's reader
+in SLEAP's environment, once per run. SLEAP is handed the file when the frame
+decodes. Otherwise the run is refused with the reader's error. Lightning Pose is
+refused an AV1 file at once, without a test, and reads an H.264 media variant
+instead. `MOSAIC_ALLOW_TOOL_CODECS=av1` skips the test for SLEAP and the refusal for
+Lightning Pose.
 
 A GPU older than Turing (compute capability below 7.5), such as a GTX 1080 Ti, limits
 every codec. It needs builds that still contain kernels for it:

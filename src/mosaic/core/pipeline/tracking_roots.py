@@ -137,10 +137,11 @@ class ToolDecoder:
 
     Each tool declares here the codecs that it reads, beside the other facts
     about each producer. TREx and Ultralytics declare AV1. SLEAP reads AV1 when
-    the OpenCV in its environment links dav1d. Lightning Pose reads through
-    DALI's ``fn.readers.video``, whose list of codecs omits AV1 in DALI 1.50 and
-    2.3. It reads AV1 on no GPU.
-    Those two declare a probe, which tests the environment that a run uses.
+    the OpenCV in its environment links dav1d, so it declares a probe, which tests
+    the environment that a run uses. Lightning Pose reads through DALI's
+    ``fn.readers.video``, whose list of codecs omits AV1 in DALI 1.50 and 2.3. It
+    reads AV1 on no GPU, so it declares AV1 in ``never_reads`` and is not tested
+    for it.
 
     Attributes:
         stack: The component that decodes, named in a refusal.
@@ -157,12 +158,29 @@ class ToolDecoder:
             declared set decides.
         remedy: What an operator can do about a refusal. Empty when the refusal
             cannot be remedied.
+        never_reads: Codecs that this tool's reader decodes in no environment. A
+            file in one is refused at once, without the probe, and a caller
+            building the tool's input makes it in another codec.
+            ``MOSAIC_ALLOW_TOOL_CODECS`` still hands such a file over, for a
+            reader that has since gained the codec.
     """
 
     stack: str
     also_reads: frozenset[str] = frozenset()
     probe: str = ""
     remedy: str = ""
+    never_reads: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        """Refuse a codec declared both read and never read.
+
+        Raises:
+            ValueError: If ``also_reads`` and ``never_reads`` share a codec.
+        """
+        both = self.also_reads & self.never_reads
+        if both:
+            message = f"{self.stack} declares {sorted(both)} both read and never read"
+            raise ValueError(message)
 
 
 CONSERVATIVE_DECODER: Final = ToolDecoder(
@@ -519,6 +537,7 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             key="litpose",
             decoder=ToolDecoder(
                 stack="NVIDIA DALI's fn.readers.video, which decodes on the GPU",
+                never_reads=frozenset({"av1"}),
                 probe=_LITPOSE_DECODE_PROBE,
                 remedy=(
                     "Hand Lightning Pose an H.264 file, such as a media variant "

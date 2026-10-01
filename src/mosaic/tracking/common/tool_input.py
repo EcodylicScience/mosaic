@@ -131,16 +131,21 @@ def _stream_codec(path: Path) -> str:
 def _allowed_codecs(decoder: ToolDecoder) -> frozenset[str]:
     """What *decoder* may be handed: the baseline, its own extras, and the override.
 
+    The baseline and ``also_reads``, less the codecs the decoder never reads,
+    and then every codec that ``MOSAIC_ALLOW_TOOL_CODECS`` names.
+
     ``MOSAIC_ALLOW_TOOL_CODECS`` is a comma-separated list of extra codec names.
     It exists because the refusal is an inference about a decoder mosaic does
     not own: someone who knows their tool environment links ``libdav1d`` is
     right, and should not have to re-encode a corpus to prove it. It widens the
     set and never narrows it, so the variable cannot turn a working run into a
-    broken one.
+    broken one. It also overrides ``never_reads``, for a reader that has since
+    gained the codec.
     """
     extra = os.environ.get(_ALLOW_CODECS_VAR, "")
     named = {part.strip().lower() for part in extra.split(",") if part.strip()}
-    return SOFTWARE_DECODABLE_CODECS | decoder.also_reads | named
+    declared = (SOFTWARE_DECODABLE_CODECS | decoder.also_reads) - decoder.never_reads
+    return declared | named
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,11 +309,14 @@ def refuse_undecodable_codec(
     Ultralytics reads through mosaic-media's PyAV. Both declare AV1. SLEAP reads
     through OpenCV, and the Linux OpenCV wheel from PyPI does not decode AV1.
     Lightning Pose reads through DALI's ``fn.readers.video``, whose list of
-    codecs omits AV1. It reads AV1 on no GPU.
+    codecs omits AV1. It reads AV1 on no GPU, and declares it in ``never_reads``.
 
-    A codec is allowed when it is in the baseline, in the tool's ``also_reads``,
-    or in ``MOSAIC_ALLOW_TOOL_CODECS``. Otherwise a tool that declares a probe is
-    tested in its environment through *decode_probe*. Exit 0 allows the codec. A
+    A codec is allowed when it is in the baseline or in the tool's
+    ``also_reads``, and not in its ``never_reads``, or when
+    ``MOSAIC_ALLOW_TOOL_CODECS`` names it. A codec in ``never_reads`` is refused
+    at once, without a probe, because no environment would pass one. Otherwise a
+    tool that declares a probe is tested in its environment through
+    *decode_probe*. Exit 0 allows the codec. A
     non-zero exit, a timeout or an interpreter that does not start raises with the
     probe's output. A tool without a probe, and a caller without *decode_probe*,
     are refused by the declaration.
@@ -346,7 +354,12 @@ def refuse_undecodable_codec(
     if not codec or codec in _allowed_codecs(decoder):
         return
     remedy = f"\n    {decoder.remedy}." if decoder.remedy else ""
-    if not decoder.probe or decode_probe is None:
+    if codec in decoder.never_reads:
+        finding = (
+            f". That reader decodes {codec} in no environment, so it is not tested."
+        )
+        setting = f"If this environment does decode {codec}, set"
+    elif not decoder.probe or decode_probe is None:
         finding = (
             f", and its declaration does not list {codec}. A tool without a "
             f"decoder for a file reads zero frames and exits 0, and without this "

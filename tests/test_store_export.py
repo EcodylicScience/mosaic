@@ -718,11 +718,11 @@ def test_a_tool_that_cannot_decode_the_export_is_refused_by_name(
     """Refuse the export for a tool whose environment fails to decode it.
 
     A raw store does not contain a stream to copy, and its export is encoded in
-    AV1. SLEAP and Lightning Pose do not declare AV1, and each is tested in its
-    environment first. The environments here fail the test, as an OpenCV without
-    dav1d and the video reader of DALI 2.3 do. A reader without a decoder returns
-    zero frames and exits 0, and SLEAP would write a `.slp` without a labeled frame,
-    recorded as a success.
+    AV1. SLEAP does not declare AV1 and is tested in its environment first, which
+    here fails the test, as an OpenCV without dav1d does. A reader without a
+    decoder returns zero frames and exits 0, and SLEAP would write a `.slp` without
+    a labeled frame, recorded as a success. Lightning Pose declares that it never
+    reads AV1, which the reader of DALI decodes on no GPU, and is refused untested.
 
     TREx and Ultralytics declare AV1 and are handed the file untested.
     """
@@ -759,9 +759,10 @@ def test_a_tool_that_cannot_decode_the_export_is_refused_by_name(
         _ = resolve_tool_input(
             ds, item, kind="litpose", decode_probe=DecodeProbe(LITPOSE_ENV)
         )
-    assert litpose_failure in str(litpose_refused.value)
+    assert "decodes av1 in no environment" in str(litpose_refused.value)
     handed = str(_exports(ds)[0])
-    assert sleap_python.calls() == litpose_python.calls() == [("-c", handed)]
+    assert sleap_python.calls() == [("-c", handed)]
+    assert litpose_python.calls() == [], "Lightning Pose reads AV1 on no GPU"
 
     for reads_av1 in ("trex", "ultralytics", "infer-pose"):
         assert resolve_tool_input(ds, item, kind=reads_av1) == _exports(ds)[0], (

@@ -2,7 +2,8 @@
 
 SLEAP and Lightning Pose are handed a file in a codec outside their declarations
 only after a program run by the interpreter of the tool's environment decodes a
-frame of it. The environments here are fakes. Each is a ``python`` shell script
+frame of it. A codec that a tool declares it never reads is refused without that
+program: Lightning Pose reads AV1 on no GPU. The environments here are fakes. Each is a ``python`` shell script
 that the tool's location ladder finds. It records its arguments and exits with a
 chosen code. The probe programs themselves run against fake ``sleap_io`` and
 ``nvidia.dali`` modules, and against a real SLEAP environment where one resolves.
@@ -10,6 +11,7 @@ chosen code. The probe programs themselves run against fake ``sleap_io`` and
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -28,6 +30,7 @@ from mosaic.core.pipeline.tracking_roots import (
     DECODE_PROBE_IMPORT_FAILED,
     TRACKING_ROOTS,
     ToolCodecError,
+    ToolDecoder,
 )
 from mosaic.tracking.common.tool_input import (
     DecodeProbe,
@@ -72,6 +75,20 @@ def _av1_dataset(
 
 def _clip(ds: Dataset, sequence: str = "s") -> Path:
     return ds.get_root("media_raw") / sequence / "clip0.mp4"
+
+
+def _probe_lightning_pose_for_av1(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear Lightning Pose's ``never_reads``, so that its probe runs on AV1.
+
+    Its probe serves a codec outside both of its declared sets. The fixtures
+    write AV1, which Lightning Pose otherwise refuses untested, so a test of the
+    probe clears the declaration rather than writing a rarer codec.
+    """
+    root = TRACKING_ROOTS["litpose"]
+    decoder = dataclasses.replace(root.decoder, never_reads=frozenset())
+    monkeypatch.setitem(
+        TRACKING_ROOTS, "litpose", dataclasses.replace(root, decoder=decoder)
+    )
 
 
 # --- the check ----------------------------------------------------------------
@@ -430,6 +447,84 @@ def test_a_caller_without_the_environment_gets_the_declared_answer(
     assert python.calls() == []
 
 
+def test_lightning_pose_is_refused_av1_without_a_probe(
+    tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DALI reads AV1 on no GPU, so no environment is started to find that out."""
+    ds = _av1_dataset(tmp_path, write_cfr_mp4)
+    python = install_fake_tool_python(monkeypatch, LITPOSE_ENV, tmp_path / "bin")
+
+    with pytest.raises(ToolCodecError) as refused:
+        refuse_undecodable_codec(
+            ds,
+            _clip(ds),
+            kind="litpose",
+            group="",
+            sequence="s",
+            decode_probe=DecodeProbe(LITPOSE_ENV),
+        )
+
+    message = str(refused.value)
+    assert "decodes av1 in no environment, so it is not tested" in message
+    assert '"codec": "h264"' in message
+    assert "MOSAIC_ALLOW_TOOL_CODECS=av1" in message
+    assert python.calls() == []
+
+
+def test_the_override_hands_lightning_pose_av1_untested(
+    tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """For a DALI that has since gained AV1, without waiting for a mosaic release."""
+    ds = _av1_dataset(tmp_path, write_cfr_mp4)
+    python = install_fake_tool_python(monkeypatch, LITPOSE_ENV, tmp_path / "bin")
+    monkeypatch.setenv("MOSAIC_ALLOW_TOOL_CODECS", "av1")
+
+    refuse_undecodable_codec(
+        ds,
+        _clip(ds),
+        kind="litpose",
+        group="",
+        sequence="s",
+        decode_probe=DecodeProbe(LITPOSE_ENV),
+    )
+
+    assert python.calls() == []
+
+
+def test_a_lightning_pose_run_refuses_av1_before_its_environment_starts(
+    tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _av1_dataset(tmp_path, write_cfr_mp4)
+    python = install_fake_tool_python(monkeypatch, LITPOSE_ENV, tmp_path / "bin")
+    litpose = install_fake_litpose(monkeypatch)
+    params = LitposeParams(model_path=str(write_litpose_model(tmp_path / "model")))
+
+    with pytest.raises(ToolCodecError, match="decodes av1 in no environment"):
+        _ = litpose_runs.run_litpose(ds, params)
+
+    assert python.calls() == []
+    assert litpose.predicted == []
+
+
+def test_only_lightning_pose_never_reads_a_codec() -> None:
+    """The declarations follow the codec grid in ``docs/installation.md``."""
+    never = {
+        kind: root.decoder.never_reads
+        for kind, root in TRACKING_ROOTS.items()
+        if root.decoder.never_reads
+    }
+    assert never == {"litpose": frozenset({"av1"})}
+
+
+def test_a_codec_declared_read_and_never_read_is_refused() -> None:
+    with pytest.raises(ValueError, match="both read and never read"):
+        _ = ToolDecoder(
+            stack="a decoder",
+            also_reads=frozenset({"av1"}),
+            never_reads=frozenset({"av1"}),
+        )
+
+
 _UNPROBED_KINDS = (
     "trex",
     "trex-convert",
@@ -536,6 +631,7 @@ def test_lightning_pose_probes_the_environment_that_its_run_placed(
     tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``litpose_bin`` names the environment, and the program is Lightning Pose's."""
+    _probe_lightning_pose_for_av1(monkeypatch)
     ds = _av1_dataset(tmp_path, write_cfr_mp4)
     unplaced = install_fake_tool_python(
         monkeypatch, LITPOSE_ENV, tmp_path / "unplaced", exit_code=1
@@ -589,6 +685,7 @@ def test_a_cancelled_sleap_run_stops_its_probe(
 def test_a_cancelled_lightning_pose_run_stops_its_probe(
     tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _probe_lightning_pose_for_av1(monkeypatch)
     ds = _av1_dataset(tmp_path, write_cfr_mp4)
     python = install_fake_tool_python(
         monkeypatch, LITPOSE_ENV, tmp_path / "bin", seconds=30
@@ -809,6 +906,7 @@ def test_a_dali_refusal_ends_with_the_reason_and_not_the_stacktrace(
     tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """DALI appends a native stacktrace, and the refusal quotes the reason alone."""
+    _probe_lightning_pose_for_av1(monkeypatch)
     ds = _av1_dataset(tmp_path, write_cfr_mp4)
     frames = "\n".join(
         f"[frame {index}]: /opt/dali/lib/libdali_operators.so(+0x{index:06x})"
@@ -890,6 +988,7 @@ def test_an_interpreter_that_does_not_import_the_reader_is_refused_as_such(
     It names neither variable of the placement ladder, because an argument such
     as ``sleap_bin=`` overrides both.
     """
+    _probe_lightning_pose_for_av1(monkeypatch)
     ds = _av1_dataset(tmp_path, write_cfr_mp4)
     python = install_fake_tool_python(
         monkeypatch, env, tmp_path / "bin", imports=_unimportable_reader(tmp_path, kind)

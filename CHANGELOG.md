@@ -35,6 +35,13 @@ that meets it, `reencode` for a join, and `reason`, the run's own refusal text.
 It makes the run's checks without probing a file. `TrackingRoot.reads`
 (`one-file`, `entry-files`, `in-process`) declares how each tool reads an entry.
 
+**Lightning Pose is refused an AV1 file at once.** `ToolDecoder.never_reads`
+declares the codecs that a tool's reader decodes in no environment. Lightning Pose
+declares AV1, which DALI's reader decodes on no GPU, so an AV1 file is refused
+with the H.264 remedy before Lightning Pose's environment starts, where a DALI
+decode test used to run first. `MOSAIC_ALLOW_TOOL_CODECS=av1` still hands it over.
+A caller building Lightning Pose's input reads the set to make an H.264 variant.
+
 **Names moved or added.**
 
 - The runner's `TrackRequest` and `InferRequestBase` replace `video_path` and
@@ -42,7 +49,7 @@ It makes the run's checks without probing a file. `TrackingRoot.reads`
   mosaic, so no other program builds these.
 - New: `entry_runner_sources`, `ToolFile`, `request_sources`, `source_windows`,
   `readable_chunks`, `NativeStore.chunk_spans`, `required_media_ops`,
-  `MediaRequirement` and `MediaRequirementCause`.
+  `MediaRequirement`, `MediaRequirementCause` and `ToolDecoder.never_reads`.
 
 **Six extras are retired.** `recommended`, `identity`, `localizer`, `gpu`, `pose`
 and `polo` are no longer declared. pip warns about an unknown extra and installs

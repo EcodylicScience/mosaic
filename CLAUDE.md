@@ -1469,15 +1469,17 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   an empty result as a success. `refuse_undecodable_codec`
   ([`tracking/common/tool_input.py`](src/mosaic/tracking/common/tool_input.py))
   allows a codec in the baseline, in the tool's `ToolDecoder.also_reads`
-  (`core/pipeline/tracking_roots.py`) or in `MOSAIC_ALLOW_TOOL_CODECS`. Any other
-  codec is refused, unless the tool declares a `probe` and the probe decodes a
-  frame of the file in the tool's environment. SLEAP (`sleap_io.load_video`) and
-  Lightning Pose (DALI's `fn.readers.video` on the GPU) declare one, and AV1 stays
-  the default codec for them. DALI's reader omits AV1 from its list of codecs, and
-  fails with "Unhandled codec 225" on every GPU, measured with DALI 1.50 and 2.3 on
-  a GTX 1080 Ti and an RTX 4000 Ada. A variant for Lightning Pose is made with
-  `codec: "h264"`. SLEAP decodes AV1 with conda-forge's headless OpenCV. The
-  default build loads conda's Qt and breaks SLEAP's PySide6.
+  (`core/pipeline/tracking_roots.py`) or in `MOSAIC_ALLOW_TOOL_CODECS`. A codec in
+  the tool's `never_reads` is refused at once, without a probe. Any other codec is
+  refused, unless the tool declares a `probe` and the probe decodes a frame of the
+  file in the tool's environment. SLEAP (`sleap_io.load_video`) and Lightning Pose
+  (DALI's `fn.readers.video` on the GPU) declare one. Lightning Pose also declares
+  AV1 in `never_reads`: DALI's reader omits AV1 from its list of codecs, and fails
+  with "Unhandled codec 225" on every GPU, measured with DALI 1.50 and 2.3 on a GTX
+  1080 Ti and an RTX 4000 Ada. So a variant for Lightning Pose is made with
+  `codec: "h264"`. AV1 stays the default codec for SLEAP, which decodes it with
+  conda-forge's headless OpenCV. The default build loads conda's Qt and breaks
+  SLEAP's PySide6.
   [`docs/installation.md`](docs/installation.md#video-codecs-each-tool-reads)
   records the codecs that each tool reads.
   Each run creates one `DecodeProbe` from the placement that it
