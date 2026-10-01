@@ -919,6 +919,19 @@ def test_an_interpreter_that_does_not_import_the_reader_is_refused_as_such(
     assert "did not decode" not in message
 
 
+def _probe_in_environment(
+    interpreter: Sequence[str], kind: str, path: Path
+) -> subprocess.CompletedProcess[str]:
+    """Run *kind*'s probe program on *path* with a real tool environment's interpreter."""
+    return subprocess.run(
+        [*interpreter, "-c", TRACKING_ROOTS[kind].decoder.probe, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+
+
 def test_the_sleap_program_reads_real_files_in_a_sleap_environment(
     tmp_path: Path, write_cfr_mp4: WriteVideo
 ) -> None:
@@ -936,22 +949,43 @@ def test_the_sleap_program_reads_real_files_in_a_sleap_environment(
     write_h264_mp4(h264)
     av1 = tmp_path / "av1.mp4"
     write_cfr_mp4(av1)
-    program = TRACKING_ROOTS["sleap"].decoder.probe
 
-    def probe(path: Path) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [*interpreter, "-c", program, str(path)],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=False,
-        )
-
-    read = probe(h264)
+    read = _probe_in_environment(interpreter, "sleap", h264)
     assert read.returncode == 0, read.stderr
     assert "sleap_io read frame 0 with shape (48, 64, " in read.stdout
-    answered = probe(av1)
+    answered = _probe_in_environment(interpreter, "sleap", av1)
     if answered.returncode == 0:
         assert "sleap_io read frame 0 with shape (48, 64, " in answered.stdout
     else:
         assert "sleap_io could not read frame 0" in answered.stderr
+
+
+def test_the_lightning_pose_program_reads_real_files_in_a_lightning_pose_environment(
+    tmp_path: Path, write_cfr_mp4: WriteVideo
+) -> None:
+    """A Lightning Pose environment reads H.264, and reports AV1 with one of two messages.
+
+    DALI's ``fn.readers.video`` accepts a fixed list of codecs. The list in every
+    DALI release measured omits AV1, and the reader then fails with "Unhandled
+    codec" on any GPU. A decode is accepted too, for a release whose list includes
+    AV1. The frames are 320 by 240, larger than the smallest frame that NVDEC
+    decodes. The test is skipped where a Lightning Pose environment does not
+    resolve.
+    """
+    try:
+        interpreter = tool_invocation(LITPOSE_ENV, executable="python")
+    except ToolNotFoundError as absent:
+        pytest.skip(f"no Lightning Pose environment resolves: {absent}")
+    h264 = tmp_path / "h264.mp4"
+    write_h264_mp4(h264, frames=30, size=(320, 240))
+    av1 = tmp_path / "av1.mp4"
+    write_cfr_mp4(av1, frames=30, size=(320, 240))
+
+    read = _probe_in_environment(interpreter, "litpose", h264)
+    assert read.returncode == 0, read.stderr
+    assert "DALI read one frame" in read.stdout
+    answered = _probe_in_environment(interpreter, "litpose", av1)
+    if answered.returncode == 0:
+        assert "DALI read one frame" in answered.stdout
+    else:
+        assert "Unhandled codec" in answered.stderr
