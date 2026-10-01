@@ -21,8 +21,8 @@ Two boundaries, one per way a tool reads (``TrackingRoot.reads``):
   it. The runner decodes each file with mosaic-media's reader in the tool's
   environment, so no Ultralytics code opens a path.
 
-:func:`required_media_ops` answers, before a run, which of those exports a tool
-still needs, by the same rules.
+:func:`required_media_ops` answers, before a run, what a tool still needs for each
+entry and why, by putting the entry through the run's own checks.
 
 :func:`refuse_undecodable_codec` checks the codec of each file handed over. A tool
 that declares a decode probe is tested in its environment by a
@@ -50,10 +50,12 @@ from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.read_target import verified_read_facts
 from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
 from mosaic.core.pipeline.joined_export import (
+    EntryJoinMissingError,
+    MissingJoinCause,
     current_join,
-    joined_source_uid,
-    joins_of,
-    needs_join,
+    join_needs_reencode,
+    join_to_read,
+    refuse_unidentified_clips,
 )
 from mosaic.core.pipeline.store_export import EXPORT_TARGET, readable_chunks
 from mosaic.core.pipeline.subprocess_util import run_supervised
@@ -63,10 +65,11 @@ from mosaic.core.pipeline.tracking_roots import (
     TRACKING_ROOTS,
     ToolCodecError,
     ToolDecoder,
-    ToolReads,
+    TrackingRoot,
     tracking_root,
 )
 from mosaic.core.pipeline.variant_source import preprocess_command
+from mosaic.tracking.common.scope import JoinedSourceMismatchError, refuse_unjoinable
 from mosaic.tracking.common.toolenv import (
     ToolEnv,
     captured_output,
@@ -75,12 +78,14 @@ from mosaic.tracking.common.toolenv import (
 )
 
 if TYPE_CHECKING:
-    from mosaic.core.dataset import Dataset
+    from mosaic.core.dataset import Dataset, ResolvedScopeEntry
     from mosaic.tracking.common.scope import TrackerWorkItem
 
 __all__ = [
     "DecodeProbe",
     "MediaOpKind",
+    "MediaRequirement",
+    "MediaRequirementCause",
     "ProbeVerdict",
     "StoreExportMissingError",
     "ToolFile",
@@ -660,16 +665,21 @@ def _analysis_facts(path: Path, stored: MediaFacts | None) -> MediaFacts:
     return verified_read_facts(path, stored, "analysis")[0]
 
 
+def _unreadable_chunks_why(kind: str) -> str:
+    """Why *kind*'s runner reads a store through its export, for a refusal."""
+    return (
+        f"whose chunk files are not the frames mosaic reads from it (a raw, "
+        f"image-directory, Bayer or YUV store), so {kind} reads its export"
+    )
+
+
 def _store_files(
     ds: "Dataset", group: str, sequence: str, store: Path, *, kind: str
 ) -> list[ToolFile]:
     """Return the files the runner reads for *store*: its chunks, or its export."""
     spans = readable_chunks(store)
     if not spans:
-        why = (
-            f"whose chunk files are not the frames mosaic reads from it (a raw, "
-            f"image-directory, Bayer or YUV store), so {kind} reads its export"
-        )
+        why = _unreadable_chunks_why(kind)
         export = _store_export(ds, group, sequence, store, kind=kind, why=why)
         return [ToolFile(export, _analysis_facts(export, None))]
 
@@ -691,27 +701,74 @@ def _store_files(
     ]
 
 
+type MediaRequirementCause = MissingJoinCause | Literal["store_export", "unjoinable"]
+"""Why a tool cannot read an entry yet. A closed set.
+
+The four join causes are those of
+:data:`~mosaic.core.pipeline.joined_export.MissingJoinCause`. The other two:
+
+- ``store_export``: a store that the tool reads only through its export, which
+  has none, or whose linked file is gone. ``export-store`` builds it.
+- ``unjoinable``: the entry's clips cannot be read as one video at all. They
+  differ in frame size, one reports no frame rate, or they include a store beside
+  other clips. No op joins them, and the reason names the remedy.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class MediaRequirement:
+    """What one entry needs before a tool can read it.
+
+    Attributes:
+        group: The entry's group.
+        sequence: The entry's sequence.
+        camera: The camera that the tool reads.
+        cause: Why, as a member of a closed set that a caller can branch on.
+        op: The media op that meets the requirement, or ``None`` where none does:
+            for ``several_joins`` the user deletes all but one join, for
+            ``unidentified_clips`` the clips are re-probed before they are joined,
+            and ``unjoinable`` clips are rearranged or read through a media
+            variant.
+        reencode: Whether the ``export-joined`` run needs ``reencode`` set, by
+            :func:`~mosaic.core.pipeline.joined_export.join_needs_reencode`.
+            ``False`` for any other op.
+        reason: The refusal that the run raises, naming the remedy.
+    """
+
+    group: str
+    sequence: str
+    camera: str
+    cause: MediaRequirementCause
+    op: MediaOpKind | None
+    reencode: bool
+    reason: str
+
+
 def required_media_ops(
     ds: "Dataset", *, kind: str, entries: Iterable[Entry] | None = None
-) -> dict[Entry, tuple[MediaOpKind, ...]]:
-    """Return the media ops still to run before *kind* can read each entry.
+) -> list[MediaRequirement]:
+    """Return what each entry needs before *kind*'s tool can read it, in scope order.
 
-    The answer follows how *kind*'s tool reads (``TrackingRoot.reads``), by the
-    rules its run applies:
+    Each entry is put through the checks that *kind*'s run makes before its tool
+    reads the entry media, in the order the run makes them, and is reported with
+    the first check that refuses it, as that refusal. An entry that passes every
+    check is absent. How *kind*'s tool reads (``TrackingRoot.reads``) decides the
+    checks:
 
-    * a one-file tool needs ``export-store`` for each store without an export,
-      and ``export-joined`` for an entry of several clips without a current
-      join;
-    * mosaic's runner needs ``export-store`` only for a store whose chunk files
-      are not the frames mosaic reads, and no join;
-    * an in-process reader needs ``export-joined`` only for clips that differ in
-      frame rate, and no export.
+    * a one-file tool needs the export of a store and the join of several clips;
+    * mosaic's runner needs the export of a store whose chunk files are not the
+      frames mosaic reads, and no join;
+    * an in-process reader needs a join only for clips that differ in frame rate.
 
-    Read from the media index, the stores' metadata and the files on disk. Nothing
-    is probed, so a store whose chunks disagree with its index, which the run then
-    reads through its export, is found by the run rather than here. An entry
-    that needs nothing is absent. An entry the run refuses for another reason,
-    such as clips of different sizes, is not reported here.
+    Every tool refuses clips that cannot be read as one video. A tracker also
+    refuses several clips of which one carries no content identity, because its
+    reuse gate cannot name them.
+
+    The answer is for the entry media. A run that reads a media variant reads the
+    variant's file and needs none of it. Nothing is probed: the answer comes from
+    the media index, the stores' metadata and the files on disk. So a store whose
+    chunks a probe finds disagreeing with the store's index, which the run then
+    reads through its export, is found by the run.
 
     Args:
         ds: The dataset.
@@ -719,43 +776,86 @@ def required_media_ops(
         entries: The entries to answer for, or ``None`` for every indexed entry.
 
     Returns:
-        The ops each entry needs, in the order to run them, by entry.
+        One requirement per entry that *kind* cannot read yet, in scope order.
+
+    Raises:
+        MediaProbeError: As the run's own resolution raises it: an entry whose
+            original needs an analysis transcode and has none, or a store whose
+            metadata cannot be read.
     """
-    reads = tracking_root(kind).reads
-    media_root = ds.get_root("media")
-    needed: dict[Entry, tuple[MediaOpKind, ...]] = {}
+    root = tracking_root(kind)
+    required: list[MediaRequirement] = []
     for entry in one_camera_per_entry(kind, ds.resolve_media_scope(entries)):
-        paths, facts = entry.resolved.paths, entry.resolved.facts
-        stores = [path for path in paths if is_imgstore(path)]
-        ops: list[MediaOpKind] = []
-        if any(
-            _needs_export(ds, entry.group, entry.sequence, store, reads=reads)
-            for store in stores
-        ):
-            ops.append("export-store")
-        if reads == "in-process":
-            joins = needs_join(paths, facts)
-        else:
-            # A one-file tool is handed several clips as their join. Clips that
-            # include a store are refused rather than joined.
-            joins = reads == "one-file" and len(paths) > 1 and not stores
-        if joins and not joins_of(media_root, joined_source_uid(facts))[0]:
-            ops.append("export-joined")
-        if ops:
-            needed[(entry.group, entry.sequence)] = tuple(ops)
-    return needed
+        try:
+            _refuse_unreadable(ds, entry, kind=kind, root=root)
+        except JoinedSourceMismatchError as refusal:
+            required.append(_requirement(entry, "unjoinable", None, refusal))
+        except EntryJoinMissingError as refusal:
+            op: MediaOpKind | None = (
+                "export-joined"
+                if refusal.cause in ("no_join", "superseded_join")
+                else None
+            )
+            required.append(_requirement(entry, refusal.cause, op, refusal))
+        except StoreExportMissingError as refusal:
+            required.append(
+                _requirement(entry, "store_export", "export-store", refusal)
+            )
+    return required
 
 
-def _needs_export(
-    ds: "Dataset", group: str, sequence: str, store: Path, *, reads: ToolReads
-) -> bool:
-    """Whether a tool that reads as *reads* needs *store* exported first."""
-    if reads == "in-process":
-        return False
-    if reads == "entry-files" and readable_chunks(store):
-        return False
-    export = _registered_export(ds, group, sequence, store)
-    return export is None or not export.is_file()
+def _refuse_unreadable(
+    ds: "Dataset", entry: "ResolvedScopeEntry", *, kind: str, root: TrackingRoot
+) -> None:
+    """Raise as *kind*'s run raises before its tool reads *entry*, without a probe.
+
+    The calls are the run's own: those of
+    :func:`~mosaic.tracking.common.scope.build_work_items` for a tracker, then
+    :func:`entry_tool_input` for a one-file tool, the store half of
+    :func:`entry_runner_sources` for mosaic's runner, and
+    :func:`~mosaic.core.pipeline.joined_export.join_to_read` for an in-process
+    reader.
+    """
+    group, sequence = entry.group, entry.sequence
+    paths, facts = entry.resolved.paths, entry.resolved.facts
+    refuse_unjoinable(
+        kind,
+        group,
+        sequence,
+        paths,
+        facts,
+        hands_over_path=root.reads != "in-process",
+    )
+    if root.retention == "tracker":
+        refuse_unidentified_clips(group, sequence, facts, asker=kind)
+    if root.reads == "in-process":
+        _ = join_to_read(ds, entry, asker=kind)
+    elif root.reads == "one-file":
+        _ = entry_tool_input(ds, group, sequence, paths, facts, kind=kind)
+    else:
+        for store in paths:
+            if is_imgstore(store) and not readable_chunks(store):
+                why = _unreadable_chunks_why(kind)
+                _ = _store_export(ds, group, sequence, store, kind=kind, why=why)
+
+
+def _requirement(
+    entry: "ResolvedScopeEntry",
+    cause: MediaRequirementCause,
+    op: MediaOpKind | None,
+    refusal: Exception,
+) -> MediaRequirement:
+    """Return *entry*'s requirement, from the refusal that names it."""
+    reencode = op == "export-joined" and join_needs_reencode(entry.resolved.facts)
+    return MediaRequirement(
+        group=entry.group,
+        sequence=entry.sequence,
+        camera=entry.camera,
+        cause=cause,
+        op=op,
+        reencode=reencode,
+        reason=str(refusal),
+    )
 
 
 def _registered_export(

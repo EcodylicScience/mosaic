@@ -1295,9 +1295,11 @@ pixel. A store whose chunks are images, raw arrays or Bayer/YUV data is still re
 through its `export-store` video, and a chunk whose measured count differs from the
 store's index sends the store there too. Each file's facts are gated in mosaic before
 they cross, because the runner cannot call the gate. `TrackingRoot.reads` declares how
-each tool reads (`one-file`, `entry-files`, `in-process`), and `required_media_ops`
-answers from it which export a tool still needs. `infer-localizer` is mosaic's own
-PyTorch and reads a store natively.
+each tool reads (`one-file`, `entry-files`, `in-process`). `required_media_ops` puts
+each entry through the checks a kind's run makes, without a probe, and returns a
+`MediaRequirement` for each entry that would be refused: its cause, the op that meets
+it, the `reencode` choice and the run's own refusal text. `infer-localizer` is
+mosaic's own PyTorch and reads a store natively.
 
 **Training cancels cooperatively, and that is the one place `run_supervised`'s
 kill is wrong.** Ultralytics honours `trainer.stop` between epochs and nowhere

@@ -16,7 +16,7 @@ stores, against stand-in weights.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -31,16 +31,23 @@ from mosaic_media.io import VideoReader
 import mosaic.tracking.common.tool_input as tool_input
 import mosaic.tracking.ultralytics_track.dataset_runs as ultralytics_runs
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import Entry
 from mosaic.core.media.imgstore_native import NativeStore
 from mosaic.core.media.read_target import verified_read_facts
 from mosaic.core.media.video_io import open_frame_reader
-from mosaic.core.pipeline.joined_export import JOINED_KIND_DIRECTORY
+from mosaic.core.pipeline.joined_export import (
+    JOINED_KIND_DIRECTORY,
+    current_joined_recipes,
+    joined_source_uid,
+)
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.store_export import StoreExportParams, readable_chunks
 from mosaic.core.pipeline.transcode import TRANSCODE_KIND_DIRECTORY
 from mosaic.core.scope import Scope
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
 from mosaic.tracking.common.tool_input import (
+    MediaOpKind,
+    MediaRequirementCause,
     StoreExportMissingError,
     ToolFile,
     entry_runner_sources,
@@ -58,6 +65,7 @@ from tests.helpers import (
     MakeStore,
     MediaClip,
     gray_level,
+    index_media_sequence,
     install_fake_pose_inference,
     install_fake_ultralytics,
     make_dataset,
@@ -67,6 +75,7 @@ from tests.helpers import (
     published_table,
     store_dataset,
     stub_join,
+    write_h264_mp4,
     write_media_index,
     write_painted_entry,
 )
@@ -588,85 +597,204 @@ def test_the_chunks_are_read_while_an_export_exists_and_a_tracked_entry_needs_ne
 # --- what has to be built before a tool can read an entry -----------------
 
 
-def _two_clips(*, rates: tuple[float, float] = (30.0, 30.0)) -> list[MediaClip]:
+type Need = tuple[MediaRequirementCause, MediaOpKind | None]
+"""An entry's cause and the op that meets it, as a test compares them."""
+
+
+def _needs(
+    ds: Dataset, kind: str, entries: Sequence[Entry] | None = None
+) -> dict[Entry, Need]:
+    """What *kind* needs for each entry, by entry, without the reasons."""
+    return {
+        (requirement.group, requirement.sequence): (requirement.cause, requirement.op)
+        for requirement in required_media_ops(ds, kind=kind, entries=entries)
+    }
+
+
+def _two_clips(
+    *,
+    rates: tuple[float, float] = (30.0, 30.0),
+    uids: tuple[str, str] = ("uid-0", "uid-1"),
+    widths: tuple[int, int] = (640, 640),
+) -> list[MediaClip]:
     return [
         MediaClip(
             filename=f"c{order}.mp4",
             video_order=order,
-            video_uuid=f"uid-{order}",
+            video_uuid=uid,
             fps=rate,
+            width=width,
         )
-        for order, rate in enumerate(rates)
+        for order, (rate, uid, width) in enumerate(
+            zip(rates, uids, widths, strict=True)
+        )
     ]
+
+
+_NO_JOIN: Need = ("no_join", "export-joined")
+_STORE_EXPORT: Need = ("store_export", "export-store")
 
 
 @pytest.mark.parametrize(
     ("kind", "needed"),
     [
-        ("trex", ("export-joined",)),
-        ("sleap", ("export-joined",)),
-        ("ultralytics", ()),
-        ("infer-pose", ()),
-        ("infer-localizer", ()),
+        ("trex", _NO_JOIN),
+        ("sleap", _NO_JOIN),
+        ("litpose", _NO_JOIN),
+        ("ultralytics", None),
+        ("infer-pose", None),
+        ("infer-localizer", None),
     ],
 )
 def test_several_clips_need_a_join_only_for_a_tool_that_opens_one_file(
-    tmp_path: Path, kind: str, needed: tuple[str, ...]
+    tmp_path: Path, kind: str, needed: Need | None
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, _two_clips())
 
-    assert required_media_ops(ds, kind=kind) == ({_ENTRY: needed} if needed else {})
+    assert _needs(ds, kind) == ({_ENTRY: needed} if needed else {})
 
     _ = stub_join(ds, ["uid-0", "uid-1"])
-    assert required_media_ops(ds, kind=kind) == {}
+    assert _needs(ds, kind) == {}
 
 
-def test_clips_at_two_rates_need_a_join_for_the_localizer(tmp_path: Path) -> None:
+def test_a_join_to_build_names_the_command_and_its_reencode_choice(
+    tmp_path: Path, write_cfr_mp4: Callable[..., None], requires_ffmpeg: None
+) -> None:
+    """Clips in two codecs are joined with ``reencode``, which the reason states."""
+    ds = make_dataset(tmp_path / "ds")
+    directory = ds.get_root("media_raw") / "sess"
+    write_h264_mp4(directory / "c0.mp4", frames=6, fps=30.0, size=(64, 48))
+    write_cfr_mp4(directory / "c1.mp4", frames=6, size=(64, 48))
+    index_media_sequence(ds, "sess", ["c0.mp4", "c1.mp4"])
+
+    (requirement,) = required_media_ops(ds, kind="trex")
+
+    assert (requirement.cause, requirement.op) == _NO_JOIN
+    assert requirement.reencode
+    assert '--kind export-joined --entries ":sess"' in requirement.reason
+    assert '"reencode": true' in requirement.reason
+    assert required_media_ops(ds, kind="ultralytics") == []
+
+
+def test_clips_at_two_rates_need_a_join_for_the_localizer_alone(
+    tmp_path: Path,
+) -> None:
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, _two_clips(rates=(30.0, 31.0)))
 
-    assert required_media_ops(ds, kind="infer-localizer") == {
-        _ENTRY: ("export-joined",)
-    }
-    assert required_media_ops(ds, kind="ultralytics") == {}
+    assert _needs(ds, "infer-localizer") == {_ENTRY: _NO_JOIN}
+    assert _needs(ds, "trex") == {_ENTRY: _NO_JOIN}
+    assert _needs(ds, "ultralytics") == {}
+    assert _needs(ds, "infer-pose") == {}
+
+
+@pytest.mark.parametrize(
+    "kind", ["trex", "ultralytics", "infer-pose", "infer-localizer"]
+)
+def test_clips_of_two_sizes_are_unjoinable_for_every_tool(
+    tmp_path: Path, kind: str
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, _two_clips(widths=(640, 1280)))
+
+    (requirement,) = required_media_ops(ds, kind=kind)
+
+    assert (requirement.cause, requirement.op) == ("unjoinable", None)
+    assert "c1.mp4 has width" in requirement.reason
 
 
 @pytest.mark.parametrize(
     ("kind", "needed"),
-    [("trex", ("export-store",)), ("ultralytics", ()), ("infer-localizer", ())],
+    [
+        ("trex", ("unidentified_clips", None)),
+        ("ultralytics", ("unidentified_clips", None)),
+        ("infer-pose", None),
+        ("infer-localizer", None),
+    ],
+)
+def test_clips_without_an_identity_are_refused_by_a_tracker(
+    tmp_path: Path, kind: str, needed: Need | None
+) -> None:
+    """A tracker's reuse gate cannot name them. An inference op reads them as they are."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, _two_clips(uids=("uid-0", "")))
+
+    requirements = required_media_ops(ds, kind=kind)
+
+    assert _needs(ds, kind) == ({_ENTRY: needed} if needed else {})
+    if needed:
+        assert "reprobe-media --apply" in requirements[0].reason
+
+
+def test_several_current_joins_are_the_users_to_choose_between(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, _two_clips())
+    root = ds.get_root("media") / JOINED_KIND_DIRECTORY
+    root.mkdir(parents=True)
+    uid = joined_source_uid(ds.resolve_media(*_ENTRY).facts)
+    for recipe in sorted(current_joined_recipes()):
+        _ = (root / f"{uid}.{recipe}.joined.mp4").write_bytes(b"join")
+
+    (requirement,) = required_media_ops(ds, kind="trex")
+
+    assert (requirement.cause, requirement.op) == ("several_joins", None)
+    assert "delete the rest" in requirement.reason
+
+
+def test_a_superseded_join_is_built_again(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, _two_clips())
+    root = ds.get_root("media") / JOINED_KIND_DIRECTORY
+    root.mkdir(parents=True)
+    uid = joined_source_uid(ds.resolve_media(*_ENTRY).facts)
+    _ = (root / f"{uid}.0000000000.joined.mp4").write_bytes(b"old join")
+
+    (requirement,) = required_media_ops(ds, kind="trex")
+
+    assert (requirement.cause, requirement.op) == ("superseded_join", "export-joined")
+    assert "prune-joined" in requirement.reason
+
+
+@pytest.mark.parametrize(
+    ("kind", "needed"),
+    [("trex", _STORE_EXPORT), ("ultralytics", None), ("infer-localizer", None)],
 )
 def test_a_video_store_needs_an_export_only_for_a_tool_that_opens_one_file(
     tmp_path: Path,
     make_media_dataset: MakeMediaDataset,
     make_imgstore: MakeStore,
     kind: str,
-    needed: tuple[str, ...],
+    needed: Need | None,
 ) -> None:
     ds, group, sequence, _store = _store_entry(
         tmp_path, make_media_dataset, make_imgstore
     )
 
     expected = {(group, sequence): needed} if needed else {}
-    assert required_media_ops(ds, kind=kind) == expected
+    assert _needs(ds, kind) == expected
 
 
 @pytest.mark.parametrize(
     ("kind", "needed"),
     [
-        ("trex", ("export-store",)),
-        ("ultralytics", ("export-store",)),
-        ("infer-localizer", ()),
+        ("trex", _STORE_EXPORT),
+        ("ultralytics", _STORE_EXPORT),
+        ("infer-localizer", None),
     ],
 )
 def test_a_store_whose_chunks_are_not_video_needs_an_export_for_every_runner(
-    tmp_path: Path, kind: str, needed: tuple[str, ...]
+    tmp_path: Path, kind: str, needed: Need | None
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, [MediaClip()])
     _ = point_at_a_store(ds, "sess", ds.get_root("media_raw") / "sess.store")
 
-    assert required_media_ops(ds, kind=kind) == ({_ENTRY: needed} if needed else {})
+    requirements = required_media_ops(ds, kind=kind)
+
+    assert _needs(ds, kind) == ({_ENTRY: needed} if needed else {})
+    if needed:
+        assert '--kind export-store --entries ":sess"' in requirements[0].reason
 
 
 def test_a_built_export_needs_nothing(
@@ -680,4 +808,27 @@ def test_a_built_export_needs_nothing(
     )
     _ = _export_store(ds, group, sequence)
 
-    assert required_media_ops(ds, kind="trex") == {}
+    assert required_media_ops(ds, kind="trex") == []
+
+
+def test_entries_narrow_the_answer_and_it_keeps_scope_order(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            *(
+                MediaClip(
+                    sequence=sequence,
+                    filename=f"{sequence}-{order}.mp4",
+                    video_order=order,
+                    video_uuid=f"{sequence}-uid-{order}",
+                )
+                for sequence in ("a", "b")
+                for order in range(2)
+            ),
+            MediaClip(sequence="c", filename="c.mp4", video_uuid="c-uid"),
+        ],
+    )
+
+    assert list(_needs(ds, "trex")) == [("", "a"), ("", "b")]
+    assert list(_needs(ds, "trex", entries=[("", "b"), ("", "c")])) == [("", "b")]
