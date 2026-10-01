@@ -1973,7 +1973,7 @@ wheels = [
 
 [[package]]
 name = "mosaic-behavior"
-version = "0.13.0"
+version = "0.14.0"
 source = { editable = "." }
 dependencies = [
     { name = "h5py" },
@@ -2015,35 +2015,11 @@ faiss = [
 feral = [
     { name = "feral" },
 ]
-gpu = [
-    { name = "faiss-cpu" },
-]
-identity = [
-    { name = "timm" },
-    { name = "torch" },
-]
 lightning-action = [
     { name = "lightning-action" },
 ]
-localizer = [
-    { name = "timm" },
-    { name = "torch" },
-]
 movement = [
     { name = "movement" },
-]
-polo = [
-    { name = "timm" },
-    { name = "torch" },
-]
-pose = [
-    { name = "timm" },
-    { name = "torch" },
-]
-recommended = [
-    { name = "faiss-cpu" },
-    { name = "timm" },
-    { name = "torch" },
 ]
 
 [package.dev-dependencies]
@@ -2084,13 +2060,7 @@ requires-dist = [
     { name = "joblib", specifier = ">=1.3" },
     { name = "lightning-action", marker = "extra == 'lightning-action'", specifier = ">=1.0" },
     { name = "matplotlib", specifier = ">=3.7" },
-    { name = "mosaic-behavior", extras = ["all"], marker = "extra == 'recommended'" },
-    { name = "mosaic-behavior", extras = ["deep-learning"], marker = "extra == 'identity'" },
-    { name = "mosaic-behavior", extras = ["deep-learning"], marker = "extra == 'localizer'" },
-    { name = "mosaic-behavior", extras = ["deep-learning"], marker = "extra == 'polo'" },
-    { name = "mosaic-behavior", extras = ["deep-learning"], marker = "extra == 'pose'" },
     { name = "mosaic-behavior", extras = ["deep-learning", "faiss"], marker = "extra == 'all'" },
-    { name = "mosaic-behavior", extras = ["faiss"], marker = "extra == 'gpu'" },
     { name = "mosaic-media", extras = ["io", "cli"], specifier = ">=0.3.4,<0.4.0" },
     { name = "movement", marker = "extra == 'movement'", specifier = ">=0.17" },
     { name = "numba", specifier = ">=0.58" },
@@ -2112,7 +2082,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "xgboost", specifier = ">=1.7" },
 ]
-provides-extras = ["deep-learning", "faiss", "movement", "lightning-action", "feral", "all", "recommended", "identity", "localizer", "gpu", "pose", "polo"]
+provides-extras = ["deep-learning", "faiss", "movement", "lightning-action", "feral", "all"]
 
 [package.metadata.requires-dev]
 dev = [

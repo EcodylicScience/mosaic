@@ -8,6 +8,50 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## 0.14.0: the Ultralytics runner reads an entry's files, a caller can ask what an entry needs, and six extras are retired
+
+This release carries every section below it down to 0.13.0.
+
+**The Ultralytics runner reads an entry's files, and nothing is joined or
+exported for it.** Ultralytics tracking, `infer-pose` and `infer-points` hand
+their runner an entry's files in order, which it reads on one frame axis: the
+clips, at any mix of frame rates, and the chunk files of an imgstore whose chunks
+are video. `export-joined` no longer runs for these three. `export-store` runs
+only for a store whose chunks are images, raw arrays, or Bayer or YUV data, or
+whose chunks a probe finds disagreeing with the store's index. No run identifier
+moves, and output tracked from a join or an export is reused.
+
+**A tracks row from `infer-pose` or `infer-points` over a store names
+`media_raw`.** `consumed_source_roots` names the store, as a tracker's row
+already did, where it named the export under `media`.
+
+**A caller can ask what an entry needs before a tool reads it.**
+`required_media_ops(ds, *, kind, entries=None)` in
+`mosaic.tracking.common.tool_input` returns one `MediaRequirement` for each
+entry that `kind`'s run would refuse. It carries the entry, a `cause` from the
+closed `MediaRequirementCause` set (`no_join`, `superseded_join`,
+`several_joins`, `unidentified_clips`, `store_export`, `unjoinable`), the `op`
+that meets it, `reencode` for a join, and `reason`, the run's own refusal text.
+It makes the run's checks without probing a file. `TrackingRoot.reads`
+(`one-file`, `entry-files`, `in-process`) declares how each tool reads an entry.
+
+**Names moved or added.**
+
+- The runner's `TrackRequest` and `InferRequestBase` replace `video_path` and
+  `media_facts` with `sources`, a list of `SourceFile`. The runner ships inside
+  mosaic, so no other program builds these.
+- New: `entry_runner_sources`, `ToolFile`, `request_sources`, `source_windows`,
+  `readable_chunks`, `NativeStore.chunk_spans`, `required_media_ops`,
+  `MediaRequirement` and `MediaRequirementCause`.
+
+**Six extras are retired.** `recommended`, `identity`, `localizer`, `gpu`, `pose`
+and `polo` are no longer declared. pip warns about an unknown extra and installs
+the base, with no torch, so replace each in a saved command:
+
+- `recommended` with `all`;
+- `identity`, `localizer`, `pose` and `polo` with `deep-learning`;
+- `gpu` with `faiss`.
+
 ## Unreleased: a codec refusal exits 65, and a cancel is recorded as cancelled
 
 **A tracker's codec refusal is a refusal.** When a tracker refuses to hand its

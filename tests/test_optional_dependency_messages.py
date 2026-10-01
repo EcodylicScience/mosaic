@@ -163,12 +163,12 @@ def test_every_self_reference_resolves() -> None:
     )
 
 
-def test_bundles_and_deprecated_aliases_are_not_empty() -> None:
-    """Resolving a bundle or alias must reach a real requirement.
+def test_the_documented_bundle_lands_torch_and_the_retired_aliases_are_gone() -> None:
+    """``all`` is the documented install, and must keep landing torch.
 
-    ``recommended`` in particular has to keep landing torch: it is what every
-    saved lab command and README still says, and an alias that quietly resolved
-    to nothing would produce a torch-less environment with no error.
+    The six aliases were removed in 0.14.0. A saved ``pip install .[recommended]``
+    now makes pip warn and install the base, which the changelog states. A
+    declared alias would instead resolve and hide that the name was retired.
     """
     extras = _declared_extras()
 
@@ -187,20 +187,12 @@ def test_bundles_and_deprecated_aliases_are_not_empty() -> None:
                 out.extend(resolve(referenced.strip(), seen))
         return out
 
-    for name in ("all", "recommended", "identity", "localizer", "gpu"):
-        assert name in extras, f"[{name}] is expected to exist until 0.13"
-        assert resolve(name), f"[{name}] resolves to no requirements at all"
+    resolved = resolve("all")
+    assert any(spec.startswith("torch") for spec in resolved), (
+        "[all] must land torch; it is what the documented install points at"
+    )
 
-    # One release behind the four above, because they were retired later: when
-    # pose and point training moved into environments mosaic does not install,
-    # and there was no longer anything for either name to install here.
-    for name in ("pose", "polo"):
-        assert name in extras, f"[{name}] is expected to exist until 0.14"
-        assert resolve(name), f"[{name}] resolves to no requirements at all"
-
-    for name in ("all", "recommended"):
-        resolved = resolve(name)
-        assert any(spec.startswith("torch") for spec in resolved), (
-            f"[{name}] must still land torch; it is what the documented install "
-            "and every saved command point at"
-        )
+    retired = {"recommended", "identity", "localizer", "gpu", "pose", "polo"}
+    assert not retired & set(extras), (
+        f"{sorted(retired & set(extras))} were removed in 0.14.0 and are declared again"
+    )

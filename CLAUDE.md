@@ -72,8 +72,7 @@ gates reading a file the user already has, and the three are ~30 MB together.
   once h5py moved to the base. On Linux torch pulls the whole `nvidia-cu12`
   stack -- about 4 GB of wheels -- which is the entire reason the default install
   does not carry it.
-- **No extra installs Ultralytics.** `pose` and `polo` are deprecation aliases
-  for `deep-learning` (removed in 0.14) and nothing under `src/mosaic/` imports
+- **No extra installs Ultralytics.** Nothing under `src/mosaic/` imports
   Ultralytics outside the runner. Every path that reaches it — `mosaic track
   ultralytics` and `mosaic run --kind infer-pose|infer-points|train-pose|train-points`
   — runs in `src/mosaic/tracking/external/ultralytics-env/` or `.../polo-env/`,
@@ -113,13 +112,12 @@ gates reading a file the user already has, and the three are ~30 MB together.
 - **`imgstore` is not an extra.** Reading a store is native — the package is
   needed only to *write* the fixture stores the suite builds — so it lives in
   the `test` dependency group, which every CI job installs.
-- `recommended`, `identity`, `localizer` and `gpu` survive as self-referential
-  aliases through 0.12 and are removed in 0.13; `pose` and `polo` join them in
-  0.13 and are removed in 0.14. They exist only because pip
-  *warns* about an unknown extra and carries on: a saved `.[recommended]` would
-  otherwise produce a working install with no torch in it and no error to say
-  so. `wavelets`, `sleap` and `hdf5` are not aliased — the base provides them,
-  so the warning is harmless.
+- **The retired extras are gone, not aliased.** `recommended`, `identity`,
+  `localizer`, `gpu`, `pose` and `polo` were removed in 0.14.0, after a release or
+  two as aliases. pip *warns* about an unknown extra and carries on, so a saved
+  `.[recommended]` now installs the base with no torch in it. The CHANGELOG names
+  what replaces each. `tests/test_optional_dependency_messages.py` fails if one is
+  declared again.
 - `feral` installs the FERAL V-JEPA behavior classifier (`FeralFeature`, train +
   infer) from PyPI, as `feral>=1.0,<2`. It runs in-process (not sandboxed like
   keypoint-MoSeq) and **wants an environment of its own, for a different reason

@@ -3,7 +3,7 @@
 ``behavior/__init__.py`` imports ``model_library``, and every network under it
 needs torch. torch is an optional extra, so a top-level ``import torch`` anywhere
 under ``model_library`` would break every mosaic import -- not just the identity
-path -- for anyone without the ``[identity]`` extra, and take the whole test
+path -- for anyone without the ``[deep-learning]`` extra, and take the whole test
 suite with it.
 
 Two habits hold that line: torch stays behind a lazy ``import_torch()``, and

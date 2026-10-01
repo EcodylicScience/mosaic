@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 if TYPE_CHECKING:
-    # Annotation-only. torch arrives through the `localizer` extra, and this
+    # Annotation-only. torch arrives through the `deep-learning` extra, and this
     # module is imported by the YOLO presets above, which do not need it.
     import torch
 

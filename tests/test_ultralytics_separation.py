@@ -101,9 +101,7 @@ EXTRAS_REACHING_ULTRALYTICS: Final = frozenset()
 Both are empty and both are asserted, because the property is now terminal: an
 extra reappearing here would be a distribution mosaic cannot import arriving in
 an environment mosaic installs, which is the shape of the thing this whole
-arrangement removed. ``pose`` and ``polo`` still exist and now alias
-``deep-learning``, so a saved install line keeps working and stops carrying
-Ultralytics.
+arrangement removed.
 """
 
 _SIDECAR_MANIFEST: Final = _ENVIRONMENT_DIRECTORY / "pyproject.toml"
@@ -362,9 +360,9 @@ def test_no_mosaic_install_declares_ultralytics_at_all() -> None:
     ``pip install -e ".[all]"`` carry no AGPL-licensed dependency, which is the
     sentence this whole arrangement exists to be able to write.
 
-    ``pose`` and ``polo`` are still declared and now alias ``deep-learning``: pip
-    only warns about an unknown extra, so deleting the names would leave a saved
-    install line producing a torch-less environment and no error to say so.
+    The ``pose`` and ``polo`` extras, which once installed Ultralytics, were
+    removed in 0.14.0. ``test_optional_dependency_messages`` holds that they stay
+    gone.
     """
     document = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
     base = _REQUIREMENTS.validate_python(document["project"]["dependencies"])
@@ -395,12 +393,6 @@ def test_no_mosaic_install_declares_ultralytics_at_all() -> None:
     }
     assert declaring == EXTRAS_DECLARING_ULTRALYTICS
     assert reaching == EXTRAS_REACHING_ULTRALYTICS
-
-    for retired in ("pose", "polo"):
-        assert extras.get(retired), (
-            f"[{retired}] is gone rather than aliased, so a saved install line "
-            "resolves to the base with only a warning"
-        )
 
 
 EXTERNAL_ENVIRONMENTS: Final = (

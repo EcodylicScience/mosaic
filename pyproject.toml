@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mosaic-behavior"
-version = "0.13.0"
+version = "0.14.0"
 description = "Mosaic — behavior analysis toolkit for animal tracking, feature extraction, and modeling."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -175,38 +175,6 @@ feral = ["feral>=1.0,<2"]
 # you build, which no extra here can install. See
 # src/mosaic/tracking/external/README.md.
 all = ["mosaic-behavior[deep-learning,faiss]"]
-
-# Deprecated in 0.12, removed in 0.13. Kept only where the name's absence would
-# leave a *silently wrong* environment: pip warns about an unknown extra and
-# carries on, so a saved `pip install -e ".[recommended]"` would otherwise
-# produce a working install with no torch in it and no error to say so.
-#
-# `wavelets`, `sleap`, `hdf5` and `imgstore` are deliberately NOT aliased. The
-# first three are base dependencies now, so the warning is harmless and the
-# environment is right either way; `imgstore` moved to the `test` dependency
-# group, being needed only to write the fixture stores the suite builds.
-recommended = ["mosaic-behavior[all]"]
-identity = ["mosaic-behavior[deep-learning]"]
-localizer = ["mosaic-behavior[deep-learning]"]
-gpu = ["mosaic-behavior[faiss]"]
-
-# Deprecated in 0.13, removed in 0.14 -- one release behind the four above,
-# because they retire here rather than there. Nothing in mosaic imports
-# Ultralytics any more: the tracker, both inference ops and both training ops run
-# it in the environment its model belongs to, so an extra that installed it would
-# put an AGPL-licensed distribution where mosaic can never reach it from. The
-# names survive for the reason `identity` and `localizer` do -- pip only *warns*
-# about an unknown extra, so a saved `pip install -e ".[pose]"` would otherwise
-# resolve to the base and leave a torch-less environment with no error to say so.
-#
-# `yolo-augment` is deliberately NOT aliased. albumentations now belongs to
-# whichever environment runs the trainer, and no alias here can put it there --
-# so pip's unknown-extra warning is the signal that the opt-in moved, where an
-# alias would resolve happily and do nothing that was asked for. It is declared
-# by both environments under `--extra augment`; see
-# src/mosaic/tracking/external/README.md.
-pose = ["mosaic-behavior[deep-learning]"]
-polo = ["mosaic-behavior[deep-learning]"]
 
 [project.scripts]
 mosaic = "mosaic.cli:app"
