@@ -31,6 +31,36 @@ _PR_SET_PDEATHSIG = 1  # from <sys/prctl.h>
 _COMMAND_HEAD: Final = 6
 """How many argv tokens the message of a cancel or a timeout quotes."""
 
+_LIBRARY_PATH_VAR: Final = "LD_LIBRARY_PATH"
+
+
+def foreign_environment() -> dict[str, str]:
+    """Return this process's environment for a program of another environment.
+
+    The copy of ``os.environ`` omits each ``LD_LIBRARY_PATH`` directory inside
+    this interpreter's prefix. OpenCV's loader prepends its library directory to
+    ``LD_LIBRARY_PATH`` when ``cv2`` is imported, for the child processes. A
+    child from another environment then loads this environment's libraries
+    before those of the child's environment. SLEAP's PySide6 failed to import
+    against mosaic's Qt that way. The variable is removed when every directory
+    is left out.
+    """
+    environment = dict(os.environ)
+    inherited = environment.get(_LIBRARY_PATH_VAR)
+    if inherited is None:
+        return environment
+    prefix = os.path.realpath(sys.prefix)
+    kept = [
+        entry
+        for entry in inherited.split(os.pathsep)
+        if entry and os.path.commonpath([prefix, os.path.realpath(entry)]) != prefix
+    ]
+    if kept:
+        environment[_LIBRARY_PATH_VAR] = os.pathsep.join(kept)
+    else:
+        del environment[_LIBRARY_PATH_VAR]
+    return environment
+
 
 def command_summary(cmd: Sequence[str], head: int | None = None) -> str:
     """Return *cmd* as a message or a log line quotes it.

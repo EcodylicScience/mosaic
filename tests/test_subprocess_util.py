@@ -29,8 +29,10 @@ from mosaic.core.pipeline.subprocess_util import (
     IdleTimeoutExpired,
     ProcessCancelled,
     command_summary,
+    foreign_environment,
     run_supervised,
 )
+from mosaic.tracking.common.toolenv import subprocess_env
 
 # A child that prints one line every 0.1 s -- an order of magnitude below any
 # idle window used here, so it must never trip the watchdog.
@@ -337,3 +339,62 @@ def test_a_summary_without_a_head_keeps_every_token_but_the_program() -> None:
 
 def test_any_token_after_dash_c_is_a_program_whatever_the_executable() -> None:
     assert command_summary(["sh", "-c", "echo hi", "x"]) == "sh -c <program> x"
+
+
+# --- the environment of a program from another environment -------------------
+
+
+def _own_library_directory() -> str:
+    """The library directory that OpenCV's loader prepends for this interpreter."""
+    return str(Path(sys.prefix) / "lib")
+
+
+def test_a_library_directory_of_this_environment_is_left_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The directory that importing cv2 prepends is dropped, and the rest is kept."""
+    inherited = f"{_own_library_directory()}:/usr/local/lib:/opt/cuda/lib64"
+    monkeypatch.setenv("LD_LIBRARY_PATH", inherited)
+
+    assert foreign_environment()["LD_LIBRARY_PATH"] == "/usr/local/lib:/opt/cuda/lib64"
+
+
+def test_a_path_of_only_this_environment_is_removed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LD_LIBRARY_PATH", _own_library_directory())
+
+    assert "LD_LIBRARY_PATH" not in foreign_environment()
+
+
+def test_a_directory_beside_this_environment_is_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A directory whose name only begins like this interpreter's prefix is kept."""
+    sibling = f"{Path(sys.prefix).resolve()}-tool/lib"
+    monkeypatch.setenv("LD_LIBRARY_PATH", sibling)
+
+    assert foreign_environment()["LD_LIBRARY_PATH"] == sibling
+
+
+def test_an_environment_without_a_library_path_is_copied_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    monkeypatch.setenv("MOSAIC_PROBE_MARKER", "kept")
+
+    environment = foreign_environment()
+
+    assert "LD_LIBRARY_PATH" not in environment
+    assert environment["MOSAIC_PROBE_MARKER"] == "kept"
+
+
+def test_a_tracking_tool_is_spawned_without_this_environments_libraries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``subprocess_env`` drops the inherited directory and keeps an overlay's value."""
+    monkeypatch.setenv("LD_LIBRARY_PATH", f"{_own_library_directory()}:/usr/local/lib")
+
+    assert subprocess_env()["LD_LIBRARY_PATH"] == "/usr/local/lib"
+    overlaid = subprocess_env({"LD_LIBRARY_PATH": _own_library_directory()})
+    assert overlaid["LD_LIBRARY_PATH"] == _own_library_directory()

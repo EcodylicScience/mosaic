@@ -27,6 +27,7 @@ import numpy as np
 from pydantic import Field, model_validator
 
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.subprocess_util import foreign_environment
 from mosaic.user_paths import user_path
 from mosaic.core.pipeline.types import (
     EmitsLevel,
@@ -486,6 +487,7 @@ class KpmsFeature:
         self._proc = subprocess.Popen(
             [str(resolved), str(_KPMS_SERVER_SCRIPT), socket_path],
             stderr=self._stderr_file,
+            env=foreign_environment(),
         )
         self._server_log = ""
 

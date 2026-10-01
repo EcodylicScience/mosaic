@@ -32,7 +32,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import ClassVar, Final, Literal
 
-from mosaic.core.pipeline.subprocess_util import command_summary
+from mosaic.core.pipeline.subprocess_util import command_summary, foreign_environment
 from mosaic.user_paths import user_path
 
 __all__ = [
@@ -417,10 +417,11 @@ def display_overlay(env: ToolEnv) -> dict[str, str] | None:
 def subprocess_env(overlay: Mapping[str, str] | None = None) -> dict[str, str]:
     """The environment an external tracking tool runs in.
 
-    The caller's environment, with any *overlay* applied and an inherited
-    notebook matplotlib backend neutralized.
+    The caller's environment as :func:`foreign_environment` returns it, without
+    this environment's library directories, with any *overlay* applied and an
+    inherited notebook matplotlib backend neutralized.
     """
-    run_env = {**os.environ, **(overlay or {})}
+    run_env = {**foreign_environment(), **(overlay or {})}
     if run_env.get("MPLBACKEND", "").startswith(_INLINE_BACKEND_PREFIX):
         run_env["MPLBACKEND"] = _HEADLESS_BACKEND
     return run_env
