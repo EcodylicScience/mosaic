@@ -8,6 +8,24 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: an H.264 copy of an entry needs no step, and a control plane can own a tracker's model
+
+**A `preprocess` variant with no steps and `codec: "h264"` is an H.264 copy of its
+source.** It holds every frame of the entry media, for a tool whose reader lacks
+AV1, such as Lightning Pose's DALI reader. A step-less AV1 variant is still
+refused, because it is the entry media itself. No identifier moves.
+
+**A tracker's parameters can be narrowed by a control plane.** mosaic-api sets a
+tracker's model, its `media` and its execution knobs itself, and removes those
+fields from the subclass of the op's parameters that it exposes. `SleapParams`'
+device check no longer requires its field, and `MediaInputParams`' frame-window
+check passes a subclass without `media`.
+
+**New API.** `TrainingProvenance.keypoint_count`, the keypoints a pose model
+predicts per instance, read from the `kpt_shape` of its prepared `data.yaml`.
+`as_json()`, and so `mosaic models provenance --json`, carries it as
+`keypoint_count`.
+
 ## 0.14.0: the Ultralytics runner reads an entry's files, a caller can ask what an entry needs, and six extras are retired
 
 This release carries every section below it down to 0.13.0.
