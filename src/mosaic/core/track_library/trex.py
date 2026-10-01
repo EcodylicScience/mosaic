@@ -331,9 +331,8 @@ beside them are centimetres -- verified in ``Export.cpp`` and on real data, wher
 they are computed against the ``.pv``'s single frame rate, which a joined
 multi-clip session gets from its *first* clip alone; that is precisely why
 :func:`~mosaic.core.pipeline.placement.retime_joined_frame` drops the other
-rate-dependent columns, and
-carrying these would smuggle the same error back in under a name it does not
-check.
+rate-dependent columns, and carrying these would smuggle the same error back in
+under a name it does not check.
 
 The bounds are not lost with the column. ``load_npz_to_df`` reads ``tracklets``
 before dropping it and writes each row's tracklet into

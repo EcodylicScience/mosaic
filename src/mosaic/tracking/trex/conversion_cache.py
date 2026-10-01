@@ -325,8 +325,8 @@ def slot_marker_is_usable(marker: PhaseMarker | None) -> bool:
     ``reusable_marker`` treats an empty ``params_hash``, or one clip's empty
     ``source_uid``, as "unknown is not mismatched", which is right for reusing a
     directory where it stands and wrong for promoting its contents into a shared
-    address. A marker backfilled onto a pre-marker directory records neither by
-    design, so it is reused in place exactly as before and never adopted.
+    address. A marker backfilled onto a pre-marker directory cannot know either,
+    so it is reused in place and never adopted.
     """
     return marker is not None and bool(marker.params_hash) and bool(marker.source_uid)
 

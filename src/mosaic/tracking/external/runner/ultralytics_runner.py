@@ -711,7 +711,8 @@ def _infer_frames(
 
     Each frame's rows are numbered by the frame's index in the video, which the
     reader returns with it, so a run with ``start_frame`` or ``frame_step`` set
-    publishes the frames that it read. The tracker numbers its rows the same way.
+    numbers its rows by the frames that it read. The tracker numbers its rows the
+    same way.
 
     The results themselves are dropped as each batch is converted. That is the
     one thing this loop does that the in-process path did not: it accumulated

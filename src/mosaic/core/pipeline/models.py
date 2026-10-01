@@ -39,11 +39,11 @@ prepared-dataset one -- would otherwise each keep a list that drifts.
 
 
 def holds_trained_models(kind: str) -> bool:
-    """Whether ``models/<kind>/`` holds trained models rather than prepared data.
+    """Whether ``models/<kind>/`` contains trained models rather than prepared data.
 
-    Every kind but :data:`PREPARED_DATA_KINDS`, including one no op registers:
-    TREx identity weights, for instance, are registered under ``train-identity``.
-    The trained-model inventory lists these kinds, and deleting a model accepts
+    Every kind but :data:`PREPARED_DATA_KINDS`, including one that no op
+    registers, such as ``train-identity``, which contains TREx identity weights. The
+    trained-model inventory lists these kinds, and deleting a model accepts
     exactly them, so the two agree on what a model is.
     """
     return kind not in PREPARED_DATA_KINDS

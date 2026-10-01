@@ -994,7 +994,7 @@ def test_measure_tracks_counts_each_pass_s_rewrites_by_what_it_did(
             frames_read=18,
             known_tail_loss=2,
         )
-    # The fixture's hand-written rows carry no run_id; drop them, as
+    # The fixture's hand-written rows have no run_id. Drop them, as
     # `_one_trex_row` does.
     frame = read_tracks_index(ds)
     frame[frame["run_id"] != ""].to_csv(tracks_index_path(ds), index=False)
@@ -1012,8 +1012,7 @@ def test_measure_tracks_apply_writes_each_count_cell(
 ) -> None:
     """A converted table read no media, so each pass clears its stale cell.
 
-    A dry run reports the clears and leaves the cells, and ``--apply`` writes
-    them.
+    A dry run leaves the cells, and ``--apply`` clears them.
     """
     from mosaic.core.pipeline.tracks_index import (
         read_frames_read,

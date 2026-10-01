@@ -248,9 +248,9 @@ def write_tracks_variant(
     variant (:func:`observed_models`), which it keeps as a union, those recorded
     first. One SLEAP model set named once by run ids and once by the paths of the
     same artifacts is one variant, because its digest covers the artifacts only,
-    and the second record names each member by its digest. Replacing the first
-    would forget the runs that
-    :func:`~mosaic.core.pipeline.tracks_index.tracks_made_with` reads.
+    and the second record names each member by its digest. The union keeps the
+    run ids that :func:`~mosaic.core.pipeline.tracks_index.tracks_made_with`
+    reads.
 
     The read, the merge and the write happen under the record's own
     :func:`~mosaic.core.pipeline.index_lock.index_lock`, so two runs minting one
@@ -358,13 +358,13 @@ def observed_models(models: Sequence[str]) -> dict[str, str]:
 
 
 def names_model_by_path(sidecar: VariantSidecar) -> bool:
-    """Whether *sidecar* names its model by a digest of the path it sat at.
+    """Whether *sidecar* names its model by a digest of the model's path.
 
-    What an inference variant recorded under tracks identity scheme 1 for a
-    model handed in by path (see :data:`TRACKS_IDENTITY_SCHEME`). The digest
-    names neither the training run nor the weights' content, so nothing can be
-    matched against it. A model handed in by run id was named by the run id
-    under scheme 1 too.
+    An inference variant recorded under tracks identity scheme 1 names a model
+    handed in by path this way (see :data:`TRACKS_IDENTITY_SCHEME`). The digest
+    names neither the training run nor the weights' content, so no run id or
+    content digest matches it. A model handed in by run id was named by the run
+    id under scheme 1 too.
     """
     model = sidecar.params.get(_MODEL)
     return (
@@ -417,7 +417,7 @@ def recorded_op_params(sidecar: VariantSidecar) -> Mapping[str, object]:
     """Return the op parameters recorded in a variant's payload, by name.
 
     A payload built by :func:`convert_variant_payload`,
-    :func:`infer_variant_payload` or :func:`resample_variant_payload` holds them
+    :func:`infer_variant_payload` or :func:`resample_variant_payload` contains them
     under ``params``. A tracker's payload is its settings
     (:func:`tracker_variant_payload`), and no tracker declares a parameter
     named ``params``.

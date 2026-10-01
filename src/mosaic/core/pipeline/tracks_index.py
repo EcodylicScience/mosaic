@@ -51,7 +51,7 @@ from mosaic.core.pipeline.writers import read_parquet_table_columns
 from mosaic.core.pipeline.composition import composition_drift
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.file_digest import MODEL_DIGEST_HEX
-from mosaic.core.pipeline._utils import atomic_write, hash_params
+from mosaic.core.pipeline._utils import atomic_write, hash_params, is_str_mapping
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
     RunIndexRowBase,
@@ -62,6 +62,7 @@ from mosaic.core.pipeline.index_lock import index_lock
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_axis import (
+    BackfillReads,
     RuleValue,
     Unanswered,
     recorded_frames_read,
@@ -99,14 +100,17 @@ __all__ = [
     "consumed_composition_for",
     "consumed_roots_for",
     "encode_source_roots",
+    "FrameAxisFindings",
     "FrameAxisMismatch",
     "FrameAxisVerdict",
     "FrameTailShortfall",
     "TailAllowance",
+    "frame_axis_findings",
     "frame_axis_mismatches",
     "frame_axis_verdict",
     "frame_tail_shortfalls",
     "legacy_view",
+    "media_drift",
     "read_frames_read",
     "read_known_tail_loss",
     "read_media_frames",
@@ -204,7 +208,7 @@ class TracksIndexRow(RunIndexRowBase):
     a run that read less on purpose, under a frame window or from a trimmed or
     decimated variant, and for a table that no tool made from media: a
     conversion, a resampling. Text, blank-is-unknown and read by
-    :func:`read_media_frames`, under exactly the rules above.
+    :func:`read_media_frames`, under the rules above.
 
     ``frames_read`` is how many frames the producer's tool did read for this
     table, on the axis of the file it read: the frames of a TRex ``.pv``, the
@@ -231,14 +235,14 @@ class TracksIndexRow(RunIndexRowBase):
 
     ``known_tail_loss`` is how many frames short of the end of the file it read
     this row's tool is known to stop: what its root's rule
-    (``TrackingRoot.tail_loss``) gives that file's header. A tool now reads one
-    file, and TRex stops short of its end by that file's reorder depth, and by
-    one more when the container records no frame count. A shortfall within it
-    is reported apart, by :func:`frame_tail_shortfalls`. Zero for a conversion
-    of several files, which loses frames at each boundary rather than at the
-    end. Text, blank-is-unknown and read by :func:`read_known_tail_loss`: blank
-    for a producer that declares no loss, and for a file whose header was not
-    read, which is then allowed the most the producer loses on any file
+    (``TrackingRoot.tail_loss``) gives that file's header. TRex stops short of
+    the end by the file's reorder depth, and by one more when the container
+    records no frame count. A shortfall within it is reported apart, by
+    :func:`frame_tail_shortfalls`. Zero for a run whose tool read several files,
+    which loses frames at each boundary rather than at the end. Text,
+    blank-is-unknown and read by :func:`read_known_tail_loss`: blank for a
+    producer that declares no loss, and for a file whose header was not read,
+    which is then allowed the most the producer loses on any file
     (:func:`tail_allowance`).
     """
 
@@ -577,7 +581,7 @@ type _Verdict = Literal["made", "not_made", "unreadable", "unconfirmed"]
 
 
 _DIGEST_HEX_LENGTHS: Final = frozenset({MODEL_DIGEST_HEX, len(hash_params({}))})
-"""How many hex characters a model digest that is matched as an exact value has.
+"""The lengths, in hex characters, of the model digests matched as exact values.
 
 A model named by its content carries one of two digests: ``MODEL_DIGEST_HEX``
 (sixteen) hex characters of blake2b over a weights file, or ``hash_params``'s
@@ -732,15 +736,11 @@ def _holds(node: object, values: frozenset[str]) -> bool:
     """Whether *node* is one of *values*, or holds one in a nested mapping or list."""
     if isinstance(node, str):
         return node in values
-    if _is_mapping(node):
+    if is_str_mapping(node):
         return any(_holds(child, values) for child in node.values())
     if _is_list(node):
         return any(_holds(child, values) for child in node)
     return False
-
-
-def _is_mapping(node: object) -> TypeIs[Mapping[object, object]]:
-    return isinstance(node, Mapping)
 
 
 def _is_list(node: object) -> TypeIs[list[object]]:
@@ -983,9 +983,10 @@ class TailAllowance:
 
     Attributes:
         frames: The shortfall allowed as a known tail loss.
-        known: Whether *frames* is the loss that the file's own header gives.
-            ``False`` when the file is unknown or could not be probed, and
-            *frames* is the most the producer loses on any file.
+        known: Whether *frames* is the loss that the file's own header gives,
+            or zero for a producer that declares no loss. ``False`` when the
+            file is unknown or could not be probed, and *frames* is the most the
+            producer loses on any file.
     """
 
     frames: int
@@ -1045,7 +1046,7 @@ def frame_axis_verdict(
 
 @dataclass(frozen=True, slots=True)
 class FrameAxisMismatch:
-    """One table whose tool read another number of frames than its media holds.
+    """One table whose tool read a different number of frames than its media holds.
 
     Carries the variant as well as the entry, because an entry legitimately
     holds several and they need not agree: re-tracking under a new recipe leaves
@@ -1113,8 +1114,8 @@ def frame_axis_mismatches(
     The table's own extent is not compared. ``frame_max`` is the last frame
     carrying a row, not the last frame the tool read, so a recording that ends
     with no animal in view would read as a short axis on every ordinary run.
-    This reports a *measurement* and not a verdict: a caller deciding what to do
-    has both numbers, the variant and the producer.
+    A record holds both counts and the variant, for the caller to decide what
+    to do.
 
     An overshoot is reported too, and in the same shape. A container frame count
     that disagrees with what a tool decoded by a frame or two is mundane --
@@ -1131,17 +1132,7 @@ def frame_axis_mismatches(
         One record per disagreeing table, ordered by variant then entry. Empty
         when they agree or when neither side was measured.
     """
-    return tuple(
-        FrameAxisMismatch(
-            run_id=row.run_id,
-            group=row.group,
-            sequence=row.sequence,
-            read=row.read,
-            media=row.media,
-        )
-        for row in _measured_rows(ds, run_id)
-        if row.verdict == "mismatch"
-    )
+    return frame_axis_findings(_variant_rows(ds, run_id)).mismatches
 
 
 def frame_tail_shortfalls(
@@ -1163,19 +1154,64 @@ def frame_tail_shortfalls(
     Returns:
         One record per such table, ordered by variant then entry.
     """
-    return tuple(
-        FrameTailShortfall(
-            run_id=row.run_id,
-            group=row.group,
-            sequence=row.sequence,
-            producer=row.producer,
-            read=row.read,
-            media=row.media,
-            allowance=row.allowance,
-        )
-        for row in _measured_rows(ds, run_id)
-        if row.verdict == "tail_short"
+    return frame_axis_findings(_variant_rows(ds, run_id)).tail_shortfalls
+
+
+@dataclass(frozen=True, slots=True)
+class FrameAxisFindings:
+    """The tables whose tool read another number of frames than their media holds.
+
+    Attributes:
+        mismatches: What :func:`frame_axis_mismatches` reports.
+        tail_shortfalls: What :func:`frame_tail_shortfalls` reports.
+    """
+
+    mismatches: tuple[FrameAxisMismatch, ...]
+    tail_shortfalls: tuple[FrameTailShortfall, ...]
+
+
+def frame_axis_findings(rows: pd.DataFrame) -> FrameAxisFindings:
+    """Classify every row of *rows*, as read from the tracks index, in one pass.
+
+    For a caller that already holds the rows, as the inventory does, so that
+    each variant is not read again. :func:`frame_axis_mismatches` and
+    :func:`frame_tail_shortfalls` give the same records for a variant they read.
+    """
+    measured = _measured_rows(rows)
+    return FrameAxisFindings(
+        mismatches=tuple(
+            FrameAxisMismatch(
+                run_id=row.run_id,
+                group=row.group,
+                sequence=row.sequence,
+                read=row.read,
+                media=row.media,
+            )
+            for row in measured
+            if row.verdict == "mismatch"
+        ),
+        tail_shortfalls=tuple(
+            FrameTailShortfall(
+                run_id=row.run_id,
+                group=row.group,
+                sequence=row.sequence,
+                producer=row.producer,
+                read=row.read,
+                media=row.media,
+                allowance=row.allowance,
+            )
+            for row in measured
+            if row.verdict == "tail_short"
+        ),
     )
+
+
+def _variant_rows(ds: Dataset, run_id: str | None) -> pd.DataFrame:
+    """The tracks index's rows of variant *run_id*, or all of them for ``None``."""
+    df = read_tracks_index(ds)
+    if run_id is None or df.empty:
+        return df
+    return df[df["run_id"].astype(str) == run_id]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1192,18 +1228,13 @@ class _MeasuredRow:
     verdict: FrameAxisVerdict
 
 
-def _measured_rows(ds: Dataset, run_id: str | None) -> list[_MeasuredRow]:
-    """Every row of *run_id*, or of the index, whose recorded counts disagree.
+def _measured_rows(rows: pd.DataFrame) -> list[_MeasuredRow]:
+    """Every row of *rows* whose recorded counts disagree.
 
     Ordered by variant, then group, then sequence.
     """
-    df = read_tracks_index(ds)
-    if df.empty:
-        return []
-    if run_id is not None:
-        df = df[df["run_id"].astype(str) == run_id]
     found: list[_MeasuredRow] = []
-    for _, series in df.iterrows():
+    for _, series in rows.iterrows():
         read = read_frames_read(series)
         media = read_media_frames(series)
         if read is None or media is None:
@@ -1303,24 +1334,25 @@ def backfill_frame_extents(ds: Dataset, *, dry_run: bool = False) -> pd.DataFram
 
 @dataclass(frozen=True, slots=True)
 class CellBackfill:
-    """What one pass over a count cell of the tracks index changed, or would change.
+    """The rows that one pass over a count cell of the tracks index changed or kept.
 
-    Each frame holds whole index rows. A pass rewrites every row whose cell the
-    rule answers for, and leaves the rest.
+    A pass rewrites every row whose cell the rule answers for, and leaves the
+    rest. Each frame contains whole index rows. A dry run reports the same rows
+    and writes nothing.
 
     Attributes:
         written: The rows given a count they did not hold, blank or different,
             with the count.
         cleared: The rows whose cell the rule leaves blank and which held a
-            value, with the value cleared.
+            value, with the value they held.
         not_established: The rows holding a value that the pass could not check,
             because what their run read cannot be established now, with the value
             they keep.
-        unregistered: The rows the pass could not read at all, whatever they
-            hold, because their producer's op is not registered in this process.
-            Importing ``mosaic.tracking`` registers every tracking op. Apart from
-            ``not_established``, because a run of the same pass after that import
-            answers for them.
+        unregistered: The rows the pass could not judge, whatever they hold,
+            because their producer's op is not registered in this process.
+            Importing ``mosaic.tracking`` registers every tracking op. Reported
+            apart from ``not_established`` because the same pass, run after that
+            import, answers for them.
     """
 
     written: pd.DataFrame
@@ -1329,18 +1361,30 @@ class CellBackfill:
     unregistered: pd.DataFrame
 
 
+type CellRule = Callable[[CellRow], RuleValue | Unanswered]
+"""The publication rule for one row's count cell: its value, or why it has none."""
+
+
 def _backfill_cell(
     ds: Dataset,
     column: str,
-    rule: Callable[[CellRow], RuleValue | Unanswered],
+    judge: Callable[[pd.DataFrame], CellRule],
     *,
     dry_run: bool,
 ) -> CellBackfill:
-    """Rewrite *column* of every row to what *rule* gives it, under the index lock.
+    """Rewrite *column* of every row to what the rule gives it.
 
-    A row that *rule* leaves :data:`~mosaic.core.pipeline.tracks_axis.Unanswered`
-    keeps its cell. Locked for the whole read-measure-write, and a dry run holds
-    the lock too, for the reasons :func:`backfill_frame_extents` gives.
+    *judge* is given the index as read, reads the records that its rows share
+    (:class:`~mosaic.core.pipeline.tracks_axis.BackfillReads`), and returns the
+    rule for one row. A row that the rule leaves
+    :data:`~mosaic.core.pipeline.tracks_axis.Unanswered` keeps its cell.
+
+    **The rule is asked outside the index lock.** It reads media, the files each
+    run left and their headers, which over a large index can take longer than a
+    producer publishing meanwhile waits for the lock. The lock is taken to write,
+    over the index as it is then, and a row that changed or was added since it
+    was judged keeps its cell: its producer wrote it after the rule was asked. A
+    dry run takes the lock too, so it reports what a real pass would write.
     """
     path = tracks_index_path(ds)
     if not path.exists():
@@ -1348,6 +1392,12 @@ def _backfill_cell(
         return CellBackfill(
             written=empty, cleared=empty, not_established=empty, unregistered=empty
         )
+    judged = read_tracks_index(ds)
+    rule = judge(judged)
+    answers = {
+        _row_cells(judged, position): rule(judged.iloc[position])
+        for position in range(len(judged))
+    }
     with index_lock(path):
         df = read_tracks_index(ds)
         before = df.copy()
@@ -1355,25 +1405,27 @@ def _backfill_cell(
         cleared: list[int] = []
         kept: list[int] = []
         unread: list[int] = []
-        for position, row in df.iterrows():
-            held = text_cell(row.get(column))
-            value = rule(row)
+        for position in range(len(df)):
+            value = answers.get(_row_cells(df, position))
+            if value is None:
+                continue
+            held = text_cell(df.at[position, column])
             if value == "unregistered":
-                unread.append(cast("int", position))
+                unread.append(position)
                 continue
             if value == "not-established":
                 if held:
-                    kept.append(cast("int", position))
+                    kept.append(position)
                 continue
             if value.count is None:
                 if not held:
                     continue
-                cleared.append(cast("int", position))
+                cleared.append(position)
                 df.at[position, column] = ""
                 continue
             if _count_cell(held) == value.count:
                 continue
-            written.append(cast("int", position))
+            written.append(position)
             df.at[position, column] = str(value.count)
         if (written or cleared) and not dry_run:
             atomic_write(path, lambda p: df.to_csv(p, index=False))
@@ -1383,6 +1435,23 @@ def _backfill_cell(
             not_established=df.loc[kept].reset_index(drop=True),
             unregistered=df.loc[unread].reset_index(drop=True),
         )
+
+
+def _row_cells(frame: pd.DataFrame, position: int) -> tuple[str, ...]:
+    """Every cell of the row at *position* of *frame*, as text.
+
+    What a row was when it was judged, which tells it from a row republished or
+    added since.
+    """
+    return tuple(text_cell(cell) for cell in frame.iloc[position])
+
+
+def _entries_of(frame: pd.DataFrame) -> list[tuple[str, str]]:
+    """The ``(group, sequence)`` entry of each row of *frame*."""
+    return [
+        (text_cell(group), text_cell(sequence))
+        for group, sequence in zip(frame["group"], frame["sequence"], strict=True)
+    ]
 
 
 def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> CellBackfill:
@@ -1406,14 +1475,14 @@ def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> CellBackfill
     written over a blank or a different value. A cell the rule leaves blank is
     cleared: a run under a frame window, a run on a trimmed or decimated media
     variant, and a converted, resampled or upgraded table, which no tool made
-    from media. An earlier pass filled every row from the entry's media, and
-    such a cell compared with a count of frames read would report a mismatch
-    that is not there.
+    from media. An earlier version of this pass filled the cell of a windowed
+    run, or of a table that no tool made, from the entry's media, and such a cell
+    compared with a count of frames read reports a mismatch that is not there.
 
     **A row whose run cannot be established keeps its value**, and is reported
     in ``not_established``: an unmounted or moved media root, a lost variant
-    record, or media changed since the run would otherwise wipe or rewrite good
-    cells. A tracker row whose op this process has not registered keeps its
+    record, or media changed since the run, none of which shows the cell to be
+    wrong. A tracker row whose op this process has not registered keeps its
     value too, and is reported in ``unregistered``: importing
     ``mosaic.tracking`` registers every tracking op.
 
@@ -1421,17 +1490,23 @@ def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> CellBackfill
         The rows written, cleared and left unchecked, or that would be.
     """
 
-    def rule(row: CellRow) -> RuleValue | Unanswered:
-        return recorded_media_frames(
-            ds,
-            producer=text_cell(row.get("producer")),
-            variant=text_cell(row.get("run_id")),
-            group=text_cell(row.get("group")),
-            sequence=text_cell(row.get("sequence")),
-            consumed_media=text_cell(row.get("consumed_media_composition")),
-        )
+    def judge(rows: pd.DataFrame) -> CellRule:
+        reads = BackfillReads(ds, _entries_of(rows))
 
-    return _backfill_cell(ds, _MEDIA_FRAMES, rule, dry_run=dry_run)
+        def rule(row: CellRow) -> RuleValue | Unanswered:
+            return recorded_media_frames(
+                ds,
+                producer=text_cell(row.get("producer")),
+                variant=text_cell(row.get("run_id")),
+                group=text_cell(row.get("group")),
+                sequence=text_cell(row.get("sequence")),
+                consumed_media=text_cell(row.get("consumed_media_composition")),
+                reads=reads,
+            )
+
+        return rule
+
+    return _backfill_cell(ds, _MEDIA_FRAMES, judge, dry_run=dry_run)
 
 
 def backfill_frames_read(ds: Dataset, *, dry_run: bool = False) -> CellBackfill:
@@ -1450,7 +1525,7 @@ def backfill_frames_read(ds: Dataset, *, dry_run: bool = False) -> CellBackfill:
     in ``unregistered``: importing ``mosaic.tracking`` registers every tracking
     op and its reader.
 
-    Its own pass, for the reason :func:`backfill_media_frames` is: it reads
+    A separate pass, as :func:`backfill_media_frames` is, because it reads
     another source of truth.
 
     Returns:
@@ -1466,7 +1541,10 @@ def backfill_frames_read(ds: Dataset, *, dry_run: bool = False) -> CellBackfill:
             source=ds.resolve_path(source) if source else None,
         )
 
-    return _backfill_cell(ds, _FRAMES_READ, rule, dry_run=dry_run)
+    def judge(_rows: pd.DataFrame) -> CellRule:
+        return rule
+
+    return _backfill_cell(ds, _FRAMES_READ, judge, dry_run=dry_run)
 
 
 def backfill_known_tail_loss(ds: Dataset, *, dry_run: bool = False) -> CellBackfill:
@@ -1485,26 +1563,32 @@ def backfill_known_tail_loss(ds: Dataset, *, dry_run: bool = False) -> CellBackf
     (:func:`tail_allowance`). A tracker row whose op this process has not
     registered is reported in ``unregistered``.
 
-    Its own pass, for the reason :func:`backfill_media_frames` is: it reads
+    A separate pass, as :func:`backfill_media_frames` is, because it reads
     another source of truth.
 
     Returns:
         The rows written, cleared and left unchecked, or that would be.
     """
 
-    def rule(row: CellRow) -> RuleValue | Unanswered:
-        source = text_cell(row.get("source_abs_path"))
-        return recorded_tail_loss(
-            ds,
-            producer=text_cell(row.get("producer")),
-            table=ds.resolve_path(text_cell(row.get("abs_path"))),
-            source=ds.resolve_path(source) if source else None,
-            group=text_cell(row.get("group")),
-            sequence=text_cell(row.get("sequence")),
-            consumed_media=text_cell(row.get("consumed_media_composition")),
-        )
+    def judge(rows: pd.DataFrame) -> CellRule:
+        reads = BackfillReads(ds, _entries_of(rows))
 
-    return _backfill_cell(ds, _KNOWN_TAIL_LOSS, rule, dry_run=dry_run)
+        def rule(row: CellRow) -> RuleValue | Unanswered:
+            source = text_cell(row.get("source_abs_path"))
+            return recorded_tail_loss(
+                ds,
+                producer=text_cell(row.get("producer")),
+                table=ds.resolve_path(text_cell(row.get("abs_path"))),
+                source=ds.resolve_path(source) if source else None,
+                group=text_cell(row.get("group")),
+                sequence=text_cell(row.get("sequence")),
+                consumed_media=text_cell(row.get("consumed_media_composition")),
+                reads=reads,
+            )
+
+        return rule
+
+    return _backfill_cell(ds, _KNOWN_TAIL_LOSS, judge, dry_run=dry_run)
 
 
 def write_tracks_row(
@@ -1552,7 +1636,7 @@ def write_tracks_row(
     caller knows what it resolved and read. ``None`` records a blank, which is
     the honest cell for a producer that never asked -- a conversion reading an
     uploaded table, or a run deliberately covering less than the whole video.
-    :func:`frame_axis_mismatches` compares it against the extent measured above.
+    :func:`frame_axis_mismatches` compares it with ``frames_read``.
     ``frames_read`` is how many frames the producer's tool read, passed for the
     same reason, and ``None`` records a blank for a producer that cannot know it.
     ``known_tail_loss`` is how many frames short of the end of the file it read
@@ -1640,20 +1724,25 @@ def drifted_media_entries(ds: Dataset, run_id: str) -> tuple[tuple[str, str], ..
     The comparison uses :func:`~mosaic.core.pipeline.composition.composition_drift`,
     under which a blank cell on either side is not drift.
     """
+    return media_drift(ds, _variant_rows(ds, run_id))
+
+
+def media_drift(ds: Dataset, rows: pd.DataFrame) -> tuple[tuple[str, str], ...]:
+    """Entries of *rows*, one variant's tracks rows, whose media moved since written.
+
+    What :func:`drifted_media_entries` reports, for a caller that already holds
+    the rows.
+    """
     from mosaic.core.pipeline.sequence_index import media_compositions_for
 
-    frame = read_tracks_index(ds)
-    if frame.empty or "consumed_media_composition" not in frame.columns:
+    if rows.empty or "consumed_media_composition" not in rows.columns:
         return ()
     recorded = {
         (str(record.get("group", "")), str(record.get("sequence", ""))): str(
             record.get("consumed_media_composition", "")
         )
-        for record in index_records(frame)
-        if str(record.get("run_id", "")) == run_id
+        for record in index_records(rows)
     }
-    if not recorded:
-        return ()
     return composition_drift(recorded, media_compositions_for(ds, recorded))
 
 

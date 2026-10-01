@@ -13,8 +13,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import numpy as np
-import numpy.typing as npt
 import pandas as pd
 import pytest
 
@@ -49,6 +47,8 @@ from tests.helpers import (
     latest_events,
     latest_snapshot,
     make_dataset,
+    paint_gray,
+    set_tracks_cell,
     write_litpose_model,
     write_media_index,
     write_painted_entry,
@@ -138,7 +138,10 @@ class TestEachProducerRecordsWhatItsToolRead:
     def test_trex_records_the_frames_of_its_conversion(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Its exports end at the last frame an animal was tracked in."""
+        """Its exports end at the last frame an animal was tracked in.
+
+        The count is the ``.pv`` header's, which counts every frame converted.
+        """
         ds = _dataset(tmp_path)
         trex = install_fake_trex(monkeypatch)
         trex.npz_frames, trex.pv_frames = 20, 28
@@ -154,9 +157,7 @@ class TestEachProducerRecordsWhatItsToolRead:
         trex = install_fake_trex(monkeypatch)
         trex.npz_frames, trex.pv_frames = 20, 28
         _ = trex_runs.run_trex(ds, TrexParams())
-        index = tracks_index_path(ds)
-        rows = pd.read_csv(index, dtype=str, keep_default_na=False)
-        rows.assign(frames_read="").to_csv(index, index=False)
+        set_tracks_cell(ds, "frames_read", "")
 
         _ = trex_runs.run_trex(ds, TrexParams(), republish=True)
 
@@ -266,10 +267,6 @@ class TestEachProducerRecordsWhatItsToolRead:
         assert _recorded(ds) is None
 
 
-def _paint(frame: int) -> npt.NDArray[np.uint8]:
-    return np.full((48, 64, 3), 20 + 8 * (frame % 25), np.uint8)
-
-
 @pytest.mark.media
 def test_the_localizer_records_every_frame_it_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requires_ffmpeg: None
@@ -278,7 +275,7 @@ def test_the_localizer_records_every_frame_it_read(
     import mosaic.tracking.pose_training.localizer_inference as localizer
 
     ds = make_dataset(tmp_path / "ds")
-    _ = write_painted_entry(ds, "sess", [(20, 25.0)], _paint)
+    _ = write_painted_entry(ds, "sess", [(20, 25.0)], paint_gray)
 
     def load(_model_path: object, **_kwargs: object) -> object:
         return object()
@@ -308,9 +305,7 @@ def test_the_localizer_records_every_frame_it_read(
 
 
 def _blank_frames_read(ds: Dataset) -> None:
-    index = tracks_index_path(ds)
-    rows = pd.read_csv(index, dtype=str, keep_default_na=False)
-    rows.assign(frames_read="").to_csv(index, index=False)
+    set_tracks_cell(ds, "frames_read", "")
 
 
 def _work_dir(ds: Dataset) -> Path:
@@ -383,9 +378,7 @@ class TestAPastRowIsFilledFromWhatItsRunLeft:
         trex = install_fake_trex(monkeypatch)
         trex.npz_frames, trex.pv_frames = 20, 28
         _ = trex_runs.run_trex(ds, TrexParams())
-        index = tracks_index_path(ds)
-        rows = pd.read_csv(index, dtype=str, keep_default_na=False)
-        rows.assign(frames_read="5").to_csv(index, index=False)
+        set_tracks_cell(ds, "frames_read", "5")
 
         done = backfill_frames_read(ds)
 

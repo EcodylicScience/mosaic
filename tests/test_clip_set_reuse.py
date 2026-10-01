@@ -233,10 +233,10 @@ def test_a_marker_that_cannot_name_the_clip_set_is_tracked_again(
 ) -> None:
     """A marker naming the first clip, or no clip, says nothing of the others.
 
-    Markers written for several clips before the gate compared the clip set record
-    the first clip's uuid, and a marker for media indexed before uuids existed
-    records none. The path it also records is the first clip's, so the path
-    cannot prove the rest either.
+    A marker for several clips written by an earlier gate records the first
+    clip's uuid, and a marker for media indexed without uuids records none. The
+    path it also records is the first clip's, so the path cannot prove the rest
+    either.
     """
     tracker = _tracker(kind, monkeypatch, tmp_path)
     session("uid-a", "uid-b")
@@ -264,7 +264,8 @@ def test_several_clips_one_unidentified_are_refused_before_any_tool_runs(
     """Refused, not reused: the path of the first clip cannot vouch for the second.
 
     No join of such clips can be addressed, so none can be tracked either. The
-    refusal names the command that mints the missing identity.
+    refusal names the command that mints the missing identity, and leaves the
+    earlier run's marker and outputs in place.
     """
     tracker = _tracker(kind, monkeypatch, tmp_path)
     session("uid-a", "uid-b")

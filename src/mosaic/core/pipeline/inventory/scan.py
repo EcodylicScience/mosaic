@@ -31,9 +31,8 @@ from mosaic.core.pipeline.index import (
 from mosaic.core.pipeline.labels_index import labels_index_path, read_labels_index
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.tracks_index import (
-    drifted_media_entries,
-    frame_axis_mismatches,
-    frame_tail_shortfalls,
+    frame_axis_findings,
+    media_drift,
     read_tracks_index,
     select_variant_rows,
     tracks_index_path,
@@ -383,20 +382,22 @@ def _variant_records(
     converted variant records no media composition and so never drifts here,
     which is right: it opened no video.
 
-    ``extra["frame_axis_mismatch"]`` names the entries whose tool read another
-    number of frames than their media holds. ``extra["frame_tail_short"]`` names
-    those whose tool read short by no more than it is allowed to lose at the end
-    of the file it read (``tail_allowance``), as TRex's under-count leaves them.
-    Both ride in ``extra`` rather than in ``status`` deliberately: the status set
-    is five closed members crossing the CLI and mosaic-api's wire, and each is a
-    measurement two cells apart rather than a state of the artifact. The table is
-    there, it is complete, and it is internally right.
+    ``extra["frame_axis_mismatch"]`` names the entries whose tool read a
+    different number of frames than their media holds, other than by a known
+    tail loss. ``extra["frame_tail_short"]`` names those whose tool read short by
+    no more than it is allowed to lose at the end of the file it read
+    (``tail_allowance``), as TRex's under-count leaves them. Both are recorded in
+    ``extra`` rather than in ``status``, because the status set is five closed
+    members crossing the CLI and mosaic-api's wire, and each is a measurement
+    two cells apart rather than a state of the artifact. The table is there, it
+    is complete, and it is internally right.
     """
     index_path = tracks_index_path(ds)
     frame = reader.frame(index_path, lambda: read_tracks_index(ds))
     if frame.empty or "run_id" not in frame.columns:
         return []
     records: list[ArtifactRecord[Entry]] = []
+    findings = frame_axis_findings(frame)
     for run_id in run_ids(frame):
         rows = _rows_of(frame, run_id)
         wanted = scope.selector.entry_pairs
@@ -406,14 +407,16 @@ def _variant_records(
         )
         coverage = Coverage(target=target, present=files)
         started, finished_at, finished = finish_state(frame, run_id)
-        drift = drifted_media_entries(ds, run_id)
+        drift = media_drift(ds, frame[frame["run_id"].astype(str) == run_id])
         mismatched = frozenset(
             make_entry_key(m.group, m.sequence)
-            for m in frame_axis_mismatches(ds, run_id)
+            for m in findings.mismatches
+            if m.run_id == run_id
         )
         tail_short = frozenset(
             make_entry_key(m.group, m.sequence)
-            for m in frame_tail_shortfalls(ds, run_id)
+            for m in findings.tail_shortfalls
+            if m.run_id == run_id
         )
         records.append(
             ArtifactRecord[Entry](

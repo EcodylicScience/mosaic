@@ -98,7 +98,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Final
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 from mosaic_media import MediaFacts, probe_media
 from mosaic_media.ffmpeg import run_to_completion
@@ -124,10 +124,12 @@ if TYPE_CHECKING:
 __all__ = [
     "CURRENT_JOINED_PARAMS",
     "JOINED_KIND_DIRECTORY",
+    "EntryJoinMissingError",
     "JoinedExportMissingError",
     "JoinedExportOp",
     "JoinedExportParams",
     "MissingJoin",
+    "MissingJoinCause",
     "current_join",
     "current_joined_recipes",
     "entry_source_uid",
@@ -328,7 +330,7 @@ def entry_source_uid(facts: Sequence[MediaFacts]) -> str:
     reading the clips themselves, records this value, so one entry has one
     identity whatever path read it.
 
-    ``""`` for no facts, and for several clips when any carries no identity.
+    ``""`` for no facts, and when any clip carries no identity.
     """
     if len(facts) == 1:
         return facts[0].video_uuid
@@ -348,6 +350,33 @@ class JoinedExportMissingError(FileNotFoundError):
     two have different remedies -- ``export-store`` and ``export-joined`` -- and a
     caller catching one should not silently swallow the other.
     """
+
+
+type MissingJoinCause = Literal[
+    "no_join", "superseded_join", "several_joins", "unidentified_clips"
+]
+"""Why one camera's clips have no single current join to read. A closed set.
+
+- ``no_join``: none was built. ``export-joined`` builds it.
+- ``superseded_join``: only an earlier version of ``export-joined`` built one.
+  The current version builds it again, and ``prune-joined`` reclaims the old.
+- ``several_joins``: two current recipes built one each, and which to keep is
+  the user's call.
+- ``unidentified_clips``: a clip carries no content identity, so no join of the
+  clips can be addressed. ``reprobe-media --apply`` mints one first.
+"""
+
+
+class EntryJoinMissingError(JoinedExportMissingError):
+    """One camera's clips have no single current join, for the reason it names.
+
+    Attributes:
+        cause: Why, as a member of a closed set a caller can branch on.
+    """
+
+    def __init__(self, message: str, *, cause: MissingJoinCause) -> None:
+        super().__init__(message)
+        self.cause: MissingJoinCause = cause
 
 
 def _join_command(group: str, sequence: str, facts: Sequence[MediaFacts]) -> str:
@@ -382,7 +411,7 @@ def refuse_unidentified_clips(
         asker: The op asking, which prefixes the refusal.
 
     Raises:
-        JoinedExportMissingError: If there are several clips and any carries no
+        EntryJoinMissingError: If there are several clips and any carries no
             content identity.
     """
     if len(facts) < 2 or joined_source_uid(facts):
@@ -393,7 +422,7 @@ def refuse_unidentified_clips(
         f"addressed. Run 'mosaic reprobe-media --apply' to mint one for every "
         f"clip, then:\n{_join_command(group, sequence, facts)}"
     )
-    raise JoinedExportMissingError(message)
+    raise EntryJoinMissingError(message, cause="unidentified_clips")
 
 
 def current_join(
@@ -451,7 +480,7 @@ def current_join(
         The current join's path.
 
     Raises:
-        JoinedExportMissingError: If the clip set cannot be addressed, has two
+        EntryJoinMissingError: If the clip set cannot be addressed, has two
             current joins, has only superseded ones, or has none.
     """
     refuse_unidentified_clips(group, sequence, facts, asker=asker)
@@ -469,7 +498,7 @@ def current_join(
             f"current, so which to keep is your call: delete the rest and "
             f"re-run."
         )
-        raise JoinedExportMissingError(message)
+        raise EntryJoinMissingError(message, cause="several_joins")
     if current:
         return current[0]
     if superseded:
@@ -480,12 +509,12 @@ def current_join(
             f"{listed}\nBuild the current join:\n{where}\n"
             f"then `mosaic prune-joined --apply` reclaims the old one."
         )
-        raise JoinedExportMissingError(message)
+        raise EntryJoinMissingError(message, cause="superseded_join")
     message = (
         f"[{asker}] ({group}, {sequence}) is one recording in {n_sources} clips. "
         f"{why} Build it:\n{where}"
     )
-    raise JoinedExportMissingError(message)
+    raise EntryJoinMissingError(message, cause="no_join")
 
 
 def needs_join(paths: Sequence[Path], facts: Sequence[MediaFacts]) -> bool:
@@ -504,8 +533,8 @@ def needs_join(paths: Sequence[Path], facts: Sequence[MediaFacts]) -> bool:
     them natively. It compares their rates by the stores' own rule
     (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`), a relative
     difference, because a store's rate is estimated from its timestamps. Stores
-    that the rule finds at two rates are refused by it, by the trackers and the
-    inference ops before they start and by the reader.
+    that the rule finds at two rates are refused by the trackers and the
+    inference ops before they start, and by the reader.
     """
     # Local: `uniformity` reaches `core.pipeline.media_index`, and this module is
     # imported from `core.pipeline.__init__`. A module-level import would make
@@ -535,7 +564,7 @@ def join_to_read(
     missing.
 
     Raises:
-        JoinedExportMissingError: If the camera :func:`needs_join` and
+        EntryJoinMissingError: If the camera :func:`needs_join` and
             :func:`current_join` refuses.
     """
     paths = entry.resolved.paths
@@ -549,12 +578,21 @@ def join_to_read(
 
 @dataclass(frozen=True, slots=True)
 class MissingJoin:
-    """One camera that needs a join and has no single current one."""
+    """One camera that needs a join and has no single current one.
+
+    Attributes:
+        group: The entry's group.
+        sequence: The entry's sequence.
+        camera: The camera whose clips need the join.
+        reason: The refusal's message, naming the remedy.
+        cause: Why, as a member of a closed set a caller can branch on.
+    """
 
     group: str
     sequence: str
     camera: str
     reason: str
+    cause: MissingJoinCause
 
 
 def missing_joins(
@@ -569,9 +607,11 @@ def missing_joins(
     for entry in media_scope:
         try:
             _ = join_to_read(ds, entry, asker=asker)
-        except JoinedExportMissingError as exc:
+        except EntryJoinMissingError as exc:
             missing.append(
-                MissingJoin(entry.group, entry.sequence, entry.camera, str(exc))
+                MissingJoin(
+                    entry.group, entry.sequence, entry.camera, str(exc), exc.cause
+                )
             )
     return missing
 

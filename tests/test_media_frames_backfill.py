@@ -1,13 +1,13 @@
 """The backfill rewrites ``media_frames`` to what the bridge's rule gives.
 
 ``mosaic measure-tracks`` fills the cell for a table published before it existed.
-It used to fill every row from the entry's media, so a run under a frame window,
-or a converted or resampled table, gained a length it was never meant to span.
-Now the backfill rebuilds what the row's run read from the variant's record
+The backfill rebuilds what the row's run read from the variant's record
 (:func:`~mosaic.core.pipeline.tracks_axis.recorded_media_frames`) and asks the
-axis the bridge asks. It clears a cell the rule leaves blank, and keeps the value
-of a row whose run cannot be established. Each case below runs a producer, sets
-the cell, backfills it, and expects the value the bridge recorded.
+axis the bridge asks, so a run under a frame window and a converted or resampled
+table get a blank cell. It clears a cell that the rule leaves blank, such as one an
+earlier backfill filled from the entry's media, and keeps the value of a row whose
+run cannot be established. Each case below runs a producer, sets the cell,
+backfills it, and expects the value the bridge recorded.
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ from mosaic.core.pipeline.tracks_index import (
     backfill_media_frames,
     read_media_frames,
     read_tracks_index,
-    tracks_index_path,
     write_tracks_row,
 )
 from mosaic.core.scope import Scope
@@ -49,6 +48,7 @@ from tests.helpers import (
     install_fake_sleap,
     install_fake_ultralytics,
     make_dataset,
+    set_tracks_cell,
     stub_join,
     write_litpose_model,
     write_media_index,
@@ -135,15 +135,8 @@ def _infer_pose(**params: object) -> Producer:
     return run
 
 
-def _set_cell(ds: Dataset, value: str, column: str = "media_frames") -> None:
-    """Write *value* into *column* of every row, as an earlier backfill might have."""
-    path = tracks_index_path(ds)
-    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
-    rows.assign(**{column: value}).to_csv(path, index=False)
-
-
 def _blank_media_frames(ds: Dataset) -> None:
-    _set_cell(ds, "")
+    set_tracks_cell(ds, "media_frames", "")
 
 
 def _recorded(ds: Dataset) -> int | None:
@@ -200,7 +193,7 @@ def test_a_backfilled_row_holds_what_the_bridge_recorded(
     assert _recorded(ds) == expected, "the backfill"
 
     # A stale count, as the backfill that filled every row from the media left it.
-    _set_cell(ds, "999")
+    set_tracks_cell(ds, "media_frames", "999")
     done = backfill_media_frames(ds)
 
     assert _recorded(ds) == expected, "the rewrite"
@@ -279,7 +272,7 @@ def test_a_row_whose_run_cannot_be_established_keeps_its_value(
     """An unmounted media root or a lost record must not wipe a cell."""
     ds = _dataset(tmp_path)
     _trex_one_clip(ds, tmp_path, monkeypatch)
-    _set_cell(ds, "999")
+    set_tracks_cell(ds, "media_frames", "999")
     unestablish(ds)
 
     done = backfill_media_frames(ds)
@@ -298,7 +291,7 @@ def test_a_row_whose_media_has_changed_since_its_run_keeps_its_value(
 
     ds = _dataset(tmp_path)
     _trex_one_clip(ds, tmp_path, monkeypatch)
-    _set_cell(ds, "then", column="consumed_media_composition")
+    set_tracks_cell(ds, "consumed_media_composition", "then")
 
     def now(_ds: Dataset, entries: object) -> dict[tuple[str, str], str]:
         return {("", "vid1"): "now"}
@@ -424,17 +417,17 @@ def test_a_row_whose_producer_is_not_registered_is_reported_apart(
 ) -> None:
     """A process that never imported the producers cannot read their rows.
 
-    Filling nothing there would read as "nothing to fill", which is a wrong
-    answer where "this process cannot tell" is a true one, so those rows are
-    reported apart from the ones whose run cannot be established.
+    Filling nothing there would read as "nothing to fill" when the answer is
+    "this process cannot tell", so those rows are reported apart from the ones
+    whose run cannot be established.
 
     Run in a subprocess, because registration is a process-global import side
     effect that this test module has already paid.
     """
     ds = _dataset(tmp_path)
     _trex_one_clip(ds, tmp_path, monkeypatch)
-    _set_cell(ds, "", column="media_frames")
-    _set_cell(ds, "", column="frames_read")
+    set_tracks_cell(ds, "media_frames", "")
+    set_tracks_cell(ds, "frames_read", "")
 
     completed = subprocess.run(
         [sys.executable, "-c", _CORE_ONLY_BACKFILL, str(ds.manifest_path)],

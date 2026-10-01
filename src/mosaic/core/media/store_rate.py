@@ -34,8 +34,8 @@ __all__ = ["STORE_RATE_TOLERANCE", "store_rate_mismatch"]
 STORE_RATE_TOLERANCE: Final = 5e-4
 """The largest relative difference between two estimates of one store rate.
 
-It sits between what one rate measured twice can differ by and what two rates
-do differ by:
+It is larger than the difference between two measurements of one rate, and
+smaller than the difference between two rates:
 
 - Two recording machines' clocks drift apart by tens of parts per million, and
   timestamps a few milliseconds off at the two ends of a store of a minute or more

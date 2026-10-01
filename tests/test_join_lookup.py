@@ -9,6 +9,7 @@ address rather than encoding one: the lookup reads names, never pixels.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
@@ -17,6 +18,7 @@ from mosaic_media import MediaFacts
 
 from mosaic.core.dataset import Dataset, ResolvedMedia, ResolvedScopeEntry
 from mosaic.core.pipeline.joined_export import (
+    EntryJoinMissingError,
     JoinedExportMissingError,
     JoinedExportParams,
     current_join,
@@ -161,6 +163,55 @@ class TestMissingJoins:
         assert (
             missing_joins(ds, [_entry(tmp_path, MIXED)], asker="extract-frames") == []
         )
+
+
+def _no_join(ds: Dataset) -> tuple[MediaFacts, ...]:
+    return MIXED
+
+
+def _superseded_join(ds: Dataset) -> tuple[MediaFacts, ...]:
+    _ = _place_join(ds, MIXED, "0123456789")
+    return MIXED
+
+
+def _several_joins(ds: Dataset) -> tuple[MediaFacts, ...]:
+    for params in (JoinedExportParams(), JoinedExportParams(reencode=True)):
+        _ = _place_join(ds, MIXED, joined_recipe_hash(params))
+    return MIXED
+
+
+def _unidentified_clips(ds: Dataset) -> tuple[MediaFacts, ...]:
+    return (_clip(30.0, ""), _clip(31.0, "u-b"))
+
+
+@pytest.mark.parametrize(
+    ("arrange", "cause"),
+    [
+        (_no_join, "no_join"),
+        (_superseded_join, "superseded_join"),
+        (_several_joins, "several_joins"),
+        (_unidentified_clips, "unidentified_clips"),
+    ],
+    ids=["none", "superseded", "several", "unidentified"],
+)
+def test_a_missing_join_names_its_cause(
+    ds: Dataset,
+    tmp_path: Path,
+    arrange: Callable[[Dataset], tuple[MediaFacts, ...]],
+    cause: str,
+) -> None:
+    """Each has its own remedy, so a caller branches on the cause, not the text.
+
+    A clip without an identity must be re-probed before any join can be built.
+    """
+    facts = arrange(ds)
+
+    (missing,) = missing_joins(ds, [_entry(tmp_path, facts)], asker="extract-frames")
+
+    assert missing.cause == cause
+    with pytest.raises(EntryJoinMissingError) as excinfo:
+        _ = join_to_read(ds, _entry(tmp_path, facts), asker="extract-frames")
+    assert excinfo.value.cause == cause
 
 
 def test_a_clip_set_without_identity_cannot_be_addressed(ds: Dataset) -> None:

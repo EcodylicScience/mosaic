@@ -234,7 +234,8 @@ def test_one_column_a_joined_retime_dropped_is_reported_in_the_singular(
             kind=_KIND,
         )
 
-    # After the line that reports the four-row table against its 600 frames.
+    # The last line on stderr. The frames read are unknown, so no line compares
+    # the table with the join's 600 frames.
     assert capsys.readouterr().err.endswith(
         f"[{_KIND}] g__s: published without timestamp, which does not map onto the "
         "source media's pixels, frames or clock.\n"

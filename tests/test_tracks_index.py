@@ -1279,8 +1279,8 @@ def test_a_mismatch_needs_both_cells(tmp_path: Path) -> None:
 
 # --- a shortfall its producer declares at the end of a file ------------------
 #
-# TREx stops short of the end of every file it reads, by the frames its decoder
-# holds back to reorder and one more when the container carries no frame count.
+# TREx stops short of the end of a file it reads by the frames its decoder holds
+# back to reorder, and by one more when the container records no frame count.
 # Its root declares that rule, and the row records what the rule gives the file
 # its tool read. A shortfall within it is a known tail loss rather than a
 # mismatch. A row whose file's header was never read is allowed the most TREx

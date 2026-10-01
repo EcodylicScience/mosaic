@@ -19,6 +19,11 @@ import numpy.typing as npt
 import pandas as pd
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.tracks_index import (
+    read_tracks_index,
+    tracks_index_path,
+    write_tracks_row,
+)
 
 
 def add_track_sequences(dataset: Dataset, *sequences: str, n_rows: int = 40) -> None:
@@ -259,7 +264,6 @@ def add_tracks_variant(
     """
     from mosaic.core.helpers import make_entry_key
     from mosaic.core.pipeline.tracks_identity import tracks_variant_root
-    from mosaic.core.pipeline.tracks_index import write_tracks_row
 
     root = tracks_variant_root(dataset.get_root("tracks"), run_id)
     root.mkdir(parents=True, exist_ok=True)
@@ -318,6 +322,18 @@ def track_sequences(dataset: Dataset) -> list[str]:
     Read from the index rather than globbed off the root, so it answers the same
     for a flat legacy layout and for variant directories.
     """
-    from mosaic.core.pipeline.tracks_index import read_tracks_index
-
     return sorted({str(name) for name in read_tracks_index(dataset)["sequence"]})
+
+
+def published_table(dataset: Dataset, producer: str) -> pd.DataFrame:
+    """Return the one tracks table that *producer* published."""
+    tracks = read_tracks_index(dataset)
+    (row,) = [row for _, row in tracks.iterrows() if row["producer"] == producer]
+    return pd.read_parquet(dataset.resolve_path(str(row["abs_path"])))
+
+
+def set_tracks_cell(dataset: Dataset, column: str, value: str) -> None:
+    """Write *value* into *column* of every tracks row, as an earlier pass might."""
+    path = tracks_index_path(dataset)
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    rows.assign(**{column: value}).to_csv(path, index=False)

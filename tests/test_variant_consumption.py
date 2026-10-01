@@ -47,7 +47,6 @@ from mosaic.core.pipeline.tracks_index import (
     backfill_media_frames,
     read_media_frames,
     read_tracks_index,
-    tracks_index_path,
 )
 from mosaic.core.pipeline.tracking_roots import ToolCodecError
 from mosaic.core.scope import Scope
@@ -79,6 +78,7 @@ from tests.helpers import (
     make_dataset,
     pose_predictions,
     scope_over,
+    set_tracks_cell,
     write_litpose_model,
     write_painted_entry,
     write_sleap_model,
@@ -900,9 +900,7 @@ def test_backfill_leaves_a_variant_table_media_frames_blank(
     on_entry = litpose_runs.run_litpose(
         ds, LitposeParams(model_path=str(litpose_model))
     )
-    index = tracks_index_path(ds)
-    rows = pd.read_csv(index, dtype=str, keep_default_na=False)
-    rows.assign(media_frames="").to_csv(index, index=False)
+    set_tracks_cell(ds, "media_frames", "")
 
     filled = backfill_media_frames(ds).written
 
@@ -920,17 +918,15 @@ def test_backfill_clears_a_stale_length_on_a_trimmed_variant_table(
     """A length an earlier pass filled from the entry media is cleared.
 
     A trimmed variant's table does not span its source axis, so the rebuilt
-    placement answers blank rather than failing to answer, and the cell is
-    cleared rather than kept.
+    placement answers blank and the cell is cleared. The row is not reported as
+    one whose run cannot be established.
     """
     ds = _dataset(tmp_path)
     variant = _variant(ds, codec="h264")
     on_variant = litpose_runs.run_litpose(
         ds, LitposeParams(model_path=str(litpose_model), media=variant)
     )
-    index = tracks_index_path(ds)
-    rows = pd.read_csv(index, dtype=str, keep_default_na=False)
-    rows.assign(media_frames=str(_FRAMES)).to_csv(index, index=False)
+    set_tracks_cell(ds, "media_frames", str(_FRAMES))
 
     done = backfill_media_frames(ds)
 
@@ -938,6 +934,27 @@ def test_backfill_clears_a_stale_length_on_a_trimmed_variant_table(
     assert done.not_established.empty
     (row,) = [row for _, row in _tracks(ds, "litpose").iterrows()]
     assert read_media_frames(row) is None
+
+
+def test_a_backfill_reads_a_variant_s_rows_once_for_all_its_entries(
+    tmp_path: Path,
+    litpose_model: Path,
+    litpose: FakeLitpose,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two entries read from one variant, whose index a pass reads once."""
+    ds = _dataset(tmp_path, ("s", "t"))
+    variant = _variant(ds, ("s", "t"), codec="h264")
+    _ = litpose_runs.run_litpose(
+        ds, LitposeParams(model_path=str(litpose_model), media=variant)
+    )
+    set_tracks_cell(ds, "media_frames", str(_FRAMES))
+    reads = count_index_reads(monkeypatch)
+
+    done = backfill_media_frames(ds)
+
+    assert sorted(done.cleared["sequence"]) == ["s", "t"]
+    assert reads.variant_indexes == 1
 
 
 @pytest.mark.parametrize("kind", ["infer-pose", "infer-localizer"])
@@ -985,9 +1002,7 @@ def test_a_variant_that_keeps_every_frame_records_its_source_length(
     (row,) = [row for _, row in _tracks(ds, "ultralytics").iterrows()]
     assert read_media_frames(row) == _FRAMES
     assert ds.frame_axis_mismatches() == ()
-    index = tracks_index_path(ds)
-    rows = pd.read_csv(index, dtype=str, keep_default_na=False)
-    rows.assign(media_frames="").to_csv(index, index=False)
+    set_tracks_cell(ds, "media_frames", "")
     _ = backfill_media_frames(ds)
     (row,) = [row for _, row in _tracks(ds, "ultralytics").iterrows()]
     assert read_media_frames(row) == _FRAMES

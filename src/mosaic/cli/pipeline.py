@@ -202,15 +202,15 @@ def show_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
 def _refused_attempt(
     base_dir: Path, request: Request | None, refusal: Refusal
 ) -> tuple[str, str]:
-    """The step of *request* that *refusal* ended the run at, and its attempt.
+    """Return the step of *request* that *refusal* ended the run at, and its attempt.
 
     A refusal that names its step names the attempt too, because the request
-    assigned every step one: a step can be refused after its attempt finished,
-    when the run finds coverage did not move. One raised inside an attempt, such
-    as a tracker's refusal of a codec, names no step. A step that raises ends the
-    run, so its attempt is the one that the run-logs record as failed: every step
-    before it finished, and none after it started. Both are empty when neither
-    answers.
+    assigned every step one. Such a step can be refused after its attempt
+    finished, when the run finds coverage did not move. A refusal raised inside an
+    attempt, such as a tracker's refusal of a codec, names no step. A step that
+    raises ends the run, so its attempt is the one that the run-logs record as
+    failed: every step before it finished, and none after it started. Both are
+    empty when neither answers.
     """
     from mosaic.core.pipeline.graph import request_rollup
 

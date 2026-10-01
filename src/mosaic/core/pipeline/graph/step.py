@@ -532,7 +532,8 @@ def _run(
             cancel_token=cancel_token,
         )
     except Cancelled:
-        # A cancel is not a failure, and backoff and quarantine read the count.
+        # A cancel is not counted as a failure, because backoff and quarantine
+        # read the failure count.
         raise
     except Exception as exc:
         store.note_step_failure(

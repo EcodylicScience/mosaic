@@ -144,9 +144,8 @@ class UltralyticsIndexRow(TrackerRunRowBase):
     ``n_frames`` is how many frames the runner read, from its result on a run
     that tracks and from the response it left beside the predictions on reuse.
     A reuse whose response is gone keeps what the row already records, and ``0``
-    means not known. ``n_keypoints`` is
-    re-derived from the recorded parquet on reuse, so a reuse run does not
-    overwrite a good row with zeros.
+    means not known. ``n_keypoints`` is re-derived from the recorded parquet on
+    reuse, so a reuse run does not overwrite a good row with zeros.
     """
 
     model_id: str = ""
@@ -371,7 +370,8 @@ def run_ultralytics(
     # A cancel raised while the weights load is answered by killing the probe,
     # the same way it is answered during tracking. The translation is local
     # because this call happens before `run_tracker` opens, so a caller outside
-    # an op is told `Cancelled` wherever the cancel lands.
+    # an op is told `Cancelled` whether the cancel comes during the probe or
+    # during tracking.
     cancel = cancel_token if cancel_token is not None else _context_token(ctx)
     try:
         probe = probe_ultralytics(
@@ -618,10 +618,10 @@ def list_ultralytics_runs(ds: Dataset) -> pd.DataFrame:
 
 
 def _recorded_n_frames(ds: Dataset, run_id: str, group: str, sequence: str) -> int:
-    """The frames read that *run_id*'s row for the entry already records, or ``0``.
+    """Return the frames read that *run_id*'s row for the entry records, or ``0``.
 
-    What a reuse keeps when the runner's response is gone: the run that tracked
-    recorded the count, and nothing the reuse reads can replace it.
+    A reuse keeps this count when the runner's response is gone. The run that
+    tracked recorded it, and the reuse reads no file that can replace it.
     """
     path = ultralytics_index_path(ds)
     if not path.exists():

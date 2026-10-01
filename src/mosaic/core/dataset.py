@@ -973,13 +973,14 @@ class Dataset:
     def measure_media_frames(self, *, dry_run: bool = False) -> "CellBackfill":
         """Rewrite every row's count of frames the tool should have read.
 
-        One half of the way to compare an already-tracked session against the
-        video it addresses: only TRex can re-bridge a table on disk without
-        re-tracking (a republish). A row is rewritten by the rule its producer
-        records it by: a count where the run read the whole entry, and a blank
-        where it read less on purpose or no media at all. A row whose run cannot
-        be established keeps its value. So does a tracker row in a process that
-        has not imported ``mosaic.tracking``, which the result reports in
+        The media side of the comparison that :meth:`frame_axis_mismatches`
+        makes, for tables already on disk. Only TRex can re-bridge such a table
+        without re-tracking (a republish). A row is rewritten by the rule its
+        producer records it by: a count where the run read the whole entry, and
+        a blank where it read less on purpose or no media at all. A row whose run
+        cannot be established keeps its value, which the result reports in
+        ``not_established``. So does a tracker row in a process that has not
+        imported ``mosaic.tracking``, which the result reports in
         ``unregistered``. See :func:`backfill_media_frames`.
         """
         return backfill_media_frames(self, dry_run=dry_run)
@@ -987,22 +988,22 @@ class Dataset:
     def measure_frames_read(self, *, dry_run: bool = False) -> "CellBackfill":
         """Rewrite every row's count of frames the tool read.
 
-        The other half, from what each run left on disk
-        (:func:`backfill_frames_read`). A row whose run left nothing that tells
-        keeps its value, and so does a tracker row in a process that has not
-        imported ``mosaic.tracking``, which the result reports in
-        ``unregistered``.
+        The tool's side of the comparison that :meth:`frame_axis_mismatches`
+        makes, from what each run left on disk (:func:`backfill_frames_read`). A
+        row whose run left nothing that tells keeps its value, and so does a
+        tracker row in a process that has not imported ``mosaic.tracking``,
+        which the result reports in ``unregistered``.
         """
         return backfill_frames_read(self, dry_run=dry_run)
 
     def measure_known_tail_loss(self, *, dry_run: bool = False) -> "CellBackfill":
         """Rewrite every row's known loss at the end of the file its tool read.
 
-        What a shortfall is compared with before it counts as a known tail loss
-        rather than a mismatch (:func:`backfill_known_tail_loss`). A row whose
-        file's header cannot be read keeps its value, and so does a tracker row
-        in a process that has not imported ``mosaic.tracking``, which the result
-        reports in ``unregistered``.
+        A shortfall within it counts as a known tail loss rather than a mismatch
+        (:func:`backfill_known_tail_loss`). A row keeps its value when its file
+        cannot be found or its header read, or its media has changed since the
+        run. So does a tracker row in a process that has not imported
+        ``mosaic.tracking``, which the result reports in ``unregistered``.
         """
         return backfill_known_tail_loss(self, dry_run=dry_run)
 
@@ -1010,6 +1011,9 @@ class Dataset:
         self, run_id: str | None = None
     ) -> "tuple[FrameAxisMismatch, ...]":
         """Tracks tables whose tool's frame count differs from their media's.
+
+        A shortfall within a known tail loss is left out
+        (:meth:`frame_tail_shortfalls`).
 
         One record per disagreeing table, naming its variant as well as its
         entry, from what the index already records -- a table measured on

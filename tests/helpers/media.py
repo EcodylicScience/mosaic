@@ -122,6 +122,20 @@ def write_h264_mp4(
     )
 
 
+def gray_level(frame: int) -> int:
+    """Return the gray level that :func:`paint_gray` paints entry frame *frame* at.
+
+    Twenty-five levels eight apart, so a decoded frame's level still tells its
+    frame, modulo 25, through a lossy encode.
+    """
+    return 20 + 8 * (frame % 25)
+
+
+def paint_gray(frame: int) -> npt.NDArray[np.uint8]:
+    """Return a 64 by 48 BGR frame, flat at the :func:`gray_level` of *frame*."""
+    return np.full((48, 64, 3), gray_level(frame), np.uint8)
+
+
 def write_painted_entry(
     dataset: Dataset,
     sequence: str,
@@ -401,9 +415,9 @@ def write_media_index(
 def stub_join(dataset: Dataset, uids: Sequence[str]) -> Path:
     """Write a placeholder join of the clips whose identities are *uids*, in order.
 
-    It is written at the address a tracker resolves for exactly these clips in this
-    order, under the current recipe. Every tracker suite fakes its tool, so
-    nothing decodes the bytes. A test that reorders, adds or replaces a clip
+    It is written at the address a tracker resolves for these clips in this order,
+    under the default recipe, which is a current one. Every tracker suite fakes its
+    tool, so nothing decodes the bytes. A test that reorders, adds or replaces a clip
     writes the new address, or sees the refusal of a missing join.
     """
     members = [
@@ -458,7 +472,8 @@ def add_transcode_derivative(
     environment-driven thresholds, so a literal would pin the suite to one
     machine. Both links are written in the order the op writes them, the
     back-link row into the ``media`` index and then the forward-link cell onto
-    the original, through the op's own writers wherever the derivative has facts.
+    the original. The forward link always goes through the op's writer, and the
+    back-link row does when the derivative has facts.
 
     Args:
         dataset: The dataset holding the original.
@@ -470,8 +485,8 @@ def add_transcode_derivative(
         encode: Writes a source's derivative to a path and returns the facts
             measured off it. ``None`` writes stub bytes instead, for a test that
             reads only the derivative's name. A stub has no facts, so its
-            back-link row names it and nothing more, and routing never resolves
-            to it.
+            back-link row names it and nothing more, and a read routed to it
+            raises.
 
     Returns:
         The derivative's path.

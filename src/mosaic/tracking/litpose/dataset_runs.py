@@ -299,13 +299,12 @@ def run_litpose(
     #
     # Resolved under the *training* kind the declaration accepts, not this
     # tracker's. A reference may be a path or a registered training ``run_id``,
-    # and a run_id resolves against ``models/<kind>/index.csv`` -- the index the
-    # row was written into, which ``train-litpose`` owns. Passing
-    # ``LITPOSE_KIND`` here sent every run_id to a ``models/litpose/`` index
-    # nothing writes, so only a path ever resolved and "train here, track with it
-    # there" could not be spelled by name. The artifact shape is unaffected:
-    # ``MODEL_KINDS`` declares ``train-litpose`` as Lightning Pose's own spec for
-    # exactly this.
+    # and a run_id resolves against ``models/<kind>/index.csv``, the index the
+    # row was written into, which ``train-litpose`` owns. No op writes a
+    # ``models/litpose/`` index, so under ``LITPOSE_KIND`` only a path would
+    # resolve and a model trained here could not be named by its run id. The
+    # artifact shape is unaffected: ``MODEL_KINDS`` declares ``train-litpose`` as
+    # Lightning Pose's own spec for this.
     refs = [str(params.model_path)]
     resolved_model = resolve_model_set(
         ds, refs, model_kind_for(LITPOSE_KIND, LITPOSE_MODEL, refs)

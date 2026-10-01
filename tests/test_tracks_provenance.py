@@ -219,8 +219,8 @@ def test_the_tracker_bridge_records_the_run_and_a_portable_source(
         tracks_variant="trex.0.1-bbbbbbbbbb",
         producer_run_id="trex.0.1-cccccccccc",
         consumed_media=[video],
-        # This suite is about provenance, not the frame axis: one clip has no
-        # second axis to compare against.
+        # This suite is about provenance, not the frame axis: an axis without
+        # clip facts records no media length to compare against.
         axis=EntryAxis(),
         conversion=None,
         overwrite=True,
@@ -258,8 +258,8 @@ def test_the_tracker_bridge_prefers_the_deepest_root_it_read(tmp_path: Path) -> 
         tracks_variant="trex.0.1-bbbbbbbbbb",
         producer_run_id="trex.0.1-cccccccccc",
         consumed_media=[video],
-        # This suite is about provenance, not the frame axis: one clip has no
-        # second axis to compare against.
+        # This suite is about provenance, not the frame axis: an axis without
+        # clip facts records no media length to compare against.
         axis=EntryAxis(),
         conversion=None,
         overwrite=True,

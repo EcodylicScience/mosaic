@@ -176,17 +176,16 @@ class TRexIndexRow(TrackerRunRowBase):
 
     ``video_uuids`` is the same arrangement by content identity, comma-joined and
     **never sorted** -- sorting would make two orderings of one session record
-    alike. ``media_composition`` is the digest of that arrangement, and is what
-    the reuse gate compared.
+    alike. ``media_composition`` is the digest of that arrangement, the work
+    item's ``source_uid``, for an entry of several clips, and empty for one clip.
 
     **Not to be confused with ``consumed_media_composition`` on the base row**,
     which every tracker carries. That one is the per-entry ``media_raw``
-    composition from ``sequences.csv`` -- what the *sources* were -- and answers
-    "did the media move under this run". This one is the digest of the clip
-    arrangement TREx joined, computed from the work item, and only TREx has one
-    because only TREx joins. Two similar names for two facts is the shape of
-    mistake that gets more expensive to correct, so the rename belongs on a
-    branch that can migrate the reuse gate with it.
+    composition from ``sequences.csv``, what the *sources* were, and answers
+    "did the media move under this run". This one is the digest of the clips the
+    run read as one join, computed from the work item. The reuse gate compares
+    the work item's ``source_uid`` through the entry's marker and does not read
+    this cell.
 
     Both are empty when any clip carries no identity,
     which is unestablishable rather than "no videos" -- and that is exactly what
@@ -296,7 +295,7 @@ def phase_settings(
 
 
 def detect_model_kind(ref: str) -> str:
-    """Which training op's index a detection-model reference resolves against.
+    """Return the training kind whose index a detection-model reference resolves in.
 
     A run id names its own kind, which :data:`TREX_DETECT_MODEL` must accept. A
     bare weights path falls back to ``train-points`` rather than guessing,
@@ -370,9 +369,10 @@ def _bridge_npz_to_tracks(
         # A reused table makes no frame-axis comparison, and cannot: the reuse returns
         # before the converter, before the table is placed on the entry's axes, and
         # before anything reads the `.pv`. Its row keeps whatever it was written with,
-        # which for a table published before `media_frames` and `frames_read` existed
-        # is a blank. `mosaic measure-tracks` fills those in, and a republish
-        # (`overwrite=True` here) re-bridges the table and records the two.
+        # which for a table published before `media_frames`, `frames_read` and
+        # `known_tail_loss` existed is a blank. `mosaic measure-tracks` fills those
+        # in, and a republish (`overwrite=True` here) re-bridges the table and
+        # records all three.
         reusable = readable_tracks_table(out_path)
         if reusable is not None:
             return reusable
@@ -411,12 +411,13 @@ def _bridge_npz_to_tracks(
 
 
 def _recorded_conversion(ds: Dataset, work_dir: Path) -> PvHeader | None:
-    """Return the header of the ``.pv`` that the entry *work_dir* tracked.
+    """Return the header of the ``.pv`` that TREx tracked in the entry's *work_dir*.
 
     It is the ``.pv`` that the entry's convert marker records. Its frame count
     counts every frame the conversion read, where each per-individual export runs
     only from that individual's first tracked frame to its last. ``None`` when the
-    marker or the ``.pv`` is gone, as after the shared conversion is swept.
+    marker or the ``.pv`` is gone, as after the shared conversion is swept, or the
+    header cannot be read.
     """
     marker = read_phase_marker(work_dir, "convert")
     if marker is None or not marker.recorded_output:
@@ -425,11 +426,12 @@ def _recorded_conversion(ds: Dataset, work_dir: Path) -> PvHeader | None:
 
 
 def _known_tail_loss(conversion: PvHeader) -> int | None:
-    """How many frames short of the end of its source *conversion* is known to stop.
+    """Return how many frames *conversion* is known to leave unread at its source's end.
 
     The rule of TREx's root, applied to the header of the file the ``.pv``
     records as its source. Zero for several files, whose losses at each boundary
-    are no loss at the end, and ``None`` when the source's header cannot be read.
+    are not losses at the end. ``None`` when the ``.pv`` records no source, as a
+    header older than ``PV15`` does, or the source's header cannot be read.
     """
     return tail_loss_of_files(TREX_KIND, conversion.sources)
 
@@ -674,9 +676,9 @@ def _adopt_into_cache(
 
     The marker must *prove* the match -- a non-empty ``params_hash`` and
     ``source_uid``, both equal to this run's. For one clip ``reusable_marker``
-    deliberately reads an empty one as "unknown is not mismatched", which is right
-    for reusing a directory where it stands and wrong for promoting its contents
-    into a durable shared address. A directory adopted from before markers existed
+    reads an empty one as "unknown is not mismatched", which is right for reusing
+    a directory where it stands and wrong for promoting its contents into a
+    durable shared address. A directory adopted from before markers existed
     records neither, so it is reused and never cached.
     """
     if slot is None or not slot_marker_is_usable(marker):
@@ -849,16 +851,17 @@ def run_trex(
 
     # Route each scoped entry through the transcode verdict: a clean entry
     # resolves to its original, an analysis-required entry to its constant-rate
-    # analysis derivative (so tracks land in the same frame space as the rest of
+    # analysis derivative (so tracks are in the same frame space as the rest of
     # the pipeline), and a required-but-unlinked entry raises MediaProbeError
     # here, before any TREx subprocess opens a known-defective original.
     #
-    # TREx decodes the files itself, so the routed *paths* are what it is given.
-    # The routed facts are still read, for a different job: they are what the
-    # concatenated timeline is built from, and TREx cannot supply that. It
-    # takes one frame rate from the first clip and never checks the others.
-    # When `media` names a variant, TREx is given the variant file instead, and
-    # the routed facts time the table when it is mapped back to the entry.
+    # TREx decodes the files itself, so it is given the routed path, or the join
+    # of the routed clips. The routed facts are read too, to build the entry's
+    # axis that the bridge times a joined table by. TREx cannot supply that,
+    # because it takes one frame rate from the first clip and never checks the
+    # others. When `media` names a variant, TREx is given the variant file
+    # instead, and the routed facts time the table when it is mapped back to the
+    # entry.
     scope_entries = scope.op_entries if scope is not None else None
     media_scope = ds.resolve_media_scope(scope_entries)
     # Before the mint, so a run refused for its media records no variant.
@@ -903,7 +906,7 @@ def run_trex(
         item, work_dir, seq_ctx = job.item, job.work_dir, job.ctx
         cancel_check = seq_ctx.cancel_token.is_cancelled
         joined = item.n_sources > 1
-        # Where the table sits on the entry's axes, which the shared bridge
+        # How the table is placed on the entry's axes, which the shared bridge
         # applies. A joined entry's `time` goes onto the clips' own measured
         # rates, because TREx takes one rate from the first clip and never
         # checks the others, and the row records how many frames TREx should

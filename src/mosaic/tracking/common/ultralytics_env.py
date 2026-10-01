@@ -480,7 +480,7 @@ def reported_frames_read(
 
     The runner writes its response beside the predictions it publishes, and the
     response stays until its phase runs again. ``None`` when the file is gone or
-    does not hold a *model*.
+    does not parse as a *model*.
     """
     try:
         return model.model_validate_json(response.read_text()).n_frames

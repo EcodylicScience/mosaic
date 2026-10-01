@@ -355,7 +355,7 @@ def localizer_detections_to_dataframe(
     ----------
     results : sequence of LocalizerFrame
         Per-frame detections from :func:`run_localizer_inference`. Each row's
-        ``frame`` is the frame index that they carry.
+        ``frame`` is the ``frame`` of its :class:`LocalizerFrame`.
     class_names : list of str, optional
         Human-readable class names.
 

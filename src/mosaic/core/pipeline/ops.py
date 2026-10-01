@@ -635,7 +635,7 @@ def list_ops(
 ) -> list[dict[str, object]]:
     """Enumerate registered ops as one dict each.
 
-    Each row carries ``kind``, ``domain``, ``category``, ``version``, the two
+    Each row contains ``kind``, ``domain``, ``category``, ``version``, the two
     scope declarations and ``model_reference``. A client reads how much scope
     an op takes, and which trained model it runs, without running it and
     without reading either out of the params model.
@@ -684,7 +684,7 @@ def op_resource_class(kind: str) -> str:
 def describe_op(kind: str) -> dict[str, object]:
     """Describe one op, as its identity, its declarations and its params schema.
 
-    The declarations a :func:`list_ops` row carries sit beside ``kind`` and
+    The declarations in a :func:`list_ops` row are keys beside ``kind`` and
     never inside ``params_schema``. They describe the op rather than its params,
     and a client drawing controls from that schema draws only fields a caller
     fills in.

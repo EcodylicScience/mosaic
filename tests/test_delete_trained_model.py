@@ -185,7 +185,10 @@ def _during_the_drop(
 def test_a_training_arriving_mid_delete_cannot_claim_the_run_root(
     ds: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Once the row is gone a resubmitted training claims the root; the delete holds it."""
+    """Once the row is gone, a resubmitted training finds no model and claims the root.
+
+    The delete holds the claim, so the training is refused and the root removed.
+    """
     refusals: list[RunRootHeld] = []
 
     def retrain() -> None:
@@ -342,7 +345,10 @@ def test_a_run_no_index_registers_is_not_found(
 def test_a_model_the_inventory_reports_is_deletable_though_no_op_trains_it(
     tmp_path: Path,
 ) -> None:
-    """TREx identity weights are registered under ``train-identity``, which no op writes."""
+    """TREx identity weights are registered under ``train-identity``.
+
+    No op writes that kind.
+    """
     ds = make_dataset(tmp_path / "dataset")
     kind, run_id = "train-identity", "train-identity.0.1-abcdef0123"
     weights = model_run_root(ds, kind, run_id) / "identity_model.pth"

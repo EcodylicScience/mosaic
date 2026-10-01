@@ -374,6 +374,28 @@ def test_a_cancel_stops_the_probe_and_is_not_remembered(
     assert len(python.calls()) == 2
 
 
+def test_a_file_whose_header_does_not_read_is_handed_to_the_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file a tool cannot open at all is the tool's to report, in its words."""
+    ds = make_dataset(tmp_path / "ds")
+    clip = _clip(ds)
+    clip.parent.mkdir(parents=True)
+    _ = clip.write_bytes(b"not a video")
+    python = install_fake_tool_python(monkeypatch, SLEAP_ENV, tmp_path / "bin")
+
+    refuse_undecodable_codec(
+        ds,
+        clip,
+        kind="sleap",
+        group="",
+        sequence="s",
+        decode_probe=DecodeProbe(SLEAP_ENV),
+    )
+
+    assert python.calls() == []
+
+
 def test_a_listed_codec_skips_the_probe(
     tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
 ) -> None:

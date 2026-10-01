@@ -18,9 +18,9 @@ unclassified column when it has a unit to convert.
 
 The retiming rule (:func:`retime`) also times a table tracked on the join of an
 entry's clips (:func:`retime_joined_frame`), whose clips may have been recorded at
-different rates. :class:`EntryAxis` says which of the two a tool's table needs,
-and how long the entry's frame axis is that the table is meant to span. The shared
-bridge applies it to every producer's table.
+different rates. :class:`EntryAxis` chooses between the two for a tool's table,
+and gives the length of the entry's frame axis that the table is meant to span.
+The shared bridge applies it to every producer's table.
 """
 
 from __future__ import annotations
@@ -350,18 +350,18 @@ def retime_joined_frame(
     frame index divided by that rate, because it loads no timestamps for a video
     file. One real session measures 30 fps, then 29.95, then 31 across seventeen
     clips. The error accumulates across the session, and every per-second
-    quantity was computed against the wrong denominator. :func:`retime` puts
+    quantity is computed against the wrong denominator. :func:`retime` puts
     ``time`` on the clips' own measured rates and drops what one rate spoiled.
 
     ``frame`` is left as the tool numbered it. On a join that is the entry's
     frame, because the join holds the clips' frames back to back. A tool that
     reads fewer frames than a clip holds numbers its rows early, and
-    :meth:`ConcatenatedTimeline.times` then places them in the wrong clip. The
-    bridge reports a shortfall in the frames the tool read against
-    :attr:`EntryAxis.media_frames` and does not correct it here.
+    :meth:`ConcatenatedTimeline.times` then places them in the wrong clip. This
+    function does not correct that. The bridge reports the shortfall, comparing
+    the frames the tool read with :attr:`EntryAxis.media_frames`.
 
     Args:
-        df: The table, carrying the join's ``frame``.
+        df: The table, with the join's ``frame``.
         timeline: The entry's clips, in the order they were joined.
 
     Returns:

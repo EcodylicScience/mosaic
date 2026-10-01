@@ -1,8 +1,10 @@
 """Which tracks in a dataset were made with a given trained model.
 
-A model is deleted only once nothing refers to it, and a tracks variant refers to
-the model its identity payload names. The payloads here are built by each tool's
-own settings function, so a tool that renames its model key is still found.
+The search answers whether anything refers to a model before it is deleted. A
+tracks variant refers to each model that its record names: the models its run
+recorded, or, in a record without them, a run id or digest in its identity
+payload. The payloads here are built by each tool's settings function, so a tool
+that renames its model key is still found.
 """
 
 from __future__ import annotations

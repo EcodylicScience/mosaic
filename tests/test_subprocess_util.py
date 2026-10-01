@@ -256,8 +256,8 @@ def test_a_cancelled_child_stops_writing(tmp_path: Path) -> None:
 
 # A tool's environment runs a probe as ``python -c <program> <path>``, so from a
 # bin placement the program is the third token of the argv. A message about the
-# run reaches the run-log's error_json and an API error body, and must not quote
-# the program.
+# run is recorded in the run-log's error_json and returned in an API error body,
+# and must not quote the program.
 _PROGRAM_MARKER = "# the program that no message quotes"
 
 

@@ -340,7 +340,7 @@ def test_two_layouts_cannot_be_one_model(
 ) -> None:
     """Names, edges and mirror pairs all have to agree; each alone differs here.
 
-    Both sets hold the one pose, edited between them: a pose keeps its id when its
+    Both sets hold the one pose, edited between them. A pose keeps its id when its
     layout changes, so the pose check passes and the layout check refuses.
     """
     library = make_dataset(tmp_path / "libraries" / "7", name="library")
@@ -835,10 +835,10 @@ def test_a_model_names_the_pose_it_was_trained_on(full_state: Dataset) -> None:
 def test_an_index_older_than_the_pose_reads_blank_and_is_adopted_on_the_next_write(
     world: tuple[Dataset, Dataset, Dataset],
 ) -> None:
-    """A row from before the pose was recorded names none; blank means unknown.
+    """A row from before the pose was recorded names none, which reads as unknown.
 
     The older file holds its columns out of schema order and one the schema has
-    retired, so an appended row alone does not bring it to the schema: only the
+    retired, so an appended row alone does not bring it to the schema. The
     adoption does.
     """
     _mice, _rats, library = world

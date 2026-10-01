@@ -188,7 +188,10 @@ def _registered_identity_model(tmp_path: Path) -> tuple[Dataset, Path]:
 
 
 def test_a_registered_prefix_run_resolves_through_the_index(tmp_path: Path) -> None:
-    """The run is named by its run id, and holds the bytes its stem names."""
+    """The run id names the model, and resolves to its weights' stem.
+
+    Its digest is the one that resolving the stem as a path gives.
+    """
     ds, weights = _registered_identity_model(tmp_path)
 
     by_run = resolve_model(ds, IDENTITY_RUN, "train-identity")

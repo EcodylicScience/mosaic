@@ -15,8 +15,8 @@ TREX_KIND: Final = "trex"
 CLIP_LIST_VERSION: Final = "0.1"
 """The last version that handed TREx a multi-clip entry's clips as a list.
 
-Its run index rows are what proves, once a conversion's ``.pv`` is swept, that
-TREx read several files and not one join of them. See the 0.1 -> 0.2 note on
+Its run index rows prove, once a conversion's ``.pv`` is swept, that TREx read
+several files and not one join of them. See the 0.1 -> 0.2 note on
 :data:`TREX_VERSION`.
 """
 
@@ -46,8 +46,8 @@ conversion slot is addressed by ``<convert run id>/<source uid>``, and neither
 term moved: ``source_uid`` is the composition of the clips, which is the same
 clips, and the convert run id is the settings, which are the same settings. So
 without this the wrong ``.pv`` would be served as a cache hit for every session
-already converted. The other three trackers needed no bump. They were truncated
-to clip 0 before the change, and their markers record that clip's uuid, where the
+already converted. The other three trackers needed no bump. They read only clip 0
+until mosaic joined the clips, and their markers record that clip's uuid, where the
 reuse gate compares the composition of every clip, so each such entry is tracked
 again on its next run.
 """

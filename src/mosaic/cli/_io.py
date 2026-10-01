@@ -58,7 +58,7 @@ def exit_refused(
 
     The message goes to stderr. Under ``--json`` the refusal is also the one JSON
     value on stdout: the execution, ``"status": "refused"``, the reason, the step
-    and the ``error_json`` blob that a ledger row carries.
+    and the ``error_json`` blob that a ledger row records.
 
     Args:
         execution_id: The attempt that refused.

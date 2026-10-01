@@ -396,8 +396,8 @@ def run_command(
         # A step declining to run, or a tracker refusing a file's codec. A
         # reserved exit code rather than a new terminal status: that set is read
         # by three repositories and mosaic-api's sweeper reaps it, so the ledger
-        # row stays ``failed`` and the reason travels in ``error_json``, which
-        # this attempt's run-log already carries.
+        # row stays ``failed`` and the reason is recorded in ``error_json``, which
+        # this attempt's run-log already contains.
         exit_refused(exec_id, refusal, step_id=step or "", as_json=as_json)
     except KeyError as exc:
         fail(str(exc))

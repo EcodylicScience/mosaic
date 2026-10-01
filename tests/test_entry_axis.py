@@ -9,9 +9,9 @@ how many it did, so a tool that read short is reported as a
 ``frame_axis_mismatch``. The table's own extent is not compared: a table with
 rows only at detections ends at its last one, however many frames the tool read.
 
-The rules are tested on the value itself. The runs are Lightning Pose and
-Ultralytics tracker runs over real clips and a real join, with the recording fakes
-standing in for the tools.
+The rules are tested on the value itself. The runs are tracker and inference runs
+over real clips and a real join, with the recording fakes standing in for the
+tools.
 """
 
 from __future__ import annotations
@@ -19,8 +19,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-import numpy as np
-import numpy.typing as npt
 import pandas as pd
 import pytest
 from mosaic_media import MediaFacts
@@ -49,6 +47,7 @@ from tests.helpers import (
     latest_events,
     latest_snapshot,
     make_dataset,
+    paint_gray,
     write_litpose_model,
     write_painted_entry,
     write_sleap_model,
@@ -154,16 +153,12 @@ _FRAMES_PER_CLIP = 30
 _ENTRY = ("", "sess")
 
 
-def _paint(frame: int) -> npt.NDArray[np.uint8]:
-    return np.full((48, 64, 3), 20 + 8 * (frame % 25), np.uint8)
-
-
 @pytest.fixture
 def session(tmp_path: Path, requires_ffmpeg: None) -> Dataset:
     """One entry of thirty frames at 30 fps, then thirty at 31 fps, and its join."""
     ds = make_dataset(tmp_path / "ds")
     _ = write_painted_entry(
-        ds, "sess", [(_FRAMES_PER_CLIP, 30.0), (_FRAMES_PER_CLIP, 31.0)], _paint
+        ds, "sess", [(_FRAMES_PER_CLIP, 30.0), (_FRAMES_PER_CLIP, 31.0)], paint_gray
     )
     _ = run_op(ds, "export-joined", {}, scope=Scope(entries=[_ENTRY]))
     return ds
@@ -225,7 +220,10 @@ class TestATrackerOverAJoinedEntry:
     def test_its_time_follows_each_clip_s_own_rate(
         self, session: Dataset, tmp_path: Path, ultralytics: FakeUltralytics
     ) -> None:
-        """The converter times every frame at the first clip's 30 fps."""
+        """The converter times every frame at the first clip's 30 fps.
+
+        The bridge retimes the second clip's frames at that clip's 31 fps.
+        """
         _track(session, tmp_path, ultralytics, 2 * _FRAMES_PER_CLIP)
 
         _media_frames, table = _published(session)

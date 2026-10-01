@@ -1,8 +1,8 @@
 """Deleting a trained model's index row and run root.
 
 A trained model is a row in ``models/<kind>/index.csv`` and the run root
-``models/<kind>/<run_id>/`` that row names. mosaic owns that layout, so a caller
-that wants a model gone asks here rather than removing directories itself.
+``models/<kind>/<run_id>/`` that the row names. mosaic owns that layout, and a
+caller that wants a model gone asks here instead of removing directories itself.
 
 **The row goes first.** Every resolver finds a model through its row
 (:func:`~mosaic.tracking.model_refs.resolve_model`), so once the row is dropped the
@@ -10,21 +10,21 @@ model stops resolving, from this dataset and from every dataset linking it as a
 library, before a file is touched. A removal that then fails leaves unreferenced
 files rather than a row naming a half-deleted model.
 
-**Nothing is touched until the request is known to be sound.** A kind that holds
-prepared data, a run identifier of another kind, a run no index registers, a run
-root that is a link, and a run root whose directory resolves outside ``models``
-are each refused first. Which kinds hold models is the trained-model inventory's
-answer, :func:`~mosaic.core.pipeline.models.holds_trained_models`, so a model
-the inventory lists can be deleted.
+**Every refusal comes before anything is touched.** A kind that holds prepared
+data, a run identifier of another kind, a run that no index registers, a run root
+that is a link, and a run root whose directory resolves outside ``models`` are
+each refused first. :func:`~mosaic.core.pipeline.models.holds_trained_models`
+decides which kinds hold models, for the trained-model inventory too, so every
+model that the inventory lists can be deleted.
 
-**The run root is claimed before the row goes**, the way an op claims it before
-writing. Once the row is dropped a resubmitted training no longer finds a
-finished model and claims the root to train into it; holding the claim until the
-root is gone refuses that training rather than deleting its files from under it.
-A root another execution already holds is refused.
+**The run root is claimed before the row goes**, as an op claims it before
+writing. Once the row is dropped, a resubmitted training finds no finished model
+and claims the root to train into it. Holding the claim until the root is gone
+refuses that training instead of deleting its files from under it. A root that
+another execution already holds is refused.
 
-The data a model trained on is left alone: a prepared dataset is its own run,
-and other trainings may read it.
+The data that a model trained on is left in place. A prepared dataset is a run of
+its own, and other trainings may read it.
 """
 
 from __future__ import annotations
@@ -165,7 +165,8 @@ def delete_trained_model(ds: Dataset, kind: str, run_id: str) -> DeletedModel:
             run identifier of *kind*, the run root is a link, or the directory
             holding it resolves outside the ``models`` root.
         ModelNotFoundError: No row in *kind*'s index registers *run_id*,
-            including when no index of *kind* exists.
+            including when no index of *kind* exists or *ds* has no ``models``
+            root.
         TrainedModelInUseError: Another live execution holds the run root.
         pandas.errors.ParserError: *kind*'s index cannot be parsed. It is a
             ``ValueError``, so a caller telling refusals apart catches
@@ -217,8 +218,8 @@ def delete_trained_model(ds: Dataset, kind: str, run_id: str) -> DeletedModel:
 def _refuse_unless_a_model_run(kind: str, run_id: str) -> None:
     """Raise unless *kind* holds trained models and *run_id* is one of its runs.
 
-    Also what keeps both arguments one path component each: a parsed run
-    identifier cannot hold a separator or ``..``, and *kind* has to be the kind
+    This also keeps both arguments one path component each. A parsed run
+    identifier cannot contain a separator or ``..``, and *kind* must be the kind
     it parses to.
     """
     if not holds_trained_models(kind):
@@ -242,9 +243,9 @@ def _refuse_unless_under_models(
 ) -> None:
     """Raise unless *run_root* is a directory of its own inside ``models``.
 
-    A link is refused outright: emptying the root through it would empty what it
-    points at, and a claim written through it would land there. Containment is
-    judged on the directory holding the root, so a leaf link cannot pass on the
+    A link is refused, because emptying the root through it would empty its
+    target, and a claim written through it would be written there. Containment is
+    judged on the directory containing the root, so a leaf link cannot pass on the
     strength of its target.
     """
     if run_root.is_symlink():

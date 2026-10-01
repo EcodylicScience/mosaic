@@ -89,13 +89,10 @@ class TestSeveralClips:
         assert capsys.readouterr().err == ""
 
     def test_every_tracker_now_covers_the_whole_entry(self, tmp_path: Path) -> None:
-        """The four tools no longer differ on this, and none of them joins.
+        """Every kind's work item covers all of an entry's clips.
 
-        SLEAP, Lightning Pose and Ultralytics used to be truncated to clip 0 and
-        track none of the rest of a recording; TREx was handed the list and lost
-        the tail of every clip to its own under-counting. Both are gone: every
-        work item covers the entry, whatever the tool, and mosaic hands each tool
-        one already-joined video.
+        mosaic hands each tool the clips' join as one video, so no tool joins clips
+        itself, and a kind with no tracking root is covered the same way.
         """
         ds = _dataset(tmp_path, SESSION)
         for kind in (TREX, SLEAP, "litpose", "ultralytics", "unregistered-tool"):

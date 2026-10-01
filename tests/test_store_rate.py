@@ -168,10 +168,8 @@ def test_a_consumer_handing_over_a_path_refuses_stores_at_one_rate(
 
     message = str(refused.value)
     assert "export-joined does not join stores" in message
-    assert (
-        """--entries "g:s" --params '{"steps":[{"step":"trim","start":0,"stop":100}]}'"""
-        in message
-    )
+    trim = """--params '{"steps":[{"step":"trim","start":0,"stop":100}]}'"""
+    assert f'--entries "g:s" {trim}' in message
 
 
 def test_the_remedy_for_stores_of_unmeasured_length_says_to_measure_them(
@@ -188,7 +186,7 @@ def test_the_remedy_for_stores_of_unmeasured_length_says_to_measure_them(
 def test_long_real_stores_measured_apart_are_read_as_one(
     make_imgstore: Callable[..., tuple[Path, list[np.ndarray]]], fmt: str
 ) -> None:
-    """Eight thousand frames each, half a frame apart at the old tolerance."""
+    """Eight thousand frames each, long enough to fail the plain half-frame rule."""
     first, _ = make_imgstore(
         name="a", nframes=8_000, fps=30.0, fmt=fmt, shape=(4, 4, 1), chunksize=2_000
     )

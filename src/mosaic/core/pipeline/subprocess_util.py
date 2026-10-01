@@ -33,18 +33,18 @@ _COMMAND_HEAD: Final = 6
 
 
 def command_summary(cmd: Sequence[str], head: int | None = None) -> str:
-    """*cmd* as a message or a log line quotes it.
+    """Return *cmd* as a message or a log line quotes it.
 
     Any token that follows a ``-c`` token is rendered as ``<program>``, whatever
     the executable. For a Python interpreter it is an entire program, and
-    printing it helps nobody. That token is third from a bin placement and later
-    under conda, so no count of tokens elides it. Then the first *head* tokens
-    are kept, and ``...`` marks the rest.
+    printing it helps nobody. That token is third when the interpreter is run
+    directly and later under ``conda run``, so no fixed count of tokens elides
+    it. Then the first *head* tokens are kept, and ``...`` marks the rest.
 
     Args:
         cmd: The argv as run.
-        head: How many tokens to keep. ``None`` keeps every token, which is what
-            a log line wants for a command it may be asked to reproduce.
+        head: How many tokens to keep. ``None`` keeps every token, for a log
+            line of a command that it may be asked to reproduce.
 
     Returns:
         The kept tokens joined by spaces, with ``<program>`` in place of each
@@ -73,12 +73,12 @@ class _LimitExpired(subprocess.TimeoutExpired):
     """A limit of :func:`run_supervised` expired.
 
     The message summarizes the argv with :func:`command_summary`, because the
-    argv's own text would quote a program passed with ``-c`` and the message
-    reaches a run-log's ``error_json``. ``cmd`` still holds the whole argv.
+    argv's own text would quote a program passed with ``-c`` and the message is
+    recorded in a run-log's ``error_json``. ``cmd`` still holds the whole argv.
     """
 
     expired: ClassVar[str] = ""
-    """What happened, between the command and the limit in seconds."""
+    """The words of the message between the command and the limit in seconds."""
 
     def __init__(
         self,

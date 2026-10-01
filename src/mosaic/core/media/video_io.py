@@ -475,8 +475,8 @@ class _ImgStoreMultiReader:
         # substituted, and the stores' own rate rule. A store's rate is measured
         # from its timestamps, so one rate measured twice differs in the last
         # digits, by an amount that does not grow with the store. Stores cannot be
-        # joined, so a store sequence refused here cannot be read another way,
-        # and every consumer refuses it first by the same rule.
+        # joined, and the trackers and inference ops refuse such a sequence by the
+        # same rule before they start.
         geometry = uniform_properties(
             [
                 MeasuredVideoProperties(
@@ -758,10 +758,9 @@ def read_entry_frames(
     Frame ``i`` is frame ``i`` of the entry, counted across its clips in order,
     which is the axis that ``MultiVideoReader`` and
     :class:`~mosaic.core.media.timeline.ConcatenatedTimeline` define. One file is
-    read by :func:`open_frame_reader`, exactly as a caller with one path reads it.
-    Several are read through :func:`open_multi_video_reader`, which refuses clips
-    whose frame rates differ; a caller holding such clips reads their join
-    instead.
+    read by :func:`open_frame_reader`, as a caller with one path reads it. Several
+    are read through :func:`open_multi_video_reader`, which refuses clips whose
+    frame rates differ. A caller holding such clips reads their join instead.
 
     The window is the one :func:`open_frame_reader` takes: from *start_frame*, up
     to *end_frame* exclusive, every *frame_step*-th frame. The reader is closed

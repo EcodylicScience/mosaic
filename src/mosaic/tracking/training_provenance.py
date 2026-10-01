@@ -189,9 +189,10 @@ def _prepared_run(data_path: str) -> tuple[str, str]:
 
 
 def _pose_id(cell: str) -> int | None:
-    """The pose id a prepared-data row records, or ``None`` for a blank cell.
+    """Return the pose id that a prepared-data row records, or ``None``.
 
-    Blank is what a row written before the column existed reads as.
+    ``None`` when the cell is blank, as a row written before the column existed
+    reads, or is not an integer.
     """
     try:
         return int(cell)

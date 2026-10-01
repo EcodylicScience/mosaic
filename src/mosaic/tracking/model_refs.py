@@ -330,9 +330,9 @@ class ResolvedModel:
     by its training run id, or, for a model handed in by path, by the digest that
     resolving it alone reports. One reference has one member, named as
     ``model_id`` names it. A set of several has no ``run_id`` and is named by a
-    digest over all its artifacts, which equals no member's, so the members are
-    recorded as provenance, where a search for the tracks a model made finds
-    them.
+    digest over all its artifacts, which differs from every member's. The members
+    are therefore recorded as provenance, where a search for the tracks that a
+    model made finds them.
     """
 
     artifacts: tuple[ModelArtifact, ...]
@@ -710,15 +710,15 @@ def resolve_model(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
 
 
 def _looked_up(ref: str, reference: Path, spec: ModelKindSpec) -> bool:
-    """Whether *ref* resolves through the model index rather than as a path.
+    """Return whether *ref* resolves through the model index rather than as a path.
 
     A path that exists is read as a path, whatever it is called, as
     :func:`model_id_for_ref` reads it. A prefix does not exist, because its
-    weights sit beside it, so a prefix is looked up only when it is a run id.
-    Probed as a path, a run id is relative and names the working directory, and
-    the prefix probe would read whatever weights sit there. Any other reference
-    that names nothing is looked up, which is where a run id resolves and where
-    a missing path is reported.
+    weights are files beside it, so a prefix is looked up only when it is a run
+    id. Probed as a path, a run id is relative to the working directory, and the
+    prefix probe would read any weights found there. Any other reference that
+    names no existing file is looked up, which is where a run id resolves and
+    where a missing path is reported.
     """
     if reference.exists():
         return False
@@ -728,7 +728,7 @@ def _looked_up(ref: str, reference: Path, spec: ModelKindSpec) -> bool:
 
 
 def _registered_reference(path: Path, spec: ModelKindSpec) -> Path:
-    """What the artifact path of a model index row resolves as under *spec*.
+    """Return the path that a model index row's artifact resolves as under *spec*.
 
     A prefix kind's row may name the weights file itself, where the tool is
     handed the stem beside it, so the file's suffix is dropped.
@@ -739,11 +739,13 @@ def _registered_reference(path: Path, spec: ModelKindSpec) -> Path:
 
 
 def _resolve_registered(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
-    """The model a registered run left behind. *ref* is never probed as a path.
+    """Return the model a registered run left behind, never probing *ref* as a path.
 
     Raises:
         FileNotFoundError: No index for *kind* exists here or in any library,
             or the artifact a row names is missing a required file.
+        NotADirectoryError: The artifact a row names is not a directory, where
+            its kind declares one.
         KeyError: An index exists and none of them registers *ref*.
     """
     spec = spec_for(kind)
@@ -761,7 +763,7 @@ def _resolve_registered(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
 
 
 def observed_model_source(*resolved: ResolvedModel | None) -> dict[str, str]:
-    """Which models a run used and where they came from, as variant provenance.
+    """Return the models a run used and where they came from, as variant provenance.
 
     Merged into the ``observed`` mapping a variant sidecar records. It names
     every member of every model given, in order (:func:`observed_models`), and
@@ -770,9 +772,10 @@ def observed_model_source(*resolved: ResolvedModel | None) -> dict[str, str]:
 
     Provenance and never identity. The run identifier already names the model;
     which dataset happened to hold it is what a later export needs to find the
-    weights, and must not make one model mint two variants. The members are what
-    a search for the tracks a model made reads, and they name a set's members,
-    which its digest does not.
+    weights, and must not make one model mint two variants. A search for the
+    tracks that a model made
+    (:func:`~mosaic.core.pipeline.tracks_index.tracks_made_with`) reads the
+    members, which name each model of a set where the set's digest does not.
     """
     present = [model for model in resolved if model is not None]
     sources = sorted(
@@ -995,7 +998,7 @@ def model_kind_for(
     *,
     path_kind: str | None = None,
 ) -> str:
-    """The training kind *refs* resolve under, for the op declaring *declared*.
+    """Return the training kind that *refs* resolve under, given the op's *declared*.
 
     A run identifier names the training op that wrote it and resolves against
     that op's index, so its kind is read from it, and refused unless *declared*
@@ -1047,11 +1050,11 @@ def model_kind_for(
 def resolve_op_model(ds: Dataset, kind: str, ref: str) -> ResolvedModel:
     """Check that op *kind* can run the model run *ref* names, and resolve it.
 
-    **Run identifiers only.** For a caller that must never hand a filesystem
-    path from outside to the resolver: a reference that is not a run identifier
-    is refused, and a run identifier is looked up in the model indexes alone,
-    never probed for as a path. :func:`resolve_model` accepts either and tries
-    the path first.
+    Accepts run identifiers only, for a caller that must not hand the resolver a
+    filesystem path from outside. A reference that is not a run identifier is
+    refused, and a run identifier is looked up in the model indexes alone, never
+    probed for as a path. :func:`resolve_model` accepts either and tries the path
+    first.
 
     The op's :class:`~mosaic.core.pipeline.ops.ModelReference` says which
     training kinds it accepts. The run resolves against this dataset's
@@ -1065,7 +1068,7 @@ def resolve_op_model(ds: Dataset, kind: str, ref: str) -> ResolvedModel:
         ref: A training run identifier.
 
     Returns:
-        The resolved model, carrying one artifact.
+        The resolved model, with one artifact.
 
     Raises:
         KeyError: *kind* names no registered op.

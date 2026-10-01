@@ -286,12 +286,12 @@ def run_sleap(
     #
     # Resolved under the *training* kind the declaration accepts, not this
     # tracker's. A reference may be a path or a registered training ``run_id``,
-    # and a run_id resolves against ``models/<kind>/index.csv`` -- the index the
-    # row was written into, which ``train-sleap`` owns. Passing ``SLEAP_KIND``
-    # here sent every run_id to a ``models/sleap/`` index nothing writes, so only
-    # a path ever resolved and "train here, track with it there" could not be
-    # spelled by name. The artifact shape is unaffected: ``MODEL_KINDS`` declares
-    # ``train-sleap`` as SLEAP's own spec for exactly this.
+    # and a run_id resolves against ``models/<kind>/index.csv``, the index the
+    # row was written into, which ``train-sleap`` owns. No op writes a
+    # ``models/sleap/`` index, so under ``SLEAP_KIND`` only a path would resolve
+    # and a model trained here could not be named by its run id. The artifact
+    # shape is unaffected: ``MODEL_KINDS`` declares ``train-sleap`` as SLEAP's own
+    # spec for this.
     refs = [str(m) for m in params.model_paths]
     resolved_models = resolve_model_set(
         ds, refs, model_kind_for(SLEAP_KIND, SLEAP_MODEL, refs)

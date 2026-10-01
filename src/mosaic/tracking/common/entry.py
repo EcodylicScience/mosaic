@@ -21,8 +21,8 @@ a recompute: a marker adopted from a directory that predates markers cannot know
 any of them, and treating silence as disagreement would re-run every such entry
 once, forever.
 
-**Except for several clips.** A marker's ``source`` is the first clip's path, which
-says nothing of the clips after it. So for an entry of several clips only a
+An entry of several clips is the exception. A marker's ``source`` is the first
+clip's path, which says nothing of the clips after it. For such an entry only a
 ``source_uid`` equal to the entry's proves the output, and a directory that
 predates markers is never adopted.
 """
@@ -80,17 +80,17 @@ def reusable_marker(
     params_hash: str,
     item: TrackerWorkItem,
 ) -> PhaseMarker | None:
-    """The marker proving *phase* need not run again for *item*, or ``None``.
+    """Return the marker proving *phase* need not run again for *item*, or ``None``.
 
     The source comparison is uid-first with the path as fallback. The uid is the
     item's ``source_uid``, the identity of the whole input: one clip's uuid, or
     the ordered composition of several. It answers "are these the same bytes",
     which is what a durable cache needs, and it catches the case a path
     comparison cannot see at all: a video replaced in place, same path, different
-    content. The path fallback is not decoration: three populations carry no
-    uid (markers backfilled by adoption, media indexed before the identity
-    columns existed, and directories written before ``source_uid`` did), and
-    dropping it would remove the relocation guard from exactly those datasets.
+    content. Three populations record no uid (markers backfilled by adoption,
+    media indexed before the identity columns existed, and directories written
+    before ``source_uid`` did), and the path fallback is their only relocation
+    guard.
 
     The path is the first clip's, so it proves nothing for an item of several
     clips. Such an item reuses a marker only when both uids are recorded and
@@ -221,8 +221,8 @@ def adopt_completed_directory(
     source-video guard, because there is nothing to compare against.
 
     An *item* of several clips is never adopted. The directory cannot say how many
-    clips it covered, and its shape is a single clip's, so adopting it would keep
-    one clip's output for the whole entry under a marker saying the entry is done.
+    clips it covered, and its shape is a single clip's, so it may hold one clip's
+    output, which a marker would then record as done for the whole entry.
     """
     if item.n_sources > 1:
         return

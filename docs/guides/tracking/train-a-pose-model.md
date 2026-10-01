@@ -80,9 +80,13 @@ mosaic run -m dataset.yaml --kind infer-pose --params '{"model": "<run_id>"}'
 
 `infer-points` and `infer-localizer` are the same shape for the other two model types.
 `infer-pose` and `infer-points` need their environment built and named first, and are
-handed a video path -- so an imgstore recording has to be exported with
-`mosaic run --kind export-store` beforehand. `infer-localizer` is mosaic's own PyTorch
-and needs neither.
+handed one video path. An entry of several clips has to be joined first with
+`mosaic run --kind export-joined`, and an imgstore recording exported with
+`mosaic run --kind export-store`. An entry of several clips that includes a store is
+refused, because `export-joined` does not join stores. The refusal names the
+`preprocess` command that makes the entry one file. `infer-localizer` runs in mosaic's
+process, without an environment to build. It reads clips and stores itself, and needs a
+join only for clips that differ in frame rate.
 
 Or hand the model to a tracker as its detector:
 
@@ -205,9 +209,9 @@ together.
 mosaic models provenance -m /data/mice/dataset.yaml train-pose.0.2-<digest>
 ```
 
-Prints the prepared dataset behind the model, the pose it was narrowed to, and each
-annotation revision behind that, with whatever was recorded when the revision was
-saved. If a dataset it drew from has since been archived, the answer says which
+Prints the prepared dataset behind the model, the pose that dataset was narrowed to,
+and each annotation revision behind it, with whatever was recorded when the revision
+was saved. If a dataset it drew from has since been archived, the answer says which
 revisions are no longer on disk.
 
 ## Augmentation is opt-in

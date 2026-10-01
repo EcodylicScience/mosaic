@@ -1063,10 +1063,10 @@ def test_a_conversion_short_within_the_declared_tail_is_a_tail_loss(
 ) -> None:
     """TREx reads a file only as far as it counted, and it counts short.
 
-    By no more than its root declares, so the shortfall is recorded as a known
-    tail loss, in its own event and counter, and not as a mismatch. The stub clip
-    has no header to read, so the most TREx loses on any file is allowed, and the
-    record says so.
+    Here it reads short by no more than its root declares, so the shortfall is
+    recorded as a known tail loss, in its own event and counter, and not as a
+    mismatch. The stub clip has no header to read, so the most TREx loses on any
+    file is allowed, and the record says so.
     """
     tail = _most_trex_loses()
     trex.npz_frames, trex.pv_frames = 280, 300 - tail

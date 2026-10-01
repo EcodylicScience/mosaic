@@ -199,7 +199,7 @@ class JobContext:
     def entry_failed_unless_cancelled(self, key: str, exc: Exception) -> None:
         """Record that one entity failed, or raise :class:`Cancelled` from *exc*.
 
-        A cancel reaches the tools an entry runs, and they fail with an error of
+        A cancel stops the tools that an entry runs, and they fail with errors of
         their own: mosaic-media reports "transcode of X was canceled", and an
         encoder killed with the process group breaks its pipe. While the attempt's
         cancel token is set, the failure is the cancel's. Recording it as a lost
@@ -216,7 +216,7 @@ class JobContext:
         self.entry_failed(key, exc)
 
     def frame_axis_mismatch(self, key: str, *, read: int, media: int) -> None:
-        """Record that one entry's tool read another number of frames than its media's.
+        """Record that one entry's tool read a frame count other than its media's.
 
         The seam :meth:`entry_failed` is, for a report rather than a failure: the
         entry published and the attempt is unaffected, so nothing is appended to

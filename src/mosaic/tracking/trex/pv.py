@@ -29,8 +29,8 @@ _CURRENT_VERSION: Final = 15
 _LONGEST_STRING: Final = 1 << 16
 """The longest header string read.
 
-A file that is not a ``.pv`` need hold no NUL byte to end a string, and the read
-of one stops here.
+A file that is not a ``.pv`` may contain no NUL byte to end a string, and the
+read of such a file stops here.
 """
 
 _VERSION_NAME: Final = re.compile(rb"PV(\d+)")

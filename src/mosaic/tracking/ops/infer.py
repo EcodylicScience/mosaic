@@ -154,15 +154,15 @@ class VideoInput:
 
     *video_paths* is one file for an op that hands its runner a path: the entry's
     clip, its export, its join or a media variant's file. For the localizer, which
-    reads in this process, it is the entry's clips in order, or their join when
-    their frame rates differ. Either way frame ``i`` of what is read is frame
-    ``i`` of the entry.
+    reads in this process, it is a media variant's file, the entry's clips in
+    order, or their join when their frame rates differ. Read from the entry
+    media, frame ``i`` of what is read is frame ``i`` of the entry.
 
     *facts* are parallel to *video_paths* and **gated**: the caller has already
     derived the read-target verdict and refused a file that needs an analysis
-    transcode first. That check used to happen a layer down, inside
-    ``open_frame_reader``; two of the three ops no longer open the video in this
-    process at all, so it moved up here where every op passes through it.
+    transcode first. The caller makes the check rather than ``open_frame_reader``,
+    because every op passes through the caller and two of the three never open the
+    video in this process.
     """
 
     video_paths: tuple[Path, ...]
@@ -423,9 +423,10 @@ def _bridge_df_to_tracks(
     row, and two models (or two parameter sets) never write to one path.
 
     No runner reports a time, so ``time`` is each frame's time in seconds on a
-    single clip at the rate of *timing*. The shared bridge then retimes a table
-    from several clips, or from a variant that is not its source, by the clips' own
-    rates, as it retimes a tracker's.
+    single clip at the rate of *timing*. The shared bridge then retimes the table
+    as it retimes a tracker's: by the clips' rates for several clips, and on the
+    source timeline for a variant, unless the variant contains every frame of a
+    single clip at its true rate.
 
     The table replaces the one that the variant already has for the entry, and
     always comes from the predictions just made. An inference run predicts on every
@@ -547,7 +548,7 @@ class _InferenceEntry:
             analysis.
         consumed_media: The media files that a table from this entry derives
             from.
-        axis: Where a table from this entry sits on the entry's axes.
+        axis: How a table from this entry is placed on the entry's axes.
         source_uid: The identity of the entry's media, or of the variant's
             file, as a tracker's work item records it
             (:func:`~mosaic.core.pipeline.joined_export.entry_source_uid`). It
@@ -583,11 +584,11 @@ def _inference_entry(
     export, and its index row's stored facts describe it without a probe.
     *variants* is ``None`` when the run reads the entry media.
 
-    The entry media is read whole. An op that hands its runner a path hands it one
-    file: the entry's clip, the export of a store, or the join of several clips,
-    as the trackers are handed. The localizer reads the clips in this process on
-    the entry's frame axis, and reads their join only when their frame rates
-    differ, which is the rule that mosaic's own reader follows everywhere
+    Every clip of the entry media is read. An op that hands its runner a path
+    hands it one file: the entry's clip, the export of a store, or the join of
+    several clips, as the trackers are handed. The localizer reads the clips in
+    this process on the entry's frame axis, and reads their join only when their
+    frame rates differ, by the rule that mosaic's reader follows everywhere
     (:func:`~mosaic.core.pipeline.joined_export.join_to_read`). Either way, clips
     that cannot be read as one video are refused first, as a tracker refuses
     them (:func:`~mosaic.tracking.common.scope.refuse_unjoinable`).
@@ -678,12 +679,12 @@ def _inference_entry(
 def _refuse_unbuilt(
     kind: str, unbuilt: Sequence[JoinedExportMissingError | StoreExportMissingError]
 ) -> None:
-    """Raise one refusal naming every entry whose join or store export cannot be read.
+    """Raise one error naming every entry whose join or store export cannot be read.
 
-    Such an entry lacks its store export or its join, holds two current joins of
+    Such an entry lacks its store export or its join, has two current joins of
     its clips, or has a clip without the content identity that names a join. Each
     has its own remedy, an op run once per entry or a choice only the user can
-    make, so the refusal names each entry with what to do, before any model is
+    make, so the error names each entry with what to do, before any model is
     loaded. A single entry's error is raised as it is. Several of one kind are
     raised as that kind, and a mix as ``FileNotFoundError``, the base that both
     share.
@@ -702,10 +703,9 @@ def _refuse_unbuilt(
         f"[{kind}] {len(unbuilt)} entries cannot be read yet, and no model was "
         f"run. Each is named below with what to do:\n{reasons}"
     )
-    kinds = {type(error) for error in unbuilt}
-    if kinds == {JoinedExportMissingError}:
+    if all(isinstance(error, JoinedExportMissingError) for error in unbuilt):
         raise JoinedExportMissingError(message)
-    if kinds == {StoreExportMissingError}:
+    if all(isinstance(error, StoreExportMissingError) for error in unbuilt):
         raise StoreExportMissingError(message)
     raise FileNotFoundError(message)
 

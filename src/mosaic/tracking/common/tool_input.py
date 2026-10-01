@@ -37,9 +37,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from mosaic_media import SOFTWARE_DECODABLE_CODECS, MediaFacts
-from mosaic_media.ffmpeg import run_to_completion
-from mosaic_media.transcode import TranscodeError
+from mosaic_media import SOFTWARE_DECODABLE_CODECS, MediaFacts, MediaProbeError
+from mosaic_media.probe.ffprobe import read_header
 
 from mosaic.core.media.facts_columns import derivative_path_for_target, row_mapping
 from mosaic.core.media.imgstore_io import is_imgstore
@@ -77,7 +76,6 @@ __all__ = [
 ]
 
 _ALLOW_CODECS_VAR: Final = "MOSAIC_ALLOW_TOOL_CODECS"
-_CODEC_PROBE_TIMEOUT_SECONDS: Final = 120.0
 _DECODE_PROBE_TIMEOUT_SECONDS: Final = 300.0
 """How long one decode probe may run. DALI's start on a GPU takes most of it."""
 
@@ -93,31 +91,15 @@ def _stream_codec(path: Path) -> str:
     packet, which is minutes over a joined session, and the codec is in the
     first few bytes. This runs once per file handed to a tool.
 
-    An unreadable header answers ``""``, which passes. A file a tool cannot open
-    at all is the tool's own error to report, with its own message; inventing a
-    codec refusal for it here would name the wrong cause.
+    An unreadable header answers ``""``, which passes, and so does a read that
+    outlasts mosaic-media's header timeout. A file a tool cannot open at all is
+    the tool's own error to report, with its own message; inventing a codec
+    refusal for it here would name the wrong cause.
     """
     try:
-        out = run_to_completion(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=codec_name",
-                "-of",
-                "csv=p=0",
-                str(path),
-            ],
-            timeout=_CODEC_PROBE_TIMEOUT_SECONDS,
-            action=f"reading the codec of {path.name}",
-            error_type=TranscodeError,
-        )
-    except TranscodeError:
+        return read_header(path).codec_name
+    except MediaProbeError:
         return ""
-    return out.strip().splitlines()[0].strip().lower() if out.strip() else ""
 
 
 def _allowed_codecs(decoder: ToolDecoder) -> frozenset[str]:
@@ -162,10 +144,10 @@ class DecodeProbe:
 
     A run creates one for its tool, from the placement that the run resolved, and
     passes it to the check of every entry. A pair of interpreter argv and codec
-    that decodes is tested once. A refusal is not kept, and the next file of the
-    codec is tested itself: the SLEAP probe reads the file, so one unreadable file
-    says nothing about the next. A new run tests again, because an environment
-    can be rebuilt between runs.
+    that decodes is tested once. A refusal is not kept, and the next file in that
+    codec is tested itself, because the SLEAP probe reads the file and one
+    unreadable file says nothing about the next. A new run tests again, because
+    an environment can be rebuilt between runs.
 
     Args:
         env: The tool's placement, as :meth:`ToolEnv.placed` returns it.
@@ -522,7 +504,7 @@ def entry_tool_input(
     *,
     kind: str,
 ) -> Path:
-    """The one file that *kind*'s tool opens for an entry's media.
+    """Return the one file that *kind*'s tool opens for an entry's media.
 
     Each clip is resolved first, so a store without an export is refused before
     the join is looked up. One clip is the file itself, or its export. Several
@@ -531,7 +513,8 @@ def entry_tool_input(
     routed facts, and the clips themselves are not handed over.
 
     The codec gate is not run here. A clip that is joined may be in any codec,
-    because the tool opens the join, and the caller gates the file returned.
+    because the tool opens the join, and the caller checks the codec of the file
+    returned.
 
     Args:
         ds: The dataset, read for the media index and the ``media`` root.

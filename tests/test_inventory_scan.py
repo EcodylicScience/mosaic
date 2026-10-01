@@ -12,6 +12,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pandas as pd
+import pytest
+
 from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.index import feature_run_root
@@ -26,6 +29,7 @@ from mosaic.core.pipeline.inventory.scan import (
     run_covers,
 )
 from mosaic.core.scope import Scope
+from tests.helpers import add_tracks_variant, make_dataset
 
 STORAGE = "speed-angvel__from__tracks"
 
@@ -345,19 +349,21 @@ def test_a_run_whose_outputs_are_not_parquet_is_not_called_damaged(
 # --- a tool that read another number of frames than its media holds -----------
 
 
-def _measured_variant(ds: Dataset, *, read: int, media: int | None) -> str:
+def _measured_variant(
+    ds: Dataset, *, read: int, media: int | None, run_id: str = "measured"
+) -> str:
     """One tracks variant over one entry, with both measurements recorded."""
     from mosaic.core.pipeline.tracks_index import write_tracks_row
     import pandas as pd
 
-    out = ds.get_root("tracks") / "measured" / "seq_m.parquet"
+    out = ds.get_root("tracks") / run_id / "seq_m.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         {"frame": range(read), "id": [0] * read, "X": 0.0, "Y": 0.0}
     ).to_parquet(out)
     write_tracks_row(
         ds,
-        run_id="measured",
+        run_id=run_id,
         group="",
         sequence="seq_m",
         out_path=out,
@@ -367,7 +373,7 @@ def _measured_variant(ds: Dataset, *, read: int, media: int | None) -> str:
         media_frames=media,
         frames_read=read,
     )
-    return "measured"
+    return run_id
 
 
 def test_a_short_frame_axis_is_named_on_the_variant(scenario_dataset: Dataset) -> None:
@@ -411,6 +417,51 @@ def test_an_agreeing_variant_names_nothing(scenario_dataset: Dataset) -> None:
     assert record.extra["frame_tail_short"] == frozenset()
 
 
+@pytest.mark.parametrize(
+    ("read", "finding"),
+    [(1782, "frame_axis_mismatch"), (1798, "frame_tail_short")],
+)
+def test_a_finding_is_named_only_on_the_variant_it_belongs_to(
+    scenario_dataset: Dataset, read: int, finding: str
+) -> None:
+    """Two variants of one entry are judged apart, from one read of the index."""
+    short = _measured_variant(scenario_dataset, read=read, media=1800, run_id="short")
+    whole = _measured_variant(scenario_dataset, read=1800, media=1800, run_id="whole")
+
+    found = inventory(scenario_dataset, kinds=["tracks-variant"])
+    records = {record.run_id: record for record in found.records}
+
+    assert records[short].extra[finding] == frozenset({"seq_m"})
+    assert records[whole].extra[finding] == frozenset()
+
+
+def test_media_drift_is_named_only_on_the_variant_it_belongs_to(
+    scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A variant made from earlier media drifts; one made from today's does not."""
+    import mosaic.core.pipeline.sequence_index as sequence_index
+    from mosaic.core.pipeline.tracks_index import tracks_index_path
+
+    for run_id in ("then", "now"):
+        _ = _measured_variant(scenario_dataset, read=1800, media=1800, run_id=run_id)
+    path = tracks_index_path(scenario_dataset)
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    mine = rows["run_id"].isin(["then", "now"])
+    rows.loc[mine, "consumed_media_composition"] = rows.loc[mine, "run_id"]
+    rows.to_csv(path, index=False)
+
+    def today(_dataset: Dataset, _entries: object) -> dict[tuple[str, str], str]:
+        return {("", "seq_m"): "now"}
+
+    monkeypatch.setattr(sequence_index, "media_compositions_for", today)
+
+    found = inventory(scenario_dataset, kinds=["tracks-variant"])
+    records = {record.run_id: record for record in found.records}
+
+    assert records["then"].status == "complete-but-drifted"
+    assert records["now"].status != "complete-but-drifted"
+
+
 def test_an_unmeasured_variant_names_nothing(scenario_dataset: Dataset) -> None:
     """Absence of an answer is not evidence that the two agree."""
     run_id = _measured_variant(scenario_dataset, read=1782, media=None)
@@ -419,3 +470,29 @@ def test_an_unmeasured_variant_names_nothing(scenario_dataset: Dataset) -> None:
     record = next(r for r in found.records if r.run_id == run_id)
 
     assert record.extra["frame_axis_mismatch"] == frozenset()
+
+
+def test_the_tracks_index_is_read_once_however_many_variants_it_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each variant's frame axis and drift are taken from the one read."""
+    import mosaic.core.pipeline.inventory.scan as scan
+    import mosaic.core.pipeline.tracks_index as tracks_index
+
+    ds = make_dataset(tmp_path / "ds")
+    for variant in ("v1", "v2", "v3"):
+        add_tracks_variant(ds, variant, "s1", "s2")
+    read = tracks_index.read_tracks_index
+    reads: list[Dataset] = []
+
+    def counted(dataset: Dataset) -> pd.DataFrame:
+        reads.append(dataset)
+        return read(dataset)
+
+    monkeypatch.setattr(tracks_index, "read_tracks_index", counted)
+    monkeypatch.setattr(scan, "read_tracks_index", counted)
+
+    found = inventory(ds, kinds=["tracks-variant"])
+
+    assert sorted(record.run_id for record in found.records) == ["v1", "v2", "v3"]
+    assert len(reads) == 1

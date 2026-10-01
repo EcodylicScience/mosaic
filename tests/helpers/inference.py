@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from mosaic_media import probe_media
 
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     InferPointsRequest,
@@ -26,8 +27,8 @@ from mosaic.tracking.pose_training.ultralytics_infer import InferenceOutcome
 from tests.helpers.ultralytics import frames_in_window, ultralytics_probe_response
 
 
-def pose_predictions() -> pd.DataFrame:
-    """Return four frames of one animal with two keypoints, in a pose runner's layout.
+def pose_predictions(frames: int = 4) -> pd.DataFrame:
+    """Return *frames* frames of one two-keypoint animal, in a pose runner's layout.
 
     The two keypoints have different values. The body center that the bridge
     derives is their mean, ``(3, 5)``. A test that asserts it cannot pass by the
@@ -35,16 +36,21 @@ def pose_predictions() -> pd.DataFrame:
     """
     return pd.DataFrame(
         {
-            "frame": range(4),
-            "id": [0] * 4,
-            "poseX0": [1.0] * 4,
-            "poseY0": [2.0] * 4,
-            "poseP0": [0.9] * 4,
-            "poseX1": [5.0] * 4,
-            "poseY1": [8.0] * 4,
-            "poseP1": [0.8] * 4,
+            "frame": range(frames),
+            "id": [0] * frames,
+            "poseX0": [1.0] * frames,
+            "poseY0": [2.0] * frames,
+            "poseP0": [0.9] * frames,
+            "poseX1": [5.0] * frames,
+            "poseY1": [8.0] * frames,
+            "poseP1": [0.8] * frames,
         }
     )
+
+
+def pose_per_frame(video: Path) -> pd.DataFrame:
+    """Return :func:`pose_predictions` at every frame of *video*, numbered from 0."""
+    return pose_predictions(probe_media(video).frame_count)
 
 
 def point_predictions() -> pd.DataFrame:

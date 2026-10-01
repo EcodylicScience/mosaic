@@ -2,14 +2,15 @@
 
 Lightning Pose is handed an AV1 file only after its environment decodes a frame
 of it. Every Lightning Pose run on AV1 media in an environment whose DALI cannot
-is refused. Both verbs print the refusal as a message and exit with the code
-reserved for a refusal. Under ``--json`` the refusal is the one JSON value on
+decode it is refused. Both verbs print the refusal as a message and exit with the
+code reserved for a refusal. Under ``--json`` the refusal is the one JSON value on
 stdout, in the shape of a pipeline step's refusal. ``mosaic pipeline run`` does the
 same, naming the step that refused and its attempt. The attempt's run-log records
 the same refusal, so a reader of the ledger can tell it from a crash.
 
 The environment is a fake ``python`` that exits 1, found by Lightning Pose's
-location ladder, so the refusal travels the real path from the op to the verb.
+location ladder, so the refusal passes through the real code from the op to the
+verb.
 """
 
 from __future__ import annotations
@@ -142,7 +143,7 @@ def test_a_codec_refusal_is_a_json_refusal_under_json(
 def test_a_codec_refusal_is_recorded_as_a_refusal_in_the_run_log(
     verb: str, refused_command: dict[str, list[str]], tmp_path: Path
 ) -> None:
-    """The ledger row carries the reason, as the ``--json`` output does."""
+    """The attempt is recorded as failed, with the refusal that ``--json`` prints."""
     result = runner.invoke(app, [*refused_command[verb], "--json"])
 
     assert result.exit_code == REFUSED_EXIT_CODE

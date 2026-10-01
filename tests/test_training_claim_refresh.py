@@ -51,8 +51,8 @@ register_ops()
 _PEER = "01JPEER000000000000000000"
 """A second execution, asking about a root it does not hold.
 
-It keeps no run-log. An absent run-log is not evidence of anything, so the claim
-it meets falls through to its expiry, which is the case the expiry exists for.
+It is an identifier with no run-log. A claim it meets is judged by its holder's
+run-log, and by its expiry while that run-log is absent or not terminal.
 """
 
 _LONG_AGO = "2020-01-01T00:00:00+00:00"

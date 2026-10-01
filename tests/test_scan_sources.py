@@ -162,9 +162,9 @@ class TestASymlinkedSourceIsStillTheScansOwnRow:
     ) -> None:
         """Why this is not a cosmetic index-tidiness bug.
 
-        TREx joins an entry's clips into one ``.pv``, so a duplicated row is a
-        clip handed to the conversion twice: the session's frame count doubles
-        and its footage repeats mid-timeline, with nothing raising.
+        A tracker reads an entry's clips as one join, so a duplicated row is a
+        clip joined twice. The session's frame count doubles and its footage
+        repeats mid-timeline, and nothing raises.
         """
         from mosaic.tracking.common.scope import build_work_items
 

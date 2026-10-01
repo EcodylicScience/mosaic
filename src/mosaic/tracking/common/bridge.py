@@ -73,7 +73,7 @@ class BridgeCounts:
     ``frames_read`` and ``media_frames`` are the two ends of one comparison: how
     many frames the producer's tool read, and how many it should have read
     (:attr:`~mosaic.core.pipeline.placement.EntryAxis.media_frames`). Both default
-    to ``None``, which means *not known* and never zero. A reused table makes no
+    to ``None``, which means not known and never zero. A reused table makes no
     measurement. ``producer`` is the tracking root that published the table,
     whose declaration the comparison reads, and ``""`` for counts of a table
     read back from disk. ``known_tail_loss`` is how many frames short of the end
@@ -100,8 +100,8 @@ class BridgeCounts:
 
         :func:`~mosaic.core.pipeline.tracks_index.frame_axis_verdict` decides, as
         it does for the recorded cells. ``None`` when either count is unknown as
-        well as when they agree: the honest-empty rule the index comparison
-        follows, because one measurement cannot disagree with an absent one.
+        well as when they agree. The index comparison follows the same rule,
+        because one measurement cannot disagree with an absent one.
         """
         if self.frames_read is None or self.media_frames is None:
             return None
@@ -297,7 +297,7 @@ def publish_or_record(
     bridge means the publication was lost, not the tracking.
 
     **A frame-axis mismatch is reported here too, and is not a failure.** When the
-    tool read another number of frames than the media it was given holds, the
+    tool read a different number of frames than the media it was given holds, the
     entry succeeded: the table is schema-valid, and every quantity computed
     inside it is right. What may be wrong is the correspondence between a
     ``frame`` in that table and a frame of the video, so `overlay`, the crop
@@ -368,9 +368,9 @@ def _report_frame_axis(
 ) -> None:
     """Record how the frames one entry's tool read disagree with its media's.
 
-    Both the event and the line, for the reason ``entry_failed`` keeps both: the
-    event is the record that survives a queue sending stderr to DEVNULL, and the
-    line is what a person running this in a terminal sees.
+    Emits both the event and the line, for the reason ``entry_failed`` keeps both.
+    The event is the record that survives a queue sending stderr to DEVNULL, and
+    the line is the one a person running this in a terminal sees.
     """
     verdict = counts.frame_axis
     if verdict is None or counts.frames_read is None or counts.media_frames is None:

@@ -168,9 +168,9 @@ class ToolCodecError(Refusal, TranscodeError):
     ``JoinedExportMissingError``, because the remedy differs: those say build the
     file, and this one says the file exists and is in the wrong codec.
 
-    A refusal, ``undecodable_codec``, raised when a tracker reaches the entry.
-    The attempt ends there, and entries before it in the same run may already be
-    tracked and published.
+    A refusal, ``undecodable_codec``. A tracker raises it when it reaches the
+    entry, and the attempt ends there, so entries before it in the same run may
+    already be published. An inference op raises it before any entry runs.
     """
 
     def __init__(self, message: str) -> None:
@@ -267,7 +267,7 @@ it, and its output ends with the reason.
 class StreamHeader(Protocol):
     """The two facts of a video file's header that decide how far a decoder reads it.
 
-    A probe's :class:`~mosaic_media.MediaFacts` carries both, and so does the
+    A probe's :class:`~mosaic_media.MediaFacts` has both, and so does the
     header that ``ffprobe`` reads without scanning a packet.
     """
 

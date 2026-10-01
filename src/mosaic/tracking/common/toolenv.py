@@ -146,8 +146,8 @@ class ToolExitError(RuntimeError):
 
     ``head`` is how many argv tokens the message echoes before eliding. It is a
     readability knob, not a limit: six covers a console script and its first
-    flags. A program passed with ``-c`` is never quoted; see
-    :func:`~mosaic.core.pipeline.subprocess_util.command_summary`.
+    flags. A program passed with ``-c`` is never quoted
+    (:func:`~mosaic.core.pipeline.subprocess_util.command_summary`).
     """
 
     tool_name: ClassVar[str] = "The tracking tool"
@@ -363,10 +363,10 @@ def _from_bin(
     would turn it into ``$CWD/trex``.
 
     A bare name in sibling mode is looked up on ``$PATH`` and resolved through
-    any link, as the ``$PATH`` rung resolves a locator. Read as a path, it has no
-    directory, and the executable beside it would be a bare name that ``$PATH``
-    resolves to whatever comes first: ``MOSAIC_SLEAP_BIN=sleap-convert`` ran the
-    first ``python`` on ``$PATH``.
+    any link, as the ``$PATH`` rung resolves a locator. Read as a path, a bare
+    name has no directory, and the executable beside it would be a bare name too,
+    which ``$PATH`` resolves to whatever comes first: for
+    ``MOSAIC_SLEAP_BIN=sleap-convert``, the first ``python`` on ``$PATH``.
 
     Args:
         env: The tool's placement.

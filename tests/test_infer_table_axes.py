@@ -17,15 +17,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-import numpy.typing as npt
 import pandas as pd
 import pytest
 from mosaic_media import probe_media
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.ops import run_op
-from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
 from mosaic.tracking.pose_training.localizer_inference import (
     LocalizerDetection,
@@ -35,6 +32,9 @@ from tests.helpers import (
     install_fake_point_inference,
     install_fake_pose_inference,
     make_dataset,
+    paint_gray,
+    pose_per_frame,
+    published_table,
     write_painted_entry,
 )
 
@@ -44,15 +44,10 @@ _SIZE = (64, 48)
 _ENTRY = ("", "sess")
 
 
-def _paint(frame: int) -> npt.NDArray[np.uint8]:
-    width, height = _SIZE
-    return np.full((height, width, 3), 20 + 8 * (frame % 25), np.uint8)
-
-
 def _dataset(tmp_path: Path, clips: list[tuple[int, float]]) -> Dataset:
     """One entry, ``sess``, of one clip per ``(frames, fps)`` in *clips*."""
     ds = make_dataset(tmp_path / "ds")
-    _ = write_painted_entry(ds, "sess", clips, _paint, size=_SIZE)
+    _ = write_painted_entry(ds, "sess", clips, paint_gray, size=_SIZE)
     return ds
 
 
@@ -64,34 +59,10 @@ def model(tmp_path: Path) -> Path:
     return path
 
 
-def _published(ds: Dataset, kind: str) -> pd.DataFrame:
-    """Return the table of *kind*'s one tracks row."""
-    tracks = read_tracks_index(ds)
-    (row,) = [row for _, row in tracks.iterrows() if row["producer"] == kind]
-    return pd.read_parquet(ds.resolve_path(str(row["abs_path"])))
-
-
 def _times_by_frame(table: pd.DataFrame) -> dict[int, float]:
     frames: list[int] = [int(frame) for frame in table["frame"].tolist()]
     times: list[float] = [float(time) for time in table["time"].tolist()]
     return dict(zip(frames, times, strict=True))
-
-
-def _pose_per_frame(video: Path) -> pd.DataFrame:
-    """One pose per frame of *video*, in the pose runner's layout."""
-    frames = probe_media(video).frame_count
-    return pd.DataFrame(
-        {
-            "frame": range(frames),
-            "id": [0] * frames,
-            "poseX0": [1.0] * frames,
-            "poseY0": [2.0] * frames,
-            "poseP0": [0.9] * frames,
-            "poseX1": [5.0] * frames,
-            "poseY1": [8.0] * frames,
-            "poseP1": [0.8] * frames,
-        }
-    )
 
 
 def _point_per_frame(video: Path) -> pd.DataFrame:
@@ -122,13 +93,13 @@ class TestTime:
     ) -> None:
         ds = _dataset(tmp_path, [(12, 25.0)])
         if kind == "infer-pose":
-            _ = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+            _ = install_fake_pose_inference(monkeypatch, pose_per_frame)
         else:
             _ = install_fake_point_inference(monkeypatch, _point_per_frame)
 
         _ = run_op(ds, kind, {"model": str(model)}, scope=Scope(entries=[_ENTRY]))
 
-        times = _times_by_frame(_published(ds, kind))
+        times = _times_by_frame(published_table(ds, kind))
         assert sorted(times) == list(range(12))
         for frame, time in times.items():
             assert time == pytest.approx(frame / 25.0), frame
@@ -147,13 +118,13 @@ class TestTime:
         """
         ds = _dataset(tmp_path, [(30, 30.0), (30, 31.0)])
         _ = run_op(ds, "export-joined", {}, scope=Scope(entries=[_ENTRY]))
-        _ = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+        _ = install_fake_pose_inference(monkeypatch, pose_per_frame)
 
         _ = run_op(
             ds, "infer-pose", {"model": str(model)}, scope=Scope(entries=[_ENTRY])
         )
 
-        times = _times_by_frame(_published(ds, "infer-pose"))
+        times = _times_by_frame(published_table(ds, "infer-pose"))
         assert sorted(times) == list(range(60))
         assert times[29] == pytest.approx(29 / 30.0)
         assert times[30] == pytest.approx(1.0)
@@ -196,7 +167,7 @@ class TestAFrameWindow:
             scope=Scope(entries=[_ENTRY]),
         )
 
-        times = _times_by_frame(_published(ds, "infer-localizer"))
+        times = _times_by_frame(published_table(ds, "infer-localizer"))
         read = list(range(5, 20, 2))
         assert list(times) == read
         for frame, time in times.items():

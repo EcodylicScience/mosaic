@@ -319,7 +319,7 @@ _NOT_THE_MODEL_RUN: dict[tuple[str, str], str] = {
 
 @pytest.mark.parametrize("kind", PRODUCER_OPS)
 def test_a_model_parameter_is_the_declared_one(kind: str) -> None:
-    """A tracker taking a model says which field, or the check above skips it.
+    """A producer taking a model says which field, or the check above skips it.
 
     The resolver check is gated on the declaration, so a tracker that adds a
     model parameter and no declaration would pass it unexamined, and a caller

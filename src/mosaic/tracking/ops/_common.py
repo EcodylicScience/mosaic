@@ -318,9 +318,9 @@ def claim_run_root(
 def empty_claimed_run_root(run_root: Path) -> None:
     """Remove everything under *run_root* except the claim on it.
 
-    What an op clears before writing into a root it has just claimed. Removing
-    the root itself, or everything in it, would take the claim with it and leave
-    the directory free for another execution mid-clear.
+    An op calls this before writing into a root it has just claimed. Removing the
+    root itself, or everything in it, would remove the claim too and leave the
+    directory free for another execution mid-clear.
 
     Raises:
         OSError: A child could not be removed.

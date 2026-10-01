@@ -247,7 +247,7 @@ def _route_to_an_av1_derivative(ds: Dataset, name: str) -> None:
     """Make clip *name* of ``sess`` resolve to an AV1 analysis derivative.
 
     What ``transcode`` leaves for a defective clip, written through the op's own
-    writers: a derivative row carrying that file's facts, and the original linked
+    writers: a derivative row recording that file's facts, and the original linked
     to it. The original is marked as requiring an analysis transcode by hand,
     standing for the prober's verdict on a defective clip.
     """

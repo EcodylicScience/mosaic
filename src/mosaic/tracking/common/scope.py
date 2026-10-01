@@ -20,11 +20,11 @@ Two collapses happen here, and both are load-bearing rather than tidy-up:
   ``infer-*`` ops apply as well.
 
 **A media variant replaces the source when the item is built.** Every tracker
-checks reuse against the item's ``source_uid`` before it resolves the file that it
-hands its tool, and that is read from the item's facts. A variant item therefore
-contains the variant file and its facts from the start, and every reuse check
-compares the variant's identity instead of the entry media's. An entry whose
-variant is missing or out of date fails alone rather than ending the run.
+checks reuse against the item's ``source_uid``, read from the item's facts, before
+it resolves the file that it hands its tool. A variant item therefore contains the
+variant file and its facts from the start, and every reuse check compares the
+variant's identity instead of the entry media's. An entry whose variant is
+missing or out of date fails alone rather than ending the run.
 
 **Joining is refused on geometry and accepted on frame rate.** The two
 disagreements have opposite consequences. Clips that decode to different frame
@@ -33,9 +33,10 @@ first, with a message naming the clip. Clips that were recorded at different
 rates are a real and common property of a session (30, then 29.95, then 31 fps is
 a measured example), and refusing them would refuse the data; they are carried
 instead, and the consumer reconstructs time per clip through
-:mod:`mosaic.core.media.timeline`. Imgstore recordings are the exception. Nothing
-joins them and the store reader needs one rate, so stores at different rates are
-refused.
+:mod:`mosaic.core.media.timeline`. Imgstore recordings are the exception, because
+``export-joined`` does not join them. A tracker refuses an entry of several clips
+that includes a store, and a reader in this process refuses stores at different
+rates, because the store reader needs one rate.
 """
 
 from __future__ import annotations
@@ -108,11 +109,11 @@ class TrackerWorkItem:
     fps: float
     """The frame rate of ``video_path``, i.e. of the **first** clip.
 
-    Deliberately not a mean over the clips, because a mean describes none of
-    them. It is the rate a tool reads the clips' join at, since the join is
-    labeled at its first clip's rate. No single rate indexes a session whose
-    clips disagree, so the shared bridge retimes a table from several clips by
-    each clip's own rate (:meth:`entry_axis`).
+    Not a mean over the clips, because a mean describes none of them. It is the
+    rate that a tool reads the clips' join at, because the join is labeled at its
+    first clip's rate. No single rate indexes a session whose clips disagree, so
+    the shared bridge retimes a table from several clips by each clip's rate
+    (:meth:`entry_axis`).
     """
 
     source_facts: tuple[MediaFacts, ...] = ()
@@ -218,7 +219,7 @@ class TrackerWorkItem:
         return self.video_paths
 
     def entry_axis(self, *, windowed: bool) -> EntryAxis:
-        """Where a table tracked on this item sits on its entry's axes.
+        """Return how a table tracked on this item is placed on its entry's axes.
 
         Args:
             windowed: Whether the run reads fewer than every frame, as
@@ -393,7 +394,8 @@ def refuse_unjoinable(
     ``export-joined`` does not join stores. A consumer that reads the stores in
     its own process reads them as one only at one rate, by the rule the store
     reader applies (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`).
-    Either refusal names the media variant that holds the entry as one file.
+    Either refusal says how to make a media variant that contains the entry as
+    one file.
 
     Raises:
         JoinedSourceMismatchError: If the clips lack one set of facts each,
@@ -455,12 +457,12 @@ def refuse_unjoinable(
 
 
 def _variant_remedy(group: str, sequence: str, facts: Sequence[MediaFacts]) -> str:
-    """Say how to make the media variant that holds an entry of stores as one file.
+    """Return how to make a media variant that reads an entry of stores as one file.
 
-    The variant reads each store at its own rate, and a trim over every frame of
-    the entry keeps them all, since preprocess refuses a variant with no step.
-    The entry's frame count comes from *facts*, so a store of unknown length is
-    measured first.
+    The variant reads each store at its own rate. Preprocess refuses a variant
+    with no step, so the remedy names a trim over every frame of the entry, which
+    keeps them all. The trim's end is the entry's frame count from *facts*, so a
+    store of unknown length is to be measured first.
     """
     counts = [int(clip.frame_count) for clip in facts]
     if min(counts) <= 0:

@@ -207,8 +207,8 @@ def test_mvr_reads_stores_whose_measured_rates_differ_in_the_last_digits(
 ) -> None:
     """A store's rate is fitted to its timestamps, so one rig measures 30.002.
 
-    The stores' own rule accepts it, a relative difference in rate
-    (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`).
+    The rule for stores, a relative difference in rate
+    (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`), accepts it.
     """
     s1, _ = make_imgstore(name="a", nframes=60, fps=30.0)
     s2, _ = make_imgstore(name="b", nframes=60, fps=30.002)

@@ -2,10 +2,10 @@
 
 A recorder that splits a session into clips leaves an entry whose frames are one
 axis over several files. The two Ultralytics inference ops hand their runner one
-path, so a multi-clip entry resolves to its join, exactly as the trackers'
-entries do. The localizer reads in this process, so it reads the clips on the
-entry's frame axis, and their join only when their frame rates differ. Either
-way the published table's ``frame`` is the entry's frame.
+path, so a multi-clip entry resolves to its join, as the trackers' entries do.
+The localizer reads in this process, so it reads the clips on the entry's frame
+axis, and their join only when their frame rates differ. Either way the
+published table's ``frame`` is the entry's frame.
 
 The clips and the joins are real. The model runners are the recording fakes from
 ``tests.helpers``, and the localizer's fake reports a detection per frame of
@@ -17,9 +17,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-import numpy as np
-import numpy.typing as npt
-import pandas as pd
 import pytest
 from mosaic_media import MediaFacts, probe_media
 
@@ -45,10 +42,14 @@ from mosaic.tracking.pose_training.localizer_inference import (
 )
 from tests.helpers import (
     MediaClip,
+    gray_level,
     install_fake_point_inference,
     install_fake_pose_inference,
     make_dataset,
+    paint_gray,
     point_at_a_store,
+    pose_per_frame,
+    published_table,
     write_media_index,
     write_painted_entry,
 )
@@ -60,23 +61,13 @@ _CLIP_FRAMES = 10
 _ENTRY = ("", "sess")
 
 
-def _level(frame: int) -> int:
-    """The gray level that entry frame *frame* is painted at."""
-    return 20 + 8 * (frame % 25)
-
-
-def _paint(frame: int) -> npt.NDArray[np.uint8]:
-    width, height = _SIZE
-    return np.full((height, width, 3), _level(frame), np.uint8)
-
-
 def _dataset(
     tmp_path: Path, rates: Sequence[float], frames: int = _CLIP_FRAMES
 ) -> tuple[Dataset, list[Path]]:
     """One entry, ``sess``, of one clip of *frames* frames per rate in *rates*."""
     ds = make_dataset(tmp_path / "ds")
     clips = write_painted_entry(
-        ds, "sess", [(frames, rate) for rate in rates], _paint, size=_SIZE
+        ds, "sess", [(frames, rate) for rate in rates], paint_gray, size=_SIZE
     )
     return ds, clips
 
@@ -99,13 +90,6 @@ def _infer(ds: Dataset, kind: str, model: Path) -> str:
     return run_op(ds, kind, {"model": str(model)}, scope=Scope(entries=[_ENTRY]))
 
 
-def _published(ds: Dataset, kind: str) -> pd.DataFrame:
-    """Return *kind*'s one tracks table."""
-    tracks = read_tracks_index(ds)
-    (row,) = [row for _, row in tracks.iterrows() if row["producer"] == kind]
-    return pd.read_parquet(ds.resolve_path(str(row["abs_path"])))
-
-
 def _recorded_source_uid(ds: Dataset, kind: str, run_id: str) -> str:
     """The identity that *kind*'s completion marker records for the entry."""
     marker = read_phase_marker(infer_run_root(ds, kind, run_id) / "sess", "infer")
@@ -119,23 +103,6 @@ def _tracker_source_uid(ds: Dataset) -> str:
     return item.source_uid
 
 
-def _pose_per_frame(video: Path) -> pd.DataFrame:
-    """One pose per frame of *video*, numbered as the runner numbers them."""
-    frames = probe_media(video).frame_count
-    return pd.DataFrame(
-        {
-            "frame": range(frames),
-            "id": [0] * frames,
-            "poseX0": [1.0] * frames,
-            "poseY0": [2.0] * frames,
-            "poseP0": [0.9] * frames,
-            "poseX1": [5.0] * frames,
-            "poseY1": [8.0] * frames,
-            "poseP1": [0.8] * frames,
-        }
-    )
-
-
 class TestAnOpThatHandsItsRunnerAPath:
     def test_it_is_handed_the_join_and_its_table_spans_both_clips(
         self,
@@ -146,12 +113,12 @@ class TestAnOpThatHandsItsRunnerAPath:
     ) -> None:
         ds, _clips = _dataset(tmp_path, [30.0, 30.0])
         joined = _join(ds)
-        fake = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+        fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
 
         _ = _infer(ds, "infer-pose", model)
 
         assert fake.videos == [joined]
-        frames = _published(ds, "infer-pose")["frame"]
+        frames = published_table(ds, "infer-pose")["frame"]
         assert (int(frames.min()), int(frames.max())) == (0, 2 * _CLIP_FRAMES - 1)
         (row,) = [row for _, row in read_tracks_index(ds).iterrows()]
         roots = decode_consumed_roots(str(row["consumed_source_roots"]))
@@ -166,7 +133,7 @@ class TestAnOpThatHandsItsRunnerAPath:
     ) -> None:
         ds, _clips = _dataset(tmp_path, [30.0, 30.0])
         joined = _join(ds)
-        _ = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+        _ = install_fake_pose_inference(monkeypatch, pose_per_frame)
 
         run_id = _infer(ds, "infer-pose", model)
 
@@ -182,7 +149,7 @@ class TestAnOpThatHandsItsRunnerAPath:
         requires_ffmpeg: None,
     ) -> None:
         ds, _clips = _dataset(tmp_path, [30.0, 30.0])
-        fake = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+        fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
 
         with pytest.raises(JoinedExportMissingError, match="--kind export-joined"):
             _ = _infer(ds, "infer-pose", model)
@@ -228,7 +195,7 @@ def test_stores_at_two_rates_are_refused_before_a_model_loads(
             ds, "sess", ds.get_root("media_raw") / f"{name}.store", video_order=order
         )
     localizer = _install_fake_localizer(monkeypatch)
-    runner = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+    runner = install_fake_pose_inference(monkeypatch, pose_per_frame)
 
     with pytest.raises(JoinedSourceMismatchError) as refused:
         _ = _infer(ds, kind, model)
@@ -258,7 +225,7 @@ def test_stores_at_one_rate_are_refused_for_a_runner_handed_a_path(
         _ = point_at_a_store(
             ds, "sess", ds.get_root("media_raw") / f"{name}.store", video_order=order
         )
-    pose = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+    pose = install_fake_pose_inference(monkeypatch, pose_per_frame)
     points = install_fake_point_inference(monkeypatch)
 
     with pytest.raises(JoinedSourceMismatchError) as refused:
@@ -291,7 +258,7 @@ class TestEntriesWithNoFileBuilt:
     ) -> None:
         ds = make_dataset(tmp_path / "ds")
         write_media_index(ds, [*_two_clips("a"), *_two_clips("b")])
-        fake = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+        fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
 
         with pytest.raises(JoinedExportMissingError) as refused:
             _ = run_op(ds, "infer-pose", {"model": str(model)})
@@ -306,14 +273,14 @@ class TestEntriesWithNoFileBuilt:
     def test_every_missing_store_export_is_named_as_one(
         self, tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Refused as a missing store export, which is what a caller catches."""
+        """Refused as a missing store export, the error that a caller catches."""
         ds = make_dataset(tmp_path / "ds")
         write_media_index(ds, [MediaClip(sequence="s"), MediaClip(sequence="t")])
         for sequence in ("s", "t"):
             _ = point_at_a_store(
                 ds, sequence, ds.get_root("media_raw") / f"{sequence}.store"
             )
-        fake = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+        fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
 
         with pytest.raises(StoreExportMissingError) as refused:
             _ = run_op(ds, "infer-pose", {"model": str(model)})
@@ -334,7 +301,7 @@ class TestEntriesWithNoFileBuilt:
         uid = joined_source_uid(ds.resolve_media("", "b").facts)
         for recipe in sorted(current_joined_recipes()):
             _ = (root / f"{uid}.{recipe}.joined.mp4").write_bytes(b"join")
-        fake = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+        fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
 
         with pytest.raises(JoinedExportMissingError) as refused:
             _ = run_op(ds, "infer-pose", {"model": str(model)})
@@ -352,7 +319,7 @@ class TestEntriesWithNoFileBuilt:
         ds = make_dataset(tmp_path / "ds")
         write_media_index(ds, [*_two_clips("a"), MediaClip(sequence="s")])
         _ = point_at_a_store(ds, "s", ds.get_root("media_raw") / "s.store")
-        fake = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+        fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
 
         with pytest.raises(FileNotFoundError) as refused:
             _ = run_op(ds, "infer-pose", {"model": str(model)})
@@ -411,7 +378,7 @@ class TestTheLocalizer:
         _ = _infer(ds, "infer-localizer", model)
 
         assert handed == [tuple(clips)]
-        frames = _published(ds, "infer-localizer")["frame"]
+        frames = published_table(ds, "infer-localizer")["frame"]
         assert (int(frames.min()), int(frames.max())) == (0, 2 * _CLIP_FRAMES - 1)
 
     def test_it_reads_clips_of_two_rates_through_their_join(
@@ -460,7 +427,7 @@ class TestReadingAnEntrysClips:
 
         assert [frame for frame, _ in read] == list(range(2 * _CLIP_FRAMES))
         for frame, level in read:
-            assert level == pytest.approx(_level(frame), abs=4), frame
+            assert level == pytest.approx(gray_level(frame), abs=4), frame
 
     def test_one_file_may_be_a_bare_path(
         self, tmp_path: Path, requires_ffmpeg: None
@@ -481,4 +448,4 @@ class TestReadingAnEntrysClips:
 
         assert [frame for frame, _ in read] == [7, 10, 13, 16, 19]
         for frame, level in read:
-            assert level == pytest.approx(_level(frame), abs=4), frame
+            assert level == pytest.approx(gray_level(frame), abs=4), frame

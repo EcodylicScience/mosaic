@@ -87,19 +87,18 @@ class RunLogSnapshot(TypedDict):
     consumer can act on the difference and a tri-state would make every reader
     special-case it.
 
-    ``entries_frame_axis_mismatch`` counts the entries whose tool read another
-    number of frames than the media it was made from holds. It accumulates like
+    ``entries_frame_axis_mismatch`` counts the entries whose tool read a different
+    number of frames than their media holds. It accumulates like
     ``entries_failed`` and, unlike it, says nothing about the attempt's success:
     the entry published, and everything computed inside its table is right. What
     may be wrong is only the correspondence between a ``frame`` in that table and
-    a frame of the video, which is what every consumer reading pixels depends on.
+    a frame of the video, on which every consumer reading pixels depends.
 
     ``entries_frame_tail_short`` counts the entries whose tool read short of their
-    media by no more than its producer declares it loses at the end of a file, as
-    TRex does. It accumulates like ``entries_frame_axis_mismatch`` and is kept
-    apart from it, because such a shortfall moves no frame of the table off the
-    video when the missing frames are at the end, which is where that producer
-    loses them.
+    media by no more than the tool is known to lose at the end of a file, as TRex
+    does. It accumulates like ``entries_frame_axis_mismatch`` and is kept apart
+    from it, because frames missing at the end of a file leave every frame of the
+    table on the video.
 
     ``entries_columns_dropped`` counts the entries whose table was published
     without some of its columns: columns that the mapping from a media variant
@@ -331,10 +330,10 @@ class JsonlRunLog:
 
         The shortfall is within what the producer's tool is known to lose at the
         end of the file it read (``TrackingRoot.tail_loss``), so it is recorded
-        apart from :meth:`frame_axis_mismatch`. Both numbers travel with the
-        event, because a count cannot show that the missing frames were at the
-        end and a reader may want to check. An ordinary event kind, like that
-        one, and not a status.
+        apart from :meth:`frame_axis_mismatch`. The event records both numbers,
+        because a count cannot show that the missing frames were at the end and
+        a reader may want to check. An ordinary event kind, like that one, and
+        not a status.
         """
         self._emit("frame_tail_short", key=key, read=read, media=media)
 

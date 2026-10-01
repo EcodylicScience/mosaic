@@ -16,18 +16,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
-pytest.importorskip("imgstore")
+from mosaic_media import probe_media
+from mosaic_media.transcode import TranscodeError
 
-from mosaic_media import probe_media  # noqa: E402
-from mosaic_media.transcode import TranscodeError  # noqa: E402
-
-from mosaic.core.dataset import Dataset  # noqa: E402
-from mosaic.core.media.video_io import open_frame_reader  # noqa: E402
-from mosaic.core.pipeline.ops import OpIdentity, ScopeRefused, run_op  # noqa: E402
-from mosaic.core.pipeline.stream_copy import coded_frame_count  # noqa: E402
-from mosaic.core.scope import Scope  # noqa: E402
-from mosaic.core.pipeline.tracking_roots import ToolCodecError  # noqa: E402
-from mosaic.core.pipeline.store_export import (  # noqa: E402
+from mosaic.core.dataset import Dataset
+from mosaic.core.media.video_io import open_frame_reader
+from mosaic.core.pipeline.ops import OpIdentity, ScopeRefused, run_op
+from mosaic.core.pipeline.stream_copy import coded_frame_count
+from mosaic.core.scope import Scope
+from mosaic.core.pipeline.tracking_roots import ToolCodecError
+from mosaic.core.pipeline.store_export import (
     EXPORT_TARGET,
     StoreExportOp,
     StoreExportParams,
@@ -35,12 +33,16 @@ from mosaic.core.pipeline.store_export import (  # noqa: E402
     export_recipe_hash,
     export_run_id,
 )
-from mosaic.tracking.common.scope import TrackerWorkItem  # noqa: E402
-from mosaic.tracking.common.tool_input import (  # noqa: E402
+from mosaic.tracking.common.scope import TrackerWorkItem
+from mosaic.tracking.common.tool_input import (
     DecodeProbe,
     StoreExportMissingError,
     resolve_tool_input,
 )
+
+# Only the fixtures that write real stores need the imgstore package. None of the
+# imports above loads it, so the skip can follow them.
+pytest.importorskip("imgstore")
 
 _SYNC_UUID = "f064059f9ea046429f227bc7addab1eb"
 

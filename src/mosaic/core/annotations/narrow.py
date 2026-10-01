@@ -79,18 +79,18 @@ def narrow_pose_sets(
         :func:`narrowed_pose` names the pose, by the same selection.
 
     Raises:
-        ValueError: A set does not declare the pose, or declares it ambiguously;
-            the sets chose poses of different ids, or the pose's layout differs
-            between them;
-            ``class_by`` meets an object without an alias, or two aliases share
-            a name; or no set holds a finished frame.
+        ValueError: There are no sets; a set does not declare the pose, or
+            declares it ambiguously; the sets chose poses of different ids, or
+            the pose's layout differs between them; ``class_by`` meets an object
+            without an alias, or two aliases share a name; or no set holds a
+            finished frame.
     """
     chosen = _chosen_poses(sets, pose)
     reference_label = next(iter(chosen))
     reference = chosen[reference_label]
-    # The pose was checked first, as it was chosen: two poses differ in layout
-    # because they differ, and the pose is the cause to name. One pose edited
-    # across revisions keeps its id, so a layout that changed reaches this check.
+    # Different poses are refused before layouts are compared, because the pose
+    # is the cause to name. A pose edited across revisions keeps its id, and a
+    # layout changed between revisions is refused here.
     for label, definition in chosen.items():
         _check_layout(label, definition.schema, reference_label, reference.schema)
 
@@ -143,9 +143,10 @@ def narrowed_pose(
 ) -> PoseDefinition:
     """The pose that :func:`narrow_pose_sets` narrows *sets* to, given *pose*.
 
-    The first set's chosen pose. Every set shares its layout, and its name is the
-    one class when classes are not taken from aliases. Chosen by the same
-    selection, and refused for the same reasons of pose.
+    Returns the first set's chosen pose, whose name is the one class when classes
+    are not taken from aliases. The pose is chosen and refused as
+    :func:`narrow_pose_sets` chooses and refuses one. Layouts, aliases and
+    finished frames are not checked.
 
     Raises:
         ValueError: There are no sets; a set does not declare the pose, or
@@ -238,8 +239,8 @@ def _check_pose(
     """Refuse a set that chose a different pose from the first.
 
     Two poses can share a layout, as a mouse and a rat can, and a choice by name,
-    or each set's only pose, can land on either. Trained together they would be
-    one class under the first set's name.
+    or each set's only pose, can select either. Trained together they are one
+    class under the first set's name.
     """
     if definition.id != reference.id:
         msg = (

@@ -1,7 +1,8 @@
 """Rebuild what a tracks row's producer read of its entry, from the dataset's records.
 
-A tracker or inference op records ``media_frames`` and ``frames_read`` as it
-publishes. A row published before the cells existed has only its records.
+A tracker or inference op records ``media_frames``, ``frames_read`` and
+``known_tail_loss`` as it publishes. A row published before the cells existed has
+only its records.
 
 - ``media_frames`` comes from the
   :class:`~mosaic.core.pipeline.placement.EntryAxis` of what the run read. The
@@ -20,19 +21,20 @@ publishes. A row published before the cells existed has only its records.
 
 Each answers in one of four ways, and a caller rewriting a cell needs all four
 apart. A :class:`RuleValue` with a count is the cell's value. A :class:`RuleValue`
-with none is a cell the rule leaves blank: a converted, resampled or upgraded table
-was made from another table and read no media, its producer is no tracking root,
-and neither count applies to it, and a run that read less on purpose has no media
-length. The two :data:`Unanswered` values leave the cell as it is:
+with none is a cell the rule leaves blank. Every cell of a converted, resampled or
+upgraded table is blank, because its producer is no tracking root and it was made
+from another table without reading media. ``media_frames`` is blank for a run
+that read less on purpose, and ``known_tail_loss`` for a producer that declares no
+loss. The two :data:`Unanswered` values leave the cell as it is.
 ``"not-established"`` is a run that cannot be established from what is on disk
-now, because its record, its media or its files are missing or have changed, and
+now, because its record, its media or its files are missing or have changed.
 ``"unregistered"`` is a producer whose op this process has not registered, so
-nothing about its run can be read here.
+none of its run's records can be read here.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
@@ -49,6 +51,7 @@ from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.preprocess_index import (
     MediaVariantDriftedError,
     MediaVariantMissingError,
+    media_variant_rows,
 )
 from mosaic.core.pipeline.sequence_index import media_compositions_for
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
@@ -61,10 +64,12 @@ from mosaic.core.pipeline.tracks_identity import (
 from mosaic.core.pipeline.variant_source import VariantLookup
 
 if TYPE_CHECKING:
-    from mosaic.core.dataset import Dataset
+    from mosaic.core.dataset import Dataset, ResolvedScopeEntry
+    from mosaic.core.entry import Entry
 
 __all__ = [
     "BLANK",
+    "BackfillReads",
     "RecordedCountReader",
     "RuleValue",
     "Unanswered",
@@ -103,14 +108,92 @@ BLANK: Final = RuleValue(None)
 """A cell the rule leaves blank."""
 
 type Unanswered = Literal["not-established", "unregistered"]
-"""Why a rule gives one cell no value, so that the cell keeps what it holds.
+"""Why a rule gives one cell no value, so that the cell keeps its current value.
 
 ``"not-established"``: what the row's run read cannot be established from what
 is on disk now. ``"unregistered"``: the row's producer is a tracking op that this
 process has not registered. Importing ``mosaic.tracking`` registers every
-tracking op, and with it every reader of frames read, so a process that imported
-only ``mosaic.core`` answers this for every tracker row.
+tracking op, and with it every reader that a producer registers, so a process
+that imported only ``mosaic.core`` answers this for every tracker row.
 """
+
+
+class BackfillReads:
+    """The dataset records that a pass over the tracks index reads once for every row.
+
+    A rule asked about one row reads the entry's media, its media composition,
+    its variant's record, and the rows of the media variant its run read. Each
+    is read here on first use and kept for the rest of the pass. The media and
+    the compositions are read for every entry of the pass at once, so a pass
+    reads the media index and the sequence projection once rather than once per
+    row.
+    """
+
+    def __init__(self, ds: Dataset, entries: Iterable[Entry]) -> None:
+        """Prepare to read, for the entries *entries* of *ds*."""
+        self._ds: Final = ds
+        self._entries: Final = tuple(dict.fromkeys(entries))
+        self._compositions: Mapping[Entry, str] | None = None
+        self._scope_read = False
+        self._scope: Mapping[Entry, tuple[ResolvedScopeEntry, ...]] | None = None
+        self._sidecars: Final[dict[str, VariantSidecar | None]] = {}
+        self._lookups: Final[dict[str, VariantLookup]] = {}
+
+    def media_changed(self, entry: Entry, consumed_media: str) -> bool:
+        """Whether *entry*'s media has changed since the run that read it.
+
+        *consumed_media* is the row's ``consumed_media_composition``. A blank one,
+        or an entry whose composition is not projected, is unknown and not a change
+        (:func:`~mosaic.core.pipeline.composition.compositions_disagree`).
+        """
+        return compositions_disagree(
+            consumed_media, self._current_compositions().get(entry, "")
+        )
+
+    def scope(self, entry: Entry) -> tuple[ResolvedScopeEntry, ...] | None:
+        """*entry*'s media, one item for each camera, or ``None`` without a media index.
+
+        An entry whose media cannot be routed has no items.
+        """
+        if not self._scope_read:
+            self._scope_read = True
+            try:
+                resolved = self._ds.resolve_media_scope(self._entries, errors={})
+            except FileNotFoundError:
+                resolved = None
+            if resolved is not None:
+                by_entry: dict[Entry, list[ResolvedScopeEntry]] = {}
+                for item in resolved:
+                    by_entry.setdefault((item.group, item.sequence), []).append(item)
+                self._scope = {key: tuple(items) for key, items in by_entry.items()}
+        if self._scope is None:
+            return None
+        return self._scope.get(entry, ())
+
+    def sidecar(self, variant: str) -> VariantSidecar | None:
+        """The record of tracks variant *variant*, or ``None`` when it has none."""
+        if variant not in self._sidecars:
+            tracks = self._ds.get_root("tracks")
+            self._sidecars[variant] = read_tracks_variant(tracks, variant)
+        return self._sidecars[variant]
+
+    def lookup(self, media: str) -> VariantLookup:
+        """The rows of media variant *media*, against the entries' compositions."""
+        lookup = self._lookups.get(media)
+        if lookup is None:
+            lookup = VariantLookup(
+                run_id=media,
+                rows=media_variant_rows(self._ds, media),
+                compositions=self._current_compositions(),
+            )
+            self._lookups[media] = lookup
+        return lookup
+
+    def _current_compositions(self) -> Mapping[Entry, str]:
+        """The current media composition of every entry of the pass."""
+        if self._compositions is None:
+            self._compositions = media_compositions_for(self._ds, self._entries)
+        return self._compositions
 
 
 def recorded_media_frames(
@@ -121,6 +204,7 @@ def recorded_media_frames(
     group: str,
     sequence: str,
     consumed_media: str,
+    reads: BackfillReads,
 ) -> RuleValue | Unanswered:
     """Return the ``media_frames`` that the bridge's rule gives one tracks row.
 
@@ -132,6 +216,7 @@ def recorded_media_frames(
         sequence: The row's sequence.
         consumed_media: The row's ``consumed_media_composition``: what the entry's
             media was when the run read it, or ``""`` when not recorded.
+        reads: The records that the pass reads once for all its rows.
 
     Returns:
         The frames of the entry media, or of the media variant, that the run was
@@ -150,17 +235,16 @@ def recorded_media_frames(
         return "unregistered"
     if not variant:
         return "not-established"
-    sidecar = read_tracks_variant(ds.get_root("tracks"), variant)
+    sidecar = reads.sidecar(variant)
     if sidecar is None:
         return "not-established"
     if _windowed(op.Params, sidecar):
         return BLANK
-    if _media_changed(ds, group, sequence, consumed_media):
-        return "not-established"
     entry_key = (group, sequence)
-    try:
-        scope = ds.resolve_media_scope([entry_key], errors={})
-    except FileNotFoundError:
+    if reads.media_changed(entry_key, consumed_media):
+        return "not-established"
+    scope = reads.scope(entry_key)
+    if scope is None:
         return "not-established"
     kept = one_camera_per_entry(producer, scope, report_skipped=False)
     if len(kept) != 1:
@@ -171,8 +255,7 @@ def recorded_media_frames(
         axis = EntryAxis.of_entry_media(entry.resolved.facts, windowed=False)
     else:
         try:
-            lookup = VariantLookup.read(ds, media, [entry_key])
-            source = lookup.resolve(ds, entry)
+            source = reads.lookup(media).resolve(ds, entry)
         except (MediaVariantMissingError, MediaVariantDriftedError, ValueError):
             return "not-established"
         axis = EntryAxis.of_variant(source.mapping())
@@ -180,18 +263,6 @@ def recorded_media_frames(
         return BLANK
     count = axis.media_frames
     return "not-established" if count is None else RuleValue(count)
-
-
-def _media_changed(ds: Dataset, group: str, sequence: str, consumed_media: str) -> bool:
-    """Whether the entry's media has changed since the run that read it.
-
-    *consumed_media* is the row's ``consumed_media_composition``. A blank one, or
-    an entry whose composition is not projected, is unknown and not a change
-    (:func:`~mosaic.core.pipeline.composition.compositions_disagree`).
-    """
-    entry_key = (group, sequence)
-    now = media_compositions_for(ds, [entry_key]).get(entry_key, "")
-    return compositions_disagree(consumed_media, now)
 
 
 def _windowed(params: type[Params], sidecar: VariantSidecar) -> bool:
@@ -208,8 +279,8 @@ def _windowed(params: type[Params], sidecar: VariantSidecar) -> bool:
 def register_frames_read_reader(producer: str, reader: RecordedCountReader) -> None:
     """Declare how the frames that *producer*'s tool read are found after the run.
 
-    Called at module scope by the producer, so importing it is what makes the
-    reader available. Registering twice replaces.
+    Called at module scope by the producer, so importing the producer registers
+    the reader. Registering twice replaces.
     """
     _FRAMES_READ_READERS[producer] = reader
 
@@ -282,6 +353,7 @@ def recorded_tail_loss(
     group: str,
     sequence: str,
     consumed_media: str,
+    reads: BackfillReads,
 ) -> RuleValue | Unanswered:
     """Return the ``known_tail_loss`` that what *producer*'s run left gives *table*.
 
@@ -297,6 +369,7 @@ def recorded_tail_loss(
         group: The row's group.
         sequence: The row's sequence.
         consumed_media: The row's ``consumed_media_composition``.
+        reads: The records that the pass reads once for all its rows.
 
     Returns:
         The loss its tool is known to have at the end of the file it read.
@@ -311,7 +384,7 @@ def recorded_tail_loss(
         return BLANK
     if producer not in OPS:
         return "unregistered"
-    if _media_changed(ds, group, sequence, consumed_media):
+    if reads.media_changed((group, sequence), consumed_media):
         return "not-established"
     reader = _TAIL_LOSS_READERS.get(producer)
     count = None if reader is None else reader(ds, table, source)

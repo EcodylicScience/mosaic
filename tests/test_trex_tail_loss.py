@@ -2,7 +2,7 @@
 
 TREx counts a file's frames from the container's count less its decoder's reorder
 delay, and never drains the decoder at the end. So it stops short of the end of a
-file by that file's reorder depth, and by one more when the container carries no
+file by that file's reorder depth, and by one more when the container records no
 frame count. Measured over 26 files: 2 for H.264 or HEVC with B-frames, 1 for one
 B-frame, 0 for AV1 and without B-frames, and 3 or 1 in Matroska. A shortfall is a
 known tail loss only within what the file TREx read gives. A conversion of several
@@ -31,7 +31,6 @@ from mosaic.core.pipeline.tracks_index import (
     backfill_known_tail_loss,
     read_known_tail_loss,
     read_tracks_index,
-    tracks_index_path,
 )
 from mosaic.tracking.trex.params import TrexParams
 from tests.helpers import (
@@ -39,6 +38,7 @@ from tests.helpers import (
     clip_facts,
     latest_snapshot,
     make_dataset,
+    set_tracks_cell,
     stub_join,
     write_media_index,
 )
@@ -239,12 +239,6 @@ def test_an_h264_run_short_by_more_than_its_file_s_loss_is_a_mismatch(
 # --- the backfill ------------------------------------------------------------------
 
 
-def _set_cell(ds: Dataset, column: str, value: str) -> None:
-    path = tracks_index_path(ds)
-    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
-    rows.assign(**{column: value}).to_csv(path, index=False)
-
-
 def _the_pv(ds: Dataset) -> Path:
     (pv,) = ds.get_root("trex-convert").rglob("*.pv")
     return pv
@@ -257,7 +251,7 @@ def test_the_backfill_gives_a_row_the_loss_the_bridge_recorded(
     ds = _tracked(
         tmp_path, monkeypatch, filename="vid1.mp4", write=_h264, read=_FRAMES - 2
     )
-    _set_cell(ds, "known_tail_loss", "")
+    set_tracks_cell(ds, "known_tail_loss", "")
 
     done = backfill_known_tail_loss(ds)
 
@@ -281,7 +275,7 @@ def test_a_legacy_row_of_several_files_two_short_is_a_mismatch(
     second = media_root / "vid1-b.mp4"
     _h264(second)
     write_pv_header(_the_pv(ds), _FRAMES - 2, sources=[media_root / "vid1.mp4", second])
-    _set_cell(ds, "known_tail_loss", "")
+    set_tracks_cell(ds, "known_tail_loss", "")
     assert ds.frame_axis_mismatches() == (), "an unread file is allowed the most"
 
     done = backfill_known_tail_loss(ds)
@@ -479,8 +473,27 @@ def test_only_the_table_s_own_working_directory_proves_a_clip_list(
     done = backfill_known_tail_loss(ds)
 
     assert done.written["sequence"].tolist() == ["sess"]
-    losses = {
+    assert _losses(ds) == {"sess": 0, "solo": None}
+
+
+@pytest.mark.parametrize("listed", ["s1", "ss1"])
+def test_a_working_directory_whose_name_ends_another_s_is_told_apart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, listed: str
+) -> None:
+    """``ss1`` ends in ``s1``, so only the exact directory tells their rows apart."""
+    clips = {"s1": 1, "ss1": 1} | {listed: 2}
+    ds = _tracked_clips(tmp_path, monkeypatch, version="0.1", clips=clips)
+
+    _ = backfill_known_tail_loss(ds)
+
+    assert _losses(ds) == {
+        sequence: 0 if sequence == listed else None for sequence in clips
+    }
+
+
+def _losses(ds: Dataset) -> dict[str, int | None]:
+    """Each entry's recorded known tail loss."""
+    return {
         str(row["sequence"]): read_known_tail_loss(row)
         for _, row in read_tracks_index(ds).iterrows()
     }
-    assert losses == {"sess": 0, "solo": None}

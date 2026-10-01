@@ -530,7 +530,7 @@ def test_a_frame_axis_mismatch_accumulates_and_leaves_the_status_alone(
 def test_the_mismatch_event_carries_both_numbers(tmp_path: Path) -> None:
     """The gap is the content of the report, so it travels with the event.
 
-    "read 1782 of 1800" says how far a late crop may be off; a bare flag says only
+    "read 1782 of 1800" says how far a late crop may be off. A bare flag says only
     that something is wrong somewhere, and the run-log is the only channel out
     of a queued job.
     """
