@@ -1606,7 +1606,7 @@ def test_a_consumer_can_own_a_trackers_model_and_execution_knobs(kind: str) -> N
 
     mosaic-api removes those fields from a subclass of the op's params and rebuilds
     it. A validator naming a removed field without ``check_fields=False`` refuses
-    that rebuild, so every such field must leave the subclass buildable.
+    that rebuild. Every such field must therefore leave the subclass buildable.
     """
     from pydantic import create_model
 
