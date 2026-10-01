@@ -832,6 +832,17 @@ def test_a_model_names_the_pose_it_was_trained_on(full_state: Dataset) -> None:
     assert (document["pose_id"], document["pose_name"]) == (CRICKET.id, CRICKET.name)
 
 
+def test_a_pose_model_names_how_many_keypoints_it_predicts(full_state: Dataset) -> None:
+    """Read from the prepared data's kpt_shape, which every pose preparation wrote,
+    so a model prepared before any other record of it still answers."""
+    model = _train(full_state, run_op(full_state, KIND, {**FULL, "pose": "cricket"}))
+
+    found = training_provenance(full_state, "train-pose", model)
+
+    assert found.keypoint_count == len(CRICKET.schema.names)
+    assert found.as_json()["keypoint_count"] == len(CRICKET.schema.names)
+
+
 def test_an_index_older_than_the_pose_reads_blank_and_is_adopted_on_the_next_write(
     world: tuple[Dataset, Dataset, Dataset],
 ) -> None:
@@ -852,6 +863,7 @@ def test_an_index_older_than_the_pose_reads_blank_and_is_adopted_on_the_next_wri
 
     found = training_provenance(library, "train-pose", model)
     assert (found.pose_id, found.pose_name) == (None, "")
+    assert found.keypoint_count is not None
     assert found.stopped_at == "", "the rest of the chain still reads"
 
     later = _prepare(library, target="polo")

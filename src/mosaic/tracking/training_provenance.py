@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final
 
 import pandas as pd
+import yaml
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from mosaic.core.annotations.projection import KEYPOINTS_SERIES
@@ -32,7 +33,11 @@ from mosaic.core.pipeline.label_series_index import (
     read_label_series,
     read_revision_manifest,
 )
-from mosaic.core.pipeline.models import PREPARED_DATA_KINDS, model_index_path
+from mosaic.core.pipeline.models import (
+    PREPARED_DATA_KINDS,
+    model_index_path,
+    prepared_artifact_cell,
+)
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 
 if TYPE_CHECKING:
@@ -54,6 +59,14 @@ class _ConsumedEntry(BaseModel):
     set_key: str = ""
     revision: int = 0
     digest: str = ""
+
+
+class _PoseDataYaml(BaseModel):
+    """The part of a pose preparation's ``data.yaml`` that is read here."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore")
+
+    kpt_shape: tuple[int, ...] = ()
 
 
 _CONSUMED: Final = TypeAdapter(list[_ConsumedEntry])
@@ -100,6 +113,10 @@ class TrainingProvenance:
         pose_id: The authoring store's id of the pose the preparation narrowed
             the sets to, or ``None`` when its row does not record one.
         pose_name: That pose's name when the preparation ran, or ``""``.
+        keypoint_count: How many keypoints a pose model predicts per instance,
+            from the ``kpt_shape`` its prepared ``data.yaml`` declares, or
+            ``None`` for a model that predicts no keypoints and when that file
+            cannot be read.
         sets: The annotation revisions the preparation consumed.
         stopped_at: Why the walk went no further, or ``""`` when it reached
             every revision. Never an error: an incomplete chain is an answer.
@@ -115,6 +132,7 @@ class TrainingProvenance:
     prepared_run_id: str = ""
     pose_id: int | None = None
     pose_name: str = ""
+    keypoint_count: int | None = None
     sets: tuple[ConsumedRevision, ...] = ()
     stopped_at: str = ""
 
@@ -131,6 +149,7 @@ class TrainingProvenance:
             "prepared_run_id": self.prepared_run_id,
             "pose_id": self.pose_id,
             "pose_name": self.pose_name,
+            "keypoint_count": self.keypoint_count,
             "stopped_at": self.stopped_at,
             "sets": [
                 {
@@ -186,6 +205,30 @@ def _prepared_run(data_path: str) -> tuple[str, str]:
         if parsed is not None and parsed.kind in PREPARED_DATA_KINDS:
             return parsed.kind, part
     return "", ""
+
+
+def _keypoint_count(holder: Dataset, prepared: Mapping[str, str]) -> int | None:
+    """The keypoints per instance that a pose preparation's ``data.yaml`` declares.
+
+    Only a ``yolo-pose`` preparation writes one with ``kpt_shape``. ``None`` for
+    every other target, and when the file is gone or does not declare the shape.
+    """
+    if prepared.get("target", "") != "yolo-pose":
+        return None
+    stored = prepared_artifact_cell(prepared)
+    if not stored:
+        return None
+    try:
+        document: object = yaml.safe_load(
+            holder.resolve_path(stored).read_text(encoding="utf-8")
+        )
+    except (OSError, yaml.YAMLError):
+        return None
+    try:
+        shape = _PoseDataYaml.model_validate(document).kpt_shape
+    except ValidationError:
+        return None
+    return shape[0] if shape else None
 
 
 def _pose_id(cell: str) -> int | None:
@@ -309,6 +352,7 @@ def training_provenance(ds: Dataset, kind: str, run_id: str) -> TrainingProvenan
         prepared_run_id=prepared_run_id,
         pose_id=_pose_id(prepared.get("pose_id", "")),
         pose_name=prepared.get("pose_name", ""),
+        keypoint_count=_keypoint_count(holder, prepared),
         sets=sets,
         stopped_at=reason,
     )
