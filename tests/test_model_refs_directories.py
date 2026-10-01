@@ -17,15 +17,18 @@ from pathlib import Path
 
 import pytest
 
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.file_digest import file_digest
+from mosaic.core.pipeline.models import model_run_root
 from mosaic.tracking.model_refs import (
     MODEL_KINDS,
+    model_id_for_ref,
     resolve_model,
     resolve_model_set,
     spec_for,
 )
 
-from tests.helpers import make_dataset, write_sleap_model
+from tests.helpers import make_dataset, register_trained_model, write_sleap_model
 
 
 def _sleap_model(directory: Path, weights: bytes, head: str = "centroid") -> Path:
@@ -169,6 +172,57 @@ def test_a_prefix_naming_nothing_still_raises(tmp_path: Path) -> None:
             str(run_root / "identity_model"),
             "train-identity",
         )
+
+
+IDENTITY_RUN = "train-identity.0.1-abcdef0123"
+
+
+def _registered_identity_model(tmp_path: Path) -> tuple[Dataset, Path]:
+    """A dataset registering one ``train-identity`` run, and that run's weights."""
+    ds = make_dataset(tmp_path / "ds", roots=("models",))
+    weights = model_run_root(ds, "train-identity", IDENTITY_RUN) / "identity_model.pth"
+    weights.parent.mkdir(parents=True)
+    _ = weights.write_bytes(b"identity weights")
+    register_trained_model(ds, "train-identity", IDENTITY_RUN, weights)
+    return ds, weights
+
+
+def test_a_registered_prefix_run_resolves_through_the_index(tmp_path: Path) -> None:
+    """The run is named by its run id, and holds the bytes its stem names."""
+    ds, weights = _registered_identity_model(tmp_path)
+
+    by_run = resolve_model(ds, IDENTITY_RUN, "train-identity")
+    by_path = resolve_model(ds, str(weights.with_suffix("")), "train-identity")
+
+    assert by_run.model_id == IDENTITY_RUN
+    assert by_run.members == (IDENTITY_RUN,)
+    assert by_run.digest == by_path.digest == file_digest(weights)
+    assert by_run.path == weights.with_suffix(""), "the stem, as TREx wants it"
+    assert model_id_for_ref(ds, IDENTITY_RUN, "train-identity") == IDENTITY_RUN
+
+
+def test_a_registered_prefix_run_resolves_in_a_set(tmp_path: Path) -> None:
+    ds, weights = _registered_identity_model(tmp_path)
+
+    resolved = resolve_model_set(ds, [IDENTITY_RUN], "train-identity")
+
+    assert resolved.model_id == IDENTITY_RUN
+    assert resolved.path == weights.with_suffix("")
+
+
+def test_a_prefix_run_id_is_never_probed_beside_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run id is relative, so probing it as a path reads the working directory."""
+    ds, weights = _registered_identity_model(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _ = (elsewhere / "identity_model.pth").write_bytes(b"other weights")
+    monkeypatch.chdir(elsewhere)
+
+    resolved = resolve_model(ds, IDENTITY_RUN, "train-identity")
+
+    assert resolved.digest == file_digest(weights)
 
 
 def test_only_a_prefix_kind_probes_for_siblings(tmp_path: Path) -> None:

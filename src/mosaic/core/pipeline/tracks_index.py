@@ -504,20 +504,20 @@ class TracksMadeWith:
     """What :func:`tracks_made_with` found for one model.
 
     Attributes:
-        entries: Every entry whose variant's payload names the model, in order.
+        entries: Every entry whose variant's record names the model, in order.
         unreadable_variants: The variants whose record is absent or unreadable,
             sorted. Any of them might name the model. ``""`` names the
             unlabelled tables, as it does for :func:`select_variant_rows`: they
             were written before variants existed, and no record says what made
             them.
-        unconfirmed_variants: The variants whose record was written before
-            models were recorded in it and names a model only by a digest that
-            does not match, sorted. Any of them might have been made with the
-            model: as a member of a SLEAP model set, whose digest covers every
-            member and equals none of them, or by an inference run recorded
-            under tracks identity scheme 1 from a model handed in by path, whose
-            digest is of the path string. The record cannot tell the first apart
-            from a different SLEAP model handed in by path.
+        unconfirmed_variants: The variants whose record has no ``models`` entry
+            and names a model only by a digest that does not match, sorted. Any
+            of them might have been made with the model: as a member of a SLEAP
+            model set, whose digest covers every member and equals none of them,
+            or by an inference run recorded under tracks identity scheme 1 from
+            a model handed in by path, whose digest is of the path string. The
+            record cannot tell the first apart from a different SLEAP model
+            handed in by path.
     """
 
     entries: tuple[TracksMadeWithEntry, ...]
@@ -555,19 +555,27 @@ def tracks_made_with(ds: Dataset, model_run_id: str, *, digest: str) -> TracksMa
     by a linked library, because the record names the run and not where it was
     stored.
 
-    A record written before models were recorded in it is judged by its identity
-    payload. The run id and the digest are matched as exact strings anywhere in
-    the payload, through nested mappings and lists, rather than under a known
-    key. Each tool names its model under a key of its own, such as ``model``, or
-    TREx's ``detect_model`` and ``visual_identification_model_path``, and
-    ``core`` cannot import the tools that declare them. A run id or a digest is
-    distinctive enough that an exact match is a reference to it. A producer that
-    runs one model names it by that model's own digest, so a digest that differs
-    rules the model out. Such a payload cannot rule out a member of a SLEAP model
-    set, whose digest covers every member and equals none of them, or a model
-    handed in by path to an inference run recorded under tracks identity scheme
-    1, whose digest is of the path string. A variant whose record names its
-    model only by such a digest is reported as unconfirmed.
+    A record with no ``models`` entry is judged by its identity payload. Such a
+    record comes from a producer that runs no model, whose payload names none (a
+    conversion, ``resample-tracks`` or ``upgrade-tracks``), or from a model run
+    that predates the entry. The run id and the digest are matched as exact
+    strings anywhere in the payload, through nested mappings and lists, rather
+    than under a known key. Each tool names its model under a key of its own,
+    such as ``model``, or TREx's ``detect_model`` and
+    ``visual_identification_model_path``, and ``core`` cannot import the tools
+    that declare them. A run id or a digest is distinctive enough that an exact
+    match is a reference to it. A producer that runs one model names it by that
+    model's own digest, so a digest that differs rules the model out. Such a
+    payload cannot rule out a member of a SLEAP model set, whose digest covers
+    every member and equals none of them, or a model handed in by path to an
+    inference run recorded under tracks identity scheme 1, whose digest is of
+    the path string. A variant whose record names its model only by such a
+    digest is reported as unconfirmed.
+
+    A variant derived from another, such as the output of ``resample-tracks``, is
+    not followed to the variant that it was derived from, so its entries are not
+    found. The variant that it was derived from names the model itself and is
+    found, so the model is reported in use through it.
 
     Reads the tracks index and the variants' records. Writes nothing.
 
@@ -645,7 +653,7 @@ def _verdict(tracks_root: Path, variant: str, named: frozenset[str]) -> _Verdict
 
     *named* holds the model's run id and its digest. A record that names its
     variant's models decides: made when one of them is in *named*. A record
-    written before that is made when its payload holds one of *named*, and
+    without that entry is made when its payload holds one of *named*, and
     unconfirmed when its provenance names a model set by a content digest
     (:attr:`~mosaic.core.pipeline.tracking_roots.TrackingRoot.model_sets`), or
     its payload names the model by a digest of its path.

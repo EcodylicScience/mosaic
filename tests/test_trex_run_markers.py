@@ -62,37 +62,11 @@ from tests.helpers import (
     MediaClip,
     install_fake_trex,
     scope_over,
+    stub_join,
     write_media_index,
 )
 
 # --- fixtures --------------------------------------------------------------
-
-
-def _joined_export(ds: Dataset, uids: list[str]) -> Path:
-    """Put the join of *uids* where a tracker will look for it.
-
-    A stub, like the clips themselves: TREx is faked in this file, so nothing
-    decodes it. What is being exercised is the *address* -- a tracker resolves
-    the join of exactly these clips in this order, so a test that reorders or
-    adds one has to write the new address or see the refusal.
-    """
-    from mosaic.core.pipeline.composition import MediaMember, media_composition
-    from mosaic.core.pipeline.joined_export import (
-        JoinedExportParams,
-        joined_export_path,
-        joined_recipe_hash,
-    )
-
-    members = [
-        MediaMember(camera="", video_order=order, uid=uid)
-        for order, uid in enumerate(uids)
-    ]
-    path = joined_export_path(
-        ds, media_composition(members).digest, joined_recipe_hash(JoinedExportParams())
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_bytes(b"joined")
-    return path
 
 
 @pytest.fixture
@@ -728,7 +702,7 @@ def _session(
         ],
     )
     if len(names) > 1 and joined:
-        _ = _joined_export(ds, [f"uid-{name}" for name in names])
+        _ = stub_join(ds, [f"uid-{name}" for name in names])
 
 
 def test_a_session_converts_once_from_the_joined_video(

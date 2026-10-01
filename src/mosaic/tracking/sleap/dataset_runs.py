@@ -335,6 +335,7 @@ def run_sleap(
             job.ds,
             work_dir,
             minted.run_id,
+            item=item,
             required=("*.predictions.slp", "*.analysis.h5"),
             record=(AdoptEvidence("track", "*.predictions.slp"),),
         )
@@ -344,8 +345,7 @@ def run_sleap(
             work_dir,
             "track",
             params_hash=minted.params_hash,
-            video_path=item.video_path,
-            video_uid=item.video_uid,
+            item=item,
         )
         if reusable is None:
             clear_phase_marker(work_dir, "track")
@@ -397,8 +397,7 @@ def run_sleap(
                 ctx=seq_ctx,
                 run_id=minted.run_id,
                 params_hash=minted.params_hash,
-                video_path=item.video_path,
-                video_uid=item.video_uid,
+                item=item,
                 output=slp_out,
             )
             recomputed = True

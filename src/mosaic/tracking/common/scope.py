@@ -20,12 +20,11 @@ Two collapses happen here, and both are load-bearing rather than tidy-up:
   ``infer-*`` ops apply as well.
 
 **A media variant replaces the source when the item is built.** Every tracker
-checks reuse against the item's ``video_uid`` or ``source_uid`` before it resolves
-the file that it hands its tool, and both are read from the item's facts. A variant
-item therefore contains the variant file and its facts from the start, and every
-reuse check compares the variant's identity instead of the entry media's. An
-entry whose variant is missing or out of date fails alone rather than ending the
-run.
+checks reuse against the item's ``source_uid`` before it resolves the file that it
+hands its tool, and that is read from the item's facts. A variant item therefore
+contains the variant file and its facts from the start, and every reuse check
+compares the variant's identity instead of the entry media's. An entry whose
+variant is missing or out of date fails alone rather than ending the run.
 
 **Joining is refused on geometry and accepted on frame rate.** The two
 disagreements have opposite consequences. Clips that decode to different frame
@@ -34,7 +33,9 @@ first, with a message naming the clip. Clips that were recorded at different
 rates are a real and common property of a session (30, then 29.95, then 31 fps is
 a measured example), and refusing them would refuse the data; they are carried
 instead, and the consumer reconstructs time per clip through
-:mod:`mosaic.core.media.timeline`.
+:mod:`mosaic.core.media.timeline`. Imgstore recordings are the exception. Nothing
+joins them and the store reader needs one rate, so stores at different rates are
+refused.
 """
 
 from __future__ import annotations
@@ -45,9 +46,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.media.uniformity import geometry_mismatch
+from mosaic.core.media.imgstore_io import is_imgstore
+from mosaic.core.media.uniformity import geometry_mismatch, rate_uniform
 from mosaic.core.pipeline.composition import MediaMember, media_composition
 from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
+from mosaic.core.pipeline.joined_export import refuse_unidentified_clips
 from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.preprocess_index import (
     MediaVariantDriftedError,
@@ -88,10 +91,10 @@ class TrackerWorkItem:
 
     ``video_paths`` are the entry's clips in ``video_order`` -- one element for
     the ordinary single-file sequence, several for a session a recorder split.
-    ``source_facts`` is parallel to it. The single-source views every tracker
-    already reads (``video_path``, ``video_uid``, ``facts``) are **derived** from
-    element 0 rather than stored beside it, so "the first source" has one
-    spelling that cannot drift from the list it comes from.
+    ``source_facts`` is parallel to it. The single-source views (``video_path``
+    and ``facts``) are **derived** from element 0 rather than stored beside it,
+    so "the first source" has one spelling that cannot drift from the list it
+    comes from.
     """
 
     group: str
@@ -127,9 +130,9 @@ class TrackerWorkItem:
     """The media variant that this item reads, or ``None`` for the entry media.
 
     When set, ``video_paths`` is the variant file and ``source_facts`` its stored
-    facts. Every view derived from them (``video_uid``, ``source_uid``,
-    ``facts``, ``n_sources``) describes the file that the tool reads, and the reuse
-    gates compare those. A tracker run over a variant therefore never reuses output
+    facts. Every view derived from them (``source_uid``, ``facts``,
+    ``n_sources``) describes the file that the tool reads, and the reuse gates
+    compare those. A tracker run over a variant therefore never reuses output
     made from the entry media, and it recomputes when the variant file is
     rewritten.
     """
@@ -166,11 +169,6 @@ class TrackerWorkItem:
         return self.source_facts[0] if self.source_facts else None
 
     @property
-    def video_uid(self) -> str:
-        """The first clip's content identity, empty when it carries none."""
-        return self.source_facts[0].video_uuid if self.source_facts else ""
-
-    @property
     def video_uids(self) -> tuple[str, ...]:
         """Every clip's content identity, in ``video_order``.
 
@@ -188,11 +186,11 @@ class TrackerWorkItem:
         composition digest, which is what notices a clip being replaced, added,
         removed or reordered -- none of which the first clip's uid can see.
 
-        ``""`` when any clip carries no identity, which sends the gate to its
-        path fallback. That fallback compares **the first clip only**, so a
-        joined entry over unidentified media will not notice a later clip
-        changing. It is the same trade the uid-less populations already make, and
-        it is stated here rather than papered over.
+        ``""`` when any clip carries no identity. For one clip that sends the
+        gate to its path fallback. An entry of several clips with one unidentified
+        is refused by :func:`build_work_items` instead, because the fallback
+        compares the first clip's path only, and no join of the clips can be
+        addressed.
         """
         if not self.source_facts:
             return ""
@@ -303,6 +301,9 @@ def build_work_items(
     Raises:
         JoinedSourceMismatchError: If an entry has clips that disagree on frame
             geometry, or one whose frame rate is unknown.
+        JoinedExportMissingError: If an entry has several clips and one carries
+            no content identity. No join of them can be addressed, and no marker
+            can prove which clips earlier output was made from.
     """
     fallback_fps = (
         ds.meta_float("fps_default", 30.0) if fps_default is None else fps_default
@@ -334,6 +335,7 @@ def build_work_items(
         paths = list(resolved.paths)
         facts = list(resolved.facts)
         refuse_unjoinable(kind, group, sequence, paths, facts)
+        refuse_unidentified_clips(group, sequence, facts, asker=kind)
 
         items.append(
             TrackerWorkItem(
@@ -384,10 +386,13 @@ def refuse_unjoinable(
     naming the file and the field rather than inside a subprocess whose
     traceback names neither. One clip is its own video and passes.
 
+    Stores at different frame rates are refused too. The store reader needs one
+    rate, and ``export-joined`` does not join stores.
+
     Raises:
         JoinedSourceMismatchError: If the clips lack one set of facts each,
-            disagree on frame geometry, or include one whose frame rate is
-            unknown.
+            disagree on frame geometry, include one whose frame rate is
+            unknown, or are stores whose frame rates differ.
     """
     if len(paths) < 2:
         return
@@ -419,3 +424,20 @@ def refuse_unjoinable(
                 f"put a wrong slope on one clip of an otherwise measured "
                 f"session. Re-probe it with 'mosaic reprobe-media'."
             )
+
+    if any(is_imgstore(path) for path in paths) and not rate_uniform(facts):
+        other = next(
+            position
+            for position in range(1, len(facts))
+            if not rate_uniform((facts[0], facts[position]))
+        )
+        raise JoinedSourceMismatchError(
+            f"[{kind}] {entry} cannot be read as one video: "
+            f"{paths[other].name} was recorded at {facts[other].fps:g} fps and "
+            f"{paths[0].name} at {facts[0].fps:g}. Stores are not joined, so no "
+            f"reader places their frames on one axis. Re-record the stores at one "
+            f"rate, or make a media variant of the entry, which reads each store "
+            f"at its own rate, and name it with the 'media' parameter:\n"
+            f"    mosaic run -m <manifest> --kind preprocess "
+            f'--entries "{group}:{sequence}" --params <steps>'
+        )

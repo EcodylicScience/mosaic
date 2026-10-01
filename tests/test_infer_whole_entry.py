@@ -203,6 +203,35 @@ def test_clips_that_cannot_be_one_video_are_refused_as_a_tracker_refuses_them(
         _ = _infer(ds, kind, model)
 
 
+@pytest.mark.parametrize("kind", ["infer-localizer", "infer-pose"])
+def test_stores_at_two_rates_are_refused_before_a_model_loads(
+    tmp_path: Path, model: Path, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stores are not joined, so no reader places their frames on one axis."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(filename="a.mp4", video_uuid="uid-a", fps=30.0),
+            MediaClip(filename="b.mp4", video_order=1, video_uuid="uid-b", fps=31.0),
+        ],
+    )
+    for order, name in enumerate(("a", "b")):
+        _ = point_at_a_store(
+            ds, "sess", ds.get_root("media_raw") / f"{name}.store", video_order=order
+        )
+    localizer = _install_fake_localizer(monkeypatch)
+    runner = install_fake_pose_inference(monkeypatch, _pose_per_frame)
+
+    with pytest.raises(JoinedSourceMismatchError) as refused:
+        _ = _infer(ds, kind, model)
+
+    message = str(refused.value)
+    assert "b.store" in message and "31" in message
+    assert "--kind preprocess" in message
+    assert localizer == [] and runner.videos == []
+
+
 def _two_clips(sequence: str) -> list[MediaClip]:
     return [
         MediaClip(

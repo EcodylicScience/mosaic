@@ -696,18 +696,46 @@ def resolve_model(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
     # Unexpanded, `~/models/best.pt` fails `exists()` and falls through to the
     # index, reporting a missing run_id for what is plainly a path.
     reference = user_path(ref)
-    # A prefix never exists, so the spec decides before the filesystem does.
-    if spec.shape == "prefix" or reference.exists():
-        artifact = _resolve_artifact(reference, spec)
-        digest = _identity((artifact,), spec)
-        return ResolvedModel(
-            artifacts=(artifact,),
-            run_id="",
-            digest=digest,
-            members=(digest,),
-            model_type=_model_type_of(artifact, spec),
-        )
-    return _resolve_registered(ds, ref, kind)
+    if _looked_up(ref, reference, spec):
+        return _resolve_registered(ds, ref, kind)
+    artifact = _resolve_artifact(reference, spec)
+    digest = _identity((artifact,), spec)
+    return ResolvedModel(
+        artifacts=(artifact,),
+        run_id="",
+        digest=digest,
+        members=(digest,),
+        model_type=_model_type_of(artifact, spec),
+    )
+
+
+def _looked_up(ref: str, reference: Path, spec: ModelKindSpec) -> bool:
+    """Whether *ref* resolves through the model index rather than as a path.
+
+    A path that exists is read as a path, whatever it is called, as
+    :func:`model_id_for_ref` reads it. A prefix does not exist, because its
+    weights sit beside it, so a prefix is looked up only when it is a run id.
+    Probed as a path, a run id is relative and names the working directory, and
+    the prefix probe would read whatever weights sit there. Any other reference
+    that names nothing is looked up, which is where a run id resolves and where
+    a missing path is reported.
+    """
+    if reference.exists():
+        return False
+    if spec.shape == "prefix":
+        return parse_op_run_id(ref) is not None
+    return True
+
+
+def _registered_reference(path: Path, spec: ModelKindSpec) -> Path:
+    """What the artifact path of a model index row resolves as under *spec*.
+
+    A prefix kind's row may name the weights file itself, where the tool is
+    handed the stem beside it, so the file's suffix is dropped.
+    """
+    if spec.shape == "prefix" and path.is_file():
+        return path.with_suffix("")
+    return path
 
 
 def _resolve_registered(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
@@ -720,7 +748,7 @@ def _resolve_registered(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
     """
     spec = spec_for(kind)
     registered = _registered_artifact(ds, ref, kind)
-    artifact = _resolve_artifact(registered.path, spec)
+    artifact = _resolve_artifact(_registered_reference(registered.path, spec), spec)
     return ResolvedModel(
         artifacts=(artifact,),
         run_id=ref,
@@ -798,14 +826,15 @@ def resolve_model_set(
     model_type = ""
     for ref in refs:
         reference = user_path(ref)
-        by_run = spec.shape != "prefix" and not reference.exists()
+        by_run = _looked_up(ref, reference, spec)
         if by_run:
             if ds is None:
                 raise FileNotFoundError(
-                    f"{spec.label} directory does not exist: {reference}"
+                    f"{spec.label} {reference} does not exist, and no dataset was "
+                    f"given to look it up in as a run id"
                 )
             found = _registered_artifact(ds, ref, kind)
-            reference = found.path
+            reference = _registered_reference(found.path, spec)
             registered.append(ref)
             served.append(found)
         artifact = _resolve_artifact(reference, spec)

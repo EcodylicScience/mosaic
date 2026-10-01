@@ -331,7 +331,13 @@ comma-joined in the order the run gave the models: each member of a SLEAP model
 set, the one model of any other tracker or inference op, and TREx's detection
 model before its identification model. A set of several references has no one
 run to name it, and its payload names it by a digest over all its artifacts,
-which equals no member's. A record written before the key existed has none.
+which equals no member's.
+
+A record without the key comes from a producer that runs no model (a conversion,
+``resample-tracks`` or ``upgrade-tracks``), or from a run of a model that predates
+the key. ``mosaic reconcile`` keeps the ``observed`` of the record that it
+re-addresses, with or without the key. A search judges such a record by its
+payload, which names no model when its producer runs none.
 """
 
 
@@ -340,7 +346,7 @@ def observed_models(models: Sequence[str]) -> dict[str, str]:
 
     Provenance and never identity, so recording the models moves no identifier.
     A run that used no model records the key empty, which a search reads as
-    made with no model rather than as a record from before the key.
+    made with no model without consulting the payload.
 
     Args:
         models: Each model's training run id or content digest, in the order
@@ -370,8 +376,8 @@ def names_model_by_path(sidecar: VariantSidecar) -> bool:
 def recorded_models(sidecar: VariantSidecar) -> tuple[str, ...] | None:
     """Return the models that :func:`observed_models` recorded in *sidecar*.
 
-    ``None`` when the record has no such entry, because it was written before
-    the entry was.
+    ``None`` when the record has no such entry: its producer runs no model, or
+    it was written before the entry was.
     """
     joined = sidecar.observed.get(_MODELS)
     return None if joined is None else _split_models(joined)

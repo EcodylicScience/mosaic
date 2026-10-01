@@ -223,7 +223,7 @@ def test_a_variant_item_describes_the_file_the_tool_reads(tmp_path: Path) -> Non
     (item,) = built.items
     path = media_variant_path(ds, variant, "", "s", "")
     assert item.video_paths == (path,)
-    assert item.source_uid == item.video_uid == _variant_uuid(ds, variant)
+    assert item.source_uid == _variant_uuid(ds, variant)
     assert item.source_uid != plain.source_uid
     assert item.fps == pytest.approx(_FPS / _STEP)
     assert item.facts is not None and (item.facts.width, item.facts.height) == (32, 24)

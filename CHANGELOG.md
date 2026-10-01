@@ -8,15 +8,36 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: inference tables are timed in seconds and numbered by source frame
+
+**`infer-pose` and `infer-points` re-address from `0.3` to `0.4`, and
+`infer-localizer` from `0.2` to `0.3`.** The version is a visible segment of the
+op run and tracks variant identifiers, not a hash term, so nothing is
+re-derived, and tables written under the older versions keep the identifiers
+they have. Re-run such a table where its `time` column is read, or its `frame`
+column after a run with a frame window.
+
+Two columns changed meaning. No model runner reports a time, and the bridge
+filled `time` with frame numbers, so a table from one clip carried frame numbers
+there, while a table from several clips was retimed into seconds. Every table
+now carries seconds, at the rate of the file that the model read. Under
+`start_frame` or `frame_step`, a row's `frame` was its place among the frames
+that the model read, so a run over frames 5, 7 and 9 of the video numbered its
+rows 0, 1 and 2. It is now the frame that the model read, as a tracker's is. A
+run without a frame window numbered its rows by the source frame already.
+
 ## Unreleased: a table from several clips is timed by each clip's rate
 
-**Track a SLEAP, Lightning Pose or Ultralytics entry of several clips again, with
-`--overwrite`.** A table of such an entry made before this change may cover only
-its first clip. One that covers every clip times each frame at the first clip's
-rate, which is wrong when the clips were recorded at different frame rates. A run
-that resolves to the same run id reuses the table, so only `--overwrite` replaces
-it. TRex tables were already timed by each clip, and the inference ops predict
-again on every run.
+**A SLEAP, Lightning Pose or Ultralytics entry of several clips is tracked again
+on its next run, with no `--overwrite`.** A table of such an entry made before
+this change may cover only its first clip. One that covers every clip times each
+frame at the first clip's rate, which is wrong when the clips were recorded at
+different frame rates. The reuse gate of these trackers now compares the whole
+clip set, the ordered composition of the clips' identities, where their markers
+record the first clip's identity alone, so the next run replaces the table. An
+entry of several clips of which one carries no content identity is refused
+instead, until `mosaic reprobe-media --apply` mints one. TRex tables were
+already timed by each clip, and the inference ops predict again on every run.
 
 ## Unreleased — every inference table carries a body centre, and three inference identifiers move
 

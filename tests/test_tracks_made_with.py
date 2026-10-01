@@ -15,6 +15,7 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.manifest import LibraryLink
+from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.tracks_identity import (
     infer_variant_payload,
     read_tracks_variant,
@@ -34,16 +35,18 @@ from mosaic.tracking.ops.infer import InferPoseOp, PoseInferParams
 from mosaic.tracking.sleap.dataset_runs import run_sleap, sleap_settings
 from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
-from mosaic.tracking.trex.dataset_runs import trex_settings
+from mosaic.tracking.trex.dataset_runs import run_trex, trex_settings
 from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 
 from tests.helpers import (
     add_track_sequences,
     add_tracks_variant,
+    install_fake_trex,
     make_dataset,
     register_trained_model,
     write_litpose_model,
+    write_media_index,
     write_sleap_model,
 )
 
@@ -192,7 +195,7 @@ def test_a_dataset_without_tracks_refers_to_nothing(tmp_path: Path) -> None:
 def test_a_reference_that_is_not_a_run_id_is_refused(
     tmp_path: Path, reference: str
 ) -> None:
-    """A match anywhere in a payload is exact only for a string as distinct as a run id."""
+    """A payload match is exact only for a value as distinct as a run id."""
     with pytest.raises(ValueError, match="not a run id"):
         _ = tracks_made_with(make_dataset(tmp_path), reference, digest=DIGEST)
 
@@ -275,6 +278,30 @@ def test_a_set_run_again_by_path_is_still_found_by_its_members(
         digest = resolve_model(ds, model, "train-sleap").digest
         (entry,) = tracks_made_with(ds, model, digest=digest).entries
         assert entry.variant == variant
+
+
+def test_a_sleap_set_recorded_with_its_models_rules_out_another_model(
+    tmp_path: Path,
+) -> None:
+    """A record that names its members decides for a model outside them.
+
+    The set's digest equals no one model's, as in a record written before the
+    members were recorded, but here the members are named, so the answer is no
+    rather than unconfirmed.
+    """
+    ds = make_dataset(tmp_path)
+    centroid, instance = MODEL, "train-sleap.0.2-fedcba9876"
+    _ = _registered_sleap_model(ds, centroid, b"centroid")
+    _ = _registered_sleap_model(ds, instance, b"instance")
+    _ = _registered_sleap_model(ds, OTHER, b"other")
+    _ = _sleap_run_variant(ds, [centroid, instance])
+    digest = resolve_model(ds, OTHER, "train-sleap").digest
+
+    found = tracks_made_with(ds, OTHER, digest=digest)
+
+    assert found == TracksMadeWith(
+        entries=(), unreadable_variants=(), unconfirmed_variants=()
+    )
 
 
 def test_a_sleap_set_recorded_without_its_models_is_unconfirmed(
@@ -432,7 +459,7 @@ def test_a_digest_of_ten_or_sixteen_lowercase_hex_is_accepted(
 
 
 def test_the_digest_is_required() -> None:
-    """A variant made from the model's bytes handed in by path names it by nothing else."""
+    """A variant made from the model's bytes by path names it by nothing else."""
     parameter = inspect.signature(tracks_made_with).parameters["digest"]
 
     assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
@@ -546,3 +573,90 @@ def test_both_of_trexs_models_are_recorded_in_order(tmp_path: Path) -> None:
     }
     assert observed_model_source(None, by_path) == {"models": by_path.digest}
     assert observed_model_source(None, None) == {"models": ""}
+
+
+TREX_DETECTOR = "train-pose.0.2-abcdef0123"
+TREX_IDENTIFIER = "train-identity.0.1-abcdef0123"
+
+
+def _trex_models(ds: Dataset) -> Path:
+    """Register a TREx detector and identification model, and return the latter.
+
+    The identification model is returned as its weights file,
+    ``identity_model.pth``.
+    """
+    detector = model_run_root(ds, "train-pose", TREX_DETECTOR) / "best.pt"
+    detector.parent.mkdir(parents=True)
+    _ = detector.write_bytes(b"detect")
+    register_trained_model(ds, "train-pose", TREX_DETECTOR, detector)
+    identifier = (
+        model_run_root(ds, "train-identity", TREX_IDENTIFIER) / "identity_model.pth"
+    )
+    identifier.parent.mkdir(parents=True)
+    _ = identifier.write_bytes(b"identity")
+    register_trained_model(ds, "train-identity", TREX_IDENTIFIER, identifier)
+    return identifier
+
+
+def _assert_trex_models_found(ds: Dataset) -> None:
+    """Assert that each of the two models finds the one TREx variant over s1."""
+    (variant,) = _variants(ds)
+    for model, kind in (
+        (TREX_DETECTOR, "train-pose"),
+        (TREX_IDENTIFIER, "train-identity"),
+    ):
+        digest = resolve_model(ds, model, kind).digest
+        found = tracks_made_with(ds, model, digest=digest)
+        assert [(entry.variant, entry.sequence) for entry in found.entries] == [
+            (variant, "s1")
+        ], model
+        assert found.unconfirmed_variants == ()
+
+
+def test_a_trex_run_is_found_by_its_detector_and_its_identification_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The detector named by its run, the identification model by a path to a copy.
+
+    Each is found by the record the run writes: the detector by its run id, and
+    the identification model by the digest of the bytes the path holds.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, ["s1"])
+    _ = install_fake_trex(monkeypatch)
+    _ = _trex_models(ds)
+    copy = tmp_path / "copy" / "identity_model.pth"
+    copy.parent.mkdir()
+    _ = copy.write_bytes(b"identity")
+
+    _ = run_trex(
+        ds,
+        TrexParams(
+            detect_model=TREX_DETECTOR,
+            visual_identification_model_path=str(copy.with_suffix("")),
+        ),
+    )
+
+    _assert_trex_models_found(ds)
+
+
+def test_a_trex_run_takes_its_identification_model_by_run_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run id resolves through the model index, and TREx gets the stem."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, ["s1"])
+    trex = install_fake_trex(monkeypatch)
+    identifier = _trex_models(ds)
+
+    _ = run_trex(
+        ds,
+        TrexParams(
+            detect_model=TREX_DETECTOR,
+            visual_identification_model_path=TREX_IDENTIFIER,
+        ),
+    )
+
+    (tracked,) = trex.track_kwargs
+    assert tracked["vi_model_path"] == identifier.with_suffix("")
+    _assert_trex_models_found(ds)

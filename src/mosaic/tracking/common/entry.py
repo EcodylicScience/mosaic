@@ -20,6 +20,11 @@ whose *successor consumes its output* does need both, and says so by calling
 a recompute: a marker adopted from a directory that predates markers cannot know
 any of them, and treating silence as disagreement would re-run every such entry
 once, forever.
+
+**Except for several clips.** A marker's ``source`` is the first clip's path, which
+says nothing of the clips after it. So for an entry of several clips only a
+``source_uid`` equal to the entry's proves the output, and a directory that
+predates markers is never adopted.
 """
 
 from __future__ import annotations
@@ -42,6 +47,7 @@ from mosaic.runlog import now_iso
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline.job import JobContext
+    from mosaic.tracking.common.scope import TrackerWorkItem
 
 __all__ = [
     "AdoptEvidence",
@@ -72,31 +78,35 @@ def reusable_marker(
     phase: PhaseName,
     *,
     params_hash: str,
-    video_path: Path,
-    video_uid: str = "",
+    item: TrackerWorkItem,
 ) -> PhaseMarker | None:
-    """The marker proving *phase* need not run again, or ``None``.
+    """The marker proving *phase* need not run again for *item*, or ``None``.
 
-    The source comparison is uid-first with the path as fallback. The uid answers
-    "are these the same bytes", which is what a durable cache needs, and it
-    catches the case a path comparison cannot see at all: a video replaced in
-    place, same path, different content. The path fallback is not decoration --
-    three populations carry no uid (markers backfilled by adoption, media indexed
-    before the identity columns existed, and directories written before
-    ``source_uid`` did), and dropping it would remove the relocation guard from
-    exactly those datasets.
+    The source comparison is uid-first with the path as fallback. The uid is the
+    item's ``source_uid``, the identity of the whole input: one clip's uuid, or
+    the ordered composition of several. It answers "are these the same bytes",
+    which is what a durable cache needs, and it catches the case a path
+    comparison cannot see at all: a video replaced in place, same path, different
+    content. The path fallback is not decoration: three populations carry no
+    uid (markers backfilled by adoption, media indexed before the identity
+    columns existed, and directories written before ``source_uid`` did), and
+    dropping it would remove the relocation guard from exactly those datasets.
 
-    Pass ``video_uid=""`` to compare on the path alone.
+    The path is the first clip's, so it proves nothing for an item of several
+    clips. Such an item reuses a marker only when both uids are recorded and
+    equal.
     """
     marker = read_phase_marker(work_dir, phase)
     if marker is None:
         return None
     if marker.params_hash and marker.params_hash != params_hash:
         return None
-    if marker.source_uid and video_uid:
-        if marker.source_uid != video_uid:
+    if marker.source_uid and item.source_uid:
+        if marker.source_uid != item.source_uid:
             return None
-    elif marker.source and not _same_video(ds, marker.source, video_path):
+    elif item.n_sources > 1:
+        return None
+    elif marker.source and not _same_video(ds, marker.source, item.video_path):
         return None
     return marker
 
@@ -107,8 +117,7 @@ def reusable_output(
     phase: PhaseName,
     *,
     params_hash: str,
-    video_path: Path,
-    video_uid: str = "",
+    item: TrackerWorkItem,
 ) -> tuple[PhaseMarker, Path] | None:
     """The marker *and its still-present recorded output*, or ``None``.
 
@@ -116,14 +125,7 @@ def reusable_output(
     comes from the marker rather than a glob, because a tool may leave it outside
     the working directory -- TREx can write its ``.pv`` beside the source video.
     """
-    marker = reusable_marker(
-        ds,
-        work_dir,
-        phase,
-        params_hash=params_hash,
-        video_path=video_path,
-        video_uid=video_uid,
-    )
+    marker = reusable_marker(ds, work_dir, phase, params_hash=params_hash, item=item)
     if marker is None or not marker.recorded_output:
         return None
     output = ds.resolve_path(marker.recorded_output)
@@ -140,19 +142,22 @@ def record_phase(
     ctx: JobContext,
     run_id: str,
     params_hash: str,
-    video_path: Path,
-    video_uid: str,
+    item: TrackerWorkItem,
     output: Path | None,
 ) -> PhaseMarker:
-    """Write *phase*'s completion marker. Call only after its outputs are on disk."""
+    """Write *phase*'s completion marker for *item*, once its outputs are on disk.
+
+    The marker records what :func:`reusable_marker` compares: the item's
+    ``source_uid`` and its first clip's path.
+    """
     marker = PhaseMarker(
         phase=phase,
         run_id=run_id,
         params_hash=params_hash,
         execution_id=ctx.execution_id,
         completed_at=now_iso(),
-        source=ds.relative_to_root(video_path),
-        source_uid=video_uid,
+        source=ds.relative_to_root(item.video_path),
+        source_uid=item.source_uid,
         recorded_output=ds.relative_to_root(output) if output is not None else "",
     )
     write_phase_marker(work_dir, marker)
@@ -194,6 +199,7 @@ def adopt_completed_directory(
     work_dir: Path,
     run_id: str,
     *,
+    item: TrackerWorkItem,
     required: Sequence[str],
     record: Sequence[AdoptEvidence],
 ) -> None:
@@ -213,7 +219,13 @@ def adopt_completed_directory(
     confident guess that would then serve as a cache key. The consequence is
     inherent rather than a gap: an adopted directory is not protected by the
     source-video guard, because there is nothing to compare against.
+
+    An *item* of several clips is never adopted. The directory cannot say how many
+    clips it covered, and its shape is a single clip's, so adopting it would keep
+    one clip's output for the whole entry under a marker saying the entry is done.
     """
+    if item.n_sources > 1:
+        return
     if any(read_phase_marker(work_dir, ev.phase) is not None for ev in record):
         return
     if not all(sorted(work_dir.glob(pattern)) for pattern in required):

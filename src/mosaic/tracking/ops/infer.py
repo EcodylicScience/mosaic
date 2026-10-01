@@ -587,7 +587,8 @@ def _inference_entry(
         MediaVariantDriftedError: If the entry's media changed after the
             variant's file was written.
         JoinedSourceMismatchError: If the entry's clips differ in frame
-            geometry, or one reports no frame rate.
+            geometry, one reports no frame rate, or they are stores whose frame
+            rates differ.
         StoreExportMissingError: If an op that opens by path is handed a store
             with no export.
         JoinedExportMissingError: If the entry's clips must be read through a

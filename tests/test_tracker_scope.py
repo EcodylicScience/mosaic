@@ -20,12 +20,13 @@ from pydantic import ValidationError
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.scope import Scope
 from mosaic.core.media.facts_columns import store_facts
+from mosaic.core.pipeline.joined_export import JoinedExportMissingError
 from mosaic.tracking.common.scope import (
     JoinedSourceMismatchError,
     TrackerWorkItem,
     build_work_items,
 )
-from tests.helpers import MediaClip, write_media_index
+from tests.helpers import MediaClip, clip_facts, point_at_a_store, write_media_index
 
 TREX = "trex"
 SLEAP = "sleap"
@@ -64,7 +65,6 @@ class TestOneClip:
         ds = _dataset(tmp_path, [MediaClip(filename="v.mp4", video_uuid="uid-v")])
         (item,) = _items(ds, kind=TREX)
         assert item.source_uid == "uid-v"
-        assert item.video_uid == "uid-v"
 
     def test_an_unmeasured_rate_still_falls_back(self, tmp_path: Path) -> None:
         """Only a *joined* entry refuses a missing rate; one clip defaults."""
@@ -119,8 +119,7 @@ class TestTheReuseKey:
     def test_several_clips_key_on_the_ordered_composition(self, tmp_path: Path) -> None:
         ds = _dataset(tmp_path, SESSION)
         (item,) = _items(ds, kind=TREX)
-        assert item.source_uid != ""
-        assert item.source_uid != item.video_uid
+        assert item.source_uid not in ("", "uid-0")
 
     def test_reordering_the_clips_changes_it(self, tmp_path: Path) -> None:
         forward = _dataset(tmp_path / "a", SESSION)
@@ -143,13 +142,16 @@ class TestTheReuseKey:
         (long,) = _items(three, kind=TREX)
         assert short.source_uid != long.source_uid
 
-    def test_an_unidentified_clip_empties_it(self, tmp_path: Path) -> None:
-        """Unestablishable, which sends the gate to its path fallback."""
-        ds = _dataset(
-            tmp_path,
-            [SESSION[0], dataclasses.replace(SESSION[1], video_uuid="")],
+    def test_an_unidentified_clip_empties_it(self) -> None:
+        """Unestablishable, so no marker and no join can name the clips."""
+        item = TrackerWorkItem(
+            group="",
+            sequence="s",
+            key="s",
+            video_paths=(Path("a.mp4"), Path("b.mp4")),
+            fps=30.0,
+            source_facts=(clip_facts(video_uuid="uid-a"), clip_facts(video_uuid="")),
         )
-        (item,) = _items(ds, kind=TREX)
         assert item.source_uid == ""
 
 
@@ -169,6 +171,37 @@ class TestRefusals:
         )
         with pytest.raises(JoinedSourceMismatchError, match="no frame rate"):
             _ = _items(ds, kind=TREX)
+
+    def test_stores_at_two_rates_are_refused(self, tmp_path: Path) -> None:
+        """Nothing joins stores, and the store reader needs one rate."""
+        clips = [SESSION[0], dataclasses.replace(SESSION[2], video_order=1)]
+        ds = _dataset(tmp_path, clips)
+        for clip in clips:
+            _ = point_at_a_store(
+                ds,
+                clip.sequence,
+                ds.get_root("media_raw") / f"{clip.video_order}.store",
+                video_order=clip.video_order,
+            )
+        with pytest.raises(JoinedSourceMismatchError, match="--kind preprocess"):
+            _ = _items(ds, kind=TREX)
+
+    def test_an_unidentified_clip_among_several_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The first clip's path would otherwise vouch for the second clip."""
+        ds = _dataset(
+            tmp_path,
+            [SESSION[0], dataclasses.replace(SESSION[1], video_uuid="")],
+        )
+        with pytest.raises(JoinedExportMissingError, match="reprobe-media --apply"):
+            _ = _items(ds, kind=TREX)
+
+    def test_one_unidentified_clip_is_not_refused(self, tmp_path: Path) -> None:
+        """One clip needs no join, and its path is the whole input."""
+        ds = _dataset(tmp_path, [MediaClip(filename="v.mp4")])
+        (item,) = _items(ds, kind=TREX)
+        assert item.source_uid == ""
 
 
 class TestCameras:

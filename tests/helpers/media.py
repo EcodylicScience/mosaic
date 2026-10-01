@@ -24,6 +24,12 @@ from mosaic_media.transcode import Target
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
+from mosaic.core.pipeline.composition import MediaMember, media_composition
+from mosaic.core.pipeline.joined_export import (
+    JoinedExportParams,
+    joined_export_path,
+    joined_recipe_hash,
+)
 from tests.helpers.environment import require_ffmpeg
 
 
@@ -392,18 +398,45 @@ def write_media_index(
     pd.DataFrame(written).to_csv(media_root / "index.csv", index=False)
 
 
-def point_at_a_store(dataset: Dataset, sequence: str, store: Path) -> Path:
+def stub_join(dataset: Dataset, uids: Sequence[str]) -> Path:
+    """Write a placeholder join of the clips whose identities are *uids*, in order.
+
+    It is written at the address a tracker resolves for exactly these clips in this
+    order, under the current recipe. Every tracker suite fakes its tool, so
+    nothing decodes the bytes. A test that reorders, adds or replaces a clip
+    writes the new address, or sees the refusal of a missing join.
+    """
+    members = [
+        MediaMember(camera="", video_order=order, uid=uid)
+        for order, uid in enumerate(uids)
+    ]
+    path = joined_export_path(
+        dataset,
+        media_composition(members).digest,
+        joined_recipe_hash(JoinedExportParams()),
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_bytes(b"joined")
+    return path
+
+
+def point_at_a_store(
+    dataset: Dataset, sequence: str, store: Path, *, video_order: int | None = None
+) -> Path:
     """Re-address *sequence*'s indexed media at an imgstore recording, *store*.
 
     A store is a directory holding a ``metadata.yaml`` naming ``__store``, which
     is all ``is_imgstore`` reads, so this needs no chunk files and no imgstore
-    package. Returns *store*.
+    package. *video_order* names the one clip to re-address, and ``None`` every
+    clip of the sequence. Returns *store*.
     """
     store.mkdir(parents=True, exist_ok=True)
     _ = (store / "metadata.yaml").write_text("__store: {}\n")
     index_path = dataset.get_root(dataset.resolve_media_root()) / "index.csv"
     table = pd.read_csv(index_path)
     is_entry = table["sequence"] == sequence
+    if video_order is not None:
+        is_entry &= table["video_order"] == video_order
     table.loc[is_entry, "abs_path"] = dataset.relative_to_root(store)
     table.loc[is_entry, "media_type"] = "imgstore"
     table.to_csv(index_path, index=False)

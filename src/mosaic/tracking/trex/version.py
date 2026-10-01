@@ -38,7 +38,8 @@ conversion slot is addressed by ``<convert run id>/<source uid>``, and neither
 term moved: ``source_uid`` is the composition of the clips, which is the same
 clips, and the convert run id is the settings, which are the same settings. So
 without this the wrong ``.pv`` would be served as a cache hit for every session
-already converted. The other three trackers needed no bump for the same change,
-because they were truncated to clip 0 before it and their ``source_uid`` moves
-from one clip's uuid to the composition of all of them by itself.
+already converted. The other three trackers needed no bump. They were truncated
+to clip 0 before the change, and their markers record that clip's uuid, where the
+reuse gate compares the composition of every clip, so each such entry is tracked
+again on its next run.
 """

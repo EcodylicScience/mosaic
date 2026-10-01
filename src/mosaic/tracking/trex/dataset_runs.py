@@ -445,8 +445,7 @@ def _republish_entry(
         work_dir,
         "track",
         params_hash=track_hash,
-        video_path=item.video_path,
-        video_uid=item.source_uid,
+        item=item,
     )
     if marker is None:
         msg = (
@@ -635,10 +634,10 @@ def _adopt_into_cache(
     existed.
 
     The marker must *prove* the match -- a non-empty ``params_hash`` and
-    ``source_uid``, both equal to this run's. ``reusable_marker`` deliberately
-    reads an empty one as "unknown is not mismatched", which is right for reusing
-    a directory where it stands and wrong for promoting its contents into a
-    durable shared address. A directory adopted from before markers existed
+    ``source_uid``, both equal to this run's. For one clip ``reusable_marker``
+    deliberately reads an empty one as "unknown is not mismatched", which is right
+    for reusing a directory where it stands and wrong for promoting its contents
+    into a durable shared address. A directory adopted from before markers existed
     records neither, so it is reused and never cached.
     """
     if slot is None or not slot_marker_is_usable(marker):
@@ -873,25 +872,18 @@ def run_trex(
         # tracking; the .pv and the per-individual files appear as processing
         # proceeds, so neither distinguishes a finished run from one killed
         # partway. A finished tracking implies a finished conversion, which is
-        # what lets one signal adopt both phases.
-        #
-        # Not for a joined entry. A pre-marker directory cannot say how many
-        # clips it covered, and a joined entry's directory is shape-identical to
-        # a single-video one -- so adopting would silently keep one clip's tracks
-        # for a whole session, under a marker asserting the session was done.
-        # This is the documented rule for a tracker whose output cannot make that
-        # distinction: do not adopt.
-        if not joined:
-            adopt_completed_directory(
-                job.ds,
-                work_dir,
-                minted.run_id,
-                required=("data/*.npz", "*.results", "*.pv"),
-                record=(
-                    AdoptEvidence("convert", "*.pv"),
-                    AdoptEvidence("track", "*.results"),
-                ),
-            )
+        # what lets one signal adopt both phases. A joined entry is not adopted.
+        adopt_completed_directory(
+            job.ds,
+            work_dir,
+            minted.run_id,
+            item=item,
+            required=("data/*.npz", "*.results", "*.pv"),
+            record=(
+                AdoptEvidence("convert", "*.pv"),
+                AdoptEvidence("track", "*.results"),
+            ),
+        )
 
         if republish:
             # Before any phase code, never beside it: a phase gate that misses
@@ -977,8 +969,7 @@ def run_trex(
                 ctx=seq_ctx,
                 run_id=minted.run_id,
                 params_hash=phase_hashes["convert"],
-                video_path=item.video_path,
-                video_uid=item.source_uid,
+                item=item,
                 output=pv,
             )
 
@@ -996,8 +987,7 @@ def run_trex(
             work_dir,
             "convert",
             params_hash=phase_hashes["convert"],
-            video_path=item.video_path,
-            video_uid=item.source_uid,
+            item=item,
         )
         if reusable_convert is not None:
             local_marker, pv_path = reusable_convert
@@ -1059,8 +1049,7 @@ def run_trex(
             work_dir,
             "track",
             params_hash=phase_hashes["track"],
-            video_path=item.video_path,
-            video_uid=item.source_uid,
+            item=item,
         )
         if track_marker is None:
             clear_outputs(work_dir, TREX_KIND, "track")
@@ -1094,8 +1083,7 @@ def run_trex(
                 ctx=seq_ctx,
                 run_id=minted.run_id,
                 params_hash=phase_hashes["track"],
-                video_path=item.video_path,
-                video_uid=item.source_uid,
+                item=item,
                 output=results[0] if results else None,
             )
             recomputed = True

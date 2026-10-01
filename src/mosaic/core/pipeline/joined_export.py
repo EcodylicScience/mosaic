@@ -140,6 +140,7 @@ __all__ = [
     "missing_joins",
     "needs_join",
     "parse_joined_name",
+    "refuse_unidentified_clips",
     "write_joined_export",
 ]
 
@@ -349,6 +350,52 @@ class JoinedExportMissingError(FileNotFoundError):
     """
 
 
+def _join_command(group: str, sequence: str, facts: Sequence[MediaFacts]) -> str:
+    """The indented command that builds the current join of an entry's clips.
+
+    It sets ``reencode`` when :func:`join_needs_reencode` says the clips need it,
+    so the command works as shown.
+    """
+    reencode = (
+        """ --params '{"reencode": true}'""" if join_needs_reencode(facts) else ""
+    )
+    return (
+        f"    mosaic run -m <manifest> --kind export-joined "
+        f'--entries "{group}:{sequence}"{reencode}'
+    )
+
+
+def refuse_unidentified_clips(
+    group: str, sequence: str, facts: Sequence[MediaFacts], *, asker: str
+) -> None:
+    """Raise when several clips include one that carries no content identity.
+
+    A join is addressed by its clips' ordered composition digest
+    (:func:`joined_source_uid`), so clips of which one has no identity have no
+    join to read, and no tracker output to reuse can name them. One clip is read
+    as itself and passes.
+
+    Args:
+        group: The entry's group, for the refusal and the commands it names.
+        sequence: The entry's sequence, likewise.
+        facts: The clips' facts, in order.
+        asker: The op asking, which prefixes the refusal.
+
+    Raises:
+        JoinedExportMissingError: If there are several clips and any carries no
+            content identity.
+    """
+    if len(facts) < 2 or joined_source_uid(facts):
+        return
+    message = (
+        f"[{asker}] ({group}, {sequence}) has {len(facts)} clips and at least "
+        f"one carries no content identity, so the join of them cannot be "
+        f"addressed. Run 'mosaic reprobe-media --apply' to mint one for every "
+        f"clip, then:\n{_join_command(group, sequence, facts)}"
+    )
+    raise JoinedExportMissingError(message)
+
+
 def current_join(
     ds: "Dataset",
     group: str,
@@ -407,24 +454,10 @@ def current_join(
         JoinedExportMissingError: If the clip set cannot be addressed, has two
             current joins, has only superseded ones, or has none.
     """
+    refuse_unidentified_clips(group, sequence, facts, asker=asker)
     source_uid = joined_source_uid(facts)
     n_sources = len(facts)
-    reencode = (
-        """ --params '{"reencode": true}'""" if join_needs_reencode(facts) else ""
-    )
-    where = (
-        f"    mosaic run -m <manifest> --kind export-joined "
-        f'--entries "{group}:{sequence}"{reencode}'
-    )
-    if not source_uid:
-        message = (
-            f"[{asker}] ({group}, {sequence}) has {n_sources} clips and at least "
-            f"one carries no content identity, so the join of them cannot be "
-            f"addressed. Run 'mosaic reprobe-media --apply' to mint one for every "
-            f"clip, then:\n{where}"
-        )
-        raise JoinedExportMissingError(message)
-
+    where = _join_command(group, sequence, facts)
     current, superseded = joins_of(ds.get_root("media"), source_uid)
     if len(current) > 1:
         listed = "\n".join(f"      {p.name}" for p in current)
@@ -469,7 +502,8 @@ def needs_join(paths: Sequence[Path], facts: Sequence[MediaFacts]) -> bool:
     ``False`` for one clip, which is its own timeline, and for an imgstore
     sequence. The store reader reads the stores natively and compares their
     rates with the same tolerance, and ``export-joined`` does not join stores,
-    so stores whose rates differ beyond it are refused by the reader.
+    so stores whose rates differ beyond it are refused, by the trackers and the
+    inference ops before they start and by the reader.
     """
     # Local: `uniformity` reaches `core.pipeline.media_index`, and this module is
     # imported from `core.pipeline.__init__`. A module-level import would make

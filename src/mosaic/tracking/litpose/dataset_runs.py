@@ -320,8 +320,7 @@ def run_litpose(
             work_dir,
             "track",
             params_hash=minted.params_hash,
-            video_path=item.video_path,
-            video_uid=item.video_uid,
+            item=item,
         )
         if reusable is None:
             clear_phase_marker(work_dir, "track")
@@ -362,8 +361,7 @@ def run_litpose(
                 ctx=seq_ctx,
                 run_id=minted.run_id,
                 params_hash=minted.params_hash,
-                video_path=item.video_path,
-                video_uid=item.video_uid,
+                item=item,
                 output=csv_out,
             )
             recomputed = True
