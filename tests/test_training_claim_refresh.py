@@ -26,8 +26,8 @@ import pytest
 import yaml
 
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline.job import CancelToken, JobContext
 from mosaic.core.pipeline.markers import (
+    INFLIGHT_MARKER_NAME,
     InflightState,
     inflight_state,
     new_inflight,
@@ -36,19 +36,24 @@ from mosaic.core.pipeline.markers import (
 )
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.ops import run_op
-from mosaic.core.pipeline.progress import (
-    NullProgressCallback,
-    TrainingProgressCallback,
-)
+from mosaic.core.pipeline.progress import TrainingProgressCallback
 from mosaic.tracking import register_ops
-from mosaic.tracking.ops._common import RunRootHeld, claim_run_root
+from mosaic.tracking.ops._common import (
+    RunRootHeld,
+    claim_run_root,
+    empty_claimed_run_root,
+)
 
 from tests.helpers import make_dataset
 
 register_ops()
 
 _PEER = "01JPEER000000000000000000"
-"""A second execution, asking about a root it does not hold."""
+"""A second execution, asking about a root it does not hold.
+
+It keeps no run-log. An absent run-log is not evidence of anything, so the claim
+it meets falls through to its expiry, which is the case the expiry exists for.
+"""
 
 _LONG_AGO = "2020-01-01T00:00:00+00:00"
 """An expiry far enough in the past that no clock skew reaches it."""
@@ -58,23 +63,6 @@ def _peer_reads(ds: Dataset, run_root: Path) -> InflightState:
     """How another execution would classify the claim on *run_root* right now."""
     return inflight_state(
         read_inflight(run_root), run_log_base=ds.base_dir, execution_id=_PEER
-    )
-
-
-def _peer_context(kind: str) -> JobContext:
-    """A second execution's context, with no run-log of its own.
-
-    Untracked on purpose: an absent run-log is not evidence of anything, so the
-    claim it meets falls through to its expiry -- which is the case the expiry
-    exists for, and the one being tested.
-    """
-    return JobContext(
-        execution_id=_PEER,
-        kind=kind,
-        target=kind,
-        run_log=None,
-        progress=NullProgressCallback(),
-        cancel_token=CancelToken(),
     )
 
 
@@ -126,11 +114,25 @@ def test_a_lapsed_claim_is_taken_by_the_next_execution(tmp_path: Path) -> None:
     )
     _go_stale(ds, run_root)
 
-    taken = claim_run_root(
-        ds, _peer_context("train-sleap"), run_root, "train-sleap", 60
-    )
+    taken = claim_run_root(ds, _PEER, run_root, "train-sleap", 60)
 
     assert taken.execution_id == _PEER, "a lapsed claim is cleared and taken"
+    held = read_inflight(run_root)
+    assert held is not None and held.execution_id == _PEER
+
+
+def test_emptying_a_claimed_run_root_keeps_the_claim(tmp_path: Path) -> None:
+    """What a one-shot op clears before it writes, without letting go of the root."""
+    ds = make_dataset(tmp_path, save=False)
+    run_root = tmp_path / "models" / "train-sleap" / "run"
+    (run_root / "train" / "weights").mkdir(parents=True)
+    _ = (run_root / "train" / "weights" / "last.pt").write_bytes(b"w")
+    _ = (run_root / "results.csv").write_text("epoch\n")
+    _ = claim_run_root(ds, _PEER, run_root, "train-sleap", 60)
+
+    empty_claimed_run_root(run_root)
+
+    assert [child.name for child in run_root.iterdir()] == [INFLIGHT_MARKER_NAME]
     held = read_inflight(run_root)
     assert held is not None and held.execution_id == _PEER
 
@@ -308,10 +310,10 @@ def test_a_refreshing_run_refuses_the_peer_that_would_have_stolen_its_root(
 
     def peer_tries_to_take_it(run_root: Path, fire: Callable[[], None]) -> None:
         _the_signal_restores_the_claim(ds, run_root, fire)
-        with pytest.raises(RunRootHeld):
-            _ = claim_run_root(
-                ds, _peer_context("train-sleap"), run_root, "train-sleap", 60
-            )
+        with pytest.raises(RunRootHeld) as refused:
+            _ = claim_run_root(ds, _PEER, run_root, "train-sleap", 60)
+        held = refused.value.held
+        assert held is not None and held.execution_id != _PEER, "names its holder"
 
     _run_sleap(ds, tmp_path, monkeypatch, peer_tries_to_take_it)
 

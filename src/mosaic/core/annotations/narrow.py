@@ -25,6 +25,7 @@ Three rules are what keep the result honest.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Literal
 
 from mosaic.core.annotations.bbox import BboxPolicy, derived_bbox
@@ -41,10 +42,28 @@ from mosaic.core.annotations.pose_annotations import (
     PoseFrame,
 )
 
-__all__ = ["AliasRole", "narrow_pose_sets"]
+__all__ = ["AliasRole", "NarrowedSets", "narrow_pose_sets"]
 
 AliasRole = Literal["alias"]
 """What an object's alias can become: today only itself, as a class or a track."""
+
+
+@dataclass(frozen=True, slots=True)
+class NarrowedSets:
+    """The sets as one training run reads them, and the pose they were narrowed to.
+
+    Attributes:
+        sets: One single-schema set per label, holding the finished frames and
+            their objects of the chosen pose, with every box explicit.
+        pose: The first set's chosen pose, which names the result: every set
+            shares its layout, and its name is the one class when classes are
+            not taken from aliases. Another set may have chosen a pose with the
+            same layout under another id, when the choice is by name or each
+            set holds one pose.
+    """
+
+    sets: dict[str, AnnotationSet]
+    pose: PoseDefinition
 
 
 def narrow_pose_sets(
@@ -54,7 +73,7 @@ def narrow_pose_sets(
     class_by: AliasRole | None = None,
     track_by: AliasRole | None = None,
     bbox: BboxPolicy | None = None,
-) -> dict[str, AnnotationSet]:
+) -> NarrowedSets:
     """Each set narrowed to one pose's finished frames, with classes decided jointly.
 
     Args:
@@ -74,8 +93,7 @@ def narrow_pose_sets(
             uses each set's own policy: the box the annotator saw.
 
     Returns:
-        One single-schema set per label, holding the finished frames and their
-        objects of the chosen pose, with every box explicit.
+        The narrowed sets, and the pose they were narrowed to.
 
     Raises:
         ValueError: A set does not declare the pose, or declares it ambiguously;
@@ -133,7 +151,7 @@ def narrow_pose_sets(
             image_root=state.image_root,
             source_format=FORMAT_NAME,
         )
-    return narrowed
+    return NarrowedSets(sets=narrowed, pose=reference)
 
 
 def _select(

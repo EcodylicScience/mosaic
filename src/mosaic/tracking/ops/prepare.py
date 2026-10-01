@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final, Literal
 
@@ -38,16 +38,22 @@ from mosaic.core.annotations.model import (
     AnnotationSet,
     KeypointSchema,
 )
-from mosaic.core.annotations.narrow import AliasRole, narrow_pose_sets
+from mosaic.core.annotations.narrow import AliasRole, NarrowedSets, narrow_pose_sets
 from mosaic.core.annotations.pose_annotations import (
     PoseAnnotationSet,
+    PoseDefinition,
     read_pose_annotations,
 )
 from mosaic.core.annotations.projection import KEYPOINTS_SERIES
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
 from mosaic.core.pipeline.file_digest import file_digest
-from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, index_records
+from mosaic.core.pipeline.index_csv import (
+    IndexCSV,
+    RunIndexRowBase,
+    index_records,
+    project_to_schema,
+)
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.label_series_index import (
     read_label_series,
@@ -57,9 +63,11 @@ from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
 
-from ._common import claim_run_root, ensure_models_root
+from ._common import claim_run_root, empty_claimed_run_root, ensure_models_root
 
 if TYPE_CHECKING:
+    import pandas as pd
+
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline._utils import ResolvedScope
 
@@ -228,10 +236,35 @@ class PreparedDatasetIndexRow(RunIndexRowBase):
     n_valid: int
     n_test: int
     status: str
+    # The pose the sets were narrowed to: the authoring store's id and the name
+    # it had then. Provenance, never identity: ``pose`` entered the run
+    # identifier as the caller spelled it, and this records which pose that
+    # chose. Blank on a row written before these columns, meaning unknown.
+    pose_id: str = ""
+    pose_name: str = ""
+
+
+_PREPARED_DATASET_INDEX_COLUMNS: Final = tuple(
+    field.name for field in fields(PreparedDatasetIndexRow)
+)
+
+
+def _adopt_prepared_dataset_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Bring a prepared-data index read off disk up to the current schema.
+
+    Runs inside the write lock, so an index is brought forward the first time a
+    preparation is recorded in it, and never by a read.
+    """
+    return project_to_schema(df, _PREPARED_DATASET_INDEX_COLUMNS)
 
 
 def prepared_dataset_index(path: Path) -> IndexCSV[PreparedDatasetIndexRow]:
-    return IndexCSV(path, PreparedDatasetIndexRow, dedup_keys=["run_id"])
+    return IndexCSV(
+        path,
+        PreparedDatasetIndexRow,
+        dedup_keys=["run_id"],
+        adopt=_adopt_prepared_dataset_columns,
+    )
 
 
 # --- Resolving sets ------------------------------------------------------------
@@ -398,7 +431,7 @@ def check_preparation(ds: Dataset, params: PrepareTrainingDataParams) -> None:
         IdentityDeferred: A revision is not indexed here, or not on disk.
     """
     ordered_sets, narrowed = _narrowed(params, resolve_keypoint_sets(ds, params.sets))
-    _ = _split(params, ordered_sets, narrowed)
+    _ = _split(params, ordered_sets, narrowed.sets)
 
 
 # --- Building the tree ---------------------------------------------------------
@@ -462,7 +495,7 @@ def _split(
 
 def _narrowed(
     params: PrepareTrainingDataParams, sets: tuple[ResolvedSet, ...]
-) -> tuple[list[ResolvedSet], dict[str, AnnotationSet]]:
+) -> tuple[list[ResolvedSet], NarrowedSets]:
     """The sets in identity order, and each narrowed as this preparation reads it.
 
     Narrowed together, in the order the run identifier sorts them, so the classes and
@@ -483,7 +516,7 @@ def _narrowed(
         track_by=params.track_by if params.target == "sleap" else None,
         bbox=params.bbox,
     )
-    categories = narrowed[_set_label(ordered_sets[0])].categories
+    categories = narrowed.sets[_set_label(ordered_sets[0])].categories
     if params.target not in _TREE_TARGETS and len(categories) > 1:
         msg = (
             f"{params.target} trains one class, and class_by="
@@ -616,13 +649,11 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
         # Claimed before anything is cleared: two executions of one identifier
         # would otherwise have one delete the other's tree mid-write.
         out.mkdir(parents=True, exist_ok=True)
-        _ = claim_run_root(ds, ctx, out, self.kind, _PREPARE_IDLE_SECONDS)
-        for child in out.iterdir():
-            if child.name != ".mosaic-inflight.json":
-                shutil.rmtree(child) if child.is_dir() else child.unlink()
+        _ = claim_run_root(ds, ctx.execution_id, out, self.kind, _PREPARE_IDLE_SECONDS)
+        empty_claimed_run_root(out)
 
         ordered_sets, narrowed = _narrowed(params, sets)
-        reference = narrowed[_set_label(ordered_sets[0])]
+        reference = narrowed.sets[_set_label(ordered_sets[0])]
         schema, categories = reference.schema, reference.categories
         class_ids = reference.category_ids()
 
@@ -632,7 +663,7 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
         gathered: list[tuple[AnnotationFrame, Path]] = []
         missing: list[str] = []
         for item in ordered_sets:
-            annotations = narrowed[_set_label(item)]
+            annotations = narrowed.sets[_set_label(item)]
             for frame in annotations.frames:
                 source = annotations.resolve(frame)
                 if not source.is_file():
@@ -650,7 +681,7 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
             )
             raise FileNotFoundError(msg)
 
-        name_by_frame, split_of = _split(params, ordered_sets, narrowed)
+        name_by_frame, split_of = _split(params, ordered_sets, narrowed.sets)
 
         def name_of(frame: AnnotationFrame, _source: Path) -> str:
             return name_by_frame[id(frame)]
@@ -687,7 +718,7 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
             )
             return _register(
                 ds, index, run_id, self.kind, params, sets, out, artifact,
-                n_frames=len(ordered),
+                pose=narrowed.pose, n_frames=len(ordered),
             )  # fmt: skip
         written, skipped = write_split_tree(
             ordered,
@@ -722,8 +753,9 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
             )
 
         return _register(
-            ds, index, run_id, self.kind, params, sets, out, data_yaml, n_frames=written
-        )
+            ds, index, run_id, self.kind, params, sets, out, data_yaml,
+            pose=narrowed.pose, n_frames=written,
+        )  # fmt: skip
 
 
 def _register(
@@ -736,6 +768,7 @@ def _register(
     out: Path,
     artifact: Path,
     *,
+    pose: PoseDefinition,
     n_frames: int,
 ) -> str:
     """Record a finished preparation, naming what a trainer is to be handed."""
@@ -761,6 +794,8 @@ def _register(
                 n_valid=_count(out / "valid"),
                 n_test=_count(out / "test"),
                 status="finished",
+                pose_id=str(pose.id),
+                pose_name=pose.name,
                 abs_path=Path(ds.relative_to_root(out)),
             )
         ]

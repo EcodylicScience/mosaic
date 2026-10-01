@@ -31,6 +31,7 @@ from mosaic.tracking.ultralytics_track import (
 # imported at module top, so pandas, numpy, cv2 and h5py are loaded well before
 # this line is reached.
 from mosaic.tracking import ops as ops
+from mosaic.tracking.ops.delete_model import delete_trained_model
 
 
 def register_ops() -> None:
@@ -50,6 +51,7 @@ __all__ = [
     "register_track_schema",
     "ensure_track_schema",
     "register_ops",
+    "delete_trained_model",
     "resolve_model",
     "resolve_model_set",
     "extract_frames",

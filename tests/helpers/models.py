@@ -15,7 +15,13 @@ __all__ = ["register_trained_model"]
 
 
 def register_trained_model(
-    ds: Dataset, kind: str, run_id: str, weights: Path, *, directory: Path | None = None
+    ds: Dataset,
+    kind: str,
+    run_id: str,
+    weights: Path,
+    *,
+    directory: Path | None = None,
+    data_path: Path | None = None,
 ) -> None:
     """Append a finished row for *run_id* to ``models/<kind>/index.csv``.
 
@@ -28,6 +34,7 @@ def register_trained_model(
         weights: The weights file.
         directory: The model directory holding *weights*, for a kind whose
             artifact is a directory. ``None`` registers the file itself.
+        data_path: What the run trained on, or ``None`` for nothing recorded.
     """
     artifact = directory if directory is not None else weights
     index = trained_model_index(model_index_path(ds, kind))
@@ -46,6 +53,7 @@ def register_trained_model(
                 artifact_shape="file" if directory is None else "directory",
                 artifact_path=ds.relative_to_root(artifact),
                 model_type="",
+                data_path="" if data_path is None else ds.relative_to_root(data_path),
                 abs_path=Path(ds.relative_to_root(model_run_root(ds, kind, run_id))),
             )
         ]

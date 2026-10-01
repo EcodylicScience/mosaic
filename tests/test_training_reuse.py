@@ -219,10 +219,12 @@ def test_a_second_execution_cannot_train_into_a_held_run_root(
     )
 
     # overwrite, so the reuse gate does not answer first and the claim is reached.
-    with pytest.raises(RunRootHeld, match="SOMEONE-ELSE"):
+    with pytest.raises(RunRootHeld, match="SOMEONE-ELSE") as refused:
         _ = run_op(ds, "train-pose", dict(params), overwrite=True)
 
     assert trainer.calls == 1
+    assert refused.value.held is not None
+    assert refused.value.held.execution_id == "SOMEONE-ELSE"
 
 
 # --- What the data fingerprint may and may not notice ----------------------

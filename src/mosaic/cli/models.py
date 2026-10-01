@@ -64,6 +64,8 @@ def provenance(
         typer.echo(f"  fine-tuned   {found.base_run_id}")
     if found.prepared_run_id:
         typer.echo(f"  prepared by  {found.prepared_run_id}")
+    if found.pose_id is not None:
+        typer.echo(f"  pose         {found.pose_name} (id {found.pose_id})")
     for item in found.sets:
         state = "" if item.reachable else "  [not on disk]"
         typer.echo(

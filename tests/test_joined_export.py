@@ -25,19 +25,13 @@ from typing import override
 import numpy as np
 import pytest
 from mosaic_media import (
-    CHROME_149,
-    DEFAULT_THRESHOLDS,
     MediaFacts,
-    derive,
     probe_media,
 )
 from mosaic_media.transcode import TranscodeError
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import (
-    MEDIA_INDEX_COLUMNS,
-    derivative_column_for_target,
-    facts_to_row,
     store_facts,
 )
 from mosaic.core.media.video_io import open_frame_reader
@@ -61,11 +55,15 @@ from mosaic.core.pipeline.media_index import (
 )
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.progress import NullProgressCallback
-from mosaic.core.pipeline.transcode import TRANSCODE_KIND_DIRECTORY
 from mosaic.core.scope import Scope
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_inputs
-from tests.helpers import add_media_sequence, clip_facts, make_dataset
+from tests.helpers import (
+    add_media_sequence,
+    add_transcode_derivative,
+    clip_facts,
+    make_dataset,
+)
 
 pytestmark = pytest.mark.media
 
@@ -247,39 +245,22 @@ def test_a_mixed_clip_set_is_refused_by_default_naming_both_remedies(
 def _route_to_an_av1_derivative(ds: Dataset, name: str) -> None:
     """Make clip *name* of ``sess`` resolve to an AV1 analysis derivative.
 
-    What ``transcode`` leaves for a defective clip: the original marked as
-    requiring an analysis transcode and linked to its derivative, and a
-    derivative row carrying that file's own facts.
+    What ``transcode`` leaves for a defective clip, written through the op's own
+    writers: a derivative row carrying that file's facts, and the original linked
+    to it. The original is marked as requiring an analysis transcode by hand,
+    standing for the prober's verdict on a defective clip.
     """
+    _ = add_transcode_derivative(
+        ds, "sess", target="analysis", clip=name, encode=_as_av1
+    )
     raw_index = ds.get_root("media_raw") / "index.csv"
     originals: list[dict[str, object]] = [
         dict(row) for row in read_media_index(raw_index)
     ]
-    original = next(row for row in originals if row["name"] == name)
-    derivative = (
-        ds.get_root("media")
-        / TRANSCODE_KIND_DIRECTORY
-        / f"{Path(name).stem}.analysis.mp4"
-    )
-    derivative.parent.mkdir(parents=True, exist_ok=True)
-    facts = _as_av1(ds.resolve_path(str(original["abs_path"])), derivative)
-
-    original["analysis_transcode"] = "required"
-    original[derivative_column_for_target("analysis")] = (
-        f"{TRANSCODE_KIND_DIRECTORY}/{derivative.name}"
-    )
+    for row in originals:
+        if row["name"] == name:
+            row["analysis_transcode"] = "required"
     write_media_index_rows(raw_index, frame_from_rows(originals))
-    row: dict[str, object] = dict.fromkeys(MEDIA_INDEX_COLUMNS, "")
-    row.update(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
-    row.update(
-        {
-            "name": derivative.name,
-            "sequence": "sess",
-            "abs_path": ds.relative_to_root(derivative),
-            "source_video_uuid": original["video_uuid"],
-        }
-    )
-    write_media_index_rows(ds.get_root("media") / "index.csv", frame_from_rows([row]))
 
 
 def test_an_entry_routed_to_a_derivative_in_another_profile_needs_reencoding(

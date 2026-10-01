@@ -393,30 +393,41 @@ def write_media_index(
 
 
 def add_transcode_derivative(
-    dataset: Dataset, sequence: str, *, target: Target = "playback"
+    dataset: Dataset,
+    sequence: str,
+    *,
+    target: Target = "playback",
+    clip: str | None = None,
+    encode: Callable[[Path, Path], MediaFacts] | None = None,
 ) -> Path:
-    """Register a derivative for *sequence*'s first video, without encoding one.
+    """Register a derivative for one of *sequence*'s videos, as the transcode op does.
 
-    A stub, because nothing being tested reads a derivative's bytes -- what is
-    read is its *name*, so it is written under the scheme the transcode op uses
-    and the recipe is computed through the op's own function rather than
-    hard-coded (the recipe folds environment-driven thresholds, so a literal
-    would pin the suite to one machine).
+    The derivative is named under the op's scheme, with the recipe computed
+    through the op's own function rather than hard-coded: the recipe folds
+    environment-driven thresholds, so a literal would pin the suite to one
+    machine. Both links are written in the order the op writes them, the
+    back-link row into the ``media`` index and then the forward-link cell onto
+    the original, through the op's own writers wherever the derivative has facts.
 
-    Both links are written, in the order the op writes them: the back-link row
-    into the ``media`` index, then the forward-link cell onto the original.
+    Args:
+        dataset: The dataset holding the original.
+        sequence: The sequence whose video gets a derivative.
+        target: Which derivative. ``playback`` by default, matching the scenario
+            this exists for: a proxy made so a browser can play the video, which
+            the tracker, frame extraction, crops and every feature ignore.
+        clip: Which of the sequence's originals, by name. ``None`` is the first.
+        encode: Writes a source's derivative to a path and returns the facts
+            measured off it. ``None`` writes stub bytes instead, for a test that
+            reads only the derivative's name. A stub has no facts, so its
+            back-link row names it and nothing more, and routing never resolves
+            to it.
 
-    ``playback`` by default, matching the scenario this exists for -- a proxy
-    made so a browser can play the video, which the tracker, frame extraction,
-    crops and every feature ignore.
+    Returns:
+        The derivative's path.
     """
-    from mosaic_media import CHROME_149
     from mosaic_media.transcode import ANALYSIS_ENCODING, PLAYBACK_ENCODING
 
-    from mosaic.core.media.facts_columns import (
-        MEDIA_INDEX_COLUMNS,
-        derivative_column_for_target,
-    )
+    from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
     from mosaic.core.pipeline.media_index import (
         frame_from_rows,
         read_media_index,
@@ -425,17 +436,24 @@ def add_transcode_derivative(
     from mosaic.core.pipeline.transcode import (
         TRANSCODE_KIND_DIRECTORY,
         TranscodeParams,
+        relative_to_anchor,
+        set_back_link,
+        set_forward_link,
         transcode_recipe_hash,
     )
     from mosaic.media_probe_config import media_thresholds
 
     raw_index = dataset.get_root("media_raw") / "index.csv"
-    originals = [dict(row) for row in read_media_index(raw_index)]
-    matches = [row for row in originals if row.get("sequence") == sequence]
+    matches = [
+        dict(row)
+        for row in read_media_index(raw_index)
+        if row.get("sequence") == sequence and clip in (None, row.get("name"))
+    ]
     if not matches:
-        raise AssertionError(f"no media_raw row for sequence {sequence!r}")
+        raise AssertionError(f"no media_raw row for sequence {sequence!r} ({clip})")
     original = matches[0]
-    video_uuid = original["video_uuid"]
+    video_uuid = str(original["video_uuid"])
+    source = dataset.resolve_path(str(original["abs_path"]))
 
     recipe = transcode_recipe_hash(
         TranscodeParams(target=target),
@@ -443,32 +461,49 @@ def add_transcode_derivative(
         CHROME_149,
         media_thresholds(),
     )
-    transcode_root = dataset.get_root("media") / TRANSCODE_KIND_DIRECTORY
+    media_root = dataset.get_root("media")
+    transcode_root = media_root / TRANSCODE_KIND_DIRECTORY
     transcode_root.mkdir(parents=True, exist_ok=True)
     derivative = transcode_root / f"{video_uuid}.{recipe}.{target}.mp4"
-    _ = derivative.write_bytes(b"stub")
 
-    media_index = dataset.get_root("media") / "index.csv"
-    rows = [dict(row) for row in read_media_index(media_index)]
-    row: dict[str, object] = {column: "" for column in MEDIA_INDEX_COLUMNS}
-    row.update(
-        {
-            "name": derivative.name,
-            "group": original.get("group", ""),
-            "sequence": sequence,
-            "abs_path": dataset.relative_to_root(str(derivative)),
-            "source_video_uuid": video_uuid,
-            "recipe_hash": recipe,
-        }
+    if encode is not None:
+        facts = encode(source, derivative)
+        set_back_link(
+            dataset,
+            str(original.get("group", "")),
+            sequence,
+            source,
+            derivative,
+            facts,
+            derive(facts, CHROME_149, media_thresholds()),
+            int(str(original.get("video_order", "") or 0)),
+            source_video_uuid=video_uuid,
+            recipe_hash=recipe,
+            encoder=facts.codec_name,
+        )
+    else:
+        _ = derivative.write_bytes(b"stub")
+        media_index = media_root / "index.csv"
+        rows: list[dict[str, object]] = [
+            dict(row) for row in read_media_index(media_index)
+        ]
+        row: dict[str, object] = {column: "" for column in MEDIA_INDEX_COLUMNS}
+        row.update(
+            {
+                "name": derivative.name,
+                "group": original.get("group", ""),
+                "sequence": sequence,
+                "abs_path": dataset.relative_to_root(str(derivative)),
+                "source_video_uuid": video_uuid,
+                "recipe_hash": recipe,
+            }
+        )
+        rows.append(row)
+        write_media_index_rows(media_index, frame_from_rows(rows))
+
+    set_forward_link(
+        dataset, source, video_uuid, relative_to_anchor(derivative, media_root), target
     )
-    rows.append(row)
-    write_media_index_rows(media_index, frame_from_rows(rows))
-
-    column = derivative_column_for_target(target)
-    for candidate in originals:
-        if candidate.get("video_uuid") == video_uuid:
-            candidate[column] = f"{TRANSCODE_KIND_DIRECTORY}/{derivative.name}"
-    write_media_index_rows(raw_index, frame_from_rows(list(originals)))
     return derivative
 
 

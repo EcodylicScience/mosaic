@@ -57,7 +57,8 @@ usual sense. It is also *traceable*, because each step records the one before it
 
 ```
 the model              records the prepared dataset it was trained on
-the prepared dataset   records each annotation set, revision and content digest it merged
+the prepared dataset   records each annotation set, revision and content digest it merged,
+                       and the pose it narrowed them to
 the revision           records what was noted when it was saved -- a database commit, say
 ```
 

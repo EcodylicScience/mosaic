@@ -4,7 +4,7 @@ Each link of that chain is written where it is known, by a different writer:
 
 ```
 models/<train kind>/<run_id>            index row: data_path, data_fingerprint
-  -> models/prepare-training-data/<id>  index row: consumed_sets
+  -> models/prepare-training-data/<id>  index row: consumed_sets, pose_id, pose_name
   -> labels_raw/keypoints/index.csv     the claimed revision, its path
   -> <revision>/manifest.json           origin: what the authoring store recorded
 ```
@@ -97,6 +97,9 @@ class TrainingProvenance:
         base_run_id: What it was fine-tuned from, or ``""``.
         prepared_kind: The preparation op behind ``data_path``, or ``""``.
         prepared_run_id: That preparation run, or ``""``.
+        pose_id: The authoring store's id of the pose the preparation narrowed
+            the sets to, or ``None`` when its row does not record one.
+        pose_name: That pose's name when the preparation ran, or ``""``.
         sets: The annotation revisions the preparation consumed.
         stopped_at: Why the walk went no further, or ``""`` when it reached
             every revision. Never an error: an incomplete chain is an answer.
@@ -110,6 +113,8 @@ class TrainingProvenance:
     base_run_id: str = ""
     prepared_kind: str = ""
     prepared_run_id: str = ""
+    pose_id: int | None = None
+    pose_name: str = ""
     sets: tuple[ConsumedRevision, ...] = ()
     stopped_at: str = ""
 
@@ -124,6 +129,8 @@ class TrainingProvenance:
             "base_run_id": self.base_run_id,
             "prepared_kind": self.prepared_kind,
             "prepared_run_id": self.prepared_run_id,
+            "pose_id": self.pose_id,
+            "pose_name": self.pose_name,
             "stopped_at": self.stopped_at,
             "sets": [
                 {
@@ -179,6 +186,17 @@ def _prepared_run(data_path: str) -> tuple[str, str]:
         if parsed is not None and parsed.kind in PREPARED_DATA_KINDS:
             return parsed.kind, part
     return "", ""
+
+
+def _pose_id(cell: str) -> int | None:
+    """The pose id a prepared-data row records, or ``None`` for a blank cell.
+
+    Blank is what a row written before the column existed reads as.
+    """
+    try:
+        return int(cell)
+    except ValueError:
+        return None
 
 
 def _consumed(holder: Dataset, cell: str) -> tuple[ConsumedRevision, ...]:
@@ -288,6 +306,8 @@ def training_provenance(ds: Dataset, kind: str, run_id: str) -> TrainingProvenan
         base_run_id=base.base_run_id,
         prepared_kind=prepared_kind,
         prepared_run_id=prepared_run_id,
+        pose_id=_pose_id(prepared.get("pose_id", "")),
+        pose_name=prepared.get("pose_name", ""),
         sets=sets,
         stopped_at=reason,
     )

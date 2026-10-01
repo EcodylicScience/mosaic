@@ -205,9 +205,10 @@ together.
 mosaic models provenance -m /data/mice/dataset.yaml train-pose.0.2-<digest>
 ```
 
-Prints the prepared dataset behind the model and each annotation revision behind
-that, with whatever was recorded when the revision was saved. If a dataset it drew
-from has since been archived, the answer says which revisions are no longer on disk.
+Prints the prepared dataset behind the model, the pose it was narrowed to, and each
+annotation revision behind that, with whatever was recorded when the revision was
+saved. If a dataset it drew from has since been archived, the answer says which
+revisions are no longer on disk.
 
 ## Augmentation is opt-in
 

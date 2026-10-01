@@ -398,11 +398,37 @@ def _field(record: dict[str, JsonValue], key: str) -> dict[str, JsonValue]:
 
 
 def test_a_pose_is_chosen_by_id_or_by_name() -> None:
-    by_id = narrow_pose_sets({"s": _state()}, pose=CRICKET.id)["s"]
-    by_name = narrow_pose_sets({"s": _state()}, pose="cricket")["s"]
+    by_id = narrow_pose_sets({"s": _state()}, pose=CRICKET.id).sets["s"]
+    by_name = narrow_pose_sets({"s": _state()}, pose="cricket").sets["s"]
 
     assert by_id.schema == by_name.schema == CRICKET.schema
     assert by_id.categories == ("cricket",)
+
+
+@pytest.mark.parametrize("pose", [CRICKET.id, "cricket"], ids=["by-id", "by-name"])
+def test_the_narrowing_names_the_pose_it_chose(pose: int | str) -> None:
+    assert narrow_pose_sets({"s": _state()}, pose=pose).pose == CRICKET
+
+
+def test_a_set_of_one_pose_is_narrowed_to_it_unnamed() -> None:
+    finished = pose_set([pose_frame("f.png", pose_object((1.0, 2.0), (3.0, 4.0)))])
+
+    assert narrow_pose_sets({"s": finished}).pose == MOUSE
+
+
+def test_sets_that_choose_different_poses_are_named_by_the_first() -> None:
+    """The first set's pose gives the layout and the one class, so it names the result."""
+    rat = replace(MOUSE, id=MOUSE.id + 1, name="rat")
+    mice = pose_set([pose_frame("m.png", pose_object((1.0, 2.0), (3.0, 4.0)))])
+    rats = pose_set(
+        [pose_frame("r.png", pose_object((1.0, 2.0), (3.0, 4.0), pose_id=rat.id))],
+        poses=(rat,),
+    )
+
+    narrowed = narrow_pose_sets({"rats": rats, "mice": mice})
+
+    assert narrowed.pose == rat
+    assert narrowed.sets["mice"].categories == ("rat",)
 
 
 def test_a_state_with_two_poses_says_which_to_name() -> None:
@@ -416,7 +442,7 @@ def test_a_set_without_the_pose_is_refused() -> None:
 
 
 def test_only_finished_frames_are_kept_and_a_frame_without_the_pose_stays() -> None:
-    narrowed = narrow_pose_sets({"s": _state()}, pose=CRICKET.id)["s"]
+    narrowed = narrow_pose_sets({"s": _state()}, pose=CRICKET.id).sets["s"]
 
     assert [frame.frame_index for frame in narrowed.frames] == [1, 2, 3]
     assert [len(frame.objects) for frame in narrowed.frames] == [1, 0, 0], (
@@ -426,7 +452,9 @@ def test_only_finished_frames_are_kept_and_a_frame_without_the_pose_stays() -> N
 
 def test_aliases_become_sorted_classes() -> None:
     finished = replace(_state(), frames=_state().frames[:3])
-    narrowed = narrow_pose_sets({"s": finished}, pose="mouse", class_by="alias")["s"]
+    narrowed = narrow_pose_sets({"s": finished}, pose="mouse", class_by="alias").sets[
+        "s"
+    ]
 
     assert narrowed.categories == ("intruder", "resident")
     assert [obj.category for frame in narrowed.frames for obj in frame.objects] == [
@@ -457,7 +485,7 @@ def test_an_alias_renamed_between_saves_is_one_class_named_by_the_first() -> Non
         {"first": finished, "second": renamed}, pose="mouse", class_by="alias"
     )
 
-    assert narrowed["second"].categories == ("intruder", "resident")
+    assert narrowed.sets["second"].categories == ("intruder", "resident")
 
 
 def test_two_aliases_sharing_a_name_cannot_be_two_classes() -> None:
@@ -475,7 +503,9 @@ def test_two_aliases_sharing_a_name_cannot_be_two_classes() -> None:
 
 
 def test_an_alias_can_be_the_track_a_sleap_identity_model_learns() -> None:
-    narrowed = narrow_pose_sets({"s": _state()}, pose="mouse", track_by="alias")["s"]
+    narrowed = narrow_pose_sets({"s": _state()}, pose="mouse", track_by="alias").sets[
+        "s"
+    ]
 
     assert [obj.track_id for frame in narrowed.frames for obj in frame.objects] == [
         "resident",
@@ -485,10 +515,10 @@ def test_an_alias_can_be_the_track_a_sleap_identity_model_learns() -> None:
 
 def test_every_box_is_explicit_and_a_drawn_one_is_kept() -> None:
     state = _state()
-    own = narrow_pose_sets({"s": state}, pose="mouse")["s"]
+    own = narrow_pose_sets({"s": state}, pose="mouse").sets["s"]
     tight = narrow_pose_sets(
         {"s": state}, pose="mouse", bbox=BboxPolicy(method="tight", margin=0.0)
-    )["s"]
+    ).sets["s"]
 
     assert own.frames[0].objects[0].bbox == tight.frames[0].objects[0].bbox == DRAWN
     keypoints = state.frames[1].objects[0].keypoints

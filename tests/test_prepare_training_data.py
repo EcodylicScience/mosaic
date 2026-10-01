@@ -9,8 +9,10 @@ from any project that links it.
 from __future__ import annotations
 
 import json
+from dataclasses import fields
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import yaml
 
@@ -27,6 +29,7 @@ from mosaic.core.annotations.projection import write_keypoint_set_revision
 from mosaic.core.dataset import Dataset
 from mosaic.core.manifest import LabelsScanSource, LibraryLink
 from mosaic.core.pipeline._utils import ResolvedScope
+from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.inventory import inventory
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.ops import OPS, IdentityDeferred, run_op
@@ -36,6 +39,7 @@ from mosaic.tracking.ops._common import (
     resolve_training_data,
 )
 from mosaic.tracking.ops.prepare import (
+    PreparedDatasetIndexRow,
     PrepareTrainingDataParams,
     check_preparation,
     prepared_dataset_index,
@@ -47,6 +51,7 @@ from mosaic.tracking.ops.train import (
 )
 from mosaic.tracking.training_provenance import training_provenance
 from tests.helpers import (
+    MOUSE,
     make_dataset,
     pose_frame,
     pose_object,
@@ -211,6 +216,33 @@ def test_the_row_records_exactly_which_revisions_were_read(
     }
     assert {c["origin_uuid"] for c in consumed} == {mice.uuid, rats.uuid}
     assert row["artifact_path"] == f"models/{KIND}/{run_id}/data.yaml"
+
+
+def _recorded_pose(library: Dataset, run_id: str) -> tuple[str, str]:
+    """The pose a preparation's index row names, as its ``(id, name)`` cells."""
+    rows = index_records(
+        prepared_dataset_index(model_index_path(library, KIND)).read(run_id=run_id)
+    )
+    return rows[-1]["pose_id"], rows[-1]["pose_name"]
+
+
+def test_a_preparation_records_the_one_pose_its_sets_hold(
+    world: tuple[Dataset, Dataset, Dataset],
+) -> None:
+    _mice, _rats, library = world
+    run_id = _prepare(library)
+
+    assert _recorded_pose(library, run_id) == (str(MOUSE.id), MOUSE.name)
+    params = PrepareTrainingDataParams.model_validate(
+        {
+            "sets": [{"set_key": "17-openfield"}, {"set_key": "21-arena"}],
+            "split": (0.5, 0.5, 0.0),
+        }
+    )
+    planned = OPS[KIND]().plan_identity(library, params, ResolvedScope()).run_id
+    assert run_id == planned, (
+        "named before the sets are narrowed, so the pose it records is not part of it"
+    )
 
 
 def test_a_selector_is_not_content(world: tuple[Dataset, Dataset, Dataset]) -> None:
@@ -491,6 +523,19 @@ def test_one_pose_is_trained_and_the_others_are_background(full_state: Dataset) 
     assert declared["names"] == ["cricket"] and declared["kpt_shape"] == [2, 3]
 
 
+@pytest.mark.parametrize(
+    ("pose", "chosen"),
+    [(EARS.id, EARS), ("mouse", EARS), (CRICKET.id, CRICKET), ("cricket", CRICKET)],
+    ids=["mouse-by-id", "mouse-by-name", "cricket-by-id", "cricket-by-name"],
+)
+def test_a_preparation_records_the_pose_it_chose(
+    full_state: Dataset, pose: int | str, chosen: PoseDefinition
+) -> None:
+    run_id = run_op(full_state, KIND, {**FULL, "pose": pose})
+
+    assert _recorded_pose(full_state, run_id) == (str(chosen.id), chosen.name)
+
+
 def test_a_state_holding_two_poses_needs_one_named(full_state: Dataset) -> None:
     with pytest.raises(ValueError, match="name the one to train"):
         _ = _prepare_full(full_state, pose=None)
@@ -708,6 +753,46 @@ def test_a_model_names_the_annotation_revisions_it_saw(
     assert all(s.reachable and s.origin == {"dolt_commit": "c1"} for s in found.sets)
 
 
+def test_a_model_names_the_pose_it_was_trained_on(full_state: Dataset) -> None:
+    model = _train(full_state, run_op(full_state, KIND, {**FULL, "pose": "cricket"}))
+
+    found = training_provenance(full_state, "train-pose", model)
+
+    assert (found.pose_id, found.pose_name) == (CRICKET.id, CRICKET.name)
+    document = found.as_json()
+    assert (document["pose_id"], document["pose_name"]) == (CRICKET.id, CRICKET.name)
+
+
+def test_an_index_older_than_the_pose_reads_blank_and_is_adopted_on_the_next_write(
+    world: tuple[Dataset, Dataset, Dataset],
+) -> None:
+    """A row from before the pose was recorded names none; blank means unknown."""
+    _mice, _rats, library = world
+    earlier = _prepare(library)
+    model = _train(library, earlier)
+    path = model_index_path(library, KIND)
+    written = pd.read_csv(path, dtype=str, keep_default_na=False)
+    written.drop(columns=["pose_id", "pose_name"]).to_csv(path, index=False)
+
+    found = training_provenance(library, "train-pose", model)
+    assert (found.pose_id, found.pose_name) == (None, "")
+    assert found.stopped_at == "", "the rest of the chain still reads"
+
+    later = _prepare(library, target="polo")
+
+    adopted = pd.read_csv(path, dtype=str, keep_default_na=False)
+    assert list(adopted.columns) == [
+        field.name for field in fields(PreparedDatasetIndexRow)
+    ]
+    rows = {row["run_id"]: row for row in index_records(adopted)}
+    assert (rows[earlier]["pose_id"], rows[earlier]["pose_name"]) == ("", "")
+    assert (rows[later]["pose_id"], rows[later]["pose_name"]) == (
+        str(MOUSE.id),
+        MOUSE.name,
+    )
+    assert rows[earlier]["n_frames"] == "16", "an integer cell is not widened"
+
+
 def test_the_same_answer_from_a_project_that_links_the_library(
     world: tuple[Dataset, Dataset, Dataset],
 ) -> None:
@@ -805,6 +890,11 @@ def test_the_provenance_command_prints_the_chain(
         "21-arena",
     }
     assert all(entry["origin"] == {"dolt_commit": "c1"} for entry in document["sets"])
+    assert (document["pose_id"], document["pose_name"]) == (MOUSE.id, MOUSE.name)
+    printed = CliRunner().invoke(
+        app, ["models", "provenance", "-m", str(mice.manifest_path), model]
+    )
+    assert printed.exit_code == 0 and f"mouse (id {MOUSE.id})" in printed.output
 
     missing = CliRunner().invoke(
         app,

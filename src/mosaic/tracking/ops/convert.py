@@ -14,7 +14,6 @@ The heavy-ish converter imports (numpy via the schema base) load lazily inside `
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
@@ -33,6 +32,7 @@ from mosaic.core.params import (
 )
 from mosaic.tracking.ops._common import (
     claim_run_root,
+    empty_claimed_run_root,
     ensure_models_root,
     fingerprint_dataset,
 )
@@ -261,14 +261,12 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
             ctx.cache_hit()
             return run_id
 
-        # Claimed before the rmtree, not after: two executions of this identifier
+        # Claimed before clearing, not after: two executions of this identifier
         # would otherwise have one delete the other's output mid-write. The body is
         # deterministic, so the bytes agree -- the destruction is the hazard.
         out.mkdir(parents=True, exist_ok=True)
-        claim_run_root(ds, ctx, out, self.kind, _CONVERT_IDLE_SECONDS)
-        for child in out.iterdir():
-            if child.name != ".mosaic-inflight.json":
-                shutil.rmtree(child) if child.is_dir() else child.unlink()
+        claim_run_root(ds, ctx.execution_id, out, self.kind, _CONVERT_IDLE_SECONDS)
+        empty_claimed_run_root(out)
 
         schema = convert_cvat_points_polo(
             xml,

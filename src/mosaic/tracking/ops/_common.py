@@ -9,6 +9,7 @@ helpers -- training ``run_id``s are unchanged by the move.
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -24,8 +25,8 @@ from mosaic.core.pipeline.models import (
     prepared_artifact_cell,
 )
 from mosaic.core.pipeline.op_identity import parse_op_run_id
-from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.markers import (
+    INFLIGHT_MARKER_NAME,
     InflightMarker,
     clear_inflight,
     inflight_state,
@@ -247,11 +248,20 @@ def fingerprint_yolo_dataset(data_yaml: Path) -> str:
 
 
 class RunRootHeld(RuntimeError):
-    """Another execution is already producing this run, so this one must not."""
+    """Another execution is already producing this run, so this one must not.
+
+    Attributes:
+        held: The claim that refused this one, or ``None`` when it could not be
+            read.
+    """
+
+    def __init__(self, message: str, *, held: InflightMarker | None) -> None:
+        super().__init__(message)
+        self.held: InflightMarker | None = held
 
 
 def claim_run_root(
-    ds: Dataset, ctx: JobContext, run_root: Path, kind: str, idle_seconds: float
+    ds: Dataset, execution_id: str, run_root: Path, kind: str, idle_seconds: float
 ) -> InflightMarker:
     """Take *run_root* exclusively for a one-shot op, or raise.
 
@@ -277,7 +287,7 @@ def claim_run_root(
         refresh on.
     """
     marker = new_inflight(
-        execution_id=ctx.execution_id,
+        execution_id=execution_id,
         host=socket.gethostname(),
         pid=os.getpid(),
         phase=None,
@@ -289,7 +299,7 @@ def claim_run_root(
             return marker
         held = read_inflight(run_root)
         state = inflight_state(
-            held, run_log_base=ds.base_dir, execution_id=ctx.execution_id
+            held, run_log_base=ds.base_dir, execution_id=execution_id
         )
         if state == "mine":
             return marker
@@ -300,5 +310,25 @@ def claim_run_root(
     where = f"{held.host}:{held.pid}" if held is not None else "another host"
     raise RunRootHeld(
         f"[{kind}] {run_root.name} is being produced by execution "
-        f"{held.execution_id if held else '?'} on {where}; not training it again."
+        f"{held.execution_id if held else '?'} on {where}; not training it again.",
+        held=held,
     )
+
+
+def empty_claimed_run_root(run_root: Path) -> None:
+    """Remove everything under *run_root* except the claim on it.
+
+    What an op clears before writing into a root it has just claimed. Removing
+    the root itself, or everything in it, would take the claim with it and leave
+    the directory free for another execution mid-clear.
+
+    Raises:
+        OSError: A child could not be removed.
+    """
+    for child in run_root.iterdir():
+        if child.name == INFLIGHT_MARKER_NAME:
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()

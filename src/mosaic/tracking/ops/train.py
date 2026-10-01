@@ -39,7 +39,7 @@ from mosaic.core.pipeline.inventory._read import IndexReader
 from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
 from mosaic.core.pipeline.inventory.model import ArtifactRecord, InventoryScope
 from mosaic.core.pipeline.models import (
-    PREPARED_DATA_KINDS,
+    holds_trained_models,
     model_index_path,
     model_run_root,
 )
@@ -980,7 +980,9 @@ class TrainPoseOp(Op[PoseTrainParams]):
 
         ctx.set_total(params.epochs)
         run_root.mkdir(parents=True, exist_ok=True)
-        marker = claim_run_root(ds, ctx, run_root, self.kind, _TRAIN_IDLE_SECONDS)
+        marker = claim_run_root(
+            ds, ctx.execution_id, run_root, self.kind, _TRAIN_IDLE_SECONDS
+        )
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         outcome = train_through_the_tool(
@@ -1111,7 +1113,9 @@ class TrainPointsOp(Op[PointTrainParams]):
 
         ctx.set_total(params.epochs)
         run_root.mkdir(parents=True, exist_ok=True)
-        marker = claim_run_root(ds, ctx, run_root, self.kind, _TRAIN_IDLE_SECONDS)
+        marker = claim_run_root(
+            ds, ctx.execution_id, run_root, self.kind, _TRAIN_IDLE_SECONDS
+        )
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         outcome = train_through_the_tool(
@@ -1218,7 +1222,9 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
         ctx.set_total(params.epochs)
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
-        marker = claim_run_root(ds, ctx, run_root, self.kind, _TRAIN_IDLE_SECONDS)
+        marker = claim_run_root(
+            ds, ctx.execution_id, run_root, self.kind, _TRAIN_IDLE_SECONDS
+        )
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         result = train_localizer(
@@ -1296,7 +1302,7 @@ def _trained_model_records(
         # ``models/`` also holds prepared training data, which has no weights.
         # Judged as a model, every such directory read as a finished row whose
         # artifact was missing -- damage that was never there.
-        if kind in PREPARED_DATA_KINDS:
+        if not holds_trained_models(kind):
             continue
         index_path = model_index_path(ds, kind)
         reader.note(index_path)

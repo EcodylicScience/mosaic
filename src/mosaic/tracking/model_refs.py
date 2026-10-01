@@ -921,7 +921,9 @@ class ModelNotFoundError(LookupError):
     ``KeyError`` or ``NotADirectoryError`` resolution raises: no index registers
     the run, or the artifact its row names is gone or is not the shape its kind
     declares. A separate type so a caller can tell a model found nowhere from
-    one of the wrong kind.
+    one of the wrong kind. Also raised by
+    :func:`~mosaic.tracking.ops.delete_model.delete_trained_model` when no index
+    row registers the run it was asked to delete.
 
     Attributes:
         reference: The run identifier that was looked up.
