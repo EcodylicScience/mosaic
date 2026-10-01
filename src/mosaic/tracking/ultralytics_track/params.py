@@ -17,7 +17,7 @@ here for the same reason.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
@@ -28,6 +28,7 @@ from mosaic.core.params import (
     Declared,
     Probability,
 )
+from mosaic.core.pipeline.ops import ModelReference
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE, TrackerOpParams
 from mosaic.tracking.ultralytics_track.run import ModelTask
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
@@ -43,7 +44,7 @@ from mosaic.tracking.ultralytics_track.version import ULTRALYTICS_KIND
 if TYPE_CHECKING:
     from typing_extensions import Self
 
-__all__ = ["UltralyticsParams"]
+__all__ = ["ULTRALYTICS_MODEL", "UltralyticsParams"]
 
 _MODEL_PATH_DESCRIPTION = (
     "The YOLO weights to track with: a .pt path, or the run id of the training "
@@ -287,3 +288,15 @@ def _untagged(
         )
         raise ValueError(refused)
     return {key: value for key, value in overrides.items() if key != TRACKER_TYPE_KEY}
+
+
+ULTRALYTICS_MODEL: Final = ModelReference(field="model_path", kinds=("train-pose",))
+"""The model this tracker runs, as ``UltralyticsOp`` declares it.
+
+``train-points`` is not accepted: it trains POLO point models, whose ``locate``
+task this tracker refuses. A weights path is read as ``train-pose``.
+
+Declared here rather than in the op module because
+:func:`~mosaic.tracking.ultralytics_track.dataset_runs.run_ultralytics` reads it
+too, and cannot import the op.
+"""

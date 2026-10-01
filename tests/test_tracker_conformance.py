@@ -281,14 +281,13 @@ def test_it_declares_no_model_vocabulary_of_its_own(kind: str) -> None:
 def test_it_resolves_its_model_through_the_shared_resolver(kind: str) -> None:
     """A tracker that consumes a model reaches for the one resolver.
 
-    Gated on the op declaring a model at all, derived from its params rather
-    than listed here, so a future tracker that consumes none is not held to it.
-    Compared by identity, not by name, because a local of the same name would
-    satisfy a name check while resolving nothing shared.
+    Gated on the op's ``model_reference`` declaration rather than on a list
+    here, so a future tracker that consumes none is not held to it. Compared by
+    identity, not by name, because a local of the same name would satisfy a
+    name check while resolving nothing shared.
     """
-    fields = OPS[kind].Params.model_fields
-    if not any("model" in name for name in fields):
-        pytest.skip(f"{kind} declares no model parameter")
+    if OPS[kind].model_reference is None:
+        pytest.skip(f"{kind} declares no model reference")
 
     module = _runner_module(kind)
     bound = [
@@ -303,6 +302,46 @@ def test_it_resolves_its_model_through_the_shared_resolver(kind: str) -> None:
     assert all(value in (resolve_model, resolve_model_set) for value in bound), (
         f"{kind} binds a resolver that is not the shared one"
     )
+
+
+# Every root whose producer is a registered op. ``trex-convert`` is a phase of
+# ``trex`` rather than an op of its own.
+PRODUCER_OPS: list[str] = sorted(kind for kind in TRACKING_ROOTS if kind in OPS)
+
+# Model-named fields that are not the trained model an op runs, each with why.
+_NOT_THE_MODEL_RUN: dict[tuple[str, str], str] = {
+    ("trex", "visual_identification_model_path"): (
+        "TREx's identity weights, beside the detector it declares. No registered "
+        "training op produces them, so there is no kind for a declaration to accept."
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", PRODUCER_OPS)
+def test_a_model_parameter_is_the_declared_one(kind: str) -> None:
+    """A tracker taking a model says which field, or the check above skips it.
+
+    The resolver check is gated on the declaration, so a tracker that adds a
+    model parameter and no declaration would pass it unexamined, and a caller
+    choosing a model by run id could not find the field.
+    """
+    declared = OPS[kind].model_reference
+    for name in OPS[kind].Params.model_fields:
+        if "model" not in name or (kind, name) in _NOT_THE_MODEL_RUN:
+            continue
+        assert declared is not None, (
+            f"{kind}.{name} names a model and {kind} declares no model_reference"
+        )
+        assert declared.field == name, (
+            f"{kind}.{name} names a model, and {kind} declares "
+            f"{declared.field!r}. Declare it, or exempt it here with the reason."
+        )
+
+
+def test_every_exemption_names_a_real_field() -> None:
+    """An exemption outliving its field would excuse the next field of that name."""
+    for kind, name in _NOT_THE_MODEL_RUN:
+        assert name in OPS[kind].Params.model_fields, f"{kind}.{name} is gone"
 
 
 @pytest.mark.parametrize("kind", sorted(set(TRACKERS) & set(MODEL_KINDS)))

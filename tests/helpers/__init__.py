@@ -82,6 +82,7 @@ from tests.helpers.media import (
     write_painted_entry,
 )
 from tests.helpers.mock_dataset import MockDataset
+from tests.helpers.models import register_trained_model
 from tests.helpers.ops import minimal_op_params
 from tests.helpers.runlog import entry_error_lines
 from tests.helpers.scope import resolved_scope, scope_over
@@ -184,6 +185,7 @@ __all__ = [
     "pose_frame",
     "pose_object",
     "pose_set",
+    "register_trained_model",
     "require_ffmpeg",
     "resolved_scope",
     "revision_file",

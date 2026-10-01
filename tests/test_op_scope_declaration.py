@@ -410,7 +410,7 @@ class TestTheIndirectPathIsMeasured:
 
 
 class TestPublished:
-    """Both declarations reach a client that reads an op without running it."""
+    """Every declaration reaches a client that reads an op without running it."""
 
     def test_list_ops_carries_both_declarations(self) -> None:
         rows = {row["kind"]: row for row in list_ops()}
@@ -425,7 +425,35 @@ class TestPublished:
         assert described["scope_takes"] == "exactly-one"
         assert described["scope_dependent"] is False
 
-    def test_neither_reaches_the_params_schema(self) -> None:
+    def test_list_ops_carries_the_model_reference(self) -> None:
+        rows = {row["kind"]: row for row in list_ops()}
+        assert rows["ultralytics"]["model_reference"] == {
+            "field": "model_path",
+            "kinds": ["train-pose"],
+            "many": False,
+        }
+        assert rows["transcode"]["model_reference"] is None
+
+    def test_describe_op_carries_the_model_reference(self) -> None:
+        assert describe_op("ultralytics")["model_reference"] == {
+            "field": "model_path",
+            "kinds": ["train-pose"],
+            "many": False,
+        }
+        assert describe_op("sleap")["model_reference"] == {
+            "field": "model_paths",
+            "kinds": ["train-sleap"],
+            "many": True,
+        }
+        assert describe_op("transcode")["model_reference"] is None
+
+    def test_both_surfaces_publish_the_same_row(self) -> None:
+        """A listing row is a description without its params schema."""
+        for row in list_ops():
+            described = describe_op(str(row["kind"]))
+            assert {key: described[key] for key in row} == row
+
+    def test_no_declaration_reaches_the_params_schema(self) -> None:
         """A client drawing controls from the schema must not draw a declaration.
 
         Read over the whole rendered document rather than its top-level
@@ -435,6 +463,9 @@ class TestPublished:
         assert "scope_takes" not in rendered
         assert "scope_dependent" not in rendered
         assert "target" in rendered, "the settings are published"
+        tracker = json.dumps(describe_op("ultralytics")["params_schema"], default=str)
+        assert "model_reference" not in tracker
+        assert "model_path" in tracker, "the field it names is published"
 
     def test_no_op_declares_a_coverage_field(self) -> None:
         """A client draws its controls from these fields, and a coverage is not one.

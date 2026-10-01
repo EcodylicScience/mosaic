@@ -402,3 +402,39 @@ def test_run_refuses_a_shortfall_with_a_non_zero_exit(
 
     assert result.exit_code == 1
     assert "allow_partial" in result.output
+
+
+POINT_MODEL_TRACKED: Document = {
+    "schema_version": 1,
+    "name": "track with a point model",
+    "steps": [
+        {
+            "id": "track",
+            "type": "op",
+            "kind": "ultralytics",
+            "params": {"model_path": "train-points.0.2-abcdef0123"},
+        },
+    ],
+}
+"""A tracker step handed a model its op does not run, which planning refuses."""
+
+
+@pytest.mark.parametrize("verb", ["plan", "run", "submit"])
+def test_a_model_the_op_does_not_run_is_refused_as_a_message(
+    verb: str, tracked: Dataset, tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            verb,
+            "--recipe",
+            f"@{_recipe_file(tmp_path, POINT_MODEL_TRACKED)}",
+            "--manifest",
+            str(tracked.manifest_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert "runs models trained by train-pose" in result.stderr

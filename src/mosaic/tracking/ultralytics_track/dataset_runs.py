@@ -37,7 +37,7 @@ from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext
 from mosaic.core.pipeline.markers import clear_phase_marker
 from mosaic.core.pipeline.media_input import media_identity_terms
-from mosaic.core.pipeline.op_identity import op_run_id, parse_op_run_id
+from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.placement import SourceMapping
 from mosaic.core.pipeline.tracks_index import media_composition_for
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
@@ -67,14 +67,20 @@ from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_input
 from mosaic.tracking.common.ultralytics_env import progress_activity
 from mosaic.tracking.external.runner.ultralytics_protocol import TrackRequest
-from mosaic.tracking.model_refs import observed_model_source, resolve_model
-from mosaic.tracking.ultralytics_track.params import UltralyticsParams
+from mosaic.tracking.model_refs import (
+    model_kind_for,
+    observed_model_source,
+    resolve_model,
+)
+from mosaic.tracking.ultralytics_track.params import (
+    ULTRALYTICS_MODEL,
+    UltralyticsParams,
+)
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
     TrackerSetting,
     resolve_tracker_config,
 )
 from mosaic.tracking.ultralytics_track.version import (
-    TRAIN_POSE_KIND,
     ULTRALYTICS_KIND,
     ULTRALYTICS_VERSION,
 )
@@ -343,11 +349,11 @@ def run_ultralytics(
     frame_step, idle_timeout = params.frame_step, params.idle_timeout
     max_runtime = params.max_runtime
 
-    # Content, never a path -- and the kind comes from the reference itself,
-    # because both `train-pose` and `train-points` produce runnable weights and a
-    # run id resolves against the index its own training op wrote.
-    parsed = parse_op_run_id(params.model_path)
-    model_kind = parsed.kind if parsed is not None else TRAIN_POSE_KIND
+    # Content, never a path. A run id of a kind this tracker does not run is
+    # refused here, before the probe loads its weights to find the same thing.
+    model_kind = model_kind_for(
+        ULTRALYTICS_KIND, ULTRALYTICS_MODEL, [params.model_path]
+    )
     resolved_model = resolve_model(ds, params.model_path, model_kind)
 
     # Once per run, before anything is minted: what the environment holds, what

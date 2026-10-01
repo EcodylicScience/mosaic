@@ -129,6 +129,29 @@ the harmful one: a value the checker rejects and the registry accepts.
 """
 
 
+@dataclass(frozen=True, slots=True)
+class ModelReference:
+    """Which params field names the trained model an op runs, and what fills it.
+
+    Declared rather than read out of the params model, as ``scope_takes`` is. A
+    field's name says that it holds a model, not which training produced one. A
+    caller choosing a model by run identifier reads this to learn where the
+    identifier goes and whether this op can run it, before anything is queued.
+
+    Attributes:
+        field: The ``Params`` field the reference goes in.
+        kinds: The training op kinds whose run identifiers the field accepts. A
+            run identifier names the op that trained it, so a run identifier of
+            any other kind is refused. A reference that is not a run identifier
+            is a weights path, which this declaration does not govern.
+        many: Whether the field holds a list of references rather than one.
+    """
+
+    field: str
+    kinds: tuple[str, ...]
+    many: bool = False
+
+
 class ScopeRefused(ValueError):
     """A scope an op's declaration does not accept.
 
@@ -312,6 +335,16 @@ class Op(Generic[P]):
     identifier for two different computations.
     """
 
+    model_reference: ClassVar[ModelReference | None] = None
+    """The trained model this op tracks or predicts with. See :class:`ModelReference`.
+
+    ``None`` for an op that runs no trained model. A training op's starting
+    weights are not declared here: they are what a run refines, not what it
+    runs. The op reads this declaration wherever it chooses the training kind a
+    reference resolves under, so a planner, a run and a caller resolving a model
+    ahead of either refuse the same references.
+    """
+
     Params: ClassVar[type[Params]]
 
     def target(self, params: P, scope: "ResolvedScope") -> str:
@@ -450,6 +483,18 @@ def register_op(cls: type[Op[Any]]) -> type[Op[Any]]:
     return cls
 
 
+def registered_op(kind: str) -> type[Op[Params]]:
+    """The op class registered under *kind*.
+
+    Raises:
+        KeyError: *kind* names no registered op.
+    """
+    op_cls = OPS.get(kind)
+    if op_cls is None:
+        raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(OPS)}")
+    return op_cls
+
+
 # ---------------------------------------------------------------------------
 # Generic runner (the single Job-Contract wrapper for all ops)
 # ---------------------------------------------------------------------------
@@ -516,9 +561,7 @@ def run_op(
         FileNotFoundError: *scope* names groups or sequences and the originals
             index does not exist.
     """
-    op_cls = OPS.get(kind)
-    if op_cls is None:
-        raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(OPS)}")
+    op_cls = registered_op(kind)
     if republish and overwrite:
         msg = (
             "republish and overwrite cannot be combined: a republish rebuilds "
@@ -554,14 +597,36 @@ def run_op(
 # ---------------------------------------------------------------------------
 
 
+def _published_declarations(op_cls: type[Op[Params]]) -> dict[str, object]:
+    """What *op_cls* declares, as :func:`list_ops` and :func:`describe_op` publish it.
+
+    One builder for both, so a listing row and a description cannot disagree.
+    ``model_reference`` is ``None`` for an op that runs no trained model, else a
+    mapping of ``field``, ``kinds`` and ``many``.
+    """
+    declared = op_cls.model_reference
+    return {
+        "scope_takes": op_cls.scope_takes,
+        "scope_dependent": op_cls.scope_dependent,
+        "model_reference": None
+        if declared is None
+        else {
+            "field": declared.field,
+            "kinds": list(declared.kinds),
+            "many": declared.many,
+        },
+    }
+
+
 def list_ops(
     category: str | None = None, domain: str | None = None
 ) -> list[dict[str, object]]:
     """Enumerate registered ops as one dict each.
 
-    Each row carries ``kind``, ``domain``, ``category``, ``version`` and the two
-    scope declarations. A client reads how much scope an op takes without
-    running it, and without reading it out of the params model.
+    Each row carries ``kind``, ``domain``, ``category``, ``version``, the two
+    scope declarations and ``model_reference``. A client reads how much scope
+    an op takes, and which trained model it runs, without running it and
+    without reading either out of the params model.
     """
     ops = sorted(OPS.values(), key=lambda c: c.kind)
     return [
@@ -570,8 +635,7 @@ def list_ops(
             "domain": c.domain,
             "category": c.category,
             "version": c.version,
-            "scope_takes": c.scope_takes,
-            "scope_dependent": c.scope_dependent,
+            **_published_declarations(c),
         }
         for c in ops
         if (category is None or c.category == category)
@@ -608,22 +672,20 @@ def op_resource_class(kind: str) -> str:
 def describe_op(kind: str) -> dict[str, object]:
     """Describe one op, as its identity, its declarations and its params schema.
 
-    The two scope declarations sit beside ``kind`` and never inside
-    ``params_schema``. They describe the op rather than its params, and a client
-    drawing controls from that schema draws only fields a caller fills in.
+    The declarations a :func:`list_ops` row carries sit beside ``kind`` and
+    never inside ``params_schema``. They describe the op rather than its params,
+    and a client drawing controls from that schema draws only fields a caller
+    fills in.
 
     Raises:
         KeyError: *kind* names no registered op.
     """
-    op_cls = OPS.get(kind)
-    if op_cls is None:
-        raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(OPS)}")
+    op_cls = registered_op(kind)
     return {
         "kind": op_cls.kind,
         "domain": op_cls.domain,
         "category": op_cls.category,
         "version": op_cls.version,
-        "scope_takes": op_cls.scope_takes,
-        "scope_dependent": op_cls.scope_dependent,
+        **_published_declarations(op_cls),
         "params_schema": op_cls.Params.model_json_schema(),
     }

@@ -77,6 +77,26 @@ def test_a_malformed_set_token_is_refused(manifest: Path) -> None:
     assert "key=value" in result.stderr
 
 
+def test_a_model_the_tracker_does_not_run_is_refused_as_a_message(
+    manifest: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "track",
+            "trex",
+            "-m",
+            str(manifest),
+            "--set",
+            "detect_model=train-sleap.0.1-abcdef0123",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert "trex runs models trained by" in result.stderr
+
+
 def test_a_tracker_specific_parameter_reaches_the_op(manifest: Path) -> None:
     """An empty scope short-circuits before any binary, so this exercises the wiring.
 

@@ -14,12 +14,13 @@ own adapter. ``tracking/trex/version.py`` is declared here for the same reason.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Final
 
 from pydantic import Field
 
 from mosaic.core.pipeline.markers import Phase
 from mosaic.core.pipeline.media_input import MediaInputParams
+from mosaic.core.pipeline.ops import ModelReference
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.core.params import (
     Declared,
@@ -28,7 +29,7 @@ from mosaic.core.params import (
 from mosaic.tracking.common.params import PhasedTrackerOpParams
 from mosaic.tracking.trex.version import TREX_KIND
 
-__all__ = ["TrexParams"]
+__all__ = ["TREX_DETECT_MODEL", "TrexParams"]
 
 _DETECT_MODEL_DESCRIPTION = (
     "A YOLO .pt path, or the run id of the training op that produced the "
@@ -246,3 +247,16 @@ class TrexParams(PhasedTrackerOpParams, MediaInputParams):
         Declared(_TRACK_EXTRA_SETTINGS_DESCRIPTION),
         Phase("track"),
     ] = None
+
+
+TREX_DETECT_MODEL: Final = ModelReference(
+    field="detect_model", kinds=("train-pose", "train-points")
+)
+"""The detection model TREx runs, as ``TrexOp`` declares it.
+
+Both training ops produce weights TREx detects with.
+
+Declared here rather than in the op module because
+:func:`~mosaic.tracking.trex.dataset_runs.run_trex` reads it too, and cannot
+import the op.
+"""

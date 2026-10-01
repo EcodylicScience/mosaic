@@ -28,12 +28,8 @@ from typing import TYPE_CHECKING, ClassVar
 
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.tracking.litpose.dataset_runs import litpose_settings, run_litpose
-from mosaic.tracking.litpose.params import LitposeParams
-from mosaic.tracking.litpose.version import (
-    LITPOSE_KIND,
-    LITPOSE_VERSION,
-    TRAIN_LITPOSE_KIND,
-)
+from mosaic.tracking.litpose.params import LITPOSE_MODEL, LitposeParams
+from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -54,6 +50,7 @@ class LitposeOp(Op[LitposeParams]):
     version = LITPOSE_VERSION
     scope_takes = "any"
     scope_dependent = False
+    model_reference = LITPOSE_MODEL
     Params = LitposeParams
 
     def target(self, params: LitposeParams, scope: ResolvedScope) -> str:
@@ -67,13 +64,20 @@ class LitposeOp(Op[LitposeParams]):
         *,
         require_data: bool = True,
     ) -> OpIdentity:
-        """What a Lightning Pose run with these settings will be called."""
-        from mosaic.tracking.common.mint import planned_model_id, tracker_identity
+        """What a Lightning Pose run with these settings will be called.
 
+        Raises:
+            ModelReferenceRefusedError: ``model_path`` is a run id of a training
+                kind Lightning Pose does not run.
+        """
+        from mosaic.tracking.common.mint import planned_model_id, tracker_identity
+        from mosaic.tracking.model_refs import model_kind_for
+
+        refs = [str(params.model_path)]
         settings = litpose_settings(
             params,
             model_id=planned_model_id(
-                ds, self.kind, [str(params.model_path)], TRAIN_LITPOSE_KIND
+                ds, self.kind, refs, model_kind_for(self.kind, LITPOSE_MODEL, refs)
             ),
         )
         return tracker_identity(self.kind, self.version, settings)

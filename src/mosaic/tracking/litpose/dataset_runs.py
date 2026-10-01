@@ -70,13 +70,13 @@ from mosaic.tracking.common.index import (
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import DecodeProbe, resolve_tool_input
-from mosaic.tracking.litpose.params import LitposeParams
-from mosaic.tracking.litpose.version import (
-    LITPOSE_KIND,
-    LITPOSE_VERSION,
-    TRAIN_LITPOSE_KIND,
+from mosaic.tracking.litpose.params import LITPOSE_MODEL, LitposeParams
+from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION
+from mosaic.tracking.model_refs import (
+    model_kind_for,
+    observed_model_source,
+    resolve_model_set,
 )
-from mosaic.tracking.model_refs import observed_model_source, resolve_model_set
 
 from .run import LITPOSE_ENV, run_litpose_predict
 
@@ -268,15 +268,19 @@ def run_litpose(
     # An unresolvable reference aborts here, before any run root or tracks variant
     # is recorded.
     #
-    # Resolved under the *training* kind, not this tracker's. A reference may be
-    # a path or a registered training ``run_id``, and a run_id resolves against
-    # ``models/<kind>/index.csv`` -- the index the row was written into, which
-    # ``train-litpose`` owns. Passing ``LITPOSE_KIND`` here sent every run_id to a
-    # ``models/litpose/`` index nothing writes, so only a path ever resolved and
-    # "train here, track with it there" could not be spelled by name. The artifact
-    # shape is unaffected: ``MODEL_KINDS`` declares ``train-litpose`` as Lightning
-    # Pose's own spec for exactly this.
-    resolved_model = resolve_model_set(ds, [str(params.model_path)], TRAIN_LITPOSE_KIND)
+    # Resolved under the *training* kind the declaration accepts, not this
+    # tracker's. A reference may be a path or a registered training ``run_id``,
+    # and a run_id resolves against ``models/<kind>/index.csv`` -- the index the
+    # row was written into, which ``train-litpose`` owns. Passing
+    # ``LITPOSE_KIND`` here sent every run_id to a ``models/litpose/`` index
+    # nothing writes, so only a path ever resolved and "train here, track with it
+    # there" could not be spelled by name. The artifact shape is unaffected:
+    # ``MODEL_KINDS`` declares ``train-litpose`` as Lightning Pose's own spec for
+    # exactly this.
+    refs = [str(params.model_path)]
+    resolved_model = resolve_model_set(
+        ds, refs, model_kind_for(LITPOSE_KIND, LITPOSE_MODEL, refs)
+    )
 
     settings = litpose_settings(params, model_id=resolved_model.model_id)
     minted = mint_tracker_run(

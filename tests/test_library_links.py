@@ -22,47 +22,40 @@ from mosaic.core.manifest import (
     MediaScanSource,
     read_manifest,
 )
-from mosaic.core.pipeline.models import model_index_path
 from mosaic.tracking.model_refs import (
+    ModelNotFoundError,
+    ModelReferenceRefusedError,
     model_id_for_ref,
     observed_model_source,
     resolve_model,
+    resolve_op_model,
 )
-from mosaic.tracking.ops.train import TrainedModelIndexRow, trained_model_index
-from tests.helpers import make_dataset, revision_file
+from tests.helpers import make_dataset, register_trained_model, revision_file
 
 RUN_ID = "train-pose.0.2-abcdef0123"
 KIND = "train-pose"
+SLEAP_RUN_ID = "train-sleap.0.1-abcdef0123"
 
 
 def _register(ds: Dataset, *, payload: bytes = b"weights") -> Path:
     """One finished ``train-pose`` run, registered the way the op registers it."""
-    run_root = ds.get_root("models") / KIND / RUN_ID
-    weights = run_root / "train" / "weights" / "best.pt"
+    weights = ds.get_root("models") / KIND / RUN_ID / "train" / "weights" / "best.pt"
     weights.parent.mkdir(parents=True)
     _ = weights.write_bytes(payload)
-
-    index = trained_model_index(model_index_path(ds, KIND))
-    index.ensure()
-    index.append(
-        [
-            TrainedModelIndexRow(
-                run_id=RUN_ID,
-                kind=KIND,
-                base_model="",
-                base_run_id="",
-                best_model_path=ds.relative_to_root(weights),
-                metrics_path="",
-                n_epochs=1,
-                status="finished",
-                artifact_shape="file",
-                artifact_path=ds.relative_to_root(weights),
-                model_type="",
-                abs_path=Path(ds.relative_to_root(run_root)),
-            )
-        ]
-    )
+    register_trained_model(ds, KIND, RUN_ID, weights)
     return weights
+
+
+def _register_sleap(ds: Dataset) -> Path:
+    """One finished ``train-sleap`` run, whose artifact is a model directory."""
+    model_dir = ds.get_root("models") / "train-sleap" / SLEAP_RUN_ID / "model"
+    model_dir.mkdir(parents=True)
+    weights = model_dir / "best.ckpt"
+    _ = weights.write_bytes(b"sleap-weights")
+    register_trained_model(
+        ds, "train-sleap", SLEAP_RUN_ID, weights, directory=model_dir
+    )
+    return model_dir
 
 
 def _library_and_project(tmp_path: Path) -> tuple[Dataset, Dataset]:
@@ -143,6 +136,148 @@ def test_a_run_nobody_registers_says_where_it_looked(tmp_path: Path) -> None:
 
     with pytest.raises(KeyError, match="Linked libraries searched"):
         _ = resolve_model(project, "train-pose.0.2-0000000000", KIND)
+
+
+# --- resolving an op's model by run id ---------------------------------------
+
+
+def test_an_op_resolves_its_model_through_the_link(tmp_path: Path) -> None:
+    library, project = _library_and_project(tmp_path)
+    weights = _register(library)
+    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+
+    resolved = resolve_op_model(project, "infer-pose", RUN_ID)
+
+    assert resolved.path == weights
+    assert resolved.run_id == RUN_ID
+    assert resolved.library_id == "group"
+    assert resolved.model_id == resolve_model(project, RUN_ID, KIND).model_id
+
+
+def test_an_op_resolves_a_model_its_own_dataset_registered(tmp_path: Path) -> None:
+    project = make_dataset(tmp_path / "52", name="project")
+    weights = _register(project)
+
+    resolved = resolve_op_model(project, "ultralytics", RUN_ID)
+
+    assert resolved.path == weights
+    assert resolved.run_id == RUN_ID
+    assert resolved.library_id == ""
+
+
+def test_an_op_accepting_several_kinds_resolves_under_the_references_own(
+    tmp_path: Path,
+) -> None:
+    """TREx takes pose and point models, and a point run is in the points index."""
+    project = make_dataset(tmp_path / "52", name="project")
+    points = "train-points.0.2-abcdef0123"
+    weights = project.get_root("models") / "train-points" / points / "best.pt"
+    weights.parent.mkdir(parents=True)
+    _ = weights.write_bytes(b"point-weights")
+    register_trained_model(project, "train-points", points, weights)
+
+    resolved = resolve_op_model(project, "trex", points)
+
+    assert resolved.path == weights
+    assert resolved.run_id == points
+
+
+def test_an_op_taking_a_list_resolves_one_run_id(tmp_path: Path) -> None:
+    library, project = _library_and_project(tmp_path)
+    model_dir = _register_sleap(library)
+    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+
+    resolved = resolve_op_model(project, "sleap", SLEAP_RUN_ID)
+
+    assert resolved.paths == [model_dir]
+    assert resolved.run_id == SLEAP_RUN_ID
+    assert resolved.library_id == "group"
+
+
+def test_an_op_is_never_handed_a_path(tmp_path: Path) -> None:
+    """A path reaches the filesystem, so a caller from outside may not pass one."""
+    library, project = _library_and_project(tmp_path)
+    weights = _register(library)
+
+    with pytest.raises(ModelReferenceRefusedError, match="not a run id") as caught:
+        _ = resolve_op_model(project, "infer-pose", str(weights))
+
+    assert caught.value.reason == "not_a_run_id"
+    assert caught.value.accepted_kinds == ("train-pose",)
+
+
+def test_a_file_named_like_a_run_id_is_not_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the model indexes are asked, never the working directory."""
+    project = make_dataset(tmp_path / "52", name="project")
+    monkeypatch.chdir(tmp_path)
+    _ = (tmp_path / RUN_ID).write_bytes(b"planted")
+
+    with pytest.raises(ModelNotFoundError):
+        _ = resolve_op_model(project, "infer-pose", RUN_ID)
+
+
+def test_an_op_refuses_a_model_another_training_op_produced(tmp_path: Path) -> None:
+    project = make_dataset(tmp_path / "52", name="project")
+    points = "train-points.0.2-abcdef0123"
+
+    with pytest.raises(ModelReferenceRefusedError, match="train-pose") as caught:
+        _ = resolve_op_model(project, "ultralytics", points)
+
+    assert caught.value.reason == "kind_not_accepted"
+    assert caught.value.op_kind == "ultralytics"
+    assert caught.value.reference == points
+    assert caught.value.accepted_kinds == ("train-pose",)
+
+
+def test_an_op_that_runs_no_model_refuses_every_reference(tmp_path: Path) -> None:
+    project = make_dataset(tmp_path / "52", name="project")
+
+    with pytest.raises(
+        ModelReferenceRefusedError, match="runs no trained model"
+    ) as caught:
+        _ = resolve_op_model(project, "transcode", RUN_ID)
+
+    assert caught.value.reason == "runs_no_model"
+    assert caught.value.accepted_kinds == ()
+
+
+def test_an_unregistered_run_is_not_found_rather_than_refused(tmp_path: Path) -> None:
+    library, project = _library_and_project(tmp_path)
+    _ = _register(library)
+    _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
+    alone = make_dataset(tmp_path / "53", name="alone")
+    missing = "train-pose.0.2-0000000000"
+
+    with pytest.raises(ModelNotFoundError, match="Linked libraries searched") as caught:
+        _ = resolve_op_model(project, "infer-pose", missing)
+    with pytest.raises(ModelNotFoundError, match="does not exist"):
+        _ = resolve_op_model(alone, "infer-pose", missing)
+
+    assert not isinstance(caught.value, ValueError)
+    assert caught.value.reference == missing
+    assert caught.value.model_kind == "train-pose"
+
+
+def test_a_row_naming_the_wrong_shape_of_artifact_is_not_found(
+    tmp_path: Path,
+) -> None:
+    """A SLEAP model is a directory, and a row naming a file resolves to none.
+
+    A row written before a model could be a directory names its weights file
+    alone.
+    """
+    project = make_dataset(tmp_path / "52", name="project")
+    weights = project.get_root("models") / "train-sleap" / SLEAP_RUN_ID / "best.ckpt"
+    weights.parent.mkdir(parents=True)
+    _ = weights.write_bytes(b"sleap-weights")
+    register_trained_model(project, "train-sleap", SLEAP_RUN_ID, weights)
+
+    with pytest.raises(ModelNotFoundError, match="not a directory") as caught:
+        _ = resolve_op_model(project, "sleap", SLEAP_RUN_ID)
+
+    assert caught.value.model_kind == "train-sleap"
 
 
 def test_a_different_dataset_at_the_linked_path_is_refused(tmp_path: Path) -> None:

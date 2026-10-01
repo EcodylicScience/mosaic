@@ -53,6 +53,7 @@ from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.track_library.trex import is_per_individual_export
 from mosaic.tracking.model_refs import (
     ResolvedModel,
+    model_kind_for,
     observed_model_source,
     resolve_model,
 )
@@ -127,7 +128,7 @@ from mosaic.core.pipeline.markers import (
     write_phase_marker,
 )
 from mosaic.runlog import now_iso
-from mosaic.tracking.trex.params import TrexParams
+from mosaic.tracking.trex.params import TREX_DETECT_MODEL, TrexParams
 
 from .run import run_trex_convert, run_trex_track
 
@@ -286,6 +287,21 @@ def phase_settings(
     so a projection over different values re-converts every entry on disk.
     """
     return {name: settings[name] for name in phase_fields(TrexParams, phase)}
+
+
+def detect_model_kind(ref: str) -> str:
+    """Which training op's index a detection-model reference resolves against.
+
+    A run id names its own kind, which :data:`TREX_DETECT_MODEL` must accept. A
+    bare weights path falls back to ``train-points`` rather than guessing,
+    because the fallback only decides which spec reads the artifact and a path
+    is read the same way under either kind.
+
+    Raises:
+        ModelReferenceRefusedError: *ref* is a run id of a kind TREx does not
+            detect with.
+    """
+    return model_kind_for(TREX_KIND, TREX_DETECT_MODEL, [ref], path_kind="train-points")
 
 
 # --- Per-entry reuse ------------------------------------------------------
@@ -797,11 +813,7 @@ def run_trex(
     detect_model_id: str | None = None
     resolved_model: ResolvedModel | None = None
     if params.detect_model is not None:
-        # Ask the identity module rather than splitting the string: a reference
-        # that is not a run identifier at all -- a bare weights path -- falls
-        # back to the points index instead of being read as a kind of its own.
-        parsed = parse_op_run_id(params.detect_model)
-        model_kind = parsed.kind if parsed is not None else "train-points"
+        model_kind = detect_model_kind(params.detect_model)
         resolved_model = resolve_model(ds, params.detect_model, model_kind)
         detect_model_path = resolved_model.path
         detect_model_id = resolved_model.model_id

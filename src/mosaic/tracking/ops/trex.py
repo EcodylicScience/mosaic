@@ -25,8 +25,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
-from mosaic.tracking.trex.dataset_runs import run_trex, trex_settings
-from mosaic.tracking.trex.params import TrexParams
+from mosaic.tracking.trex.dataset_runs import (
+    detect_model_kind,
+    run_trex,
+    trex_settings,
+)
+from mosaic.tracking.trex.params import TREX_DETECT_MODEL, TrexParams
 from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
 
 if TYPE_CHECKING:
@@ -48,6 +52,7 @@ class TrexOp(Op[TrexParams]):
     version = TREX_VERSION
     scope_takes = "any"
     scope_dependent = False
+    model_reference = TREX_DETECT_MODEL
     Params = TrexParams
 
     def target(self, params: TrexParams, scope: ResolvedScope) -> str:
@@ -68,6 +73,10 @@ class TrexOp(Op[TrexParams]):
         settings must carry is what a model *is*, because a bare weights path is
         a mutable key and swapping the file in place would let two different runs
         share one identifier.
+
+        Raises:
+            ModelReferenceRefusedError: ``detect_model`` is a run id of a
+                training kind TREx does not detect with.
         """
         from mosaic.tracking.common.mint import planned_model_id, tracker_identity
 
@@ -76,7 +85,7 @@ class TrexOp(Op[TrexParams]):
                 ds,
                 self.kind,
                 [params.detect_model],
-                _detect_model_kind(params.detect_model),
+                detect_model_kind(params.detect_model),
             )
             if params.detect_model is not None
             else None
@@ -124,19 +133,3 @@ class TrexOp(Op[TrexParams]):
         See :func:`~mosaic.tracking.trex.dataset_runs.run_trex`.
         """
         return run_trex(ds, params, scope, republish=True, ctx=ctx)
-
-
-def _detect_model_kind(ref: str | None) -> str:
-    """Which training op's index a detection-model reference resolves against.
-
-    The kind comes from the reference itself, matching ``run_trex``: both
-    ``train-pose`` and ``train-points`` produce runnable detection weights, and a
-    run identifier resolves against the index its own training op wrote. A
-    reference that is not a run identifier at all -- a bare weights path -- falls
-    back rather than guessing, because the fallback only decides which spec reads
-    the artifact and a path is read the same way either way.
-    """
-    from mosaic.core.pipeline.op_identity import parse_op_run_id
-
-    parsed = parse_op_run_id(str(ref)) if ref else None
-    return parsed.kind if parsed is not None else "train-points"

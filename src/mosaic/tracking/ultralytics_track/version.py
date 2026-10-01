@@ -19,16 +19,6 @@ from typing import Final
 
 ULTRALYTICS_KIND: Final = "ultralytics"
 
-TRAIN_POSE_KIND: Final = "train-pose"
-"""Where a model reference that names a run rather than a path is looked up.
-
-A ``run_id`` resolves against ``models/<kind>/index.csv``, and the kind naming
-that index belongs to the *training* op, never to this tracker -- mosaic has no
-``train-ultralytics``. This is the fallback for a reference that parses as no run
-id at all; a reference that does parse names its own kind, because both
-``train-pose`` and ``train-points`` produce weights this tracker can run.
-"""
-
 ULTRALYTICS_VERSION: Final = "8.4"
 """The *integration's* compatibility version, not the installed library's.
 

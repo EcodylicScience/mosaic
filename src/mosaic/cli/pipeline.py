@@ -139,6 +139,7 @@ def plan_command(
 ) -> None:
     """Resolve a recipe against a dataset: identities, coverage, what is left."""
     from mosaic.core.pipeline.graph import plan_pipeline
+    from mosaic.tracking.model_refs import ModelReferenceRefusedError
 
     ds = load_dataset(manifest)
     try:
@@ -146,6 +147,8 @@ def plan_command(
             plan = plan_pipeline(ds, _recipe(recipe), scope=_scope(entry))
     except ScopeRefused as refusal:
         fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
+    except ModelReferenceRefusedError as refusal:
+        fail(str(refusal))
     _emit_plan(plan, as_json=as_json)
 
 
@@ -215,6 +218,7 @@ def run_command(
 ) -> None:
     """Run every step of a recipe here, in order, skipping what is already done."""
     from mosaic.core.pipeline.graph import StepRefused, run_pipeline
+    from mosaic.tracking.model_refs import ModelReferenceRefusedError
 
     ds = load_dataset(manifest)
     parsed = _recipe(recipe)
@@ -229,7 +233,7 @@ def run_command(
             )
     except ScopeRefused as refusal:
         fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
-    except StepRefused as refusal:
+    except (StepRefused, ModelReferenceRefusedError) as refusal:
         fail(str(refusal))
 
     rows = [
@@ -303,6 +307,7 @@ def submit_command(
     them in dependency order will run the graph correctly.
     """
     from mosaic.core.pipeline.graph import step_argv, submit_request
+    from mosaic.tracking.model_refs import ModelReferenceRefusedError
 
     ds = load_dataset(manifest)
     parsed = _recipe(recipe)
@@ -318,6 +323,8 @@ def submit_command(
             )
     except ScopeRefused as refusal:
         fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
+    except ModelReferenceRefusedError as refusal:
+        fail(str(refusal))
     request = submitted.request
     steps = [
         {

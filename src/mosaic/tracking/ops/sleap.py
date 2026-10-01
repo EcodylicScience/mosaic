@@ -28,12 +28,8 @@ from typing import TYPE_CHECKING, ClassVar
 
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.tracking.sleap.dataset_runs import run_sleap, sleap_settings
-from mosaic.tracking.sleap.params import SleapParams
-from mosaic.tracking.sleap.version import (
-    SLEAP_KIND,
-    SLEAP_VERSION,
-    TRAIN_SLEAP_KIND,
-)
+from mosaic.tracking.sleap.params import SLEAP_MODEL, SleapParams
+from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -54,6 +50,7 @@ class SleapOp(Op[SleapParams]):
     version = SLEAP_VERSION
     scope_takes = "any"
     scope_dependent = False
+    model_reference = SLEAP_MODEL
     Params = SleapParams
 
     def target(self, params: SleapParams, scope: ResolvedScope) -> str:
@@ -69,17 +66,24 @@ class SleapOp(Op[SleapParams]):
     ) -> OpIdentity:
         """What a SLEAP run with these settings will be called.
 
-        The model set resolves under the *training* kind rather than this
-        tracker's, matching ``run_sleap``: a registered reference resolves
-        against the index the training op wrote, and ``MODEL_KINDS`` declares
-        ``train-sleap`` as SLEAP's own artifact shape for exactly this.
+        The model set resolves under the *training* kind the declaration accepts
+        rather than this tracker's, matching ``run_sleap``: a registered
+        reference resolves against the index the training op wrote, and
+        ``MODEL_KINDS`` declares ``train-sleap`` as SLEAP's own artifact shape
+        for exactly this.
+
+        Raises:
+            ModelReferenceRefusedError: A reference in ``model_paths`` is a run
+                id of a training kind SLEAP does not run.
         """
         from mosaic.tracking.common.mint import planned_model_id, tracker_identity
+        from mosaic.tracking.model_refs import model_kind_for
 
+        refs = list(params.model_paths)
         settings = sleap_settings(
             params,
             model_id=planned_model_id(
-                ds, self.kind, list(params.model_paths), TRAIN_SLEAP_KIND
+                ds, self.kind, refs, model_kind_for(self.kind, SLEAP_MODEL, refs)
             ),
         )
         return tracker_identity(self.kind, self.version, settings)

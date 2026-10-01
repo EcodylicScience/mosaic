@@ -13,20 +13,21 @@ in ``tracking/ops/litpose.py``, the integration would import its own adapter.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Final
 
 from pydantic import Field
 
 from mosaic.core.pipeline.media_input import MediaInputParams
+from mosaic.core.pipeline.ops import ModelReference
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
 )
 from mosaic.tracking.common.params import TrackerOpParams
-from mosaic.tracking.litpose.version import LITPOSE_KIND
+from mosaic.tracking.litpose.version import LITPOSE_KIND, TRAIN_LITPOSE_KIND
 
-__all__ = ["LitposeParams"]
+__all__ = ["LITPOSE_MODEL", "LitposeParams"]
 
 _MODEL_PATH_DESCRIPTION = (
     "A trained Lightning Pose model directory (config.yaml plus a checkpoint "
@@ -65,3 +66,12 @@ class LitposeParams(TrackerOpParams, MediaInputParams):
         Field(examples=["fp32", "fp16", "bf16"]),
         Declared(_PRECISION_DESCRIPTION),
     ] = "fp32"
+
+
+LITPOSE_MODEL: Final = ModelReference(field="model_path", kinds=(TRAIN_LITPOSE_KIND,))
+"""The model Lightning Pose runs, as ``LitposeOp`` declares it.
+
+Declared here rather than in the op module because
+:func:`~mosaic.tracking.litpose.dataset_runs.run_litpose` reads it too, and
+cannot import the op.
+"""

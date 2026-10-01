@@ -32,6 +32,8 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
     ProbeResponse,
     TrackRequest,
 )
+from mosaic.tracking.model_refs import ModelReferenceRefusedError
+from mosaic.tracking.ops.ultralytics import UltralyticsOp
 from mosaic.tracking.ultralytics_track.dataset_runs import (
     ultralytics_index_path,
     ultralytics_run_root,
@@ -47,6 +49,7 @@ from tests.helpers import (
     ULTRALYTICS_KEYPOINTS,
     FakeUltralytics,
     install_fake_ultralytics,
+    register_trained_model,
     scope_over,
     ultralytics_probe_response,
     write_media_index,
@@ -323,6 +326,33 @@ def test_an_empty_scope_still_returns_the_run_it_minted(
     assert run_id.startswith("ultralytics.8.4-")
     assert ultralytics.tracked == []
     assert [kind for _name, kind in ultralytics.events] == ["probe"]
+
+
+def test_a_point_model_is_refused_before_anything_runs(
+    ds: Dataset, ultralytics: FakeUltralytics
+) -> None:
+    """A ``train-points`` model is a POLO point model, and its run id says so.
+
+    Registered, so it would resolve. Refused from the reference alone anyway,
+    before the probe loads the weights and before a run root or a tracks variant
+    names a run that cannot happen. The planner refuses it in the same words.
+    """
+    run_id = "train-points.0.2-abcdef0123"
+    weights = _make_model(
+        ds.get_root("models") / "train-points" / run_id / "weights" / "best.pt"
+    )
+    register_trained_model(ds, "train-points", run_id, weights)
+    params = UltralyticsParams.model_validate({"model_path": run_id})
+
+    with pytest.raises(ModelReferenceRefusedError) as caught:
+        _ = dr.run_ultralytics(ds, params)
+    with pytest.raises(ModelReferenceRefusedError) as planned:
+        _ = UltralyticsOp().plan_identity(ds, params, ds.resolve_scope(None))
+
+    assert str(planned.value) == str(caught.value)
+    assert caught.value.accepted_kinds == ("train-pose",)
+    assert ultralytics.events == []
+    assert list(ds.base_dir.rglob("ultralytics.*")) == []
 
 
 def test_a_re_run_clears_the_previous_attempts_request_and_response(

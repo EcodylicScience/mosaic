@@ -74,13 +74,13 @@ from mosaic.tracking.common.index import (
 from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import DecodeProbe, resolve_tool_input
-from mosaic.tracking.model_refs import observed_model_source, resolve_model_set
-from mosaic.tracking.sleap.params import SleapParams
-from mosaic.tracking.sleap.version import (
-    SLEAP_KIND,
-    SLEAP_VERSION,
-    TRAIN_SLEAP_KIND,
+from mosaic.tracking.model_refs import (
+    model_kind_for,
+    observed_model_source,
+    resolve_model_set,
 )
+from mosaic.tracking.sleap.params import SLEAP_MODEL, SleapParams
+from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
 
 from .run import SLEAP_ENV, run_sleap_convert, run_sleap_track
 
@@ -281,16 +281,17 @@ def run_sleap(
     # variant is recorded -- a recorded variant naming weights that could not be
     # found describes a run that never happened.
     #
-    # Resolved under the *training* kind, not this tracker's. A reference may be
-    # a path or a registered training ``run_id``, and a run_id resolves against
-    # ``models/<kind>/index.csv`` -- the index the row was written into, which
-    # ``train-sleap`` owns. Passing ``SLEAP_KIND`` here sent every run_id to a
-    # ``models/sleap/`` index nothing writes, so only a path ever resolved and
-    # "train here, track with it there" could not be spelled by name. The
-    # artifact shape is unaffected: ``MODEL_KINDS`` declares ``train-sleap`` as
-    # SLEAP's own spec for exactly this.
+    # Resolved under the *training* kind the declaration accepts, not this
+    # tracker's. A reference may be a path or a registered training ``run_id``,
+    # and a run_id resolves against ``models/<kind>/index.csv`` -- the index the
+    # row was written into, which ``train-sleap`` owns. Passing ``SLEAP_KIND``
+    # here sent every run_id to a ``models/sleap/`` index nothing writes, so only
+    # a path ever resolved and "train here, track with it there" could not be
+    # spelled by name. The artifact shape is unaffected: ``MODEL_KINDS`` declares
+    # ``train-sleap`` as SLEAP's own spec for exactly this.
+    refs = [str(m) for m in params.model_paths]
     resolved_models = resolve_model_set(
-        ds, [str(m) for m in params.model_paths], TRAIN_SLEAP_KIND
+        ds, refs, model_kind_for(SLEAP_KIND, SLEAP_MODEL, refs)
     )
 
     settings = sleap_settings(params, model_id=resolved_models.model_id)

@@ -14,11 +14,12 @@ The model is declared beside the integration rather than beside the op, because
 
 from __future__ import annotations
 
-from typing import Annotated, Self
+from typing import Annotated, Final, Self
 
 from pydantic import Field, field_validator, model_validator
 
 from mosaic.core.pipeline.media_input import MediaInputParams
+from mosaic.core.pipeline.ops import ModelReference
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.core.params import (
     HASH_EXCLUDE,
@@ -32,9 +33,9 @@ from mosaic.tracking.sleap.run import (
     SleapScoringMethod,
     sleap_track_device_args,
 )
-from mosaic.tracking.sleap.version import SLEAP_KIND
+from mosaic.tracking.sleap.version import SLEAP_KIND, TRAIN_SLEAP_KIND
 
-__all__ = ["SleapParams"]
+__all__ = ["SLEAP_MODEL", "SleapParams"]
 
 _MODEL_PATHS_DESCRIPTION = (
     "One trained SLEAP model directory, or two for a top-down model "
@@ -193,3 +194,14 @@ class SleapParams(TrackerOpParams, MediaInputParams):
             )
             raise ValueError(msg)
         return self
+
+
+SLEAP_MODEL: Final = ModelReference(
+    field="model_paths", kinds=(TRAIN_SLEAP_KIND,), many=True
+)
+"""The model SLEAP runs, as ``SleapOp`` declares it.
+
+Declared here rather than in the op module because
+:func:`~mosaic.tracking.sleap.dataset_runs.run_sleap` reads it too, and cannot
+import the op.
+"""

@@ -54,7 +54,7 @@ from mosaic.core.params import (
 from mosaic.core.pipeline.media_input import MediaInputParams
 from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
 from mosaic.core.pipeline.entry_claim import open_entry, phase_activity, release_entry
-from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
+from mosaic.core.pipeline.ops import ModelReference, Op, OpIdentity, register_op
 from mosaic.core.pipeline.preprocess_index import (
     MediaVariantDriftedError,
     MediaVariantMissingError,
@@ -76,7 +76,11 @@ from mosaic.tracking.common.tool_input import (
     resolve_entry_input,
 )
 from mosaic.tracking.common.ultralytics_env import progress_activity
-from mosaic.tracking.model_refs import observed_model_source, resolve_model
+from mosaic.tracking.model_refs import (
+    model_kind_for,
+    observed_model_source,
+    resolve_model,
+)
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
 if TYPE_CHECKING:
@@ -456,7 +460,11 @@ def _bridge_df_to_tracks(
 
 
 def infer_identity(
-    ds: Dataset, kind: str, version: str, params: _InferParamsBase, train_kind: str
+    ds: Dataset,
+    kind: str,
+    version: str,
+    params: _InferParamsBase,
+    declared: ModelReference,
 ) -> OpIdentity:
     """What an inference run with these params will be called. Writes nothing.
 
@@ -469,9 +477,14 @@ def infer_identity(
     step whose weights are a training step's output in the same graph is
     resolvable before that training has run: a reference that is a run identifier
     is its own identity, which is exactly what ``resolve_model`` returns for it.
+
+    Raises:
+        ModelReferenceRefusedError: ``params.model`` is a run id of a training
+            kind *declared* does not accept.
     """
     from mosaic.tracking.common.mint import planned_model_id
 
+    train_kind = model_kind_for(kind, declared, [params.model])
     model_id = planned_model_id(ds, kind, [params.model], train_kind)
     return OpIdentity(
         run_id=infer_run_id(kind, version, params, model_id),
@@ -583,7 +596,7 @@ def _run_inference_op(
     scope: ResolvedScope | None = None,
     kind: str,
     version: str,
-    train_kind: str,
+    declared: ModelReference,
     opens_by_path: bool,
     per_video_for: Callable[[str], PerVideo],
 ) -> str:
@@ -609,10 +622,12 @@ def _run_inference_op(
     # carries comes from ``infer_identity`` below, which is the one place these
     # two identifiers are minted; computing them here as well would be a second
     # answer to what this run is called.
-    model = resolve_model(ds, params.model, train_kind)
+    model = resolve_model(
+        ds, params.model, model_kind_for(kind, declared, [params.model])
+    )
     model_id = model.model_id
 
-    identity = infer_identity(ds, kind, version, params, train_kind)
+    identity = infer_identity(ds, kind, version, params, declared)
     run_id = identity.run_id
     ctx.set_run_id(run_id)
 
@@ -844,6 +859,11 @@ def _run_inference_op(
 
 # --- Ops -----------------------------------------------------------------
 
+# The model each op runs. Its identity and its run read the same declaration.
+_POSE_MODEL: Final = ModelReference(field="model", kinds=("train-pose",))
+_POINTS_MODEL: Final = ModelReference(field="model", kinds=("train-points",))
+_LOCALIZER_MODEL: Final = ModelReference(field="model", kinds=("train-localizer",))
+
 
 @register_op
 class InferPoseOp(Op[PoseInferParams]):
@@ -868,6 +888,7 @@ class InferPoseOp(Op[PoseInferParams]):
     version = "0.3"
     scope_takes = "any"
     scope_dependent = False
+    model_reference = _POSE_MODEL
     Params = PoseInferParams
 
     def plan_identity(
@@ -879,7 +900,7 @@ class InferPoseOp(Op[PoseInferParams]):
         require_data: bool = True,
     ) -> OpIdentity:
         """What this run and the tracks variant it bridges into are called."""
-        return infer_identity(ds, self.kind, self.version, params, "train-pose")
+        return infer_identity(ds, self.kind, self.version, params, _POSE_MODEL)
 
     def run(
         self,
@@ -954,7 +975,7 @@ class InferPoseOp(Op[PoseInferParams]):
             scope=scope,
             kind=self.kind,
             version=self.version,
-            train_kind="train-pose",
+            declared=_POSE_MODEL,
             opens_by_path=True,
             per_video_for=per_video_for,
         )
@@ -976,6 +997,7 @@ class InferPointsOp(Op[PointInferParams]):
     version = "0.3"
     scope_takes = "any"
     scope_dependent = False
+    model_reference = _POINTS_MODEL
     Params = PointInferParams
 
     def plan_identity(
@@ -987,7 +1009,7 @@ class InferPointsOp(Op[PointInferParams]):
         require_data: bool = True,
     ) -> OpIdentity:
         """What this run and the tracks variant it bridges into are called."""
-        return infer_identity(ds, self.kind, self.version, params, "train-points")
+        return infer_identity(ds, self.kind, self.version, params, _POINTS_MODEL)
 
     def run(
         self,
@@ -1063,7 +1085,7 @@ class InferPointsOp(Op[PointInferParams]):
             scope=scope,
             kind=self.kind,
             version=self.version,
-            train_kind="train-points",
+            declared=_POINTS_MODEL,
             opens_by_path=True,
             per_video_for=per_video_for,
         )
@@ -1083,6 +1105,7 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
     version = "0.2"
     scope_takes = "any"
     scope_dependent = False
+    model_reference = _LOCALIZER_MODEL
     Params = LocalizerInferParams
 
     def plan_identity(
@@ -1094,7 +1117,7 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
         require_data: bool = True,
     ) -> OpIdentity:
         """What this run and the tracks variant it bridges into are called."""
-        return infer_identity(ds, self.kind, self.version, params, "train-localizer")
+        return infer_identity(ds, self.kind, self.version, params, _LOCALIZER_MODEL)
 
     def run(
         self,
@@ -1138,7 +1161,7 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
             scope=scope,
             kind=self.kind,
             version=self.version,
-            train_kind="train-localizer",
+            declared=_LOCALIZER_MODEL,
             # Reads a store natively, through mosaic's own reader.
             opens_by_path=False,
             per_video_for=per_video_for,

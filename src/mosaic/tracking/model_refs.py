@@ -36,9 +36,11 @@ from mosaic.user_paths import user_path
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.core.pipeline.op_identity import parse_op_run_id
+from mosaic.core.pipeline.ops import registered_op
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.ops import ModelReference
 
 __all__ = [
     "Arity",
@@ -46,15 +48,20 @@ __all__ = [
     "MODEL_KINDS",
     "ModelArtifact",
     "ModelKindSpec",
+    "ModelNotFoundError",
+    "ModelReferenceRefusedError",
+    "ModelRefusalReason",
     "ModelShape",
     "ResolvedModel",
     "Role",
     "RoleSpec",
     "model_id_for_ref",
     "model_id_for_ref_set",
+    "model_kind_for",
     "observed_model_source",
     "resolve_model",
     "resolve_model_set",
+    "resolve_op_model",
     "spec_for",
 ]
 
@@ -688,7 +695,18 @@ def resolve_model(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
             digest=_identity((artifact,), spec),
             model_type=_model_type_of(artifact, spec),
         )
+    return _resolve_registered(ds, ref, kind)
 
+
+def _resolve_registered(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
+    """The model a registered run left behind. *ref* is never probed as a path.
+
+    Raises:
+        FileNotFoundError: No index for *kind* exists here or in any library,
+            or the artifact a row names is missing a required file.
+        KeyError: An index exists and none of them registers *ref*.
+    """
+    spec = spec_for(kind)
     registered = _registered_artifact(ds, ref, kind)
     artifact = _resolve_artifact(registered.path, spec)
     return ResolvedModel(
@@ -847,3 +865,190 @@ def model_id_for_ref_set(ds: Dataset | None, refs: Sequence[str], kind: str) -> 
     if len(refs) == 1:
         return model_id_for_ref(ds, refs[0], kind)
     return resolve_model_set(ds, refs, kind).model_id
+
+
+# --- An op's declared model -------------------------------------------------
+
+
+ModelRefusalReason = Literal["runs_no_model", "not_a_run_id", "kind_not_accepted"]
+"""Why a model reference was refused.
+
+``runs_no_model``
+    The op runs no trained model, so it takes no reference at all.
+``not_a_run_id``
+    The reference is not a run identifier, where only one is accepted.
+``kind_not_accepted``
+    The reference is a run of a training kind the op does not run.
+"""
+
+
+class ModelReferenceRefusedError(ValueError):
+    """A model reference an op's declaration does not accept.
+
+    Raised before any weights are read or any identifier is minted.
+    ``mosaic run``, ``mosaic track`` and ``mosaic pipeline plan|run|submit``
+    render it as a message.
+
+    Attributes:
+        reason: Which refusal this is, for a caller that answers each one
+            differently.
+        op_kind: The op the reference was offered to.
+        reference: The reference as given.
+        accepted_kinds: The training op kinds whose run identifiers the op
+            accepts. Empty for an op that runs no trained model.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: ModelRefusalReason,
+        op_kind: str,
+        reference: str,
+        accepted_kinds: tuple[str, ...],
+    ) -> None:
+        super().__init__(message)
+        self.reason: ModelRefusalReason = reason
+        self.op_kind: str = op_kind
+        self.reference: str = reference
+        self.accepted_kinds: tuple[str, ...] = accepted_kinds
+
+
+class ModelNotFoundError(LookupError):
+    """A run identifier of an accepted kind that names no model.
+
+    Raised by :func:`resolve_op_model` in place of the ``FileNotFoundError``,
+    ``KeyError`` or ``NotADirectoryError`` resolution raises: no index registers
+    the run, or the artifact its row names is gone or is not the shape its kind
+    declares. A separate type so a caller can tell a model found nowhere from
+    one of the wrong kind.
+
+    Attributes:
+        reference: The run identifier that was looked up.
+        model_kind: The training op kind whose indexes were searched.
+    """
+
+    def __init__(self, message: str, *, reference: str, model_kind: str) -> None:
+        super().__init__(message)
+        self.reference: str = reference
+        self.model_kind: str = model_kind
+
+
+def model_kind_for(
+    op_kind: str,
+    declared: ModelReference,
+    refs: list[str],
+    *,
+    path_kind: str | None = None,
+) -> str:
+    """The training kind *refs* resolve under, for the op declaring *declared*.
+
+    A run identifier names the training op that wrote it and resolves against
+    that op's index, so its kind is read from it, and refused unless *declared*
+    accepts it. A reference that is not a run identifier is a weights path,
+    which the declaration does not govern, and is read as *path_kind*.
+
+    A list, never a bare string, because a string is a sequence of strings and
+    would be read one character at a time.
+
+    Args:
+        op_kind: The op the references are offered to, named in a refusal.
+        declared: That op's declaration.
+        refs: The references as given, in order.
+        path_kind: What a weights path is read as: the op's own fallback.
+            Omitted, it is the first declared kind.
+
+    Returns:
+        The kind of the first run identifier in *refs*, or *path_kind* when
+        none of them is one.
+
+    Raises:
+        ModelReferenceRefusedError: A run identifier in *refs* is of a kind
+            *declared* does not accept.
+    """
+    kind: str | None = None
+    for ref in refs:
+        parsed = parse_op_run_id(ref)
+        if parsed is None:
+            continue
+        if parsed.kind not in declared.kinds:
+            accepted = " or ".join(declared.kinds)
+            message = (
+                f"{op_kind} runs models trained by {accepted}, and {ref!r} is "
+                f"a {parsed.kind} run."
+            )
+            raise ModelReferenceRefusedError(
+                message,
+                reason="kind_not_accepted",
+                op_kind=op_kind,
+                reference=ref,
+                accepted_kinds=declared.kinds,
+            )
+        kind = kind or parsed.kind
+    if kind is not None:
+        return kind
+    return path_kind if path_kind is not None else declared.kinds[0]
+
+
+def resolve_op_model(ds: Dataset, kind: str, ref: str) -> ResolvedModel:
+    """Check that op *kind* can run the model run *ref* names, and resolve it.
+
+    **Run identifiers only.** For a caller that must never hand a filesystem
+    path from outside to the resolver: a reference that is not a run identifier
+    is refused, and a run identifier is looked up in the model indexes alone,
+    never probed for as a path. :func:`resolve_model` accepts either and tries
+    the path first.
+
+    The op's :class:`~mosaic.core.pipeline.ops.ModelReference` says which
+    training kinds it accepts. The run resolves against this dataset's
+    ``models/<kind>/index.csv`` and then each linked library's. An op whose
+    field takes a list resolves the one run the same way, and the caller passes
+    it as a one-element list.
+
+    Args:
+        ds: The dataset whose model index, and linked libraries, hold the run.
+        kind: The registered op kind the model is for.
+        ref: A training run identifier.
+
+    Returns:
+        The resolved model, carrying one artifact.
+
+    Raises:
+        KeyError: *kind* names no registered op.
+        ModelReferenceRefusedError: The op runs no trained model, *ref* is not
+            a run identifier, or it is a run of a kind the op does not accept.
+        ModelNotFoundError: No index registers *ref*, or the artifact its row
+            names is gone or is not the shape its kind declares.
+    """
+    # Deferred, because importing the package imports this module.
+    from mosaic.tracking import register_ops
+
+    register_ops()
+    declared = registered_op(kind).model_reference
+    if declared is None:
+        raise ModelReferenceRefusedError(
+            f"{kind} runs no trained model, so it takes no model reference.",
+            reason="runs_no_model",
+            op_kind=kind,
+            reference=ref,
+            accepted_kinds=(),
+        )
+    if parse_op_run_id(ref) is None:
+        accepted = " or ".join(declared.kinds)
+        message = (
+            f"{ref!r} is not a run id. {kind} takes a model by the run id of "
+            f"the {accepted} run that trained it."
+        )
+        raise ModelReferenceRefusedError(
+            message,
+            reason="not_a_run_id",
+            op_kind=kind,
+            reference=ref,
+            accepted_kinds=declared.kinds,
+        )
+    model_kind = model_kind_for(kind, declared, [ref])
+    try:
+        return _resolve_registered(ds, ref, model_kind)
+    except (FileNotFoundError, KeyError, NotADirectoryError) as exc:
+        detail = str(exc.args[0]) if exc.args else str(exc)
+        raise ModelNotFoundError(detail, reference=ref, model_kind=model_kind) from exc

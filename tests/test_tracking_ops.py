@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
+import typing
 from pathlib import Path
 
 import pandas as pd
@@ -24,7 +25,13 @@ from mosaic_media import (
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline.job import CancelToken, Cancelled
-from mosaic.core.pipeline.ops import OPS, describe_op, list_ops, run_op
+from mosaic.core.pipeline.ops import (
+    OPS,
+    ModelReference,
+    describe_op,
+    list_ops,
+    run_op,
+)
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     InferPointsRequest,
@@ -38,6 +45,7 @@ from mosaic.core.pipeline.run_log import (
 )
 from mosaic.tracking import resolve_model
 from mosaic.tracking.frame_extraction.dataset_runs import ExtractFramesParams
+from mosaic.tracking.model_refs import ModelReferenceRefusedError
 
 from mosaic.core.scope import Scope
 from tests.helpers import (
@@ -47,6 +55,7 @@ from tests.helpers import (
     install_fake_pose_inference,
     install_fake_trex,
     make_dataset,
+    minimal_op_params,
     scope_over,
     write_litpose_model,
     write_media_index,
@@ -166,6 +175,79 @@ def test_augmentation_accepts_the_dict_forms():
 def test_unknown_kind_raises():
     with pytest.raises(KeyError):
         run_op(object(), "nope", {})
+
+
+# --- model reference declarations ------------------------------------------
+
+_MODEL_REFERENCES = {
+    "ultralytics": ModelReference(field="model_path", kinds=("train-pose",)),
+    "trex": ModelReference(field="detect_model", kinds=("train-pose", "train-points")),
+    "sleap": ModelReference(field="model_paths", kinds=("train-sleap",), many=True),
+    "litpose": ModelReference(field="model_path", kinds=("train-litpose",)),
+    "infer-pose": ModelReference(field="model", kinds=("train-pose",)),
+    "infer-points": ModelReference(field="model", kinds=("train-points",)),
+    "infer-localizer": ModelReference(field="model", kinds=("train-localizer",)),
+}
+
+_DECLARING_OPS = sorted(
+    kind for kind, cls in OPS.items() if cls.model_reference is not None
+)
+
+
+def test_every_op_that_runs_a_trained_model_declares_it() -> None:
+    """A caller choosing a model by run id reads this, so it is pinned whole."""
+    declared = {kind: OPS[kind].model_reference for kind in _DECLARING_OPS}
+    assert declared == _MODEL_REFERENCES
+
+
+@pytest.mark.parametrize("kind", _DECLARING_OPS)
+def test_a_declared_model_field_is_a_params_field_of_that_shape(kind: str) -> None:
+    declared = OPS[kind].model_reference
+    assert declared is not None
+    fields = OPS[kind].Params.model_fields
+    assert declared.field in fields, f"{kind} declares a field its Params lacks"
+    is_list = typing.get_origin(fields[declared.field].annotation) is list
+    assert is_list == declared.many, (
+        f"{kind}.{declared.field} is {'' if is_list else 'not '}a list, and "
+        f"the declaration says many={declared.many}"
+    )
+
+
+@pytest.mark.parametrize("kind", _DECLARING_OPS)
+def test_every_declared_kind_is_a_registered_training_op(kind: str) -> None:
+    declared = OPS[kind].model_reference
+    assert declared is not None
+    assert declared.kinds, f"{kind} accepts no training kind at all"
+    for model_kind in declared.kinds:
+        assert model_kind in OPS, f"{kind} accepts unregistered {model_kind!r}"
+        assert OPS[model_kind].category == "train", (
+            f"{kind} accepts {model_kind!r}, which trains nothing"
+        )
+
+
+@pytest.mark.parametrize("kind", _DECLARING_OPS)
+def test_a_run_id_of_a_kind_the_op_does_not_accept_is_refused_at_plan(
+    kind: str, tmp_path: Path
+) -> None:
+    """The planner refuses what the run would, before any weights are read."""
+    declared = OPS[kind].model_reference
+    assert declared is not None
+    other = next(
+        k for k in sorted(OPS) if OPS[k].category == "train" and k not in declared.kinds
+    )
+    ref = f"{other}.0.1-abcdef0123"
+    params = OPS[kind].Params.model_validate(
+        {**minimal_op_params(kind), declared.field: [ref] if declared.many else ref}
+    )
+    ds = make_dataset(tmp_path)
+
+    with pytest.raises(ModelReferenceRefusedError) as caught:
+        _ = OPS[kind]().plan_identity(ds, params, ds.resolve_scope(None))
+
+    assert caught.value.reason == "kind_not_accepted"
+    assert caught.value.op_kind == kind
+    assert caught.value.reference == ref
+    assert caught.value.accepted_kinds == declared.kinds
 
 
 # --- run_id determinism ----------------------------------------------------
