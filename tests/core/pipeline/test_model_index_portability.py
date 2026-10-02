@@ -10,15 +10,14 @@ path-bearing columns would have been skipped anyway.
 A registered model survived a move only because ``resolve_path`` re-anchors a
 relative string; an absolute one, which is what an older row holds, did not.
 That is the ``detect_model=<run_id>`` handoff breaking on a dataset synced
-between machines.
+between machines. The contract in ``test_index_portability.py`` holds that the
+path passes rewrite all three columns. These tests cover what reads them.
 """
 
 from __future__ import annotations
 
 import shutil
 from pathlib import Path
-
-import pandas as pd
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.dataset_indexes import iter_dataset_indexes
@@ -82,21 +81,6 @@ def test_a_directory_shaped_model_resolves_by_its_run(tmp_path: Path) -> None:
     assert resolved.path == run_root, "the directory, not the checkpoint inside it"
     assert resolved.model_id == RUN_ID, "a registered model is named by its run"
     assert resolved.model_type == "heatmap"
-
-
-def test_make_portable_relativizes_the_model_paths(tmp_path: Path) -> None:
-    ds = make_dataset(tmp_path, name="m", save=False)
-    _ = _register(ds, absolute=True)
-    index_path = model_index_path(ds, "train-litpose")
-
-    before = pd.read_csv(index_path, keep_default_na=False)
-    assert Path(str(before.loc[0, "artifact_path"])).is_absolute()
-
-    _ = ds.make_portable()
-
-    after = pd.read_csv(index_path, keep_default_na=False)
-    for column in ("abs_path", "best_model_path", "artifact_path"):
-        assert not Path(str(after.loc[0, column])).is_absolute(), column
 
 
 def test_a_registered_model_survives_the_dataset_moving(tmp_path: Path) -> None:

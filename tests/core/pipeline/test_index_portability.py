@@ -1,8 +1,12 @@
-"""Path-portability + reindex tests for the feature index.
+"""Index paths that survive a dataset moving, and the feature index's reindex.
 
-Guards the fix that makes feature indexes store dataset-root-*relative* paths
-(so a moved / synced dataset resolves on any machine) and the resolve-then-skip
-behavior in ``manifest._resolve_feature``:
+Every path column of every index is relativized by ``make_portable``, remapped
+by ``rewrite_index_paths``, and still names its file once the dataset moves:
+one contract, run over an index of each kind that carries a path beyond
+``abs_path``.
+
+The rest guards the fix that makes feature indexes store dataset-root-*relative*
+paths and the resolve-then-skip behavior in ``manifest._resolve_feature``:
 
 - relocated-but-present outputs resolve under a different root (no false-fail),
 - an all-missing run raises a loud, actionable error (dataset moved),
@@ -15,7 +19,10 @@ behavior in ``manifest._resolve_feature``:
 from __future__ import annotations
 
 import shutil
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 import numpy as np
 import pandas as pd
@@ -31,7 +38,16 @@ from mosaic.core.pipeline.index import (
     feature_index_path,
 )
 from mosaic.core.pipeline.manifest import _resolve_feature
-from tests.helpers import MockDataset, add_track_sequences, make_dataset
+from mosaic.core.pipeline.models import model_index_path, model_run_root
+from mosaic.core.pipeline.tracks_index import tracks_index_path, write_tracks_row
+from mosaic.tracking.trex.dataset_runs import TRexIndexRow, trex_index, trex_index_path
+from tests.helpers import (
+    MockDataset,
+    add_track_sequences,
+    make_dataset,
+    register_trained_model,
+    write_litpose_model,
+)
 
 
 # --- Helpers ---
@@ -193,6 +209,9 @@ def test_run_feature_writes_relative_paths(tmp_path: Path) -> None:
         assert ds.resolve_path(stored).exists()
 
 
+# --- the manifest across a load and a save -----------------------------------
+
+
 def test_manifest_identity_survives_load_save(tmp_path: Path) -> None:
     """uuid and created_at survive a load -> save round-trip.
 
@@ -236,26 +255,29 @@ def test_a_key_the_current_format_does_not_model_survives_a_save(
     assert written["dataset_type"] == "continuous"
 
 
-# --- the tracks index's source pointer --------------------------------------
+# --- every path column of every index -------------------------------------
 #
-# `source_abs_path` is the tracks index's second path column and was in neither
-# rewrite list, so it silently stopped being portable the moment a dataset moved.
+# Both path passes read raw CSVs and rewrite the columns declared for the index's
+# root. A column missing from that declaration silently stops being portable,
+# and an index the enumeration does not reach is not rewritten at all. Each case
+# writes one row through its producer's own writer, so every cell starts
+# relative and names a file that exists.
 
 
-def _dataset_with_tracks_source(base: Path) -> "Dataset":
-    from mosaic.core.dataset import Dataset as _RealDataset
-    from mosaic.core.pipeline.tracks_index import write_tracks_row
+@dataclass(frozen=True)
+class _IndexedRow:
+    """One index row, and the columns of it that hold a path."""
 
-    base.mkdir(parents=True, exist_ok=True)
-    ds = _RealDataset(
-        manifest_path=base / "dataset.yaml",
-        roots={"tracks": str(base / "tracks"), "tracks_raw": str(base / "tracks_raw")},
-    )
-    ds.ensure_roots()
-    ds.save()
+    dataset: Dataset
+    index: Path
+    columns: tuple[str, ...]
 
+
+def _tracks_row(base: Path) -> _IndexedRow:
+    """A converted table, and the upload it came from in ``source_abs_path``."""
+    ds = make_dataset(base)
     source = ds.get_root("tracks_raw") / "raw.npz"
-    source.write_bytes(b"x")
+    _ = source.write_bytes(b"x")
     out = ds.get_root("tracks") / "s.parquet"
     pd.DataFrame({"frame": [0], "id": [0]}).to_parquet(out)
     write_tracks_row(
@@ -269,43 +291,121 @@ def _dataset_with_tracks_source(base: Path) -> "Dataset":
         n_rows=1,
         source=source,
     )
-    return ds
+    return _IndexedRow(ds, tracks_index_path(ds), ("abs_path", "source_abs_path"))
 
 
-def test_make_portable_relativizes_a_tracks_source_path(tmp_path: Path) -> None:
-    """An absolute source pointer is what the tracker bridge used to write."""
-    from mosaic.core.pipeline.tracks_index import tracks_index_path
-
-    ds = _dataset_with_tracks_source(tmp_path / "ds")
-    index_path = tracks_index_path(ds)
-
-    # Put an absolute value back, as a pre-Stage-2 index holds.
-    frame = pd.read_csv(index_path, keep_default_na=False)
-    absolute = str(ds.get_root("tracks_raw") / "raw.npz")
-    frame.loc[0, "source_abs_path"] = absolute
-    frame.to_csv(index_path, index=False)
-
-    _ = ds.make_portable()
-
-    rewritten = pd.read_csv(index_path, keep_default_na=False)
-    stored = str(rewritten.loc[0, "source_abs_path"])
-    assert not Path(stored).is_absolute(), stored
-    assert stored == "tracks_raw/raw.npz"
+def _model_row(base: Path) -> _IndexedRow:
+    """A directory-shaped trained model, its checkpoint and its directory."""
+    ds = make_dataset(base)
+    run_id = "train-litpose.0.1-abcdef0123"
+    directory = write_litpose_model(model_run_root(ds, "train-litpose", run_id))
+    weights = next(directory.rglob("best.ckpt"))
+    register_trained_model(ds, "train-litpose", run_id, weights, directory=directory)
+    columns = ("abs_path", "best_model_path", "artifact_path")
+    return _IndexedRow(ds, model_index_path(ds, "train-litpose"), columns)
 
 
-def test_rewrite_index_paths_remaps_a_tracks_source_path(tmp_path: Path) -> None:
-    """The other pass, for a dataset whose absolutes point at an old machine."""
-    from mosaic.core.pipeline.tracks_index import tracks_index_path
+def _trex_row(base: Path) -> _IndexedRow:
+    """A tracker run, the video it read and the ``.pv`` it converted to.
 
-    ds = _dataset_with_tracks_source(tmp_path / "ds")
-    index_path = tracks_index_path(ds)
+    The tracker root is a subdirectory of the ``_tracking`` root, whose own
+    ``index.csv`` the passes once never visited.
+    """
+    ds = make_dataset(base)
+    video = ds.get_root(ds.resolve_media_root()) / "vid1.mp4"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    _ = video.write_bytes(b"fake")
+    seq_dir = ds.get_root("trex") / "trex-abc" / "vid1"
+    seq_dir.mkdir(parents=True)
+    pv_path = seq_dir / "vid1.pv"
+    _ = pv_path.write_bytes(b"fake")
+    index = trex_index(trex_index_path(ds))
+    index.ensure()
+    index.append(
+        [
+            TRexIndexRow(
+                run_id="trex-abc",
+                group="",
+                sequence="vid1",
+                abs_path=Path(ds.relative_to_root(seq_dir)),
+                video_abs_path=ds.relative_to_root(video),
+                params_hash="abc",
+                n_ids=1,
+                pv_path=ds.relative_to_root(pv_path),
+            )
+        ]
+    )
+    columns = ("abs_path", "video_abs_path", "pv_path")
+    return _IndexedRow(ds, trex_index_path(ds), columns)
 
-    frame = pd.read_csv(index_path, keep_default_na=False)
-    frame.loc[0, "source_abs_path"] = "/old/machine/tracks_raw/raw.npz"
-    frame.to_csv(index_path, index=False)
 
-    _ = ds.rewrite_index_paths({"/old/machine": str(tmp_path / "ds")})
+_ROWS: Final[Mapping[str, Callable[[Path], _IndexedRow]]] = {
+    "models": _model_row,
+    "trex": _trex_row,
+    "tracks": _tracks_row,
+}
 
-    rewritten = pd.read_csv(index_path, keep_default_na=False)
-    stored = str(rewritten.loc[0, "source_abs_path"])
-    assert "/old/machine" not in stored
+
+def _cells(index: Path, columns: tuple[str, ...]) -> dict[str, str]:
+    """The path cells of the one row *index* holds."""
+    frame = pd.read_csv(index, keep_default_na=False)
+    assert len(frame) == 1
+    return {column: str(frame.loc[0, column]) for column in columns}
+
+
+def _set_cells(index: Path, cells: Mapping[str, str]) -> None:
+    """Overwrite cells of the one row, as an index written earlier holds them."""
+    frame = pd.read_csv(index, keep_default_na=False)
+    for column, value in cells.items():
+        frame.loc[0, column] = value
+    frame.to_csv(index, index=False)
+
+
+@pytest.mark.parametrize("kind", sorted(_ROWS))
+def test_make_portable_relativizes_every_path_column(tmp_path: Path, kind: str) -> None:
+    """A legacy row of absolutes is repaired in every column, not only ``abs_path``."""
+    row = _ROWS[kind](tmp_path / "ds")
+    relative = _cells(row.index, row.columns)
+    ds = row.dataset
+    _set_cells(row.index, {c: str(ds.resolve_path(v)) for c, v in relative.items()})
+
+    changed = ds.make_portable()
+
+    assert _cells(row.index, row.columns) == relative
+    visited = {Path(key).resolve() for key in changed}
+    assert row.index.resolve() in visited, f"the index was not visited: {changed}"
+
+
+@pytest.mark.parametrize("kind", sorted(_ROWS))
+def test_rewrite_index_paths_remaps_every_path_column(
+    tmp_path: Path, kind: str
+) -> None:
+    """Absolutes naming another machine are remapped, and the files left alone."""
+    row = _ROWS[kind](tmp_path / "ds")
+    relative = _cells(row.index, row.columns)
+    ds = row.dataset
+    _set_cells(row.index, {c: f"/old/machine/{v}" for c, v in relative.items()})
+
+    _ = ds.rewrite_index_paths({"/old/machine": str(ds.base_dir)})
+
+    for column, value in _cells(row.index, row.columns).items():
+        assert "/old/machine" not in value, column
+        assert ds.resolve_path(value) == ds.resolve_path(relative[column]), column
+        assert ds.resolve_path(value).exists(), column
+
+
+@pytest.mark.parametrize("kind", sorted(_ROWS))
+def test_a_relative_row_resolves_after_the_dataset_moves(
+    tmp_path: Path, kind: str
+) -> None:
+    """The point of storing relative: every cell still names its file elsewhere."""
+    row = _ROWS[kind](tmp_path / "ds")
+    index = row.index.relative_to(row.dataset.base_dir)
+    moved = tmp_path / "moved"
+
+    _ = shutil.move(str(row.dataset.base_dir), str(moved))
+
+    reloaded = Dataset(manifest_path=moved / "dataset.yaml").load()
+    for column, value in _cells(moved / index, row.columns).items():
+        resolved = reloaded.resolve_path(value)
+        assert resolved.is_relative_to(moved) and resolved.exists(), column
