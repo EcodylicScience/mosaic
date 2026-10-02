@@ -206,8 +206,10 @@ def _write_trex_npz(path: Path, n: int = 12, ind: int = 0) -> None:
         path,
         n=n,
         individual=ind,
-        poseX=np.stack([np.linspace(0.0, 1.0, n)] * 2, axis=1),
-        poseY=np.stack([np.linspace(1.0, 0.0, n)] * 2, axis=1),
+        columns={
+            "poseX": np.stack([np.linspace(0.0, 1.0, n)] * 2, axis=1),
+            "poseY": np.stack([np.linspace(1.0, 0.0, n)] * 2, axis=1),
+        },
     )
 
 

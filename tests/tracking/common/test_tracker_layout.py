@@ -477,7 +477,7 @@ def _unconvertible_npz(path: Path) -> None:
         path,
         n=6,
         cm_per_pixel=0.03,
-        a_field_mosaic_has_never_seen=np.arange(6, dtype=float),
+        columns={"a_field_mosaic_has_never_seen": np.arange(6, dtype=float)},
     )
 
 

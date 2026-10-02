@@ -322,11 +322,14 @@ def _trex_npz(path: Path, value: float) -> None:
     write_trex_npz(
         path,
         n=5,
-        X=np.full(5, value),
-        Y=np.full(5, value),
-        **{"X#wcentroid": np.full(5, value), "Y#wcentroid": np.full(5, value)},
-        poseX=np.stack([np.full(5, value)] * 2, axis=1),
-        poseY=np.stack([np.full(5, value)] * 2, axis=1),
+        columns={
+            "X": np.full(5, value),
+            "Y": np.full(5, value),
+            "X#wcentroid": np.full(5, value),
+            "Y#wcentroid": np.full(5, value),
+            "poseX": np.stack([np.full(5, value)] * 2, axis=1),
+            "poseY": np.stack([np.full(5, value)] * 2, axis=1),
+        },
     )
 
 

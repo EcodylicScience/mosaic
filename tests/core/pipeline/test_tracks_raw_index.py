@@ -59,10 +59,12 @@ def _trex_npz(
     write_trex_npz(
         path,
         n=n,
-        time=np.arange(n, dtype=float),
-        poseX0=rng.random(n),
-        poseY0=rng.random(n),
-        **dict(extra or {}),
+        columns={
+            "time": np.arange(n, dtype=float),
+            "poseX0": rng.random(n),
+            "poseY0": rng.random(n),
+            **(extra or {}),
+        },
     )
 
 

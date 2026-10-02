@@ -192,13 +192,13 @@ def test_a_calibrated_export_converts_to_the_same_pixels_as_an_uncalibrated_one(
         plain,
         n=6,
         cm_per_pixel=1.0,
-        **{"X#wcentroid": pixels_x, "Y#wcentroid": pixels_y},
+        columns={"X#wcentroid": pixels_x, "Y#wcentroid": pixels_y},
     )
     write_trex_npz(
         scaled,
         n=6,
         cm_per_pixel=0.25,
-        **{"X#wcentroid": pixels_x * 0.25, "Y#wcentroid": pixels_y * 0.25},
+        columns={"X#wcentroid": pixels_x * 0.25, "Y#wcentroid": pixels_y * 0.25},
     )
 
     assert _convert(scaled)["X"].to_numpy() == pytest.approx(
@@ -215,9 +215,12 @@ def test_x_becomes_the_body_centre_and_the_head_is_preserved(tmp_path: Path) -> 
     write_trex_npz(
         path,
         n=6,
-        X=head_x,
-        Y=head_x,
-        **{"X#wcentroid": centre_x, "Y#wcentroid": centre_x},
+        columns={
+            "X": head_x,
+            "Y": head_x,
+            "X#wcentroid": centre_x,
+            "Y#wcentroid": centre_x,
+        },
     )
 
     out = _convert(path)
@@ -274,13 +277,15 @@ def _with_tracklet_arrays(path: Path, *, n: int = 8) -> None:
         path,
         n=n,
         cm_per_pixel=0.03,
-        missing=missing,
-        tracklet_id=np.full(n, _COLLAPSED_TRACKLET_ID, dtype=np.float32),
-        tracklets=np.array([[0, 2], [4, 7]], dtype=np.uint32),
-        tracklet_vxys=np.array(
-            [[1.0, -60.0, -120.0, 134.164], [2.0, -109.9, -300.0, 319.504]],
-            dtype=np.float32,
-        ),
+        columns={
+            "missing": missing,
+            "tracklet_id": np.full(n, _COLLAPSED_TRACKLET_ID, dtype=np.float32),
+            "tracklets": np.array([[0, 2], [4, 7]], dtype=np.uint32),
+            "tracklet_vxys": np.array(
+                [[1.0, -60.0, -120.0, 134.164], [2.0, -109.9, -300.0, 319.504]],
+                dtype=np.float32,
+            ),
+        },
     )
 
 
@@ -373,7 +378,7 @@ def test_the_key_survives_the_merge_and_a_parquet_round_trip(tmp_path: Path) -> 
 def test_an_export_without_bounds_keeps_its_own_tracklet_id(tmp_path: Path) -> None:
     """With no ``tracklets`` the per-frame export is the only record, so it stays."""
     path = tmp_path / "seq_fish0.npz"
-    write_trex_npz(path, n=4, tracklet_id=np.array([7.0, 7.0, 9.0, 9.0]))
+    write_trex_npz(path, n=4, columns={"tracklet_id": np.array([7.0, 7.0, 9.0, 9.0])})
 
     table = _convert(path)
 
@@ -434,7 +439,10 @@ def test_an_unclassified_field_still_refuses_a_calibrated_table(
     """The guard must keep its teeth: dropping two fields is not disarming it."""
     path = tmp_path / "seq_fish0.npz"
     write_trex_npz(
-        path, n=4, cm_per_pixel=0.03, some_new_trex_field=np.arange(4, dtype=float)
+        path,
+        n=4,
+        cm_per_pixel=0.03,
+        columns={"some_new_trex_field": np.arange(4, dtype=float)},
     )
     with pytest.raises(UnknownTrexUnitsError, match="some_new_trex_field"):
         _ = _convert(path)
@@ -450,7 +458,7 @@ def test_an_unclassified_field_still_refuses_a_calibrated_table(
 
 def _write_uncalibrated(path: Path, *, n: int = 8, **columns: np.ndarray) -> None:
     """A pre-2025 export: everything TRex writes today, minus the factor."""
-    write_trex_npz(path, n=n, omit=(CALIBRATION_COLUMN,), **columns)
+    write_trex_npz(path, n=n, columns=columns, omit=(CALIBRATION_COLUMN,))
 
 
 def _convert_scaled(path: Path, factor: float) -> pd.DataFrame:

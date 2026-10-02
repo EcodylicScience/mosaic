@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 import zlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -127,8 +127,8 @@ def write_trex_npz(
     individual: int | None = None,
     n: int = 8,
     cm_per_pixel: float = 1.0,
+    columns: Mapping[str, np.ndarray] | None = None,
     omit: Sequence[str] = (),
-    **columns: np.ndarray,
 ) -> None:
     """Write a per-individual TREx export carrying what TREx always writes.
 
@@ -146,7 +146,9 @@ def write_trex_npz(
     The bare ``X``/``Y`` are given the same values as ``#wcentroid`` by default.
     In a real export they differ (bare is the head), but most callers only need
     *a* position; a caller testing the head-versus-centre distinction passes them
-    explicitly through *columns*.
+    explicitly in *columns*, which replaces or adds fields by name. It is a
+    mapping rather than keyword arguments because some TREx field names, such as
+    ``X#wcentroid``, are not Python identifiers.
 
     ``individual`` defaults to the trailing digits of the filename, because TREx
     names each file for the individual it holds -- ``myseq_fish0.npz`` beside
@@ -175,7 +177,7 @@ def write_trex_npz(
         "poseX0": centre_x,
         "poseY0": centre_y,
     }
-    fields.update(columns)
+    fields.update(columns or {})
     for name in omit:
         del fields[name]
     np.savez(path, allow_pickle=False, **fields)

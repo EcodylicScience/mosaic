@@ -39,8 +39,10 @@ def _trex_npz(path: Path, *, individual: int, n: int = 5) -> None:
         path,
         individual=individual,
         n=n,
-        poseX=np.stack([np.linspace(0.0, 1.0, n)] * 2, axis=1),
-        poseY=np.stack([np.linspace(1.0, 0.0, n)] * 2, axis=1),
+        columns={
+            "poseX": np.stack([np.linspace(0.0, 1.0, n)] * 2, axis=1),
+            "poseY": np.stack([np.linspace(1.0, 0.0, n)] * 2, axis=1),
+        },
     )
 
 

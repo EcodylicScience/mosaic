@@ -60,9 +60,11 @@ def _trex_npz(path: Path, *, n: int = 8, seed: int = 0) -> None:
     write_trex_npz(
         path,
         n=n,
-        time=np.arange(n, dtype=float),
-        poseX0=rng.random(n),
-        poseY0=rng.random(n),
+        columns={
+            "time": np.arange(n, dtype=float),
+            "poseX0": rng.random(n),
+            "poseY0": rng.random(n),
+        },
     )
 
 
