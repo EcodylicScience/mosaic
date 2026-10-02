@@ -27,6 +27,7 @@ What lives where:
 - ``media`` -- media files, media-index rows, transcode derivatives.
 - ``variants`` -- media variant files and their index rows, and a count of the
   index reads a variant's consumers make.
+- ``identity`` -- the digest a feature run is named by, from its parameters.
 - ``ops`` -- the smallest params dict that validates for each registered op.
 - ``runlog`` -- an attempt's recorded run-log events.
 - ``scope`` -- a resolved scope over named entries, for the ops and drivers
@@ -153,6 +154,7 @@ from tests.helpers.tracks import (
     write_sleap_analysis_h5,
     write_trex_npz,
 )
+from tests.helpers.identity import run_id_digest
 from tests.helpers.inference import (
     FakeInference,
     install_fake_point_inference,
@@ -279,6 +281,7 @@ __all__ = [
     "require_ffmpeg",
     "resolved_scope",
     "revision_file",
+    "run_id_digest",
     "runs_in_an_external_environment",
     "sandbox_home",
     "scope_over",
