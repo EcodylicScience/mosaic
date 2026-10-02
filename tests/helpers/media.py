@@ -138,6 +138,93 @@ def paint_gray(frame: int) -> npt.NDArray[np.uint8]:
     return np.full((48, 64, 3), gray_level(frame), np.uint8)
 
 
+_CODE_GRID: Final = (4, 3)
+"""Columns and rows of the cells a frame code is painted in, one bit per cell."""
+_CODE_BITS: Final = _CODE_GRID[0] * _CODE_GRID[1]
+_CODE_ZERO: Final = 32
+_CODE_ONE: Final = 224
+_CODE_THRESHOLD: Final = (_CODE_ZERO + _CODE_ONE) // 2
+_CODE_MARGIN: Final = 48
+"""The least distance from the threshold at which a decoded cell is read as a bit."""
+
+
+def _code_cells(width: int, height: int) -> list[tuple[slice, slice, slice, slice]]:
+    """Return each code cell of a *width* by *height* frame, in reading order.
+
+    Each cell is ``(rows, columns, inner_rows, inner_columns)``: its whole extent,
+    and the central half of it that :func:`read_frame_code` measures.
+    """
+    columns, rows = _CODE_GRID
+    cells: list[tuple[slice, slice, slice, slice]] = []
+    for row in range(rows):
+        top, bottom = row * height // rows, (row + 1) * height // rows
+        for column in range(columns):
+            left, right = column * width // columns, (column + 1) * width // columns
+            inset_y, inset_x = (bottom - top) // 4, (right - left) // 4
+            cells.append(
+                (
+                    slice(top, bottom),
+                    slice(left, right),
+                    slice(top + inset_y, bottom - inset_y),
+                    slice(left + inset_x, right - inset_x),
+                )
+            )
+    return cells
+
+
+def paint_frame_code(
+    frame: int, size: tuple[int, int] = (64, 48)
+) -> npt.NDArray[np.uint8]:
+    """Return a BGR frame of *size* that spells *frame* in binary, one bit per cell.
+
+    The frame is a 4 by 3 grid of cells, most significant bit first in reading
+    order, each flat at 32 for a 0 and 224 for a 1. A lossy encode moves a cell by a
+    few gray levels and a bit is 96 levels from the threshold, so
+    :func:`read_frame_code` recovers *frame* exactly after several encodes. A flat
+    :func:`gray_level` does not: four color conversions darken it by as much as 6
+    levels on x86_64 Linux, more than half the distance to a neighboring frame's
+    level.
+
+    Raises:
+        ValueError: If *frame* does not fit in 12 bits.
+    """
+    if not 0 <= frame < 1 << _CODE_BITS:
+        message = f"frame {frame} does not fit in a {_CODE_BITS}-bit frame code"
+        raise ValueError(message)
+    width, height = size
+    image = np.empty((height, width, 3), np.uint8)
+    for bit, (rows, columns, _, _) in enumerate(_code_cells(width, height)):
+        one = frame >> (_CODE_BITS - 1 - bit) & 1
+        image[rows, columns] = _CODE_ONE if one else _CODE_ZERO
+    return image
+
+
+def read_frame_code(image: npt.NDArray[np.uint8]) -> int:
+    """Return the frame that :func:`paint_frame_code` spelled in decoded *image*.
+
+    Each cell is read from the mean of its central half, away from the ringing a
+    lossy encode leaves along the cell's edges. The grid is placed in proportion to
+    *image*'s size, so a resized frame reads as well.
+
+    Raises:
+        ValueError: If a cell's mean is within 48 levels of the threshold, so a
+            frame too damaged to read fails as unreadable rather than reading as
+            another frame.
+    """
+    height, width = image.shape[:2]
+    code = 0
+    for bit, (_, _, rows, columns) in enumerate(_code_cells(width, height)):
+        level = float(np.mean(image[rows, columns]))
+        if abs(level - _CODE_THRESHOLD) < _CODE_MARGIN:
+            message = (
+                f"bit {bit} of the frame code reads {level:.1f}, within"
+                f" {_CODE_MARGIN} of the threshold {_CODE_THRESHOLD}"
+            )
+            raise ValueError(message)
+        code = code << 1 | int(level > _CODE_THRESHOLD)
+    return code
+
+
 def write_painted_entry(
     dataset: Dataset,
     sequence: str,

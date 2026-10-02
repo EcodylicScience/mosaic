@@ -71,6 +71,8 @@ from tests.helpers import (
     entry_error_lines,
     index_media_sequence,
     make_dataset,
+    paint_frame_code,
+    read_frame_code,
     write_h264_mp4,
     write_media_index,
     write_painted_entry,
@@ -99,11 +101,13 @@ _GRAYSCALE: Step = {"step": "grayscale"}
 
 
 _LEVEL_TOLERANCE = 5
-"""The largest distance of a decoded flat frame from the level it was painted with.
+"""The largest distance between two decodes of one flat frame, one encode apart.
 
-Two encodes, the source's and the variant's, move a flat frame by up to about 4
-levels. Painted levels are 12 apart. A frame within this tolerance of its level
-is that frame and not a neighbor.
+One encode moves a flat frame by about 2 levels, and painted levels are 12 apart,
+so a frame within this tolerance of another's level is that frame and not a
+neighbor. A test identifying a frame through the source's encode and the
+variant's paints a frame code instead: each conversion darkens a flat level, by
+as much as 6 levels over four of them on x86_64 Linux.
 """
 
 
@@ -195,6 +199,12 @@ def _means(path: Path) -> list[float]:
     """Return the mean level of each frame of *path*, decoded for analysis."""
     with open_frame_reader(path, target="analysis") as reader:
         return [float(np.mean(frame)) for _, frame in reader]
+
+
+def _codes(path: Path) -> list[int]:
+    """Return the frame code of each frame of *path*, decoded for analysis."""
+    with open_frame_reader(path, target="analysis") as reader:
+        return [read_frame_code(frame) for _, frame in reader]
 
 
 def _entries_written(ds: Dataset, execution_id: str) -> int:
@@ -306,7 +316,7 @@ def test_a_step_less_h264_variant_is_every_source_frame_in_h264(
     tmp_path: Path,
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
-    _entry(ds, "s", [(20, 30.0), (20, 30.0)])
+    _ = write_painted_entry(ds, "s", [(20, 30.0), (20, 30.0)], paint_frame_code)
 
     run_id = _run(ds, [], codec="h264")
 
@@ -314,10 +324,7 @@ def test_a_step_less_h264_variant_is_every_source_frame_in_h264(
     facts = probe_media(path)
     width, height = _SIZE
     assert (facts.width, facts.height, facts.codec_name) == (width, height, "h264")
-    means = _means(path)
-    assert len(means) == 40
-    for frame, mean in enumerate(means):
-        assert mean == pytest.approx(_level(frame, 0), abs=_LEVEL_TOLERANCE), frame
+    assert _codes(path) == list(range(40))
     row = _row(ds, run_id)
     assert media_variant_placement(row).frames == FrameMap(0, 1, 40)
     assert row["encoder"] == "libx264"
@@ -329,15 +336,13 @@ def test_trim_and_decimate_across_clips_keep_the_mapped_source_frames(
 ) -> None:
     """Frame ``i`` of the variant is source frame ``7 + 3 * i``, across both clips."""
     ds = make_dataset(tmp_path / "ds")
-    _entry(ds, "s", [(30, 30.0), (30, 30.0)])
+    _ = write_painted_entry(ds, "s", [(30, 30.0), (30, 30.0)], paint_frame_code)
 
     run_id = _run(ds, [_trim(7, 50), _decimate(3)])
 
     kept = list(range(7, 50, 3))
-    means = _means(media_variant_path(ds, run_id, "", "s", ""))
-    assert len(means) == len(kept) == 15
-    for position, (mean, source) in enumerate(zip(means, kept, strict=True)):
-        assert mean == pytest.approx(_level(source, 0), abs=_LEVEL_TOLERANCE), position
+    assert len(kept) == 15
+    assert _codes(media_variant_path(ds, run_id, "", "s", "")) == kept
     row = _row(ds, run_id)
     assert media_variant_placement(row).frames == FrameMap(7, 3, 15)
     assert media_variant_placement(row).fps == pytest.approx(10.0)
@@ -355,7 +360,7 @@ def test_a_mixed_rate_entry_is_labeled_at_the_first_clips_rate_or_at_fps(
     uniform.
     """
     ds = make_dataset(tmp_path / "ds")
-    _entry(ds, "s", [(300, 30.0), (300, 31.0)])
+    _ = write_painted_entry(ds, "s", [(300, 30.0), (300, 31.0)], paint_frame_code)
     run_id = _run(ds, [_trim(290, 320)], fps=fps)
 
     path = media_variant_path(ds, run_id, "", "s", "")
@@ -363,9 +368,7 @@ def test_a_mixed_rate_entry_is_labeled_at_the_first_clips_rate_or_at_fps(
     assert facts.fps == pytest.approx(labeled)
     assert facts.frame_count == 30
     assert media_variant_placement(_row(ds, run_id)).fps == pytest.approx(labeled)
-    means = _means(path)
-    assert means[0] == pytest.approx(_level(290, 0), abs=_LEVEL_TOLERANCE)
-    assert means[10] == pytest.approx(_level(300, 0), abs=_LEVEL_TOLERANCE)
+    assert _codes(path) == list(range(290, 320))
 
 
 @pytest.mark.media
