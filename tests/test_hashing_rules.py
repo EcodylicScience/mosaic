@@ -4,11 +4,6 @@ One test per independently checkable rule from the reference document. These are
 cheap invariants that hold (or should hold) across the whole registry, as
 distinct from the literal-identifier pinning in ``test_identity_golden.py`` and
 the end-to-end scenarios in ``test_hashing_workflows.py``.
-
-Assertions describing target state rather than current behaviour are marked
-``xfail(strict=True)`` with the implementation item that closes them. Strict
-means the marker is self-clearing: when the item lands, the test reports XPASS
-and fails until the marker is removed.
 """
 
 from __future__ import annotations
@@ -362,7 +357,7 @@ def test_provenance_serialization_still_degrades() -> None:
 
 
 def test_distinct_payloads_have_distinct_digests() -> None:
-    """The baseline the two xfails above are protecting."""
+    """The baseline that the payload-identity tests above rest on."""
     assert hash_params({"a": 1}) != hash_params({"a": 2})
 
 

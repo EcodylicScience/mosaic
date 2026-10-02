@@ -166,9 +166,10 @@ dependency group beside `imgstore`, so every CI job already installs it.
 
 Five markers are declared, all in `[tool.pytest.ini_options]`: `slow`, `media`
 (needs `ffmpeg` **and** `ffprobe` on PATH), `tracker`, `identity` and `feral`. The
-last three are how CI selects its extra jobs, so a new test file in any of those
-areas is covered the day it lands rather than when someone remembers to edit the
-workflow.
+last three are **job markers**: each selects the CI job whose environment its tests
+need, so a new test file in any of those areas is covered the day it lands rather
+than when someone remembers to edit the workflow. The `test` job deselects all
+three, so every test runs in exactly one job.
 
 `-m` on the command line **replaces** the `-m "not slow"` in `addopts` rather than
 intersecting with it. That is what makes `pytest -m slow` work, and it also means
@@ -244,11 +245,19 @@ and pull request. There is no `.pre-commit-config.yaml`. **Every job installs
 the `test` dependency group**, because `tests/conftest.py` demands `imgstore` of
 any run with `CI` set and a job without it fails at collection.
 
-- **`test`** — `uv run --no-sync pytest -q`. It inherits `addopts = "-m 'not slow'"`,
-  so **slow-marked tests never run in CI**. A change that only breaks a slow test
-  goes green; run them locally.
+**Each test runs in exactly one place.** The `test` job takes what no job marker
+claims and is not slow; each marked job takes all of its marker, slow tests
+included; and [`.github/workflows/slow.yml`](.github/workflows/slow.yml) takes the
+remaining slow tests, weekly and on manual dispatch, as its own workflow so a push
+cannot cancel it. `tests/test_pytest_config.py` reads both workflows and fails when
+a marker is selected twice or not at all.
+
+- **`test`** — `-m "not slow and not tracker and not identity and not feral"`.
+  **A change that only breaks a slow test goes green on push** and red at the
+  next weekly run; run them locally.
 - **`identity`** — the identity-marked suites under a `deep-learning`
-  environment, so `pytest.importorskip("torch")` cannot silently skip them.
+  environment, so `pytest.importorskip("torch")` cannot silently skip them. Its
+  slow tests download pretrained timm weights, which the job caches.
 - **`tracking`** — the `tracker`-marked suites, against real Ultralytics and POLO
   environments built the way a user builds them: `uv sync --python 3.12` in
   `src/mosaic/tracking/external/ultralytics-env/` and `.../polo-env/`, located by
@@ -272,7 +281,7 @@ strict-mode errors. So before reporting work done, run what CI will not:
 
 ```bash
 basedpyright                        # not gated at all
-pytest -m "slow or not slow"        # CI skips the slow ones
+pytest -m "slow or not slow"        # a push skips the slow ones
 ```
 
 ## High-Level Architecture

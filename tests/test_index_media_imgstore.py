@@ -89,6 +89,7 @@ def test_resolve_media_returns_store_dir(tmp_path, make_imgstore):
     assert paths[0].resolve() == store_dir.resolve()
 
 
+@pytest.mark.media
 @pytest.mark.slow
 def test_index_media_excludes_every_supported_extension_inside_a_store(
     tmp_path: Path,

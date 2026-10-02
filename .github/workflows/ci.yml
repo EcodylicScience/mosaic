@@ -29,6 +29,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       # mosaic-media resolves from PyPI, so nothing here needs the sibling to
       # install. It is checked out and installed editable anyway, over the
@@ -91,7 +92,12 @@ jobs:
         # the imgstore tests reach `pytest.importorskip` and skip, and CI reports
         # green while running less than this workflow installs for. (The lock is
         # also stale and cannot currently be regenerated; see CONTRIBUTING.md.)
-        run: uv run --no-sync pytest -q
+        #
+        # Each job marker is deselected here because its own job below selects
+        # it, so every test runs in exactly one job and a failure is reported
+        # once. The slow tests that no job marker claims run in `slow.yml`.
+        # `tests/test_pytest_config.py` holds the workflows to that partition.
+        run: uv run --no-sync pytest -q -m "not slow and not tracker and not identity and not feral" --durations=25
 
   # The identity tests need torch and timm, via the `deep-learning` extra, which
   # nothing else
@@ -103,6 +109,7 @@ jobs:
   # which predicts happily and is wrong.
   identity:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -131,6 +138,16 @@ jobs:
           uv pip install -e '.[deep-learning]'
           uv pip install --group test
 
+      # The slow identity tests build backbones with `pretrained=True`, so timm
+      # downloads their weights from the Hugging Face hub, one of them about
+      # 800 MB. On a cache hit the run makes no download that could fail.
+      - name: Cache pretrained weights
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: pretrained-weights-${{ hashFiles('src/mosaic/behavior/model_library/**/*.py', 'tests/test_identity_*.py') }}
+          restore-keys: pretrained-weights-
+
       - name: Test identity checkpoints
         working-directory: mosaic
         env:
@@ -143,10 +160,11 @@ jobs:
         # slow"` in `addopts`, which is what this job needs -- the tests that
         # construct a real backbone are slow-marked, and they are the ones it
         # exists for.
-        run: uv run --no-sync pytest -q -m identity
+        run: uv run --no-sync pytest -q -m identity --durations=25
 
   tracking:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -208,7 +226,7 @@ jobs:
           # is found first.
           MOSAIC_POLO_BIN: ${{ github.workspace }}/mosaic/src/mosaic/tracking/external/polo-env/.venv/bin/yolo
         # `-m tracker` for the same reason as the identity job above.
-        run: uv run --no-sync pytest -q -m tracker
+        run: uv run --no-sync pytest -q -m tracker --durations=25
 
   # FERAL is a moving target mosaic reaches deep into: the feature builds its own
   # training loop out of thirteen symbols from `feral.model`, `feral.dataset`,
@@ -225,6 +243,7 @@ jobs:
   # `opencv-python` build keeps conftest's two-builds guard satisfied.
   feral:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -260,7 +279,7 @@ jobs:
           # same file also asserts the ImportError raised in feral's absence.
           MOSAIC_CI_FERAL: "1"
         # `-m feral` for the same reason as the identity job above.
-        run: uv run --no-sync pytest -q -m feral
+        run: uv run --no-sync pytest -q -m feral --durations=25
 
   # Runs on push as well as on pull request. `uvx` resolves the newest ruff at
   # run time, so a rule set widening upstream surfaces here rather than on
@@ -268,6 +287,7 @@ jobs:
   # pyproject pins which rules are in force against that drift.
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 

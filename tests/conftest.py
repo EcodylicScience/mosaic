@@ -57,7 +57,7 @@ from tests.helpers.media import MediaClip, add_media_sequence, write_media_index
 from tests.helpers.tracks import add_track_sequences
 
 # Modules every CI job must have, installed through the `test` dependency group.
-# `imgstore` gates 35 tests behind ``pytest.importorskip``, so its absence
+# `imgstore` gates tests behind ``pytest.importorskip``, so its absence
 # presents as a skip rather than a failure -- a green CI that ran less than the
 # workflow installed for. That is not hypothetical: the test step used to invoke
 # `uv run pytest`, which re-synced the environment from `uv.lock` and pruned
@@ -240,7 +240,7 @@ def pytest_configure() -> None:
     missing = [name for name in required if importlib.util.find_spec(name) is None]
     if missing:
         raise pytest.UsageError(
-            f"CI installs {', '.join(missing)} through extras, but they are not "
+            f"CI installs {', '.join(missing)}, but they are not "
             "importable. The suite would skip silently instead of failing. Check "
             "that the test step does not re-sync the environment away "
             "(uv run --no-sync)."

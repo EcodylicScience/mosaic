@@ -237,6 +237,10 @@ testpaths = ["tests"]
 # stay first, and `tests/test_pytest_config.py` asserts that it is. worksteal
 # balances a suite whose cases range from microseconds to a video encode, where
 # a static split leaves workers idle. `-n0` runs one invocation serially.
+# `--import-mode=prepend`, pytest's default, is pinned because the suite imports
+# `tests.helpers` by package name, which resolves to this checkout only while the
+# repository root leads `sys.path`: an installed distribution may ship a
+# top-level `tests` package of its own, as an Ultralytics wheel does.
 addopts = [
     "-m",
     "not slow",
@@ -247,14 +251,15 @@ addopts = [
     "auto",
     "--dist",
     "worksteal",
+    "--import-mode=prepend",
 ]
-# The suite's one xfail already sets strict=True, so this only binds the next
-# author: a non-strict xfail passes whether or not the bug it names is fixed.
+# A non-strict xfail passes whether or not the bug it names is fixed, so every
+# xfail in the suite is strict.
 xfail_strict = true
 markers = [
     "slow: takes seconds to minutes; deselected by the default invocation",
     "media: needs the ffmpeg toolchain (both `ffmpeg` and `ffprobe`) on PATH",
-    "tracker: exercises an integrated tracker's run loop behind a fake tool",
+    "tracker: Ultralytics tracking, inference or training; CI's `tracking` job runs these against the real environments",
     "identity: needs torch and timm, i.e. the `deep-learning` extra",
     "feral: needs the feral package, i.e. the `feral` extra",
 ]

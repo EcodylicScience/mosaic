@@ -1,10 +1,9 @@
 """Every script under ``tools/`` still imports.
 
-``tools/`` sits outside every automatic gate. CI's ruff check covers only
-``src`` and ``tests`` (``ruff check src tests`` in
-``.github/workflows/ci.yml``), basedpyright runs ungated, and no other test
-imports these scripts. An import is the one cheap check available for a
-script nothing else reads.
+CI's ruff check covers ``tools/``, but basedpyright runs ungated and no other
+test imports these scripts, so a script can lint clean and still fail to
+import. An import is the one cheap check available for a script nothing else
+reads.
 
 Before the fix this test protects, ``_utils.py`` still exported the selector
 under the name ``Scope``. The stale ``from mosaic.core.pipeline._utils

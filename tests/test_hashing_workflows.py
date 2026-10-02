@@ -3,12 +3,6 @@
 Transcribed from the workflow walkthroughs (H1-H5), which specify what each one
 must assert and note that two synthetic sequences of a few hundred frames cover
 all five. The fixture is ``scenario_dataset`` in ``conftest.py``.
-
-These are the milestone gates: H5 gates M1, H1 and H2 gate M2, H3 gates M3 and
-M4, H4 gates M4. Assertions describing target state are marked
-``xfail(strict=True)`` naming the milestone that closes them, so the suite
-doubles as a progress meter -- when a milestone lands, its scenarios report XPASS
-and fail until the markers come off.
 """
 
 from __future__ import annotations
