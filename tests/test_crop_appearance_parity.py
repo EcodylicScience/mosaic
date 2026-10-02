@@ -1,15 +1,20 @@
-"""Pin the crop features' CLAHE and gray conversion to the byte.
+"""Pin the crop features' CLAHE and gray conversion.
 
 ``egocentric-crop`` and ``interaction-crop-pipeline`` equalize a crop with CLAHE
-and convert it to gray. Each feature's output on a fixed synthetic crop is pinned
-here as a SHA-256 digest. A change to either computation, including a change to
-code that the two share, fails here instead of altering crops under an unchanged
-feature version.
+and convert it to gray. A change to either computation, including a change to code
+that the two share, fails here instead of altering crops under an unchanged feature
+version.
 
-CLAHE is pinned twice. With the features' defaults, 25 tiles on this crop contain
+Gray conversion is fixed-point arithmetic, so its output is pinned as a SHA-256
+digest. CLAHE blends its tile tables in floating point, which is not bit-exact
+across CPU architectures: the same OpenCV release gives different bytes on arm64
+and x86_64. Its output is compared with OpenCV's CLAHE called directly, with the
+clip limit and tile grid spelled out here rather than read from the feature.
+
+CLAHE is checked twice. With the features' defaults, 25 tiles on this crop contain
 12 pixels each, and OpenCV raises the clip threshold to one count per bin. Every
 clip limit up to about 21 therefore gives the same bytes. With 4 tiles the clip
-limit takes effect, which pins that each feature passes its clip limit and tile
+limit takes effect, which shows that each feature passes its clip limit and tile
 grid through.
 
 The crops are 8-bit, as decoded video is, and 16-bit, as a raw imgstore of a
@@ -17,7 +22,7 @@ The crops are 8-bit, as decoded video is, and 16-bit, as a raw imgstore of a
 16-bit color crop because OpenCV converts only an 8-bit or float image to LAB.
 
 The crop is taken around the fixture's center at the fixture's size, unrotated.
-It is the whole fixture, and the digests measure the appearance path alone.
+It is the whole fixture, so the comparisons measure the appearance path alone.
 """
 
 from __future__ import annotations
@@ -164,60 +169,49 @@ def test_the_crop_around_the_center_is_the_whole_fixture(
     assert np.array_equal(_FEATURES[feature]({})(image), image)
 
 
+def _opencv_clahe(
+    image: Image, clip_limit: float, tile_grid_size: int
+) -> npt.NDArray[np.uint8 | np.uint16]:
+    """Equalize *image* with OpenCV's CLAHE, independently of mosaic's own code.
+
+    A gray image is equalized directly and a BGR one on L of LAB.
+    """
+    clahe = cv2.createCLAHE(
+        clipLimit=clip_limit, tileGridSize=(tile_grid_size, tile_grid_size)
+    )
+    if image.ndim == 2:
+        return np.asarray(clahe.apply(image), dtype=image.dtype)
+    lab = np.asarray(cv2.cvtColor(image, cv2.COLOR_BGR2LAB), dtype=image.dtype)
+    lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+    return np.asarray(cv2.cvtColor(lab, cv2.COLOR_LAB2BGR), dtype=image.dtype)
+
+
 @pytest.mark.parametrize("feature", sorted(_FEATURES))
 @pytest.mark.parametrize(
-    ("flags", "fixture", "digest"),
+    ("flags", "fixture", "clip_limit", "tile_grid_size"),
     [
-        (
-            {"use_clahe": True},
-            "color",
-            "af49dd8757677f24b9bcc34802f4c0050ec732a488421fe4d2f3904273d53f63",
-        ),
-        (
-            {"use_clahe": True},
-            "gray",
-            "53c682d00f6529dc522bebdc12b9532497bcb302f8d0ed6a1ae9a19c7d1c465a",
-        ),
-        (
-            {"grayscale": True},
-            "color",
-            "1e223ecca321f9746ac0a7b6738528b136c9f75835b31ebf2f26c643acbd2618",
-        ),
-        (
-            {"use_clahe": True},
-            "16-bit-gray",
-            "953f95dd173e6778282c78cee899e9ad59ccbde2d275747b0317cf4ff6dca19f",
-        ),
-        (
-            {"grayscale": True},
-            "16-bit-color",
-            "ceb5a87fcb33ddbd904f13908b62bdfe72a678fe60df92f69075b998fe62a3fb",
-        ),
-        (
-            _CLIPPING_CLAHE,
-            "color",
-            "f94c570e064c233054aca879d224b24f08d4bb065a647e51820c4c9eda28d70f",
-        ),
-        (
-            _CLIPPING_CLAHE,
-            "gray",
-            "83ee2a06328ec74277d12711369ec16fb8217c05df51f25ed10c5128ba7d3a35",
-        ),
+        ({"use_clahe": True}, "color", 2.0, 25),
+        ({"use_clahe": True}, "gray", 2.0, 25),
+        ({"use_clahe": True}, "16-bit-gray", 2.0, 25),
+        (_CLIPPING_CLAHE, "color", 3.0, 4),
+        (_CLIPPING_CLAHE, "gray", 3.0, 4),
     ],
     ids=[
         "clahe-on-color",
         "clahe-on-gray",
-        "gray-conversion",
         "clahe-on-16-bit-gray",
-        "16-bit-gray-conversion",
         "clipping-clahe-on-color",
         "clipping-clahe-on-gray",
     ],
 )
-def test_a_crop_feature_equalizes_and_converts_to_the_pinned_bytes(
-    feature: str, flags: dict[str, object], fixture: str, digest: str
+def test_a_crop_feature_equalizes_as_opencvs_clahe(
+    feature: str,
+    flags: dict[str, object],
+    fixture: str,
+    clip_limit: float,
+    tile_grid_size: int,
 ) -> None:
-    """Both features compute the same bytes, and each case has one digest."""
+    """Both features equalize exactly as OpenCV does with the stated settings."""
     image = _FIXTURES[fixture]()
 
     result = _FEATURES[feature](flags)(image)
@@ -225,6 +219,48 @@ def test_a_crop_feature_equalizes_and_converts_to_the_pinned_bytes(
     assert result.shape[:2] == (_HEIGHT, _WIDTH)
     assert result.dtype == image.dtype
     assert not np.array_equal(result, image), "the fixture must be changed"
+    assert np.array_equal(result, _opencv_clahe(image, clip_limit, tile_grid_size))
+
+
+@pytest.mark.parametrize("fixture", ["color", "gray"])
+def test_the_clipping_settings_differ_from_each_default_alone(fixture: str) -> None:
+    """A feature dropping either clipping setting for its default would fail above.
+
+    The clipping cases pass only if each feature forwards both settings, because
+    keeping either default alone gives different bytes.
+    """
+    image = _FIXTURES[fixture]()
+    clipping = _opencv_clahe(image, 3.0, 4)
+
+    assert not np.array_equal(clipping, _opencv_clahe(image, 2.0, 4))
+    assert not np.array_equal(clipping, _opencv_clahe(image, 3.0, 25))
+
+
+@pytest.mark.parametrize("feature", sorted(_FEATURES))
+@pytest.mark.parametrize(
+    ("fixture", "digest"),
+    [
+        (
+            "color",
+            "1e223ecca321f9746ac0a7b6738528b136c9f75835b31ebf2f26c643acbd2618",
+        ),
+        (
+            "16-bit-color",
+            "ceb5a87fcb33ddbd904f13908b62bdfe72a678fe60df92f69075b998fe62a3fb",
+        ),
+    ],
+    ids=["gray-conversion", "16-bit-gray-conversion"],
+)
+def test_a_crop_feature_converts_to_gray_to_the_pinned_bytes(
+    feature: str, fixture: str, digest: str
+) -> None:
+    """Both features compute the same bytes, and each case has one digest."""
+    image = _FIXTURES[fixture]()
+
+    result = _FEATURES[feature]({"grayscale": True})(image)
+
+    assert result.shape == (_HEIGHT, _WIDTH)
+    assert result.dtype == image.dtype
     assert _digest(result) == digest
 
 
