@@ -12,7 +12,7 @@ coverage is a reviewed change) and the **identifiers live in data**
 
 Regenerating after a deliberate identity change::
 
-    MOSAIC_UPDATE_GOLDEN=1 pytest tests/test_identity_golden.py
+    MOSAIC_UPDATE_GOLDEN=1 pytest tests/core/pipeline/test_feature_run_id_golden.py
 
 Then read the resulting diff: every moved line must be explained by the change
 that moved it. A line you cannot explain is a bug caught before it reached a

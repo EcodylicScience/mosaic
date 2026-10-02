@@ -75,17 +75,17 @@ a `.npz` format matches nothing and converts zero rows without failing.
 
 ### What the tests then check
 
-[`tests/test_track_converters.py`][tests] is parametrized over the registry, so an
-in-tree converter inherits five assertions the moment its import line lands: no
-entry-identity field reaches the parameter digest, `version` is non-empty, the
-registry key equals the declared `src_format`, a merging format overrides
-`sequence_from_stem`, and no format claims both `enumerable` and
-`merges_per_sequence`. Add a per-format test beside them, converting a synthetic
-fixture written into `tmp_path`.
+[`tests/core/track_library/test_track_converters.py`][tests] is parametrized
+over the registry, so an in-tree converter inherits five assertions the moment
+its import line lands: no entry-identity field reaches the parameter digest,
+`version` is non-empty, the registry key equals the declared `src_format`, a
+merging format overrides `sequence_from_stem`, and no format claims both
+`enumerable` and `merges_per_sequence`. Add a per-format test beside them,
+converting a synthetic fixture written into `tmp_path`.
 
 [deeplabcut]: https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/core/track_library/deeplabcut.py
 [template]: https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/core/track_library/track_converter_template.py
 [library]: https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/core/track_library/__init__.py
-[tests]: https://github.com/EcodylicScience/mosaic/blob/main/tests/test_track_converters.py
+[tests]: https://github.com/EcodylicScience/mosaic/blob/main/tests/core/track_library/test_track_converters.py
 [shiners]: https://github.com/EcodylicScience/mosaic/blob/main/notebooks/collective-motion-shiners.ipynb
 [zebrafish]: https://github.com/EcodylicScience/mosaic/blob/main/notebooks/collective-motion-zebrafish.ipynb

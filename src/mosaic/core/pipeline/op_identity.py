@@ -33,7 +33,8 @@ frozen permanently: ``mosaic-api`` writes it to ``AnnotationFrame.run_id``, a
 Dolt-tracked column, *and embeds it mid-string* in ``image_path`` on rows
 carrying keypoint annotation labor, and discovers runs by reading the directory
 name off disk. Moving it orphans every annotated frame path, recoverable only by
-re-annotating. See ``frames_run_id`` and ``tests/test_op_identity_golden.py``.
+re-annotating. See ``frames_run_id`` and
+``tests/core/pipeline/test_op_identity_golden.py``.
 
 **Transcode is also carved out**, for the opposite reason: its output is a media
 *filename* with no directory level, so there is no visible slot for a version and

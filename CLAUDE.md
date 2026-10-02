@@ -116,8 +116,8 @@ gates reading a file the user already has, and the three are ~30 MB together.
   `localizer`, `gpu`, `pose` and `polo` were removed in 0.14.0, after a release or
   two as aliases. pip *warns* about an unknown extra and carries on, so a saved
   `.[recommended]` now installs the base with no torch in it. The CHANGELOG names
-  what replaces each. `tests/test_optional_dependency_messages.py` fails if one is
-  declared again.
+  what replaces each. `tests/meta/test_optional_dependency_messages.py` fails if
+  one is declared again.
 - `feral` installs the FERAL V-JEPA behavior classifier (`FeralFeature`, train +
   infer) from PyPI, as `feral>=1.0,<2`. It runs in-process (not sandboxed like
   keypoint-MoSeq) and **wants an environment of its own, for a different reason
@@ -150,8 +150,9 @@ pytest -m "slow or not slow"                # everything
 pytest -m identity                          # what CI's identity job runs
 pytest -m tracker                           # what CI's tracking job runs
 pytest -m feral                             # what CI's feral job runs
-pytest tests/test_run_feature.py            # one file
-pytest tests/test_run_feature.py::test_x    # one test
+pytest tests/core/media                     # one area
+pytest tests/cli/test_cli.py                # one file
+pytest tests/cli/test_cli.py::test_x        # one test
 pytest -k "feature_params"                  # name pattern
 pytest -n0                                  # one process, for a debugger or -s
 pytest -v                                   # verbose
@@ -174,28 +175,60 @@ three, so every test runs in exactly one job.
 `-m` on the command line **replaces** the `-m "not slow"` in `addopts` rather than
 intersecting with it. That is what makes `pytest -m slow` work, and it also means
 `pytest -m "not media"` quietly re-enables the slow tests.
-`tests/test_pytest_config.py` pins the default so that stays deliberate.
+`tests/meta/test_pytest_config.py` pins the default so that stays deliberate.
 
 Three tests keep the suite honest about its own environment.
-`tests/test_optional_dependency_coverage.py` reads the suite's guards out of its
-AST — both `importorskip` calls and the literal `find_spec` probes that back a
-two-directional `skipif`, as `feral`'s do — and fails when one names a module no
-CI job installs, **or when one guards a module that is a base dependency**, since
-a guard that can never fire masks a broken install.
-`tests/test_optional_dependency_messages.py` checks the other direction: every
-extra named in a `pip install "mosaic-behavior[...]"` hint or passed to
+`tests/meta/test_optional_dependency_coverage.py` reads the suite's guards out of
+its AST — both `importorskip` calls and the literal `find_spec` probes that back
+a two-directional `skipif`, as `feral`'s do — and fails when one names a module
+no CI job installs, **or when one guards a module that is a base dependency**,
+since a guard that can never fire masks a broken install.
+`tests/meta/test_optional_dependency_messages.py` checks the other direction:
+every extra named in a `pip install "mosaic-behavior[...]"` hint or passed to
 `optional_dependency.require` must be declared, and every self-referential extra
 must resolve — a dangling one would make pip warn and install the base, which is
-a silently torch-less environment. And `tests/test_pytest_config.py` asserts the
-configuration above.
+a silently torch-less environment. And `tests/meta/test_pytest_config.py` asserts
+the configuration above.
 
 **Shared test code is imported only as `from tests.helpers import X`**, never from
 another test module or a helper submodule, and a test finds the repository through
 `REPO_ROOT`, `TESTS_ROOT` and `GOLDEN_DIR` from there, never from its own
 `__file__`. Both habits tie a test to where its file sits, and
-`tests/test_suite_layout.py` fails on either, naming the file and line. A golden
-file is read and rewritten through the `golden` helpers, whose
+`tests/meta/test_suite_layout.py` fails on either, naming the file and line. A
+golden file is read and rewritten through the `golden` helpers, whose
 `regenerate_command(__name__)` names the command a failure message should give.
+
+#### Where a test goes
+
+A test module belongs in the directory that mirrors the `src/mosaic` package of
+the concept it exercises: `tests/core/pipeline/graph/` for the pipeline graph,
+`tests/tracking/trex/` for TREx.
+
+- **The concept decides, ahead of the implementing module.** The preprocess op is
+  implemented in `core/pipeline/preprocess.py`, and its tests are in
+  `tests/core/media/preprocess/` beside the media steps. A tracker op's tests are
+  in `tests/tracking/<tool>/`.
+- **A subpackage gets a directory once it has several test modules.** Until then
+  its tests belong in the nearest enclosing one, as `test_inputs_subclass.py` for
+  `core/pipeline/types/` is in `tests/core/pipeline/`.
+- **Tests of a top-level module (`src/mosaic/*.py`) go to `tests/core/`,** as
+  those of `user_paths` do, or to the `core` package of their concept, as those
+  of `media_probe_config` go to `tests/core/media/`.
+- **`tests/meta/` contains the tests of the repository, its configuration and
+  the suite itself.** It is the one directory without a `src/mosaic` counterpart.
+- **Every test directory contains an `__init__.py`. Test module basenames are
+  unique across the suite.**
+- **Only the root `conftest.py` implements hooks.** A nested conftest declares
+  fixtures. A nested `pytest_collection_modifyitems` receives every item of the
+  session, and a nested `pytest_configure` runs only once pytest collects its
+  directory.
+
+`tests/meta/test_suite_layout.py` fails on a module or a directory outside these
+rules. `tests/meta/test_repository_references.py` fails on a reference to a test
+module, or a link into the repository on GitHub, whose target does not exist. A move
+or a rename therefore rewrites its references in the same change. The reference scan
+leaves out `CHANGELOG.md` and the plans, specs, issues and drafts under `docs/`,
+because they describe the tree at the time they were written.
 
 ### Linting and formatting
 
@@ -257,8 +290,8 @@ any run with `CI` set and a job without it fails at collection.
 claims and is not slow; each marked job takes all of its marker, slow tests
 included; and [`.github/workflows/slow.yml`](.github/workflows/slow.yml) takes the
 remaining slow tests, weekly and on manual dispatch, as its own workflow so a push
-cannot cancel it. `tests/test_pytest_config.py` reads both workflows and fails when
-a marker is selected twice or not at all.
+cannot cancel it. `tests/meta/test_pytest_config.py` reads both workflows and
+fails when a marker is selected twice or not at all.
 
 - **`test`** — `-m "not slow and not tracker and not identity and not feral"`.
   **A change that only breaks a slow test goes green on push** and red at the
@@ -512,11 +545,11 @@ knows nothing of mosaic-api's groups; the API keys one library per group.
   folder.
 - **The provenance chain is walked, never stored**
   ([`tracking/training_provenance.py`](src/mosaic/tracking/training_provenance.py)):
-  model row (`data_path`, `data_fingerprint`) -> prepared-data row
-  (`consumed_sets`, and the pose it narrowed to, `pose_id` and `pose_name`) ->
-  series index row -> the revision's `manifest.json`. A training run root also
-  holds `training.json`. That name is deliberate: `params.json` belongs to one
-  schema with one reader, and `tests/test_run_params_reader.py` holds the line.
+  model row (`data_path`, `data_fingerprint`) -> prepared-data row (`consumed_sets`,
+  and the pose it narrowed to, `pose_id` and `pose_name`) -> series index row -> the
+  revision's `manifest.json`. A training run root also holds `training.json`. That
+  name is deliberate: `params.json` belongs to one schema with one reader, and
+  `tests/core/pipeline/inventory/test_run_params_reader.py` holds the line.
 - `models/` also holds prepared training **data**
   (`PREPARED_DATA_KINDS` in `core/pipeline/models.py`), which has no weights. The
   trained-model inventory skips those kinds and a `prepared-dataset` kind reports
@@ -774,7 +807,7 @@ Deliberately separate from the live-object `Pipeline`, which holds feature
   Parsing a recipe, ordering it, listing parents, deciding a lane and rendering a
   status view must not pay the multi-second feature-library import, because the
   gate runs far more often than a submit does.
-  `tests/test_graph_imports.py` holds the line.
+  `tests/meta/test_graph_imports.py` holds the line.
 - **`can_connect` / `can_join` answer with no dataset at all**, from declarations
   (`declaration_catalog()`), so a canvas refuses a wire as it is drawn. The
   sharpest refusal is `can_join`'s: a multi-input join of mismatched entity
@@ -1284,7 +1317,7 @@ mosaic's side: `ULTRALYTICS_ENV` on the same five-step location ladder every oth
 external tool uses, plus `probe_ultralytics`, `ultralytics_tracker_defaults` and
 `run_ultralytics_tool`. One subprocess per entry.
 
-`tests/test_ultralytics_separation.py` holds both directions: no mosaic module
+`tests/meta/test_ultralytics_separation.py` holds both directions: no mosaic module
 outside the runner may import Ultralytics, no extra or bundle may declare it, and
 the runner may not import mosaic. **The separation is complete** — tracking,
 single-model inference and model training all run out of process, so
@@ -1304,17 +1337,18 @@ handed the entry's files rather than one (`entry_runner_sources` in
 axis: an entry's clips, or the chunk files of a store whose chunks hold the frames
 mosaic reads (`readable_chunks`). Nothing is joined or exported for Ultralytics
 tracking, `infer-pose` or `infer-points`, and the tracker's state carries across a
-file boundary as it carries across a batch. The frames, their numbers and the batches
-are those of the join, which `tests/test_runner_entry_files.py` compares pixel for
+file boundary as it carries across a batch. The frames, their numbers and the
+batches are those of the join, which
+`tests/tracking/ultralytics_track/test_runner_entry_files.py` compares pixel for
 pixel. A store whose chunks are images, raw arrays or Bayer/YUV data is still read
 through its `export-store` video, and a chunk whose measured count differs from the
-store's index sends the store there too. Each file's facts are gated in mosaic before
-they cross, because the runner cannot call the gate. `TrackingRoot.reads` declares how
-each tool reads (`one-file`, `entry-files`, `in-process`). `required_media_ops` puts
-each entry through the checks a kind's run makes, without a probe, and returns a
-`MediaRequirement` for each entry that would be refused: its cause, the op that meets
-it, the `reencode` choice and the run's own refusal text. `infer-localizer` is
-mosaic's own PyTorch and reads a store natively.
+store's index sends the store there too. Each file's facts are gated in mosaic
+before they cross, because the runner cannot call the gate. `TrackingRoot.reads`
+declares how each tool reads (`one-file`, `entry-files`, `in-process`).
+`required_media_ops` puts each entry through the checks a kind's run makes, without
+a probe, and returns a `MediaRequirement` for each entry that would be refused: its
+cause, the op that meets it, the `reencode` choice and the run's own refusal text.
+`infer-localizer` is mosaic's own PyTorch and reads a store natively.
 
 **Training cancels cooperatively, and that is the one place `run_supervised`'s
 kill is wrong.** Ultralytics honours `trainer.stop` between epochs and nowhere
@@ -1504,7 +1538,7 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   is not kept, because the SLEAP probe reads the file and one unreadable file says
   nothing about the next. A result is not kept between runs, and a rebuilt
   environment is tested again.
-  `tests/test_decoder_probe.py` tests both outcomes.
+  `tests/tracking/common/test_decoder_probe.py` tests both outcomes.
 - **A tracker reports; a feature derives.** `mosaic_v1` *forbids* `VX`, `VY`,
   `SPEED`, `ANGLE` and the rest, so a converter cannot compute one and present it
   as a measurement. Heading is the sharpest case: the principal-component fit the
@@ -1668,7 +1702,8 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   and units, feature composition, reproducibility, pipelines as documents.
 - Wiring a **new external tracker** in is not a published page. `tracking/common/`
   owns the run loop; a tracker supplies its argv, its settings, its phases and its
-  converter, plus one `TrackingRoot` row. `tests/test_tracker_conformance.py` is
-  parametrized over every tracker root, so a half-implemented one fails by name,
-  and it reads `docs/drafts/adding-a-tracker.md` when that draft is present.
+  converter, plus one `TrackingRoot` row.
+  `tests/tracking/common/test_tracker_conformance.py` is parametrized over every
+  tracker root, so a half-implemented one fails by name, and it reads
+  `docs/drafts/adding-a-tracker.md` when that draft is present.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — PR workflow and CLA.

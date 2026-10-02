@@ -198,9 +198,9 @@ def test_a_pair_feature_writes_perspective(cls: type) -> None:
     A pair feature emits one row per *ordered* pair, so without ``perspective``
     its two rows per frame are the same row twice as far as any join can tell.
     Presence of the name is a weak check -- the values are asserted in
-    ``tests/test_pair_identity_convention.py``, which runs the producers -- but it
-    is the one that covers every registered feature, including the ones that need
-    a video or a fitted model to run.
+    ``tests/behavior/feature_library/test_pair_identity_convention.py``, which
+    runs the producers -- but it is the one that covers every registered feature,
+    including the ones that need a video or a fitted model to run.
     """
     if getattr(cls, "emits", None) != "pair":
         pytest.skip("does not declare emits = 'pair'")

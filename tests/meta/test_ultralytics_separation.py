@@ -67,8 +67,8 @@ RUNNER_PROGRAM: Final = "tracking/external/runner/ultralytics_runner.py"
 It sits under ``src/mosaic/`` because that is where mosaic ships it from, not
 because mosaic imports it: mosaic spawns it by path and never imports the module.
 Every Ultralytics import in it is deferred into a function body, which is what
-lets ``tests/test_ultralytics_wire_contract.py`` import the file in an
-environment that has no Ultralytics at all.
+lets ``tests/tracking/ultralytics_track/test_ultralytics_wire_contract.py``
+import the file in an environment that has no Ultralytics at all.
 """
 
 ALLOWED_TO_IMPORT_ULTRALYTICS: Final = frozenset({RUNNER_PROGRAM})

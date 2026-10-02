@@ -104,8 +104,9 @@ class Feature(Protocol):
       quantity is symmetric -- a distance, a mutual-interaction flag -- because a
       lone unordered row matches half of an ordered partner's rows and the merge
       broadcasts rather than refusing. Write the symmetric value on both rows.
-      ``tests/test_pair_identity_convention.py`` and the sweeps in
-      ``tests/test_feature_conformance.py`` hold this.
+      ``tests/behavior/feature_library/test_pair_identity_convention.py`` and the
+      sweeps in ``tests/behavior/feature_library/test_feature_conformance.py``
+      hold this.
     - ``"unidentified"`` -- no per-animal identity at all: a per-frame or
       per-chunk aggregate over everyone present. ``collective-motion-metrics``,
       ``frame-aggregate``.

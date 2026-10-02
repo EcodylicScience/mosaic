@@ -72,8 +72,8 @@ def entity_level_of(columns: Iterable[str]) -> str:
     list of names that grows every time a feature invents one is a list somebody
     forgets to extend; every producer now writes ``id1`` (the focal) and ``id2``
     (the other), and a feature that does not is caught by
-    ``tests/test_pair_identity_convention.py`` rather than silently read as
-    unidentified here.
+    ``tests/behavior/feature_library/test_pair_identity_convention.py`` rather
+    than silently read as unidentified here.
     """
     present = set(columns)
     if "id1" in present and "id2" in present:

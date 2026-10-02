@@ -5,7 +5,7 @@ module rather than from here. That is deliberate: ``mosaic.behavior`` imports
 this package eagerly, and every network needs PyTorch, so exporting them would
 make the optional ``identity`` extra a hard requirement for importing mosaic at
 all. Each module imports torch lazily inside its methods, and
-``tests/test_behavior_import_is_torch_free.py`` holds that line.
+``tests/meta/test_behavior_import_is_torch_free.py`` holds that line.
 
 Available modules:
 

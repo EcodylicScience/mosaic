@@ -41,7 +41,7 @@ from mosaic.core.params import Params
 from tests.helpers import MockDataset, make_dataset
 
 
-# --- Minimal mock dataset + feature (mirrors tests/test_run_feature.py) ---
+# --- Minimal mock dataset + feature (mirrors test_run_feature.py) ---
 
 
 def _setup_tracks(ds: MockDataset, pairs: list[tuple[str, str]], n_rows: int = 10):

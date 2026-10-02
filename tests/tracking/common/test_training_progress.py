@@ -246,7 +246,7 @@ def test_train_sleap_reports_the_epochs_its_trainer_prints(
 ) -> None:
     """The half a structural check cannot make: that the reporter is connected.
 
-    ``tests/test_progress_reporting.py`` holds that the op passes *a* reporting
+    ``tests/meta/test_progress_reporting.py`` holds that the op passes *a* reporting
     argument. This holds that what it passes turns the trainer's real output
     into a moving numerator, read back out of the run-log -- which is the only
     channel a queued job has, since it is spawned with both streams on DEVNULL.

@@ -19,7 +19,7 @@ Importing the feature library costs seconds of wall clock, and parsing a recipe,
 ordering it, listing a step's parents, deciding a lane and rendering a status
 view must all work without paying it -- otherwise a release gate that runs far
 more often than a submit does acquires that floor, and so do the read endpoints
-and cancel. ``tests/test_graph_imports.py`` holds the line.
+and cancel. ``tests/meta/test_graph_imports.py`` holds the line.
 
 This module is the only public import path; the submodules are its
 implementation.

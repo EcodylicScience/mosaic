@@ -11,7 +11,7 @@ They once read the ast for a second reason that no longer holds:
 ``core/__init__.py`` imported ``Dataset`` eagerly, so pandas sat in
 ``sys.modules`` by the time any leaf was reachable and a runtime probe reported
 the same pollution whichever module earned it. That file now binds its names on
-access, and ``tests/test_core_lazy_exports.py`` makes the runtime measurement
+access, and ``tests/meta/test_core_lazy_exports.py`` makes the runtime measurement
 the ast cannot: that importing a leaf loads neither pandas nor h5py.
 """
 

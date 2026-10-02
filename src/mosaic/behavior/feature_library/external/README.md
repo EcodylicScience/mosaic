@@ -77,7 +77,7 @@ recompute a fitted model.
 ## Check it works
 
 ```bash
-pytest -m slow tests/test_kpms_integration.py
+pytest -m slow tests/behavior/feature_library/test_kpms_integration.py
 ```
 
 These tests skip unless both an interpreter resolves and the acceptance is set,

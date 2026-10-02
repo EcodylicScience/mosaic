@@ -180,10 +180,11 @@ def test_every_guarded_module_is_required_by_some_ci_job() -> None:
         f"guarded but required by no CI job: {uncovered}. "
         "Their tests skip green in every job, so they are not evidence. Either "
         "add the distribution to a CI install line and its import name to the "
-        "matching tuple in tests/helpers/environment.py, or delete the guard. A dependency "
-        "that belongs in an external tool's own environment rather than in "
-        "mosaic's -- ultralytics is the one -- has no tuple to join: guard the "
-        "environment, as tests/test_ultralytics_preflight.py does."
+        "matching tuple in tests/helpers/environment.py, or delete the guard. A "
+        "dependency that belongs in an external tool's own environment rather "
+        "than in mosaic's -- ultralytics is the one -- has no tuple to join: "
+        "guard the environment, as "
+        "tests/tracking/ultralytics_track/test_ultralytics_preflight.py does."
     )
 
 

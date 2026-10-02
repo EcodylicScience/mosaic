@@ -6,8 +6,8 @@ bound at module scope is paid for by every consumer of every leaf below.
 ``Dataset`` reaches pandas through ``helpers`` and ``schema``, and
 ``track_library`` reached h5py through the SLEAP converter, so importing three
 field names off ``mosaic.core.scope`` loaded a dataframe library and raised
-``ModuleNotFoundError`` where h5py was absent. ``tests/test_core_lazy_exports.py``
-holds that line.
+``ModuleNotFoundError`` where h5py was absent.
+``tests/meta/test_core_lazy_exports.py`` holds that line.
 
 Each name is declared under ``TYPE_CHECKING`` as well, so a type checker and an
 editor still resolve it.

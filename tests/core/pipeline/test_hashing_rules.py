@@ -1,9 +1,9 @@
 """Rule-level checks for the hashing and data-consistency contract.
 
 One test per independently checkable rule from the reference document. These are
-cheap invariants that hold (or should hold) across the whole registry, as
-distinct from the literal-identifier pinning in ``test_identity_golden.py`` and
-the end-to-end scenarios in ``test_hashing_workflows.py``.
+cheap invariants that hold (or should hold) across the whole registry, as distinct
+from the literal-identifier pinning in ``test_feature_run_id_golden.py`` and the
+end-to-end scenarios in ``test_hashing_workflows.py``.
 """
 
 from __future__ import annotations

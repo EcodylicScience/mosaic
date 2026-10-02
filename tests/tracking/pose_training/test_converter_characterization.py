@@ -13,8 +13,11 @@ today, bugs included -- it is not a claim that any of it is right. Its job is to
 make every behavioral consequence of a refactor *visible*, so a change is either
 intended and re-blessed in the same commit, or a defect.
 
-Regenerate with ``MOSAIC_UPDATE_GOLDEN=1 pytest tests/test_converter_characterization.py``
-and read the diff. A moved line is a question to answer, never a formality.
+Regenerate the golden file, then read its diff::
+
+    MOSAIC_UPDATE_GOLDEN=1 pytest tests/tracking/pose_training/test_converter_characterization.py
+
+A moved line is a question to answer, never a formality.
 
 What is recorded, and why only this:
 

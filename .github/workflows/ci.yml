@@ -96,7 +96,7 @@ jobs:
         # Each job marker is deselected here because its own job below selects
         # it, so every test runs in exactly one job and a failure is reported
         # once. The slow tests that no job marker claims run in `slow.yml`.
-        # `tests/test_pytest_config.py` holds the workflows to that partition.
+        # `tests/meta/test_pytest_config.py` holds the workflows to that partition.
         run: uv run --no-sync pytest -q -m "not slow and not tracker and not identity and not feral" --durations=25
 
   # The identity tests need torch and timm, via the `deep-learning` extra, which

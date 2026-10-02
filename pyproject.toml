@@ -232,9 +232,9 @@ testpaths = ["tests"]
 # documents. Note that a caller passing its own `-m` *replaces* this one rather
 # than intersecting with it -- which is what makes `pytest -m slow` work, and
 # also means `pytest -m "not media"` silently re-enables the slow tests.
-# `tests/test_pytest_config.py` pins the deselection so that stays deliberate.
+# `tests/meta/test_pytest_config.py` pins the deselection so that stays deliberate.
 # `-n auto --dist worksteal` appended rather than led: the deselection has to
-# stay first, and `tests/test_pytest_config.py` asserts that it is. worksteal
+# stay first, and `tests/meta/test_pytest_config.py` asserts that it is. worksteal
 # balances a suite whose cases range from microseconds to a video encode, where
 # a static split leaves workers idle. `-n0` runs one invocation serially.
 # `--import-mode=prepend`, pytest's default, is pinned because the suite imports

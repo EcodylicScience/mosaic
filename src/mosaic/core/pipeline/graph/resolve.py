@@ -9,7 +9,7 @@ evaluating a release gate and cancelling must all work without paying it, and th
 gate runs far more often than a submit does.
 
 So the registry imports live **inside the functions**, not at module scope, and
-``tests/test_graph_imports.py`` holds both halves of that line.
+``tests/meta/test_graph_imports.py`` holds both halves of that line.
 
 **Declarations are read off what a class already declares**, never off its name.
 Whether a feature accepts tracks is answered by validating a probe payload

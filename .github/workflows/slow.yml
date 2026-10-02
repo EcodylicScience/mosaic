@@ -3,7 +3,7 @@ name: Slow tests
 # The slow tests that no job marker claims. `ci.yml`'s `test` job deselects
 # `slow` so a push stays quick, and each marked job (`identity`, `tracking`,
 # `feral`) runs its own slow tests, so without this workflow the rest would run
-# nowhere but on a developer's machine. `tests/test_pytest_config.py` holds the
+# nowhere but on a developer's machine. `tests/meta/test_pytest_config.py` holds the
 # two workflows to that partition.
 #
 # A workflow of its own rather than a job in `ci.yml`: that workflow cancels an

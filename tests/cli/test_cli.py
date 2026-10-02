@@ -600,7 +600,7 @@ def test_inputs_rejected_with_kind(dataset: tuple[Path, Dataset]) -> None:
     """An op declares its inputs in Params, where a feature takes them as a flag.
 
     ``--entries`` is no longer beside this one. Both arms now take the same
-    three scope flags, covered in ``tests/test_cli_run_scope.py``.
+    three scope flags, covered in ``tests/cli/test_cli_run_scope.py``.
     """
     manifest, _ = dataset
     result = runner.invoke(

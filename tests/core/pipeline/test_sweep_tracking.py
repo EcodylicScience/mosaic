@@ -354,9 +354,9 @@ def test_a_reclaimed_slot_takes_its_staging_tree_with_it(tmp_path: Path) -> None
 
     A *surviving* slot's stale staging is a different problem, and it is the
     conversion path that clears it rather than this one -- see
-    ``tests/test_trex_conversion_cache.py``. What is pinned here is that the
-    declared clear globs name it, so a re-conversion removes it, and that an
-    aged unpinned slot does not leave a partial `.pv` behind.
+    ``tests/tracking/trex/test_trex_conversion_cache.py``. What is pinned here
+    is that the declared clear globs name it, so a re-conversion removes it,
+    and that an aged unpinned slot does not leave a partial `.pv` behind.
     """
     from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
     from mosaic.tracking.trex.conversion_cache import CONVERT_KIND

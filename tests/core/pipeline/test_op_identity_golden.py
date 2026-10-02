@@ -1,11 +1,11 @@
 """Golden corpus for the identifiers minted by ``hash_params`` directly.
 
-``test_identity_golden.py`` routes every case through ``compute_run_id``, so it
+``test_feature_run_id_golden.py`` routes every case through ``compute_run_id``, so it
 pins *feature* identity and nothing else. Six further identifier families call
 ``hash_params`` straight -- frame extraction, TREx, transcode, and the train /
-convert / infer ops -- and were pinned by nothing at all. A change to
-``hash_params`` or the serializer beneath it could move all six with a green
-suite, which is the exact failure this corpus exists to prevent.
+convert / infer ops -- and were pinned by nothing at all. A change to ``hash_params``
+or the serializer beneath it could move all six with a green suite, which is the
+exact failure this corpus exists to prevent.
 
 Organised by family rather than as a flat list, because the families do not
 share a freeze rule:
@@ -34,7 +34,7 @@ and item 1.2 needs it anyway.
 
 Regenerating after a deliberate change::
 
-    MOSAIC_UPDATE_GOLDEN=1 pytest tests/test_op_identity_golden.py
+    MOSAIC_UPDATE_GOLDEN=1 pytest tests/core/pipeline/test_op_identity_golden.py
 
 Then read the diff: every moved line must be explained by the change that moved
 it, and a moved ``frames/`` line is a bug, not a diff to accept.

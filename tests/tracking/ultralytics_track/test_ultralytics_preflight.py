@@ -5,7 +5,7 @@ declaration, and the refusals over them are decided from that declaration alone.
 The last section is the one that reaches outside, and it reaches into the
 *Ultralytics* environment rather than mosaic's own, because mosaic's own no
 longer holds Ultralytics -- that is the whole subject of
-``tests/test_ultralytics_separation.py``.
+``tests/meta/test_ultralytics_separation.py``.
 
 **Why mosaic transcribes those tables at all.** Every detection-affecting setting
 is passed explicitly and enters the run identifier, so an upstream retune must

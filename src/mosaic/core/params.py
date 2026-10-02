@@ -41,9 +41,9 @@ NEEDS_DESCRIPTION: Final = ""
 
 ``Declared(NEEDS_DESCRIPTION)`` publishes the description key, so the field is
 declared and a client draws a control for it, and publishes it empty, so
-``tests/test_params_declaration.py`` counts the field against a ceiling that only
-comes down. The two states are separable at the schema: no key at all means no
-``Declared``, an empty one means the prose is owed.
+``tests/meta/test_params_declaration.py`` counts the field against a ceiling
+that only comes down. The two states are separable at the schema: no key at all
+means no ``Declared``, an empty one means the prose is owed.
 
 Written as a name rather than a bare ``""`` so that deferring is a deliberate act
 a reader can grep for.
@@ -65,7 +65,7 @@ class Declared:
     ``Field`` in that bracket carries constraints. A ``description=`` on it
     overrides this one silently: pydantic applies ``FieldInfo``'s description
     after the metadata hooks, whichever order the two are written in.
-    ``tests/test_params_declaration.py`` asserts ``FieldInfo.description is
+    ``tests/meta/test_params_declaration.py`` asserts ``FieldInfo.description is
     None`` on every field to catch that spelling.
 
     ``description`` is the first positional parameter and has no default. A
@@ -244,7 +244,7 @@ class DeclaredModel(StrictModel):
 
         Fields declared :data:`NEEDS_DESCRIPTION` are left out. An entry with
         no description states nothing, and the ceiling in
-        ``tests/test_params_declaration.py`` is what tracks them.
+        ``tests/meta/test_params_declaration.py`` is what tracks them.
         """
         super().__pydantic_init_subclass__(**kwargs)
         own = cls.__dict__.get("__doc__")

@@ -445,10 +445,11 @@ def test_two_single_entry_scopes_name_one_run(
     the measurement behind it.
 
     It lives here rather than in the shared gate in
-    ``tests/test_op_scope_declaration.py`` because that gate's dataset holds
-    plain videos. Every scope this op admits is refused there before an
-    identity exists, and a refusal is not a deferral the gate can record as a
-    skip, so a store dataset is the only place the question can be asked.
+    ``tests/core/pipeline/test_op_scope_declaration.py`` because that gate's
+    dataset holds plain videos. Every scope this op admits is refused there
+    before an identity exists, and a refusal is not a deferral the gate can
+    record as a skip, so a store dataset is the only place the question can be
+    asked.
 
     Two single-entry scopes, because ``scope_takes = "exactly-one"`` admits no
     wider one. That is the sharper question anyway: an identity that moved

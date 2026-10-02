@@ -5,13 +5,13 @@ here rather than read from the installed Ultralytics. Reading them would let an
 upstream retune re-mint every identifier already on disk without a mosaic
 change: the digest moves while the settings a user typed do not.
 
-The models below are mosaic's declaration. The setting names are dictated by the
-code that consumes them -- each backend reads its settings off the config object
--- and the values are transcribed from what Ultralytics 8.4.84 ships. No YAML file is
-vendored, and ``tests/test_ultralytics_preflight.py`` diffs every model against
-whatever Ultralytics the external environment holds, in both directions, so drift
-is a named failure at upgrade time instead of a wrong number nobody looks at. See
-``NOTICE`` at the repository root.
+The models below are mosaic's declaration. The setting names are dictated by the code
+that consumes them -- each backend reads its settings off the config object -- and
+the values are transcribed from what Ultralytics 8.4.84 ships. No YAML file is
+vendored, and ``tests/tracking/ultralytics_track/test_ultralytics_preflight.py``
+diffs every model against whatever Ultralytics the external environment holds, in
+both directions, so drift is a named failure at upgrade time instead of a wrong
+number nobody looks at. See ``NOTICE`` at the repository root.
 
 Every model states its own settings. Five of the six backends do share the six
 ByteTrack association settings, and sharing them through a base class is refused
@@ -121,7 +121,8 @@ run an unseeded RANSAC, so a run under one of them is not reproducible bit for
 bit. Membership is not the same as running one -- ``deepocsort`` defaults to
 ``none`` -- so a caller reads a backend's own ``gmc_method`` for what a run
 does, and this set for which backends offer the choice.
-``tests/test_ultralytics_preflight.py`` checks it against the declared models.
+``tests/tracking/ultralytics_track/test_ultralytics_preflight.py`` checks it
+against the declared models.
 """
 
 
@@ -316,7 +317,7 @@ class _BackendConfig(Params):
 
     :class:`~mosaic.core.params.Params` rather than ``StrictModel``,
     which would be enough for validation, because
-    ``tests/test_params_declaration.py`` walks ``Params.__subclasses__()``: a
+    ``tests/meta/test_params_declaration.py`` walks ``Params.__subclasses__()``: a
     setting declared without prose has to fail a test rather than depend on
     whoever adds it. ``BboxPolicy`` is a nested configuration model on the same
     base for the same reason.

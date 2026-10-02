@@ -199,9 +199,9 @@ plain videos, so ``_stores_for`` refuses every scope the op admits before an
 identity exists. Twelve of the gated ops sit out for the same kind of reason --
 no weights, no ``data.yaml`` -- and say so through ``IdentityDeferred``, which
 this one cannot: nothing upstream writes a recording, so an entry holding no
-store is a refusal rather than a deferral. Its invariance is measured against
-a store dataset instead, by
-``tests/test_store_export.py::test_two_single_entry_scopes_name_one_run``.
+store is a refusal rather than a deferral. Its invariance is measured against a
+store dataset instead, by
+``tests/core/media/test_store_export.py::test_two_single_entry_scopes_name_one_run``.
 """
 
 
@@ -489,11 +489,12 @@ class TestPublished:
 
         That a body reads it is measured per op, in both directions, wherever
         an op has a reuse gate: the five training ops and ``convert-points`` in
-        ``tests/test_training_reuse.py``, ``tests/test_train_sleap.py`` and
-        ``tests/test_train_litpose.py``, ``transcode`` and ``export-store`` in
-        their own suites, and ``extract-frames`` in
-        ``tests/test_frame_extraction.py``, where the argument answers a
-        refusal instead of a recompute.
+        ``tests/tracking/ops/test_training_reuse.py``,
+        ``tests/tracking/sleap/test_train_sleap.py`` and
+        ``tests/tracking/litpose/test_train_litpose.py``, ``transcode`` and
+        ``export-store`` in their own suites, and ``extract-frames`` in
+        ``tests/tracking/frame_extraction/test_frame_extraction.py``, where the
+        argument answers a refusal instead of a recompute.
         """
         declaring = {
             kind for kind in OPS if "overwrite" in OPS[kind].Params.model_fields

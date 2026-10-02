@@ -29,9 +29,9 @@ a tenth field cannot land with no record. Two of the nine are recorded beside
 their subjects rather than here:
 
 - ``LabelConvertParams.strict_schema`` --
-  ``tests/test_labels_index.py::test_the_label_conversion_reads_strict_schema``
+  ``test_labels_index.py::test_the_label_conversion_reads_strict_schema``
 - ``PointInferParams.dor`` --
-  ``tests/test_ultralytics_wire_contract.py::test_the_point_inference_request_carries_dor``
+  ``test_ultralytics_wire_contract.py::test_the_point_inference_request_carries_dor``
 """
 
 from __future__ import annotations

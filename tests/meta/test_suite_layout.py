@@ -1,4 +1,9 @@
-"""What a test module may reach for, wherever its file sits in the suite.
+"""Checks where each test module is placed, and which code and paths it may use.
+
+A test module is placed in the directory that mirrors the ``src/mosaic``
+package it exercises. The tests of one package are then adjacent, and a new
+module has one correct directory. "Where a test goes" in ``CLAUDE.md`` states
+the rule, and the tests below fail on a module or a directory outside it.
 
 A test module that imports another test module, or that finds a file by counting
 directories up from its own ``__file__``, depends on where both files sit. Moved,
@@ -11,10 +16,25 @@ finds the repository only through the paths that the helpers export.
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Final
 
-from tests.helpers import TESTS_ROOT, source_tree
+from tests.helpers import REPO_ROOT, TESTS_ROOT, source_tree
+
+_SOURCE_ROOT: Final = REPO_ROOT / "src" / "mosaic"
+
+_SUPPORT_DIRECTORIES: Final = frozenset({"helpers", "data"})
+"""The directories of ``tests/`` for shared code and data files."""
+
+_UNMIRRORED_AREA: Final = Path("meta")
+"""The one area without a source package: the repository, its configuration and
+the suite itself."""
+
+_TOP_LEVEL_MODULES: Final = frozenset({"__init__.py", "conftest.py"})
+
+_PLACEMENT_RULE: Final = 'See "Where a test goes" in CLAUDE.md.'
 
 
 def _suite_modules() -> list[Path]:
@@ -26,6 +46,18 @@ def _suite_modules() -> list[Path]:
         if "__pycache__" not in path.parts
         and helpers not in path.parents
         and (path.name.startswith("test_") or path.name == "conftest.py")
+    )
+
+
+def _area_directories() -> list[Path]:
+    """Every directory below ``tests/`` for test modules, relative to ``tests/``."""
+    return sorted(
+        relative
+        for path in TESTS_ROOT.rglob("*")
+        if path.is_dir()
+        and "__pycache__" not in path.parts
+        and (relative := path.relative_to(TESTS_ROOT)).parts[0]
+        not in _SUPPORT_DIRECTORIES
     )
 
 
@@ -47,6 +79,95 @@ def test_the_scan_reads_every_test_module() -> None:
     names = {path.name for path in _suite_modules()}
 
     assert {"conftest.py", "test_suite_layout.py", "test_pytest_config.py"} <= names
+    assert {Path("core", "pipeline"), _UNMIRRORED_AREA} <= set(_area_directories())
+
+
+def test_only_the_package_and_the_root_conftest_sit_at_the_top() -> None:
+    """A test module is placed in the directory of the package that it exercises."""
+    stray = sorted(
+        path.name
+        for path in TESTS_ROOT.glob("*.py")
+        if path.name not in _TOP_LEVEL_MODULES
+    )
+
+    assert not stray, (
+        "move each into the directory that mirrors the src/mosaic package it "
+        f"exercises. {_PLACEMENT_RULE} {stray}"
+    )
+
+
+def test_every_directory_holding_modules_is_a_package() -> None:
+    """A directory without ``__init__.py`` has its modules imported by basename.
+
+    pytest then puts the directory itself on ``sys.path``. Two modules of one name
+    in different directories collide, and ``regenerate_command(__name__)``
+    cannot find the module's file.
+    """
+    directories = {
+        path.parent
+        for path in TESTS_ROOT.rglob("*.py")
+        if "__pycache__" not in path.parts
+    }
+    missing = sorted(
+        directory.relative_to(TESTS_ROOT).as_posix()
+        for directory in directories
+        if not (directory / "__init__.py").is_file()
+    )
+
+    assert not missing, f"add an empty __init__.py to each: {missing}"
+
+
+def test_every_area_mirrors_a_source_package() -> None:
+    """Each directory of tests names a package of ``src/mosaic``, apart from ``meta``.
+
+    A directory without a source counterpart is a category that only the suite
+    knows, and a reader looking for a package's tests beside its path does not
+    find the tests filed there.
+    """
+    unmirrored = [
+        area.as_posix()
+        for area in _area_directories()
+        if area != _UNMIRRORED_AREA and not (_SOURCE_ROOT / area).is_dir()
+    ]
+
+    assert not unmirrored, (
+        "name each directory after the src/mosaic package its tests exercise, "
+        f"or move its tests to one that is. {_PLACEMENT_RULE} {unmirrored}"
+    )
+
+
+def test_a_nested_conftest_implements_no_hooks() -> None:
+    """Only the root ``conftest.py`` implements pytest hooks.
+
+    ``pytest_collection_modifyitems`` in a nested conftest receives every item of
+    the session, including items outside its directory. A nested
+    ``pytest_configure`` runs only when pytest collects that directory, after the
+    root one has accepted the environment. A nested conftest declares fixtures.
+    """
+    hooks = [
+        f"{_where(path, node.lineno)} implements {node.name}"
+        for path in _suite_modules()
+        if path.name == "conftest.py" and path.parent != TESTS_ROOT
+        for node in ast.iter_child_nodes(source_tree(path))
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name.startswith("pytest_")
+    ]
+
+    assert not hooks, f"move each hook to tests/conftest.py: {hooks}"
+
+
+def test_test_module_names_are_unique() -> None:
+    """One basename names one test module across the suite.
+
+    Prose and recorded references name a test module by its basename, and
+    ``test_unwired_fields`` resolves the ones it records that way.
+    """
+    counts = Counter(
+        path.name for path in _suite_modules() if path.name != "conftest.py"
+    )
+    shared = sorted(name for name, count in counts.items() if count > 1)
+
+    assert not shared, f"rename all but one module of each name: {shared}"
 
 
 def test_a_test_module_imports_the_suite_only_through_the_helpers() -> None:

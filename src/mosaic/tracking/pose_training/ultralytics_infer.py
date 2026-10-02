@@ -63,7 +63,7 @@ Both are byproducts of an attempt rather than results of one, so a re-run of the
 what the phase's clear globs exist to prevent. Those globs live in
 :data:`~mosaic.core.pipeline.tracking_roots.TRACKING_ROOTS`, which is in ``core``
 and so cannot import this module -- the two spell the same strings independently,
-and ``test_infer_run_markers.py`` is what holds them together.
+and ``tests/tracking/ops/test_infer_preflight.py`` holds them together.
 """
 
 

@@ -193,8 +193,9 @@ CONSERVATIVE_DECODER: Final = ToolDecoder(
 """What a producer that has not declared a decoder is assumed to hold.
 
 Assumes nothing beyond the baseline, so a tracker added without a declaration
-refuses AV1 rather than being trusted with it. `tests/test_tracker_conformance.py`
-turns that silence into a named failure.
+refuses AV1 rather than being trusted with it.
+`tests/tracking/common/test_tracker_conformance.py` turns that silence into a
+named failure.
 """
 
 

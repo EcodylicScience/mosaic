@@ -72,7 +72,8 @@ it.
 
 - Keep changes minimal and scoped to one concern per PR.
 - Preserve backward compatibility unless a breaking change is explicitly discussed.
-- Add or update tests for behavior changes.
+- Add or update tests for behavior changes, in the directory that mirrors the
+  package they exercise (see "Where a test goes" in [CLAUDE.md](CLAUDE.md)).
 - Update docs/notebooks if user-facing behavior changes.
 
 ## Contributor License Agreement

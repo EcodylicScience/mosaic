@@ -86,8 +86,9 @@ def test_a_failed_write_leaves_no_table_and_no_temp(
 ) -> None:
     """An interrupted publish leaves the addressed path absent, not torn.
 
-    Modelled on ``tests/test_pipeline_writers.py``, which pins the same property
-    for feature outputs -- the tracker side had no equivalent.
+    Modelled on ``tests/core/pipeline/test_pipeline_writers.py``, which pins
+    the same property for feature outputs -- the tracker side had no
+    equivalent.
     """
     from mosaic.core.pipeline import writers
 

@@ -13,7 +13,7 @@ declares. A message that names the wrong extra is worse than no message: it send
 someone to install a thing that will not fix their problem.
 
 So the extra name is passed in and rendered one way, and
-``tests/test_optional_dependency_messages.py`` checks every name used here
+``tests/meta/test_optional_dependency_messages.py`` checks every name used here
 against the declared extras. A rename that misses a call site fails there rather
 than in a user's terminal.
 """
