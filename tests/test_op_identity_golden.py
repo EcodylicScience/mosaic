@@ -42,8 +42,6 @@ it, and a moved ``frames/`` line is a bug, not a diff to accept.
 
 from __future__ import annotations
 
-import json
-import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,7 +49,6 @@ from pathlib import Path
 import pytest
 from mosaic_media import CHROME_149
 from mosaic_media.transcode import ANALYSIS_ENCODING
-from pydantic import RootModel
 
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.tracking.frame_extraction.dataset_runs import (
@@ -100,16 +97,20 @@ from mosaic.tracking.ultralytics_track.version import (
     ULTRALYTICS_VERSION,
 )
 
-GOLDEN_PATH = Path(__file__).parent / "data" / "op_identity_golden.json"
-UPDATE_ENV = "MOSAIC_UPDATE_GOLDEN"
+from tests.helpers import (
+    UPDATE_GOLDEN_ENV,
+    read_string_golden,
+    regenerate_command,
+    updating_golden,
+    write_golden,
+)
+
+GOLDEN = "op_identity_golden.json"
+"""``case id -> digest``. A plain map so the diff stays readable."""
 
 # The op registry is populated by an explicit call, not by importing the
 # package, so the params classes below are unreachable without it.
 register_ops()
-
-
-class GoldenFile(RootModel[dict[str, str]]):
-    """``case id -> digest``. A plain map so the diff stays readable."""
 
 
 @dataclass(frozen=True)
@@ -944,12 +945,6 @@ def _all_digests() -> dict[str, str]:
     return fresh
 
 
-def _load_golden() -> dict[str, str]:
-    if not GOLDEN_PATH.exists():
-        return {}
-    return GoldenFile.model_validate_json(GOLDEN_PATH.read_text()).root
-
-
 def test_case_ids_are_unique() -> None:
     """A duplicated case id would silently drop coverage from the golden file."""
     ids = [case.case_id for case in OP_CASES] + list(FUNCTION_CASES)
@@ -1005,14 +1000,14 @@ def test_labels_and_tracks_roots_do_not_collide() -> None:
 @pytest.mark.parametrize("case", OP_CASES, ids=lambda c: c.case_id)
 def test_op_params_digest_matches_golden(case: OpCase) -> None:
     """The literal digest for *case* is unchanged since the file was written."""
-    if os.environ.get(UPDATE_ENV) == "1":
-        pytest.skip(f"{UPDATE_ENV}=1: regenerating, see test_regenerate_golden")
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating, see test_regenerate_golden")
 
-    golden = _load_golden()
+    golden = read_string_golden(GOLDEN)
     if case.case_id not in golden:
         pytest.fail(
             f"No golden digest for '{case.case_id}'. If this case is new, run "
-            f"`{UPDATE_ENV}=1 pytest tests/test_op_identity_golden.py` and review "
+            f"`{regenerate_command(__name__)}` and review "
             f"the diff."
         )
     frozen_note = (
@@ -1030,14 +1025,13 @@ def test_op_params_digest_matches_golden(case: OpCase) -> None:
 @pytest.mark.parametrize("case_id", sorted(FUNCTION_CASES), ids=lambda c: str(c))
 def test_function_digest_matches_golden(case_id: str) -> None:
     """The transcode minters pin payload construction as well as the digest."""
-    if os.environ.get(UPDATE_ENV) == "1":
-        pytest.skip(f"{UPDATE_ENV}=1: regenerating, see test_regenerate_golden")
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating, see test_regenerate_golden")
 
-    golden = _load_golden()
+    golden = read_string_golden(GOLDEN)
     if case_id not in golden:
         pytest.fail(
-            f"No golden digest for '{case_id}'. Run "
-            f"`{UPDATE_ENV}=1 pytest tests/test_op_identity_golden.py`."
+            f"No golden digest for '{case_id}'. Run `{regenerate_command(__name__)}`."
         )
     assert FUNCTION_CASES[case_id]() == golden[case_id], (
         f"Digest for '{case_id}' changed."
@@ -1046,18 +1040,17 @@ def test_function_digest_matches_golden(case_id: str) -> None:
 
 def test_regenerate_golden() -> None:
     """Rewrite the golden file. Runs only under the update environment variable."""
-    if os.environ.get(UPDATE_ENV) != "1":
-        pytest.skip(f"set {UPDATE_ENV}=1 to regenerate")
+    if not updating_golden():
+        pytest.skip(f"set {UPDATE_GOLDEN_ENV}=1 to regenerate")
     fresh = _all_digests()
-    GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    GOLDEN_PATH.write_text(json.dumps(fresh, indent=2, sort_keys=True) + "\n")
+    write_golden(GOLDEN, fresh)
     assert len(fresh) == len(OP_CASES) + len(FUNCTION_CASES)
 
 
 def test_golden_file_has_no_stale_entries() -> None:
     """A golden entry with no matching case is dead weight that hides removals."""
-    if os.environ.get(UPDATE_ENV) == "1":
-        pytest.skip(f"{UPDATE_ENV}=1: regenerating")
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
     known = {case.case_id for case in OP_CASES} | set(FUNCTION_CASES)
-    stale = set(_load_golden()) - known
+    stale = set(read_string_golden(GOLDEN)) - known
     assert not stale, f"golden file has entries with no case: {sorted(stale)}"

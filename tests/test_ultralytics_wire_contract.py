@@ -34,7 +34,7 @@ import mosaic.tracking.pose_training.ultralytics_infer as ultralytics_infer
 import mosaic.tracking.ultralytics_track.dataset_runs as dataset_runs
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 import mosaic.tracking.ultralytics_track.run as ultralytics_run
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.media.read_target import verified_read_facts
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.tracks_index import read_tracks_index
@@ -53,13 +53,14 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
 from mosaic.tracking.ultralytics_track.tracker_defaults import TRACKER_NAMES
 
 from tests.helpers import (
+    FakeDetections,
+    FakeResult,
     install_fake_point_probe,
     install_fake_pose_probe,
     make_dataset,
     write_media_index,
     write_painted_entry,
 )
-from tests.test_ultralytics_rows import FakeDetections, FakeResult
 
 # Selected by CI's `tracking` job with `-m tracker` rather than by a filename
 # list in the workflow, so a new file here is covered the day it lands.
@@ -296,8 +297,7 @@ def test_the_columns_mosaic_names_match_the_block_the_runner_writes(
 
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest("t", base_dir=tmp_path)
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    dataset = make_dataset(tmp_path)
     write_media_index(dataset, ["vid1"])
     return dataset
 

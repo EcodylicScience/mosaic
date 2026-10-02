@@ -1,9 +1,9 @@
 """Every guarded optional dependency is accounted for in exactly one place.
 
 A guarded test proves nothing unless some environment is obliged to install what
-it guards. ``tests/conftest.py`` states that rule in prose -- "a new optional
-dependency joins the install line and this tuple in the same change" -- and prose
-does not fail. This does.
+it guards. ``tests/helpers/environment.py`` states that rule in prose -- "a new
+optional dependency joins the install line and this tuple in the same change" --
+and prose does not fail. This does.
 
 The suite guards two ways, and both are audited here: ``pytest.importorskip``,
 and a module-level ``importlib.util.find_spec`` probe fed to ``skipif``. The
@@ -37,16 +37,22 @@ import tomllib
 from collections import defaultdict
 from pathlib import Path
 
-# From `conftest` rather than from `tests.helpers`: these are pytest's own
-# configuration, read by `pytest_configure`, not builders a test composes with.
-from tests.conftest import (
+from tests.helpers import (
     CI_FERAL_MODULES,
     CI_IDENTITY_MODULES,
     CI_REQUIRED_MODULES,
+    REPO_ROOT,
+    TESTS_ROOT,
 )
 
-TESTS = Path(__file__).resolve().parent
-PYPROJECT = TESTS.parent / "pyproject.toml"
+PYPROJECT = REPO_ROOT / "pyproject.toml"
+
+
+def _suite_sources() -> list[Path]:
+    """Every Python file of the suite, in every directory under ``tests/``."""
+    return sorted(
+        path for path in TESTS_ROOT.rglob("*.py") if "__pycache__" not in path.parts
+    )
 
 
 def _canonical(distribution: str) -> str:
@@ -59,9 +65,13 @@ def _canonical(distribution: str) -> str:
 
 
 def _probe_targets(attribute: str, *, literal_required: bool) -> dict[str, set[str]]:
-    """``{module: {test filename}}`` for every ``<obj>.<attribute>("name")`` call."""
+    """``{module: {test file}}`` for every ``<obj>.<attribute>("name")`` call.
+
+    Each file is named by its path under ``tests/``.
+    """
     found: dict[str, set[str]] = defaultdict(set)
-    for path in sorted(TESTS.glob("*.py")):
+    for path in _suite_sources():
+        name = path.relative_to(TESTS_ROOT).as_posix()
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -74,11 +84,11 @@ def _probe_targets(attribute: str, *, literal_required: bool) -> dict[str, set[s
             first = node.args[0]
             if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
                 assert not literal_required, (
-                    f"{path.name}:{node.lineno} calls {attribute} with a non-literal "
+                    f"{name}:{node.lineno} calls {attribute} with a non-literal "
                     "module name, which cannot be audited by this file"
                 )
                 continue
-            found[first.value].add(path.name)
+            found[first.value].add(name)
     return dict(found)
 
 
@@ -170,7 +180,7 @@ def test_every_guarded_module_is_required_by_some_ci_job() -> None:
         f"guarded but required by no CI job: {uncovered}. "
         "Their tests skip green in every job, so they are not evidence. Either "
         "add the distribution to a CI install line and its import name to the "
-        "matching tuple in tests/conftest.py, or delete the guard. A dependency "
+        "matching tuple in tests/helpers/environment.py, or delete the guard. A dependency "
         "that belongs in an external tool's own environment rather than in "
         "mosaic's -- ultralytics is the one -- has no tuple to join: guard the "
         "environment, as tests/test_ultralytics_preflight.py does."
@@ -204,5 +214,18 @@ def test_every_required_module_is_reachable_from_the_suite() -> None:
     assert not unreached, (
         f"{unreached} are demanded of a CI job but nothing in the suite reaches "
         "them. Either a test needs them and should say so, or the tuple entry in "
-        "tests/conftest.py is stale."
+        "tests/helpers/environment.py is stale."
     )
+
+
+def test_the_audit_reads_the_whole_suite() -> None:
+    """Each guard style is found wherever its test file sits.
+
+    The audit used to read only the top level of ``tests/``. Moved into a
+    subdirectory, a guarded file would have dropped out of every check above
+    while each of them kept passing.
+    """
+    guarded = guarded_targets()
+
+    assert any(path.endswith("test_feral_feature.py") for path in guarded["feral"])
+    assert any(path.endswith("conftest.py") for path in guarded["imgstore"])

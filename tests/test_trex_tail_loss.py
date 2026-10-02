@@ -36,14 +36,15 @@ from mosaic.tracking.trex.params import TrexParams
 from tests.helpers import (
     MediaClip,
     clip_facts,
+    install_fake_trex,
     latest_snapshot,
     make_dataset,
     set_tracks_cell,
     stub_join,
+    write_h264_mp4,
     write_media_index,
+    write_pv_header,
 )
-from tests.helpers.media import write_h264_mp4
-from tests.helpers.trex import install_fake_trex, write_pv_header
 
 _FRAMES = 30
 """How many frames each clip holds."""

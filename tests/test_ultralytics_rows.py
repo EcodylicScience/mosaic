@@ -9,7 +9,6 @@ rather than seconds.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -28,34 +27,7 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
     rows_from_result,
 )
 
-
-# --- stand-ins for the Ultralytics result surface --------------------------
-
-
-@dataclass
-class FakeDetections:
-    array: np.ndarray
-
-    @property
-    def data(self) -> np.ndarray:
-        return self.array
-
-    @property
-    def id(self) -> np.ndarray | None:
-        # A tracked Boxes carries the track id in column 4.
-        return self.array[:, 4] if self.array.shape[1] >= 7 else None
-
-    def cpu(self) -> FakeDetections:
-        return self
-
-    def numpy(self) -> FakeDetections:
-        return self
-
-
-@dataclass
-class FakeResult:
-    boxes: FakeDetections | None
-    keypoints: FakeDetections | None = None
+from tests.helpers import FakeDetections, FakeResult
 
 
 def _boxes(*rows: tuple[float, ...]) -> FakeDetections:

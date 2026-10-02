@@ -189,6 +189,14 @@ must resolve — a dangling one would make pip warn and install the base, which 
 a silently torch-less environment. And `tests/test_pytest_config.py` asserts the
 configuration above.
 
+**Shared test code is imported only as `from tests.helpers import X`**, never from
+another test module or a helper submodule, and a test finds the repository through
+`REPO_ROOT`, `TESTS_ROOT` and `GOLDEN_DIR` from there, never from its own
+`__file__`. Both habits tie a test to where its file sits, and
+`tests/test_suite_layout.py` fails on either, naming the file and line. A golden
+file is read and rewritten through the `golden` helpers, whose
+`regenerate_command(__name__)` names the command a failure message should give.
+
 ### Linting and formatting
 
 ```bash

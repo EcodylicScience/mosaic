@@ -38,8 +38,13 @@ from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.sequence_index import read_sequence_index
 from mosaic.core.pipeline.tracks_index import read_tracks_index, tracks_compositions
 from mosaic.core.pipeline.types import Feature
-from tests.helpers import add_tracks_variant, write_media_index, write_trex_npz
-from tests.test_provenance import CropLike, PlainFeature
+from tests.helpers import (
+    CropLike,
+    PlainFeature,
+    add_tracks_variant,
+    write_media_index,
+    write_trex_npz,
+)
 
 VARIANT = "convert-trex_npz.0.1-aaaaaaaaaa"
 """One labelled tracks variant, so ``scope.tracks_variants`` is non-empty.

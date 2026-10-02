@@ -9,6 +9,9 @@ a GPU.
 
 The predictions that it writes are fixed by :func:`write_ultralytics_predictions`,
 and a test can compute the table that the bridge publishes from them.
+
+:class:`FakeResult` and :class:`FakeDetections` stand in one level lower, for the
+result objects Ultralytics returns per frame, which the runner reads rows from.
 """
 
 from __future__ import annotations
@@ -38,6 +41,40 @@ from mosaic.tracking.ultralytics_track.tracker_defaults import TRACKER_NAMES
 
 ULTRALYTICS_KEYPOINTS: Final = 2
 """The number of keypoints in the fake's weights."""
+
+
+@dataclass
+class FakeDetections:
+    """An Ultralytics ``Boxes`` or ``Keypoints``: one array, readable as itself.
+
+    A tracked box row is ``(x1, y1, x2, y2, track_id, conf, cls)``, and an
+    untracked one has no ``track_id`` column.
+    """
+
+    array: np.ndarray
+
+    @property
+    def data(self) -> np.ndarray:
+        return self.array
+
+    @property
+    def id(self) -> np.ndarray | None:
+        # A tracked Boxes carries the track id in column 4.
+        return self.array[:, 4] if self.array.shape[1] >= 7 else None
+
+    def cpu(self) -> FakeDetections:
+        return self
+
+    def numpy(self) -> FakeDetections:
+        return self
+
+
+@dataclass
+class FakeResult:
+    """One frame's Ultralytics ``Results``: its boxes and, for a pose model, keypoints."""
+
+    boxes: FakeDetections | None
+    keypoints: FakeDetections | None = None
 
 
 def write_ultralytics_predictions(

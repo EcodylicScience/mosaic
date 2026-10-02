@@ -54,6 +54,7 @@ from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline.types import labels as labels_types
 from mosaic.core.pipeline.types.data_config import COLUMNS, PoseConfig
 from tests.helpers import (
+    TESTS_ROOT,
     functions_named,
     module_tree,
     names_read,
@@ -388,13 +389,14 @@ def test_a_params_center_mode_selects_one_keypoint() -> None:
 
 _SRC = Path(mosaic.__file__ or "").resolve().parent
 
-_HERE = "tests/test_unwired_fields.py"
+_HERE = "test_unwired_fields.py"
 
 # Every ``unwired=`` declaration under ``src/mosaic/``, keyed by its module path
-# and field name, mapped to the test that records it.
+# and field name, mapped to the test that records it. A test is named by its
+# file's name and its own, so the record survives a move between directories.
 _RECORDED_BY: dict[tuple[str, str], str] = {
     ("core/label_converter.py", "strict_schema"): (
-        "tests/test_labels_index.py::test_the_label_conversion_reads_strict_schema"
+        "test_labels_index.py::test_the_label_conversion_reads_strict_schema"
     ),
     ("core/pipeline/_loaders.py", "frame_column"): (
         f"{_HERE}::test_the_parquet_load_reads_the_frame_column"
@@ -418,8 +420,7 @@ _RECORDED_BY: dict[tuple[str, str], str] = {
         f"{_HERE}::test_the_subsampling_reads_drop_nan"
     ),
     ("tracking/ops/infer.py", "dor"): (
-        "tests/test_ultralytics_wire_contract.py"
-        "::test_the_point_inference_request_carries_dor"
+        "test_ultralytics_wire_contract.py::test_the_point_inference_request_carries_dor"
     ),
 }
 
@@ -462,9 +463,14 @@ def _unwired_declarations() -> set[tuple[str, str]]:
 
 
 def _functions_defined_in(test_file: str) -> set[str]:
-    """The test function names *test_file* defines, relative to the repository."""
-    path = Path(__file__).resolve().parent.parent / test_file
-    tree = source_tree(path)
+    """The test function names defined by the test file named *test_file*.
+
+    The file is found by its name anywhere under ``tests/``, and exactly one may
+    carry it.
+    """
+    matches = sorted(TESTS_ROOT.rglob(test_file))
+    assert len(matches) == 1, f"{test_file} names {len(matches)} files: {matches}"
+    tree = source_tree(matches[0])
     return {
         node.name
         for node in ast.walk(tree)

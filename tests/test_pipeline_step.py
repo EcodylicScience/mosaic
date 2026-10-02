@@ -43,7 +43,7 @@ from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from mosaic.core.scope import Scope
 from mosaic.runlog import read_run, run_log_dir
-from tests.helpers import add_tracks_variant, make_dataset
+from tests.helpers import FakeTrainer, add_tracks_variant, make_dataset, write_data_yaml
 
 runner = CliRunner()
 
@@ -659,11 +659,9 @@ def test_two_dispatches_of_one_training_run_do_not_both_train(
     from mosaic.core.pipeline.markers import new_inflight, write_inflight
     from mosaic.core.pipeline.models import model_run_root
     from mosaic.tracking.ops._common import RunRootHeld
-    from tests.test_training_reuse import _Counter, _data_yaml
-    from tests.test_tracking_ops import _make_dataset
 
-    dataset = _make_dataset(tmp_path)
-    trainer = _Counter()
+    dataset = make_dataset(tmp_path)
+    trainer = FakeTrainer()
     trainer.install(monkeypatch)
     recipe = Recipe.model_validate(
         {
@@ -674,7 +672,7 @@ def test_two_dispatches_of_one_training_run_do_not_both_train(
                     "type": "op",
                     "kind": "train-pose",
                     "params": {
-                        "data": str(_data_yaml(tmp_path)),
+                        "data": str(write_data_yaml(tmp_path)),
                         "epochs": 2,
                         "device": "cpu",
                     },

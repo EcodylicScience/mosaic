@@ -8,7 +8,7 @@ reviewable diff in a single data file.
 
 The split is deliberate: the **matrix lives in code** (``CASES`` below, so adding
 coverage is a reviewed change) and the **identifiers live in data**
-(``data/identity_golden.json``, so a shift is one diff).
+(``data/feature_run_id_golden.json``, so a shift is one diff).
 
 Regenerating after a deliberate identity change::
 
@@ -21,24 +21,24 @@ dataset.
 
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import pytest
-from pydantic import RootModel
 
 from mosaic.cli._features import build_feature
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.run import compute_run_id
 
-GOLDEN_PATH = Path(__file__).parent / "data" / "identity_golden.json"
-UPDATE_ENV = "MOSAIC_UPDATE_GOLDEN"
+from tests.helpers import (
+    UPDATE_GOLDEN_ENV,
+    read_string_golden,
+    regenerate_command,
+    updating_golden,
+    write_golden,
+)
 
-
-class GoldenFile(RootModel[dict[str, str]]):
-    """``case id -> run_id``. A plain map so the diff stays readable."""
+GOLDEN = "feature_run_id_golden.json"
+"""``case id -> run_id``. A plain map so the diff stays readable."""
 
 
 @dataclass(frozen=True)
@@ -486,17 +486,10 @@ def _identifier(case: Case) -> str:
     return run_id
 
 
-def _load_golden() -> dict[str, str]:
-    if not GOLDEN_PATH.exists():
-        return {}
-    return GoldenFile.model_validate_json(GOLDEN_PATH.read_text()).root
-
-
 def _regenerate() -> dict[str, str]:
     """Recompute every case and rewrite the golden file."""
     fresh = {case.case_id: _identifier(case) for case in CASES}
-    GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    GOLDEN_PATH.write_text(json.dumps(fresh, indent=2, sort_keys=True) + "\n")
+    write_golden(GOLDEN, fresh)
     return fresh
 
 
@@ -514,7 +507,7 @@ def test_zero_overlap_digests_exactly_as_no_overlap() -> None:
     payload as ``0``, every feature run in every existing dataset would be
     re-addressed and recomputed, for a parameter none of them used.
     """
-    golden = _load_golden()
+    golden = read_string_golden(GOLDEN)
     assert golden.get("speed-angvel/overlap-0") == golden.get("speed-angvel/default")
 
 
@@ -525,7 +518,7 @@ def test_a_wider_context_is_a_different_run() -> None:
     every sequence boundary -- so a shared identifier means the second run is
     served the first's parquet and nothing anywhere says so.
     """
-    golden = _load_golden()
+    golden = read_string_golden(GOLDEN)
     zero = golden.get("speed-angvel/overlap-0")
     thirty = golden.get("speed-angvel/overlap-30")
     sixty = golden.get("speed-angvel/overlap-60")
@@ -536,35 +529,35 @@ def test_a_wider_context_is_a_different_run() -> None:
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.case_id)
 def test_identifier_matches_golden(case: Case) -> None:
     """The literal identifier for *case* is unchanged since the file was written."""
-    if os.environ.get(UPDATE_ENV) == "1":
-        pytest.skip(f"{UPDATE_ENV}=1: regenerating, see test_regenerate_golden")
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating, see test_regenerate_golden")
 
-    golden = _load_golden()
+    golden = read_string_golden(GOLDEN)
     if case.case_id not in golden:
         pytest.fail(
             f"No golden identifier for '{case.case_id}'. If this case is new, run "
-            f"`{UPDATE_ENV}=1 pytest tests/test_identity_golden.py` and review the diff."
+            f"`{regenerate_command(__name__)}` and review the diff."
         )
     assert _identifier(case) == golden[case.case_id], (
         f"Identifier for '{case.case_id}' changed. If this shift is intended, run "
-        f"`{UPDATE_ENV}=1 pytest tests/test_identity_golden.py` and explain every "
+        f"`{regenerate_command(__name__)}` and explain every "
         f"moved line in the commit message."
     )
 
 
 def test_regenerate_golden() -> None:
     """Rewrite the golden file. Runs only under the update environment variable."""
-    if os.environ.get(UPDATE_ENV) != "1":
-        pytest.skip(f"set {UPDATE_ENV}=1 to regenerate")
+    if not updating_golden():
+        pytest.skip(f"set {UPDATE_GOLDEN_ENV}=1 to regenerate")
     fresh = _regenerate()
     assert len(fresh) == len(CASES)
 
 
 def test_golden_file_has_no_stale_entries() -> None:
     """A golden entry with no matching case is dead weight that hides removals."""
-    if os.environ.get(UPDATE_ENV) == "1":
-        pytest.skip(f"{UPDATE_ENV}=1: regenerating")
-    stale = set(_load_golden()) - {case.case_id for case in CASES}
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    stale = set(read_string_golden(GOLDEN)) - {case.case_id for case in CASES}
     assert not stale, f"golden file has entries with no case: {sorted(stale)}"
 
 

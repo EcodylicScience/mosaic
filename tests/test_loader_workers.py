@@ -34,7 +34,7 @@ from mosaic.tracking.ops.train import PointTrainParams, PoseTrainParams
 from mosaic.tracking.ops.train_litpose import TrainLitposeParams
 from mosaic.tracking.ops.train_sleap import TrainSleapParams
 
-from tests.helpers import FakeTrainer, make_dataset
+from tests.helpers import FakeTrainer, make_dataset, write_data_yaml
 
 register_ops()
 
@@ -280,14 +280,6 @@ def test_litpose_sends_nothing_when_the_worker_count_is_unset(
 # --- YOLO, end to end ------------------------------------------------------
 
 
-def _data_yaml(tmp_path: Path) -> Path:
-    directory = tmp_path / "converted"
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "data.yaml"
-    _ = path.write_text("kpt_shape: [4, 3]\n")
-    return path
-
-
 def test_yolo_reuses_the_model_when_only_the_worker_count_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -295,7 +287,7 @@ def test_yolo_reuses_the_model_when_only_the_worker_count_changes(
     trainer = FakeTrainer()
     trainer.install(monkeypatch)
     params: dict[str, object] = {
-        "data": str(_data_yaml(tmp_path)),
+        "data": str(write_data_yaml(tmp_path)),
         "epochs": 2,
         "device": "cpu",
     }
@@ -316,7 +308,7 @@ def test_yolo_sends_the_worker_count_in_the_request(
     trainer = FakeTrainer()
     trainer.install(monkeypatch)
     params: dict[str, object] = {
-        "data": str(_data_yaml(tmp_path)),
+        "data": str(write_data_yaml(tmp_path)),
         "epochs": 2,
         "device": "cpu",
         "workers": workers,

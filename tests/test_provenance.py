@@ -9,75 +9,13 @@ recorded cell on that run can say.
 
 from __future__ import annotations
 
-from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.provenance import PROVENANCE_COLUMNS, reached_by
-from mosaic.core.pipeline.types import (
-    DependencyLookup,
-    Inputs,
-    InputStream,
-)
-from mosaic.core.params import Params
 
-
-class _P(Params):
-    pass
-
-
-class CropLike:
-    """A per-frame feature that opens video: it declares ``media_raw``.
-
-    Plainly named, along with :class:`PlainFeature`, because five test modules
-    build their scenarios on these two -- a leading underscore on a symbol a
-    sibling imports is the thing ``reportPrivateUsage`` names.
-
-    The four protocol methods carry the protocol's own parameter names and types
-    rather than ``object`` stand-ins. A structural protocol matches on parameter
-    *names*, so a stub spelling them differently is not a ``Feature``, and every
-    module passing one to ``run_feature`` inherited that error.
-    """
-
-    name = "prov-crop"
-    version = "0.1"
-    parallelizable = False
-    scope_dependent = False
-    consumed_roots: tuple[str, ...] = ("media_raw",)
-
-    def __init__(
-        self,
-        inputs: Inputs | None = None,
-        params: dict[str, object] | _P | None = None,
-    ) -> None:
-        self.inputs = inputs if inputs is not None else Inputs(("tracks",))
-        self.params = params if isinstance(params, _P) else _P.from_overrides(params)
-
-    def load_state(
-        self,
-        run_root: Path,
-        artifact_paths: dict[str, Path],
-        dependency_lookups: dict[str, DependencyLookup],
-    ) -> bool:
-        return True
-
-    def fit(self, inputs: InputStream) -> None:
-        pass
-
-    def save_state(self, run_root: Path) -> None:
-        pass
-
-    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        return df
-
-
-class PlainFeature(CropLike):
-    """The ordinary shape: forty of forty-two features declare no source root."""
-
-    name = "prov-plain"
-    consumed_roots: tuple[str, ...] = ()
+from tests.helpers import CropLike, PlainFeature
 
 
 def _for(frame, kind: str, name: str):

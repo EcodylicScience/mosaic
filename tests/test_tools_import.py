@@ -23,8 +23,9 @@ from typing import Final
 
 import pytest
 
-_REPO_ROOT: Final = Path(__file__).resolve().parents[1]
-_TOOLS_DIRECTORY: Final = _REPO_ROOT / "tools"
+from tests.helpers import REPO_ROOT
+
+_TOOLS_DIRECTORY: Final = REPO_ROOT / "tools"
 
 _TOOL_SCRIPTS: Final = sorted(_TOOLS_DIRECTORY.rglob("*.py"))
 

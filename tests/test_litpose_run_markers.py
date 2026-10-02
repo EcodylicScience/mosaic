@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 
 import mosaic.tracking.litpose.dataset_runs as dr
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.markers import read_phase_marker
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.litpose.dataset_runs import litpose_index_path, litpose_run_root
@@ -24,6 +24,7 @@ from mosaic.tracking.litpose.params import LitposeParams
 from tests.helpers import (
     FakeLitpose,
     install_fake_litpose,
+    make_dataset,
     write_litpose_model,
     write_media_index,
 )
@@ -34,8 +35,7 @@ from tests.helpers import (
 
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest("t", base_dir=tmp_path)
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    dataset = make_dataset(tmp_path)
     write_media_index(dataset, ["vid1"])
     return dataset
 

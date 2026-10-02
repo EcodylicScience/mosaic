@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 
 import mosaic.tracking.sleap.dataset_runs as dr
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.sleap.dataset_runs import sleap_index_path, sleap_run_root
 from mosaic.tracking.sleap.params import SleapParams
@@ -23,6 +23,7 @@ from mosaic.tracking.sleap.params import SleapParams
 from tests.helpers import (
     FakeSleap,
     install_fake_sleap,
+    make_dataset,
     write_media_index,
     write_sleap_model,
 )
@@ -33,8 +34,7 @@ from tests.helpers import (
 
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest("t", base_dir=tmp_path)
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    dataset = make_dataset(tmp_path)
     write_media_index(dataset, ["vid1"])
     return dataset
 

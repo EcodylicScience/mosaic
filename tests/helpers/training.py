@@ -123,3 +123,18 @@ class FakeTrainer:
             epochs_completed=completed,
             stop=self.stop,
         )
+
+
+def write_data_yaml(base: Path) -> Path:
+    """Write a converted-dataset directory under *base* holding only ``data.yaml``.
+
+    Its own directory because that is the layout ``convert-points`` produces, not
+    because the fingerprint requires it: ``fingerprint_yolo_dataset`` digests what
+    the YAML *declares*, so a data.yaml sharing a directory with anything else --
+    including whatever the run itself writes -- fingerprints the same either way.
+    """
+    directory = base / "converted"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "data.yaml"
+    _ = path.write_text("kpt_shape: [4, 3]\n")
+    return path

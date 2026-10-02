@@ -17,13 +17,14 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
 
+from tests.helpers import REPO_ROOT
+
 SVG_NS = "{http://www.w3.org/2000/svg}"
-ASSETS = Path(__file__).resolve().parent.parent / "docs" / "assets"
+ASSETS = REPO_ROOT / "docs" / "assets"
 LIGHT = ASSETS / "pipeline-light.svg"
 DARK = ASSETS / "pipeline-dark.svg"
 
@@ -80,9 +81,6 @@ def test_no_pure_black_or_white() -> None:
             assert banned not in text, f"{path.name} uses {banned}"
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
-
-
 COUNT_REGISTRIES = """
 import json
 from typer.main import get_command
@@ -125,7 +123,7 @@ def registry_sizes() -> dict[str, int]:
         capture_output=True,
         text=True,
         check=True,
-        cwd=REPOSITORY_ROOT,
+        cwd=REPO_ROOT,
     )
     counts: dict[str, int] = json.loads(completed.stdout)
     return counts
@@ -140,7 +138,7 @@ def test_readme_counts_match_the_registries() -> None:
     what went wrong before: three hand-maintained feature lists claimed "~30",
     "40+" and a subset, against a registry of 44.
     """
-    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     sizes = registry_sizes()
     for count, noun in (
         (sizes["features"], "registered features"),

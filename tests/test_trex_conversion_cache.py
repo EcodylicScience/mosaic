@@ -41,7 +41,13 @@ from mosaic.tracking.trex.conversion_cache import (
 from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.trex.version import TREX_VERSION
 
-from tests.helpers import FakeTrex, clip_facts, install_fake_trex, write_media_index
+from tests.helpers import (
+    FakeTrex,
+    clip_facts,
+    install_fake_trex,
+    make_dataset,
+    write_media_index,
+)
 
 # --- fixtures --------------------------------------------------------------
 
@@ -49,8 +55,7 @@ from tests.helpers import FakeTrex, clip_facts, install_fake_trex, write_media_i
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
     """One sequence, ``vid1``, whose media carries a content identity."""
-    manifest = new_dataset_manifest("cache", base_dir=tmp_path)
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    dataset = make_dataset(tmp_path, name="cache")
     write_media_index(dataset, ["vid1"], uids={"vid1": "uid-vid1"})
     return dataset
 
@@ -188,8 +193,7 @@ def test_media_without_a_uid_converts_in_place_and_says_so(
     tmp_path: Path, trex: FakeTrex, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A path is a mutable key, so media with no content identity is not cached."""
-    manifest = new_dataset_manifest("nouid", base_dir=tmp_path)
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    dataset = make_dataset(tmp_path, name="nouid")
     write_media_index(dataset, ["vid1"], uids={"vid1": ""})
 
     run_id = dr.run_trex(dataset, TrexParams())

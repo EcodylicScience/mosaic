@@ -27,7 +27,6 @@ test that pinned the call is gone.
 from __future__ import annotations
 
 import tomllib
-from pathlib import Path
 from typing import Final
 
 import pytest
@@ -52,12 +51,13 @@ from mosaic.tracking.ultralytics_track.tracker_defaults import (
     resolve_tracker_config,
 )
 
+from tests.helpers import REPO_ROOT
+
 # Selected by CI's `tracking` job with `-m tracker` rather than by a filename
 # list in the workflow, so a new file here is covered the day it lands.
 pytestmark = pytest.mark.tracker
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_EXTERNAL = _REPO_ROOT / "src" / "mosaic" / "tracking" / "external"
+_EXTERNAL = REPO_ROOT / "src" / "mosaic" / "tracking" / "external"
 ENVIRONMENT_DIRECTORIES: Final = ("ultralytics-env", "polo-env")
 """Every environment that runs an Ultralytics-family library, by directory.
 

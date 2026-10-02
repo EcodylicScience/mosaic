@@ -17,7 +17,8 @@ import pytest
 from mosaic.core.pipeline.tracks_axis import tail_loss_of_files
 from mosaic.core.pipeline.tracks_index import frame_axis_verdict
 from mosaic.tracking.trex.pv import PvHeader, read_pv_header
-from tests.helpers.trex import write_pv_header
+
+from tests.helpers import write_pv_header
 
 _TWO_CLIPS: Final = b"".join(
     [

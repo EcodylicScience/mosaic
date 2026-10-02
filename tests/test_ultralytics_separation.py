@@ -48,7 +48,7 @@ from mosaic.tracking.common.toolenv import (
 )
 from mosaic.tracking.common.ultralytics_env import POLO_ENV, ULTRALYTICS_ENV
 
-from tests.helpers import inside_a_virtualenv
+from tests.helpers import REPO_ROOT, inside_a_virtualenv
 
 # Selected by CI's `tracking` job with `-m tracker` rather than by a filename
 # list in the workflow, so a new file here is covered the day it lands.
@@ -57,9 +57,8 @@ pytestmark = pytest.mark.tracker
 _ULTRALYTICS: Final = "ultralytics"
 _MOSAIC: Final = "mosaic"
 
-_REPO_ROOT: Final = Path(__file__).resolve().parents[1]
 _ENVIRONMENT_DIRECTORY: Final = (
-    _REPO_ROOT / "src" / "mosaic" / "tracking" / "external" / "ultralytics-env"
+    REPO_ROOT / "src" / "mosaic" / "tracking" / "external" / "ultralytics-env"
 )
 
 RUNNER_PROGRAM: Final = "tracking/external/runner/ultralytics_runner.py"
@@ -287,7 +286,7 @@ def test_the_runner_program_takes_no_import_from_mosaic() -> None:
     :data:`MOSAIC_DISTRIBUTIONS_THE_ENVIRONMENT_MAY_DECLARE` says on what
     grounds.
     """
-    directory = _REPO_ROOT / "src" / "mosaic" / "tracking" / "external" / "runner"
+    directory = REPO_ROOT / "src" / "mosaic" / "tracking" / "external" / "runner"
     sources = sorted(directory.glob("*.py"))
     assert [source.name for source in sources] == [
         "__init__.py",
@@ -364,7 +363,7 @@ def test_no_mosaic_install_declares_ultralytics_at_all() -> None:
     removed in 0.14.0. ``test_optional_dependency_messages`` holds that they stay
     gone.
     """
-    document = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
+    document = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     base = _REQUIREMENTS.validate_python(document["project"]["dependencies"])
     extras = _EXTRAS.validate_python(document["project"]["optional-dependencies"])
 

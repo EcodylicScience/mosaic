@@ -18,7 +18,6 @@ being portable, an identifier that moves with a green suite.
 from __future__ import annotations
 
 import dataclasses
-import json
 import sys
 from dataclasses import Field
 from pathlib import Path
@@ -50,6 +49,8 @@ from mosaic.tracking.trex.conversion_cache import ConversionIndexRow
 from mosaic.tracking.trex.dataset_runs import TRexIndexRow
 from mosaic.tracking.ultralytics_track.dataset_runs import UltralyticsIndexRow
 
+from tests.helpers import REPO_ROOT, read_string_golden
+
 register_ops()
 
 TRACKERS: list[str] = sorted(
@@ -77,9 +78,7 @@ ROW_CLASSES: dict[str, type[TrackerRunRowBase]] = {
     "ultralytics": UltralyticsIndexRow,
 }
 
-GOLDEN = json.loads(
-    (Path(__file__).parent / "data" / "op_identity_golden.json").read_text()
-)
+GOLDEN = read_string_golden("op_identity_golden.json")
 
 # Types IndexCSV can map onto a CSV column. A row field of any other type is
 # written by str() and read back as a string, which is a silent corruption
@@ -383,7 +382,7 @@ def test_the_recipe_does_not_teach_a_private_resolver() -> None:
     state in a fresh checkout rather than a fault, and the assertions resume the
     moment the page is published again.
     """
-    recipe = Path(__file__).parent.parent / "docs" / "drafts" / "adding-a-tracker.md"
+    recipe = REPO_ROOT / "docs" / "drafts" / "adding-a-tracker.md"
     if not recipe.is_file():
         pytest.skip("docs/drafts/adding-a-tracker.md is not in this checkout")
     text = recipe.read_text()

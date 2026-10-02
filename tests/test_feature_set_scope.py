@@ -29,7 +29,8 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.params import Params
-from tests.helpers.tracks import add_tracks_variant
+
+from tests.helpers import add_tracks_variant
 
 CONVERTED = "convert-demo.0.1-1111111111"
 TRACKED = "trex.0.1-2222222222"

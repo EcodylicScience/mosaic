@@ -61,6 +61,8 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
 )
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 from tests.helpers import (
+    FakeDetections,
+    FakeResult,
     FakeUltralytics,
     MakeStore,
     MediaClip,
@@ -80,7 +82,6 @@ from tests.helpers import (
     write_media_index,
     write_painted_entry,
 )
-from tests.test_ultralytics_rows import FakeDetections, FakeResult
 
 pytestmark = pytest.mark.tracker
 

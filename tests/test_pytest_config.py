@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import shlex
 import tomllib
-from pathlib import Path
 
 import pytest
 import yaml
 from pydantic import BaseModel
 
-PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
-WORKFLOWS = PYPROJECT.parent / ".github" / "workflows"
+from tests.helpers import REPO_ROOT
+
+PYPROJECT = REPO_ROOT / "pyproject.toml"
+WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
 _UNCLAIMED_MARKERS = frozenset({"slow", "media"})
 """The markers that no CI job selects by name.
@@ -169,3 +170,12 @@ def test_the_slow_workflow_runs_the_slow_tests_no_job_marker_claims() -> None:
     expected = {"slow", *(f"not {marker}" for marker in _job_markers())}
 
     assert _terms(_marker_expressions("slow.yml")["slow"]) == expected
+
+
+def test_an_empty_parameter_set_fails_collection() -> None:
+    """A parametrize over nothing would otherwise report one skip and check nothing.
+
+    ``test_tools_import`` parametrizes over the scripts under ``tools/``, and
+    pointed at a directory that is not there it would find none.
+    """
+    assert _ini_options()["empty_parameter_set_mark"] == "fail_at_collect"

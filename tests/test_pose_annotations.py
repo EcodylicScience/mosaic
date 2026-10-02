@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -37,7 +36,15 @@ from mosaic.core.annotations.writers.coco import (
     coco_keypoints_document,
     coco_keypoints_payload,
 )
-from tests.helpers import MOUSE, pose_frame, pose_object, pose_set
+from tests.helpers import (
+    MOUSE,
+    golden_path,
+    pose_frame,
+    pose_object,
+    pose_set,
+    updating_golden,
+    write_golden,
+)
 
 RESIDENT = Alias(id=12, name="resident")
 INTRUDER = Alias(id=13, name="intruder")
@@ -104,9 +111,6 @@ def _document(state: PoseAnnotationSet) -> dict[str, object]:
 
 # ---------------------------------------------------------------- one state, one bytes
 
-GOLDEN = Path(__file__).parent / "data"
-UPDATE_ENV = "MOSAIC_UPDATE_GOLDEN"
-
 
 @pytest.mark.parametrize(
     ("golden", "encode"),
@@ -126,10 +130,9 @@ def test_the_files_are_exactly_what_they_were(golden: str, encode: object) -> No
     assert callable(encode)
     written = encode(_state())
     assert isinstance(written, bytes)
-    path = GOLDEN / golden
-    if os.environ.get(UPDATE_ENV) == "1":
-        document = json.loads(written)
-        _ = path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+    if updating_golden():
+        write_golden(golden, json.loads(written))
+    path = golden_path(golden)
     canonical = json.dumps(
         json.loads(path.read_text()), sort_keys=True, separators=(",", ":")
     ).encode("utf-8")

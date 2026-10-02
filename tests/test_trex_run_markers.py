@@ -35,7 +35,7 @@ from pydantic import Field
 import mosaic.tracking.trex.dataset_runs as dr
 from mosaic.tracking.common.bridge import BridgeCounts
 from mosaic.tracking.common.scope import JoinedSourceMismatchError
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.media_input import MediaInputParams
 from mosaic.core.pipeline.markers import (
     InflightMarker,
@@ -63,6 +63,7 @@ from tests.helpers import (
     install_fake_trex,
     latest_events,
     latest_snapshot,
+    make_dataset,
     scope_over,
     stub_join,
     write_media_index,
@@ -74,8 +75,7 @@ from tests.helpers import (
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
     """A dataset with one sequence, ``vid1``, backed by ``vid1.mp4``."""
-    manifest = new_dataset_manifest("t", base_dir=tmp_path)
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    dataset = make_dataset(tmp_path)
     write_media_index(dataset, [MediaClip(sequence="vid1", filename="vid1.mp4")])
     return dataset
 

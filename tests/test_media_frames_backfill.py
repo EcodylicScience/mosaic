@@ -46,6 +46,7 @@ from tests.helpers import (
     install_fake_litpose,
     install_fake_pose_inference,
     install_fake_sleap,
+    install_fake_trex,
     install_fake_ultralytics,
     make_dataset,
     set_tracks_cell,
@@ -54,7 +55,6 @@ from tests.helpers import (
     write_media_index,
     write_sleap_model,
 )
-from tests.helpers.trex import install_fake_trex
 
 _FRAMES = 30
 """How many frames each clip holds."""

@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.tracking.litpose.params import LitposeParams
 from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.trex.params import TrexParams
@@ -38,6 +38,7 @@ from tests.helpers import (
     install_fake_litpose,
     install_fake_sleap,
     install_fake_trex,
+    make_dataset,
     write_litpose_model,
     write_media_index,
     write_sleap_model,
@@ -71,8 +72,7 @@ _UIDS: dict[str, str] = {"vid1": "uid-vid1", "vid2": "uid-vid2"}
 
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest("layout", base_dir=tmp_path)
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    dataset = make_dataset(tmp_path, name="layout")
     write_media_index(dataset, ["vid1"], uids=_UIDS)
     return dataset
 

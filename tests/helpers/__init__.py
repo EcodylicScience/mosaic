@@ -13,6 +13,8 @@ What lives where:
 - ``datasets`` -- the `Dataset` a test runs against.
 - ``features`` -- the templates and per-sequence frames the global
   fit-then-apply features are tested on.
+- ``stand_in_features`` -- features that do nothing but declare the source
+  roots they consume, for the tests of what a source change reaches.
 - ``tracks`` -- track tables, tracks variants, raw TREx, SLEAP and DeepLabCut
   exports.
 - ``trex``, ``sleap``, ``litpose`` and ``ultralytics`` contain recording
@@ -29,13 +31,16 @@ What lives where:
 - ``scope`` -- a resolved scope over named entries, for the ops and drivers
   that take their coverage as an argument.
 - ``environment`` -- what the surrounding machine provides: the ffmpeg
-  toolchain, and which files under the package root a structural walk should
-  skip -- installed third-party code, and mosaic's own code that runs in an
-  environment built for an external tool.
+  toolchain, the modules each CI job must install, and which files under the
+  package root a structural walk should skip -- installed third-party code, and
+  mosaic's own code that runs in an environment built for an external tool.
 - ``mock_dataset`` -- the duck-typed stand-in, for the pipeline tests that want
   no real roots.
 - ``source_scan`` -- reads a module's source as a tree, for the tests that
   assert what a code path reads and what it calls.
+- ``paths`` -- the repository, the ``tests`` directory and the golden-file
+  directory, which a test names from here rather than from its own location.
+- ``golden`` -- reading and rewriting the golden files under ``tests/data/``.
 
 Fixtures stay in ``tests/conftest.py``, because pytest collects them only from
 there. Their bodies delegate here, so the logic has one home either way.
@@ -54,6 +59,9 @@ from tests.helpers.annotations import (
 from tests.helpers.datasets import make_dataset
 from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
 from tests.helpers.environment import (
+    CI_FERAL_MODULES,
+    CI_IDENTITY_MODULES,
+    CI_REQUIRED_MODULES,
     FFMPEG_TOOLCHAIN,
     assert_no_literal_tilde,
     inside_a_virtualenv,
@@ -67,6 +75,15 @@ from tests.helpers.features import (
     make_sequence_df,
     make_templates,
     write_templates,
+)
+from tests.helpers.golden import (
+    UPDATE_GOLDEN_ENV,
+    golden_path,
+    read_golden,
+    read_string_golden,
+    regenerate_command,
+    updating_golden,
+    write_golden,
 )
 from tests.helpers.media import (
     MOTIF_SYNC_UUID,
@@ -92,6 +109,11 @@ from tests.helpers.media import (
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.models import register_trained_model
 from tests.helpers.ops import minimal_op_params
+from tests.helpers.paths import (
+    GOLDEN_DIR,
+    REPO_ROOT,
+    TESTS_ROOT,
+)
 from tests.helpers.runlog import entry_error_lines, latest_events, latest_snapshot
 from tests.helpers.scope import resolved_scope, scope_over
 from tests.helpers.source_scan import (
@@ -102,7 +124,15 @@ from tests.helpers.source_scan import (
     source_tree,
 )
 from tests.helpers.documents import dotted_values, is_section
-from tests.helpers.training import FakeTrainer, healthy_probe
+from tests.helpers.stand_in_features import (
+    CropLike,
+    PlainFeature,
+)
+from tests.helpers.training import (
+    FakeTrainer,
+    healthy_probe,
+    write_data_yaml,
+)
 from tests.helpers.tracks import (
     add_track_sequences,
     add_tracks_variant,
@@ -129,10 +159,16 @@ from tests.helpers.litpose import (
     write_litpose_model,
 )
 from tests.helpers.sleap import FakeSleap, install_fake_sleap, write_sleap_model
-from tests.helpers.trex import FakeTrex, install_fake_trex
+from tests.helpers.trex import (
+    FakeTrex,
+    install_fake_trex,
+    write_pv_header,
+)
 from tests.helpers.ultralytics import (
-    ULTRALYTICS_KEYPOINTS,
+    FakeDetections,
+    FakeResult,
     FakeUltralytics,
+    ULTRALYTICS_KEYPOINTS,
     install_fake_ultralytics,
     ultralytics_probe_response,
     write_ultralytics_predictions,
@@ -145,9 +181,19 @@ from tests.helpers.variants import (
 )
 
 __all__ = [
+    "CI_FERAL_MODULES",
+    "CI_IDENTITY_MODULES",
+    "CI_REQUIRED_MODULES",
+    "CropLike",
     "FFMPEG_TOOLCHAIN",
+    "FakeDetections",
+    "FakeResult",
+    "GOLDEN_DIR",
     "KEYPOINTS_PAYLOAD",
     "MOUSE",
+    "PlainFeature",
+    "REPO_ROOT",
+    "TESTS_ROOT",
     "ULTRALYTICS_KEYPOINTS",
     "FakeInference",
     "FakeLitpose",
@@ -161,12 +207,14 @@ __all__ = [
     "MakeStore",
     "MediaClip",
     "MockDataset",
+    "UPDATE_GOLDEN_ENV",
     "add_media_sequence",
     "add_media_variant",
     "add_track_sequences",
     "add_tracks_variant",
     "add_transcode_derivative",
     "assert_no_literal_tilde",
+    "golden_path",
     "healthy_probe",
     "clean_facts_cells",
     "clip_facts",
@@ -209,6 +257,9 @@ __all__ = [
     "pose_set",
     "published_table",
     "read_frame_code",
+    "read_golden",
+    "read_string_golden",
+    "regenerate_command",
     "register_trained_model",
     "require_ffmpeg",
     "resolved_scope",
@@ -220,15 +271,19 @@ __all__ = [
     "source_tree",
     "store_dataset",
     "stub_join",
+    "updating_golden",
     "video_store_maker",
     "track_sequences",
     "ultralytics_probe_response",
+    "write_data_yaml",
     "write_dlc_csv",
+    "write_golden",
     "write_h264_mp4",
     "write_litpose_model",
     "write_media_index",
     "write_mpeg4_mp4",
     "write_painted_entry",
+    "write_pv_header",
     "write_sleap_analysis_h5",
     "write_sleap_model",
     "write_templates",

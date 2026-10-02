@@ -32,6 +32,7 @@ from mosaic.core.params import Params
 from mosaic.core.scope import Scope
 
 from tests.helpers import (
+    PlainFeature,
     add_media_sequence,
     add_track_sequences,
     add_tracks_variant,
@@ -413,7 +414,6 @@ def test_h3_case1_membership_change_invalidates_tracks_but_not_derivatives(
     from mosaic.core.pipeline.media_index import MediaIndexScope
 
     from tests.helpers import add_tracks_variant, add_transcode_derivative
-    from tests.test_provenance import PlainFeature
 
     ds = scenario_dataset_with_media
     # The producer that reads media: the TREx bridge passes the video and its own

@@ -48,72 +48,18 @@ from mosaic.core.dataset import Dataset, new_dataset_manifest
 # The plain helpers live in `tests.helpers`; only the ones the fixtures below
 # call are imported here. Test modules import from the facade, never from
 # this file.
-from tests.helpers.environment import (
+from tests.helpers import (
+    CI_FERAL_MODULES,
+    CI_IDENTITY_MODULES,
+    CI_REQUIRED_MODULES,
     FFMPEG_TOOLCHAIN,
+    MediaClip,
+    add_media_sequence,
+    add_track_sequences,
     missing_ffmpeg_tools,
     require_ffmpeg as _require_ffmpeg,
+    write_media_index,
 )
-from tests.helpers.media import MediaClip, add_media_sequence, write_media_index
-from tests.helpers.tracks import add_track_sequences
-
-# Modules every CI job must have, installed through the `test` dependency group.
-# `imgstore` gates tests behind ``pytest.importorskip``, so its absence
-# presents as a skip rather than a failure -- a green CI that ran less than the
-# workflow installed for. That is not hypothetical: the test step used to invoke
-# `uv run pytest`, which re-synced the environment from `uv.lock` and pruned
-# both extras before the first test ran.
-#
-# **A new optional dependency joins the install line and this tuple in the same
-# change**, or its tests stop being evidence: adding it to the install alone
-# leaves nothing to notice when it next vanishes.
-#
-# `pywt`, `h5py` and `tables` used to be here. They are base dependencies now, so
-# requiring them of CI would assert something `pip install -e .` already
-# guarantees -- and guarding them in a test is an error the coverage suite below
-# reports, because a guard that can never fire masks a broken install.
-#
-# That rule is no longer only prose. ``test_optional_dependency_coverage.py``
-# reads the suite's own ``importorskip`` calls out of its AST and fails when one
-# names a module no tuple here requires -- which is how ``timm`` and ``tables``
-# were found, both guarded and neither installed by any job, and how ``yaml`` was
-# found being guarded despite being a *core* dependency, a guard that could never
-# fire and would have masked a broken install.
-CI_REQUIRED_MODULES = ("imgstore",)
-
-# The same rule, scoped to one job. `torch` (via the `deep-learning` extra) is a
-# ~200 MB wheel, so requiring it of every CI run would slow all of them down for
-# tests only one job runs. It gets its own job instead, which sets
-# MOSAIC_CI_IDENTITY=1 -- and inside that job the absence of torch is an error
-# for exactly the reason above: `pytest.importorskip("torch")` would otherwise
-# skip the T-Rex checkpoint tests green, and those are the only thing standing
-# between a refactor and a silently randomly-initialised network inside T-Rex.
-CI_IDENTITY_MODULES = ("torch", "timm")
-
-# The same argument again for the tracking job, with one difference that changes
-# its shape entirely: what that job installs is not a module. Ultralytics is
-# AGPL-3.0 and mosaic never imports it -- it runs in an environment the user
-# builds, reached as a subprocess -- so there is no import name to demand of
-# *this* environment and deliberately no tuple below. Folding one in would claim
-# a CI job installs Ultralytics here, and would then excuse an
-# `importorskip("ultralytics")` that guards the wrong environment entirely.
-#
-# The rule itself is unchanged, pointed at the environment instead: under
-# MOSAIC_CI_TRACKING an Ultralytics environment that does not resolve is a broken
-# environment rather than a reason to skip. `test_ultralytics_preflight.py` skips
-# its drift check when it cannot find one, and a job that builds the environment
-# and then skips that check has proved nothing about the tracker tables it exists
-# to compare.
-
-# And again for the job that installs `feral`, which became possible at all only
-# when FERAL started publishing to PyPI. `feral` is probed with
-# ``importlib.util.find_spec`` rather than ``pytest.importorskip``, because two of
-# the tests assert the *absence* path -- the ImportError naming the extra -- which
-# ``importorskip`` cannot express. That probe is audited the same way; see
-# ``test_optional_dependency_coverage.py``.
-#
-# Its own job for the usual reason and one more: FERAL pins its dependencies
-# exactly, so the environment it produces is not the one the other jobs install.
-CI_FERAL_MODULES = ("feral",)
 
 # The same argument, for binaries rather than modules. Probing shells out to the
 # system toolchain, so every test that indexes real media hard-*fails* without it

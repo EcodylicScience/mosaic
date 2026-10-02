@@ -35,36 +35,7 @@ from mosaic.tracking.ops._common import (
     fingerprint_yolo_dataset,
 )
 from mosaic.tracking.ops.train import trained_model_index
-from tests.helpers import FakeTrainer
-from tests.test_tracking_ops import _make_dataset
-
-
-class _Counter(FakeTrainer):
-    """A trainer stand-in that records how many times it really trained.
-
-    The name and the ``calls`` attribute are what ``tests/test_pipeline_step.py``
-    reaches for, so the graph-execution claim test keeps working.
-    """
-
-    @property
-    def last_request(self):
-        return self.requests[-1]
-
-
-def _data_yaml(tmp_path: Path) -> Path:
-    """A converted-dataset directory holding just the data.yaml.
-
-    Its own directory because that is the layout ``convert-points`` produces, not
-    because the fingerprint requires it: ``fingerprint_yolo_dataset`` digests what
-    the YAML *declares*, so a data.yaml sharing a directory with anything else --
-    including whatever the run itself writes -- fingerprints the same either way.
-    ``test_an_unrelated_sibling_does_not_move_the_identity`` is what pins that.
-    """
-    directory = tmp_path / "converted"
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "data.yaml"
-    _ = path.write_text("kpt_shape: [4, 3]\n")
-    return path
+from tests.helpers import FakeTrainer, make_dataset, write_data_yaml
 
 
 def _write(path: Path, content: bytes) -> Path:
@@ -95,10 +66,10 @@ def _yolo_dataset(root: Path, *, image: bytes = b"train-image") -> Path:
 def test_an_identical_resubmission_does_not_retrain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ds = _make_dataset(tmp_path)
-    trainer = _Counter()
+    ds = make_dataset(tmp_path)
+    trainer = FakeTrainer()
     trainer.install(monkeypatch)
-    params = {"data": str(_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
+    params = {"data": str(write_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
 
     first = run_op(ds, "train-pose", dict(params))
     second = run_op(ds, "train-pose", dict(params))
@@ -125,10 +96,10 @@ def test_a_reused_training_run_records_the_cache_hit(
     """
     from mosaic.runlog import read_run, run_log_dir
 
-    ds = _make_dataset(tmp_path)
-    trainer = _Counter()
+    ds = make_dataset(tmp_path)
+    trainer = FakeTrainer()
     trainer.install(monkeypatch)
-    params = {"data": str(_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
+    params = {"data": str(write_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
 
     _ = run_op(ds, "train-pose", dict(params), execution_id="EXECTRAINFIRST")
     _ = run_op(ds, "train-pose", dict(params), execution_id="EXECTRAINSECOND")
@@ -143,10 +114,10 @@ def test_a_reused_training_run_records_the_cache_hit(
 
 def test_overwrite_retrains(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The escape hatch: a caller who means it can force the work again."""
-    ds = _make_dataset(tmp_path)
-    trainer = _Counter()
+    ds = make_dataset(tmp_path)
+    trainer = FakeTrainer()
     trainer.install(monkeypatch)
-    params = {"data": str(_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
+    params = {"data": str(write_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
 
     first = run_op(ds, "train-pose", dict(params))
     second = run_op(ds, "train-pose", dict(params), overwrite=True)
@@ -167,10 +138,10 @@ def test_an_incomplete_run_root_retrains(
     the trainer returned. Adopting that as complete would ship a half-trained
     model, which is why the gate reads the index rather than the artifact.
     """
-    ds = _make_dataset(tmp_path)
-    trainer = _Counter()
+    ds = make_dataset(tmp_path)
+    trainer = FakeTrainer()
     trainer.install(monkeypatch)
-    params = {"data": str(_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
+    params = {"data": str(write_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
 
     run_id = run_op(ds, "train-pose", dict(params))
 
@@ -198,10 +169,10 @@ def test_a_second_execution_cannot_train_into_a_held_run_root(
     one-shot op is the whole batch, and returning its run_id would hand the caller
     a model someone else is mid-write.
     """
-    ds = _make_dataset(tmp_path)
-    trainer = _Counter()
+    ds = make_dataset(tmp_path)
+    trainer = FakeTrainer()
     trainer.install(monkeypatch)
-    params = {"data": str(_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
+    params = {"data": str(write_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
 
     run_id = run_op(ds, "train-pose", dict(params))
     assert trainer.calls == 1
@@ -244,8 +215,8 @@ def test_an_unrelated_sibling_does_not_move_the_identity(
     landing there -- a notebook, a log, the run's own output -- re-addressed the
     next training run and made content-addressed reuse unreachable in that layout.
     """
-    ds = _make_dataset(tmp_path)
-    trainer = _Counter()
+    ds = make_dataset(tmp_path)
+    trainer = FakeTrainer()
     trainer.install(monkeypatch)
     data_yaml = _yolo_dataset(tmp_path / "converted")
     params = {"data": str(data_yaml), "epochs": 2, "device": "cpu"}
@@ -362,10 +333,10 @@ def test_overrides_reach_the_trainer_and_move_the_identity(
     that lets the deployed POLO hyperparameters run through the op instead of
     around it.
     """
-    ds = _make_dataset(tmp_path)
-    trainer = _Counter()
+    ds = make_dataset(tmp_path)
+    trainer = FakeTrainer()
     trainer.install(monkeypatch)
-    params = {"data": str(_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
+    params = {"data": str(write_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
 
     plain = run_op(ds, "train-pose", dict(params))
     tuned = run_op(
@@ -390,10 +361,10 @@ def test_overrides_reach_the_trainer_and_move_the_identity(
 def test_train_points_reuses_a_finished_run_unless_overwrite_says_otherwise(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ds = _make_dataset(tmp_path)
-    trainer = _Counter()
+    ds = make_dataset(tmp_path)
+    trainer = FakeTrainer()
     trainer.install(monkeypatch)
-    params = {"data": str(_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
+    params = {"data": str(write_data_yaml(tmp_path)), "epochs": 2, "device": "cpu"}
 
     first = run_op(ds, "train-points", dict(params))
     assert trainer.calls == 1
@@ -440,7 +411,7 @@ def _fake_localizer(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
 def test_train_localizer_reuses_a_finished_run_unless_overwrite_says_otherwise(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ds = _make_dataset(tmp_path)
+    ds = make_dataset(tmp_path)
     trained = _fake_localizer(monkeypatch)
     dataset_dir = tmp_path / "patches"
     (dataset_dir / "train").mkdir(parents=True)

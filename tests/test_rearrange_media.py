@@ -15,6 +15,8 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.rearrange import Arrangement, rearrange_media
 
+from tests.helpers import CropLike
+
 
 def _reverse(ds: Dataset, sequence: str = "seq_a") -> Arrangement:
     return Arrangement(
@@ -72,7 +74,6 @@ class TestThePreviewCarriesTheBlastRadius:
         self, scenario_dataset_with_media: Dataset
     ) -> None:
         """The preview is item 6.1's walk, run against the sequences about to move."""
-        from tests.test_provenance import CropLike
 
         from mosaic.core.pipeline.run import run_feature
 

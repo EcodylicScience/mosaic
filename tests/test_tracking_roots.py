@@ -30,9 +30,9 @@ from mosaic.core.pipeline.tracking_roots import (
 )
 from mosaic.core.pipeline.tracks_raw_index import iter_track_files
 
-from tests.helpers import write_mpeg4_mp4
+from tests.helpers import REPO_ROOT, write_mpeg4_mp4
 
-_REPO_SRC = Path(__file__).resolve().parents[1] / "src" / "mosaic"
+_REPO_SRC = REPO_ROOT / "src" / "mosaic"
 
 
 # --- The registry ------------------------------------------------------------

@@ -23,7 +23,7 @@ import pytest
 from mosaic_media import MediaFacts, probe_media
 
 import mosaic.tracking.ultralytics_track.dataset_runs as dr
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.markers import read_phase_marker
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_index import read_tracks_index
@@ -46,11 +46,12 @@ from mosaic.tracking.ultralytics_track.run import (
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 
 from tests.helpers import (
-    ULTRALYTICS_KEYPOINTS,
     FakeUltralytics,
-    add_transcode_derivative,
     MediaClip,
+    ULTRALYTICS_KEYPOINTS,
+    add_transcode_derivative,
     install_fake_ultralytics,
+    make_dataset,
     point_at_a_store,
     register_trained_model,
     scope_over,
@@ -68,8 +69,7 @@ pytestmark = pytest.mark.tracker
 
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest("t", base_dir=tmp_path)
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    dataset = make_dataset(tmp_path)
     write_media_index(dataset, ["vid1"])
     return dataset
 

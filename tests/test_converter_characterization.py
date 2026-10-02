@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -62,9 +61,15 @@ from mosaic.tracking.pose_training.converters.lightning_pose import (
     convert_lightning_pose,
 )
 
-from tests.helpers import write_dlc_csv
+from tests.helpers import (
+    read_golden,
+    regenerate_command,
+    updating_golden,
+    write_dlc_csv,
+    write_golden,
+)
 
-GOLDEN_PATH = Path(__file__).parent / "data" / "converter_characterization.json"
+GOLDEN = "converter_characterization.json"
 
 # Small enough to read, large enough that a 16px patch fits with room for the
 # localizer's negative sampling to have somewhere to go.
@@ -405,12 +410,6 @@ def sources(tmp_path: Path) -> dict[str, Any]:
     }
 
 
-def _load_golden() -> dict[str, Any]:
-    if not GOLDEN_PATH.exists():
-        return {}
-    return json.loads(GOLDEN_PATH.read_text())
-
-
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_converter_output_matches_the_snapshot(
     case: str, sources: dict[str, Any], tmp_path: Path
@@ -420,23 +419,22 @@ def test_converter_output_matches_the_snapshot(
         CASES[case](sources, tmp_path / "out" / case),
     )
 
-    if os.environ.get("MOSAIC_UPDATE_GOLDEN") == "1":
-        golden = _load_golden()
+    if updating_golden():
+        golden = read_golden(GOLDEN)
         golden[case] = produced
-        GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        GOLDEN_PATH.write_text(json.dumps(golden, indent=2, sort_keys=True) + "\n")
+        write_golden(GOLDEN, golden)
         pytest.skip(f"regenerated golden for {case}")
 
-    golden = _load_golden()
+    golden = read_golden(GOLDEN)
     assert case in golden, (
         f"No golden entry for {case!r}. Regenerate with "
-        f"MOSAIC_UPDATE_GOLDEN=1 and read the diff before committing."
+        f"`{regenerate_command(__name__)}` and read the diff before committing."
     )
     assert produced == golden[case]
 
 
 def test_the_golden_covers_every_case() -> None:
     """A case added without a golden entry, or left behind after one is removed."""
-    if os.environ.get("MOSAIC_UPDATE_GOLDEN") == "1":
+    if updating_golden():
         pytest.skip("regenerating")
-    assert set(_load_golden()) == set(CASES)
+    assert set(read_golden(GOLDEN)) == set(CASES)

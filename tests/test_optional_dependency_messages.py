@@ -27,10 +27,9 @@ import tomllib
 from pathlib import Path
 from typing import cast
 
-from tests.helpers import inside_a_virtualenv
+from tests.helpers import REPO_ROOT, inside_a_virtualenv
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_SRC = _REPO_ROOT / "src" / "mosaic"
+_SRC = REPO_ROOT / "src" / "mosaic"
 
 # `pip install "mosaic-behavior[x,y]"`, in any of the quoting styles the source
 # uses. The distribution name is part of the pattern deliberately: a message
@@ -49,7 +48,7 @@ exactly how a walk comes to read thousands of the wrong ones.
 
 
 def _declared_extras() -> dict[str, list[str]]:
-    pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text())
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     return cast(dict[str, list[str]], pyproject["project"]["optional-dependencies"])
 
 
@@ -87,7 +86,7 @@ def test_every_extra_named_in_a_message_is_declared() -> None:
             hinting.add(str(path.relative_to(_SRC)))
             for name in match.group(1).split(","):
                 if name.strip() not in declared:
-                    rel = path.relative_to(_REPO_ROOT)
+                    rel = path.relative_to(REPO_ROOT)
                     bad.append(f"{rel} names [{name.strip()}]")
     # The walk proves it happened before its verdict is believed: an exclusion
     # one predicate too broad would find nothing and report a green invariant it
@@ -126,11 +125,11 @@ def test_every_require_call_names_a_declared_extra() -> None:
                 continue
             extra = node.args[1]
             if not isinstance(extra, ast.Constant) or not isinstance(extra.value, str):
-                bad.append(f"{path.relative_to(_REPO_ROOT)} passes a non-literal extra")
+                bad.append(f"{path.relative_to(REPO_ROOT)} passes a non-literal extra")
                 continue
             calling.add(str(path.relative_to(_SRC)))
             if extra.value not in declared:
-                bad.append(f"{path.relative_to(_REPO_ROOT)} requires [{extra.value}]")
+                bad.append(f"{path.relative_to(REPO_ROOT)} requires [{extra.value}]")
     assert _REQUIRE_WITNESS in calling, (
         f"the walk read no require() call in {_REQUIRE_WITNESS}, so it is not "
         f"reading mosaic's own source; it found calls in {sorted(calling)}"

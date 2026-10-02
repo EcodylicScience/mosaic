@@ -18,18 +18,25 @@ names things.
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 
 import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import Plan, Recipe, plan_pipeline, recipe_digest
-from tests.helpers import add_tracks_variant, make_dataset, write_media_index
+from tests.helpers import (
+    UPDATE_GOLDEN_ENV,
+    add_tracks_variant,
+    golden_path,
+    make_dataset,
+    read_string_golden,
+    regenerate_command,
+    updating_golden,
+    write_golden,
+    write_media_index,
+)
 
-GOLDEN_PATH = Path(__file__).parent / "data" / "pipeline_plan_golden.json"
-UPDATE_ENV = "MOSAIC_UPDATE_GOLDEN"
+GOLDEN = "pipeline_plan_golden.json"
 
 VARIANT = "convert-trex.0.2-1111111111"
 """The tracks recipe the fixture's tables answer to."""
@@ -139,31 +146,28 @@ def _resolved(dataset: Dataset) -> dict[str, str]:
 
 
 def _load_golden() -> dict[str, str]:
-    if not GOLDEN_PATH.exists():
+    if not golden_path(GOLDEN).exists():
         pytest.fail(
-            f"No golden corpus at {GOLDEN_PATH}. Run "
-            f"`{UPDATE_ENV}=1 pytest tests/test_pipeline_golden.py`."
+            f"No golden corpus at {golden_path(GOLDEN)}. Run "
+            f"`{regenerate_command(__name__)}`."
         )
-    loaded: object = json.loads(GOLDEN_PATH.read_text())
-    assert isinstance(loaded, dict)
-    return {str(key): str(value) for key, value in loaded.items()}
+    return read_string_golden(GOLDEN)
 
 
 def test_the_worked_plan_matches_golden(worked_dataset: Dataset) -> None:
     """Every field of every step, byte for byte."""
-    if os.environ.get(UPDATE_ENV) == "1":
-        pytest.skip(f"{UPDATE_ENV}=1: regenerating, see test_regenerate_golden")
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating, see test_regenerate_golden")
 
     assert _resolved(worked_dataset) == _load_golden()
 
 
 def test_regenerate_golden(worked_dataset: Dataset) -> None:
     """Rewrite the golden file. Runs only under the update environment variable."""
-    if os.environ.get(UPDATE_ENV) != "1":
-        pytest.skip(f"set {UPDATE_ENV}=1 to regenerate")
+    if not updating_golden():
+        pytest.skip(f"set {UPDATE_GOLDEN_ENV}=1 to regenerate")
     fresh = _resolved(worked_dataset)
-    GOLDEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _ = GOLDEN_PATH.write_text(json.dumps(fresh, indent=2, sort_keys=True) + "\n")
+    write_golden(GOLDEN, fresh)
     assert fresh
 
 
