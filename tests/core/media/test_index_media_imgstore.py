@@ -6,12 +6,11 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 
-import cv2
 import numpy as np
 import pandas as pd
 import pytest
 
-from tests.helpers import make_dataset
+from tests.helpers import make_dataset, write_mpeg4_mp4
 
 pytest.importorskip("imgstore")
 
@@ -37,20 +36,13 @@ def _camera_meta(serial: str, uuid: str) -> dict[str, object]:
     }
 
 
-def _write_plain_mp4(path: Path, nframes: int = 6) -> None:
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(nframes):
-        writer.write(np.zeros((48, 64, 3), np.uint8))
-    writer.release()
-
-
 # Probes the store's video chunk to measure it, which shells out.
 @pytest.mark.media
 def test_index_media_discovers_store_and_excludes_chunks(tmp_path, make_imgstore):
     ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"
     store_dir, _ = make_imgstore(name="rec1", nframes=12, parent=search)
-    _write_plain_mp4(search / "plain.mp4")
+    write_mpeg4_mp4(search / "plain.mp4")
 
     # Include .npy so the store's internal chunk files would be picked up by the
     # glob unless the chunk-exclusion guard works.
@@ -118,7 +110,7 @@ def test_index_media_excludes_every_supported_extension_inside_a_store(
 
     for extension in sorted(VIDEO_EXTENSIONS):
         (store_dir / f"decoy{extension}").write_bytes(b"")
-    _write_plain_mp4(search / "plain.mp4")
+    write_mpeg4_mp4(search / "plain.mp4")
 
     out_csv = ds.index_media([search], extensions=tuple(sorted(VIDEO_EXTENSIONS)))
     df = pd.read_csv(out_csv)

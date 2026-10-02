@@ -18,7 +18,7 @@ from mosaic.core.media.drift import classify_identity
 from mosaic.core.pipeline.media_index import MediaIndexScope
 from mosaic.core.pipeline.types import Inputs
 from mosaic.core.params import Params
-from tests.helpers import make_dataset
+from tests.helpers import make_dataset, write_mpeg4_mp4
 
 
 class _P(Params):
@@ -32,31 +32,20 @@ def _write(ds: Dataset, sequence: str, directory: Path) -> object:
     )
 
 
-def _clip(path: Path, shade: int, frames: int = 6) -> None:
-    import cv2
-    import numpy as np
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter.fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(frames):
-        writer.write(np.full((48, 64, 3), shade, np.uint8))
-    writer.release()
-
-
 @pytest.mark.usefixtures("requires_ffmpeg")
 class TestWritePathDrift:
     def test_a_replaced_file_is_reported_as_drift(self, tmp_path: Path) -> None:
         """Different bytes under a stable path, found because the write re-probed."""
         ds = make_dataset(tmp_path / "dataset", name="drift", save=False)
         directory = ds.get_root("media_raw") / "seq_a"
-        _clip(directory / "a.mp4", shade=40)
+        write_mpeg4_mp4(directory / "a.mp4", shade=40)
         first = _write(ds, "seq_a", directory)
         assert first.drift == []
 
         # Replaced in place. The size and mtime both move, so the measurement
         # cache misses and the file is re-probed -- which is the moment the
         # stored identity and the fresh one are both in hand.
-        _clip(directory / "a.mp4", shade=200, frames=9)
+        write_mpeg4_mp4(directory / "a.mp4", shade=200, frames=9)
         second = _write(ds, "seq_a", directory)
 
         assert len(second.drift) == 1, "a replaced file was not reported"
@@ -81,7 +70,7 @@ class TestWritePathDrift:
         """
         ds = make_dataset(tmp_path / "dataset", name="drift", save=False)
         directory = ds.get_root("media_raw") / "seq_a"
-        _clip(directory / "a.mp4", shade=40)
+        write_mpeg4_mp4(directory / "a.mp4", shade=40)
         _ = _write(ds, "seq_a", directory)
 
         import mosaic.core.dataset as dataset_module
@@ -106,12 +95,12 @@ class TestWritePathDrift:
         ds = make_dataset(tmp_path / "dataset", name="drift", save=False)
         first_dir = ds.get_root("media_raw") / "seq_a"
         second_dir = ds.get_root("media_raw") / "seq_b"
-        _clip(first_dir / "a.mp4", shade=40)
-        _clip(second_dir / "a.mp4", shade=90)
+        write_mpeg4_mp4(first_dir / "a.mp4", shade=40)
+        write_mpeg4_mp4(second_dir / "a.mp4", shade=90)
         _ = _write(ds, "seq_a", first_dir)
         _ = _write(ds, "seq_b", second_dir)
 
-        _clip(first_dir / "a.mp4", shade=210, frames=9)
+        write_mpeg4_mp4(first_dir / "a.mp4", shade=210, frames=9)
         report = _write(ds, "seq_a", first_dir)
 
         assert len(report.drift) == 1
@@ -130,11 +119,11 @@ class TestWritePathDrift:
         ds = make_dataset(tmp_path / "dataset", name="drift", save=False)
         directory = ds.get_root("media_raw") / "seq_a"
         clip = directory / "a.mp4"
-        _clip(clip, shade=40)
+        write_mpeg4_mp4(clip, shade=40)
         _ = _write(ds, "seq_a", directory)
         before = clip.stat()
 
-        _clip(clip, shade=200)
+        write_mpeg4_mp4(clip, shade=200)
         # Restore both stat fields the cache keys on. Size is only equal if the
         # two encodes happen to match; skip rather than assert a coincidence.
         if clip.stat().st_size != before.st_size:

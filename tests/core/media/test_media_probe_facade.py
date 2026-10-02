@@ -1,24 +1,16 @@
 import subprocess
 from pathlib import Path
 
-import cv2
-import numpy as np
 import pytest
 
 from mosaic.core.media.video_io import get_video_metadata, open_frame_reader
+from tests.helpers import write_mpeg4_mp4
 
 # Both tests here shell out to the toolchain directly rather than reaching it
 # through a guarded helper -- `_write_raw_h264` invokes `ffmpeg` itself, because a
 # raw H.264 stream is exactly what no in-process writer produces. So the guard is
 # the marker rather than a fixture.
 pytestmark = pytest.mark.media
-
-
-def _write_cfr_mp4(path: Path, n: int = 12, w: int = 64, h: int = 48) -> None:
-    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (w, h))
-    for _ in range(n):
-        vw.write(np.zeros((h, w, 3), np.uint8))
-    vw.release()
 
 
 def _write_raw_h264(path: Path, n_frames: int = 15) -> None:
@@ -47,7 +39,7 @@ def _write_raw_h264(path: Path, n_frames: int = 15) -> None:
 
 def test_get_video_metadata_constant_rate(tmp_path: Path) -> None:
     mp4 = tmp_path / "v.mp4"
-    _write_cfr_mp4(mp4)
+    write_mpeg4_mp4(mp4, frames=12)
     meta = get_video_metadata(mp4)
     assert (meta.width, meta.height) == (64, 48)
     assert meta.fps == pytest.approx(30.0, rel=0.05)

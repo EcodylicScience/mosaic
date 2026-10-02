@@ -31,6 +31,8 @@ from mosaic.core.media.video_io import (
 from mosaic_media import MediaFacts, MediaProbeError
 from mosaic_media.io import VideoReader
 
+from tests.helpers import write_mpeg4_mp4
+
 # Only the fixtures that write real stores need the imgstore package; the
 # imports above are import-free at module scope, so this skip gate can follow
 # them instead of forcing them below it.
@@ -220,10 +222,7 @@ def test_mvr_reads_stores_whose_measured_rates_differ_in_the_last_digits(
 def test_mvr_rejects_mixed_sequence(make_imgstore, tmp_path):
     store_dir, _ = make_imgstore(nframes=4)
     mp4 = tmp_path / "v.mp4"
-    vw = cv2.VideoWriter(str(mp4), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
-    for _ in range(4):
-        vw.write(np.zeros((48, 64, 3), np.uint8))
-    vw.release()
+    write_mpeg4_mp4(mp4, frames=4)
     with pytest.raises(ValueError, match="mixed"):
         MultiVideoReader([mp4, store_dir], target="analysis")
 
