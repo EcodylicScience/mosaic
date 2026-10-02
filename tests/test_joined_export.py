@@ -34,7 +34,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import (
     store_facts,
 )
-from mosaic.core.media.video_io import open_frame_reader
+from mosaic.core.media.video_io import FFmpegVideoWriter, open_frame_reader
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.joined_export import (
     CURRENT_JOINED_PARAMS,
@@ -191,31 +191,19 @@ def _as_av1(source: Path, dest: Path) -> "MediaFacts":
     clips are H.264 originals as a camera wrote them, and `transcode` gives one
     defective sibling an AV1 analysis derivative. That is the ESI corpus, and it
     is also what made a join need re-encoding at all.
+
+    Encoded in this process by mosaic-media's writer, not by the system
+    ``ffmpeg``: an SVT-AV1 older than 3.0, as a distribution's ffmpeg may link,
+    refuses a frame under 64 pixels on a side, and these clips are 64x48.
     """
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-nostdin",
-            "-v",
-            "error",
-            "-y",
-            "-i",
-            str(source),
-            "-c:v",
-            "libsvtav1",
-            "-crf",
-            "30",
-            "-preset",
-            "8",
-            "-pix_fmt",
-            "yuv420p",
-            "-fps_mode",
-            "passthrough",
-            str(dest),
-        ],
-        check=True,
-        capture_output=True,
-    )
+    with (
+        open_frame_reader(source, target="raw") as reader,
+        FFmpegVideoWriter(
+            dest, width=reader.width, height=reader.height, fps=reader.fps, av1_crf=30
+        ) as writer,
+    ):
+        for _, frame in reader:
+            writer.write(frame)
     return probe_media(dest)
 
 
