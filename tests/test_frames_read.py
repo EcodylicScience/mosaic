@@ -47,7 +47,7 @@ from tests.helpers import (
     latest_events,
     latest_snapshot,
     make_dataset,
-    paint_gray,
+    paint_frame_code,
     set_tracks_cell,
     write_litpose_model,
     write_media_index,
@@ -275,7 +275,7 @@ def test_the_localizer_records_every_frame_it_read(
     import mosaic.tracking.pose_training.localizer_inference as localizer
 
     ds = make_dataset(tmp_path / "ds")
-    _ = write_painted_entry(ds, "sess", [(20, 25.0)], paint_gray)
+    _ = write_painted_entry(ds, "sess", [(20, 25.0)], paint_frame_code)
 
     def load(_model_path: object, **_kwargs: object) -> object:
         return object()

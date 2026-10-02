@@ -124,20 +124,6 @@ def write_h264_mp4(
     )
 
 
-def gray_level(frame: int) -> int:
-    """Return the gray level that :func:`paint_gray` paints entry frame *frame* at.
-
-    Twenty-five levels eight apart, so a decoded frame's level still tells its
-    frame, modulo 25, through a lossy encode.
-    """
-    return 20 + 8 * (frame % 25)
-
-
-def paint_gray(frame: int) -> npt.NDArray[np.uint8]:
-    """Return a 64 by 48 BGR frame, flat at the :func:`gray_level` of *frame*."""
-    return np.full((48, 64, 3), gray_level(frame), np.uint8)
-
-
 _CODE_GRID: Final = (4, 3)
 """Columns and rows of the cells a frame code is painted in, one bit per cell."""
 _CODE_BITS: Final = _CODE_GRID[0] * _CODE_GRID[1]
@@ -181,8 +167,8 @@ def paint_frame_code(
     order, each flat at 32 for a 0 and 224 for a 1. A lossy encode moves a cell by a
     few gray levels and a bit is 96 levels from the threshold, so
     :func:`read_frame_code` recovers *frame* exactly after several encodes. A flat
-    :func:`gray_level` does not: four color conversions darken it by as much as 6
-    levels on x86_64 Linux, more than half the distance to a neighboring frame's
+    gray level per frame does not: four color conversions darken one by as much as
+    6 levels on x86_64 Linux, more than half the distance to a neighboring frame's
     level.
 
     Raises:
@@ -535,21 +521,26 @@ def video_store_maker(
     *,
     fps: float = 30.0,
     size: tuple[int, int] = (64, 48),
-    paint: Callable[[int], npt.NDArray[np.uint8]] = paint_gray,
+    paint: Callable[[int], npt.NDArray[np.uint8]] | None = None,
 ) -> MakeStore:
     """Return a ``make_imgstore``-shaped factory that writes H.264 video stores.
 
     Each store has one chunk per count in *chunk_frames*, and store frame ``i`` is
-    ``paint(i)``. The layout is the one the imgstore package writes for
-    ``avc1/mp4``: ``metadata.yaml``, ``NNNNNN.mp4`` chunks and ``NNNNNN.npz``
-    indexes. The chunks are encoded by ffmpeg (:func:`write_h264_mp4`), because
-    the imgstore package encodes through OpenCV, whose Linux wheel cannot write
-    H.264.
+    ``paint(i)``, by default the frame code of ``i`` at *size*. The layout is the
+    one the imgstore package writes for ``avc1/mp4``: ``metadata.yaml``,
+    ``NNNNNN.mp4`` chunks and ``NNNNNN.npz`` indexes. The chunks are encoded by
+    ffmpeg (:func:`write_h264_mp4`), because the imgstore package encodes through
+    OpenCV, whose Linux wheel cannot write H.264.
 
     The factory takes ``name``, ``parent`` and ``extra_metadata`` as
     ``make_imgstore`` does, and ignores the rest of that fixture's arguments.
     """
     width, height = size
+
+    def paint_code(frame: int) -> npt.NDArray[np.uint8]:
+        return paint_frame_code(frame, size)
+
+    paint_frame = paint if paint is not None else paint_code
 
     def make(
         *,
@@ -580,7 +571,7 @@ def video_store_maker(
         for chunk, count in enumerate(chunk_frames):
 
             def paint_chunk(frame: int, offset: int = first) -> npt.NDArray[np.uint8]:
-                return paint(offset + frame)
+                return paint_frame(offset + frame)
 
             write_h264_mp4(
                 store / f"{chunk:06d}.mp4",
@@ -596,7 +587,7 @@ def video_store_maker(
                 frame_time=numbers / fps,
             )
             first += count
-        return store, [paint(frame) for frame in range(first)]
+        return store, [paint_frame(frame) for frame in range(first)]
 
     return make
 

@@ -34,7 +34,12 @@ from mosaic.tracking.frame_extraction.dataset_runs import (
     frames_identity_payload,
     frames_run_id,
 )
-from tests.helpers import add_media_sequence, write_painted_entry
+from tests.helpers import (
+    add_media_sequence,
+    write_painted_entry,
+    paint_frame_code,
+    read_frame_code,
+)
 
 runner = CliRunner()
 
@@ -175,6 +180,12 @@ def _level(png: Path) -> float:
     image = cv2.imread(str(png))
     assert image is not None, png
     return float(np.mean(image))
+
+
+def _code(png: Path) -> int:
+    image = cv2.imread(str(png))
+    assert image is not None, png
+    return read_frame_code(np.asarray(image, dtype=np.uint8))
 
 
 def test_exactly_the_listed_frames_are_written_across_the_clips(
@@ -321,14 +332,6 @@ def test_the_command_line_reads_a_list_from_a_file(
 RATE_CLIP = 300
 """Long enough that 30 beside 31 fps drifts past the reader's half-frame allowance."""
 
-_LEVEL_STEP = 11
-_LEVEL_PERIOD = 20
-
-
-def _level_of(index: int) -> int:
-    """The grey level global frame *index* is written with."""
-    return 16 + (index % _LEVEL_PERIOD) * _LEVEL_STEP
-
 
 @pytest.fixture
 def mixed_rate(tmp_path: Path, requires_ffmpeg: None) -> Dataset:
@@ -344,7 +347,7 @@ def mixed_rate(tmp_path: Path, requires_ffmpeg: None) -> Dataset:
         ds,
         "sess",
         [(RATE_CLIP, 30.0), (RATE_CLIP, 31.0)],
-        lambda index: np.full((48, 64, 3), _level_of(index), np.uint8),
+        paint_frame_code,
     )
     return ds
 
@@ -369,9 +372,8 @@ class TestAMixedRateRecording:
         )
 
         seq_dir = _run_root(mixed_rate, run_id) / "sess"
-        for index in listed:
-            level = _level(seq_dir / f"frame_{index:06d}.png")
-            assert level == pytest.approx(_level_of(index), abs=4.0), index
+        codes = [_code(seq_dir / f"frame_{index:06d}.png") for index in listed]
+        assert codes == listed
 
         rows = list_frame_runs(mixed_rate, method="list")
         assert ".joined.mp4" in str(rows.iloc[0]["video_abs_path"])

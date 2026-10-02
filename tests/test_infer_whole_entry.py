@@ -43,14 +43,14 @@ from mosaic.tracking.pose_training.localizer_inference import (
 )
 from tests.helpers import (
     MediaClip,
-    gray_level,
     install_fake_point_inference,
     install_fake_pose_inference,
     make_dataset,
-    paint_gray,
+    paint_frame_code,
     point_at_a_store,
     pose_per_frame,
     published_table,
+    read_frame_code,
     write_media_index,
     write_painted_entry,
 )
@@ -68,7 +68,7 @@ def _dataset(
     """One entry, ``sess``, of one clip of *frames* frames per rate in *rates*."""
     ds = make_dataset(tmp_path / "ds")
     clips = write_painted_entry(
-        ds, "sess", [(frames, rate) for rate in rates], paint_gray, size=_SIZE
+        ds, "sess", [(frames, rate) for rate in rates], paint_frame_code, size=_SIZE
     )
     return ds, clips
 
@@ -409,11 +409,11 @@ class TestReadingAnEntrysClips:
     """The reader behind the localizer, over real clips."""
 
     @staticmethod
-    def _frames_and_levels(
+    def _frames_and_codes(
         clips: Sequence[Path], *, start: int = 0, step: int = 1
     ) -> list[tuple[int, int]]:
         return [
-            (frame, round(float(image.mean())))
+            (frame, read_frame_code(image))
             for frame, image in read_entry_frames(
                 clips, start_frame=start, frame_step=step, target="analysis"
             )
@@ -424,11 +424,9 @@ class TestReadingAnEntrysClips:
     ) -> None:
         _ds, clips = _dataset(tmp_path, [30.0, 30.0])
 
-        read = self._frames_and_levels(clips)
+        read = self._frames_and_codes(clips)
 
-        assert [frame for frame, _ in read] == list(range(2 * _CLIP_FRAMES))
-        for frame, level in read:
-            assert level == pytest.approx(gray_level(frame), abs=4), frame
+        assert read == [(frame, frame) for frame in range(2 * _CLIP_FRAMES)]
 
     def test_one_file_may_be_a_bare_path(
         self, tmp_path: Path, requires_ffmpeg: None
@@ -445,8 +443,6 @@ class TestReadingAnEntrysClips:
     ) -> None:
         _ds, clips = _dataset(tmp_path, [30.0, 30.0])
 
-        read = self._frames_and_levels(clips, start=7, step=3)
+        read = self._frames_and_codes(clips, start=7, step=3)
 
-        assert [frame for frame, _ in read] == [7, 10, 13, 16, 19]
-        for frame, level in read:
-            assert level == pytest.approx(gray_level(frame), abs=4), frame
+        assert read == [(frame, frame) for frame in (7, 10, 13, 16, 19)]

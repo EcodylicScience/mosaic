@@ -32,7 +32,7 @@ from tests.helpers import (
     install_fake_point_inference,
     install_fake_pose_inference,
     make_dataset,
-    paint_gray,
+    paint_frame_code,
     pose_per_frame,
     published_table,
     write_painted_entry,
@@ -47,7 +47,7 @@ _ENTRY = ("", "sess")
 def _dataset(tmp_path: Path, clips: list[tuple[int, float]]) -> Dataset:
     """One entry, ``sess``, of one clip per ``(frames, fps)`` in *clips*."""
     ds = make_dataset(tmp_path / "ds")
-    _ = write_painted_entry(ds, "sess", clips, paint_gray, size=_SIZE)
+    _ = write_painted_entry(ds, "sess", clips, paint_frame_code, size=_SIZE)
     return ds
 
 

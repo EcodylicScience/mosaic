@@ -47,7 +47,7 @@ from tests.helpers import (
     latest_events,
     latest_snapshot,
     make_dataset,
-    paint_gray,
+    paint_frame_code,
     write_litpose_model,
     write_painted_entry,
     write_sleap_model,
@@ -158,7 +158,10 @@ def session(tmp_path: Path, requires_ffmpeg: None) -> Dataset:
     """One entry of thirty frames at 30 fps, then thirty at 31 fps, and its join."""
     ds = make_dataset(tmp_path / "ds")
     _ = write_painted_entry(
-        ds, "sess", [(_FRAMES_PER_CLIP, 30.0), (_FRAMES_PER_CLIP, 31.0)], paint_gray
+        ds,
+        "sess",
+        [(_FRAMES_PER_CLIP, 30.0), (_FRAMES_PER_CLIP, 31.0)],
+        paint_frame_code,
     )
     _ = run_op(ds, "export-joined", {}, scope=Scope(entries=[_ENTRY]))
     return ds

@@ -64,15 +64,15 @@ from tests.helpers import (
     FakeUltralytics,
     MakeStore,
     MediaClip,
-    gray_level,
     index_media_sequence,
     install_fake_pose_inference,
     install_fake_ultralytics,
     make_dataset,
-    paint_gray,
+    paint_frame_code,
     point_at_a_store,
     pose_per_frame,
     published_table,
+    read_frame_code,
     store_dataset,
     stub_join,
     video_store_maker,
@@ -88,8 +88,6 @@ MakeMediaDataset = Callable[[Path], Dataset]
 
 _ENTRY = ("", "sess")
 _CLIP_FRAMES = 10
-_LEVEL_TOLERANCE = 4
-"""How far a decoded painted frame's mean gray level may sit from the painted one."""
 
 _STORE_FRAMES = 12
 _STORE_CHUNK = 5
@@ -168,7 +166,7 @@ class _Weights:
     Attributes:
         task: What the weights declare themselves to be.
         loads: How many times the weights were loaded.
-        batches: The mean gray level of each frame of each call, in order.
+        batches: The frame code of each frame of each call, in order.
     """
 
     task: str = "detect"
@@ -183,14 +181,14 @@ class _Weights:
         self, source: list[npt.NDArray[np.uint8]], **kwargs: object
     ) -> list[FakeResult]:
         assert kwargs["persist"] is True, "the tracker persists across calls"
-        self.batches.append([round(float(frame.mean())) for frame in source])
+        self.batches.append([read_frame_code(frame) for frame in source])
         box = np.array([[1.0, 2.0, 5.0, 6.0, 1.0, 0.9, 0.0]])
         return [FakeResult(boxes=FakeDetections(box)) for _ in source]
 
     @property
-    def levels(self) -> list[int]:
-        """Every frame's mean gray level, over every call."""
-        return [level for batch in self.batches for level in batch]
+    def codes(self) -> list[int]:
+        """Every frame's code, over every call."""
+        return [code for batch in self.batches for code in batch]
 
 
 @pytest.fixture
@@ -214,10 +212,13 @@ def weights(monkeypatch: pytest.MonkeyPatch) -> _Weights:
 def _painted_entry(
     tmp_path: Path, rates: tuple[float, ...]
 ) -> tuple[Dataset, list[Path]]:
-    """One entry, ``sess``, of one painted clip of ten frames per rate in *rates*."""
+    """One entry, ``sess``, of one clip of ten frames per rate in *rates*.
+
+    Each frame is painted with its entry frame's code.
+    """
     ds = make_dataset(tmp_path / "ds")
     clips = write_painted_entry(
-        ds, "sess", [(_CLIP_FRAMES, rate) for rate in rates], paint_gray
+        ds, "sess", [(_CLIP_FRAMES, rate) for rate in rates], paint_frame_code
     )
     return ds, clips
 
@@ -298,8 +299,7 @@ def test_the_runner_tracks_an_entrys_clips_on_one_frame_axis(
     assert frames == list(range(2 * _CLIP_FRAMES))
     assert weights.loads == 1
     assert [len(batch) for batch in weights.batches] == [4, 4, 4, 4, 4]
-    for frame, level in zip(frames, weights.levels, strict=True):
-        assert abs(level - gray_level(frame)) <= _LEVEL_TOLERANCE, frame
+    assert weights.codes == frames
 
 
 @pytest.mark.media
@@ -312,8 +312,7 @@ def test_a_window_on_the_entry_axis_reads_across_the_boundary(
     frames = _track(runner_module, tmp_path, files, start_frame=7, frame_step=3)
 
     assert frames == [7, 10, 13, 16, 19]
-    for frame, level in zip(frames, weights.levels, strict=True):
-        assert abs(level - gray_level(frame)) <= _LEVEL_TOLERANCE, frame
+    assert weights.codes == frames
 
 
 class _Batches(Protocol):
