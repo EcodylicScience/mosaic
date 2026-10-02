@@ -25,15 +25,7 @@ from mosaic.core.media.probe_row import probe_video_metadata
 from tests.helpers import add_track_sequences, make_dataset
 
 
-def _make_runner() -> CliRunner:
-    # click <8.2 needs mix_stderr=False to split streams; >=8.2 splits by default.
-    try:
-        return CliRunner(mix_stderr=False)  # pyright: ignore[reportCallIssue]
-    except TypeError:
-        return CliRunner()
-
-
-runner = _make_runner()
+runner = CliRunner()
 
 
 @pytest.fixture

@@ -724,18 +724,13 @@ def test_the_name_parser(name: str, expected: tuple[str, str, str] | None) -> No
 # --- the command surface ------------------------------------------------------
 
 
-def _runner() -> CliRunner:
-    # click <8.2 needs mix_stderr=False to split streams; >=8.2 splits by default.
-    try:
-        return CliRunner(mix_stderr=False)  # pyright: ignore[reportCallIssue]
-    except TypeError:
-        return CliRunner()
+runner = CliRunner()
 
 
 def test_the_command_is_a_dry_run_by_default(pruned_dataset: Dataset) -> None:
     stale = _add_derivative(pruned_dataset, uuid=UUID_A, recipe="deadbeef01")
 
-    result = _runner().invoke(
+    result = runner.invoke(
         app,
         [
             "prune-media",
@@ -757,7 +752,7 @@ def test_the_command_is_a_dry_run_by_default(pruned_dataset: Dataset) -> None:
 def test_the_json_document_is_one_value_on_stdout(pruned_dataset: Dataset) -> None:
     _ = _add_derivative(pruned_dataset, uuid=UUID_A, recipe="deadbeef01")
 
-    result = _runner().invoke(
+    result = runner.invoke(
         app,
         [
             "prune-media",
@@ -785,7 +780,7 @@ def test_a_decline_exits_zero_and_says_why(tmp_path: Path) -> None:
     ds.ensure_roots()
     ds.save()
 
-    result = _runner().invoke(app, ["prune-media", "-m", str(ds.manifest_path)])
+    result = runner.invoke(app, ["prune-media", "-m", str(ds.manifest_path)])
 
     assert result.exit_code == 0
     assert "declined" in result.stdout
