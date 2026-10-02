@@ -10,42 +10,24 @@ from __future__ import annotations
 
 import pytest
 
-from mosaic.tracking.common import toolenv
 
 from mosaic.tracking.litpose import run as litpose_run
 from mosaic.tracking.litpose.run import (
+    LITPOSE_ENV,
     LitposeNotFoundError,
     _litpose_invocation,
     _run_litpose,
 )
+from tests.helpers import FAKE_CONDA, fake_path_lookup, isolate_tool_location
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch):
-    """Remove Lightning Pose env vars and make ``which`` resolve fake script paths.
-
-    The fake conda sits two levels deep for a reason. ``conda_invocation``
-    resolves the environment's own executable by climbing ``parent.parent`` from
-    the conda binary and probing ``<base>/bin/<executable>`` on the real
-    filesystem. A one-level fake such as ``/p/conda`` makes that base ``/``, so
-    the probe finds ``/bin/python`` wherever the host happens to have one and
-    the test's result depends on the machine rather than on the code. ``/p``
-    exists nowhere, so every candidate misses and the bare name is used.
-    """
-    for var in (
-        "MOSAIC_LITPOSE_CONDA_ENV",
-        "MOSAIC_LITPOSE_BIN",
-        "CONDA_EXE",
-        "CONDA_ENVS_DIRS",
-    ):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(
-        toolenv.shutil,
-        "which",
-        lambda name: {
-            "litpose": "/p/bin/litpose",
-            "conda": "/p/bin/conda",
-        }.get(name),
+    """Unset the Lightning Pose variables and put fakes on ``$PATH``."""
+    isolate_tool_location(
+        monkeypatch,
+        LITPOSE_ENV,
+        found={"litpose": "/p/bin/litpose", "conda": FAKE_CONDA},
     )
 
 
@@ -105,19 +87,19 @@ def test_default_path_lookup():
 
 
 def test_default_missing_raises(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
+    fake_path_lookup(monkeypatch, {})
     with pytest.raises(LitposeNotFoundError):
         _litpose_invocation()
 
 
 def test_conda_missing_raises(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
+    fake_path_lookup(monkeypatch, {})
     with pytest.raises(LitposeNotFoundError):
         _litpose_invocation(litpose_conda_env="lp")
 
 
 def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
+    fake_path_lookup(monkeypatch, {})
     monkeypatch.setenv("CONDA_EXE", "/opt/conda/bin/conda")
     assert _litpose_invocation(litpose_conda_env="lp")[0] == "/opt/conda/bin/conda"
 

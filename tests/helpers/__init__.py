@@ -31,7 +31,8 @@ What lives where:
 - ``scope`` -- a resolved scope over named entries, for the ops and drivers
   that take their coverage as an argument.
 - ``environment`` -- what the surrounding machine provides: the ffmpeg
-  toolchain, the modules each CI job must install, and which files under the
+  toolchain, the variables and ``$PATH`` an external tool is located through,
+  the modules each CI job must install, and which files under the
   package root a structural walk should skip -- installed third-party code, and
   mosaic's own code that runs in an environment built for an external tool.
 - ``mock_dataset`` -- the duck-typed stand-in, for the pipeline tests that want
@@ -63,9 +64,12 @@ from tests.helpers.environment import (
     CI_FERAL_MODULES,
     CI_IDENTITY_MODULES,
     CI_REQUIRED_MODULES,
+    FAKE_CONDA,
     FFMPEG_TOOLCHAIN,
     assert_no_literal_tilde,
+    fake_path_lookup,
     inside_a_virtualenv,
+    isolate_tool_location,
     missing_ffmpeg_tools,
     require_ffmpeg,
     runs_in_an_external_environment,
@@ -188,6 +192,7 @@ __all__ = [
     "CI_IDENTITY_MODULES",
     "CI_REQUIRED_MODULES",
     "CropLike",
+    "FAKE_CONDA",
     "FFMPEG_TOOLCHAIN",
     "FakeDetections",
     "FakeResult",
@@ -218,6 +223,7 @@ __all__ = [
     "add_tracks_variant",
     "add_transcode_derivative",
     "assert_no_literal_tilde",
+    "fake_path_lookup",
     "golden_path",
     "healthy_probe",
     "clean_facts_cells",
@@ -239,6 +245,7 @@ __all__ = [
     "install_fake_tool_python",
     "install_fake_trex",
     "install_fake_ultralytics",
+    "isolate_tool_location",
     "is_section",
     "latest_events",
     "latest_snapshot",

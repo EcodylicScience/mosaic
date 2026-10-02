@@ -10,39 +10,33 @@ from __future__ import annotations
 
 import pytest
 
-from mosaic.tracking.common import toolenv
 
 from mosaic.tracking.sleap import run as sleap_run
 from mosaic.tracking.sleap.run import (
+    SLEAP_ENV,
     SleapNotFoundError,
     _run_sleap,
     _sleap_invocation,
 )
+from tests.helpers import FAKE_CONDA, fake_path_lookup, isolate_tool_location
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch):
-    """Remove SLEAP env vars and make ``which`` resolve fake script/conda paths.
+    """Unset the SLEAP variables and put fake scripts and conda on ``$PATH``.
 
     ``sleap-nn`` is on this fake ``$PATH`` somewhere else entirely, which a
     ``$PATH`` lookup must not answer from: SLEAP's scripts are found beside
     ``sleap-convert``, so inference and export run from one install.
     """
-    for var in (
-        "MOSAIC_SLEAP_CONDA_ENV",
-        "MOSAIC_SLEAP_BIN",
-        "CONDA_EXE",
-        "CONDA_ENVS_DIRS",
-    ):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(
-        toolenv.shutil,
-        "which",
-        lambda name: {
+    isolate_tool_location(
+        monkeypatch,
+        SLEAP_ENV,
+        found={
             "sleap-nn": "/elsewhere/sleap-nn",
             "sleap-convert": "/p/sleap-convert",
-            "conda": "/p/bin/conda",
-        }.get(name),
+            "conda": FAKE_CONDA,
+        },
     )
 
 
@@ -109,7 +103,7 @@ def test_default_path_lookup_runs_every_script_beside_sleap_convert():
 
 
 def test_default_missing_raises(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
+    fake_path_lookup(monkeypatch, {})
     with pytest.raises(SleapNotFoundError):
         _sleap_invocation("sleap-nn")
 
@@ -118,21 +112,19 @@ def test_sleap_nn_alone_on_path_is_not_a_sleap_install(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """A bare ``pip install sleap-nn`` has no ``sleap-convert`` to export with."""
-    monkeypatch.setattr(
-        toolenv.shutil, "which", {"sleap-nn": "/elsewhere/sleap-nn"}.get
-    )
+    fake_path_lookup(monkeypatch, {"sleap-nn": "/elsewhere/sleap-nn"})
     with pytest.raises(SleapNotFoundError):
         _sleap_invocation("sleap-nn")
 
 
 def test_conda_missing_raises(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
+    fake_path_lookup(monkeypatch, {})
     with pytest.raises(SleapNotFoundError):
         _sleap_invocation("sleap-nn", sleap_conda_env="sleap")
 
 
 def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
+    fake_path_lookup(monkeypatch, {})
     monkeypatch.setenv("CONDA_EXE", "/opt/conda/bin/conda")
     assert _sleap_invocation("sleap-nn", sleap_conda_env="sleap")[0] == (
         "/opt/conda/bin/conda"

@@ -19,6 +19,11 @@ They live here rather than in the guards that use them because a second copy is
 how two guards come to disagree, and because the substring spelling of the second
 was written wrong in three of them before it was written right in one.
 
+:func:`isolate_tool_location` and :func:`fake_path_lookup` stand in for the
+machine an external tool is located on: the variables its location ladder reads,
+and ``$PATH``. They patch the one seam the ladder looks through, so a test names
+what is installed rather than how the lookup is reached.
+
 ``require_ffmpeg`` is a plain function rather than a fixture because the helpers
 that need it are plain functions too -- ``add_media_sequence`` writes videos and
 then indexes them, and a fixture cannot guard a call a test makes directly.
@@ -29,9 +34,13 @@ the same outcome.
 from __future__ import annotations
 
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+
+from mosaic.tracking.common import toolenv
+from mosaic.tracking.common.toolenv import ToolEnv
 
 # Both binaries. Probing shells out to ``ffprobe``; the transcode op and the
 # raw-H.264 packet scan shell out to ``ffmpeg``, and it is the one that goes
@@ -204,6 +213,51 @@ def sandbox_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> Path:
     monkeypatch.delenv("HOMEPATH", raising=False)
     monkeypatch.chdir(home)
     return home
+
+
+FAKE_CONDA = "/p/bin/conda"
+"""A conda executable for a fake ``$PATH``, two levels deep for a reason.
+
+``conda_invocation`` resolves an environment's own executable by climbing
+``parent.parent`` from the conda binary and probing ``<base>/bin/<executable>``
+on the real filesystem. A one-level fake such as ``/p/conda`` makes that base
+``/``, so the probe finds ``/bin/python`` wherever the host has one, and the
+result depends on the machine rather than on the code. ``/p`` exists nowhere,
+so every candidate misses and the bare name is used.
+"""
+
+
+def fake_path_lookup(monkeypatch: pytest.MonkeyPatch, found: Mapping[str, str]) -> None:
+    """Answer every ``$PATH`` lookup a tool's location ladder makes from *found*.
+
+    A name *found* does not hold is not on the fake ``$PATH``, so ``{}`` is a
+    machine with nothing installed.
+    """
+
+    def which(name: str) -> str | None:
+        return found.get(name)
+
+    monkeypatch.setattr(toolenv.shutil, "which", which)
+
+
+def isolate_tool_location(
+    monkeypatch: pytest.MonkeyPatch, *envs: ToolEnv, found: Mapping[str, str]
+) -> None:
+    """Unset what the location ladder reads for *envs*, and fake ``$PATH``.
+
+    Each tool's conda-environment, executable and display variables are unset,
+    and conda's own ``CONDA_EXE`` and ``CONDA_ENVS_DIRS``. A developer may export
+    any of them, and a test of which rung wins would then report the machine
+    rather than the code. ``$PATH`` lookups answer from *found*, as
+    :func:`fake_path_lookup` does.
+    """
+    for env in envs:
+        for variable in (env.conda_env_var, env.bin_var, env.display_var):
+            if variable:
+                monkeypatch.delenv(variable, raising=False)
+    for variable in ("CONDA_EXE", "CONDA_ENVS_DIRS"):
+        monkeypatch.delenv(variable, raising=False)
+    fake_path_lookup(monkeypatch, found)
 
 
 def assert_no_literal_tilde(root: Path) -> None:

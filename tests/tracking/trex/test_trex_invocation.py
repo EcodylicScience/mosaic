@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.json_value import JsonValue
-from mosaic.tracking.common import toolenv
 from mosaic.tracking.common.toolenv import ToolEnv, display_overlay
 
 from mosaic.tracking.trex import run as trex_run
@@ -27,23 +26,14 @@ from mosaic.tracking.trex.run import (
     TRexNotFoundError,
     _trex_invocation,
 )
+from tests.helpers import FAKE_CONDA, fake_path_lookup, isolate_tool_location
 
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch: pytest.MonkeyPatch):
-    """Remove TREX env vars and make ``which`` resolve fake trex/conda paths."""
-    for var in (
-        "MOSAIC_TREX_CONDA_ENV",
-        "MOSAIC_TREX_BIN",
-        "MOSAIC_TREX_DISPLAY",
-        "CONDA_EXE",
-        "CONDA_ENVS_DIRS",
-    ):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(
-        toolenv.shutil,
-        "which",
-        lambda name: {"trex": "/p/trex", "conda": "/p/bin/conda"}.get(name),
+    """Unset the TREx variables and put a fake trex and conda on ``$PATH``."""
+    isolate_tool_location(
+        monkeypatch, TREX_ENV, found={"trex": "/p/trex", "conda": FAKE_CONDA}
     )
 
 
@@ -100,23 +90,19 @@ def test_default_path_lookup():
 
 
 def test_default_missing_raises(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
+    fake_path_lookup(monkeypatch, {})
     with pytest.raises(TRexNotFoundError):
         _trex_invocation()
 
 
 def test_conda_missing_raises(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(toolenv.shutil, "which", lambda name: None)
+    fake_path_lookup(monkeypatch, {})
     with pytest.raises(TRexNotFoundError):
         _trex_invocation(TREX_ENV.placed(conda_env="track"))
 
 
 def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(
-        toolenv.shutil,
-        "which",
-        lambda name: "/p/trex" if name == "trex" else None,
-    )
+    fake_path_lookup(monkeypatch, {"trex": "/p/trex"})
     monkeypatch.setenv("CONDA_EXE", "/opt/conda/bin/conda")
     placed = TREX_ENV.placed(conda_env="track")
     assert _trex_invocation(placed)[0] == "/opt/conda/bin/conda"

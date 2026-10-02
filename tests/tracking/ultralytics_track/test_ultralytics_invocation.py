@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 
 import mosaic.tracking.common.ultralytics_env as ultralytics_env
-from mosaic.tracking.common import toolenv
 from mosaic.tracking.external.runner.ultralytics_protocol import ProbeResponse
 from mosaic.tracking.common.ultralytics_env import (
     POLO_ENV,
@@ -33,6 +32,7 @@ from mosaic.tracking.common.ultralytics_env import (
 )
 from mosaic.tracking.common.toolenv import ToolEnv, ToolNotFoundError
 from mosaic.tracking.ultralytics_track.run import probe_ultralytics
+from tests.helpers import FAKE_CONDA, fake_path_lookup, isolate_tool_location
 
 BOTH_ENVIRONMENTS = pytest.mark.parametrize(
     ("env", "not_found"),
@@ -46,36 +46,13 @@ BOTH_ENVIRONMENTS = pytest.mark.parametrize(
 
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Remove both environments' variables, and make ``which`` resolve fakes.
-
-    The fake conda sits two levels deep for a reason. ``conda_invocation``
-    resolves the environment's own executable by climbing ``parent.parent`` from
-    the conda binary and probing ``<base>/bin/<executable>`` on the real
-    filesystem. A one-level fake such as ``/p/conda`` makes that base ``/``, so
-    the probe finds ``/bin/python`` wherever the host happens to have one and
-    the test's result depends on the machine rather than on the code. ``/p``
-    exists nowhere, so every candidate misses and the bare name is used.
-    """
-    for var in (
-        ULTRALYTICS_ENV.conda_env_var,
-        ULTRALYTICS_ENV.bin_var,
-        POLO_ENV.conda_env_var,
-        POLO_ENV.bin_var,
-        "CONDA_EXE",
-        "CONDA_ENVS_DIRS",
-    ):
-        monkeypatch.delenv(var, raising=False)
-    fakes = {"yolo": "/p/bin/yolo", "conda": "/p/bin/conda"}
-
-    def fake_which(name: str) -> str | None:
-        return fakes.get(name)
-
-    monkeypatch.setattr(toolenv.shutil, "which", fake_which)
-
-
-def _nothing_on_path(_name: str) -> str | None:
-    """A ``$PATH`` holding neither the tool nor conda."""
-    return None
+    """Unset both environments' variables and put fakes on ``$PATH``."""
+    isolate_tool_location(
+        monkeypatch,
+        ULTRALYTICS_ENV,
+        POLO_ENV,
+        found={"yolo": "/p/bin/yolo", "conda": FAKE_CONDA},
+    )
 
 
 # --- precedence: param conda env > param bin > env conda > env bin > which ---
@@ -162,7 +139,7 @@ def test_default_path_lookup(env: ToolEnv, not_found: type[ToolNotFoundError]) -
 def test_default_missing_raises(
     env: ToolEnv, not_found: type[ToolNotFoundError], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
+    fake_path_lookup(monkeypatch, {})
     with pytest.raises(not_found):
         _ = runner_invocation(env)
 
@@ -171,7 +148,7 @@ def test_default_missing_raises(
 def test_conda_missing_raises(
     env: ToolEnv, not_found: type[ToolNotFoundError], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
+    fake_path_lookup(monkeypatch, {})
     with pytest.raises(not_found):
         _ = runner_invocation(env, conda_env="ul")
 
@@ -181,7 +158,7 @@ def test_conda_uses_conda_exe_fallback(
     env: ToolEnv, not_found: type[ToolNotFoundError], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     del not_found
-    monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
+    fake_path_lookup(monkeypatch, {})
     monkeypatch.setenv("CONDA_EXE", "/opt/conda/bin/conda")
     assert runner_invocation(env, conda_env="ul")[0] == "/opt/conda/bin/conda"
 

@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.tracking.common import toolenv
 from mosaic.tracking.sleap import run as sleap_run
 from mosaic.tracking.sleap import training as sleap_training
 from mosaic.tracking.trex import run as trex_run
@@ -26,6 +25,7 @@ from mosaic.tracking.common.toolenv import (
     subprocess_env,
     tool_invocation,
 )
+from tests.helpers import FAKE_CONDA, fake_path_lookup, isolate_tool_location
 
 
 class _FakeNotFound(ToolNotFoundError):
@@ -65,31 +65,17 @@ _LOCATED = ToolEnv(
 )
 
 
-_ON_PATH: dict[str, str] = {
-    "runme": "/p/bin/runme",
-    "finder": "/p/bin/finder",
-    "conda": "/p/bin/conda",
-}
-
-
-def _fake_which(name: str) -> str | None:
-    return _ON_PATH.get(name)
-
-
-def _nothing_on_path(_name: str) -> str | None:
-    return None
-
-
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for var in (
-        "MOSAIC_FAKE_CONDA_ENV",
-        "MOSAIC_FAKE_BIN",
-        "CONDA_EXE",
-        "CONDA_ENVS_DIRS",
-    ):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(toolenv.shutil, "which", _fake_which)
+    isolate_tool_location(
+        monkeypatch,
+        _DIRECT,
+        found={
+            "runme": "/p/bin/runme",
+            "finder": "/p/bin/finder",
+            "conda": FAKE_CONDA,
+        },
+    )
 
 
 # --- the two bin modes, which is the whole of what differs between tools ----
@@ -132,7 +118,7 @@ def test_a_bare_sibling_name_is_resolved_through_its_link(
     linked = tmp_path / "local-bin" / "finder"
     linked.parent.mkdir()
     linked.symlink_to(env_bin / "finder")
-    monkeypatch.setattr(toolenv.shutil, "which", {"finder": str(linked)}.get)
+    fake_path_lookup(monkeypatch, {"finder": str(linked)})
 
     got = tool_invocation(_SIBLING.placed(bin_path="finder"), executable="python")
 
@@ -142,7 +128,7 @@ def test_a_bare_sibling_name_is_resolved_through_its_link(
 def test_a_bare_sibling_name_not_on_path_is_refused_naming_the_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
+    fake_path_lookup(monkeypatch, {})
     monkeypatch.setenv("MOSAIC_FAKE_BIN", "finder")
 
     with pytest.raises(
@@ -155,7 +141,7 @@ def test_a_bare_sibling_name_not_on_path_is_refused_naming_the_placement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A caller's argument overrides the variable, so the variable is not named."""
-    monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
+    fake_path_lookup(monkeypatch, {})
     monkeypatch.setenv("MOSAIC_FAKE_BIN", "/elsewhere/finder")
 
     with pytest.raises(_FakeNotFound) as refused:
@@ -200,7 +186,7 @@ def test_a_linked_locator_is_resolved_to_the_environment_it_belongs_to(
     linked = tmp_path / "local-bin" / "finder"
     linked.parent.mkdir()
     linked.symlink_to(env_bin / "finder")
-    monkeypatch.setattr(toolenv.shutil, "which", {"finder": str(linked)}.get)
+    fake_path_lookup(monkeypatch, {"finder": str(linked)})
 
     assert tool_invocation(_LOCATED, executable="python") == [str(env_bin / "python")]
 
@@ -265,9 +251,7 @@ def test_a_named_conda_env_runs_its_own_executable_not_one_earlier_on_path(
     that ran. Naming the file settles it.
     """
     conda = _conda_env_with(tmp_path, "toolenv", "runme")
-    monkeypatch.setattr(
-        toolenv.shutil, "which", lambda name: conda if name == "conda" else None
-    )
+    fake_path_lookup(monkeypatch, {"conda": conda})
 
     got = tool_invocation(_DIRECT.placed(conda_env="toolenv"), executable="runme")
 
@@ -286,9 +270,7 @@ def test_an_executable_absent_from_the_env_falls_back_to_the_bare_name(
 ) -> None:
     """No candidate holds it, so there is nothing to name and conda resolves it."""
     conda = _conda_env_with(tmp_path, "toolenv", "runme")
-    monkeypatch.setattr(
-        toolenv.shutil, "which", lambda name: conda if name == "conda" else None
-    )
+    fake_path_lookup(monkeypatch, {"conda": conda})
 
     got = tool_invocation(_DIRECT.placed(conda_env="toolenv"), executable="absent-here")
 
@@ -302,9 +284,7 @@ def test_conda_envs_dirs_locates_an_env_outside_the_base_installation(
     elsewhere = tmp_path / "elsewhere" / "toolenv" / "bin"
     elsewhere.mkdir(parents=True)
     (elsewhere / "runme").touch()
-    monkeypatch.setattr(
-        toolenv.shutil, "which", lambda name: conda if name == "conda" else None
-    )
+    fake_path_lookup(monkeypatch, {"conda": conda})
     monkeypatch.setenv("CONDA_ENVS_DIRS", str(tmp_path / "elsewhere"))
 
     got = tool_invocation(_DIRECT.placed(conda_env="toolenv"), executable="runme")
@@ -333,7 +313,7 @@ def test_a_missing_conda_names_the_bin_variable_to_set_instead(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The message has to name *this* tool's variable, not a generic one."""
-    monkeypatch.setattr(toolenv.shutil, "which", _nothing_on_path)
+    fake_path_lookup(monkeypatch, {})
 
     with pytest.raises(_FakeNotFound, match="MOSAIC_FAKE_BIN"):
         tool_invocation(_DIRECT.placed(conda_env="nope"), executable="runme")
