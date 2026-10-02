@@ -9,11 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
-from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.sequence_index import (
     SEQUENCE_LABEL_COLUMNS,
@@ -21,31 +19,11 @@ from mosaic.core.pipeline.sequence_index import (
     sequence_label_path,
 )
 
-from tests.helpers import make_dataset
+from tests.helpers import add_track_sequences, make_dataset
 
 # Only ``tracks`` is declared: a label is a property of the sequence, and these
 # tests read it beside the one index that names sequences.
 TRACKS_ONLY = ("tracks",)
-
-
-def _add_tracks(ds: Dataset, *entries: tuple[str, str]) -> None:
-    tracks = ds.get_root("tracks")
-    rows: list[dict[str, str]] = []
-    for group, sequence in entries:
-        key = f"{group}__{sequence}" if group else sequence
-        path = tracks / f"{key}.parquet"
-        pd.DataFrame({"frame": np.arange(3), "id": np.zeros(3, dtype=int)}).to_parquet(
-            path
-        )
-        rows.append(
-            {
-                "run_id": "",
-                "group": group,
-                "sequence": sequence,
-                "abs_path": str(path),
-            }
-        )
-    pd.DataFrame(rows).to_csv(tracks / "index.csv", index=False)
 
 
 def test_an_unlabelled_sequence_is_called_by_its_token(tmp_path: Path) -> None:
@@ -65,7 +43,7 @@ def test_a_label_displaces_the_token_for_a_human_and_nothing_else(
     tmp_path: Path,
 ) -> None:
     ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
-    _add_tracks(ds, ("", "seqA"))
+    add_track_sequences(ds, "seqA")
     before = sorted(p.name for p in ds.get_root("tracks").iterdir())
 
     ds.set_display_name("", "seqA", "Trial 1, morning")
@@ -140,7 +118,7 @@ def test_get_sequence_metadata_carries_the_label_beside_the_token(
 ) -> None:
     """Additive: every existing column is a join key and none of them moves."""
     ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
-    _add_tracks(ds, ("", "seqA"), ("", "seqB"))
+    add_track_sequences(ds, "seqA", "seqB")
     ds.set_display_name("", "seqA", "Trial 1")
 
     frame = ds.get_sequence_metadata()
@@ -155,7 +133,7 @@ def test_parse_hierarchy_still_reads_the_token(tmp_path: Path) -> None:
     token with ``__``; that is where ``level_names`` keeps reading it.
     """
     ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
-    _add_tracks(ds, ("", "fish3__fast"))
+    add_track_sequences(ds, "fish3__fast")
     ds.set_display_name("", "fish3__fast", "something entirely different")
 
     frame = ds.get_sequence_metadata(level_names=["individual", "speed"])

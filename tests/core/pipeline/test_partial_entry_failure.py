@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -37,41 +36,18 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
 from mosaic.runlog import read_run, run_log_dir
-from tests.helpers import MockDataset
+from tests.helpers import MockDataset, add_track_sequences
 
 _DOOMED = "s2"
 
 
-def _make_parquet(path: Path, sequence: str, n_rows: int = 10) -> None:
-    """A track table carrying its own sequence name.
-
-    ``apply`` receives only a frame, so the name is how a feature can fail for one
-    entity and succeed for another without depending on iteration order.
-    """
-    df = pd.DataFrame(
-        {
-            "frame": range(n_rows),
-            "time": [f / 30.0 for f in range(n_rows)],
-            "id": [0] * n_rows,
-            "sequence": [sequence] * n_rows,
-            "feat_a": np.arange(n_rows, dtype=float),
-        }
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path)
-
-
-def _setup_tracks(ds: MockDataset, sequences: list[str]) -> None:
-    rows: list[dict[str, str]] = []
-    for sequence in sequences:
-        path = ds.get_root("tracks") / f"g1__{sequence}.parquet"
-        _make_parquet(path, sequence)
-        rows.append({"group": "g1", "sequence": sequence, "abs_path": str(path)})
-    pd.DataFrame(rows).to_csv(ds.get_root("tracks") / "index.csv", index=False)
-
-
 class _FailsOnOneSequence:
-    """Raises for ``_DOOMED`` and succeeds for every other entity."""
+    """Raises for ``_DOOMED`` and succeeds for every other entity.
+
+    ``apply`` receives only a frame, so it finds the entity in the table's
+    ``sequence`` column. Failing by name rather than by call order keeps the
+    outcome independent of iteration order.
+    """
 
     name = "test-fails-on-one"
     version = "0.1"
@@ -124,7 +100,7 @@ def test_one_failed_entity_is_not_a_finished_run(
     tmp_path: Path, parallel_workers: int
 ) -> None:
     ds = MockDataset(tmp_path)
-    _setup_tracks(ds, ["s1", _DOOMED])
+    add_track_sequences(ds, ("g1", "s1"), ("g1", _DOOMED))
     execution_id = "TESTPARTIAL1"
 
     result = run_feature(
@@ -159,7 +135,7 @@ def test_one_failed_entity_is_not_a_finished_run(
 def test_every_entity_failing_is_a_failed_run(tmp_path: Path) -> None:
     """Losing every entity is a failure, not a finished run with no outputs."""
     ds = MockDataset(tmp_path)
-    _setup_tracks(ds, ["s1", _DOOMED])
+    add_track_sequences(ds, ("g1", "s1"), ("g1", _DOOMED))
     execution_id = "TESTPARTIAL2"
 
     with pytest.raises(AllEntriesFailed):
@@ -188,7 +164,7 @@ def test_an_empty_scope_is_not_an_all_entries_failure(tmp_path: Path) -> None:
     start raising.
     """
     ds = MockDataset(tmp_path)
-    _setup_tracks(ds, ["s1"])
+    add_track_sequences(ds, ("g1", "s1"))
 
     result = run_feature(
         ds, _FailsOnOneSequence(), scope=Scope(sequences=["nosuchsequence"])

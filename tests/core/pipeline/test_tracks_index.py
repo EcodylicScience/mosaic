@@ -46,6 +46,7 @@ from mosaic.core.pipeline.tracks_index import (
     tracks_index_path,
     write_tracks_row,
 )
+from tests.helpers import add_track_sequences, track_table
 
 # The exact header the hand-written writer emitted, in its order. Pinned as a
 # literal rather than imported, because the point of the adoption tests is that
@@ -84,7 +85,7 @@ def _track_parquet(ds: Dataset, sequence: str, n_rows: int = 40) -> Path:
     root = ds.get_root("tracks")
     root.mkdir(parents=True, exist_ok=True)
     path = root / f"{sequence}.parquet"
-    pd.DataFrame({"frame": range(n_rows), "id": [0] * n_rows}).to_parquet(path)
+    track_table("", sequence, n_rows=n_rows).to_parquet(path)
     return path
 
 
@@ -1084,17 +1085,10 @@ def test_an_empty_tracks_scope_is_not_recorded_as_a_completed_run(
 # --- the measured frame extent ---
 
 
-def _write_table(path: Path, start: int, n_frames: int, n_ids: int = 1) -> None:
-    frames = [start + f for f in range(n_frames) for _ in range(n_ids)]
-    ids = [i for _ in range(n_frames) for i in range(n_ids)]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"frame": frames, "id": ids, "X": 0.0, "Y": 0.0}).to_parquet(path)
-
-
 def test_frame_extent_is_measured_from_the_table(tmp_path: Path) -> None:
     """Measured, not passed: no call site can record an extent the table denies."""
     path = tmp_path / "t.parquet"
-    _write_table(path, start=10, n_frames=5, n_ids=3)
+    track_table(n_rows=5, n_ids=3, start_frame=10).to_parquet(path)
     assert frame_extent(path) == (10, 14)
 
 
@@ -1123,7 +1117,7 @@ def test_a_blank_extent_cell_reads_as_unknown_not_as_frame_zero() -> None:
 def test_write_tracks_row_records_the_extent(tmp_path: Path) -> None:
     ds = _dataset(tmp_path)
     out = ds.get_root("tracks") / "g__s1.parquet"
-    _write_table(out, start=100, n_frames=4)
+    track_table("g", "s1", n_rows=4, start_frame=100).to_parquet(out)
     write_tracks_row(
         ds,
         run_id="v1",
@@ -1145,12 +1139,8 @@ def test_backfill_measures_only_the_rows_that_lack_an_extent(tmp_path: Path) -> 
     sidecars.
     """
     ds = _dataset(tmp_path)
-    rows = []
     for index, name in enumerate(("s1", "s2")):
-        path = ds.get_root("tracks") / f"g__{name}.parquet"
-        _write_table(path, start=index * 10, n_frames=10)
-        rows.append({"group": "g", "sequence": name, "abs_path": str(path)})
-    pd.DataFrame(rows).to_csv(tracks_index_path(ds), index=False)
+        add_track_sequences(ds, ("g", name), n_rows=10, start_frame=index * 10)
 
     assert read_frame_extents(ds) == {}
 
@@ -1195,7 +1185,7 @@ def test_a_row_written_without_a_media_length_records_a_blank(tmp_path: Path) ->
     """The default every producer takes: a conversion opened no video to measure."""
     ds = _dataset(tmp_path)
     out = ds.get_root("tracks") / "g__s1.parquet"
-    _write_table(out, start=0, n_frames=4)
+    track_table("g", "s1", n_rows=4).to_parquet(out)
     write_tracks_row(
         ds,
         run_id="v1",
@@ -1221,7 +1211,7 @@ def _entry_row(
 ) -> None:
     """One row of a table of *rows* frames, whose tool read *read* of *media*."""
     out = ds.get_root("tracks") / f"g__{sequence}.parquet"
-    _write_table(out, start=0, n_frames=rows)
+    track_table("g", sequence, n_rows=rows).to_parquet(out)
     write_tracks_row(
         ds,
         run_id="v1",
@@ -1377,7 +1367,7 @@ def test_a_table_of_a_producer_declaring_no_tail_short_by_one_is_a_mismatch(
 ) -> None:
     ds = _dataset(tmp_path)
     out = ds.get_root("tracks") / "g__s1.parquet"
-    _write_table(out, start=0, n_frames=10)
+    track_table("g", "s1", n_rows=10).to_parquet(out)
     write_tracks_row(
         ds,
         run_id="v1",
@@ -1435,7 +1425,7 @@ def test_backfill_media_frames_fills_only_the_rows_that_lack_one(
         ds.get_root("tracks"), variant, "trex", "0.2", {"analysis_range": None}
     )
     out = ds.get_root("tracks") / variant / "s1.parquet"
-    _write_table(out, start=0, n_frames=580)
+    track_table("", "s1", n_rows=580).to_parquet(out)
     write_tracks_row(
         ds,
         run_id=variant,
@@ -1474,7 +1464,7 @@ def _variant_row(
 ) -> None:
     out = ds.get_root("tracks") / run_id / f"g__{sequence}.parquet"
     out.parent.mkdir(parents=True, exist_ok=True)
-    _write_table(out, start=0, n_frames=read)
+    track_table("g", sequence, n_rows=read).to_parquet(out)
     write_tracks_row(
         ds,
         run_id=run_id,

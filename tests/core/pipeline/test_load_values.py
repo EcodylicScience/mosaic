@@ -15,15 +15,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import pytest
 
 from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline.labels_index import _ambiguous_label_variant_message
 from mosaic.core.pipeline.run import load_values
 from mosaic.core.pipeline.types import GroundTruthLabelsSource, TracksColumn
-from tests.helpers import MockDataset
+from tests.helpers import MockDataset, add_track_sequences
 
 
 def test_the_refusal_names_a_keyword_the_caller_can_pass() -> None:
@@ -40,21 +38,7 @@ def test_load_values_threads_the_labels_selector(
 ) -> None:
     """The selector has to reach the lookup, which is where it stopped."""
     ds = MockDataset(tmp_path)
-    tracks = ds.get_root("tracks")
-    path = tracks / "g1__s1.parquet"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(
-        {
-            "frame": range(4),
-            "time": [f / 30.0 for f in range(4)],
-            "id": [0] * 4,
-            "X": np.arange(4.0),
-            "Y": np.arange(4.0),
-        }
-    ).to_parquet(path)
-    pd.DataFrame([{"group": "g1", "sequence": "s1", "abs_path": str(path)}]).to_csv(
-        tracks / "index.csv", index=False
-    )
+    add_track_sequences(ds, ("g1", "s1"), n_rows=4)
 
     seen: list[str | None] = []
 

@@ -11,12 +11,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library import SpeedAngvel
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline import FeatureStep, Pipeline
 from mosaic.core.pipeline.index import (
     FeatureIndexRow,
@@ -25,28 +24,12 @@ from mosaic.core.pipeline.index import (
     feature_run_root,
 )
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
+from tests.helpers import add_track_sequences, make_dataset
 
 
 def _dataset_with_tracks(tmp_path: Path) -> Dataset:
-    manifest = new_dataset_manifest("t", base_dir=tmp_path)
-    ds = Dataset(manifest_path=manifest).load()
-    tracks_root = ds.get_root("tracks")
-    rows = []
-    for group, sequence in [("g", "s1"), ("g", "s2")]:
-        n = 12
-        df = pd.DataFrame(
-            {
-                "frame": range(n),
-                "time": [f / 30.0 for f in range(n)],
-                "id": [0] * n,
-                "X": np.linspace(0.0, 5.0, n),
-                "Y": np.linspace(0.0, 2.0, n),
-            }
-        )
-        path = tracks_root / f"{group}__{sequence}.parquet"
-        df.to_parquet(path)
-        rows.append({"group": group, "sequence": sequence, "abs_path": str(path)})
-    pd.DataFrame(rows).to_csv(tracks_root / "index.csv", index=False)
+    ds = make_dataset(tmp_path)
+    add_track_sequences(ds, ("g", "s1"), ("g", "s2"), n_rows=12)
     return ds
 
 

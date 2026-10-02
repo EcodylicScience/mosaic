@@ -20,7 +20,7 @@ from mosaic.core.pipeline.types import Inputs, ParquetLoadSpec, Result, TrackInp
 from mosaic.core.scope import Scope
 
 
-from tests.helpers import MockDataset as _MockDataset
+from tests.helpers import MockDataset, add_track_sequences, track_table
 
 
 def _make_parquet(path: Path, n_rows: int = 10, *, track_shaped: bool = False) -> None:
@@ -37,12 +37,6 @@ def _make_parquet(path: Path, n_rows: int = 10, *, track_shaped: bool = False) -
     df = pd.DataFrame(data)
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path)
-
-
-def _write_tracks_index(ds, entries):
-    idx_path = ds.get_root("tracks") / "index.csv"
-    rows = [{"group": g, "sequence": s, "abs_path": str(p)} for g, s, p in entries]
-    pd.DataFrame(rows).to_csv(idx_path, index=False)
 
 
 def _setup_feature(ds, feat_name, pairs, run_id="v1-abc", *, track_shaped=False):
@@ -73,13 +67,8 @@ def _setup_feature(ds, feat_name, pairs, run_id="v1-abc", *, track_shaped=False)
 
 
 def test_build_manifest_tracks_only(tmp_path):
-    ds = _MockDataset(tmp_path)
-    entries = []
-    for g, s in [("g1", "s1"), ("g1", "s2")]:
-        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
-        _make_parquet(p)
-        entries.append((g, s, p))
-    _write_tracks_index(ds, entries)
+    ds = MockDataset(tmp_path)
+    add_track_sequences(ds, ("g1", "s1"), ("g1", "s2"))
 
     inputs = Inputs(("tracks",))
     manifest, scope = build_manifest(ds, inputs)
@@ -94,7 +83,7 @@ def test_build_manifest_tracks_only(tmp_path):
 
 
 def test_build_manifest_feature_result(tmp_path):
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     run_id = _setup_feature(ds, "speed-angvel", [("g1", "s1"), ("g1", "s2")])
     inputs = Inputs((Result(feature="speed-angvel", run_id=run_id),))
 
@@ -118,7 +107,7 @@ def test_track_inputs_accepts_result_type():
 
 def test_build_manifest_track_result_ok(tmp_path):
     """A Result from a track-producing feature (output keeps X/Y) is a valid track input."""
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     run_id = _setup_feature(
         ds,
         "trajectory-smooth__from__tracks",
@@ -140,7 +129,7 @@ def test_build_manifest_derived_result_rejected(tmp_path):
     a type-valid Result but not a track-shaped one; resolution must reject it with a
     clear error rather than silently KeyError at apply time.
     """
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     run_id = _setup_feature(
         ds,
         "speed-angvel__from__tracks",
@@ -153,14 +142,9 @@ def test_build_manifest_derived_result_rejected(tmp_path):
 
 
 def test_build_manifest_mixed_intersects(tmp_path):
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     # Tracks have s1, s2, s3
-    entries = []
-    for s in ("s1", "s2", "s3"):
-        p = tmp_path / "tracks" / f"g1__{s}.parquet"
-        _make_parquet(p)
-        entries.append(("g1", s, p))
-    _write_tracks_index(ds, entries)
+    add_track_sequences(ds, ("g1", "s1"), ("g1", "s2"), ("g1", "s3"))
     # Feature has only s1, s2 -- no run_id, exercises latest-run resolution
     _setup_feature(ds, "nn", [("g1", "s1"), ("g1", "s2")])
 
@@ -175,13 +159,8 @@ def test_build_manifest_mixed_intersects(tmp_path):
 
 
 def test_build_manifest_group_filter(tmp_path):
-    ds = _MockDataset(tmp_path)
-    entries = []
-    for g, s in [("g1", "s1"), ("g2", "s2")]:
-        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
-        _make_parquet(p)
-        entries.append((g, s, p))
-    _write_tracks_index(ds, entries)
+    ds = MockDataset(tmp_path)
+    add_track_sequences(ds, ("g1", "s1"), ("g2", "s2"))
 
     inputs = Inputs(("tracks",))
     manifest, scope = build_manifest(ds, inputs, Scope(groups=["g1"]))
@@ -202,13 +181,8 @@ def test_build_manifest_narrows_a_selector_that_lists_nothing_to_nothing(
     narrowing in the codebase tests ``is not None``, and one of the three arms
     disagreeing is what makes a misspelled scope resolve to the whole dataset.
     """
-    ds = _MockDataset(tmp_path)
-    entries: list[tuple[str, str, Path]] = []
-    for g, s in [("g1", "s1"), ("g2", "s2")]:
-        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
-        _make_parquet(p)
-        entries.append((g, s, p))
-    _write_tracks_index(ds, entries)
+    ds = MockDataset(tmp_path)
+    add_track_sequences(ds, ("g1", "s1"), ("g2", "s2"))
 
     manifest, scope = build_manifest(ds, Inputs(("tracks",)), selector)
 
@@ -220,13 +194,8 @@ def test_build_manifest_covers_everything_for_an_unset_selector(
     tmp_path: Path,
 ) -> None:
     """The other half of the rule above, which an empty list must not reach."""
-    ds = _MockDataset(tmp_path)
-    entries: list[tuple[str, str, Path]] = []
-    for g, s in [("g1", "s1"), ("g2", "s2")]:
-        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
-        _make_parquet(p)
-        entries.append((g, s, p))
-    _write_tracks_index(ds, entries)
+    ds = MockDataset(tmp_path)
+    add_track_sequences(ds, ("g1", "s1"), ("g2", "s2"))
 
     _, scope = build_manifest(ds, Inputs(("tracks",)), Scope())
 
@@ -240,13 +209,8 @@ def test_build_manifest_entries_filter(tmp_path):
     selector would be ambiguous there. An entries one picks the pairs it lists
     and excludes (g1, s2).
     """
-    ds = _MockDataset(tmp_path)
-    entries = []
-    for g, s in [("g1", "s1"), ("g1", "s2"), ("g2", "s1")]:
-        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
-        _make_parquet(p)
-        entries.append((g, s, p))
-    _write_tracks_index(ds, entries)
+    ds = MockDataset(tmp_path)
+    add_track_sequences(ds, ("g1", "s1"), ("g1", "s2"), ("g2", "s1"))
 
     inputs = Inputs(("tracks",))
     manifest, scope = build_manifest(
@@ -268,7 +232,7 @@ def test_build_manifest_refuses_entries_beside_groups() -> None:
 
 def test_build_manifest_entries_feature_input(tmp_path):
     """An entries selector also narrows a feature-result input."""
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     run_id = _setup_feature(
         ds, "speed-angvel", [("g1", "s1"), ("g1", "s2"), ("g2", "s1")]
     )
@@ -283,13 +247,8 @@ def test_build_manifest_entries_feature_input(tmp_path):
 
 def test_build_manifest_adjacency(tmp_path):
     """Verify prev/next adjacency pointers are set correctly."""
-    ds = _MockDataset(tmp_path)
-    entries = []
-    for s in ("s1", "s2", "s3"):
-        p = tmp_path / "tracks" / f"g1__{s}.parquet"
-        _make_parquet(p)
-        entries.append(("g1", s, p))
-    _write_tracks_index(ds, entries)
+    ds = MockDataset(tmp_path)
+    add_track_sequences(ds, ("g1", "s1"), ("g1", "s2"), ("g1", "s3"))
 
     inputs = Inputs(("tracks",))
     manifest, scope = build_manifest(ds, inputs)
@@ -316,13 +275,8 @@ def test_build_manifest_adjacency(tmp_path):
 
 def test_build_manifest_adjacency_cross_group(tmp_path):
     """Adjacency does not cross group boundaries."""
-    ds = _MockDataset(tmp_path)
-    entries = []
-    for g, s in [("g1", "s1"), ("g1", "s2"), ("g2", "s3")]:
-        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
-        _make_parquet(p)
-        entries.append((g, s, p))
-    _write_tracks_index(ds, entries)
+    ds = MockDataset(tmp_path)
+    add_track_sequences(ds, ("g1", "s1"), ("g1", "s2"), ("g2", "s3"))
 
     inputs = Inputs(("tracks",))
     manifest, _ = build_manifest(ds, inputs)
@@ -337,13 +291,8 @@ def test_build_manifest_adjacency_cross_group(tmp_path):
 
 
 def test_iter_manifest_yields_keydata(tmp_path):
-    ds = _MockDataset(tmp_path)
-    entries = []
-    for g, s in [("g1", "s1"), ("g1", "s2")]:
-        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
-        _make_parquet(p, n_rows=10)
-        entries.append((g, s, p))
-    _write_tracks_index(ds, entries)
+    ds = MockDataset(tmp_path)
+    add_track_sequences(ds, ("g1", "s1"), ("g1", "s2"), n_rows=10)
 
     inputs = Inputs(("tracks",))
     manifest, _ = build_manifest(ds, inputs)
@@ -357,20 +306,10 @@ def test_iter_manifest_yields_keydata(tmp_path):
 
 
 def test_iter_manifest_mixed_inner_join(tmp_path):
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
 
     # Tracks: frames 0-9
-    track_path = tmp_path / "tracks" / "g1__s1.parquet"
-    track_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(
-        {
-            "frame": range(10),
-            "time": [f / 30.0 for f in range(10)],
-            "id": [0] * 10,
-            "feat_a": np.random.randn(10),
-        }
-    ).to_parquet(track_path)
-    _write_tracks_index(ds, [("g1", "s1", track_path)])
+    add_track_sequences(ds, ("g1", "s1"), n_rows=10)
 
     # Feature: frames 2-7 only
     run_id = "v1-abc"
@@ -418,37 +357,6 @@ def test_iter_manifest_mixed_inner_join(tmp_path):
 # --- Helpers for overlap / filter_factory tests ---
 
 
-def _make_simple_parquet(
-    path: Path,
-    n_frames: int,
-    start_frame: int = 0,
-    n_ids: int = 1,
-    sequence: str = "",
-    group: str = "g1",
-) -> None:
-    """Write a frame-major parquet carrying identity, as a real tracks table does.
-
-    ``n_ids`` and the identity columns are not decoration. An overlap defect only
-    shows itself where a frame holds several individuals -- with one id per frame
-    a row offset and a frame number happen to agree, which is why the suite could
-    not see any of this before.
-    """
-    frames = np.repeat(np.arange(start_frame, start_frame + n_frames), n_ids)
-    ids = np.tile(np.arange(n_ids), n_frames)
-    df = pd.DataFrame(
-        {
-            "frame": frames,
-            "time": frames / 30.0,
-            "id": ids,
-            "group": group,
-            "sequence": sequence,
-            "feat_a": np.arange(len(frames), dtype=float),
-        }
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path)
-
-
 def _build_three_seq_manifest(
     tmp_path: Path,
     *,
@@ -469,9 +377,9 @@ def _build_three_seq_manifest(
     for index, name in enumerate(names):
         start = index * n_frames if contiguous else 0
         path = tmp_path / f"g1__{name}.parquet"
-        _make_simple_parquet(
-            path, n_frames=n_frames, start_frame=start, n_ids=n_ids, sequence=name
-        )
+        track_table(
+            "g1", name, n_rows=n_frames, n_ids=n_ids, start_frame=start
+        ).to_parquet(path)
         paths[name] = path
         extents[name] = (start, start + n_frames - 1)
 
@@ -657,7 +565,7 @@ def test_social_features_accept_derived_results(tmp_path, feature_name):
         f"{feature_name} declares TrackInputs; it cannot be fed a derived Result"
     )
 
-    ds = _MockDataset(tmp_path)
+    ds = MockDataset(tmp_path)
     smooth_run = _setup_feature(
         ds, "trajectory-smooth__from__tracks", [("g1", "s1")], track_shaped=True
     )

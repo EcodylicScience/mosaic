@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import zlib
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
@@ -19,22 +20,78 @@ import numpy.typing as npt
 import pandas as pd
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
     tracks_index_path,
     write_tracks_row,
 )
+from tests.helpers.mock_dataset import MockDataset
 
 
-def add_track_sequences(dataset: Dataset, *sequences: str, n_rows: int = 40) -> None:
-    """Write a track parquet per sequence and rewrite ``tracks/index.csv``.
+TrackEntry = str | tuple[str, str]
+"""A bare sequence name, whose group is empty, or a ``(group, sequence)`` pair."""
 
-    Sequences accumulate: calling this again with a further name leaves the
-    existing parquets in place, which is what lets a scenario widen a scope and
-    then assert what was and was not recomputed.
 
-    The group is empty, so the composite key renders as the bare sequence name
-    and the parquet is ``<sequence>.parquet``.
+def track_table(
+    group: str = "",
+    sequence: str = "",
+    *,
+    n_rows: int = 40,
+    n_ids: int = 1,
+    start_frame: int = 0,
+) -> pd.DataFrame:
+    """One entry's track table: *n_rows* frames from *start_frame*, *n_ids* per frame.
+
+    Frame-major, as a tracker writes one: every individual of a frame before the
+    next frame. With several individuals a row offset and a frame number then
+    disagree, which is what an overlap or trim defect needs in order to show.
+
+    ``X``/``Y`` are a straight path, offset by identity so that the individuals
+    are apart. ``feat_a`` is seeded from the entry's key, so one entry always
+    holds the same values and two entries hold different ones. A fit over
+    several entries then differs from a fit over one.
+    """
+    frame = np.repeat(
+        np.arange(start_frame, start_frame + n_rows, dtype=np.int64), n_ids
+    )
+    identity = np.tile(np.arange(n_ids, dtype=np.int64), n_rows)
+    seed = zlib.crc32(make_entry_key(group, sequence).encode())
+    return pd.DataFrame(
+        {
+            "frame": frame,
+            "time": frame / 30.0,
+            "id": identity,
+            "group": group,
+            "sequence": sequence,
+            "X": np.repeat(np.linspace(0.0, 10.0, n_rows), n_ids) + identity,
+            "Y": np.repeat(np.linspace(10.0, 0.0, n_rows), n_ids) + identity,
+            "feat_a": np.random.default_rng(seed).random(len(frame)),
+        }
+    )
+
+
+def add_track_sequences(
+    dataset: Dataset | MockDataset,
+    *entries: TrackEntry,
+    n_rows: int = 40,
+    n_ids: int = 1,
+    start_frame: int = 0,
+) -> None:
+    """Write a :func:`track_table` per entry and add its row to ``tracks/index.csv``.
+
+    Entries accumulate: calling this again with a further entry leaves the
+    existing parquets and rows in place, which is what lets a scenario widen a
+    scope and then assert what was and was not recomputed. Naming an entry again
+    replaces its table and its row.
+
+    The parquet is ``<group>__<sequence>.parquet``, or ``<sequence>.parquet``
+    for an empty group, as the composite key renders.
+
+    The index holds three columns, ``group``, ``sequence`` and ``abs_path``: the
+    shape a dataset converted before tracks variants existed has, with no
+    recorded frame extent. A test that needs the extents runs
+    ``backfill_frame_extents``, the migration such a dataset is given.
 
     ``X``/``Y`` are here because the features these scenarios run need them. Without
     them every entry's ``apply`` raised, and because a per-entity failure used to be
@@ -43,27 +100,25 @@ def add_track_sequences(dataset: Dataset, *sequences: str, n_rows: int = 40) -> 
     """
     tracks = dataset.get_root("tracks")
     tracks.mkdir(parents=True, exist_ok=True)
-    for sequence in sequences:
-        frame = np.arange(n_rows, dtype=np.int64)
-        pd.DataFrame(
-            {
-                "frame": frame,
-                "time": frame / 30.0,
-                "id": np.zeros(n_rows, dtype=np.int64),
-                "X": np.linspace(0.0, 10.0, n_rows),
-                "Y": np.linspace(10.0, 0.0, n_rows),
-                "feat_a": np.linspace(0.0, 1.0, n_rows),
-            }
-        ).to_parquet(tracks / f"{sequence}.parquet")
-    present = sorted(tracks.glob("*.parquet"))
-    index = pd.DataFrame(
-        {
-            "group": ["" for _ in present],
-            "sequence": [path.stem for path in present],
-            "abs_path": [str(path) for path in present],
-        }
-    )
-    index.to_csv(tracks / "index.csv", index=False)
+    added: list[dict[str, str]] = []
+    for entry in entries:
+        group, sequence = ("", entry) if isinstance(entry, str) else entry
+        path = tracks / f"{make_entry_key(group, sequence)}.parquet"
+        track_table(
+            group, sequence, n_rows=n_rows, n_ids=n_ids, start_frame=start_frame
+        ).to_parquet(path)
+        added.append({"group": group, "sequence": sequence, "abs_path": str(path)})
+    index_path = tracks / "index.csv"
+    replaced = {(row["group"], row["sequence"]) for row in added}
+    kept: list[dict[str, str]] = []
+    if index_path.exists():
+        existing = pd.read_csv(index_path, dtype=str, keep_default_na=False)
+        kept = [
+            {str(key): str(value) for key, value in row.items()}
+            for row in existing.to_dict("records")
+            if (row["group"], row["sequence"]) not in replaced
+        ]
+    pd.DataFrame([*kept, *added]).to_csv(index_path, index=False)
 
 
 def write_trex_npz(
@@ -262,46 +317,27 @@ def add_tracks_variant(
     produces is the index production produces -- including the dedup that decides
     whether a second call adds a row or replaces one.
     """
-    from mosaic.core.helpers import make_entry_key
     from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 
     root = tracks_variant_root(dataset.get_root("tracks"), run_id)
     root.mkdir(parents=True, exist_ok=True)
     for sequence in sequences:
-        # A schema-valid table with two individuals, rather than the four columns
-        # ``add_track_sequences`` writes. That is what lets a *registered*
-        # feature actually run on this fixture -- including the social ones,
-        # which need a sequence to hold at least two ids -- which the
-        # chain-runner parity assertions depend on. ``feat_a`` stays for the
-        # scenario mock features that read it.
+        # Two individuals and seven keypoints, beyond what ``add_track_sequences``
+        # writes. That is what lets a *registered* feature actually run on this
+        # fixture -- including the social ones, which need a sequence to hold at
+        # least two ids -- which the chain-runner parity assertions depend on.
         #
-        # X/Y are the body centre and every converter emits them. This fixture
-        # carried only the ``#wcentroid`` pair, a shape no converter produces,
-        # so tests built on it were measuring a table that cannot exist.
-        # ``#wcentroid`` stays, holding the identical values, because that is
-        # what a TREx table looks like: one body centre under both names.
-        frame = np.tile(np.arange(n_rows, dtype=np.int64), 2)
-        identity = np.repeat(np.arange(2, dtype=np.int64), n_rows)
-        total = len(frame)
-        centre_x = np.linspace(0.0, 10.0, total) + identity
-        centre_y = np.linspace(0.0, 5.0, total) + identity
-        columns: dict[str, object] = {
-            "frame": frame,
-            "time": frame / 30.0,
-            "id": identity,
-            "group": [""] * total,
-            "sequence": [sequence] * total,
-            "X": centre_x,
-            "Y": centre_y,
-            "X#wcentroid": centre_x,
-            "Y#wcentroid": centre_y,
-            "feat_a": np.linspace(0.0, 1.0, total),
-        }
+        # ``#wcentroid`` holds the values of X/Y because that is what a TREx table
+        # looks like: one body centre under both names. This fixture once carried
+        # only the ``#wcentroid`` pair, a shape no converter produces.
+        table = track_table("", sequence, n_rows=n_rows, n_ids=2)
+        table["X#wcentroid"] = table["X"]
+        table["Y#wcentroid"] = table["Y"]
         for keypoint in range(7):
-            columns[f"poseX{keypoint}"] = np.linspace(0.0, 10.0, total) + keypoint
-            columns[f"poseY{keypoint}"] = np.linspace(0.0, 5.0, total) + keypoint
+            table[f"poseX{keypoint}"] = table["X"] + keypoint
+            table[f"poseY{keypoint}"] = table["Y"] + keypoint
         out_path = root / f"{make_entry_key('', sequence)}.parquet"
-        pd.DataFrame(columns).to_parquet(out_path)
+        table.to_parquet(out_path)
         write_tracks_row(
             dataset,
             run_id=run_id,

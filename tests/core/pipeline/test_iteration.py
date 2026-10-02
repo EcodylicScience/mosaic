@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pandas as pd
 import pytest
 
@@ -13,71 +11,20 @@ from mosaic.core.pipeline.iteration import (
     read_tracks_index,
     yield_sequences,
 )
-
-# --- Helpers ---
-
-
-class _MockDataset:
-    """Minimal Dataset stand-in for iteration tests."""
-
-    def __init__(self, root: Path):
-        self._root = root
-        self._roots = {
-            "tracks": root / "tracks",
-            "features": root / "features",
-        }
-        for d in self._roots.values():
-            d.mkdir(parents=True, exist_ok=True)
-
-    def get_root(self, key: str) -> Path:
-        if key not in self._roots:
-            raise KeyError(f"Root not configured: {key}")
-        return self._roots[key]
-
-    def resolve_path(self, stored_path, anchor=None) -> Path:
-        p = Path(stored_path)
-        if p.is_absolute():
-            return p
-        return self._root / p
-
-
-def _make_parquet(path: Path, n_rows: int = 10, n_ids: int = 2) -> pd.DataFrame:
-    """Create a simple tracks-like parquet."""
-    rows = []
-    for fid in range(n_ids):
-        for f in range(n_rows):
-            rows.append({"frame": f, "time": f / 30.0, "id": fid, "X": f, "Y": f + 1})
-    df = pd.DataFrame(rows)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(path)
-    return df
-
-
-def _write_tracks_index(ds, entries: list[tuple[str, str, Path]]) -> Path:
-    """Write tracks/index.csv with (group, sequence, abs_path) entries."""
-    idx_path = ds.get_root("tracks") / "index.csv"
-    rows = [{"group": g, "sequence": s, "abs_path": str(p)} for g, s, p in entries]
-    pd.DataFrame(rows).to_csv(idx_path, index=False)
-    return idx_path
-
+from tests.helpers import MockDataset, add_track_sequences
 
 # --- Fixtures ---
 
 
 @pytest.fixture
 def ds(tmp_path):
-    return _MockDataset(tmp_path)
+    return MockDataset(tmp_path)
 
 
 @pytest.fixture
-def populated_ds(ds, tmp_path):
+def populated_ds(ds):
     """Dataset with 3 sequences across 2 groups, each with a parquet file."""
-    entries = []
-    for g, s in [("arena", "s1"), ("arena", "s2"), ("field", "s3")]:
-        p = tmp_path / "tracks" / f"{g}__{s}.parquet"
-        _make_parquet(p)
-        entries.append((g, s, p))
-    _write_tracks_index(ds, entries)
+    add_track_sequences(ds, ("arena", "s1"), ("arena", "s2"), ("field", "s3"))
     return ds
 
 
@@ -106,11 +53,9 @@ class TestReadTracksIndex:
         assert list(df.columns) == TRACKS_INDEX_COLUMNS
         assert df[df["group"] == "g"].empty
 
-    def test_empty_strings_preserved(self, ds, tmp_path):
+    def test_empty_strings_preserved(self, ds):
         """An empty cell stays an empty string rather than becoming NaN."""
-        p = tmp_path / "tracks" / "dummy.parquet"
-        _make_parquet(p)
-        _write_tracks_index(ds, [("", "s1", p)])
+        add_track_sequences(ds, "s1")
         df = read_tracks_index(ds)
         assert df.iloc[0]["group"] == ""
         assert not pd.isna(df.iloc[0]["group"])
@@ -147,8 +92,9 @@ class TestYieldSequences:
             assert isinstance(df, pd.DataFrame)
             assert "frame" in df.columns
 
-    def test_missing_parquet_raises(self, ds, tmp_path):
-        _write_tracks_index(ds, [("g", "s", tmp_path / "missing.parquet")])
+    def test_missing_parquet_raises(self, ds):
+        add_track_sequences(ds, ("g", "s"))
+        (ds.get_root("tracks") / "g__s.parquet").unlink()
         with pytest.raises(FileNotFoundError, match="Stale tracks index"):
             list(yield_sequences(ds))
 

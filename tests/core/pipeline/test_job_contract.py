@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -38,30 +37,10 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.params import Params
-from tests.helpers import MockDataset, make_dataset
+from tests.helpers import MockDataset, add_track_sequences, make_dataset
 
 
-# --- Minimal mock dataset + feature (mirrors test_run_feature.py) ---
-
-
-def _setup_tracks(ds: MockDataset, pairs: list[tuple[str, str]], n_rows: int = 10):
-    entries = []
-    for group, sequence in pairs:
-        path = ds.get_root("tracks") / f"{group}__{sequence}.parquet"
-        df = pd.DataFrame(
-            {
-                "frame": range(n_rows),
-                "time": [f / 30.0 for f in range(n_rows)],
-                "id": [0] * n_rows,
-                "feat_a": np.random.randn(n_rows),
-            }
-        )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(path)
-        entries.append((group, sequence, path))
-    rows = [{"group": g, "sequence": s, "abs_path": str(p)} for g, s, p in entries]
-    pd.DataFrame(rows).to_csv(ds.get_root("tracks") / "index.csv", index=False)
-    return entries
+# --- Minimal feature ---
 
 
 class _Stateless:
@@ -132,7 +111,7 @@ def test_execution_id_is_sortable_ulid():
 
 def test_lifecycle_finished(tmp_path: Path):
     ds = MockDataset(tmp_path)
-    _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
+    add_track_sequences(ds, ("g", "s1"), ("g", "s2"))
 
     result = run_feature(ds, _Stateless())
     assert isinstance(result, Result)
@@ -150,7 +129,7 @@ def test_lifecycle_finished(tmp_path: Path):
 
 def test_progress_entries_recorded(tmp_path: Path):
     ds = MockDataset(tmp_path)
-    _setup_tracks(ds, [("g", "s1"), ("g", "s2"), ("g", "s3")])
+    add_track_sequences(ds, ("g", "s1"), ("g", "s2"), ("g", "s3"))
 
     result = run_feature(ds, _Stateless())
     rows = read_run_progress(_run_dir(ds), result.execution_id)
@@ -166,7 +145,7 @@ def test_progress_entries_recorded(tmp_path: Path):
 
 def test_cache_hit_new_attempt_same_run_id(tmp_path: Path):
     ds = MockDataset(tmp_path)
-    _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
+    add_track_sequences(ds, ("g", "s1"), ("g", "s2"))
 
     r1 = run_feature(ds, _Stateless())
     assert r1.cache_hit is False
@@ -199,7 +178,7 @@ def test_cache_hit_new_attempt_same_run_id(tmp_path: Path):
 
 def test_cancel_midrun_marks_cancelled_with_partial(tmp_path: Path):
     ds = MockDataset(tmp_path)
-    _setup_tracks(ds, [("g", "s1"), ("g", "s2"), ("g", "s3"), ("g", "s4")])
+    add_track_sequences(ds, ("g", "s1"), ("g", "s2"), ("g", "s3"), ("g", "s4"))
 
     token = CancelToken()
     calls = {"n": 0}
@@ -237,7 +216,7 @@ def test_cancel_midrun_marks_cancelled_with_partial(tmp_path: Path):
 
 def test_inert_token_does_not_cancel(tmp_path: Path):
     ds = MockDataset(tmp_path)
-    _setup_tracks(ds, [("g", "s1")])
+    add_track_sequences(ds, ("g", "s1"))
     # default token never fires
     result = run_feature(ds, _Stateless())
     assert read_run(_run_dir(ds), result.execution_id)["status"] == "finished"
@@ -248,7 +227,7 @@ def test_inert_token_does_not_cancel(tmp_path: Path):
 
 def test_failure_marks_failed_with_error(tmp_path: Path):
     ds = MockDataset(tmp_path)
-    _setup_tracks(ds, [("g", "s1")])
+    add_track_sequences(ds, ("g", "s1"))
 
     with pytest.raises(RuntimeError, match="kaboom"):
         # The apply exception is swallowed per-entry by run_feature, so instead
@@ -298,7 +277,7 @@ def test_a_refusal_is_recorded_by_its_reason_and_the_step_it_ran_in(
 
 def test_track_false_writes_no_log(tmp_path: Path):
     ds = MockDataset(tmp_path)
-    _setup_tracks(ds, [("g", "s1")])
+    add_track_sequences(ds, ("g", "s1"))
     result = run_feature(ds, _Stateless(), track=False)
     assert result.execution_id is not None  # still minted
     # but nothing recorded: no run-log file for this attempt
@@ -328,7 +307,7 @@ def test_attempt_fields_do_not_perturb_downstream_run_id():
 
 def test_standalone_readers(tmp_path: Path):
     ds = MockDataset(tmp_path)
-    _setup_tracks(ds, [("g", "s1")])
+    add_track_sequences(ds, ("g", "s1"))
     result = run_feature(ds, _Stateless())
 
     run_dir = _run_dir(ds)
@@ -485,7 +464,7 @@ def test_completeness_gate_marks_index_finished_only_when_all_outputs_present(
     (see ``test_cancel_midrun_...``) stays unfinished and is resumable.
     """
     ds = MockDataset(tmp_path)
-    _setup_tracks(ds, [("g", "s1"), ("g", "s2")])
+    add_track_sequences(ds, ("g", "s1"), ("g", "s2"))
 
     result = run_feature(ds, _Stateless())
     storage = "test-jc__from__tracks"

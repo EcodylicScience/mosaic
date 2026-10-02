@@ -31,22 +31,7 @@ from mosaic.core.pipeline.index import (
     feature_index_path,
 )
 from mosaic.core.pipeline.manifest import _resolve_feature
-
-
-# --- Mock dataset (resolves relative paths against its root) ---
-
-
-class _MockDataset:
-    def __init__(self, root: Path):
-        self._root = root
-        (root / "features").mkdir(parents=True, exist_ok=True)
-
-    def get_root(self, key: str) -> Path:
-        return self._root / key
-
-    def resolve_path(self, stored_path: object, anchor: object = None) -> Path:
-        path = Path(str(stored_path))
-        return path if path.is_absolute() else self._root / path
+from tests.helpers import MockDataset, add_track_sequences, make_dataset
 
 
 # --- Helpers ---
@@ -71,7 +56,7 @@ def _write_relative_feature_index(
     pairs: list[tuple[str, str]],
 ) -> None:
     """Write a feature index under *root* whose abs_path values are RELATIVE."""
-    idx = feature_index(feature_index_path(_MockDataset(root), feat))
+    idx = feature_index(feature_index_path(MockDataset(root), feat))
     idx.ensure()
     rows: list[FeatureIndexRow] = []
     for g, s in pairs:
@@ -104,7 +89,7 @@ def test_relative_index_resolves_under_a_different_root(tmp_path: Path) -> None:
     _write_relative_feature_index(root_a, "feat", "0.1-abc", [("g", "s1"), ("g", "s2")])
     shutil.copytree(root_a, root_b)
 
-    ds_b = _MockDataset(root_b)
+    ds_b = MockDataset(root_b)
     result = _resolve_feature(ds_b, "feat", "0.1-abc")
     assert result.entries == {("g", "s1"), ("g", "s2")}
     assert result.full_order == [("g", "s1"), ("g", "s2")]
@@ -121,7 +106,7 @@ def test_all_missing_run_raises_actionable_error(tmp_path: Path) -> None:
     # Remove every output for the run -> "dataset moved" signal.
     shutil.rmtree(root / "features" / "feat" / "0.1-abc")
 
-    ds = _MockDataset(root)
+    ds = MockDataset(root)
     with pytest.raises(FileNotFoundError, match="output file"):
         _resolve_feature(ds, "feat", "0.1-abc")
 
@@ -132,7 +117,7 @@ def test_partial_missing_run_skips(tmp_path: Path) -> None:
     _write_relative_feature_index(root, "feat", "0.1-abc", [("g", "s1"), ("g", "s2")])
     (root / "features" / "feat" / "0.1-abc" / "g__s1.parquet").unlink()
 
-    ds = _MockDataset(root)
+    ds = MockDataset(root)
     result = _resolve_feature(ds, "feat", "0.1-abc")
     # The surviving entry is kept; the missing one is dropped (recomputed upstream).
     assert result.entries == {("g", "s2")}
@@ -143,8 +128,7 @@ def test_partial_missing_run_skips(tmp_path: Path) -> None:
 
 
 def _dataset_with_manual_feature(tmp_path: Path) -> tuple[Dataset, str, str]:
-    manifest = new_dataset_manifest("t", base_dir=tmp_path)
-    ds = Dataset(manifest_path=manifest).load()
+    ds = make_dataset(tmp_path)
     feat, run_id = "feat", "0.1-abc"
     _write_relative_feature_index(
         ds.get_root("features").parent, feat, run_id, [("g", "s1"), ("g", "s2")]
@@ -193,25 +177,8 @@ def test_reindex_keeps_relocated_present_rows(tmp_path: Path) -> None:
 
 
 def test_run_feature_writes_relative_paths(tmp_path: Path) -> None:
-    manifest = new_dataset_manifest("t", base_dir=tmp_path)
-    ds = Dataset(manifest_path=manifest).load()
-    tracks_root = ds.get_root("tracks")
-    rows = []
-    for group, sequence in [("g", "s1"), ("g", "s2")]:
-        n = 12
-        df = pd.DataFrame(
-            {
-                "frame": range(n),
-                "time": [f / 30.0 for f in range(n)],
-                "id": [0] * n,
-                "X": np.linspace(0.0, 5.0, n),
-                "Y": np.linspace(0.0, 2.0, n),
-            }
-        )
-        path = tracks_root / f"{group}__{sequence}.parquet"
-        df.to_parquet(path)
-        rows.append({"group": group, "sequence": sequence, "abs_path": str(path)})
-    pd.DataFrame(rows).to_csv(tracks_root / "index.csv", index=False)
+    ds = make_dataset(tmp_path)
+    add_track_sequences(ds, ("g", "s1"), ("g", "s2"), n_rows=12)
 
     pipe = Pipeline()
     pipe.add(FeatureStep("speed", SpeedAngvel, {"step_size": 1}))
