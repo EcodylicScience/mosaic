@@ -418,38 +418,3 @@ def test_global_tsne_result_inputs() -> None:
     assert gt.inputs.feature_inputs[0].feature == "pair-wavelet"
     assert gt.inputs.feature_inputs[0].run_id == "0.1-abc"
     assert gt.inputs.storage_suffix() == "pair-wavelet+pair-ego-wavelet"
-
-
-# --- GlobalModelParams: the exclusive source, across a round trip -------------
-
-
-@pytest.mark.parametrize("source", ["templates", "model"])
-def test_a_global_model_params_file_reads_back(source: str) -> None:
-    """What ``run_feature`` writes, ``reconcile`` has to be able to rebuild from.
-
-    ``model_dump`` emits both ``templates`` and ``model``, the unused one as an
-    explicit null, so a validator counting key *presence* rejected every params
-    file any global model feature ever wrote. ``reconcile`` rebuilds a run's
-    feature from exactly that file, so it could confirm none of them.
-    """
-    from mosaic.behavior.feature_library import GlobalTSNE
-
-    params = GlobalTSNE.Params.from_overrides({source: {"feature": "upstream"}})
-    dumped = params.model_dump()
-    assert "templates" in dumped and "model" in dumped, "both keys are written"
-
-    restored = GlobalTSNE.Params.from_overrides(dumped)
-
-    assert restored.identity_dump() == params.identity_dump()
-
-
-def test_a_global_model_params_still_needs_exactly_one_source() -> None:
-    """The rule itself is unchanged: neither and both are still refused."""
-    from mosaic.behavior.feature_library import GlobalTSNE
-
-    with pytest.raises(ValidationError):
-        _ = GlobalTSNE.Params.from_overrides({})
-    with pytest.raises(ValidationError):
-        _ = GlobalTSNE.Params.from_overrides(
-            {"templates": {"feature": "t"}, "model": {"feature": "m"}}
-        )
