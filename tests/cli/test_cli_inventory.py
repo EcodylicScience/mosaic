@@ -10,17 +10,15 @@ from typer.testing import CliRunner
 from mosaic.cli import app
 from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
+from tests.helpers import invoke_json
 
 runner = CliRunner()
 
 
 def _json(ds: Dataset, *extra: str) -> dict[str, object]:
-    result = runner.invoke(
-        app,
-        ["inventory", "--manifest", str(ds.manifest_path), "--json", *extra],
+    return invoke_json(
+        ["inventory", "--manifest", str(ds.manifest_path), "--json", *extra]
     )
-    assert result.exit_code == 0, result.output
-    return json.loads(result.stdout)
 
 
 def test_it_reports_a_computed_run(scenario_dataset: Dataset) -> None:

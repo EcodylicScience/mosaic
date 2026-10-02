@@ -22,7 +22,7 @@ from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
 from mosaic.core.media.probe_row import probe_video_metadata
-from tests.helpers import add_track_sequences, make_dataset
+from tests.helpers import add_track_sequences, invoke_json, make_dataset
 
 
 runner = CliRunner()
@@ -37,20 +37,12 @@ def dataset(tmp_path: Path) -> tuple[Path, Dataset]:
     return manifest, ds
 
 
-def _run_json(args: list[str]) -> dict[str, object]:
-    result = runner.invoke(app, args)
-    assert result.exit_code == 0, (
-        f"exit={result.exit_code}\nstdout={result.stdout}\nstderr={result.stderr}"
-    )
-    return json.loads(result.stdout)
-
-
 # --- run -> status roundtrip ----------------------------------------------
 
 
 def test_run_then_status_roundtrip(dataset: tuple[Path, Dataset]) -> None:
     manifest, _ = dataset
-    payload = _run_json(
+    payload = invoke_json(
         ["run", "-m", str(manifest), "--feature", "speed-angvel", "--json"]
     )
 
@@ -65,7 +57,7 @@ def test_run_then_status_roundtrip(dataset: tuple[Path, Dataset]) -> None:
     assert payload["cache_hit"] is False
     assert payload["status"] == "finished"
 
-    status = _run_json(
+    status = invoke_json(
         [
             "status",
             "-m",
@@ -82,10 +74,10 @@ def test_run_then_status_roundtrip(dataset: tuple[Path, Dataset]) -> None:
 
 def test_second_identical_run_is_cache_hit(dataset: tuple[Path, Dataset]) -> None:
     manifest, _ = dataset
-    first = _run_json(
+    first = invoke_json(
         ["run", "-m", str(manifest), "--feature", "speed-angvel", "--json"]
     )
-    second = _run_json(
+    second = invoke_json(
         ["run", "-m", str(manifest), "--feature", "speed-angvel", "--json"]
     )
     assert second["cache_hit"] is True
@@ -130,7 +122,7 @@ def test_json_stream_separation(dataset: tuple[Path, Dataset]) -> None:
 
 def test_entries_scopes_to_one_sequence(dataset: tuple[Path, Dataset]) -> None:
     manifest, ds = dataset
-    payload = _run_json(
+    payload = invoke_json(
         [
             "run",
             "-m",
@@ -153,7 +145,9 @@ def test_entries_scopes_to_one_sequence(dataset: tuple[Path, Dataset]) -> None:
 
 def test_runs_lists_the_attempt(dataset: tuple[Path, Dataset]) -> None:
     manifest, _ = dataset
-    run = _run_json(["run", "-m", str(manifest), "--feature", "speed-angvel", "--json"])
+    run = invoke_json(
+        ["run", "-m", str(manifest), "--feature", "speed-angvel", "--json"]
+    )
     rows = json.loads(
         runner.invoke(
             app, ["runs", "-m", str(manifest), "--kind", "feature", "--json"]
@@ -165,8 +159,10 @@ def test_runs_lists_the_attempt(dataset: tuple[Path, Dataset]) -> None:
 
 def test_cancel_on_finished_run_is_noop(dataset: tuple[Path, Dataset]) -> None:
     manifest, _ = dataset
-    run = _run_json(["run", "-m", str(manifest), "--feature", "speed-angvel", "--json"])
-    res = _run_json(
+    run = invoke_json(
+        ["run", "-m", str(manifest), "--feature", "speed-angvel", "--json"]
+    )
+    res = invoke_json(
         [
             "cancel",
             "-m",
@@ -215,7 +211,7 @@ def test_cancel_on_a_dead_process_records_the_terminal_event(
 
     monkeypatch.setattr(os, "kill", gone)
 
-    res = _run_json(
+    res = invoke_json(
         ["cancel", "-m", str(manifest), "--execution-id", execution_id, "--json"]
     )
     assert res["status"] == "cancelled"
@@ -250,7 +246,7 @@ def test_a_reaped_attempt_no_longer_holds_its_run_root(
         raise ProcessLookupError(pid)
 
     monkeypatch.setattr(os, "kill", gone)
-    _ = _run_json(
+    _ = invoke_json(
         ["cancel", "-m", str(manifest), "--execution-id", execution_id, "--json"]
     )
 
@@ -279,7 +275,7 @@ def test_cancel_on_a_live_process_leaves_the_run_log_alone(
 
     monkeypatch.setattr(os, "kill", record)
 
-    res = _run_json(
+    res = invoke_json(
         ["cancel", "-m", str(manifest), "--execution-id", execution_id, "--json"]
     )
     assert res["signalled"] is True
@@ -321,7 +317,7 @@ def test_release_frees_a_root_whose_process_is_gone(
     manifest, ds = dataset
     root = _claimed_root(ds, "01ABANDONED", pid=424242, host=socket.gethostname())
 
-    res = _run_json(
+    res = invoke_json(
         ["release", "-m", str(manifest), "--execution-id", "01ABANDONED", "--json"]
     )
     assert res["released"] == [str(root)]
@@ -363,7 +359,7 @@ def test_release_refuses_a_claim_whose_process_is_still_running(
     assert result.exit_code != 0
     assert (root / INFLIGHT_MARKER_NAME).exists()
 
-    forced = _run_json(
+    forced = invoke_json(
         [
             "release",
             "-m",
@@ -383,7 +379,7 @@ def test_release_says_so_when_nothing_is_claimed(
 ) -> None:
     """Not an error: having nothing to release is the state the user wanted."""
     manifest, _ = dataset
-    res = _run_json(
+    res = invoke_json(
         ["release", "-m", str(manifest), "--execution-id", "01NOTHING", "--json"]
     )
     assert res["released"] == []
@@ -391,7 +387,7 @@ def test_release_says_so_when_nothing_is_claimed(
 
 def test_sequences(dataset: tuple[Path, Dataset]) -> None:
     manifest, _ = dataset
-    payload = _run_json(["sequences", "-m", str(manifest), "--json"])
+    payload = invoke_json(["sequences", "-m", str(manifest), "--json"])
     assert payload["sequences"] == ["s1", "s2"]
 
 
@@ -435,7 +431,7 @@ def test_sequences_narrowed_to_an_empty_group_still_succeeds(
 ) -> None:
     """--group matching nothing is not the same as having no tracks."""
     manifest, _ = dataset
-    payload = _run_json(
+    payload = invoke_json(
         ["sequences", "-m", str(manifest), "--group", "no-such-group", "--json"]
     )
     assert payload["sequences"] == []
@@ -710,7 +706,7 @@ def test_reprobe_media_names_the_facts_cell_it_rebuilds(
     assert result.exit_code == 0, result.stderr
     assert "facts cell rebuilt in the media_raw index: 1 row(s)" in result.stdout
 
-    payload = _run_json(["reprobe-media", "-m", str(ds.manifest_path), "--json"])
+    payload = invoke_json(["reprobe-media", "-m", str(ds.manifest_path), "--json"])
     # The applied run healed the cell, so the second look reports no rebuild.
     assert payload["facts_rebuilt"] == 0
 
@@ -804,7 +800,7 @@ def test_reprobe_media_dry_run_is_the_default_and_writes_nothing(
     index_path = _seed_legacy_media_index(ds, write_cfr_mp4, extra=[])
     before = index_path.read_bytes()
 
-    payload = _run_json(["reprobe-media", "-m", str(ds.manifest_path), "--json"])
+    payload = invoke_json(["reprobe-media", "-m", str(ds.manifest_path), "--json"])
 
     assert payload["changed"] is True
     assert payload["applied"] is False
@@ -823,7 +819,7 @@ def test_reprobe_media_apply_writes_the_migrated_index(
     index_path = _seed_legacy_media_index(ds, write_cfr_mp4, extra=[])
     before = index_path.read_bytes()
 
-    payload = _run_json(
+    payload = invoke_json(
         ["reprobe-media", "-m", str(ds.manifest_path), "--apply", "--json"]
     )
 
@@ -910,7 +906,7 @@ def test_reprobe_media_names_the_column_it_drops(
     assert "dropped from the media_raw index" in result.stdout
     assert "operator_note" not in read_index_header(index_path)
 
-    payload = _run_json(["reprobe-media", "-m", str(ds.manifest_path), "--json"])
+    payload = invoke_json(["reprobe-media", "-m", str(ds.manifest_path), "--json"])
     assert payload["unknown_columns_dropped"] == []
 
 
@@ -924,7 +920,7 @@ def test_reprobe_media_names_the_column_it_drops(
 
 def test_measure_tracks_is_a_dry_run_by_default(dataset: tuple[Path, Dataset]) -> None:
     manifest, ds = dataset
-    payload = _run_json(["measure-tracks", "-m", str(manifest), "--json"])
+    payload = invoke_json(["measure-tracks", "-m", str(manifest), "--json"])
 
     assert payload["applied"] is False
     assert payload["frame_extents_measured"] == 2
@@ -974,7 +970,7 @@ def test_measure_tracks_counts_each_pass_s_rewrites_by_what_it_did(
     frame = read_tracks_index(ds)
     frame[frame["run_id"] != ""].to_csv(tracks_index_path(ds), index=False)
 
-    payload = _run_json(["measure-tracks", "-m", str(manifest), "--json"])
+    payload = invoke_json(["measure-tracks", "-m", str(manifest), "--json"])
 
     cells = ("media_frames", "frames_read", "known_tail_loss")
     outcomes = {"measured": 0, "cleared": 1, "not_established": 1, "unregistered": 0}
@@ -1019,10 +1015,10 @@ def test_measure_tracks_apply_writes_each_count_cell(
         (row,) = (row for _, row in read_tracks_index(ds).iterrows())
         return read_media_frames(row), read_frames_read(row), read_known_tail_loss(row)
 
-    _ = _run_json(["measure-tracks", "-m", str(manifest), "--json"])
+    _ = invoke_json(["measure-tracks", "-m", str(manifest), "--json"])
     assert cells() == (20, 18, 2)
 
-    _ = _run_json(["measure-tracks", "-m", str(manifest), "--apply", "--json"])
+    _ = invoke_json(["measure-tracks", "-m", str(manifest), "--apply", "--json"])
     assert cells() == (None, None, None)
 
 
@@ -1030,7 +1026,7 @@ def test_measure_tracks_apply_records_the_extents(
     dataset: tuple[Path, Dataset],
 ) -> None:
     manifest, ds = dataset
-    payload = _run_json(["measure-tracks", "-m", str(manifest), "--apply", "--json"])
+    payload = invoke_json(["measure-tracks", "-m", str(manifest), "--apply", "--json"])
 
     assert payload["applied"] is True
     from mosaic.core.pipeline.tracks_index import read_frame_extents
@@ -1073,7 +1069,7 @@ def test_measure_tracks_names_a_frame_axis_that_is_not_its_media(
     manifest, ds = dataset
     _one_trex_row(ds, read=16, media=20)
 
-    payload = _run_json(["measure-tracks", "-m", str(manifest), "--apply", "--json"])
+    payload = invoke_json(["measure-tracks", "-m", str(manifest), "--apply", "--json"])
 
     assert payload["frame_axis_mismatch"] == [
         {
@@ -1098,7 +1094,7 @@ def test_measure_tracks_names_a_known_tail_loss_apart(
     manifest, ds = dataset
     _one_trex_row(ds, read=18, media=20)
 
-    payload = _run_json(["measure-tracks", "-m", str(manifest), "--apply", "--json"])
+    payload = invoke_json(["measure-tracks", "-m", str(manifest), "--apply", "--json"])
 
     assert payload["frame_axis_mismatch"] == []
     assert payload["frame_tail_short"] == [

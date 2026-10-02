@@ -11,6 +11,7 @@ What lives where:
 - ``annotations`` -- keypoint annotation sets in their saved shape, and the file
   a revision of one is claimed by.
 - ``datasets`` -- the `Dataset` a test runs against.
+- ``cli`` -- a ``mosaic`` command run for its ``--json`` output.
 - ``features`` -- the templates and per-sequence frames the global
   fit-then-apply features are tested on.
 - ``stand_in_features`` -- features that do nothing but declare the source
@@ -58,6 +59,7 @@ from tests.helpers.annotations import (
     pose_set,
     revision_file,
 )
+from tests.helpers.cli import invoke_json
 from tests.helpers.datasets import make_dataset
 from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
 from tests.helpers.environment import (
@@ -245,6 +247,7 @@ __all__ = [
     "install_fake_sleap",
     "install_fake_tool_python",
     "install_fake_trex",
+    "invoke_json",
     "install_fake_ultralytics",
     "isolate_tool_location",
     "is_section",
