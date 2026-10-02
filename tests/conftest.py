@@ -272,7 +272,9 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
         return
     skip = pytest.mark.skip(reason=f"not on PATH: {', '.join(missing)}")
     for item in items:
-        if "media" in item.keywords:
+        # The marker itself, not ``item.keywords``: keywords also hold every node
+        # name above the item, so a directory named ``media`` would match.
+        if item.get_closest_marker("media") is not None:
             item.add_marker(skip)
 
 
