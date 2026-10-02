@@ -230,17 +230,7 @@ def test_x_becomes_the_body_centre_and_the_head_is_preserved(tmp_path: Path) -> 
 def test_an_export_without_a_body_centre_refuses(tmp_path: Path) -> None:
     """The bare pair is not a substitute -- promoting it would put a head in X."""
     path = tmp_path / "seq_fish0.npz"
-    np.savez(
-        path,
-        frame=np.arange(4),
-        time=np.arange(4) / 30.0,
-        id=np.array([0]),
-        cm_per_pixel=np.array([1.0]),
-        X=np.zeros(4),
-        Y=np.zeros(4),
-        poseX0=np.zeros(4),
-        poseY0=np.zeros(4),
-    )
+    write_trex_npz(path, n=4, omit=("X#wcentroid", "Y#wcentroid"))
     with pytest.raises(MissingBodyCentreError, match="wcentroid"):
         _ = _convert(path)
 
@@ -248,17 +238,7 @@ def test_an_export_without_a_body_centre_refuses(tmp_path: Path) -> None:
 def test_an_export_without_a_calibration_refuses(tmp_path: Path) -> None:
     """Assuming 1.0 would read a calibrated file's centimetres as pixels."""
     path = tmp_path / "seq_fish0.npz"
-    np.savez(
-        path,
-        frame=np.arange(4),
-        time=np.arange(4) / 30.0,
-        id=np.array([0]),
-        X=np.zeros(4),
-        Y=np.zeros(4),
-        poseX0=np.zeros(4),
-        poseY0=np.zeros(4),
-        **{"X#wcentroid": np.zeros(4), "Y#wcentroid": np.zeros(4)},
-    )
+    write_trex_npz(path, n=4, omit=(CALIBRATION_COLUMN,))
     with pytest.raises(MissingTrexCalibrationError, match=CALIBRATION_COLUMN):
         _ = _convert(path)
 
@@ -470,9 +450,7 @@ def test_an_unclassified_field_still_refuses_a_calibrated_table(
 
 def _write_uncalibrated(path: Path, *, n: int = 8, **columns: np.ndarray) -> None:
     """A pre-2025 export: everything TRex writes today, minus the factor."""
-    write_trex_npz(path, n=n, **columns)
-    kept = {k: v for k, v in np.load(path).items() if k != CALIBRATION_COLUMN}
-    np.savez(path, **kept)
+    write_trex_npz(path, n=n, omit=(CALIBRATION_COLUMN,), **columns)
 
 
 def _convert_scaled(path: Path, factor: float) -> pd.DataFrame:

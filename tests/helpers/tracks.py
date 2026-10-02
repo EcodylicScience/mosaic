@@ -127,6 +127,7 @@ def write_trex_npz(
     individual: int | None = None,
     n: int = 8,
     cm_per_pixel: float = 1.0,
+    omit: Sequence[str] = (),
     **columns: np.ndarray,
 ) -> None:
     """Write a per-individual TREx export carrying what TREx always writes.
@@ -151,6 +152,10 @@ def write_trex_npz(
     names each file for the individual it holds -- ``myseq_fish0.npz`` beside
     ``myseq_fish1.npz``. Defaulting it to a constant instead would give a
     sequence's several files one id and quietly collapse them into one animal.
+
+    ``omit`` names fields to leave out, for an export lacking one that TREx
+    writes today: one made before TREx recorded ``cm_per_pixel``, or one a
+    converter has to refuse. Naming a field the export does not hold raises.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if individual is None:
@@ -171,7 +176,9 @@ def write_trex_npz(
         "poseY0": centre_y,
     }
     fields.update(columns)
-    np.savez(path, **fields)
+    for name in omit:
+        del fields[name]
+    np.savez(path, allow_pickle=False, **fields)
 
 
 type SleapPreset = Literal["matlab", "standard"]
