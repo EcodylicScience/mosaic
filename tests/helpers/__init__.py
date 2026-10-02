@@ -103,6 +103,7 @@ from tests.helpers.media import (
     clip_facts,
     dot_image,
     index_media_sequence,
+    index_session,
     paint_frame_code,
     point_at_a_store,
     read_frame_code,
@@ -118,12 +119,7 @@ from tests.helpers.media import (
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.models import register_trained_model
 from tests.helpers.ops import minimal_op_params
-from tests.helpers.paths import (
-    GOLDEN_DIR,
-    REPO_ROOT,
-    SOURCE_ROOT,
-    TESTS_ROOT,
-)
+from tests.helpers.paths import GOLDEN_DIR, REPO_ROOT, SOURCE_ROOT, TESTS_ROOT
 from tests.helpers.runlog import entry_error_lines, latest_events, latest_snapshot
 from tests.helpers.scope import resolved_scope, scope_over
 from tests.helpers.source_scan import (
@@ -134,15 +130,8 @@ from tests.helpers.source_scan import (
     source_tree,
 )
 from tests.helpers.documents import dotted_values, is_section
-from tests.helpers.stand_in_features import (
-    CropLike,
-    PlainFeature,
-)
-from tests.helpers.training import (
-    FakeTrainer,
-    healthy_probe,
-    write_data_yaml,
-)
+from tests.helpers.stand_in_features import CropLike, PlainFeature
+from tests.helpers.training import FakeTrainer, healthy_probe, write_data_yaml
 from tests.helpers.tracks import (
     add_track_sequences,
     add_tracks_variant,
@@ -165,17 +154,9 @@ from tests.helpers.inference import (
     pose_per_frame,
     pose_predictions,
 )
-from tests.helpers.litpose import (
-    FakeLitpose,
-    install_fake_litpose,
-    write_litpose_model,
-)
+from tests.helpers.litpose import FakeLitpose, install_fake_litpose, write_litpose_model
 from tests.helpers.sleap import FakeSleap, install_fake_sleap, write_sleap_model
-from tests.helpers.trex import (
-    FakeTrex,
-    install_fake_trex,
-    write_pv_header,
-)
+from tests.helpers.trex import FakeTrex, install_fake_trex, write_pv_header
 from tests.helpers.ultralytics import (
     FakeDetections,
     FakeResult,
@@ -240,6 +221,7 @@ __all__ = [
     "finish_media_variant",
     "functions_named",
     "index_media_sequence",
+    "index_session",
     "inside_a_virtualenv",
     "install_fake_litpose",
     "install_fake_point_inference",

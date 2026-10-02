@@ -499,6 +499,41 @@ def stub_media_dataset(base: Path, sequences: Sequence[str]) -> Dataset:
     return dataset
 
 
+def index_session(
+    dataset: Dataset,
+    *filenames: str,
+    widths: Mapping[str, int] | None = None,
+    frame_count: int = 100,
+    joined: bool = True,
+) -> None:
+    """Index *filenames* as the clips of one sequence, ``sess``, in the order given.
+
+    Each clip's identity is ``uid-<filename>``. *widths* overrides a clip's frame
+    width, for a case that needs clips which cannot be read as one video.
+    *frame_count* is how many frames each clip holds, so a caller can state the
+    media axis a table is compared against. *joined* also writes the joined export
+    a multi-clip entry resolves to. ``False`` leaves it absent, which a run must
+    refuse.
+    """
+    sizes = widths or {}
+    write_media_index(
+        dataset,
+        [
+            MediaClip(
+                sequence="sess",
+                filename=name,
+                video_order=order,
+                video_uuid=f"uid-{name}",
+                width=sizes.get(name, 640),
+                frame_count=frame_count,
+            )
+            for order, name in enumerate(filenames)
+        ],
+    )
+    if len(filenames) > 1 and joined:
+        _ = stub_join(dataset, [f"uid-{name}" for name in filenames])
+
+
 def stub_join(dataset: Dataset, uids: Sequence[str]) -> Path:
     """Write a placeholder join of the clips whose identities are *uids*, in order.
 

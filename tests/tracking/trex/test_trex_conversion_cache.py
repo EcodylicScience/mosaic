@@ -60,11 +60,6 @@ def ds(tmp_path: Path) -> Dataset:
     return dataset
 
 
-@pytest.fixture
-def trex(monkeypatch: pytest.MonkeyPatch) -> FakeTrex:
-    return install_fake_trex(monkeypatch)
-
-
 def slot_of(ds: Dataset, uid: str = "uid-vid1") -> Path:
     """The one published slot, found by walking rather than by recomputing it."""
     root = ds.get_root(CONVERT_KIND)

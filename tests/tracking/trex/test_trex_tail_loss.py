@@ -34,11 +34,15 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from mosaic.tracking.trex.params import TrexParams
 from tests.helpers import (
+    FakeTrex,
     MediaClip,
     clip_facts,
+    index_session,
     install_fake_trex,
     latest_snapshot,
+    latest_events,
     make_dataset,
+    scope_over,
     set_tracks_cell,
     stub_join,
     write_h264_mp4,
@@ -498,3 +502,58 @@ def _losses(ds: Dataset) -> dict[str, int | None]:
         str(row["sequence"]): read_known_tail_loss(row)
         for _, row in read_tracks_index(ds).iterrows()
     }
+
+
+# --- a run over a clip whose header is not read -------------------------------
+
+
+def _tail_events(ds: Dataset) -> list[tuple[object, object]]:
+    return [
+        (record["read"], record["media"])
+        for record in latest_events(ds, "frame_tail_short")
+    ]
+
+
+def test_a_conversion_short_within_the_declared_tail_is_a_tail_loss(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """TREx reads a file only as far as it counted, and it counts short.
+
+    Here it reads short by no more than its root declares, so the shortfall is
+    recorded as a known tail loss, in its own event and counter, and not as a
+    mismatch. The stub clip has no header to read, so the most TREx loses on any
+    file is allowed, and the record says so.
+    """
+    tail = _trex_loss().most
+    trex.npz_frames, trex.pv_frames = 280, 300 - tail
+    index_session(ds, "c0.mp4", frame_count=300)
+
+    _ = trex_runs.run_trex(ds, TrexParams(), scope_over(("", "sess")))
+
+    assert ds.frame_axis_mismatches() == ()
+    (found,) = ds.frame_tail_shortfalls()
+    assert (found.read, found.media) == (300 - tail, 300)
+    assert (found.allowance.frames, found.allowance.known) == (tail, False)
+    assert _tail_events(ds) == [(300 - tail, 300)]
+    snapshot = latest_snapshot(ds)
+    assert snapshot["entries_frame_tail_short"] == 1
+    assert snapshot["entries_frame_axis_mismatch"] == 0
+    assert snapshot["status"] == "finished"
+
+
+def test_a_conversion_short_beyond_the_declared_tail_is_a_mismatch(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    tail = _trex_loss().most
+    trex.npz_frames, trex.pv_frames = 280, 299 - tail
+    index_session(ds, "c0.mp4", frame_count=300)
+
+    _ = trex_runs.run_trex(ds, TrexParams(), scope_over(("", "sess")))
+
+    assert ds.frame_tail_shortfalls() == ()
+    (found,) = ds.frame_axis_mismatches()
+    assert (found.read, found.media) == (299 - tail, 300)
+    assert _tail_events(ds) == []
+    snapshot = latest_snapshot(ds)
+    assert snapshot["entries_frame_axis_mismatch"] == 1
+    assert snapshot["entries_frame_tail_short"] == 0

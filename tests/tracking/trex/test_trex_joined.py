@@ -15,9 +15,20 @@ import pandas as pd
 import pytest
 from mosaic_media import MediaFacts
 
+import mosaic.tracking.trex.dataset_runs as dr
+from mosaic.core.dataset import Dataset
 from mosaic.core.media.timeline import concatenated_timeline
 from mosaic.core.pipeline.placement import retime_joined_frame
-from tests.helpers import clip_facts
+from mosaic.tracking.trex.params import TrexParams
+from tests.helpers import (
+    FakeTrex,
+    clip_facts,
+    index_session,
+    latest_events,
+    latest_snapshot,
+    published_table,
+    scope_over,
+)
 
 
 # Clip length matters here, and is not incidental. `rate_uniform` measures
@@ -162,3 +173,31 @@ class TestOneClip:
 def test_the_facts_helper_is_the_shared_one() -> None:
     """Guards the shared builder this file leans on."""
     assert isinstance(clip_facts(), MediaFacts)
+
+
+# --- a run over a session -----------------------------------------------------
+
+
+def test_a_joined_session_reports_the_columns_its_retiming_dropped(
+    ds: Dataset, trex: FakeTrex
+) -> None:
+    """TREx mints ``timestamp`` from its frame index and one rate.
+
+    The timeline of the clips' measured rates replaces it, and the run-log names
+    it, as it names the columns that a media variant's mapping drops.
+    """
+    import numpy as np
+
+    trex.npz_frames = 600
+    trex.extra_fields = {"timestamp": np.arange(600) / 30.0}
+    index_session(ds, "c0.mp4", "c1.mp4", frame_count=300)
+
+    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
+
+    table = published_table(ds, "trex")
+    assert "timestamp" not in table.columns
+    snapshot = latest_snapshot(ds)
+    assert snapshot["entries_columns_dropped"] == 1
+    assert snapshot["status"] == "finished"
+    dropped = [record["columns"] for record in latest_events(ds, "columns_dropped")]
+    assert dropped == [["timestamp"]]

@@ -45,14 +45,8 @@ from mosaic.core.pipeline.markers import (
     read_phase_marker,
     write_inflight,
 )
-from mosaic.core.params import (
-    Declared,
-    Params,
-)
-from mosaic.tracking.common.params import (
-    PhasedTrackerOpParams,
-    refuse_unphased_fields,
-)
+from mosaic.core.params import Declared, Params
+from mosaic.tracking.common.params import PhasedTrackerOpParams, refuse_unphased_fields
 from mosaic.tracking.trex.conversion_cache import CONVERT_KIND
 from mosaic.tracking.trex.dataset_runs import trex_index_path
 from mosaic.tracking.trex.params import TrexParams
@@ -60,29 +54,13 @@ from mosaic.tracking.trex.run import TRexConvertResult
 from tests.helpers import (
     FakeTrex,
     MediaClip,
+    index_session,
     install_fake_trex,
-    latest_events,
-    latest_snapshot,
-    make_dataset,
     scope_over,
-    stub_join,
     write_media_index,
 )
 
-# --- fixtures --------------------------------------------------------------
-
-
-@pytest.fixture
-def ds(tmp_path: Path) -> Dataset:
-    """A dataset with one sequence, ``vid1``, backed by ``vid1.mp4``."""
-    dataset = make_dataset(tmp_path)
-    write_media_index(dataset, [MediaClip(sequence="vid1", filename="vid1.mp4")])
-    return dataset
-
-
-@pytest.fixture
-def trex(monkeypatch: pytest.MonkeyPatch) -> FakeTrex:
-    return install_fake_trex(monkeypatch)
+# --- where a run writes ----------------------------------------------------
 
 
 def seq_dir_of(ds: Dataset, run_id: str, key: str = "vid1") -> Path:
@@ -674,40 +652,6 @@ def test_an_absent_uid_still_falls_back_to_the_path(
 # cannot see.
 
 
-def _session(
-    ds: Dataset,
-    *names: str,
-    widths: dict[str, int] | None = None,
-    frame_count: int = 100,
-    joined: bool = True,
-) -> None:
-    """Put *names* in one sequence, in the order given, each with an identity.
-
-    *widths* overrides a clip's frame width, for the one case that needs clips
-    which cannot be read as one video. *frame_count* is how many frames each clip
-    holds, so a caller can state the media axis its export is to be compared
-    against. *joined* also writes the joined export a multi-clip entry now
-    resolves to; ``False`` leaves it absent, which is what a run must refuse.
-    """
-    sizes = widths or {}
-    write_media_index(
-        ds,
-        [
-            MediaClip(
-                sequence="sess",
-                filename=name,
-                video_order=order,
-                video_uuid=f"uid-{name}",
-                width=sizes.get(name, 640),
-                frame_count=frame_count,
-            )
-            for order, name in enumerate(names)
-        ],
-    )
-    if len(names) > 1 and joined:
-        _ = stub_join(ds, [f"uid-{name}" for name in names])
-
-
 def test_a_session_converts_once_from_the_joined_video(
     ds: Dataset, trex: FakeTrex
 ) -> None:
@@ -717,7 +661,7 @@ def test_a_session_converts_once_from_the_joined_video(
     it lost the tail of each one. It is handed one video now, so there are no
     boundaries for it to lose frames at and no arrangement for it to get wrong.
     """
-    _session(ds, "c0.mp4", "c1.mp4", "c2.mp4")
+    index_session(ds, "c0.mp4", "c1.mp4", "c2.mp4")
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
 
     assert len(trex.sources) == 1, "three clips, one conversion"
@@ -732,7 +676,7 @@ def test_a_session_with_no_joined_video_is_refused_naming_the_command(
     """Refused, not silently truncated and not silently joined by the tool."""
     from mosaic.core.pipeline.joined_export import JoinedExportMissingError
 
-    _session(ds, "c0.mp4", "c1.mp4", "c2.mp4", joined=False)
+    index_session(ds, "c0.mp4", "c1.mp4", "c2.mp4", joined=False)
 
     with pytest.raises(JoinedExportMissingError, match="export-joined"):
         _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
@@ -749,7 +693,7 @@ def test_the_pv_is_named_for_the_entry_not_the_first_clip(
     not decide what a directory several runs read is called. What this guards is
     unchanged -- the name is chosen, never inherited from the clips.
     """
-    _session(ds, "c0.mp4", "c1.mp4")
+    index_session(ds, "c0.mp4", "c1.mp4")
     run_id = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
     seq_dir = seq_dir_of(ds, run_id, "sess")
     marker = read_phase_marker(seq_dir, "convert")
@@ -761,7 +705,7 @@ def test_the_pv_is_named_for_the_entry_not_the_first_clip(
 
 
 def test_an_unchanged_session_is_reused(ds: Dataset, trex: FakeTrex) -> None:
-    _session(ds, "c0.mp4", "c1.mp4")
+    index_session(ds, "c0.mp4", "c1.mp4")
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
     assert len(trex.sources) == 1
@@ -769,9 +713,9 @@ def test_an_unchanged_session_is_reused(ds: Dataset, trex: FakeTrex) -> None:
 
 def test_adding_a_clip_forces_a_recompute(ds: Dataset, trex: FakeTrex) -> None:
     """What the first clip's uid cannot see, and the composition can."""
-    _session(ds, "c0.mp4", "c1.mp4")
+    index_session(ds, "c0.mp4", "c1.mp4")
     first = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
-    _session(ds, "c0.mp4", "c1.mp4", "c2.mp4")
+    index_session(ds, "c0.mp4", "c1.mp4", "c2.mp4")
     second = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
 
     assert len(trex.sources) == 2, "the added clip must invalidate the conversion"
@@ -779,15 +723,15 @@ def test_adding_a_clip_forces_a_recompute(ds: Dataset, trex: FakeTrex) -> None:
 
 
 def test_reordering_the_clips_forces_a_recompute(ds: Dataset, trex: FakeTrex) -> None:
-    _session(ds, "c0.mp4", "c1.mp4")
+    index_session(ds, "c0.mp4", "c1.mp4")
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
-    _session(ds, "c1.mp4", "c0.mp4")
+    index_session(ds, "c1.mp4", "c0.mp4")
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
     assert len(trex.sources) == 2
 
 
 def test_the_row_records_the_whole_arrangement(ds: Dataset, trex: FakeTrex) -> None:
-    _session(ds, "c0.mp4", "c1.mp4")
+    index_session(ds, "c0.mp4", "c1.mp4")
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
     # Through the typed reader, which is the documented read path: it projects
     # to the schema and reads a blank cell as "", where a raw read_csv gives NaN.
@@ -814,7 +758,7 @@ def test_a_single_video_row_says_so(ds: Dataset, trex: FakeTrex) -> None:
 def test_a_resolution_mismatch_is_refused_before_trex_runs(
     ds: Dataset, trex: FakeTrex
 ) -> None:
-    _session(ds, "c0.mp4", "c1.mp4", widths={"c1.mp4": 1280})
+    index_session(ds, "c0.mp4", "c1.mp4", widths={"c1.mp4": 1280})
 
     with pytest.raises(JoinedSourceMismatchError, match="c1.mp4"):
         _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
@@ -833,7 +777,7 @@ def test_a_joined_entry_is_not_adopted(ds: Dataset, trex: FakeTrex) -> None:
     exactly the thing a marker-less directory cannot demonstrate -- and that is a
     different question, covered separately.
     """
-    _session(ds, "c0.mp4", "c1.mp4")
+    index_session(ds, "c0.mp4", "c1.mp4")
     run_id = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
     seq_dir = seq_dir_of(ds, run_id, "sess")
     for marker in seq_dir.glob(".mosaic-*.json"):
@@ -857,7 +801,7 @@ def test_a_joined_session_reuses_a_slot_that_proves_its_composition(
     conversion is therefore reused and only the tracking redone -- the opposite
     of adoption, which would have skipped both on no evidence at all.
     """
-    _session(ds, "c0.mp4", "c1.mp4")
+    index_session(ds, "c0.mp4", "c1.mp4")
     run_id = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
     seq_dir = seq_dir_of(ds, run_id, "sess")
     for marker in seq_dir.glob(".mosaic-*.json"):
@@ -867,237 +811,3 @@ def test_a_joined_session_reuses_a_slot_that_proves_its_composition(
     _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
     assert len(trex.sources) == 1, "the slot's conversion covers this clip set"
     assert len(trex.tracked) == 1, "tracking is redone, never adopted"
-
-
-# --- the frame axis of a joined conversion ---------------------------------
-#
-# TREx's `FFmpegVideoCapture` under-counts every file it opens and then reads
-# only as many frames as it counted, so a session's clips convert into a `.pv`
-# that has dropped the tail of each one. Measured on a six-clip fixture carrying
-# its own frame numbers: 1,800 media frames converted to 1,788, the offset
-# constant inside each clip and stepping by two at every boundary. The published
-# table is then numbered on the tracker's axis while every consumer that reads
-# pixels is on the media's -- right at the start of a sequence and progressively
-# wrong through it.
-#
-# mosaic cannot correct that (it holds no map from one axis to the other, and
-# TREx records none), so what these pin is that it is *measured and reported*,
-# and that reporting it costs the table nothing.
-
-
-def _tracks_row(ds: Dataset) -> "pd.Series[object]":
-    from mosaic.core.pipeline.tracks_index import read_tracks_index
-
-    frame = read_tracks_index(ds)
-    assert len(frame) == 1
-    return frame.iloc[0]
-
-
-def test_a_joined_session_records_the_length_of_its_media(
-    ds: Dataset, trex: FakeTrex
-) -> None:
-    """The comparison needs both numbers, and this is where the second is taken."""
-    from mosaic.core.pipeline.tracks_index import read_media_frames
-
-    trex.npz_frames = 600
-    _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
-
-    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
-
-    assert read_media_frames(_tracks_row(ds)) == 600
-    assert latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
-
-
-def test_a_short_joined_conversion_records_both_numbers(
-    ds: Dataset, trex: FakeTrex
-) -> None:
-    """The defect itself: 596 frames published against 600 frames of media."""
-    from mosaic.core.pipeline.tracks_index import read_frame_extent, read_media_frames
-
-    trex.npz_frames = 596
-    _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
-
-    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
-
-    row = _tracks_row(ds)
-    assert read_media_frames(row) == 600
-    assert read_frame_extent(row) == (0, 595)
-    (found,) = ds.frame_axis_mismatches()
-    assert (found.group, found.sequence) == ("", "sess")
-    assert (found.read, found.media) == (596, 600)
-
-
-def test_a_short_joined_conversion_reports_itself_on_the_run_log(
-    ds: Dataset, trex: FakeTrex
-) -> None:
-    """The record that survives a queue sending the child's stderr to DEVNULL."""
-    trex.npz_frames = 596
-    _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
-
-    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
-
-    assert latest_snapshot(ds)["entries_frame_axis_mismatch"] == 1
-
-
-def test_a_short_joined_conversion_still_publishes_a_usable_table(
-    ds: Dataset, trex: FakeTrex
-) -> None:
-    """Recorded, never refused -- and this is the assertion that holds that line.
-
-    Raising instead would be permanent. The condition is deterministic, so every
-    re-run fails the same entry, and a published table cannot be re-bridged
-    without re-tracking. Everything computed inside the table is unaffected by
-    the axis being short, so throwing it away would cost the analyses that never
-    depended on registration in order to flag the one thing that does.
-    """
-    trex.npz_frames = 596
-    _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
-
-    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
-
-    row = _tracks_row(ds)
-    table = ds.resolve_path(str(row["abs_path"]))
-    assert pd.read_parquet(table).shape[0] == 596
-    snapshot = latest_snapshot(ds)
-    assert snapshot["entries_failed"] == 0
-    assert snapshot["entries_written"] == 1
-    assert snapshot["status"] == "finished"
-
-
-def test_a_joined_session_reports_the_columns_its_retiming_dropped(
-    ds: Dataset, trex: FakeTrex
-) -> None:
-    """TREx mints ``timestamp`` from its frame index and one rate.
-
-    The timeline of the clips' measured rates replaces it, and the run-log names
-    it, as it names the columns that a media variant's mapping drops.
-    """
-    import numpy as np
-
-    trex.npz_frames = 600
-    trex.extra_fields = {"timestamp": np.arange(600) / 30.0}
-    _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
-
-    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
-
-    table = pd.read_parquet(ds.resolve_path(str(_tracks_row(ds)["abs_path"])))
-    assert "timestamp" not in table.columns
-    snapshot = latest_snapshot(ds)
-    assert snapshot["entries_columns_dropped"] == 1
-    assert snapshot["status"] == "finished"
-    dropped = [record["columns"] for record in latest_events(ds, "columns_dropped")]
-    assert dropped == [["timestamp"]]
-
-
-@pytest.mark.parametrize(
-    "window",
-    [
-        {"analysis_range": (0, 100)},
-        {"track_extra_settings": {"analysis_range": [0, 100]}},
-        {"convert_extra_settings": {"video_conversion_range": [0, 100]}},
-    ],
-    ids=["field", "track-setting", "convert-setting"],
-)
-def test_an_analysis_range_run_asks_no_question(
-    ds: Dataset, trex: FakeTrex, window: dict[str, object]
-) -> None:
-    """A run told to cover part of the video is not a run that lost the rest.
-
-    The range may be the field or a frame setting passed through to TREx.
-    """
-    from mosaic.core.pipeline.tracks_index import read_media_frames
-
-    trex.npz_frames = 100
-    _session(ds, "c0.mp4", "c1.mp4", frame_count=300)
-
-    _ = dr.run_trex(ds, TrexParams.model_validate(window), scope_over(("", "sess")))
-
-    assert read_media_frames(_tracks_row(ds)) is None
-    assert ds.frame_axis_mismatches() == ()
-    assert latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
-
-
-def test_a_table_that_ends_early_is_not_a_short_conversion(
-    ds: Dataset, trex: FakeTrex
-) -> None:
-    """Nobody is tracked in the last twenty frames, and the ``.pv`` holds them all.
-
-    ``frame_max`` is the last frame carrying a row, not the last frame the tracker
-    saw: TREx exports each individual from its first tracked frame to its last.
-    Compared with the media, it would report an animal that leaves before the end
-    as a broken frame axis on every ordinary run. What TREx read is the ``.pv``'s
-    frame count, and that is what the media is compared with.
-    """
-    from mosaic.core.pipeline.tracks_index import read_frame_extent, read_media_frames
-
-    trex.npz_frames, trex.pv_frames = 280, 300
-    _session(ds, "c0.mp4", frame_count=300)
-
-    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
-
-    row = _tracks_row(ds)
-    assert read_frame_extent(row) == (0, 279)
-    assert read_media_frames(row) == 300
-    assert ds.frame_axis_mismatches() == ()
-    assert latest_snapshot(ds)["entries_frame_axis_mismatch"] == 0
-
-
-def _tail_events(ds: Dataset) -> list[tuple[object, object]]:
-    return [
-        (record["read"], record["media"])
-        for record in latest_events(ds, "frame_tail_short")
-    ]
-
-
-def _most_trex_loses() -> int:
-    """The most TREx leaves unread at the end of any file, as its root declares."""
-    from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
-
-    loss = TRACKING_ROOTS["trex"].tail_loss
-    assert loss is not None
-    return loss.most
-
-
-def test_a_conversion_short_within_the_declared_tail_is_a_tail_loss(
-    ds: Dataset, trex: FakeTrex
-) -> None:
-    """TREx reads a file only as far as it counted, and it counts short.
-
-    Here it reads short by no more than its root declares, so the shortfall is
-    recorded as a known tail loss, in its own event and counter, and not as a
-    mismatch. The stub clip has no header to read, so the most TREx loses on any
-    file is allowed, and the record says so.
-    """
-    tail = _most_trex_loses()
-    trex.npz_frames, trex.pv_frames = 280, 300 - tail
-    _session(ds, "c0.mp4", frame_count=300)
-
-    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
-
-    assert ds.frame_axis_mismatches() == ()
-    (found,) = ds.frame_tail_shortfalls()
-    assert (found.read, found.media) == (300 - tail, 300)
-    assert (found.allowance.frames, found.allowance.known) == (tail, False)
-    assert _tail_events(ds) == [(300 - tail, 300)]
-    snapshot = latest_snapshot(ds)
-    assert snapshot["entries_frame_tail_short"] == 1
-    assert snapshot["entries_frame_axis_mismatch"] == 0
-    assert snapshot["status"] == "finished"
-
-
-def test_a_conversion_short_beyond_the_declared_tail_is_a_mismatch(
-    ds: Dataset, trex: FakeTrex
-) -> None:
-    tail = _most_trex_loses()
-    trex.npz_frames, trex.pv_frames = 280, 299 - tail
-    _session(ds, "c0.mp4", frame_count=300)
-
-    _ = dr.run_trex(ds, TrexParams(), scope_over(("", "sess")))
-
-    assert ds.frame_tail_shortfalls() == ()
-    (found,) = ds.frame_axis_mismatches()
-    assert (found.read, found.media) == (299 - tail, 300)
-    assert _tail_events(ds) == []
-    snapshot = latest_snapshot(ds)
-    assert snapshot["entries_frame_axis_mismatch"] == 1
-    assert snapshot["entries_frame_tail_short"] == 0
