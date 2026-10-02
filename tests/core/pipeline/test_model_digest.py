@@ -137,10 +137,10 @@ def test_an_unresolvable_reference_still_raises(tmp_path: Path) -> None:
 # pair. Those spellings reach ``hash_params``, so they name every tracks variant
 # either tracker has ever written.
 #
-# Nothing pinned them. The tests in ``test_tracking_ops.py`` are relational --
-# they assert two models differ, or that order matters -- and every one of them
-# stays green through a rename of a payload key, which would silently re-mint
-# identities on disk that no reconcile was asked for.
+# Nothing pinned them. The tests in ``test_sleap_op.py`` and ``test_litpose_op.py``
+# are relational -- they assert two models differ, or that order matters -- and
+# every one of them stays green through a rename of a payload key, which would
+# silently re-mint identities on disk that no reconcile was asked for.
 #
 # So: fixed bytes in, exact identifier out. blake2b over fixed bytes is
 # machine-independent, and ``hash_params`` sorts keys, so these are stable

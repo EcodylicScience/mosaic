@@ -17,7 +17,7 @@ None of this path had any test coverage, so these are the first regression net
 over it as well as the proof of the fixes.
 
 TREx itself never runs: ``run_trex_convert`` / ``run_trex_track`` are replaced
-with recording fakes, the established shape in ``test_tracking_ops.py``.
+with recording fakes, the established shape in ``test_trex_op.py``.
 """
 
 from __future__ import annotations
