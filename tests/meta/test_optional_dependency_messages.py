@@ -27,9 +27,7 @@ import tomllib
 from pathlib import Path
 from typing import cast
 
-from tests.helpers import REPO_ROOT, inside_a_virtualenv
-
-_SRC = REPO_ROOT / "src" / "mosaic"
+from tests.helpers import REPO_ROOT, SOURCE_ROOT, inside_a_virtualenv
 
 # `pip install "mosaic-behavior[x,y]"`, in any of the quoting styles the source
 # uses. The distribution name is part of the pattern deliberately: a message
@@ -68,8 +66,8 @@ def _python_sources() -> list[Path]:
     """
     return [
         source
-        for source in sorted(_SRC.rglob("*.py"))
-        if not inside_a_virtualenv(source, _SRC)
+        for source in sorted(SOURCE_ROOT.rglob("*.py"))
+        if not inside_a_virtualenv(source, SOURCE_ROOT)
     ]
 
 
@@ -83,7 +81,7 @@ def test_every_extra_named_in_a_message_is_declared() -> None:
             # Its module docstring quotes the historical bug verbatim.
             continue
         for match in _INSTALL_HINT.finditer(path.read_text()):
-            hinting.add(str(path.relative_to(_SRC)))
+            hinting.add(str(path.relative_to(SOURCE_ROOT)))
             for name in match.group(1).split(","):
                 if name.strip() not in declared:
                     rel = path.relative_to(REPO_ROOT)
@@ -127,7 +125,7 @@ def test_every_require_call_names_a_declared_extra() -> None:
             if not isinstance(extra, ast.Constant) or not isinstance(extra.value, str):
                 bad.append(f"{path.relative_to(REPO_ROOT)} passes a non-literal extra")
                 continue
-            calling.add(str(path.relative_to(_SRC)))
+            calling.add(str(path.relative_to(SOURCE_ROOT)))
             if extra.value not in declared:
                 bad.append(f"{path.relative_to(REPO_ROOT)} requires [{extra.value}]")
     assert _REQUIRE_WITNESS in calling, (

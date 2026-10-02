@@ -24,7 +24,7 @@ from mosaic.core.stored_paths import resolve_stored_path
 from mosaic.user_paths import user_path
 
 from tests.helpers import (
-    REPO_ROOT,
+    SOURCE_ROOT,
     assert_no_literal_tilde,
     inside_a_virtualenv,
     runs_in_an_external_environment,
@@ -101,7 +101,7 @@ def test_expanduser_is_called_in_exactly_one_place() -> None:
     regression that would make the boundary unreviewable again, so it is the
     thing pinned -- narrowly, by name, with a one-line repair.
     """
-    package = REPO_ROOT / "src" / "mosaic"
+    package = SOURCE_ROOT
     home = package / "user_paths.py"
 
     offenders: list[str] = []

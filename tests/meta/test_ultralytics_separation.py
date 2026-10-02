@@ -48,7 +48,7 @@ from mosaic.tracking.common.toolenv import (
 )
 from mosaic.tracking.common.ultralytics_env import POLO_ENV, ULTRALYTICS_ENV
 
-from tests.helpers import REPO_ROOT, inside_a_virtualenv
+from tests.helpers import REPO_ROOT, SOURCE_ROOT, inside_a_virtualenv
 
 # Selected by CI's `tracking` job with `-m tracker` rather than by a filename
 # list in the workflow, so a new file here is covered the day it lands.
@@ -58,7 +58,7 @@ _ULTRALYTICS: Final = "ultralytics"
 _MOSAIC: Final = "mosaic"
 
 _ENVIRONMENT_DIRECTORY: Final = (
-    REPO_ROOT / "src" / "mosaic" / "tracking" / "external" / "ultralytics-env"
+    SOURCE_ROOT / "tracking" / "external" / "ultralytics-env"
 )
 
 RUNNER_PROGRAM: Final = "tracking/external/runner/ultralytics_runner.py"
@@ -286,7 +286,7 @@ def test_the_runner_program_takes_no_import_from_mosaic() -> None:
     :data:`MOSAIC_DISTRIBUTIONS_THE_ENVIRONMENT_MAY_DECLARE` says on what
     grounds.
     """
-    directory = REPO_ROOT / "src" / "mosaic" / "tracking" / "external" / "runner"
+    directory = SOURCE_ROOT / "tracking" / "external" / "runner"
     sources = sorted(directory.glob("*.py"))
     assert [source.name for source in sources] == [
         "__init__.py",

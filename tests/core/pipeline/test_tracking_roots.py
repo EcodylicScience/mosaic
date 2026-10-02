@@ -30,9 +30,7 @@ from mosaic.core.pipeline.tracking_roots import (
 )
 from mosaic.core.pipeline.tracks_raw_index import iter_track_files
 
-from tests.helpers import REPO_ROOT, write_mpeg4_mp4
-
-_REPO_SRC = REPO_ROOT / "src" / "mosaic"
+from tests.helpers import SOURCE_ROOT, write_mpeg4_mp4
 
 
 # --- The registry ------------------------------------------------------------
@@ -82,7 +80,7 @@ def test_no_module_spells_the_tracker_root_path_itself() -> None:
     registry module is excluded -- it is where the string is allowed to live.
     """
     hits = subprocess.run(
-        ["grep", "-rn", '"_tracking/', str(_REPO_SRC)],
+        ["grep", "-rn", '"_tracking/', str(SOURCE_ROOT)],
         capture_output=True,
         text=True,
         check=False,

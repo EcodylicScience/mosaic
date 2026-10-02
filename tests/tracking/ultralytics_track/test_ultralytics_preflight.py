@@ -51,13 +51,13 @@ from mosaic.tracking.ultralytics_track.tracker_defaults import (
     resolve_tracker_config,
 )
 
-from tests.helpers import REPO_ROOT
+from tests.helpers import SOURCE_ROOT
 
 # Selected by CI's `tracking` job with `-m tracker` rather than by a filename
 # list in the workflow, so a new file here is covered the day it lands.
 pytestmark = pytest.mark.tracker
 
-_EXTERNAL = REPO_ROOT / "src" / "mosaic" / "tracking" / "external"
+_EXTERNAL = SOURCE_ROOT / "tracking" / "external"
 ENVIRONMENT_DIRECTORIES: Final = ("ultralytics-env", "polo-env")
 """Every environment that runs an Ultralytics-family library, by directory.
 

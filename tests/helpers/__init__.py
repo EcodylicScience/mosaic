@@ -38,8 +38,9 @@ What lives where:
   no real roots.
 - ``source_scan`` -- reads a module's source as a tree, for the tests that
   assert what a code path reads and what it calls.
-- ``paths`` -- the repository, the ``tests`` directory and the golden-file
-  directory, which a test names from here rather than from its own location.
+- ``paths`` -- the repository, the source package, the ``tests`` directory and
+  the golden-file directory, which a test names from here rather than from its
+  own location.
 - ``golden`` -- reading and rewriting the golden files under ``tests/data/``.
 
 Fixtures stay in ``tests/conftest.py``, because pytest collects them only from
@@ -112,6 +113,7 @@ from tests.helpers.ops import minimal_op_params
 from tests.helpers.paths import (
     GOLDEN_DIR,
     REPO_ROOT,
+    SOURCE_ROOT,
     TESTS_ROOT,
 )
 from tests.helpers.runlog import entry_error_lines, latest_events, latest_snapshot
@@ -193,6 +195,7 @@ __all__ = [
     "MOUSE",
     "PlainFeature",
     "REPO_ROOT",
+    "SOURCE_ROOT",
     "TESTS_ROOT",
     "ULTRALYTICS_KEYPOINTS",
     "FakeInference",

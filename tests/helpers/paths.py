@@ -18,5 +18,8 @@ TESTS_ROOT: Final = Path(__file__).resolve().parent.parent
 REPO_ROOT: Final = TESTS_ROOT.parent
 """The repository checkout the suite belongs to."""
 
+SOURCE_ROOT: Final = REPO_ROOT / "src" / "mosaic"
+"""The ``mosaic`` package's source directory in that checkout."""
+
 GOLDEN_DIR: Final = TESTS_ROOT / "data"
 """The golden files that pin identifiers and converter output."""

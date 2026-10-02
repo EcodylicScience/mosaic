@@ -21,9 +21,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
 
-from tests.helpers import REPO_ROOT, TESTS_ROOT, source_tree
-
-_SOURCE_ROOT: Final = REPO_ROOT / "src" / "mosaic"
+from tests.helpers import SOURCE_ROOT, TESTS_ROOT, source_tree
 
 _SUPPORT_DIRECTORIES: Final = frozenset({"helpers", "data"})
 """The directories of ``tests/`` for shared code and data files."""
@@ -127,7 +125,7 @@ def test_every_area_mirrors_a_source_package() -> None:
     unmirrored = [
         area.as_posix()
         for area in _area_directories()
-        if area != _UNMIRRORED_AREA and not (_SOURCE_ROOT / area).is_dir()
+        if area != _UNMIRRORED_AREA and not (SOURCE_ROOT / area).is_dir()
     ]
 
     assert not unmirrored, (
