@@ -43,7 +43,7 @@ import pytest
 
 from mosaic_media.io.writer import FFmpegVideoWriter
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset
 
 # The plain helpers live in `tests.helpers`; only the ones the fixtures below
 # call are imported here. Test modules import from the facade, never from
@@ -56,6 +56,7 @@ from tests.helpers import (
     MediaClip,
     add_media_sequence,
     add_track_sequences,
+    make_dataset,
     missing_ffmpeg_tools,
     require_ffmpeg as _require_ffmpeg,
     write_media_index,
@@ -303,27 +304,13 @@ def make_media_dataset(requires_ffmpeg: None) -> Callable[[Path], Dataset]:
     ``scenario_dataset_with_media``, so the 14 files reaching media through this
     factory met a bare ``FileNotFoundError`` where the other files skipped.
 
-    The manifest is written to disk, not merely named: ``base_dir`` treats a
-    ``manifest_path`` that is not an existing file as the base directory itself
-    and creates it, which would make every root-relative ``abs_path`` resolve one
-    level too deep. The ``tracks`` root is present because ``index_media`` reads
-    its index to derive each media file's ``(group, sequence)``, so a transcode
-    test that indexes real media needs it. Returns a callable
-    ``(base_dir) -> Dataset``.
+    The ``tracks`` root is present because ``index_media`` reads its index to
+    derive each media file's ``(group, sequence)``, so a transcode test that
+    indexes real media needs it. Returns a callable ``(base_dir) -> Dataset``.
     """
 
     def _make(base: Path) -> Dataset:
-        ds = Dataset(
-            manifest_path=base / "dataset.yaml",
-            roots={
-                "media_raw": str(base / "media_raw"),
-                "media": str(base / "media"),
-                "tracks": str(base / "tracks"),
-            },
-        )
-        ds.ensure_roots()
-        ds.save()
-        return ds
+        return make_dataset(base, roots=("media_raw", "media", "tracks"))
 
     return _make
 
@@ -336,8 +323,7 @@ def scenario_dataset(tmp_path: Path) -> Dataset:
     a stand-in, so scenario assertions exercise the same root resolution and
     index handling the control plane and notebooks do.
     """
-    manifest = new_dataset_manifest(name="scenario", base_dir=tmp_path / "dataset")
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    dataset = make_dataset(tmp_path / "dataset", name="scenario")
     add_track_sequences(dataset, "seq_a", "seq_b")
     return dataset
 
@@ -453,8 +439,7 @@ def dataset_without_index(tmp_path: Path) -> Dataset:
     What proves an entries-only scope needs no index: resolving one here must
     not raise.
     """
-    manifest = new_dataset_manifest("no-index", base_dir=tmp_path)
-    return Dataset(manifest_path=manifest).load(ensure_roots=True)
+    return make_dataset(tmp_path, name="no-index")
 
 
 @pytest.fixture
@@ -465,8 +450,7 @@ def three_entry_dataset(tmp_path: Path) -> Dataset:
     sequences-only selector resolve to two entries, and what a cross product
     cannot express.
     """
-    manifest = new_dataset_manifest("three-entry", base_dir=tmp_path)
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    dataset = make_dataset(tmp_path, name="three-entry")
     write_media_index(
         dataset,
         [
@@ -487,8 +471,7 @@ def three_entry_dataset(tmp_path: Path) -> Dataset:
 @pytest.fixture
 def two_camera_dataset(tmp_path: Path) -> Dataset:
     """One entry, (A, one), with two media rows differing only by camera."""
-    manifest = new_dataset_manifest("two-camera", base_dir=tmp_path)
-    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    dataset = make_dataset(tmp_path, name="two-camera")
     write_media_index(
         dataset,
         [
