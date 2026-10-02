@@ -16,36 +16,17 @@ code, running for real.
 
 from __future__ import annotations
 
-import importlib
 import json
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
-import mosaic.tracking.external.runner as runner_package
-
 pytestmark = pytest.mark.tracker
 
 TOTAL_EPOCHS = 5
-
-
-@pytest.fixture
-def runner(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
-    """The runner program, imported the way it is when spawned, then unimported."""
-    directory = str(Path(runner_package.__file__).parent)
-    inserted = directory not in sys.path
-    if inserted:
-        sys.path.insert(0, directory)
-    try:
-        yield importlib.import_module("ultralytics_runner")
-    finally:
-        if inserted:
-            sys.path.remove(directory)
-        for name in ("ultralytics_runner", "ultralytics_protocol"):
-            _ = sys.modules.pop(name, None)
 
 
 class _Trainer:
@@ -122,7 +103,7 @@ def _install_ultralytics(
         monkeypatch.setitem(sys.modules, name, module)
 
 
-def _request(runner: ModuleType, tmp_path: Path, **overrides: object):
+def _request(runner_module: ModuleType, tmp_path: Path, **overrides: object):
     """A pose training request with everything resolved, as mosaic sends it."""
     fields: dict[str, object] = {
         "model": "yolo11n-pose.pt",
@@ -140,7 +121,7 @@ def _request(runner: ModuleType, tmp_path: Path, **overrides: object):
         "cancel_sentinel": str(tmp_path / "cancel"),
     }
     fields.update(overrides)
-    return runner.TrainPoseRequest(**fields)
+    return runner_module.TrainPoseRequest(**fields)
 
 
 def _lines(captured: str) -> list[dict[str, object]]:
@@ -157,13 +138,13 @@ def _lines(captured: str) -> list[dict[str, object]]:
 
 
 def test_a_full_run_reports_every_epoch_and_says_it_completed(
-    runner: ModuleType,
+    runner_module: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _install_ultralytics(monkeypatch)
-    response = runner.run_train_pose(_request(runner, tmp_path))
+    response = runner_module.run_train_pose(_request(runner_module, tmp_path))
 
     assert response.stop == "completed"
     assert response.epochs_completed == TOTAL_EPOCHS
@@ -176,7 +157,7 @@ def test_a_full_run_reports_every_epoch_and_says_it_completed(
 
 
 def test_the_startup_stretch_is_announced_at_both_ends(
-    runner: ModuleType,
+    runner_module: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -189,7 +170,7 @@ def test_the_startup_stretch_is_announced_at_both_ends(
     sum of an epoch and all of that.
     """
     _install_ultralytics(monkeypatch)
-    _ = runner.run_train_pose(_request(runner, tmp_path))
+    _ = runner_module.run_train_pose(_request(runner_module, tmp_path))
 
     events = _lines(capsys.readouterr().out)
     started = [
@@ -203,7 +184,7 @@ def test_the_startup_stretch_is_announced_at_both_ends(
 
 
 def test_a_sentinel_stops_the_run_at_an_epoch_boundary(
-    runner: ModuleType,
+    runner_module: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -211,7 +192,7 @@ def test_a_sentinel_stops_the_run_at_an_epoch_boundary(
     """The behavior a process kill cannot give, and the reason for the file."""
     _install_ultralytics(monkeypatch)
     sentinel = tmp_path / "cancel"
-    request = _request(runner, tmp_path)
+    request = _request(runner_module, tmp_path)
 
     original = _FakeYolo.train
 
@@ -226,7 +207,7 @@ def test_a_sentinel_stops_the_run_at_an_epoch_boundary(
         original(self, **kwargs)
 
     monkeypatch.setattr(_FakeYolo, "train", train_and_cancel_midway)
-    response = runner.run_train_pose(request)
+    response = runner_module.run_train_pose(request)
 
     assert response.stop == "cancelled"
     assert response.epochs_completed == 2, "the epoch it was in still finished"
@@ -239,11 +220,11 @@ def test_a_sentinel_stops_the_run_at_an_epoch_boundary(
 
 
 def test_a_run_that_stops_short_on_its_own_is_not_a_cancellation(
-    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``patience`` and a cancel look identical on disk, so they are told apart here."""
     _install_ultralytics(monkeypatch)
-    request = _request(runner, tmp_path)
+    request = _request(runner_module, tmp_path)
 
     original = _FakeYolo.train
 
@@ -252,14 +233,14 @@ def test_a_run_that_stops_short_on_its_own_is_not_a_cancellation(
         original(self, **kwargs)
 
     monkeypatch.setattr(_FakeYolo, "train", train_with_patience)
-    response = runner.run_train_pose(request)
+    response = runner_module.run_train_pose(request)
 
     assert response.stop == "early_stopped"
     assert response.epochs_completed == 3
 
 
 def test_a_sentinel_on_the_last_epoch_is_still_a_finished_model(
-    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A cancel that loses the race has cost nothing, and must not discard a model."""
     _install_ultralytics(monkeypatch)
@@ -273,13 +254,13 @@ def test_a_sentinel_on_the_last_epoch_is_still_a_finished_model(
         original(self, **kwargs)
 
     monkeypatch.setattr(_FakeYolo, "train", train_ignoring_stop)
-    response = runner.run_train_pose(_request(runner, tmp_path, epochs=1))
+    response = runner_module.run_train_pose(_request(runner_module, tmp_path, epochs=1))
 
     assert response.stop == "completed"
 
 
 def test_the_metrics_that_cross_are_finite_floats_and_nothing_else(
-    runner: ModuleType,
+    runner_module: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -301,7 +282,7 @@ def test_the_metrics_that_cross_are_finite_floats_and_nothing_else(
         original(self, **kwargs)
 
     monkeypatch.setattr(_FakeYolo, "train", train_with_a_nan)
-    _ = runner.run_train_pose(_request(runner, tmp_path))
+    _ = runner_module.run_train_pose(_request(runner_module, tmp_path))
 
     epochs = [e for e in _lines(capsys.readouterr().out) if e["event"] == "epoch"]
     assert epochs, "the epoch survived rather than being dropped for one bad key"
@@ -309,7 +290,7 @@ def test_the_metrics_that_cross_are_finite_floats_and_nothing_else(
 
 
 def test_an_environment_without_the_callback_refuses_rather_than_going_quiet(
-    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The failure no test in mosaic's own environment could otherwise catch.
 
@@ -319,22 +300,22 @@ def test_an_environment_without_the_callback_refuses_rather_than_going_quiet(
     """
     _install_ultralytics(monkeypatch, events=("on_train_start",))
 
-    with pytest.raises(runner.RunnerError, match="on_train_epoch_end"):
-        _ = runner.run_train_pose(_request(runner, tmp_path))
+    with pytest.raises(runner_module.RunnerError, match="on_train_epoch_end"):
+        _ = runner_module.run_train_pose(_request(runner_module, tmp_path))
 
 
 def test_the_caller_overrides_beat_the_resolved_augmentation(
-    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two bags, applied in order, which is why they stay two on the wire."""
     _install_ultralytics(monkeypatch)
     request = _request(
-        runner,
+        runner_module,
         tmp_path,
         augment={"fliplr": 0.5, "mosaic": 0.5},
         train_overrides={"fliplr": 0.9, "lr0": 0.0044},
     )
-    _ = runner.run_train_pose(request)
+    _ = runner_module.run_train_pose(request)
 
     assert _FakeYolo.last is not None
     kwargs = _FakeYolo.last.kwargs
@@ -344,23 +325,25 @@ def test_the_caller_overrides_beat_the_resolved_augmentation(
 
 
 def test_the_run_directory_is_pinned_rather_than_incremented(
-    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Ultralytics renames a busy directory; mosaic reads back from the composed one."""
     _install_ultralytics(monkeypatch)
-    _ = runner.run_train_pose(_request(runner, tmp_path))
+    _ = runner_module.run_train_pose(_request(runner_module, tmp_path))
 
     assert _FakeYolo.last is not None
     assert _FakeYolo.last.kwargs["exist_ok"] is True
 
 
 def test_a_resumed_run_carries_the_keyword_and_the_checkpoint(
-    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Mosaic finds the checkpoint; this program is only told what to do with it."""
     _install_ultralytics(monkeypatch)
     checkpoint = str(tmp_path / "run" / "train" / "weights" / "last.pt")
-    _ = runner.run_train_pose(_request(runner, tmp_path, model=checkpoint, resume=True))
+    _ = runner_module.run_train_pose(
+        _request(runner_module, tmp_path, model=checkpoint, resume=True)
+    )
 
     assert _FakeYolo.last is not None
     assert _FakeYolo.last.model == checkpoint
@@ -368,33 +351,33 @@ def test_a_resumed_run_carries_the_keyword_and_the_checkpoint(
 
 
 def test_the_worker_count_reaches_the_trainer(
-    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The other half of the field mosaic excludes from identity."""
     _install_ultralytics(monkeypatch)
-    _ = runner.run_train_pose(_request(runner, tmp_path, workers=8))
+    _ = runner_module.run_train_pose(_request(runner_module, tmp_path, workers=8))
 
     assert _FakeYolo.last is not None
     assert _FakeYolo.last.kwargs["workers"] == 8
 
 
 def test_an_unset_worker_count_leaves_ultralytics_its_default(
-    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Absent, not ``None``: Ultralytics would try to use ``None`` as a count."""
     _install_ultralytics(monkeypatch)
-    _ = runner.run_train_pose(_request(runner, tmp_path))
+    _ = runner_module.run_train_pose(_request(runner_module, tmp_path))
 
     assert _FakeYolo.last is not None
     assert "workers" not in _FakeYolo.last.kwargs
 
 
 def test_point_training_carries_the_fork_only_arguments(
-    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``dor`` reaches a real keyword here, where on the inference path it reaches none."""
     _install_ultralytics(monkeypatch)
-    request = runner.TrainPointsRequest(
+    request = runner_module.TrainPointsRequest(
         model="polo26n.yaml",
         data_yaml=str(tmp_path / "data.yaml"),
         epochs=2,
@@ -412,7 +395,7 @@ def test_point_training_carries_the_fork_only_arguments(
         loc_loss="hausdorff",
         dor=0.6,
     )
-    response = runner.run_train_points(request)
+    response = runner_module.run_train_points(request)
 
     assert response.stop == "completed"
     assert _FakeYolo.last is not None
@@ -424,14 +407,14 @@ def test_point_training_carries_the_fork_only_arguments(
 
 
 def test_the_heartbeat_speaks_while_an_epoch_runs(
-    runner: ModuleType,
+    runner_module: ModuleType,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """An epoch can outlast every window that supervises it, so silence is broken."""
     _install_ultralytics(monkeypatch)
-    monkeypatch.setattr(runner, "_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(runner_module, "_HEARTBEAT_SECONDS", 0.05)
     original = _FakeYolo.train
 
     def slow_train(self: _FakeYolo, **kwargs: object) -> None:
@@ -441,7 +424,7 @@ def test_the_heartbeat_speaks_while_an_epoch_runs(
         original(self, **kwargs)
 
     monkeypatch.setattr(_FakeYolo, "train", slow_train)
-    _ = runner.run_train_pose(_request(runner, tmp_path))
+    _ = runner_module.run_train_pose(_request(runner_module, tmp_path))
 
     events = _lines(capsys.readouterr().out)
     assert any(event["event"] == "heartbeat" for event in events)
@@ -452,7 +435,7 @@ def test_the_heartbeat_speaks_while_an_epoch_runs(
 
 
 def test_a_probe_with_no_model_asks_about_the_environment_alone(
-    runner: ModuleType, monkeypatch: pytest.MonkeyPatch
+    runner_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A fresh training run has no local weights, and must not download to preflight."""
     loaded: list[str] = []
@@ -471,10 +454,10 @@ def test_a_probe_with_no_model_asks_about_the_environment_alone(
     def no_tracker_table(root: Path, tracker: str) -> dict[str, bool]:
         return {}
 
-    monkeypatch.setattr(runner, "_load_model", record_load)
-    monkeypatch.setattr(runner, "_is_importable", importable)
-    monkeypatch.setattr(runner, "_has_locate", no_locate)
-    monkeypatch.setattr(runner, "_installed_tracker_table", no_tracker_table)
+    monkeypatch.setattr(runner_module, "_load_model", record_load)
+    monkeypatch.setattr(runner_module, "_is_importable", importable)
+    monkeypatch.setattr(runner_module, "_has_locate", no_locate)
+    monkeypatch.setattr(runner_module, "_installed_tracker_table", no_tracker_table)
     ultralytics = sys.modules["ultralytics"]
     setattr(ultralytics, "__version__", "8.4.63")
     ultralytics.__file__ = "/nowhere/ultralytics/__init__.py"
@@ -483,7 +466,7 @@ def test_a_probe_with_no_model_asks_about_the_environment_alone(
     monkeypatch.setitem(sys.modules, "ultralytics.trackers", ModuleType("x"))
     monkeypatch.setitem(sys.modules, "ultralytics.trackers.track", trackers)
 
-    response = runner.run_probe(runner.ProbeRequest(model_path=""))
+    response = runner_module.run_probe(runner_module.ProbeRequest(model_path=""))
 
     assert loaded == [], "nothing was loaded, so nothing could be downloaded"
     assert response.model_task == ""
@@ -493,7 +476,7 @@ def test_a_probe_with_no_model_asks_about_the_environment_alone(
 
 
 def test_point_training_stops_at_an_epoch_boundary_too(
-    runner: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Both subcommands share the callback, so both share the guarantee."""
     _install_ultralytics(monkeypatch)
@@ -509,7 +492,7 @@ def test_point_training_stops_at_an_epoch_boundary_too(
         original(self, **kwargs)
 
     monkeypatch.setattr(_FakeYolo, "train", train_and_cancel_midway)
-    request = runner.TrainPointsRequest(
+    request = runner_module.TrainPointsRequest(
         model="polo26n.yaml",
         data_yaml=str(tmp_path / "data.yaml"),
         epochs=TOTAL_EPOCHS,
@@ -527,7 +510,7 @@ def test_point_training_stops_at_an_epoch_boundary_too(
         loc_loss="mse",
         dor=0.8,
     )
-    response = runner.run_train_points(request)
+    response = runner_module.run_train_points(request)
 
     assert response.stop == "cancelled"
     assert response.epochs_completed == 1
