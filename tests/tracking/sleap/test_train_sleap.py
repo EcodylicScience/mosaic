@@ -35,7 +35,7 @@ from mosaic.tracking.sleap.run import SleapNotFoundError
 from mosaic.tracking.sleap import training as training_module
 from mosaic.tracking.sleap.training import sleap_device_overrides, sleap_train_config
 
-from tests.helpers import dotted_values, is_section, make_dataset
+from tests.helpers import dotted_values, is_section, make_dataset, write_sleap_model
 
 register_ops()
 
@@ -58,11 +58,7 @@ def _fake_trainer(
         config_dir = Path(argv[argv.index("--config-dir") + 1])
         config = yaml.safe_load((config_dir / "config.yaml").read_text())
         produced = config_dir / config["trainer_config"]["run_name"]
-        produced.mkdir(parents=True, exist_ok=True)
-        _ = (produced / "best.ckpt").write_bytes(b"weights")
-        _ = (produced / "training_config.yaml").write_text(
-            f"head_configs:\n  {head}: {{}}\n"
-        )
+        _ = write_sleap_model(produced, head=head)
         if writes_training_log:
             _ = (produced / "training_log.csv").write_text("epoch,train_loss\n0,1.0\n")
         return ("done", "", 0)

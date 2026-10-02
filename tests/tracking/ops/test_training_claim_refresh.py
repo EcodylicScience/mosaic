@@ -44,7 +44,7 @@ from mosaic.tracking.ops._common import (
     empty_claimed_run_root,
 )
 
-from tests.helpers import make_dataset
+from tests.helpers import make_dataset, write_litpose_model, write_sleap_model
 
 register_ops()
 
@@ -198,11 +198,7 @@ def _run_sleap(
         run_root = Path(argv[argv.index("--config-dir") + 1])
         config = yaml.safe_load((run_root / "config.yaml").read_text())
         produced = run_root / config["trainer_config"]["run_name"]
-        produced.mkdir(parents=True, exist_ok=True)
-        _ = (produced / "best.ckpt").write_bytes(b"weights")
-        _ = (produced / "training_config.yaml").write_text(
-            "head_configs:\n  centroid: {}\n"
-        )
+        _ = write_sleap_model(produced, head="centroid")
 
         assert on_activity is not None, (
             "the op must hand the trainer its liveness callback"
@@ -242,10 +238,7 @@ def _run_litpose(
         **kw: object,
     ) -> tuple[str, str, int]:
         run_root = Path(argv[argv.index("-c") + 4])
-        checkpoints = run_root / "tb_logs" / "run" / "version_0" / "checkpoints"
-        checkpoints.mkdir(parents=True, exist_ok=True)
-        _ = (run_root / "config.yaml").write_text("model:\n  model_type: heatmap\n")
-        _ = (checkpoints / "best.ckpt").write_bytes(b"weights")
+        _ = write_litpose_model(run_root)
 
         assert on_activity is not None, (
             "the op must hand the trainer its liveness callback"

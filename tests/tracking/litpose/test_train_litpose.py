@@ -28,7 +28,7 @@ from mosaic.tracking.litpose.training import (
 from mosaic.tracking.ops.train import trained_model_index
 from mosaic.tracking.ops.train_litpose import TrainLitposeParams
 
-from tests.helpers import dotted_values, is_section, make_dataset
+from tests.helpers import dotted_values, is_section, make_dataset, write_litpose_model
 
 register_ops()
 
@@ -86,10 +86,7 @@ def _fake_trainer(
         launches.argv.append(list(argv))
         launches.env.append(dict(env or {}))
         out = Path(argv[argv.index("-c") + 4])
-        checkpoints = out / "tb_logs" / "run" / "version_0" / "checkpoints"
-        checkpoints.mkdir(parents=True, exist_ok=True)
-        _ = (out / "config.yaml").write_text(f"model:\n  model_type: {model_type}\n")
-        _ = (checkpoints / "best.ckpt").write_bytes(b"weights")
+        _ = write_litpose_model(out, model_type=model_type)
         if writes_predictions:
             _ = (out / "predictions_pixel_error.csv").write_text("head\n1.5\n")
         return ("done", "", 0)

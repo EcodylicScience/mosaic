@@ -34,7 +34,13 @@ from mosaic.tracking.ops.train import PointTrainParams, PoseTrainParams
 from mosaic.tracking.ops.train_litpose import TrainLitposeParams
 from mosaic.tracking.ops.train_sleap import TrainSleapParams
 
-from tests.helpers import FakeTrainer, make_dataset, write_data_yaml
+from tests.helpers import (
+    FakeTrainer,
+    make_dataset,
+    write_data_yaml,
+    write_litpose_model,
+    write_sleap_model,
+)
 
 register_ops()
 
@@ -143,11 +149,7 @@ class _Sleap:
         run_root = Path(argv[argv.index("--config-dir") + 1])
         config = yaml.safe_load((run_root / "config.yaml").read_text())
         produced = run_root / config["trainer_config"]["run_name"]
-        produced.mkdir(parents=True, exist_ok=True)
-        _ = (produced / "best.ckpt").write_bytes(b"weights")
-        _ = (produced / "training_config.yaml").write_text(
-            "head_configs:\n  centroid: {}\n"
-        )
+        _ = write_sleap_model(produced, head="centroid")
         return ("done", "", 0)
 
     def run(self, ds: Dataset, **params: object) -> str:
@@ -229,10 +231,7 @@ class _Litpose:
     ) -> tuple[str, str, int]:
         self.argv.append(list(argv))
         run_root = Path(argv[argv.index("-c") + 4])
-        checkpoints = run_root / "tb_logs" / "run" / "version_0" / "checkpoints"
-        checkpoints.mkdir(parents=True, exist_ok=True)
-        _ = (run_root / "config.yaml").write_text("model:\n  model_type: heatmap\n")
-        _ = (checkpoints / "best.ckpt").write_bytes(b"weights")
+        _ = write_litpose_model(run_root)
         return ("done", "", 0)
 
     def run(self, ds: Dataset, **params: object) -> str:

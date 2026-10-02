@@ -165,11 +165,8 @@ def test_a_different_config_is_a_different_run(
 ) -> None:
     """The config.yaml is part of model identity (it shapes the output)."""
     m1 = write_litpose_model(tmp_path / "c1")
-    m2 = write_litpose_model(tmp_path / "c2")
     # Same weights, different config -> different run.
-    (m2 / "config.yaml").write_text(
-        "model:\n  model_type: heatmap\ndata:\n  keypoint_names: [nose, tail, mid]\n"
-    )
+    m2 = write_litpose_model(tmp_path / "c2", keypoint_names=("nose", "tail", "mid"))
     a = dr.run_litpose(ds, LitposeParams(model_path=str(m1)))
     b = dr.run_litpose(ds, LitposeParams(model_path=str(m2)))
     assert a != b
@@ -241,7 +238,7 @@ def _register_training_run(ds: Dataset, model: Path, run_id: str) -> None:
     from mosaic.tracking.ops.train import finalize_training
     from mosaic.tracking.ops.train_litpose import TrainLitposeParams
 
-    checkpoint = model / "tb_logs" / "m" / "version_0" / "checkpoints" / "best.ckpt"
+    checkpoint = next(model.rglob("best.ckpt"))
     finalize_training(
         ds,
         TRAIN_LITPOSE_KIND,

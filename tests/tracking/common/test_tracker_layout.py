@@ -217,9 +217,7 @@ def test_litpose_leaves_this_shape(
 
 @pytest.fixture
 def sleap_model(tmp_path: Path) -> Path:
-    return write_sleap_model(
-        tmp_path / "sleap_model", training_config="head: single_instance\n"
-    )
+    return write_sleap_model(tmp_path / "sleap_model", head="single_instance")
 
 
 @pytest.fixture

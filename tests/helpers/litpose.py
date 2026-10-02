@@ -10,6 +10,7 @@ writes the model directory that a run resolves.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -65,19 +66,28 @@ def install_fake_litpose(
     return installed
 
 
-def write_litpose_model(model_dir: Path, *, weights: bytes = b"weights") -> Path:
+def write_litpose_model(
+    model_dir: Path,
+    *,
+    weights: bytes = b"weights",
+    model_type: str = "heatmap",
+    keypoint_names: Sequence[str] = _BODYPARTS,
+) -> Path:
     """Write a minimal Lightning Pose model directory, and return it.
 
-    The directory contains a ``config.yaml`` naming the two keypoints of
-    :class:`FakeLitpose`, and one checkpoint with *weights*. The model's identity
-    is a digest of both. Two directories written with the same *weights* are one
-    model.
+    The directory contains a ``config.yaml`` declaring *model_type* and naming
+    *keypoint_names*, by default the two keypoints of :class:`FakeLitpose`, and
+    one checkpoint with *weights*. The model's identity is a digest of both
+    files' bytes. Two directories written with the same arguments are one model.
+
+    The config has no ``data`` section when *keypoint_names* is empty, which is
+    the config a pinned digest was taken over.
     """
     checkpoint = model_dir / "tb_logs" / "m" / "version_0" / "checkpoints" / "best.ckpt"
     checkpoint.parent.mkdir(parents=True, exist_ok=True)
     _ = checkpoint.write_bytes(weights)
-    names = ", ".join(_BODYPARTS)
-    _ = (model_dir / "config.yaml").write_text(
-        f"model:\n  model_type: heatmap\ndata:\n  keypoint_names: [{names}]\n"
-    )
+    config = f"model:\n  model_type: {model_type}\n"
+    if keypoint_names:
+        config += f"data:\n  keypoint_names: [{', '.join(keypoint_names)}]\n"
+    _ = (model_dir / "config.yaml").write_text(config)
     return model_dir

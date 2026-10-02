@@ -63,17 +63,20 @@ def install_fake_sleap(
 
 
 def write_sleap_model(
-    directory: Path, weights: bytes = b"weights", *, training_config: str = ""
+    directory: Path, weights: bytes = b"weights", *, head: str = ""
 ) -> Path:
     """Write a SLEAP model directory at *directory*, and return it.
 
     The directory contains ``best.ckpt`` with *weights*, whose digest is the model's
-    identity. Two directories with the same *weights* are one model. A
-    ``training_config.yaml`` with *training_config* is written beside it when one is
-    given. SLEAP's config is provenance, and a model does not need one.
+    identity. Two directories with the same *weights* are one model. When *head* is
+    given, a ``training_config.yaml`` selecting it under ``head_configs`` is written
+    beside the checkpoint, as SLEAP's trainer leaves one. The config is provenance,
+    read for the model type, and a model does not need one.
     """
     directory.mkdir(parents=True, exist_ok=True)
     _ = (directory / "best.ckpt").write_bytes(weights)
-    if training_config:
-        _ = (directory / "training_config.yaml").write_text(training_config)
+    if head:
+        _ = (directory / "training_config.yaml").write_text(
+            f"head_configs:\n  {head}: {{}}\n"
+        )
     return directory

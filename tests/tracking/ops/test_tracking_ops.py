@@ -1115,10 +1115,7 @@ def test_litpose_config_is_part_of_identity(tmp_path):
     from mosaic.tracking.model_refs import resolve_model_set
 
     a = write_litpose_model(tmp_path / "a")
-    b = write_litpose_model(tmp_path / "b")
-    (b / "config.yaml").write_text(
-        "model:\n  model_type: heatmap\ndata:\n  keypoint_names: [nose, tail, mid]\n"
-    )
+    b = write_litpose_model(tmp_path / "b", keypoint_names=("nose", "tail", "mid"))
     assert (
         resolve_model_set(None, [str(a)], "litpose").model_id
         != resolve_model_set(None, [str(b)], "litpose").model_id

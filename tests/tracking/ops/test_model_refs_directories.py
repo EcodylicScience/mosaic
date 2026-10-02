@@ -28,30 +28,19 @@ from mosaic.tracking.model_refs import (
     spec_for,
 )
 
-from tests.helpers import make_dataset, register_trained_model, write_sleap_model
-
-
-def _sleap_model(directory: Path, weights: bytes, head: str = "centroid") -> Path:
-    """Write a SLEAP model whose training config names its *head*."""
-    config = f"head_configs:\n  {head}: {{}}\n"
-    return write_sleap_model(directory, weights, training_config=config)
-
-
-def _litpose_model(
-    directory: Path, weights: bytes = b"lp", model_type: str = "heatmap"
-) -> Path:
-    checkpoints = directory / "tb_logs" / "run" / "version_0" / "checkpoints"
-    checkpoints.mkdir(parents=True)
-    (directory / "config.yaml").write_text(f"model:\n  model_type: {model_type}\n")
-    (checkpoints / "best.ckpt").write_bytes(weights)
-    return directory
+from tests.helpers import (
+    make_dataset,
+    register_trained_model,
+    write_litpose_model,
+    write_sleap_model,
+)
 
 
 # --- directory-shaped artifacts ---------------------------------------------
 
 
 def test_a_directory_resolves_to_its_declared_files(tmp_path: Path) -> None:
-    model = _litpose_model(tmp_path / "lp")
+    model = write_litpose_model(tmp_path / "lp")
     resolved = resolve_model_set(None, [str(model)], "litpose")
 
     assert resolved.path == model, "a directory model is handed to the tool whole"
@@ -60,9 +49,9 @@ def test_a_directory_resolves_to_its_declared_files(tmp_path: Path) -> None:
 
 
 def test_a_directory_is_named_by_content_not_location(tmp_path: Path) -> None:
-    here = _litpose_model(tmp_path / "here")
-    there = _litpose_model(tmp_path / "there")
-    other = _litpose_model(tmp_path / "other", weights=b"different")
+    here = write_litpose_model(tmp_path / "here")
+    there = write_litpose_model(tmp_path / "there")
+    other = write_litpose_model(tmp_path / "other", weights=b"different")
 
     assert (
         resolve_model_set(None, [str(here)], "litpose").model_id
@@ -82,15 +71,14 @@ def test_what_a_tool_writes_back_is_not_part_of_the_model(tmp_path: Path) -> Non
     the moment inference ran, which is the failure mode "identity reads only
     declared roles" is there to make impossible.
     """
-    model = _litpose_model(tmp_path / "lp")
+    model = write_litpose_model(tmp_path / "lp")
     before = resolve_model_set(None, [str(model)], "litpose").model_id
 
     (model / "video_preds").mkdir()
     (model / "video_preds" / "clip.csv").write_text("scorer,bodypart,coord\n")
     (model / "predictions.csv").write_text("anything\n")
-    (model / "tb_logs" / "run" / "version_0" / "events.out.tfevents.1").write_bytes(
-        b"\x00\x01"
-    )
+    version = next(model.rglob("version_0"))
+    (version / "events.out.tfevents.1").write_bytes(b"\x00\x01")
 
     assert resolve_model_set(None, [str(model)], "litpose").model_id == before
 
@@ -106,8 +94,10 @@ def test_a_file_handed_to_a_directory_kind_is_refused(tmp_path: Path) -> None:
 
 
 def test_an_ordered_pair_carries_both_artifacts(tmp_path: Path) -> None:
-    centroid = _sleap_model(tmp_path / "centroid", b"centroid", "centroid")
-    instance = _sleap_model(tmp_path / "instance", b"instance", "centered_instance")
+    centroid = write_sleap_model(tmp_path / "centroid", b"centroid", head="centroid")
+    instance = write_sleap_model(
+        tmp_path / "instance", b"instance", head="centered_instance"
+    )
 
     resolved = resolve_model_set(None, [str(centroid), str(instance)], "sleap")
     assert resolved.paths == [centroid, instance], "order is the caller's, preserved"
@@ -117,8 +107,8 @@ def test_an_ordered_pair_carries_both_artifacts(tmp_path: Path) -> None:
 
 def test_the_order_of_an_ordered_pair_is_identity(tmp_path: Path) -> None:
     """Centroid-then-instance is a different model from instance-then-centroid."""
-    centroid = _sleap_model(tmp_path / "centroid", b"centroid")
-    instance = _sleap_model(tmp_path / "instance", b"instance")
+    centroid = write_sleap_model(tmp_path / "centroid", b"centroid", head="centroid")
+    instance = write_sleap_model(tmp_path / "instance", b"instance", head="centroid")
 
     forward = resolve_model_set(None, [str(centroid), str(instance)], "sleap")
     reverse = resolve_model_set(None, [str(instance), str(centroid)], "sleap")

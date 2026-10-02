@@ -258,7 +258,7 @@ def test_train_sleap_reports_the_epochs_its_trainer_prints(
     from mosaic.tracking.sleap import probe as probe_module
     from mosaic.tracking.sleap import training as training_module
 
-    from tests.helpers import make_dataset
+    from tests.helpers import make_dataset, write_sleap_model
 
     register_ops()
     ds = make_dataset(tmp_path, save=False)
@@ -282,11 +282,7 @@ def test_train_sleap_reports_the_epochs_its_trainer_prints(
     ) -> tuple[str, str, int]:
         run_root = Path(argv[argv.index("--config-dir") + 1])
         produced = run_root / "model"
-        produced.mkdir(parents=True, exist_ok=True)
-        _ = (produced / "best.ckpt").write_bytes(b"weights")
-        _ = (produced / "training_config.yaml").write_text(
-            "head_configs:\n  centroid: {}\n"
-        )
+        _ = write_sleap_model(produced, head="centroid")
         assert on_output is not None, "the op must read the trainer's output"
         for line in (SLEAP_PARTIAL, *SLEAP_FULL):
             on_output(line)

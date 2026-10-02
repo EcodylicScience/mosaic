@@ -25,17 +25,13 @@ from mosaic.core.pipeline.dataset_indexes import iter_dataset_indexes
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.tracking.model_refs import resolve_model
 from mosaic.tracking.ops.train import TrainedModelIndexRow, trained_model_index
-from tests.helpers import make_dataset
+from tests.helpers import make_dataset, write_litpose_model
 
 RUN_ID = "train-litpose.0.1-abcdef0123"
 
 
 def _litpose_artifact(run_root: Path) -> Path:
-    checkpoints = run_root / "tb_logs" / "run" / "version_0" / "checkpoints"
-    checkpoints.mkdir(parents=True)
-    _ = (run_root / "config.yaml").write_text("model:\n  model_type: heatmap\n")
-    _ = (checkpoints / "best.ckpt").write_bytes(b"weights")
-    return checkpoints / "best.ckpt"
+    return next(write_litpose_model(run_root).rglob("best.ckpt"))
 
 
 def _register(ds: Dataset, *, absolute: bool) -> Path:

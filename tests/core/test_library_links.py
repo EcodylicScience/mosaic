@@ -30,7 +30,12 @@ from mosaic.tracking.model_refs import (
     resolve_model,
     resolve_op_model,
 )
-from tests.helpers import make_dataset, register_trained_model, revision_file
+from tests.helpers import (
+    make_dataset,
+    register_trained_model,
+    revision_file,
+    write_sleap_model,
+)
 
 RUN_ID = "train-pose.0.2-abcdef0123"
 KIND = "train-pose"
@@ -48,12 +53,12 @@ def _register(ds: Dataset, *, payload: bytes = b"weights") -> Path:
 
 def _register_sleap(ds: Dataset) -> Path:
     """One finished ``train-sleap`` run, whose artifact is a model directory."""
-    model_dir = ds.get_root("models") / "train-sleap" / SLEAP_RUN_ID / "model"
-    model_dir.mkdir(parents=True)
-    weights = model_dir / "best.ckpt"
-    _ = weights.write_bytes(b"sleap-weights")
+    model_dir = write_sleap_model(
+        ds.get_root("models") / "train-sleap" / SLEAP_RUN_ID / "model",
+        b"sleap-weights",
+    )
     register_trained_model(
-        ds, "train-sleap", SLEAP_RUN_ID, weights, directory=model_dir
+        ds, "train-sleap", SLEAP_RUN_ID, model_dir / "best.ckpt", directory=model_dir
     )
     return model_dir
 

@@ -20,7 +20,7 @@ from mosaic.tracking.model_refs import (
     resolve_model_set,
 )
 
-from tests.helpers import make_dataset
+from tests.helpers import make_dataset, write_litpose_model, write_sleap_model
 
 
 def test_the_digest_is_stable_and_content_addressed(tmp_path: Path) -> None:
@@ -150,25 +150,10 @@ def test_an_unresolvable_reference_still_raises(tmp_path: Path) -> None:
 # must not change a single digit below.
 
 
-def _make_sleap_model(directory: Path, weights: bytes, head: str) -> Path:
-    """A minimal SLEAP model directory: the checkpoint, and a config for provenance."""
-    directory.mkdir(parents=True)
-    (directory / "best.ckpt").write_bytes(weights)
-    (directory / "training_config.yaml").write_text(f"head_configs:\n  {head}: {{}}\n")
-    return directory
-
-
-def _make_litpose_model(directory: Path, weights: bytes, model_type: str) -> Path:
-    """A minimal Lightning Pose model directory: ``config.yaml`` plus a tb_logs checkpoint."""
-    checkpoints = directory / "tb_logs" / "run" / "version_0" / "checkpoints"
-    checkpoints.mkdir(parents=True)
-    (directory / "config.yaml").write_text(f"model:\n  model_type: {model_type}\n")
-    (checkpoints / "best.ckpt").write_bytes(weights)
-    return directory
-
-
 def test_a_sleap_model_directory_mints_a_pinned_identifier(tmp_path: Path) -> None:
-    centroid = _make_sleap_model(tmp_path / "centroid", b"centroid weights", "centroid")
+    centroid = write_sleap_model(
+        tmp_path / "centroid", b"centroid weights", head="centroid"
+    )
     resolved = resolve_model_set(None, [str(centroid)], "sleap")
     assert resolved.model_id == "2bb8be883f"
     assert resolved.model_type == "centroid"
@@ -176,9 +161,11 @@ def test_a_sleap_model_directory_mints_a_pinned_identifier(tmp_path: Path) -> No
 
 def test_a_sleap_top_down_pair_mints_a_pinned_identifier(tmp_path: Path) -> None:
     """Two directories, one identity -- and the order is part of it."""
-    centroid = _make_sleap_model(tmp_path / "centroid", b"centroid weights", "centroid")
-    instance = _make_sleap_model(
-        tmp_path / "instance", b"instance weights", "centered_instance"
+    centroid = write_sleap_model(
+        tmp_path / "centroid", b"centroid weights", head="centroid"
+    )
+    instance = write_sleap_model(
+        tmp_path / "instance", b"instance weights", head="centered_instance"
     )
 
     forward = resolve_model_set(None, [str(centroid), str(instance)], "sleap")
@@ -189,7 +176,12 @@ def test_a_sleap_top_down_pair_mints_a_pinned_identifier(tmp_path: Path) -> None
 
 
 def test_a_litpose_model_directory_mints_a_pinned_identifier(tmp_path: Path) -> None:
-    model = _make_litpose_model(tmp_path / "lp", b"lp weights", "heatmap_mhcrnn")
+    model = write_litpose_model(
+        tmp_path / "lp",
+        weights=b"lp weights",
+        model_type="heatmap_mhcrnn",
+        keypoint_names=(),
+    )
     resolved = resolve_model_set(None, [str(model)], "litpose")
     assert resolved.model_id == "7ebb705dc6"
     assert resolved.model_type == "heatmap_mhcrnn"
@@ -203,7 +195,9 @@ def test_a_model_directory_is_named_by_its_declared_files_only(tmp_path: Path) -
     ran -- the same model would stop matching its own cached output. The rule
     that prevents it is that identity reads only the declared roles.
     """
-    model = _make_litpose_model(tmp_path / "lp", b"lp weights", "heatmap")
+    model = write_litpose_model(
+        tmp_path / "lp", weights=b"lp weights", model_type="heatmap", keypoint_names=()
+    )
     before = resolve_model_set(None, [str(model)], "litpose").model_id
 
     predictions = model / "video_preds"
