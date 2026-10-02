@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: an H.264 copy of an entry needs no step, and a control plane can own a tracker's model
+## 0.15.0: an H.264 copy of an entry needs no step, and a control plane can own a tracker's model
 
 **A `preprocess` variant with no steps and `codec: "h264"` is an H.264 copy of its
 source.** It holds every frame of the entry media, for a tool whose reader lacks
