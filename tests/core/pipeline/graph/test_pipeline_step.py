@@ -495,6 +495,9 @@ def test_the_cli_refuses_a_scope_flag_on_a_step(tracked: Dataset, flag: str) -> 
     assert "A step covers the entries its plan resolved" in result.output
 
 
+# --- what an op step hands its op --------------------------------------------
+
+
 def test_a_graph_op_step_passes_overwrite_to_the_op(
     tracked: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
