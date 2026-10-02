@@ -24,7 +24,7 @@ from mosaic.tracking.litpose.params import LitposeParams
 from tests.helpers import (
     FakeLitpose,
     install_fake_litpose,
-    make_dataset,
+    stub_media_dataset,
     write_litpose_model,
     write_media_index,
 )
@@ -35,9 +35,7 @@ from tests.helpers import (
 
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
-    dataset = make_dataset(tmp_path)
-    write_media_index(dataset, ["vid1"])
-    return dataset
+    return stub_media_dataset(tmp_path, ["vid1"])
 
 
 @pytest.fixture

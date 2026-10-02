@@ -41,6 +41,7 @@ from tests.helpers import (
     add_transcode_derivative,
     finish_media_variant,
     make_dataset,
+    stub_media_dataset,
     write_media_index,
 )
 
@@ -274,8 +275,7 @@ def test_a_variant_still_writing_reads_partial_until_it_finishes(
     The op renames a file into place and then writes its row. Between the two, the
     file exists and a consumer, which reads the row, cannot use it yet.
     """
-    ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, ["s1", "s2"])
+    ds = stub_media_dataset(tmp_path / "ds", ["s1", "s2"])
     _ = add_media_variant(ds, _VARIANT, "s1")
     ahead = media_variant_path(ds, _VARIANT, "", "s2", "")
     _ = ahead.write_bytes(b"variant")
@@ -339,8 +339,7 @@ def test_the_work_directory_and_a_partial_file_are_not_variant_files(
     Both are under the entry's work directory and away from the entry's variant
     path. A finished run that contains them reads complete rather than damaged.
     """
-    ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, ["s1", "s2", "s3"])
+    ds = stub_media_dataset(tmp_path / "ds", ["s1", "s2", "s3"])
     _ = add_media_variant(ds, _VARIANT, "s1")
     finish_media_variant(ds, _VARIANT)
     claim = media_variant_work_root(ds, _VARIANT) / "s2"
@@ -397,8 +396,7 @@ def test_a_scan_reads_the_media_index_and_the_compositions_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Every variant is looked up against the same two shared reads."""
-    ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, ["s1"])
+    ds = stub_media_dataset(tmp_path / "ds", ["s1"])
     _ = add_media_variant(ds, _VARIANT, "s1")
     _ = add_media_variant(ds, _CHAINED, "s1", upstream=_VARIANT)
     calls = _record_reads(monkeypatch)
@@ -412,8 +410,7 @@ def test_a_scan_reads_the_media_index_and_the_compositions_once(
 def test_a_scan_with_no_variant_reads_neither(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, ["s1"])
+    ds = stub_media_dataset(tmp_path / "ds", ["s1"])
     calls = _record_reads(monkeypatch)
 
     found = inventory(ds, kinds=["media-variant"])
@@ -425,8 +422,7 @@ def test_a_scan_with_no_variant_reads_neither(
 def test_a_selector_narrows_a_variant_to_the_entries_it_names(
     tmp_path: Path,
 ) -> None:
-    ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, ["s1", "s2", "s3"])
+    ds = stub_media_dataset(tmp_path / "ds", ["s1", "s2", "s3"])
     _ = add_media_variant(ds, _VARIANT, "s1")
     _ = add_media_variant(ds, _VARIANT, "s2")
     ahead = media_variant_path(ds, _VARIANT, "", "s3", "")

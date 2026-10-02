@@ -47,8 +47,8 @@ from tests.helpers import (
     install_fake_trex,
     make_dataset,
     register_trained_model,
+    stub_media_dataset,
     write_litpose_model,
-    write_media_index,
     write_sleap_model,
 )
 
@@ -623,8 +623,7 @@ def test_a_trex_run_is_found_by_its_detector_and_its_identification_model(
     Each is found by the record the run writes: the detector by its run id, and
     the identification model by the digest of the bytes the path holds.
     """
-    ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, ["s1"])
+    ds = stub_media_dataset(tmp_path / "ds", ["s1"])
     _ = install_fake_trex(monkeypatch)
     _ = _trex_models(ds)
     copy = tmp_path / "copy" / "identity_model.pth"
@@ -646,8 +645,7 @@ def test_a_trex_run_takes_its_identification_model_by_run_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The run id resolves through the model index, and TREx gets the stem."""
-    ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, ["s1"])
+    ds = stub_media_dataset(tmp_path / "ds", ["s1"])
     trex = install_fake_trex(monkeypatch)
     identifier = _trex_models(ds)
 

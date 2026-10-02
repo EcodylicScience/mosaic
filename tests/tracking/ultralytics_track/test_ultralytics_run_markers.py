@@ -51,10 +51,10 @@ from tests.helpers import (
     ULTRALYTICS_KEYPOINTS,
     add_transcode_derivative,
     install_fake_ultralytics,
-    make_dataset,
     point_at_a_store,
     register_trained_model,
     scope_over,
+    stub_media_dataset,
     ultralytics_probe_response,
     write_media_index,
     write_ultralytics_predictions,
@@ -69,9 +69,7 @@ pytestmark = pytest.mark.tracker
 
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
-    dataset = make_dataset(tmp_path)
-    write_media_index(dataset, ["vid1"])
-    return dataset
+    return stub_media_dataset(tmp_path, ["vid1"])
 
 
 def _make_model(path: Path, *, weights: bytes = b"weights") -> Path:

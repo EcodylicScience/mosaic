@@ -32,6 +32,7 @@ from mosaic.core.pipeline.joined_export import (
     joined_export_path,
     joined_recipe_hash,
 )
+from tests.helpers.datasets import make_dataset
 from tests.helpers.environment import require_ffmpeg
 
 
@@ -485,6 +486,17 @@ def write_media_index(
             }
         )
     pd.DataFrame(written).to_csv(media_root / "index.csv", index=False)
+
+
+def stub_media_dataset(base: Path, sequences: Sequence[str]) -> Dataset:
+    """Return a saved dataset at *base* indexing one stub video per sequence.
+
+    The videos come from `write_media_index`, so nothing can decode them. The
+    dataset suits a test that fakes the tool reading its media.
+    """
+    dataset = make_dataset(base)
+    write_media_index(dataset, list(sequences))
+    return dataset
 
 
 def stub_join(dataset: Dataset, uids: Sequence[str]) -> Path:

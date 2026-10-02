@@ -58,7 +58,7 @@ from tests.helpers import (
     install_fake_point_probe,
     install_fake_pose_probe,
     make_dataset,
-    write_media_index,
+    stub_media_dataset,
     write_painted_entry,
 )
 
@@ -297,9 +297,7 @@ def test_the_columns_mosaic_names_match_the_block_the_runner_writes(
 
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
-    dataset = make_dataset(tmp_path)
-    write_media_index(dataset, ["vid1"])
-    return dataset
+    return stub_media_dataset(tmp_path, ["vid1"])
 
 
 @pytest.fixture

@@ -23,7 +23,7 @@ from mosaic.tracking.sleap.params import SleapParams
 from tests.helpers import (
     FakeSleap,
     install_fake_sleap,
-    make_dataset,
+    stub_media_dataset,
     write_media_index,
     write_sleap_model,
 )
@@ -34,9 +34,7 @@ from tests.helpers import (
 
 @pytest.fixture
 def ds(tmp_path: Path) -> Dataset:
-    dataset = make_dataset(tmp_path)
-    write_media_index(dataset, ["vid1"])
-    return dataset
+    return stub_media_dataset(tmp_path, ["vid1"])
 
 
 @pytest.fixture
