@@ -17,7 +17,9 @@ K = TypeVar("K", bound=str, default=str)
 _KIND_DESCRIPTION = "Which labels/<kind> subdirectory this dependency resolves to."
 
 _GROUND_TRUTH_KIND_DESCRIPTION = (
-    "Fixed to behavior. Ground-truth labels always resolve to labels/behavior/."
+    "Which labels/<kind> subdirectory the ground-truth labels resolve to. "
+    "Defaults to behavior; another kind resolves the same way, through "
+    "labels/<kind>/index.csv."
 )
 
 _SOURCE_DESCRIPTION = "Fixed tag naming this as a labels/ dependency."
@@ -53,15 +55,17 @@ class LabelsSource(DeclaredModel, Generic[K]):
     kind: Annotated[K, Declared(_KIND_DESCRIPTION)]
 
 
-class GroundTruthLabelsSource(LabelsSource[Literal["behavior"]]):
+class GroundTruthLabelsSource(LabelsSource[str]):
     """Labels loaded from labels/<kind>/index.csv."""
 
     source: Annotated[
         Literal["labels"], Declared(_SOURCE_DESCRIPTION, unwired=_SOURCE_UNWIRED)
     ] = "labels"
-    kind: Annotated[Literal["behavior"], Declared(_GROUND_TRUTH_KIND_DESCRIPTION)] = (
-        "behavior"
-    )
+    # min_length: the resolver skips a source with an empty kind, so "" would
+    # resolve to no labels at all and fail every entry for want of a file.
+    kind: Annotated[
+        str, Field(min_length=1), Declared(_GROUND_TRUTH_KIND_DESCRIPTION)
+    ] = "behavior"
     load: Annotated[LoadSpec, Declared(_LOAD_DESCRIPTION, unwired=_LOAD_UNWIRED)] = (
         Field(default_factory=lambda: NpzLoadSpec(key="labels"))
     )

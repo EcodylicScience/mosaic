@@ -26,6 +26,8 @@ from mosaic.core.pose_columns import (
     frame_keypoint_centroid,
     keypoint_centroid,
     pose_column_pairs,
+    pose_column_triplets,
+    resolve_keypoint_refs,
 )
 
 
@@ -184,3 +186,45 @@ def test_a_configured_set_does_not_widen_to_what_the_table_carries() -> None:
     assert configured_pose_pairs(
         columns, x_prefix="poseX", y_prefix="poseY", count=2
     ) == [("poseX0", "poseY0"), ("poseX1", "poseY1")]
+
+
+# -- 3D keypoints and keypoint references -------------------------------------
+
+
+def test_triplets_are_ordered_numerically_like_pairs() -> None:
+    columns = [f"pose{axis}{i}" for i in (10, 2, 1) for axis in ("X", "Y", "Z")]
+    assert pose_column_triplets(columns) == [
+        ("poseX1", "poseY1", "poseZ1"),
+        ("poseX2", "poseY2", "poseZ2"),
+        ("poseX10", "poseY10", "poseZ10"),
+    ]
+
+
+def test_a_keypoint_without_its_z_is_not_a_triplet() -> None:
+    columns = ["poseX0", "poseY0", "poseZ0", "poseX1", "poseY1"]
+    assert pose_column_triplets(columns) == [("poseX0", "poseY0", "poseZ0")]
+
+
+def test_a_2d_table_has_no_triplets() -> None:
+    assert pose_column_triplets(_numbered(3)) == []
+
+
+def test_references_resolve_by_name_and_by_index_in_the_order_given() -> None:
+    names = ["nose", "left_wrist", "right_wrist"]
+    assert resolve_keypoint_refs(["right_wrist", 0], names, 3, who="t") == [2, 0]
+
+
+def test_an_unknown_name_names_the_known_ones() -> None:
+    with pytest.raises(ValueError, match="left_wrist"):
+        _ = resolve_keypoint_refs(["elbow"], ["nose", "left_wrist"], 2, who="t")
+
+
+def test_a_name_without_a_name_list_is_refused() -> None:
+    with pytest.raises(ValueError, match="no keypoint names"):
+        _ = resolve_keypoint_refs(["nose"], None, 3, who="t")
+
+
+@pytest.mark.parametrize("index", [-1, 3])
+def test_an_index_outside_the_table_is_refused(index: int) -> None:
+    with pytest.raises(ValueError, match="outside"):
+        _ = resolve_keypoint_refs([index], None, 3, who="t")

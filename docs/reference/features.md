@@ -3,7 +3,7 @@
 
 # Features
 
-45 features are registered. Each one runs as
+50 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -86,6 +86,16 @@ Per-sequence fission-fusion grouping metrics.
 | `window_size` | `integer` | `5` | >= `1` | The sliding-window size for smoothing the pairwise distance matrix before thresholding. Must be an odd number. [frames] |
 | `min_event_duration` | `integer` | `1` | >= `1` | The minimum span, last frame minus first, of a stable subgroup's contiguous run for it to be registered as an event. [frames] |
 
+### `head-eye`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.gaze_geometry.HeadEye`
+
+Head orientation, and where the eyes point within the head, in a world frame.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `fps` | `number` \| `None` | `null` |  | The frame rate head_angular_speed and gaze_angular_speed are scaled by. Unset, it is measured from the time column as the median time step between consecutive frames. [fps] |
+
 ### `heading`
 
 Version `0.1` &middot; `mosaic.behavior.feature_library.heading.HeadingFeature`
@@ -98,6 +108,22 @@ Per-frame body heading derived from pose keypoints.
 | `front_idx` | `integer` | `0` |  | The keypoint index of the forward landmark, such as the head, snout or rostrum. Used when method is two_point. |
 | `rear_idx` | `integer` | `1` |  | The keypoint index of the rearward landmark, such as the tail base or abdomen. Used when method is two_point. |
 | `output_col` | `string` | `"ANGLE"` |  | The column the heading is written to. Defaults to the library's own orientation column, the name a downstream feature reading ANGLE already expects. |
+
+### `keypoint-kinematics`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.keypoint_kinematics.KeypointKinematics`
+
+Per-keypoint smoothed speed and acceleration, and inter-keypoint distances.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `keypoint_names` | list of `string` \| `None` | `null` |  | A name for each keypoint, in the table's keypoint order. Used in the output column names, and accepted wherever a parameter refers to a keypoint. Its length must equal the table's keypoint count. Unset, keypoint k is labelled kp{k} and is referred to by its index. |
+| `keypoints` | list of (`integer` \| `string`) \| `None` | `null` |  | The keypoints to report speed and acceleration for, by index or by name. Unset, every keypoint the table carries. An empty list reports none, for a run that wants only distances. |
+| `fps` | `number` \| `None` | `null` |  | The recording's frame rate, which sets the time step of every derivative. Unset, it is the reciprocal of the median time step per frame read off the time column, and a table whose time column cannot give one is refused. [fps] |
+| `window` | `integer` | `7` | >= `3` | The Savitzky-Golay window length: odd, and larger than polyorder. It is also the longest gap in a keypoint's track that is linearly interpolated before filtering. A longer gap ends the stretch the filter runs over. [frames] |
+| `polyorder` | `integer` | `2` | >= `2` | The order of the polynomial fitted in each window. At least 2, because acceleration is the fit's second derivative and a lower order would report it as zero everywhere. |
+| `distances` | list of (tuple of (`integer` \| `string`, `integer` \| `string`)) | _constructed_ |  | Keypoint pairs, by index or by name, whose separation is reported on every row as dist__{a}__{b}. Euclidean over the table's two or three axes, and measured on the unsmoothed positions. |
+| `normalize_by` | tuple of (`integer` \| `string`, `integer` \| `string`) \| `None` | `null` |  | A keypoint pair whose median separation over each individual's rows in the sequence divides every distance, speed, vertical velocity and acceleration, making them independent of body size. Unset, they stay in the table's units. An individual on which the pair is never seen reports NaN throughout. |
 
 ### `local-order-metrics`
 
@@ -387,6 +413,34 @@ CWT spectrograms on PairPoseDistancePCA outputs.
     | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
     | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
 
+### `pose-egocentric`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.pose_egocentric.PoseEgocentric`
+
+Per-frame 3D keypoints in each individual's own body frame.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `origin` | list of (`integer` \| `string`) | _required_ | min items `1` | The keypoints whose mean is the body frame's origin, by index or by name, such as both hips. Every one must be present on a row for the origin to be defined there: a mean of whichever happen to be detected moves the origin from row to row, and that movement would read as a change of posture. |
+| `lateral` | tuple of (`integer` \| `string`, `integer` \| `string`) | _required_ | min items `2`, max items `2` | The (left, right) keypoint pair, by index or by name. The horizontal part of left minus right is the subject's left, the body frame's +Y. Left and right are the subject's own, not the camera's. |
+| `keypoint_names` | list of `string` \| `None` | `null` |  | The keypoint names in keypoint index order, so that origin, lateral, keypoints and scale_by may name keypoints rather than number them. It must name every keypoint the table numbers, from 0 to the highest. |
+| `keypoints` | list of (`integer` \| `string`) \| `None` | `null` |  | Which keypoints to express in the body frame and emit, by index or by name. Unset, every keypoint the table carries on all three axes. |
+| `scale_by` | tuple of (list of (`integer` \| `string`), list of (`integer` \| `string`)) \| `None` | `null` |  | Two keypoint groups, such as the hips and the shoulders. Set, the egocentric coordinates are divided by the median distance between the two groups' centroids, taken per individual and per sequence, so that posture compares across body sizes. Unset, they stay in the table's length unit. |
+| `max_gap` | `integer` | `0` | >= `0` | The longest run of undefined values filled by linear interpolation, per individual and per output column, after the body frame is computed. A longer run stays undefined throughout, and a run at either end of an individual's track is never filled. 0 fills nothing. arhmm replaces an undefined value with zero, which it then fits as a pose, so a run meant for it usually wants this set. [frames] |
+
+### `ray-target`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.gaze_geometry.RayTarget`
+
+Where a ray points relative to targets on the body, in a world frame.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `ray` | `string` | `"gaze"` |  | The column prefix of the ray to measure: its origin is read from <ray>X, <ray>Y and <ray>Z and its direction from <ray>DX, <ray>DY and <ray>DZ. The default is the gaze ray every mosaic_world_v1 table may carry. The direction is renormalised; a zero or non-finite one gives NaN. |
+| `keypoint_names` | list of `string` \| `None` | `null` |  | The keypoint names, one per keypoint of the table and in its keypoint order, so that targets can refer to keypoints by name. A list of another length is refused. Unset, targets refer to keypoints by index only. |
+| `targets` | `object` | _required_ |  | Each target's name mapped to the keypoints that define it, by index or by name, each keypoint once. A target is the mean of its keypoints that are finite on the row. Names become output column suffixes, so each must be a Python identifier. The keypoints are the measured individual's own. |
+| `fps` | `number` \| `None` | `null` |  | The frame rate ray_angular_speed is scaled by. Unset, it is measured from the time column as the median time step between consecutive frames. [fps] |
+
 ### `scale-to-cm`
 
 Version `0.2` &middot; `mosaic.behavior.feature_library.scale_to_cm.ScaleToCm`
@@ -536,6 +590,67 @@ Per-sequence feature reducing multi-id data to one row per frame.
 | `threshold` | `number` \| `None` | `null` |  | Aggregate the boolean column > threshold instead of the raw column. Unset, the raw column is aggregated. With agg set to mean, the result is the fraction of ids in the frame exceeding the threshold. |
 | `transform` | `"none"` \| `"abs"` | `"none"` |  | A transform applied to the column before aggregation. Known values are none and abs. abs aggregates the column's absolute value, useful for a magnitude such as angular velocity. |
 
+### `label-statistics`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.label_statistics.LabelStatistics`
+
+Per-individual behavioural statistics of a label sequence: a fingerprint.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `labels` | `ResultColumn` \| `GroundTruthLabelsSource` | `{"kind": "behavior", "source": "labels", "load": {"key": "labels", "kind": "npz", "transpose": false}, "pattern": null}` |  | Where the label sequence comes from. A GroundTruthLabelsSource reads each entry's converted label file from labels/<kind>/, through its segment sidecar when the file carries one. A ResultColumn reads a categorical column of a feature's output: from that feature's run when it names a feature, from this feature's own input when its feature is left empty. |
+| `states` | list of (`string` \| `integer`) \| `None` | `null` |  | The fixed vocabulary of states, which gives every entry the same columns -- a state an entry never shows reads as zero usage and zero bouts rather than as a missing column. An integer names a label id or a numeric column value, a string a label name or a text column value. Required for a ResultColumn source. Unset for ground truth, it is the label file's label_names in file order, less those in ignore, so it can differ between entries whose files were converted with different vocabularies; a file that declares no label_ids has no vocabulary to default to and is refused. A label or value in neither states nor ignore is refused. |
+| `fps` | `number` \| `None` | `null` |  | The frame rate that converts bout lengths to seconds and bout counts to rates. Unset, it is read from the input's time column as the median time step per frame, and an input without a usable time column is refused. [fps] |
+| `min_bout_frames` | `integer` | `1` | >= `1` | The shortest bout kept. A shorter run or segment is dropped before any statistic is taken: it adds to no usage and no coverage, is no bout, and takes part in no transition. A bout's length is its rows times the entry's frame step, so on a table holding every k-th frame a bout of r rows has length r*k. [frames] |
+| `ignore` | list of (`string` \| `integer`) | _constructed_ |  | Labels or values excluded from every statistic, such as a background or an unsure class. Their frames count toward n_frames only, so they lower coverage. Matched as states are, and refused when also listed in states. |
+
+??? note "`GroundTruthLabelsSource`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
+    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
+    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
+    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+
+??? note "`JoblibLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
+
+??? note "`NpzLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
+
+??? note "`ParquetLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+
+??? note "`ResultColumn`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  | Feature name whose output to consume. |
+    | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `column` | `string` | _required_ |  | Column name to extract from the parquet output. |
+
 ### `nn-delta-bins`
 
 Version `0.1` &middot; `mosaic.behavior.feature_library.nn_delta_bins.NearestNeighborDeltaBins`
@@ -636,7 +751,7 @@ Extract labeled, split-annotated templates from upstream features.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `kind` | `"behavior"` | `"behavior"` |  | Fixed to behavior. Ground-truth labels always resolve to labels/behavior/. |
+    | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
     | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
     | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
     | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |

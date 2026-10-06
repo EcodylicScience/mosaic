@@ -11,8 +11,10 @@ models, so a TREx-tracked dataset trained on blank images with no error anywhere
 along the way.
 
 The fix was blocked on the units question -- ``X``/``Y`` used to be centimetres
-on TREx and pixels everywhere else. It is not any more: tracks are pixels, and
-the one family that is not (``trex_v1``) is refused by name.
+on TREx and pixels everywhere else. It is not any more: every schema family
+declares its space, and a crop or an overlay refuses every space but video
+pixels -- centimetres (``trex_v1``, ``mosaic_cm_v1``) and world metres
+(``mosaic_world_v1``) alike.
 
 ``center_mode="xy"`` is that fallback asked for outright: a request for the body
 centre that never consults pose even where pose exists, and that therefore
@@ -36,6 +38,7 @@ from mosaic.behavior.visualization_library.interaction_crop import (
     InteractionCropPipeline,
 )
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.tracks_index import write_tracks_row
 
 
@@ -153,6 +156,86 @@ def test_an_unrecorded_schema_is_read_as_the_legacy_one(tmp_path: Path) -> None:
     ds = _dataset_recording(tmp_path, "")
     with pytest.raises(ValueError, match="upgrade-tracks"):
         require_pixel_positions(ds, "", "seq", "who")
+
+
+def test_a_world_table_refuses_and_names_the_projection(tmp_path: Path) -> None:
+    """Metres in a world frame land nowhere sensible when read as pixels."""
+    ds = _dataset_recording(tmp_path, "mosaic_world_v1")
+    with pytest.raises(ValueError, match="projection"):
+        require_pixel_positions(ds, "", "seq", "who")
+
+
+def test_a_centimetre_table_without_a_pixel_factor_refuses(tmp_path: Path) -> None:
+    """``mosaic_cm_v1`` used to pass: the guard only knew the ``trex_v1`` family."""
+    ds = _dataset_recording(tmp_path, "mosaic_cm_v1")
+    with pytest.raises(ValueError, match="centimetres"):
+        require_pixel_positions(ds, "", "seq", "who")
+
+
+def test_an_unregistered_schema_refuses_rather_than_being_guessed(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset_recording(tmp_path, "never_registered_v1")
+    with pytest.raises(ValueError, match="not registered"):
+        require_pixel_positions(ds, "", "seq", "who")
+
+
+def test_the_schema_of_the_table_in_hand_wins_over_the_index(tmp_path: Path) -> None:
+    """A feature knows which table it was handed; the index row may be another."""
+    ds = _dataset_recording(tmp_path, "trex_v1")
+    require_pixel_positions(ds, "", "seq", "who", schema="mosaic_v1")
+    with pytest.raises(ValueError, match="projection"):
+        require_pixel_positions(ds, "", "seq", "who", schema="mosaic_world_v1")
+
+
+def test_the_guard_judges_the_variant_that_was_read(tmp_path: Path) -> None:
+    """Two variants of one entry: the first index row is not necessarily the one."""
+    ds = _dataset_recording(tmp_path, "mosaic_world_v1")
+    out = ds.get_root("tracks") / "seq_pixels.parquet"
+    _centroid_table().to_parquet(out)
+    write_tracks_row(
+        ds,
+        run_id="convert-y.0.1-bbbbbbbbbb",
+        group="",
+        sequence="seq",
+        out_path=out,
+        producer="convert-y",
+        std_format="mosaic_v1",
+        n_rows=5,
+    )
+    require_pixel_positions(
+        ds, "", "seq", "who", tracks_run_id="convert-y.0.1-bbbbbbbbbb"
+    )
+    with pytest.raises(ValueError, match="projection"):
+        require_pixel_positions(
+            ds, "", "seq", "who", tracks_run_id="convert-x.0.1-aaaaaaaaaa"
+        )
+    with pytest.raises(ValueError):
+        require_pixel_positions(ds, "", "seq", "who")
+
+
+def test_a_posed_centimetre_table_refuses_in_the_default_mode(tmp_path: Path) -> None:
+    """Keypoints are no safer than ``X``: in ``trex_v1`` both are centimetres.
+
+    The gate used to run only without keypoints or under ``"xy"``, so a
+    ``trex_v1`` table -- which always has keypoints -- was cropped around its
+    centimetre keypoints with nothing raising.
+    """
+    ds = _dataset_recording(tmp_path, "trex_v1", table=_posed_table())
+    crop = EgocentricCrop(params={"angle_col": "ANGLE"})
+    crop.bind_dataset(ds)
+    with pytest.raises(ValueError, match="upgrade-tracks"):
+        _ = crop.transform(_posed_table())
+
+
+def test_a_crop_reads_the_schema_off_its_scope(tmp_path: Path) -> None:
+    """The scope names the schema of the table the run resolved for the entry."""
+    ds = _dataset_recording(tmp_path, "mosaic_v1", table=_posed_table())
+    crop = EgocentricCrop(params={"angle_col": "ANGLE"})
+    crop.bind_dataset(ds)
+    crop.set_scope(ResolvedScope(tracks_schemas={("", "seq"): "mosaic_world_v1"}))
+    with pytest.raises(ValueError, match="projection"):
+        _ = crop.transform(_posed_table())
 
 
 # ---------------------------------------------------------------------------

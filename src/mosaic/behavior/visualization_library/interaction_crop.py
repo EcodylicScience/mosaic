@@ -29,7 +29,6 @@ from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pose_columns import (
     configured_pose_pairs,
     frame_keypoint_centroid,
-    pose_column_pairs,
 )
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
@@ -273,12 +272,18 @@ class InteractionCropPipeline:
         group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
         sequence = str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
 
-        # ``xy`` reads the body centre whether or not the table has keypoints, so
-        # it needs the units check unconditionally. Without the first clause a
-        # trex_v1 table -- which *requires* pose columns, and so always has them --
-        # would be cropped at centimetre coordinates and report success.
-        if p.center_mode == "xy" or not pose_column_pairs(df.columns):
-            require_pixel_positions(self._ds, group, sequence, self.name)
+        # Crops are cut at pixel coordinates whether they are centred on the
+        # keypoints or on the body centre, and in every schema family both are in
+        # the same space -- so the check is unconditional. It used to run only
+        # without keypoints or under ``xy``, which let a trex_v1 table, whose
+        # keypoints are centimetres too, be cropped at centimetre coordinates.
+        require_pixel_positions(
+            self._ds,
+            group,
+            sequence,
+            self.name,
+            schema=self._scope.tracks_schemas.get((group, sequence)),
+        )
 
         # Resolve video
         resolved = self._ds.resolve_media(group, sequence)

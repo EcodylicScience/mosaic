@@ -29,6 +29,8 @@ __all__ = [
     "frame_keypoint_centroid",
     "keypoint_centroid",
     "pose_column_pairs",
+    "pose_column_triplets",
+    "resolve_keypoint_refs",
 ]
 
 
@@ -70,6 +72,85 @@ def pose_column_pairs(columns: Iterable[str]) -> list[tuple[str, str]]:
         for suffix in sorted(suffixes, key=_keypoint_sort_key)
         if f"poseY{suffix}" in present
     ]
+
+
+def pose_column_triplets(columns: Iterable[str]) -> list[tuple[str, str, str]]:
+    """Extract (poseX*, poseY*, poseZ*) column triplets, ordered by keypoint index.
+
+    The 3D sibling of :func:`pose_column_pairs`, for a world-frame table. A
+    keypoint missing any of its three axes is skipped rather than half-reported;
+    ``mosaic_world_v1`` refuses such a table when it is written, so on a validated
+    table nothing is skipped.
+
+    Args:
+        columns: Column names to scan.
+
+    Returns:
+        The ``(poseX<k>, poseY<k>, poseZ<k>)`` triplets present in full, in
+        keypoint order -- numerically for numeric suffixes.
+    """
+    column_names = list(columns)
+    present = set(column_names)
+    suffixes = [c[len("poseX") :] for c in column_names if c.startswith("poseX")]
+    return [
+        (f"poseX{suffix}", f"poseY{suffix}", f"poseZ{suffix}")
+        for suffix in sorted(suffixes, key=_keypoint_sort_key)
+        if f"poseY{suffix}" in present and f"poseZ{suffix}" in present
+    ]
+
+
+def resolve_keypoint_refs(
+    refs: Sequence[int | str],
+    names: Sequence[str] | None,
+    n_keypoints: int,
+    *,
+    who: str,
+) -> list[int]:
+    """Resolve keypoint references, by index or by name, to indices.
+
+    A parameter naming keypoints accepts either form, so a recipe can say
+    ``"left_wrist"`` where a name list is given and ``9`` where none is. Both are
+    checked against the table's keypoint count: an out-of-range index is the
+    same mistake as an unknown name, and silently reading NaN for it would hide
+    the typo in a plausible-looking output column.
+
+    Args:
+        refs: Keypoint indices or names, in the order wanted.
+        names: The keypoint names, in index order, or ``None`` when none were
+            given.
+        n_keypoints: How many keypoints the table carries.
+        who: The caller, for the message.
+
+    Returns:
+        The keypoint indices, in the order of *refs*.
+
+    Raises:
+        ValueError: On an unknown name, a name with no name list to resolve it
+            in, or an index outside ``0..n_keypoints-1``.
+    """
+    lookup = {name: index for index, name in enumerate(names or [])}
+    resolved: list[int] = []
+    for ref in refs:
+        if isinstance(ref, str):
+            if not names:
+                raise ValueError(
+                    f"{who} names keypoint {ref!r} but was given no keypoint names; "
+                    "pass keypoint_names or refer to keypoints by index"
+                )
+            if ref not in lookup:
+                raise ValueError(
+                    f"{who}: no keypoint named {ref!r}; the names are {list(names)}"
+                )
+            index = lookup[ref]
+        else:
+            index = int(ref)
+        if not 0 <= index < n_keypoints:
+            raise ValueError(
+                f"{who}: keypoint {ref!r} is outside the table's {n_keypoints} "
+                f"keypoints (0..{n_keypoints - 1})"
+            )
+        resolved.append(index)
+    return resolved
 
 
 def configured_pose_pairs(

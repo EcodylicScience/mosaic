@@ -26,14 +26,19 @@ from mosaic.core.pipeline.manifest import build_manifest
 from mosaic.core.pipeline.types import Inputs
 from mosaic.core.schema import (
     DERIVED_COLUMNS,
+    GAZE_COLUMNS,
+    HEAD_COLUMNS,
     TRACK_SCHEMAS,
+    TRACK_SPACES,
     ForbiddenTrackColumnError,
+    IncompleteTrackColumnsError,
     TrackSchema,
     TrackSchemaError,
     UnknownTrackSchemaError,
     ensure_track_schema,
     register_track_schema,
     schema_family,
+    schema_space,
 )
 from mosaic.core.scope import Scope
 
@@ -356,5 +361,138 @@ def test_an_unrecorded_schema_still_refuses_beside_a_pixel_native_one(
 ) -> None:
     """The case that matters: blank is centimetres, ``mosaic_v1`` is pixels."""
     ds = _dataset_mixing(tmp_path, "", "mosaic_v1")
+    with pytest.raises(ValueError, match="incompatible schemas"):
+        _ = build_manifest(ds, Inputs(("tracks",)))
+
+
+# -- Track spaces and the world-frame schema ---------------------------------
+
+
+def test_every_registered_schema_declares_a_space() -> None:
+    """A family is one space; a schema with none would be guessed at downstream."""
+    for name, schema in TRACK_SCHEMAS.items():
+        assert schema.space in TRACK_SPACES, name
+
+
+def test_the_built_in_spaces() -> None:
+    assert schema_space("mosaic_v1") == "image_px"
+    assert schema_space("trex_v2") == "image_px"
+    assert schema_space("mosaic_cm_v1") == "plane_cm"
+    assert schema_space("trex_v1") == "plane_cm"
+    assert schema_space("mosaic_world_v1") == "world_m"
+
+
+def test_an_unrecorded_schema_is_read_as_the_legacy_space() -> None:
+    """The blank cell an old index row carries is ``trex_v1``, in centimetres."""
+    assert schema_space("") == "plane_cm"
+
+
+def test_an_unknown_schema_has_no_space_rather_than_raising() -> None:
+    assert schema_space("never_registered") is None
+
+
+def test_a_root_schema_without_a_space_is_refused_at_registration() -> None:
+    with pytest.raises(TrackSchemaError, match="declares no space"):
+        register_track_schema(TrackSchema(name="spaceless_root", required={"frame"}))
+    assert "spaceless_root" not in TRACK_SCHEMAS
+
+
+def test_an_extension_inherits_its_base_space() -> None:
+    try:
+        register_track_schema(
+            TrackSchema(name="pixel_extension", extends="mosaic_v1", allows={"ANGLE"})
+        )
+        assert TRACK_SCHEMAS["pixel_extension"].space == "image_px"
+    finally:
+        _ = TRACK_SCHEMAS.pop("pixel_extension", None)
+
+
+def test_an_extension_may_not_change_its_base_space() -> None:
+    with pytest.raises(TrackSchemaError, match="one space"):
+        register_track_schema(
+            TrackSchema(name="relabelled", extends="mosaic_v1", space="world_m")
+        )
+    assert "relabelled" not in TRACK_SCHEMAS
+
+
+def test_the_world_schema_is_its_own_family() -> None:
+    """So a scope mixing it with pixel tables is refused by the existing check."""
+    assert schema_family("mosaic_world_v1") == "mosaic_world_v1"
+    assert schema_family("mosaic_world_v1") != schema_family("mosaic_v1")
+
+
+def _minimal_world_frame() -> pd.DataFrame:
+    """A table satisfying every ``mosaic_world_v1`` requirement, one keypoint."""
+    frame = _minimal_mosaic_v1_frame()
+    frame["Z"] = [0.5, 0.6]
+    for axis in ("X", "Y", "Z"):
+        frame[f"pose{axis}0"] = [0.1, 0.2]
+    frame["poseP0"] = [0.9, 0.8]
+    return frame
+
+
+def test_a_complete_world_table_validates_strictly() -> None:
+    _, report = ensure_track_schema(_minimal_world_frame(), "mosaic_world_v1", True)
+    assert report["missing_required"] == []
+
+
+def test_the_world_schema_requires_z() -> None:
+    frame = _minimal_world_frame().drop(columns=["Z"])
+    with pytest.raises(TrackSchemaError):
+        _ = ensure_track_schema(frame, "mosaic_world_v1", strict=True)
+
+
+def test_a_partial_keypoint_triplet_raises_without_strict() -> None:
+    """Read as 2D by every pair-shaped helper, so it is refused, not reported."""
+    frame = _minimal_world_frame()
+    frame["poseX1"] = [0.0, 0.0]
+    frame["poseY1"] = [0.0, 0.0]
+    with pytest.raises(IncompleteTrackColumnsError, match="keypoint 1"):
+        _ = ensure_track_schema(frame, "mosaic_world_v1", strict=False)
+
+
+@pytest.mark.parametrize("group", [GAZE_COLUMNS, HEAD_COLUMNS])
+def test_a_partial_column_group_raises_without_strict(group: frozenset[str]) -> None:
+    frame = _minimal_world_frame()
+    first = sorted(group)[0]
+    frame[first] = [0.0, 0.0]
+    with pytest.raises(IncompleteTrackColumnsError, match="present together"):
+        _ = ensure_track_schema(frame, "mosaic_world_v1", strict=False)
+
+
+@pytest.mark.parametrize("group", [GAZE_COLUMNS, HEAD_COLUMNS])
+def test_a_complete_column_group_validates(group: frozenset[str]) -> None:
+    frame = _minimal_world_frame()
+    for column in group:
+        frame[column] = [0.0, 0.0]
+    _ = ensure_track_schema(frame, "mosaic_world_v1", strict=True)
+
+
+@pytest.mark.parametrize("column", ["VZ", "AZ", "SPEED", "camera"])
+def test_the_world_schema_forbids_derived_columns_and_a_camera(column: str) -> None:
+    """A fused table spans every camera, so a ``camera`` column would be a lie."""
+    frame = _minimal_world_frame()
+    frame[column] = [0.0, 0.0]
+    with pytest.raises(ForbiddenTrackColumnError):
+        _ = ensure_track_schema(frame, "mosaic_world_v1", strict=False)
+
+
+def test_the_3d_derived_columns_are_forbidden_in_pixel_tables_too() -> None:
+    assert {"VZ", "AZ"} <= DERIVED_COLUMNS
+    frame = _minimal_mosaic_v1_frame()
+    frame["VZ"] = [0.0, 0.0]
+    with pytest.raises(ForbiddenTrackColumnError):
+        _ = ensure_track_schema(frame, "mosaic_v1", strict=False)
+
+
+def test_a_2d_schema_does_not_check_keypoint_completeness() -> None:
+    """Every 2D schema predates ``pose_axes``; its tables are judged as before."""
+    frame = _minimal_mosaic_v1_frame()
+    frame["poseX0"] = [1.0, 2.0]
+    _ = ensure_track_schema(frame, "mosaic_v1", strict=True)
+
+
+def test_a_world_table_refuses_beside_a_pixel_one(tmp_path: Path) -> None:
+    ds = _dataset_mixing(tmp_path, "mosaic_world_v1", "mosaic_v1")
     with pytest.raises(ValueError, match="incompatible schemas"):
         _ = build_manifest(ds, Inputs(("tracks",)))

@@ -15,7 +15,7 @@ import pandas as pd
 import pyarrow as pa
 
 from ...core.helpers import make_entry_key, text_cell
-from ...core.schema import LEGACY_SCHEMA, schema_family
+from ...core.schema import LEGACY_SCHEMA, schema_family, schema_space
 from ...core.scope import Scope
 from .sequence_index import read_entry_compositions
 from ._utils import ResolvedScope
@@ -25,7 +25,7 @@ from .index import (
     missing_outputs_error,
 )
 from .loading import load_entry_data
-from .track_universe import current_run_id, is_track_shaped
+from .track_universe import carries_z, current_run_id, is_track_shaped
 from .tracks_index import (
     FrameExtents,
     read_frame_extents,
@@ -100,6 +100,9 @@ class ResolvedInput:
         tracks_variants: Which tracks recipes produced them. Only ever non-empty
             for the tracks resolver; a feature input's own identity is already
             pinned in ``Inputs`` by ``resolve_references``.
+        tracks_schemas: The schema each entry in ``entries`` records, for the
+            tracks resolver only. What ``ResolvedScope.track_spaces`` is read
+            from.
     """
 
     entries: set[tuple[str, str]]
@@ -107,6 +110,7 @@ class ResolvedInput:
     full_order: list[tuple[str, str]]
     path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]]
     tracks_variants: tuple[str, ...] = ()
+    tracks_schemas: dict[tuple[str, str], str] = field(default_factory=dict)
 
 
 def _ensure_track_shaped(
@@ -145,6 +149,19 @@ def _ensure_track_shaped(
             f"of a track-producing feature (trajectory-smooth, track-subsample, "
             f"movement-smooth, movement-filter-interpolate)."
         )
+
+
+def _track_result_is_world(
+    path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]],
+) -> bool:
+    """Whether a track-shaped ``Result`` input is a world-frame table.
+
+    Peeks one output, as ``_ensure_track_shaped`` does: one run of one producer
+    wrote every file, so they agree on their columns.
+    """
+    if not path_map_all:
+        return False
+    return carries_z(next(iter(path_map_all.values()))[0])
 
 
 def _leaf_run_of(ds: Dataset, feature_name: str) -> str:
@@ -220,10 +237,13 @@ def build_manifest(
     first_full_order: list[tuple[str, str]] = []
 
     variants: tuple[str, ...] = ()
+    tracks_schemas: dict[tuple[str, str], str] = {}
+    result_spaces: set[str] = set()
     for i, item in enumerate(inputs.root):
         if item == "tracks":
             input_result = _resolve_tracks(ds, tracks_run_id, selector, on_missing_run)
             variants = input_result.tracks_variants
+            tracks_schemas = input_result.tracks_schemas
         else:
             input_result = _resolve_feature(
                 ds,
@@ -234,6 +254,8 @@ def build_manifest(
             )
             if getattr(type(inputs), "_track_input", False):
                 _ensure_track_shaped(item.feature, input_result.path_map_all)
+                if _track_result_is_world(input_result.path_map_all):
+                    result_spaces.add("world_m")
         per_input_entries.append(input_result.entries)
         per_input_paths.append(input_result.path_map)
         per_input_paths_all.append(input_result.path_map_all)
@@ -251,6 +273,16 @@ def build_manifest(
     # declares keeps the resolver ignorant of features: what is *hashed* is
     # decided at the one payload site, and what is merely *recorded* on the index
     # row wants the others.
+    shared_schemas = {
+        entry: schema
+        for entry, schema in tracks_schemas.items()
+        if entry in shared_entries
+    }
+    spaces = {
+        space
+        for space in (schema_space(schema) for schema in shared_schemas.values())
+        if space is not None
+    }
     resolved = ResolvedScope(
         entries=shared_entries,
         # What was asked for, beside what it resolved to. An empty resolution
@@ -259,6 +291,8 @@ def build_manifest(
         selector=selector,
         tracks_variants=variants,
         compositions=read_entry_compositions(ds, shared_entries),
+        tracks_schemas=shared_schemas,
+        track_spaces=frozenset(spaces | result_spaces),
     )
 
     # Build per-group ordering: the universe from the first input, the *order*
@@ -609,7 +643,12 @@ def _resolve_tracks(
     _refuse_mixed_schemas(scoped, schema_by_entry)
 
     return ResolvedInput(
-        scoped, path_map, full_order, path_map_all, tuple(sorted(resolved_variants))
+        scoped,
+        path_map,
+        full_order,
+        path_map_all,
+        tuple(sorted(resolved_variants)),
+        {entry: schema_by_entry[entry] for entry in scoped},
     )
 
 

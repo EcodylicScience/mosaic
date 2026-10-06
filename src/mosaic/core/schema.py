@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, replace
+from typing import Final, Literal
 
 import pandas as pd
 
@@ -12,15 +14,21 @@ _NO_COLUMNS: AbstractSet[str] = frozenset()
 
 __all__ = [
     "DERIVED_COLUMNS",
+    "GAZE_COLUMNS",
+    "HEAD_COLUMNS",
     "LEGACY_SCHEMA",
     "TRACK_SCHEMAS",
+    "TRACK_SPACES",
     "ForbiddenTrackColumnError",
+    "IncompleteTrackColumnsError",
     "TrackSchema",
     "TrackSchemaError",
+    "TrackSpace",
     "UnknownTrackSchemaError",
     "ensure_track_schema",
     "register_track_schema",
     "schema_family",
+    "schema_space",
 ]
 
 LEGACY_SCHEMA = "trex_v1"
@@ -32,6 +40,29 @@ has to decide what an unrecorded schema means reads it from here, so the two
 that ask -- the scope check in ``pipeline.manifest`` and the crop features'
 units guard -- cannot drift into answering differently.
 """
+
+
+type TrackSpace = Literal["image_px", "plane_cm", "world_m"]
+"""What a table's spatial columns are measured in, and against what.
+
+- ``"image_px"`` -- video pixels of the view the producer read. ``mosaic_v1`` and
+  everything extending it. The only space a coordinate may be *drawn* in as it
+  stands: an overlay or a crop places it on the frame directly.
+- ``"plane_cm"`` -- centimetres in the image plane, for archived tables whose
+  pixel factor cannot be recovered (``mosaic_cm_v1``, ``trex_v1``). Still two
+  axes, so a planar feature computes in it; nothing draws it.
+- ``"world_m"`` -- metres in a calibrated world frame, right-handed with +Z up,
+  for a multi-view or fused producer (``mosaic_world_v1``). Three axes. It
+  reaches a video only through a projection with the recording's calibration.
+
+Declared on a schema family rather than inferred from columns, because the two
+2D spaces are indistinguishable by their columns -- a centimetre table and a
+pixel table both carry ``X`` and ``Y`` -- and the difference reads as a
+plausible number either way.
+"""
+
+TRACK_SPACES: Final[tuple[TrackSpace, ...]] = ("image_px", "plane_cm", "world_m")
+"""Every :data:`TrackSpace`, in a stable order for messages and iteration."""
 
 
 @dataclass(frozen=True)
@@ -53,6 +84,19 @@ class TrackSchema:
         allows: Columns this schema lifts from the base's ``forbidden`` set. How
             a tracker that genuinely *measures* a quantity the base treats as
             derived says so.
+        space: The :data:`TrackSpace` every spatial column is in. **Required on
+            a root schema** and inherited through ``extends``, which may not
+            change it: a family is one space, which is what makes refusing a
+            mixture of families mean something.
+        pose_axes: The axes every keypoint carries, as column-prefix suffixes
+            (``("X", "Y", "Z")`` means ``poseX{k}``, ``poseY{k}``, ``poseZ{k}``).
+            When set, a keypoint present on some of these axes but not all of
+            them raises, whatever ``strict`` says. Empty checks nothing, which is
+            what every 2D schema registered before this field declares.
+        all_or_none: Column groups that must be present entirely or not at all,
+            such as a gaze ray's origin and direction. A partial group raises,
+            whatever ``strict`` says. Merged with the base's groups on
+            ``extends``.
         description: Human-readable summary, surfaced in validation output.
 
     The set fields are typed ``AbstractSet[str]`` rather than ``frozenset[str]``
@@ -74,6 +118,9 @@ class TrackSchema:
     forbidden: AbstractSet[str] = _NO_COLUMNS
     extends: str | None = None
     allows: AbstractSet[str] = _NO_COLUMNS
+    space: TrackSpace | None = None
+    pose_axes: tuple[str, ...] = ()
+    all_or_none: tuple[AbstractSet[str], ...] = ()
     description: str = ""
 
 
@@ -91,6 +138,11 @@ def register_track_schema(schema: TrackSchema) -> None:
         UnknownTrackSchemaError: If ``extends`` names a schema that is not
             registered yet. Registration order is therefore base-before-derived,
             which is also the order they read in.
+        TrackSchemaError: If a root schema declares no ``space``, or an extension
+            declares a ``space`` or ``pose_axes`` different from its base's. A
+            root left without a space would be drawn as pixels or refused by
+            every feature, and which of the two is not something to leave to a
+            default.
     """
     if schema.extends is not None:
         base = TRACK_SCHEMAS.get(schema.extends)
@@ -100,12 +152,32 @@ def register_track_schema(schema: TrackSchema) -> None:
                 f"Schema {schema.name!r} extends {schema.extends!r}, which is not "
                 f"registered. Known: {known}"
             )
+        if schema.space is not None and schema.space != base.space:
+            raise TrackSchemaError(
+                f"Schema {schema.name!r} declares space {schema.space!r}, but it "
+                f"extends {base.name!r}, whose space is {base.space!r}. A family is "
+                f"one space: register a root schema for a different one."
+            )
+        if schema.pose_axes and schema.pose_axes != base.pose_axes:
+            raise TrackSchemaError(
+                f"Schema {schema.name!r} declares pose axes {schema.pose_axes}, but "
+                f"it extends {base.name!r}, whose pose axes are {base.pose_axes}."
+            )
         schema = replace(
             schema,
             required=base.required | schema.required,
             required_prefixes=base.required_prefixes | schema.required_prefixes,
             recommended=base.recommended | schema.recommended,
             forbidden=(base.forbidden | schema.forbidden) - schema.allows,
+            space=base.space,
+            pose_axes=base.pose_axes,
+            all_or_none=base.all_or_none + schema.all_or_none,
+        )
+    elif schema.space is None:
+        raise TrackSchemaError(
+            f"Schema {schema.name!r} is a root schema and declares no space. Pass "
+            f"space= one of {list(TRACK_SPACES)}, or extend the schema whose space "
+            f"it shares (a pixel table extends 'mosaic_v1')."
         )
     TRACK_SCHEMAS[schema.name] = schema
 
@@ -154,6 +226,17 @@ class ForbiddenTrackColumnError(TrackSchemaError):
     """
 
 
+class IncompleteTrackColumnsError(TrackSchemaError):
+    """A table carries part of a column group its schema says is all or nothing.
+
+    Raised regardless of ``strict``, for the reason a forbidden column is: the
+    table is not merely incomplete but misleading. A keypoint with ``poseX``,
+    ``poseY`` and no ``poseZ`` in a 3D table reads to every pair-shaped helper as
+    a perfectly good 2D keypoint, and a gaze origin without its direction is a
+    point nobody can tell from a measured one.
+    """
+
+
 def schema_family(schema_name: str) -> str:
     """The root of *schema_name*'s ``extends`` chain.
 
@@ -179,6 +262,38 @@ def schema_family(schema_name: str) -> str:
             return current
         current = schema.extends
     return current
+
+
+def schema_space(schema_name: str) -> TrackSpace | None:
+    """The :data:`TrackSpace` of *schema_name*'s family, or ``None`` if unknown.
+
+    A blank name is the legacy schema, the same reading ``schema_family``'s
+    callers give an index row written before the column existed. Total, like
+    ``schema_family``: an unregistered name answers ``None`` rather than raising,
+    and a caller deciding whether to *draw* a table treats ``None`` as "not
+    pixels".
+    """
+    schema = TRACK_SCHEMAS.get(schema_family(schema_name or LEGACY_SCHEMA))
+    return None if schema is None else schema.space
+
+
+_POSE_COLUMN = re.compile(r"^pose([A-Z])(\d+)$")
+
+
+def _incomplete_keypoints(
+    column_names: AbstractSet[str], pose_axes: tuple[str, ...]
+) -> list[str]:
+    """The keypoints present on some of *pose_axes* but not on all of them."""
+    axes_by_index: dict[str, set[str]] = {}
+    for name in column_names:
+        match = _POSE_COLUMN.match(name)
+        if match is not None and match.group(1) in pose_axes:
+            axes_by_index.setdefault(match.group(2), set()).add(match.group(1))
+    wanted = set(pose_axes)
+    incomplete = sorted(
+        (int(index) for index, axes in axes_by_index.items() if axes != wanted)
+    )
+    return [f"keypoint {index}" for index in incomplete]
 
 
 def ensure_track_schema(
@@ -211,6 +326,9 @@ def ensure_track_schema(
             missing column deep in a feature.
         ForbiddenTrackColumnError: If the table carries a column the schema
             forbids. Raised whatever *strict* says -- see the class docstring.
+        IncompleteTrackColumnsError: If a keypoint lacks one of the schema's
+            ``pose_axes``, or an ``all_or_none`` group is partly present. Raised
+            whatever *strict* says.
         TrackSchemaError: If *strict* and a required column or prefix is missing.
     """
     schema = TRACK_SCHEMAS.get(schema_name)
@@ -245,12 +363,40 @@ def ensure_track_schema(
     }
     src_tag = f" {source}" if source else ""
     if forbidden_present:
+        derived = [c for c in forbidden_present if c in DERIVED_COLUMNS]
+        other = [c for c in forbidden_present if c not in DERIVED_COLUMNS]
+        reasons: list[str] = []
+        if derived:
+            reasons.append(
+                f"{derived} are derived quantities a feature computes, not "
+                f"measurements a tracker reports; a tracker that genuinely measures "
+                f"one declares a schema that allows it."
+            )
+        if other:
+            reasons.append(
+                f"{other} cannot appear in this schema at all; its description "
+                f"says why."
+            )
         raise ForbiddenTrackColumnError(
-            f"Schema '{schema_name}'{src_tag} forbids {forbidden_present}. These are "
-            f"derived quantities a feature computes, not measurements a tracker "
-            f"reports; a tracker that genuinely measures one declares a schema "
-            f"that allows it."
+            f"Schema '{schema_name}'{src_tag} forbids {forbidden_present}. "
+            + " ".join(reasons)
         )
+    if schema.pose_axes:
+        incomplete = _incomplete_keypoints(column_names, schema.pose_axes)
+        if incomplete:
+            raise IncompleteTrackColumnsError(
+                f"Schema '{schema_name}'{src_tag} keypoints carry every one of "
+                f"{list(schema.pose_axes)} or none, and {incomplete[:5]}"
+                f"{' (+more)' if len(incomplete) > 5 else ''} carry only some."
+            )
+    for group in schema.all_or_none:
+        present = sorted(c for c in group if c in column_names)
+        if present and len(present) != len(group):
+            missing = sorted(c for c in group if c not in column_names)
+            raise IncompleteTrackColumnsError(
+                f"Schema '{schema_name}'{src_tag} carries {present} without "
+                f"{missing}; those columns are present together or not at all."
+            )
     if strict and (missing_required or missing_prefixes):
         raise TrackSchemaError(
             f"Schema '{schema_name}'{src_tag} validation failed: {report}"
@@ -289,6 +435,7 @@ register_track_schema(
             "SPEED",
             "ANGLE",
         },
+        space="plane_cm",
         description="Minimal T-Rex-like per-frame, per-id tracks with centroid/pose columns. "
         "`group` is required but may be empty (an optional namespace, not the "
         "canonical grouping -- use tags / run_feature(scope=Scope(entries=...)) "
@@ -301,8 +448,10 @@ DERIVED_COLUMNS: AbstractSet[str] = frozenset(
     {
         "VX",
         "VY",
+        "VZ",
         "AX",
         "AY",
+        "AZ",
         "SPEED",
         "SPEED#centroid",
         "SPEED#pcentroid",
@@ -359,6 +508,7 @@ register_track_schema(
         name="mosaic_v1",
         required=STANDARD_COLUMNS,
         forbidden=DERIVED_COLUMNS,
+        space="image_px",
         description=(
             "The tracker-neutral standard: per-frame, per-id tracks in video "
             "pixels. `X`/`Y` are the individual's body center -- for a pose-only "
@@ -397,6 +547,7 @@ register_track_schema(
         name="mosaic_cm_v1",
         required=STANDARD_COLUMNS,
         allows=DERIVED_COLUMNS,
+        space="plane_cm",
         description=(
             "The same contract as `trex_v2`, in centimeters rather than pixels, "
             "with `X`/`Y` still the body center. Use it for archived data whose "
@@ -406,6 +557,56 @@ register_track_schema(
             "resolves both this and a pixel schema is refused rather than mixed. "
             "For pixel data, `scale-to-cm` converts to centimeters as a recorded "
             "step instead."
+        ),
+    )
+)
+
+
+GAZE_COLUMNS: AbstractSet[str] = frozenset(
+    {"gazeX", "gazeY", "gazeZ", "gazeDX", "gazeDY", "gazeDZ"}
+)
+"""A gaze ray in the table's frame: origin ``gazeX/Y/Z`` and unit direction ``gazeD*``.
+
+A measurement of the tracked individual on the table's own frame axis -- an eye
+tracker's ray, resampled by nothing -- which is why it is a tracks column and
+not a separate stream. Present all together or not at all.
+"""
+
+HEAD_COLUMNS: AbstractSet[str] = frozenset(
+    {"headX", "headY", "headZ", "headQW", "headQX", "headQY", "headQZ"}
+)
+"""A head pose in the table's frame: position ``headX/Y/Z`` and the head-to-world
+rotation as a unit quaternion ``headQW/QX/QY/QZ`` (scalar first).
+
+The head frame is +X forward (straight ahead of the face), +Y to the subject's
+left, +Z up through the crown -- the body-frame convention, so a gaze direction
+rotated into it reads as azimuth and elevation directly. A producer whose device
+reports a camera pose (+X right, +Y down, +Z forward) converts it. Present all
+together or not at all.
+"""
+
+
+register_track_schema(
+    TrackSchema(
+        name="mosaic_world_v1",
+        required=STANDARD_COLUMNS | {"Z"},
+        forbidden=DERIVED_COLUMNS | {"camera"},
+        space="world_m",
+        pose_axes=("X", "Y", "Z"),
+        all_or_none=(GAZE_COLUMNS, HEAD_COLUMNS),
+        description=(
+            "The tracker-neutral 3D standard: per-frame, per-id tracks in metres "
+            "in the recording's calibrated world frame, right-handed with +Z up. "
+            "`X`/`Y`/`Z` are the individual's body center, the mean of its body "
+            "keypoints for a pose producer. Keypoints are optional and, when "
+            "present, carry all three axes (`poseX{k}`, `poseY{k}`, `poseZ{k}`, "
+            "optionally `poseP{k}`). A gaze ray (`gaze*`) and a head pose "
+            "(`head*`) may ride along, each complete or absent. A fused table "
+            "spans every camera of the recording, so it carries no `camera` "
+            "column; it reaches a video only through a projection with the "
+            "recording's calibration. Derived quantities are forbidden, as in "
+            "`mosaic_v1`. A producer converts its source's unit and axis "
+            "convention into this frame and records the transform it applied."
         ),
     )
 )

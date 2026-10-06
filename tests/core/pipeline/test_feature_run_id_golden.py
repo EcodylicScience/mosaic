@@ -95,9 +95,12 @@ _TRACKS_DEFAULT_FEATURES = (
     "egocentric-crop",
     "ffgroups",
     "ffgroups-metrics",
+    "head-eye",
     "heading",
     "id-tag-columns",
     "interaction-crop-pipeline",
+    "keypoint-kinematics",
+    "label-statistics",
     "movement-filter-interpolate",
     "movement-smooth",
     "nearest-neighbor",
@@ -129,6 +132,17 @@ CASES: tuple[Case, ...] = (
     *(
         Case(case_id=f"{slug}/default", feature=slug)
         for slug in _TRACKS_DEFAULT_FEATURES
+    ),
+    # --- features with a required parameter ---
+    Case(
+        case_id="pose-egocentric/params-hips-shoulders",
+        feature="pose-egocentric",
+        params={"origin": [11, 12], "lateral": [5, 6]},
+    ),
+    Case(
+        case_id="ray-target/params-targets",
+        feature="ray-target",
+        params={"targets": {"head": [0, 1]}},
     ),
     # --- params participate in identity ---
     Case(

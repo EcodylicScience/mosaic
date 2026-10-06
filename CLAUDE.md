@@ -634,7 +634,16 @@ for one class and decorating the other.
 
 Every feature implements four methods — `load_state`, `fit`, `apply`,
 `save_state` — and declares a `name`, `version`, and parallelizability flags.
-Two flavors:
+A feature that reads tracks may also declare `track_spaces`, the schema spaces it
+computes in; one that declares nothing is planar and is refused a world-frame
+table (see "Tracks are in their producer's measured frame"). The features built
+for world-frame tables are `pose-egocentric` (keypoints in a body frame about
+world up), `keypoint-kinematics` (Savitzky–Golay speeds, accelerations and named
+distances, 2D or 3D), `ray-target` and `head-eye` (a gaze ray against body
+targets, and eye-in-head gaze); `label-statistics` summarises any per-frame
+label or state column -- or segment annotations kept in a label file's
+`seg_*` sidecar (`core/label_intervals.py`) -- into per-individual usage, bouts
+and transitions. Two flavors:
 
 - **per-frame / per-sequence** — stateless transforms (e.g. `speed-angvel`,
   `pair-egocentric`, `nearest-neighbor`, `pair-wavelet`, `temporal-stack`,
@@ -865,6 +874,7 @@ src/mosaic/
 │   │   ├── media_input.py      # MediaInputParams: the `media` parameter, frame windows refused
 │   │   ├── placement.py        # EntryAxis: a tool's table placed on its entry's axes (variant, join)
 │   │   ├── tracks_axis.py      # what a tracks row's run read, rebuilt for measure-tracks
+│   │   ├── track_space.py      # a feature's track_spaces, and the refusal of another space
 │   │   ├── inventory/          # what a dataset holds: coverage, status, params.json
 │   │   ├── graph/              # a pipeline as a file: recipe, plan, submit, run a step
 │   │   ├── writers.py          # parquet output writing, overlap trimming
@@ -875,7 +885,8 @@ src/mosaic/
 │   │   ├── imgstore_native.py  # native imgstore decode: mp4 via reader, raw via numpy
 │   │   ├── facts_columns.py    # MediaFacts / verdict <-> media-index row mapping
 │   │   └── preprocess/         # MEDIA_STEPS: the built-in steps, Placement, shared CLAHE / gray
-│   ├── schema.py               # track-schema validation (e.g. trex_v1)
+│   ├── schema.py               # track-schema validation; each family's space (pixels, cm, world)
+│   ├── cameras.py              # CameraSystem (OpenCV conventions) and world -> pixel projection
 │   ├── params.py               # Params + the declaration vocabulary every parameter model shares
 │   ├── entry.py                # Entry / CameraEntry: the (group, sequence) aliases
 │   ├── strict_model.py         # StrictModel: the pydantic base, extra="forbid"
@@ -1133,7 +1144,7 @@ annotation paths.
 
 ### Track schema
 
-Standardized tracks are validated by `core/schema.py`. Four schemas are
+Standardized tracks are validated by `core/schema.py`. Five schemas are
 registered, and a converter declares which it emits through
 `TrackConverter.output_schema` — a tracker through `TrackingRoot.output_schema`.
 **That declaration is the only place the name is written.** It used to be spelled
@@ -1168,8 +1179,24 @@ chosen names and the index row recorded only the second.
   archived dataset is in it. Its spatial columns are **centimetres** and its `X`
   is a head position. Not the schema for new centimetre data — it also requires
   keypoints and does not require `X`/`Y`; `mosaic_cm_v1` is.
+- **`mosaic_world_v1`** — the 3D standard, for a multi-view or fused producer:
+  `mosaic_v1`'s columns plus `Z`, in **metres in the recording's calibrated
+  world frame, right-handed with +Z up**, `X`/`Y`/`Z` the body centre.
+  Keypoints are optional and, when present, are `poseX/Y/Z{k}` **triplets**. A
+  gaze ray (`gaze*`) and a head pose (`head*`) may ride along, each complete or
+  absent. It forbids a `camera` column: a fused table spans every camera, so it
+  is one table per sequence and needs no camera axis. Its own schema family. A
+  producer whose source uses another unit or axis convention converts into this
+  one.
 
-Two rules the validator enforces beyond presence:
+**Every schema family declares a `space`** (`TrackSchema.space`): `image_px`
+(`mosaic_v1`, `trex_v2`), `plane_cm` (`mosaic_cm_v1`, `trex_v1`) or `world_m`
+(`mosaic_world_v1`). It is required on a root schema, inherited through
+`extends`, and may not change there, so a family is one space. The two 2D spaces
+cannot be told apart by their columns, which is why the space is declared rather
+than inferred. `schema_space()` answers it, reading a blank cell as `trex_v1`.
+
+Three rules the validator enforces beyond presence:
 
 - **A named, closed `forbidden` set.** `mosaic_v1` forbids `VX, VY, AX, AY,
   SPEED*, ANGLE, ANGULAR_*, X#wcentroid, Y#wcentroid` — quantities a *feature*
@@ -1179,16 +1206,44 @@ Two rules the validator enforces beyond presence:
   declares a schema that `allows` it, as `trex_v2` does.
 - **An unregistered schema name raises.** It used to return an empty report,
   validating nothing *and* silently disarming `strict=True`.
+- **A partial group raises, regardless of `strict`.** A schema's `pose_axes`
+  makes every keypoint carry all of its axes, and its `all_or_none` groups are
+  present entirely or not at all. A `poseZ`-less keypoint in a 3D table reads to
+  every pair-shaped helper as a good 2D one, and a gaze origin without its
+  direction is indistinguishable from a measured point.
 
 The validator still **never rejects a column merely for being unknown**, so
 additive columns (e.g. an optional `camera` axis for multi-camera recordings)
 remain back-compatible — only the named set is refused. New track converters
 must emit schema-valid parquet.
 
-### Tracks are pixels; a physical unit is a feature
+### Tracks are in their producer's measured frame; a change of unit or frame is a feature
 
-Every spatial column in `tracks/` is in video pixels, and `X`/`Y` mean the body
-centre on every tracker. Neither was true before: TREx reports centimetres scaled
+Every spatial column in `tracks/` is in the frame its producer measured, and the
+schema family says which: **video pixels** for a single-view producer
+(`mosaic_v1` and everything extending it), **metres in a calibrated world
+frame**, right-handed with +Z up, for a multi-view or fused producer
+(`mosaic_world_v1`). `X`/`Y` (and `Z`) are the body centre in every family. A
+family is one unit and one frame, which is what lets a scope mixing two be
+refused.
+
+- A table is never rescaled or re-framed in place. Centimetres from pixels are
+  the `scale-to-cm` feature; pixels from world coordinates are a projection
+  through the recording's calibration at the point of drawing.
+- Anything that places a coordinate on a video asks the space first
+  (`require_pixel_positions`, called whether the caller draws keypoints or the
+  body centre — in every family both are in the same space), and only
+  `image_px` passes.
+- A feature declares the spaces it computes in as `track_spaces`
+  ([`core/pipeline/track_space.py`](src/mosaic/core/pipeline/track_space.py)).
+  One that declares nothing computes in the two 2D spaces, so every planar
+  feature refuses a world table without being edited; `run_feature` raises
+  `TrackSpaceRefused` (reason `schema_family_mismatch`, exit 65) before anything
+  is hashed or read. A track-shaped `Result` carrying `Z` counts as world.
+- `mosaic_cm_v1` and `trex_v1` are the archived exceptions, for tables whose
+  pixel factor cannot be recovered.
+
+For the pixel family, neither half was true before: TREx reports centimetres scaled
 by `cm_per_pixel` and puts the *head* in `X`, while every other converter wrote
 pixels and a keypoint mean. A feature reading `X` across trackers was comparing
 a head to a centroid in two unit systems, and nothing on disk recorded either
@@ -1497,12 +1552,15 @@ Each of these replaced a silent wrong answer, and each has a test named for it.
   deterministic and a table cannot be re-bridged without re-tracking, so raising
   would fail the same entry forever and cost the analyses that never depended on
   registration.
-- **Tracks are pixels, and `X` is the body centre.** Both hold on every tracker,
-  and neither did before: TREx reports centimetres and puts the *head* in `X`. A
-  physical unit is obtained by the `scale-to-cm` feature, never stored in the
-  table. A converter that writes a scaled column, or puts a landmark other than
-  the body centre in `X`, reintroduces a difference that reads as a plausible
-  number and is recorded nowhere.
+- **Tracks are in their producer's measured frame, and `X` is the body centre.**
+  Pixels for a single-view producer, metres in a right-handed +Z-up world frame
+  for a fused 3D one; the schema family's `space` says which. Both halves hold on
+  every tracker, and neither did before: TREx reports centimetres and puts the
+  *head* in `X`. A physical unit is obtained by the `scale-to-cm` feature, never
+  stored in the table. A converter that writes a scaled column, or puts a
+  landmark other than the body centre in `X`, reintroduces a difference that
+  reads as a plausible number and is recorded nowhere — and so does a feature
+  computing on two axes of a 3D table, which `track_spaces` refuses.
 - **A media variant is consumed by name, and its tracks are published in source
   space.** A tracker or inference op reads a media variant only when its `media`
   parameter names the variant's run id, and that run id enters the consumer's

@@ -106,6 +106,23 @@ def is_track_shaped(path: Path) -> bool:
     return {COLUMNS.x_col, COLUMNS.y_col} <= set(names)
 
 
+def carries_z(path: Path) -> bool:
+    """Does this parquet carry a ``Z`` column, the mark of a world-frame table?
+
+    A track-shaped ``Result`` records no schema, so this is how a 3D table that
+    passed through a track-producing feature is still recognised as 3D by the
+    next one. Read the way :func:`is_track_shaped` reads, from the parquet schema
+    alone, so the two never disagree about which file they looked at.
+    """
+    if not path.exists():
+        return False
+    try:
+        names = cast("list[str]", pq.read_schema(path).names)  # pyright: ignore[reportUnknownMemberType]
+    except (OSError, ValueError):
+        return False
+    return "Z" in names
+
+
 def _sample_output(ds: Dataset, storage: str, run_id: str) -> Path | None:
     """One parquet from this run, or ``None`` when it wrote none."""
     root = feature_run_root(ds, storage, run_id)

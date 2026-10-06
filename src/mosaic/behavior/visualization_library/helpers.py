@@ -16,9 +16,9 @@ import numpy as np
 import pandas as pd
 import cv2
 
-from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.tracks_index import read_tracks_index, select_variant_rows
 from mosaic.core.pipeline.types import COLUMNS
-from mosaic.core.schema import LEGACY_SCHEMA, schema_family
+from mosaic.core.schema import schema_space
 
 
 # =============================================================================
@@ -26,48 +26,95 @@ from mosaic.core.schema import LEGACY_SCHEMA, schema_family
 # =============================================================================
 
 
-def require_pixel_positions(ds: Any, group: str, sequence: str, who: str) -> None:
-    """Refuse to read ``X``/``Y`` as pixels where the entry records centimetres.
+def require_pixel_positions(
+    ds: Any,
+    group: str,
+    sequence: str,
+    who: str,
+    *,
+    schema: str | None = None,
+    tracks_run_id: str | None = None,
+) -> None:
+    """Refuse to place a table's coordinates on video unless they are pixels.
 
-    Called where the body centre is the only thing left to draw or crop around
-    (a table carrying no keypoints), or where it has been asked for by name
-    (``center_mode="xy"``, which never consults pose even where pose exists).
-    ``mosaic_v1`` and everything
-    extending it store video pixels, so using ``X``/``Y`` is exact there.
-    ``trex_v1`` stores centimetres, and a crop or marker placed at those
-    coordinates lands somewhere else in the frame entirely -- silently, which is
-    the failure the centroid fallback exists to remove.
+    Called before anything is drawn or cropped, whether the caller places the
+    body centre or the keypoints: in every schema family both are in the same
+    space, so a keypoint is no safer than ``X``. Only the ``image_px`` space --
+    ``mosaic_v1`` and everything extending it -- is video pixels.
 
-    An unrecorded schema is read as the legacy one, matching the scope check in
-    ``pipeline.manifest``: the column was added after ``trex_v1`` was the only
-    schema there was, so a table from that era is a TREx table.
+    - ``plane_cm`` (``trex_v1``, ``mosaic_cm_v1``) is centimetres, and a marker
+      placed at those coordinates lands somewhere else in the frame entirely.
+    - ``world_m`` (``mosaic_world_v1``) is metres in a world frame, which reaches
+      a video only through a projection with the recording's calibration.
+    - A schema not registered in this process cannot be vouched for, and is
+      refused rather than guessed at.
+
+    Which table is judged matters once an entry holds several variants. A caller
+    that knows the schema of the table it was handed passes it as *schema* (a
+    feature reads it off ``ResolvedScope.tracks_schemas``). Otherwise the entry's
+    index row is chosen the way the loader chose it, by ``select_variant_rows``
+    under *tracks_run_id*, rather than by taking whichever row comes first. An
+    entry with no row, or a blank cell, is the legacy ``trex_v1``.
 
     Args:
         ds: The dataset holding the tracks index.
         group: Entry group.
         sequence: Entry sequence.
         who: Name of the caller, for the message.
+        schema: The schema of the table the caller holds, when it knows it.
+        tracks_run_id: The tracks variant the caller read, when it does not.
 
     Raises:
-        ValueError: If the entry's recorded schema is in the ``trex_v1`` family.
+        ValueError: If the table's space is not ``image_px``, or if the entry
+            holds two variants and neither *schema* nor *tracks_run_id* says
+            which one was read.
     """
-    recorded = ""
-    index = read_tracks_index(ds)
-    if not index.empty:
-        hit = index[
-            (index[COLUMNS.group_col] == group) & (index[COLUMNS.seq_col] == sequence)
-        ]
-        if not hit.empty:
-            recorded = str(hit["std_format"].iloc[0])
-    if schema_family(recorded or LEGACY_SCHEMA) != LEGACY_SCHEMA:
-        return
-    raise ValueError(
-        f"{who} is placing {COLUMNS.x_col}/{COLUMNS.y_col} for "
-        f"{group}/{sequence}, and this table records schema "
-        f"{recorded or '(none)'!r}, whose spatial columns are centimetres "
-        "rather than video pixels. Run `mosaic upgrade-tracks` to convert the "
-        "table to pixels."
+    recorded = (
+        schema
+        if schema is not None
+        else _recorded_schema(ds, group, sequence, tracks_run_id)
     )
+    space = schema_space(recorded)
+    if space == "image_px":
+        return
+    head = (
+        f"{who} is placing coordinates for {group}/{sequence} on video, and this "
+        f"table records schema {recorded or '(none)'!r}"
+    )
+    if space == "plane_cm":
+        raise ValueError(
+            f"{head}, whose spatial columns are centimetres rather than video "
+            "pixels. A trex_v1 table is converted to pixels by `mosaic "
+            "upgrade-tracks`; a mosaic_cm_v1 table records no pixel factor and "
+            "cannot be drawn."
+        )
+    if space == "world_m":
+        raise ValueError(
+            f"{head}, whose spatial columns are metres in a world frame. They reach "
+            "a video only through a projection with the recording's calibration, "
+            f"which {who} does not perform."
+        )
+    raise ValueError(
+        f"{head}, which is not registered in this process, so nothing says what "
+        "its coordinates are. Register the schema, or extend 'mosaic_v1' if its "
+        "coordinates are video pixels."
+    )
+
+
+def _recorded_schema(
+    ds: Any, group: str, sequence: str, tracks_run_id: str | None
+) -> str:
+    """The schema an entry's tracks row records, chosen as the loader chooses."""
+    index = read_tracks_index(ds)
+    if index.empty:
+        return ""
+    hit = index[
+        (index[COLUMNS.group_col] == group) & (index[COLUMNS.seq_col] == sequence)
+    ]
+    chosen = select_variant_rows(hit, tracks_run_id)
+    if chosen.empty:
+        return ""
+    return str(chosen["std_format"].iloc[0])
 
 
 # =============================================================================

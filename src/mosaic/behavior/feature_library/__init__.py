@@ -53,6 +53,7 @@ from . import (
     ffgroups,
     ffgroups_metrics,
     frame_aggregate,
+    gaze_geometry,
     global_kmeans,
     global_scaler,
     global_tsne,
@@ -62,7 +63,9 @@ from . import (
     id_tag_columns,
     identity_embedding_model,
     identity_model,
+    keypoint_kinematics,
     kpms,
+    label_statistics,
     local_order_metrics,
     nearestneighbor,
     nn_delta_bins,
@@ -74,6 +77,7 @@ from . import (
     pair_position,
     pair_wavelet,
     pairposedistancepca,
+    pose_egocentric,
     scale_to_cm,
     social_motion_summary,
     speed_angvel,
@@ -95,6 +99,7 @@ from .extract_templates import ExtractTemplates
 from .ffgroups import FFGroups
 from .ffgroups_metrics import FFGroupsMetrics
 from .frame_aggregate import FrameAggregate
+from .gaze_geometry import HeadEye, RayTarget
 from .global_kmeans import GlobalKMeansClustering
 from .global_scaler import GlobalScaler
 from .global_tsne import GlobalTSNE
@@ -102,7 +107,9 @@ from .global_ward import GlobalWardClustering
 from .id_tag_columns import IdTagColumns
 from .identity_embedding_model import GlobalIdentityEmbedding
 from .identity_model import GlobalIdentityModel
+from .keypoint_kinematics import KeypointKinematics
 from .kpms import KpmsFeature
+from .label_statistics import LabelStatistics
 from .local_order_metrics import LocalOrderMetrics
 from .nearestneighbor import NearestNeighbor
 from .nn_delta_bins import NearestNeighborDeltaBins
@@ -114,6 +121,7 @@ from .pair_interaction_filter import PairInteractionFilter
 from .pair_position import PairPositionFeatures
 from .pair_wavelet import PairWavelet
 from .pairposedistancepca import PairPoseDistancePCA
+from .pose_egocentric import PoseEgocentric
 from .scale_to_cm import ScaleToCm
 from .registry import FEATURES, register_feature
 from .social_motion_summary import SocialMotionSummary
@@ -182,8 +190,11 @@ __all__ = [
     "GlobalScaler",
     "GlobalTSNE",
     "GlobalWardClustering",
+    "HeadEye",
     "IdTagColumns",
+    "KeypointKinematics",
     "KpmsFeature",
+    "LabelStatistics",
     "LocalOrderMetrics",
     "NearestNeighbor",
     "NearestNeighborDelta",
@@ -195,6 +206,8 @@ __all__ = [
     "PairPositionFeatures",
     "PairPoseDistancePCA",
     "PairWavelet",
+    "PoseEgocentric",
+    "RayTarget",
     "ScaleToCm",
     "SocialMotionSummary",
     "SpeedAngvel",
@@ -226,6 +239,7 @@ __all__ = [
     "ffgroups",
     "ffgroups_metrics",
     "frame_aggregate",
+    "gaze_geometry",
     "global_kmeans",
     "global_scaler",
     "global_tsne",
@@ -234,7 +248,9 @@ __all__ = [
     "id_tag_columns",
     "identity_embedding_model",
     "identity_model",
+    "keypoint_kinematics",
     "kpms",
+    "label_statistics",
     "local_order_metrics",
     "nearestneighbor",
     "nn_delta_bins",
@@ -246,6 +262,7 @@ __all__ = [
     "pair_position",
     "pair_wavelet",
     "pairposedistancepca",
+    "pose_egocentric",
     "scale_to_cm",
     "social_motion_summary",
     "speed_angvel",

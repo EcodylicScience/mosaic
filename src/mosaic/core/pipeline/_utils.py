@@ -85,6 +85,21 @@ class ResolvedScope:
         default_factory=dict
     )
     selector: scope_module.Scope = field(default_factory=scope_module.Scope)
+    tracks_schemas: Mapping[tuple[str, str], str] = field(
+        default_factory=dict[tuple[str, str], str]
+    )
+    """The schema each in-scope entry's tracks table records, keyed like
+    ``entries``; ``""`` for a row written before the column existed. Recorded
+    for consumers that place coordinates on video, which must ask the space of
+    the table they were handed rather than of whichever row an index lookup
+    meets first. Never hashed."""
+    track_spaces: frozenset[str] = frozenset()
+    """The :data:`~mosaic.core.schema.TrackSpace` of every track-shaped table this
+    run reads: the recorded schema's space for a ``"tracks"`` input, and
+    ``"world_m"`` for a track-shaped ``Result`` carrying ``Z``. A schema not
+    registered in this process contributes nothing, because nothing can be said
+    about it. What :func:`~mosaic.core.pipeline.track_space.refuse_unsupported_track_space`
+    checks a feature's ``track_spaces`` against. Never hashed."""
 
     def composition_of(self, entry: tuple[str, str], root: str) -> str:
         """*root*'s recorded composition for *entry*, or ``""`` when none is.

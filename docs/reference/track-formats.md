@@ -4,7 +4,7 @@
 # Track formats, schemas and label formats
 
 8 track converters read a tracker's output into one of
-4 registered schemas, and 3 label
+5 registered schemas, and 3 label
 converters read manual annotations. A converter declares the schema it emits,
 in one place, and that declaration is what validation and the tracks index
 both read.
@@ -98,7 +98,7 @@ The same contract as `trex_v2`, in centimeters rather than pixels, with `X`/`Y` 
 | Required | `X`, `Y`, `frame`, `group`, `id`, `sequence`, `time` |
 | Required prefixes | -- |
 | Recommended | -- |
-| Allows | `ANGLE`, `ANGULAR_A`, `ANGULAR_A#centroid`, `ANGULAR_V`, `ANGULAR_V#centroid`, `AX`, `AY`, `SPEED`, `SPEED#centroid`, `SPEED#pcentroid`, `SPEED#wcentroid`, `VX`, `VY`, `X#wcentroid`, `Y#wcentroid` |
+| Allows | `ANGLE`, `ANGULAR_A`, `ANGULAR_A#centroid`, `ANGULAR_V`, `ANGULAR_V#centroid`, `AX`, `AY`, `AZ`, `SPEED`, `SPEED#centroid`, `SPEED#pcentroid`, `SPEED#wcentroid`, `VX`, `VY`, `VZ`, `X#wcentroid`, `Y#wcentroid` |
 | Forbidden | -- |
 
 ### `mosaic_v1`
@@ -112,7 +112,20 @@ The tracker-neutral standard: per-frame, per-id tracks in video pixels. `X`/`Y` 
 | Required prefixes | -- |
 | Recommended | -- |
 | Allows | -- |
-| Forbidden | `ANGLE`, `ANGULAR_A`, `ANGULAR_A#centroid`, `ANGULAR_V`, `ANGULAR_V#centroid`, `AX`, `AY`, `SPEED`, `SPEED#centroid`, `SPEED#pcentroid`, `SPEED#wcentroid`, `VX`, `VY`, `X#wcentroid`, `Y#wcentroid` |
+| Forbidden | `ANGLE`, `ANGULAR_A`, `ANGULAR_A#centroid`, `ANGULAR_V`, `ANGULAR_V#centroid`, `AX`, `AY`, `AZ`, `SPEED`, `SPEED#centroid`, `SPEED#pcentroid`, `SPEED#wcentroid`, `VX`, `VY`, `VZ`, `X#wcentroid`, `Y#wcentroid` |
+
+### `mosaic_world_v1`
+
+The tracker-neutral 3D standard: per-frame, per-id tracks in metres in the recording's calibrated world frame, right-handed with +Z up. `X`/`Y`/`Z` are the individual's body center, the mean of its body keypoints for a pose producer. Keypoints are optional and, when present, carry all three axes (`poseX{k}`, `poseY{k}`, `poseZ{k}`, optionally `poseP{k}`). A gaze ray (`gaze*`) and a head pose (`head*`) may ride along, each complete or absent. A fused table spans every camera of the recording, so it carries no `camera` column; it reaches a video only through a projection with the recording's calibration. Derived quantities are forbidden, as in `mosaic_v1`. A producer converts its source's unit and axis convention into this frame and records the transform it applied.
+
+| | |
+| --- | --- |
+| Extends | nothing |
+| Required | `X`, `Y`, `Z`, `frame`, `group`, `id`, `sequence`, `time` |
+| Required prefixes | -- |
+| Recommended | -- |
+| Allows | -- |
+| Forbidden | `ANGLE`, `ANGULAR_A`, `ANGULAR_A#centroid`, `ANGULAR_V`, `ANGULAR_V#centroid`, `AX`, `AY`, `AZ`, `SPEED`, `SPEED#centroid`, `SPEED#pcentroid`, `SPEED#wcentroid`, `VX`, `VY`, `VZ`, `X#wcentroid`, `Y#wcentroid`, `camera` |
 
 ### `trex_v1`
 
@@ -137,7 +150,7 @@ Minimal T-Rex-like per-frame, per-id tracks with centroid/pose columns. `group` 
 | Required | `X`, `Y`, `frame`, `group`, `id`, `sequence`, `time` |
 | Required prefixes | -- |
 | Recommended | -- |
-| Allows | `ANGLE`, `ANGULAR_A`, `ANGULAR_A#centroid`, `ANGULAR_V`, `ANGULAR_V#centroid`, `AX`, `AY`, `SPEED`, `SPEED#centroid`, `SPEED#pcentroid`, `SPEED#wcentroid`, `VX`, `VY`, `X#wcentroid`, `Y#wcentroid` |
+| Allows | `ANGLE`, `ANGULAR_A`, `ANGULAR_A#centroid`, `ANGULAR_V`, `ANGULAR_V#centroid`, `AX`, `AY`, `AZ`, `SPEED`, `SPEED#centroid`, `SPEED#pcentroid`, `SPEED#wcentroid`, `VX`, `VY`, `VZ`, `X#wcentroid`, `Y#wcentroid` |
 | Forbidden | -- |
 
 ## Label series

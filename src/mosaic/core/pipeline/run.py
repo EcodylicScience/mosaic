@@ -72,6 +72,7 @@ from .fit_scope import write_fit_scope
 from .labels_index import read_labels_index, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
 from .sequence_index import encode_entry_composition, read_entry_compositions
+from .track_space import refuse_unsupported_track_space
 from .tracks_index import tracks_compositions
 from .types.data_config import META_COLS
 from .types import (
@@ -1190,6 +1191,11 @@ def _run_feature_impl(
         manifest, resolved = build_manifest(
             ds, feature.inputs, selector, tracks_run_id=tracks_run_id
         )
+
+    # A planar feature handed a world-frame table would compute on two of its
+    # three axes and report success, so the space is checked before anything is
+    # hashed or read.
+    refuse_unsupported_track_space(feature, feature.name, resolved.track_spaces)
 
     # Overlap is refused up front, over the whole manifest, rather than as the
     # iteration reaches each entry: a run that cannot do what was asked should
