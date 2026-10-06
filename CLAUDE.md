@@ -457,10 +457,11 @@ series in a registry, never inferred from a path**
 | Index | `labels_raw/index.csv`, per sequence | `labels_raw/<series>/index.csv`, per revision |
 | Composition | Enters `sequences.csv` | **Never** enters it |
 
-A series is an editor's committed state projected to disk whenever a consumer
-needs a fixed copy -- the keypoint annotator's now (`keypoints`, unit `set`, saved
-at train submit and export), the scoring tool's later (`behavior`, reserved and
-unspecified). Hashing rule P1 already said an editor's
+A series is an editor's committed state projected to disk when a consumer needs a
+fixed copy or a person saves a version. An editor save, close or completion flag
+does not write a revision. The keypoint annotator's series exists now (`keypoints`,
+unit `set`, saved at train submit), and the scoring tool's comes later (`behavior`,
+reserved and unspecified). Hashing rule P1 already said an editor's
 state is projected into `labels_raw` and that a new kind is a subdirectory, never
 a root. The promoted-correction series in `tracks_raw` is the older cousin and
 follows the *other* rule: there the newest revision supersedes the rest.
@@ -964,7 +965,7 @@ raw tracks/labels
    ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet
    └─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
 
-an editor's saved state (mosaic-api at train submit or export, or a notebook)
+an editor's committed state (mosaic-api at train submit, or a notebook)
    └─ write_keypoint_set_revision()  → labels_raw/keypoints/<set>/rev<N>/   (immutable)
                                         annotations.mosaic.json + annotations.coco.json
 
