@@ -427,6 +427,7 @@ Per-frame 3D keypoints in each individual's own body frame.
 | `keypoints` | list of (`integer` \| `string`) \| `None` | `null` |  | Which keypoints to express in the body frame and emit, by index or by name. Unset, every keypoint the table carries on all three axes. |
 | `scale_by` | tuple of (list of (`integer` \| `string`), list of (`integer` \| `string`)) \| `None` | `null` |  | Two keypoint groups, such as the hips and the shoulders. Set, the egocentric coordinates are divided by the median distance between the two groups' centroids, taken per individual and per sequence, so that posture compares across body sizes. Unset, they stay in the table's length unit. |
 | `max_gap` | `integer` | `0` | >= `0` | The longest run of undefined values filled by linear interpolation, per individual and per output column, after the body frame is computed. A longer run stays undefined throughout, and a run at either end of an individual's track is never filled. 0 fills nothing. arhmm replaces an undefined value with zero, which it then fits as a pose, so a run meant for it usually wants this set. [frames] |
+| `context` | `boolean` | `true` |  | Also emit body_yaw and origin_x/y/z: where the body frame sits and which way it faces. They are context, not posture, and a model fitted on every numeric column (arhmm, the global scaler, t-SNE, k-means) would fit them as posture -- body_yaw jumps by 2 pi where it wraps. Turn it off for a run such a model reads. |
 
 ### `ray-target`
 

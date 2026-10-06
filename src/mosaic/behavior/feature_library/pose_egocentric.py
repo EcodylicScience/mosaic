@@ -100,6 +100,14 @@ _SCALE_BY_DESCRIPTION = (
     "across body sizes. Unset, they stay in the table's length unit."
 )
 
+_CONTEXT_DESCRIPTION = (
+    "Also emit body_yaw and origin_x/y/z: where the body frame sits and which way "
+    "it faces. They are context, not posture, and a model fitted on every numeric "
+    "column (arhmm, the global scaler, t-SNE, k-means) would fit them as posture -- "
+    "body_yaw jumps by 2 pi where it wraps. Turn it off for a run such a model "
+    "reads."
+)
+
 _MAX_GAP_DESCRIPTION = (
     "The longest run of undefined values filled by linear interpolation, per "
     "individual and per output column, after the body frame is computed. A longer "
@@ -270,8 +278,9 @@ class PoseEgocentric:
     - ``origin_x``, ``origin_y``, ``origin_z``: where the origin is in the world.
 
     ``body_yaw`` and ``origin_*`` are context -- where the body frame sits and
-    which way it faces -- and not posture. A model meant to see posture alone
-    is not fitted on them.
+    which way it faces -- and not posture. ``context=False`` leaves them out, for
+    a run that a model fitted on every numeric column (``arhmm``, the global
+    features) reads as posture.
 
     Each value is NaN exactly where something it is computed from is undefined,
     never zero. The egocentric coordinates need the whole frame: the origin,
@@ -322,6 +331,7 @@ class PoseEgocentric:
         max_gap: Annotated[
             int, Field(ge=0), Declared(_MAX_GAP_DESCRIPTION, unit="frames")
         ] = 0
+        context: Annotated[bool, Declared(_CONTEXT_DESCRIPTION)] = True
 
         @model_validator(mode="after")
         def _check_references(self) -> Self:
@@ -410,9 +420,10 @@ class PoseEgocentric:
                 measured[f"ego_{axis}{k}"] = values if scale is None else values / scale
         # arctan2 returns +pi or -pi for a backward heading depending on the sign
         # of a zero; wrapping gives one spelling for one direction.
-        measured["body_yaw"] = wrap_angle(np.arctan2(forward_y, forward_x))
-        for axis, values in zip("xyz", origin.T, strict=True):
-            measured[f"origin_{axis}"] = values
+        if self.params.context:
+            measured["body_yaw"] = wrap_angle(np.arctan2(forward_y, forward_x))
+            for axis, values in zip("xyz", origin.T, strict=True):
+                measured[f"origin_{axis}"] = values
 
         frames = df[C.frame_col].to_numpy(dtype=np.float64)
         out = self._fill_gaps(measured, frames, segment)

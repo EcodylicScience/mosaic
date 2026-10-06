@@ -262,6 +262,19 @@ def test_a_keypoint_missing_one_axis_is_missing() -> None:
 # --- the output ---------------------------------------------------------------
 
 
+def test_without_context_only_the_posture_is_emitted() -> None:
+    """A model fitted on every numeric column must not see heading or position."""
+    table = _still(1.0, (1.0, 2.0, 0.0), n=3)
+    with_context = PoseEgocentric(params=BASE_PARAMS).apply(table)
+    posture = PoseEgocentric(params={**BASE_PARAMS, "context": False}).apply(table)
+    context = {"body_yaw", "origin_x", "origin_y", "origin_z"}
+    assert context <= set(with_context.columns)
+    assert not context & set(posture.columns)
+    shared = [c for c in posture.columns if c.startswith("ego_")]
+    assert shared
+    pd.testing.assert_frame_equal(posture[shared], with_context[shared])
+
+
 def test_the_output_is_one_float32_row_per_input_row_sorted_by_id_and_frame() -> None:
     first = _still(0.0, (0.0, 0.0, 0.0), n=3)
     second = _still(1.0, (1.0, 0.0, 0.0), n=3)
