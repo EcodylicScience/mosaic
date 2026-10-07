@@ -53,6 +53,7 @@ type RefusalReason = Literal[
     "parent_unrecorded",
     "recipe_missing",
     "digest_mismatch",
+    "recipe_refused",
     "undecodable_codec",
 ]
 """The reasons a :class:`Refusal` can name. A closed set on purpose.
@@ -61,7 +62,10 @@ It crosses two repository boundaries as the ``reason`` field of ``error_json``,
 so a new member is a wire addition rather than a local choice, and a free-text
 reason would be one nobody downstream can branch on.
 
-Most are a pipeline step declining before it runs. ``undecodable_codec`` is a
+Most are a pipeline step declining before it runs. ``recipe_refused`` is a step
+whose own re-plan finds a problem that the dataset gained after submit, such as a
+frame rate removed from under a time filter; its ``problems`` detail has the
+shape that a refused submission lists. ``undecodable_codec`` is a
 tracker's or an inference op's refusal to hand its tool a file whose codec the
 tool's environment does not decode, inside a step or in a run outside any
 pipeline. A tracker raises it when it reaches that entry, and an inference op

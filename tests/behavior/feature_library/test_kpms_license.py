@@ -2,7 +2,9 @@
 
 Covers :func:`~mosaic.behavior.feature_library.kpms.check_license_accepted`,
 :func:`~mosaic.behavior.feature_library.kpms.resolve_kpms_python`, and the order
-in which ``KpmsFeature`` applies them. None of this needs the external
+in which ``KpmsFeature`` applies them. It also covers ``KpmsLicense`` and
+``KpmsEnvironment``, the prerequisites of the pipeline catalog, which give the
+same answers. None of this needs the external
 environment, so these run in the default (non-slow) suite -- unlike
 ``test_kpms_integration.py``, which needs a real keypoint-moseq install.
 """
@@ -16,7 +18,9 @@ import pytest
 from mosaic.behavior.feature_library.kpms import (
     KPMS_LICENSE_ENV,
     KPMS_PYTHON_ENV,
+    KpmsEnvironment,
     KpmsFeature,
+    KpmsLicense,
     KpmsNotFoundError,
     check_license_accepted,
     resolve_kpms_python,
@@ -151,3 +155,34 @@ def test_interpreter_path_is_not_part_of_run_identity() -> None:
     assert relocated.identity_dump() == base.identity_dump()
     # It still reaches params.json and any parallel worker.
     assert relocated.model_dump()["kpms_python"] == "/somewhere/else/python"
+
+
+# --- the prerequisites the catalog reads ------------------------------------
+
+
+def test_the_license_prerequisite_is_met_once_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unaccepted = KpmsLicense().missing()
+
+    assert unaccepted is not None
+    assert "non-commercial" in unaccepted
+    assert f"{KPMS_LICENSE_ENV}=1" in unaccepted
+    assert "keypoint-moseq/blob/main/LICENSE.md" in unaccepted
+    monkeypatch.setenv(KPMS_LICENSE_ENV, " 1 ")
+    assert KpmsLicense().missing() is None
+
+
+def test_the_environment_prerequisite_is_met_by_an_interpreter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Resolved as the spawn resolves it, without starting the interpreter."""
+    absent = KpmsEnvironment().missing()
+
+    assert absent is not None
+    assert KPMS_PYTHON_ENV in absent
+    assert "external/README.md" in absent
+    interpreter = tmp_path / "python"
+    interpreter.touch()
+    monkeypatch.setenv(KPMS_PYTHON_ENV, str(interpreter))
+    assert KpmsEnvironment().missing() is None

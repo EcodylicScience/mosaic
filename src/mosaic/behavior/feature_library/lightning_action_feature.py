@@ -22,7 +22,7 @@ import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, TypedDict, final
+from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Literal, TypedDict, final
 
 import joblib
 import numpy as np
@@ -42,6 +42,7 @@ from mosaic.core.pipeline.types import (
     JoblibLoadSpec,
     Result,
 )
+from mosaic.optional_dependency import OptionalModule, Prerequisite
 
 from .helpers import ensure_columns, feature_columns, meta_columns
 from .registry import register_feature
@@ -54,17 +55,10 @@ log = logging.getLogger(__name__)
 
 # --- Import guard ---
 
-
-def _check_lightning_action() -> None:
-    """Raise a helpful ImportError if lightning-action is not installed."""
-    try:
-        import lightning_action  # noqa: F401
-    except ImportError:
-        msg = (
-            "lightning-action is required for LightningActionFeature. "
-            "Install with: pip install lightning-action"
-        )
-        raise ImportError(msg) from None
+LIGHTNING_ACTION: Final = OptionalModule(
+    "lightning_action", "lightning-action", "the lightning-action classifier"
+)
+"""The lightning-action package, imported when the feature is constructed."""
 
 
 # --- Model artifact ---
@@ -178,6 +172,7 @@ class LightningActionFeature:
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
+    prerequisites: tuple[Prerequisite, ...] = (LIGHTNING_ACTION,)
     emits: EmitsLevel = "as-input"
     ModelArtifact = LightningActionModelArtifact
 
@@ -244,7 +239,7 @@ class LightningActionFeature:
         inputs: LightningActionFeature.Inputs,
         params: dict[str, object] | None = None,
     ) -> None:
-        _check_lightning_action()
+        _ = LIGHTNING_ACTION.load()
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
 

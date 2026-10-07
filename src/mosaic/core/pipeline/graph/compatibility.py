@@ -223,6 +223,15 @@ class Declaration:
     read off the params model when the catalog is built, and a reader of the
     declaration resolves a reference without the registry.
     """
+    unavailable: str | None = None
+    """What this installation lacks to run the step, ``None`` when it lacks nothing.
+
+    The sentences of the feature's unmet prerequisites
+    (:mod:`mosaic.optional_dependency`), each naming what is missing and how to
+    install or enable it. Evaluated when the catalog is built. Validation reports
+    the sentence as a problem of a step that runs the feature, and an attach
+    candidate is refused with it.
+    """
 
 
 @dataclass(frozen=True, slots=True)

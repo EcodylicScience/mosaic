@@ -1,7 +1,8 @@
 """The answers a pipeline editor reads, as the JSON it reads them in.
 
 An editor lists the step types on offer, reports what is wrong with the recipe
-it edits, and offers what may follow a step. Each answer is a wire model. The
+it edits, offers what may follow a step, and offers what may be inserted between
+a step and its children. Each answer is a wire model. The
 CLI's ``--json`` output is the same model dumped. These tests check the models
 and the functions that fill them. Every answer here is computed from the
 registries alone, without a dataset. The plan preview's wire needs a dataset and
@@ -17,17 +18,22 @@ import pytest
 from typer.testing import CliRunner
 
 from mosaic.cli import app
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import (
     EXCLUDED_KINDS,
     TRACKS_INPUT,
+    FeatureStepSpec,
     Problem,
     Recipe,
     RecipeInvalid,
+    Step,
+    StepRef,
     attach_candidates,
     check_recipe,
     declaration_catalog,
     editor_catalog,
     input_candidates,
+    insert_candidates,
     params_reference_site,
     read_recipe,
     render_location,
@@ -56,7 +62,7 @@ BRANCH_STEPS: list[Document] = [
     {
         "id": "smooth",
         "type": "feature",
-        "feature": "movement-smooth",
+        "feature": "trajectory-smooth",
         "inputs": ["tracks"],
         "tracks": {"step": "trex"},
     },
@@ -291,6 +297,204 @@ def test_attaching_below_an_unknown_step_is_refused() -> None:
     assert raised.value.problems[0].where == "after"
 
 
+# --- inserting between a step and its children -------------------------------------
+
+
+def _reading_inserted(step: Step, after: str) -> Step:
+    """*step* reading the step ``inserted`` first, where it read *after* first."""
+    if not isinstance(step, FeatureStepSpec) or not step.inputs:
+        return step
+    first, *rest = step.inputs
+    if not isinstance(first, StepRef) or first.step != after:
+        return step
+    return step.model_copy(update={"inputs": [StepRef(step="inserted"), *rest]})
+
+
+def _inserted(recipe: Recipe, after: str, template: dict[str, JsonValue]) -> Recipe:
+    """*recipe* with a feature *template* inserted below *after*, read by its children."""
+    added = FeatureStepSpec.model_validate({"id": "inserted", **template})
+    steps = [_reading_inserted(step, after) for step in recipe.steps]
+    return Recipe(name=recipe.name, steps=[*steps, added])
+
+
+def test_inserting_below_the_smoothing_step_reaches_both_branches() -> None:
+    report = insert_candidates(read_recipe(BRANCH), "smooth")
+
+    assert report.children == ("speed", "nn")
+    again = report.candidates["trajectory-smooth"]
+    assert again.allowed, again.reason
+    assert again.template == {
+        "type": "feature",
+        "feature": "trajectory-smooth",
+        "inputs": [{"step": "smooth"}],
+    }
+    assert again.template is not None
+    grown = _inserted(read_recipe(BRANCH), "smooth", again.template)
+    assert check_recipe(grown) == ()
+
+
+def test_a_candidate_that_a_child_cannot_read_is_refused_naming_the_child() -> None:
+    recipe = read_recipe(BRANCH)
+
+    refused = insert_candidates(recipe, "smooth").candidates["speed-angvel"]
+
+    assert attach_candidates(recipe, "smooth").candidates["speed-angvel"].allowed
+    assert not refused.allowed
+    assert refused.template is None
+    assert refused.reason.startswith("'speed' cannot read speed-angvel")
+
+
+def test_a_candidate_whose_output_lacks_a_child_s_column_is_refused() -> None:
+    document: Document = {
+        "steps": [
+            {"id": "speed", "type": "feature", "feature": "speed-angvel"},
+            {
+                "id": "mean_speed",
+                "type": "feature",
+                "feature": "frame-aggregate",
+                "inputs": [{"step": "speed"}],
+                "params": {"column": "speed"},
+            },
+        ]
+    }
+
+    refused = insert_candidates(read_recipe(document), "speed").candidates[
+        "ffgroups-metrics"
+    ]
+
+    assert not refused.allowed
+    assert refused.reason.startswith(
+        "'mean_speed' would read ffgroups-metrics in place of 'speed'"
+    )
+    assert "lack 'speed'" in refused.reason
+
+
+def test_a_candidate_that_breaks_a_step_below_the_children_is_refused() -> None:
+    """``temporal-stack`` takes its input's entity level, and passes it down.
+
+    ``attention-target`` writes individuals. Read by ``stack`` in place of the
+    pair-level ``facing``, it leaves ``both`` joining individuals from ``stack``
+    with pairs from ``pos``.
+    """
+    document: Document = {
+        "steps": [
+            {"id": "smooth", "type": "feature", "feature": "trajectory-smooth"},
+            {
+                "id": "facing",
+                "type": "feature",
+                "feature": "pair-facing",
+                "inputs": [{"step": "smooth"}],
+            },
+            {
+                "id": "pos",
+                "type": "feature",
+                "feature": "pair-egocentric",
+                "inputs": [{"step": "smooth"}],
+            },
+            {
+                "id": "stack",
+                "type": "feature",
+                "feature": "temporal-stack",
+                "inputs": [{"step": "facing"}],
+            },
+            {
+                "id": "both",
+                "type": "feature",
+                "feature": "temporal-stack",
+                "inputs": [{"step": "stack"}, {"step": "pos"}],
+            },
+        ]
+    }
+    recipe = read_recipe(document)
+
+    report = insert_candidates(recipe, "facing")
+    refused = report.candidates["attention-target"]
+
+    assert check_recipe(recipe) == ()
+    assert report.children == ("stack",)
+    assert attach_candidates(recipe, "facing").candidates["attention-target"].allowed
+    assert not refused.allowed
+    assert refused.reason.startswith("'both' would then be invalid:")
+    assert "different entity levels" in refused.reason
+
+
+def test_a_join_reading_the_step_through_a_later_input_is_not_a_child() -> None:
+    """``both`` reads ``facing`` through its second input, and keeps reading it.
+
+    ``attention-target`` writes individuals, and ``both`` cannot join them with
+    the pairs from ``pos``. It may stand between ``facing`` and ``stack``, the
+    one step that reads ``facing`` first.
+    """
+    document: Document = {
+        "steps": [
+            {"id": "smooth", "type": "feature", "feature": "trajectory-smooth"},
+            {
+                "id": "facing",
+                "type": "feature",
+                "feature": "pair-facing",
+                "inputs": [{"step": "smooth"}],
+            },
+            {
+                "id": "pos",
+                "type": "feature",
+                "feature": "pair-egocentric",
+                "inputs": [{"step": "smooth"}],
+            },
+            {
+                "id": "stack",
+                "type": "feature",
+                "feature": "temporal-stack",
+                "inputs": [{"step": "facing"}],
+            },
+            {
+                "id": "both",
+                "type": "feature",
+                "feature": "temporal-stack",
+                "inputs": [{"step": "pos"}, {"step": "facing"}],
+            },
+        ]
+    }
+    recipe = read_recipe(document)
+
+    report = insert_candidates(recipe, "facing")
+    between = report.candidates["attention-target"]
+
+    assert check_recipe(recipe) == ()
+    assert report.children == ("stack",)
+    assert between.allowed, between.reason
+    assert insert_candidates(recipe, "pos").children == ("both",)
+
+
+def test_below_a_tracker_the_children_read_its_variant() -> None:
+    report = insert_candidates(read_recipe(BRANCH), "trex")
+
+    assert report.children == ("smooth",)
+    again = report.candidates["trajectory-smooth"]
+    assert again.allowed, again.reason
+    assert again.template == {
+        "type": "feature",
+        "feature": "trajectory-smooth",
+        "inputs": ["tracks"],
+        "tracks": {"step": "trex"},
+    }
+    assert report.candidates["speed-angvel"].reason.startswith("'smooth' cannot read")
+
+
+def test_inserting_below_a_leaf_is_attaching() -> None:
+    recipe = read_recipe(BRANCH)
+
+    report = insert_candidates(recipe, "nn")
+
+    assert report.children == ()
+    assert report.candidates == attach_candidates(recipe, "nn").candidates
+
+
+def test_inserting_below_an_unknown_step_is_refused() -> None:
+    with pytest.raises(RecipeInvalid) as raised:
+        _ = insert_candidates(read_recipe(BRANCH), "no-such-step")
+    assert raised.value.problems[0].where == "after"
+
+
 def test_a_params_error_elsewhere_does_not_block_the_picker() -> None:
     speed = {**BRANCH_STEPS[3], "params": {"not_a_field": 1}}
     document: Document = {
@@ -307,7 +511,9 @@ def test_every_template_is_wired_the_way_validation_accepts() -> None:
 
     Those are params the author must fill, and required columns that its one
     input lacks. ``input_candidates`` reports each such column as still needed,
-    and validation reports the same column as a problem.
+    and validation reports the same column as a problem. A step type that this
+    installation cannot run is refused without a template. A feature whose
+    construction fails for want of an undeclared package therefore fails here.
     """
     recipe = read_recipe(BRANCH)
     for above in (None, *(step.id for step in recipe.steps)):
@@ -332,7 +538,6 @@ def test_every_template_is_wired_the_way_validation_accepts() -> None:
                 for problem in check_recipe(grown)
                 if problem.step == "added"
                 and not problem.where.startswith("params")
-                and "not installed" not in problem.message
                 and not any(
                     problem.message.startswith(f"needs {label},") for label in needed
                 )

@@ -619,7 +619,7 @@ def test_a_field_the_params_model_refuses_is_reported_at_that_field() -> None:
 def test_a_missing_optional_dependency_is_a_problem_not_a_crash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A feature whose extra is not installed raises on construction."""
+    """Construction raises ImportError for a package outside the prerequisites."""
 
     def _unavailable(_spec: object) -> NoReturn:
         raise ImportError("lightning-action is required")

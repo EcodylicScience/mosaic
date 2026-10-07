@@ -44,6 +44,27 @@ empty, and does all its work in `apply`. A global one restores a fitted model in
 `load_state`, builds it in `fit`, persists it in `save_state`, and maps with it in
 `apply`.
 
+A feature that needs a package outside the base install declares it in a
+`prerequisites` tuple, and imports it through the same declaration:
+
+```python
+from mosaic.optional_dependency import OptionalModule
+
+MOVEMENT = OptionalModule("movement", "movement", "the movement-library features")
+
+class MovementSmooth:
+    prerequisites = (MOVEMENT,)
+
+    def apply(self, df):
+        _ = MOVEMENT.load()
+        ...
+```
+
+The arguments are the import name, the mosaic extra that installs it, and what needs
+it. Where the package is not installed, the pipeline catalog lists the feature as
+unavailable, and `mosaic pipeline validate` reports a step running it as a problem
+whose message says what to install.
+
 ## `emits` is the one to get right
 
 `emits` has no default, and it is the one where a wrong answer is silent.

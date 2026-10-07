@@ -813,6 +813,15 @@ Deliberately separate from the live-object `Pipeline`, which holds feature
   (`declaration_catalog()`), so a canvas refuses a wire as it is drawn. The
   sharpest refusal is `can_join`'s: a multi-input join of mismatched entity
   granularity is a silent per-frame cartesian product.
+- **A feature declares the packages and setups beyond the base install that
+  it needs** in a `prerequisites` tuple: an `OptionalModule` for a package an
+  extra installs (`src/mosaic/optional_dependency.py`), and `KpmsLicense` and
+  `KpmsEnvironment` for kpms. `declaration_catalog()` evaluates them into
+  `Declaration.unavailable`, once per process and without importing the
+  packages. The editor catalog lists that sentence as `unavailable`, validation
+  reports it at the step's `feature`, and `attach_candidates` refuses the
+  feature with it. A feature imports the package through the same declaration
+  (`OptionalModule.load()`), and the catalog and the run name one extra.
 - **`reject_unless_valid` runs before the dataset is touched** and reports every
   problem rather than the first. `overwrite` is refused in `params` on presence,
   and `extract-frames` is excluded by *ownership* -- mosaic-api embeds its frozen

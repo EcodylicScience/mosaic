@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.behavior.model_library.timm_backbone import DEFAULT_MODEL_NAME
+from mosaic.behavior.model_library.timm_backbone import DEFAULT_MODEL_NAME, TIMM
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -42,6 +42,7 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 from mosaic.core.params import Declared, Params
+from mosaic.optional_dependency import Prerequisite
 
 from ._identity_model_descriptions import LEARNING_RATE_DESCRIPTION
 from .registry import register_feature
@@ -198,6 +199,7 @@ class GlobalIdentityModel:
         False  # trains per entry; a neighbour's rows carry another entry's labels
     )
     consumed_roots: tuple[str, ...] = ()
+    prerequisites: tuple[Prerequisite, ...] = (TIMM,)
     emits: EmitsLevel = "as-input"
     ModelArtifact = ClassifierIdentityArtifact
 

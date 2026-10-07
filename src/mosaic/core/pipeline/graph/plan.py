@@ -27,16 +27,32 @@ read rather than handed over a wire.** A serialized inventory invites a stale or
 fabricated snapshot, which is the one way this could produce a confidently wrong
 answer. An injectable holder exists so a long-lived process can keep one between
 calls, and so a test can build the world it is asserting about.
+
+**A recipe that validates can still be refused by a dataset.** The plan records
+each such problem at the place in the recipe that would change, and
+:func:`plan_pipeline` raises them together in :class:`RecipeRefused`:
+
+- A time filter on a dataset that does not record its frame rate, at
+  ``run.filter_start_time`` or ``run.filter_end_time``. The step's identity is
+  then unresolved.
+- A column that a step requires and the tracks tables lack, at ``inputs``. The
+  plan reads the column names of the tables that each step reads, from the
+  parquet footers, and checks the recipe's columns again with them
+  (:func:`~mosaic.core.pipeline.graph.validate.check_recipe`). Validation reads
+  only the columns that the schemas allow, and ``ANGLE`` is a caution there on
+  any tracks.
+  Read off ``mosaic_v1`` tables, which forbid it, it is a problem.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
 
 from mosaic.core.helpers import resolve_frame_range
 from mosaic.core.scope import Scope
 
+from ..manifest import tracks_table_columns
 from ..inventory.cache import InventoryCache
 from ..inventory.model import (
     ArtifactRef,
@@ -57,6 +73,7 @@ from ..run import resolve_feature_identity
 from .digest import recipe_digest
 from .lanes import lane_for
 from .model import (
+    TRACKS_INPUT,
     BoundRef,
     FeatureStepSpec,
     OpStepSpec,
@@ -75,12 +92,19 @@ from .resolve import (
     op_class_for_kind,
     resolve_step_spec,
 )
+from .columns import ColumnSet, measured_columns
 from .scope import intended_scope
 from .topo import parents_of, topological_order
-from .validate import reject_unless_valid
+from .validate import (
+    RecipeInvalid,
+    check_recipe,
+    one_run_problems,
+    reject_unless_valid,
+)
+from .wire import Problem
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Mapping, Sequence
 
     from mosaic.core.dataset import Dataset
     from mosaic.core.params import Params
@@ -99,6 +123,7 @@ __all__ = [
     "Plan",
     "PlannedStep",
     "Reason",
+    "RecipeRefused",
     "Stalled",
     "WaitingOnResource",
     "coverage_against",
@@ -300,11 +325,16 @@ class Plan:
         recipe_digest: What names the recipe this plan is of.
         scope: The entries the graph is planned over.
         steps: Every step, in topological order.
+        problems: Why this dataset refuses the recipe, in topological order of
+            their steps. Empty in a plan that :func:`plan_pipeline` returns
+            with ``refuse`` set, because it raises :class:`RecipeRefused`
+            instead.
     """
 
     recipe_digest: str
     scope: frozenset[Entry]
     steps: tuple[PlannedStep, ...] = ()
+    problems: tuple[Problem, ...] = ()
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
@@ -327,6 +357,57 @@ class Plan:
     def run_ids(self) -> dict[str, str | None]:
         """What each step will be called, keyed by step id."""
         return {planned.step_id: planned.run_id for planned in self.steps}
+
+
+class RecipeRefused(RecipeInvalid):
+    """A valid recipe that one dataset cannot run, with every problem found.
+
+    A subclass of :class:`~.validate.RecipeInvalid`, because a caller refusing a
+    malformed recipe refuses this one in the same way.
+
+    Attributes:
+        plan: The plan that found the problems, ``problems`` included. A step
+            whose identity a problem leaves unresolved has no ``run_id``.
+    """
+
+    lead: ClassVar[str] = "this recipe cannot be run on this dataset"
+
+    def __init__(self, plan: Plan) -> None:
+        self.plan: Plan = plan
+        super().__init__(plan.problems)
+
+
+@dataclass
+class _Findings:
+    """What the walk finds beside the identities: problems, and the tracks it read.
+
+    Attributes:
+        problems: The plan-time problems found while walking the steps.
+        tracks: The columns of the tracks that each step reads, keyed by step
+            id, for the steps whose tables were read.
+        read: The columns read for each tracks variant, ``None`` naming the
+            variant of each entry. Each is read once per plan.
+    """
+
+    problems: list[Problem] = field(default_factory=list)
+    tracks: dict[str, ColumnSet] = field(default_factory=dict)
+    read: dict[str | None, ColumnSet | None] = field(default_factory=dict)
+
+    def read_tracks(
+        self, ds: Dataset, step_id: str, variant: str | None, target: frozenset[Entry]
+    ) -> None:
+        """Record the columns of the tracks that *step_id* reads, from their tables.
+
+        A variant without tables yet, such as one that an op of this graph
+        writes, records nothing, and the step's tracks stay as the schemas
+        describe them.
+        """
+        if variant not in self.read:
+            tables = tracks_table_columns(ds, variant, Scope(entries=sorted(target)))
+            self.read[variant] = measured_columns(tables.values())
+        columns = self.read[variant]
+        if columns is not None:
+            self.tracks[step_id] = columns
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,6 +433,7 @@ def plan_pipeline(
     quarantined: Iterable[Entry] = (),
     catalog: DeclarationCatalog | None = None,
     recorded: Mapping[str, str] | None = None,
+    refuse: bool = True,
 ) -> Plan:
     """Resolve *recipe* against *ds*. Returns what to run; never submits it.
 
@@ -379,6 +461,9 @@ def plan_pipeline(
             graph keeps the rest of it addressable after a step legitimately
             landed somewhere else, which is what a ``scope_dependent`` step does
             whenever fewer entries complete than were intended.
+        refuse: Whether a problem this dataset finds with the recipe raises.
+            Unset, the problems are recorded on the returned plan. A step that
+            runs plans this way and refuses only the problems at its step.
 
     Returns:
         A :class:`Plan`: one :class:`PlannedStep` per step, in topological order.
@@ -386,6 +471,8 @@ def plan_pipeline(
     Raises:
         RecipeInvalid: The recipe is malformed. Raised before *ds* is read, and
             reporting every problem found rather than the first.
+        RecipeRefused: The recipe validates and this dataset cannot run it, with
+            every problem found. Raised only when *refuse* is set.
         ScopeRefused: An op step's scope is one that op's declaration does not
             accept. Raised on the first such step rather than collected,
             because it takes the dataset to enumerate the selector against and
@@ -417,6 +504,8 @@ def plan_pipeline(
     resolved: dict[str, ResolvedStep] = {}
     planned: dict[str, PlannedStep] = {}
     steps: list[PlannedStep] = []
+    findings = _Findings()
+    fps = ds.meta_float("fps_default")
     for step in topological_order(recipe):
         step_plan = _plan_step(
             ds,
@@ -430,6 +519,14 @@ def plan_pipeline(
             planned=planned,
             recorded=recorded or {},
         )
+        if isinstance(step, FeatureStepSpec):
+            findings.problems.extend(_feature_problems(recipe, step, fps, resolved))
+            if TRACKS_INPUT in step.inputs and (
+                step.tracks is None or step_plan.spec.tracks_run_id
+            ):
+                # A tracks reference to a producer whose identity is unresolved
+                # does not name a variant, and its tables cannot be read.
+                findings.read_tracks(ds, step.id, step_plan.spec.tracks_run_id, target)
         planned[step.id] = step_plan
         steps.append(step_plan)
         resolved[step.id] = ResolvedStep(
@@ -440,7 +537,19 @@ def plan_pipeline(
             model_run_id=step_plan.model_run_id,
         )
 
-    return Plan(recipe_digest=recipe_digest(recipe), scope=target, steps=tuple(steps))
+    problems = list(findings.problems)
+    if findings.tracks:
+        problems.extend(check_recipe(recipe, catalog, tracks=findings.tracks))
+    order = {planned_step.step_id: index for index, planned_step in enumerate(steps)}
+    plan = Plan(
+        recipe_digest=recipe_digest(recipe),
+        scope=target,
+        steps=tuple(steps),
+        problems=tuple(sorted(problems, key=lambda found: order.get(found.step, -1))),
+    )
+    if refuse and plan.problems:
+        raise RecipeRefused(plan)
+    return plan
 
 
 def _plan_step(
@@ -604,17 +713,35 @@ def _resolve_feature_step(
     bind: Mapping[str, BoundRef],
     resolved: Mapping[str, ResolvedStep],
 ) -> _Resolution:
-    """One feature step's identity, from its params plus what is above it."""
+    """One feature step's identity, from its params plus what is above it.
+
+    A problem that :func:`_feature_problems` finds leaves the identity
+    unresolved, and :func:`plan_pipeline` reports it.
+    """
     spec = resolve_step_spec(recipe, step.id, resolved, bind=bind)
+    shared = _shared_run_problems(recipe, step, resolved)
+    if shared:
+        # Before the feature is built, because its inputs model refuses a run
+        # listed twice.
+        return _Resolution(step=_unresolved_feature(step, spec, shared))
     feature = build_step_feature(spec)
     # Pin every unpinned reference before hashing, exactly as execution does. A
     # params reference the recipe wrote literally -- a global fitter's templates,
     # named but not pinned -- is resolved from the dataset here, and a run that
     # hashed it as None would predict one identifier and execute another.
     _ = resolve_references(ds, feature)
+    scope_dependent = bool(getattr(feature, "scope_dependent", False))
+
+    fps = ds.meta_float("fps_default")
+    unconvertible = _time_filter_problems(step, fps)
+    if unconvertible:
+        return _Resolution(
+            step=_unresolved_feature(step, spec, unconvertible),
+            scope_dependent=scope_dependent,
+        )
 
     frame_start, frame_end = resolve_frame_range(
-        ds.meta_float("fps_default"),
+        fps,
         spec.filter_start_frame,
         spec.filter_end_frame,
         spec.filter_start_time,
@@ -645,8 +772,78 @@ def _resolve_feature_step(
             storage_name=spec.storage_name,
             artifact=FeatureRunRef(name=spec.storage_name, run_id=run_id),
         ),
-        scope_dependent=bool(getattr(feature, "scope_dependent", False)),
+        scope_dependent=scope_dependent,
     )
+
+
+def _unresolved_feature(
+    step: FeatureStepSpec, spec: StepSpec, problems: Sequence[Problem]
+) -> PlannedStep:
+    """The record of a feature step whose identity *problems* leave unresolved."""
+    return PlannedStep(
+        step_id=step.id,
+        kind="feature",
+        runs=step.feature,
+        spec=spec,
+        run_id=None,
+        storage_name=spec.storage_name,
+        reason=IdentityUnresolved(step=step.id, because=problems[0].message),
+    )
+
+
+def _feature_problems(
+    recipe: Recipe,
+    step: FeatureStepSpec,
+    fps: float | None,
+    resolved: Mapping[str, ResolvedStep],
+) -> list[Problem]:
+    """What this dataset refuses in a feature step, found before its identity."""
+    return [
+        *_time_filter_problems(step, fps),
+        *_shared_run_problems(recipe, step, resolved),
+    ]
+
+
+_RESOLVED_ALIKE: Final = (
+    "with params, inputs and run arguments that name one run on this dataset"
+)
+"""Why two steps that validate as two runs resolve to one, as a frame filter and
+the time filter equal to it at the dataset's frame rate do."""
+
+
+def _shared_run_problems(
+    recipe: Recipe, step: FeatureStepSpec, resolved: Mapping[str, ResolvedStep]
+) -> list[Problem]:
+    """A problem at *step*'s inputs for each run that several of them resolve to."""
+    runs = {
+        other.id: other.feature if isinstance(other, FeatureStepSpec) else other.kind
+        for other in recipe.steps
+    }
+    return one_run_problems(step, resolved, runs, alike=_RESOLVED_ALIKE)
+
+
+def _time_filter_problems(step: FeatureStepSpec, fps: float | None) -> list[Problem]:
+    """A problem at each time filter of *step*, when the dataset lacks a frame rate.
+
+    The plan converts a time filter to frames with the dataset's ``fps_default``,
+    as a run does.
+    """
+    if fps is not None:
+        return []
+    message = (
+        "a time filter needs the dataset's frame rate, and this dataset does not "
+        "record one. Set meta.fps_default in its dataset.yaml, or filter by frame "
+        "with run.filter_start_frame and run.filter_end_frame"
+    )
+    filters = {
+        "filter_start_time": step.run.filter_start_time,
+        "filter_end_time": step.run.filter_end_time,
+    }
+    return [
+        Problem(step.id, f"run.{name}", message)
+        for name, value in filters.items()
+        if value is not None
+    ]
 
 
 def _resolve_op_step(

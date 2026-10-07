@@ -55,7 +55,13 @@ from .plan import (
     is_stalled,
     plan_pipeline,
 )
-from .preflight import CoverageShortfall, StepRefused, preflight, refuse_mixed_schemas
+from .preflight import (
+    CoverageShortfall,
+    RecipeRefusedAtStep,
+    StepRefused,
+    preflight,
+    refuse_mixed_schemas,
+)
 from .request import load_recipe_for_request
 from .resolve import (
     build_step_feature,
@@ -161,7 +167,10 @@ def execute_step(
 
     Raises:
         StepRefused: The step declined to run, naming why. Its ``error_json`` has
-            already been written to this attempt's run-log.
+            already been written to this attempt's run-log. A
+            :class:`~.preflight.RecipeRefusedAtStep` is this dataset refusing the
+            step as a plan of the recipe reports it; a problem at another step
+            does not refuse this one.
         RecipeInvalid: The recipe this request names is malformed.
     """
     attempt = execution_id or request.execution_of(step_id)
@@ -219,7 +228,7 @@ def _execute(
     held = InventoryCache(ds) if inventory is None else inventory
     excluded = set(store.exclusions(request.request_id).entries)
     recorded = _pinned_parents(ds, recipe, request, step_id)
-    plan = _plan(ds, recipe, request, recorded, excluded, held, catalog)
+    plan = _plan(ds, recipe, request, step_id, recorded, excluded, held, catalog)
     planned = plan.step(step_id)
 
     if planned.status in COMPLETE_STATUSES and not overwrite:
@@ -246,7 +255,7 @@ def _execute(
         # left has to be named for what is left.
         store.exclude(request.request_id, step_id, quarantined)
         excluded |= set(quarantined)
-        plan = _plan(ds, recipe, request, recorded, excluded, held, catalog)
+        plan = _plan(ds, recipe, request, step_id, recorded, excluded, held, catalog)
         planned = plan.step(step_id)
         if planned.status in COMPLETE_STATUSES:
             return _cached(ds, planned, attempt=attempt, owner=owner)
@@ -282,13 +291,22 @@ def _plan(
     ds: Dataset,
     recipe: Recipe,
     request: Request,
+    step_id: str,
     recorded: Mapping[str, str],
     excluded: Iterable[Entry],
     inventory: InventoryCache,
     catalog: DeclarationCatalog | None,
 ) -> Plan:
-    """This step's graph, resolved against what is on disk right now."""
-    return plan_pipeline(
+    """This step's graph, resolved against what is on disk right now.
+
+    Only a problem at this step refuses it. The dataset can change after the
+    request was submitted, as when an op of the graph writes the tracks that a
+    later step reads, and a problem found then belongs to the step it names.
+
+    Raises:
+        RecipeRefusedAtStep: The dataset refuses this step.
+    """
+    plan = plan_pipeline(
         ds,
         recipe,
         request=request,
@@ -296,7 +314,12 @@ def _plan(
         quarantined=excluded,
         inventory=inventory,
         catalog=catalog,
+        refuse=False,
     )
+    own = tuple(problem for problem in plan.problems if problem.step == step_id)
+    if own:
+        raise RecipeRefusedAtStep(step_id, replace(plan, problems=own))
+    return plan
 
 
 def _measured(

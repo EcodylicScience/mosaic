@@ -53,9 +53,15 @@ the first. It also checks the columns that each step reads against the columns o
 inputs. A required column that every input lacks is a problem, and the problem names
 the inputs providing it. A column that an input may contain is a caution. A caution
 does not block `run`. A step whose feature does not declare its column requirements
-is named on one line as not checked.
+is named on one line as not checked. A step whose feature needs a package this installation
+lacks, or a setup it has not enabled, is a problem too. Its message names what to
+install or set, and `mosaic pipeline catalog --json` gives each such feature the same
+sentence as `unavailable`.
 `plan` says what each step will be called and what is already done, without
-submitting anything. On first use the recipe is copied to
+submitting anything. It refuses a recipe that the dataset cannot run, naming each
+problem at the step and the field that would change: a time filter on a dataset
+without `meta.fps_default`, and a column that a step requires and every tracks table
+lacks. `submit` and `run` refuse the same recipe. On first use the recipe is copied to
 `<dataset>/.mosaic/pipelines/<digest>.json`, so the dataset records which pipelines
 were applied to it.
 

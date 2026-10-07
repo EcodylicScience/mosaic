@@ -37,9 +37,13 @@ from mosaic.core.pipeline.graph import (
     resolved_columns,
     validation_report,
 )
-from tests.helpers import catalog_without_contract, golden_path, read_golden
-
-GUPPIES = "guppies_pipeline_v5.recipe.json"
+from tests.helpers import (
+    GUPPIES_RECIPE,
+    catalog_without_contract,
+    golden_path,
+    guppies_recipe,
+    read_golden,
+)
 
 DELTA_STEPS = (
     "delta_focal_n10",
@@ -52,10 +56,6 @@ DELTA_STEPS = (
 """The guppies recipe's nn-delta-response steps, each reading ``ANGLE``."""
 
 runner = CliRunner()
-
-
-def _guppies() -> Recipe:
-    return read_recipe(read_golden(GUPPIES))
 
 
 def _rewired(recipe: Recipe, step_id: str, inputs: list[str]) -> Recipe:
@@ -93,7 +93,7 @@ def _inputs_of(recipe: Recipe, step_id: str) -> list[str]:
 
 def test_the_guppies_recipe_validates_with_cautions_only() -> None:
     """Its one unconfirmed column is ``ANGLE``, possible in its tracks by schema."""
-    report = validation_report(read_golden(GUPPIES))
+    report = validation_report(read_golden(GUPPIES_RECIPE))
 
     assert report.valid, report.problems
     assert report.problems == ()
@@ -103,7 +103,7 @@ def test_the_guppies_recipe_validates_with_cautions_only() -> None:
 
 def test_nearest_neighbor_reading_speed_is_refused_at_its_inputs() -> None:
     """The wire that used to fail at run time with "not a track-shaped table"."""
-    recipe = _rewired(_guppies(), "nn", ["speed"])
+    recipe = _rewired(guppies_recipe(), "nn", ["speed"])
     expected = (
         "nearest-neighbor reads a track-shaped table, and speed-angvel neither "
         "passes its input through nor writes X and Y"
@@ -114,7 +114,7 @@ def test_nearest_neighbor_reading_speed_is_refused_at_its_inputs() -> None:
 
 def test_a_delta_step_without_its_neighbor_input_is_refused() -> None:
     """The wire that used to fail with "needs a neighbor id column"."""
-    guppies = _guppies()
+    guppies = guppies_recipe()
     without_nn = [
         name for name in _inputs_of(guppies, "delta_focal_n10") if name != "nn"
     ]
@@ -129,7 +129,7 @@ def test_a_delta_step_without_its_neighbor_input_is_refused() -> None:
 
 def test_a_bins_step_reading_speed_names_every_response_column() -> None:
     """The wire that used to raise a ``KeyError`` inside ``nn-delta-bins``."""
-    recipe = _rewired(_guppies(), "bins_focal_n10", ["speed", "focal_tags"])
+    recipe = _rewired(guppies_recipe(), "bins_focal_n10", ["speed", "focal_tags"])
 
     problems = check_recipe(recipe)
 
@@ -159,7 +159,7 @@ def test_a_bins_step_without_a_category_column_is_a_caution(
     writes no ``neighbor_focal``. The tracks may contain ``Focal_fish``. A spec
     writing a third column leaves both category columns to the input.
     """
-    guppies = _guppies()
+    guppies = guppies_recipe()
     kept = {"smooth", "speed", "nn", "delta_focal_n10", "bins_focal_n10"}
     recipe = guppies.model_copy(
         update={"steps": [step for step in guppies.steps if step.id in kept]}
@@ -239,7 +239,7 @@ def test_a_spec_whose_source_column_is_missing_is_a_problem() -> None:
 
 def test_the_fixture_is_the_recipe_the_paper_runs() -> None:
     """Twenty steps, joins of up to five inputs: the shape the checks are about."""
-    recipe = _guppies()
+    recipe = guppies_recipe()
 
     assert len(recipe.steps) == 20
     assert max(len(_inputs_of(recipe, step.id)) for step in recipe.steps) == 5
@@ -258,7 +258,7 @@ def test_a_track_input_is_refused_below_a_feature_that_drops_the_track_frame() -
 
 
 def test_attaching_nearest_neighbor_follows_the_same_rule() -> None:
-    recipe = _guppies()
+    recipe = guppies_recipe()
 
     below_speed = attach_candidates(recipe, "speed").candidates["nearest-neighbor"]
     below_smooth = attach_candidates(recipe, "smooth").candidates["nearest-neighbor"]
@@ -278,7 +278,7 @@ def test_attaching_nearest_neighbor_follows_the_same_rule() -> None:
 
 def _partial_delta() -> Recipe:
     """The guppies recipe's upstream, and a delta step reading only ``smooth``."""
-    guppies = _guppies()
+    guppies = guppies_recipe()
     kept = [
         step
         for step in guppies.steps
@@ -496,7 +496,7 @@ def test_a_column_an_upstream_column_decides_is_only_possible() -> None:
 
 
 def test_a_passthrough_keeps_its_input_and_adds_its_own() -> None:
-    columns = resolved_columns(_guppies())["smooth"]
+    columns = resolved_columns(guppies_recipe())["smooth"]
 
     assert {"X", "Y", "id", "frame", "bad_frame"} <= columns.guaranteed
     assert "ANGLE" in columns.possible
@@ -657,7 +657,7 @@ def test_the_catalog_states_each_feature_s_columns_under_its_defaults() -> None:
 
 def test_the_cli_prints_cautions_beside_a_valid_verdict() -> None:
     result = runner.invoke(
-        app, ["pipeline", "validate", "--recipe", f"@{golden_path(GUPPIES)}"]
+        app, ["pipeline", "validate", "--recipe", f"@{golden_path(GUPPIES_RECIPE)}"]
     )
 
     assert result.exit_code == 0, result.output

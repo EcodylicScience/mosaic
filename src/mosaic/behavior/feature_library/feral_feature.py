@@ -33,7 +33,7 @@ import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Annotated, ClassVar, Self, final
+from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Self, final
 
 import numpy as np
 import pandas as pd
@@ -56,6 +56,7 @@ from mosaic.core.params import (
 )
 
 from mosaic.core.pipeline.progress import CSVProgressCallback
+from mosaic.optional_dependency import OptionalModule, Prerequisite
 
 from .registry import register_feature
 
@@ -63,6 +64,15 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 log = logging.getLogger(__name__)
+
+FERAL: Final = OptionalModule("feral", "feral", "the FERAL behavior classifier")
+"""The installed FERAL package, as the pipeline catalog checks for it.
+
+The feature imports it through :func:`_import_feral`, which honors a step's
+``feral_code_dir`` as well. The catalog does not read params. A step that names
+a checkout on an installation without the package is therefore reported
+unavailable.
+"""
 
 
 def _import_feral(feral_code_dir: str | Path | None = None):
@@ -509,6 +519,7 @@ class FeralFeature:
         False  # takes its context from the crop video, not from this frame
     )
     consumed_roots: tuple[str, ...] = ()
+    prerequisites: tuple[Prerequisite, ...] = (FERAL,)
     emits: EmitsLevel = "as-input"
 
     class Inputs(Inputs[Result]):

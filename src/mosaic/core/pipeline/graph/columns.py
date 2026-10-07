@@ -19,7 +19,8 @@ this module does not restate them. A converter also writes columns that its
 schema does not name, such as SLEAP's ``poseP0`` and TRex's ``X#head``, and a
 step's params may name one. The tracks therefore may contain any column that no
 declaration names literally (:func:`tracks_columns`), and a requirement on one is
-a caution.
+a caution. A plan reads the tables that a step reads, and states their columns
+(:func:`measured_columns`).
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ __all__ = [
     "ColumnSet",
     "UNKNOWN_COLUMNS",
     "declared_vocabulary",
+    "measured_columns",
     "merged_input",
     "names_wire",
     "need_status",
@@ -365,6 +367,31 @@ def declared_vocabulary(catalog: DeclarationCatalog) -> frozenset[str]:
         name
         for declared in catalog.entries.values()
         for name in declared_names(declared.requires, declared.provides)
+    )
+
+
+def measured_columns(tables: Iterable[Collection[str]]) -> ColumnSet | None:
+    """The columns of a step's tracks, from the column names of each table it reads.
+
+    Guaranteed: each column in every table. Possible: each column in some table.
+    The set admits only those, because the tables are read. A column that some
+    tables contain and others lack stays possible, and the entries whose tables
+    lack it fail at run time.
+
+    ``None`` for an empty *tables*, which says nothing about the columns.
+    """
+    read = [frozenset(table) for table in tables]
+    if not read:
+        return None
+    first, *rest = read
+    return _column_set(
+        first.intersection(*rest),
+        first.union(*rest),
+        (),
+        (),
+        unbounded=False,
+        unlisted=False,
+        vocabulary=(),
     )
 
 

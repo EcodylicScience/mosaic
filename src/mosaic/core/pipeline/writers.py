@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -84,6 +84,24 @@ def read_parquet_table(path: Path) -> pd.DataFrame:
     to one annotated function keeps that at one site rather than at each caller.
     """
     return pd.read_parquet(path)
+
+
+def read_parquet_column_names(path: Path) -> tuple[str, ...] | None:
+    """The column names of a parquet, read from its footer and not its data.
+
+    ``None`` for an absent file and for one whose footer does not parse, as an
+    interrupted write leaves it. A caller asking what a table contains treats
+    that as unknown.
+    """
+    if not path.exists():
+        return None
+    try:
+        # read_schema().names is Unknown, because pyarrow does not ship type
+        # stubs here.
+        names = cast("list[str]", pq.read_schema(path).names)  # pyright: ignore[reportUnknownMemberType]
+    except (OSError, ValueError):
+        return None
+    return tuple(names)
 
 
 def read_parquet_table_columns(path: Path, columns: list[str]) -> pd.DataFrame:

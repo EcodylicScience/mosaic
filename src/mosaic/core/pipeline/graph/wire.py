@@ -2,8 +2,9 @@
 
 One model per answer an editor asks for: the step types on offer
 (:class:`EditorCatalog`), what is wrong with a recipe (:class:`ValidationReport`),
-what may follow a step (:class:`AttachReport`), what may be added as an input of
-a step (:class:`InputCandidates`) and what a recipe would do to one dataset
+what may follow a step (:class:`AttachReport`), what may be inserted below a step
+that has children (:class:`InsertReport`), what may be added as an input of a step
+(:class:`InputCandidates`) and what a recipe would do to one dataset
 (:class:`PlanWire`). The CLI's ``--json`` output and mosaic-api's responses are
 these models dumped, and the two agree on every shape.
 
@@ -11,6 +12,7 @@ Models only. The functions that fill them live beside what they read --
 :func:`~mosaic.core.pipeline.graph.resolve.editor_catalog`,
 :func:`~mosaic.core.pipeline.graph.validate.validation_report`,
 :func:`~mosaic.core.pipeline.graph.validate.attach_candidates`,
+:func:`~mosaic.core.pipeline.graph.validate.insert_candidates`,
 :func:`~mosaic.core.pipeline.graph.validate.input_candidates` and
 :func:`~mosaic.core.pipeline.graph.serialize.plan_wire` -- and each of those
 modules imports this one. This module imports none of them, which keeps the
@@ -48,6 +50,7 @@ __all__ = [
     "IdentityUnresolvedWire",
     "InputCandidate",
     "InputCandidates",
+    "InsertReport",
     "NeedStatus",
     "PlanWire",
     "PlannedStepWire",
@@ -186,6 +189,10 @@ class CatalogEntry(GraphModel):
             requirements not declared".
         provides: The columns of its output, under its default params. ``None``
             when undeclared.
+        unavailable: What this installation lacks to run it, naming what to
+            install or set. ``None`` when it runs here. Validation reports the
+            same sentence for a step that runs it, and an attach candidate is
+            refused with it.
     """
 
     name: str
@@ -198,6 +205,7 @@ class CatalogEntry(GraphModel):
     reference_fields: dict[str, ReferenceKind]
     requires: tuple[ColumnNames, ...] | None
     provides: ProvidedColumns | None
+    unavailable: str | None
 
 
 class EditorCatalog(GraphModel):
@@ -268,6 +276,29 @@ class AttachReport(GraphModel):
     """
 
     after: str | None
+    candidates: dict[str, Attachment]
+
+
+class InsertReport(GraphModel):
+    """What may be inserted between one step and the steps that read it first.
+
+    Attributes:
+        after: The step asked about, ``None`` for the dataset's tracks.
+        children: The steps whose first input reads *after*, in topological
+            order: a reference to it below a feature, the dataset's tracks at
+            the top level, and ``tracks`` read from its variant below an op.
+            Each reads the inserted step through its first input in place of
+            *after*. A step that reads *after* through a later input only is
+            not among them.
+        candidates: One attachment per step type, keyed by name. Its template
+            wires the new step below *after*, as an attachment does. A step
+            type is refused when a child cannot read it, when a child's
+            requirement would lack a column that the child's inputs now supply,
+            or when a step further below would then be invalid.
+    """
+
+    after: str | None
+    children: tuple[str, ...]
     candidates: dict[str, Attachment]
 
 
@@ -487,9 +518,15 @@ class PlanWire(GraphModel):
         scope_size: How many entries the graph is planned over.
         complete: Whether every step is already computed over its scope.
         steps: Every step, in topological order.
+        problems: Why this dataset refuses the recipe, in topological order of
+            their steps: a time filter without a frame rate, at
+            ``run.filter_start_time`` or ``run.filter_end_time``, and a column
+            that the tracks tables lack, at ``inputs``. Empty when the plan
+            may run.
     """
 
     recipe_digest: str
     scope_size: int
     complete: bool
     steps: tuple[PlannedStepWire, ...]
+    problems: tuple[Problem, ...]

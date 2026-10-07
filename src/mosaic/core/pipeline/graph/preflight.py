@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 
 from ..manifest import refuse_mixed_track_schemas
 from ..refusal import Refusal, RefusalReason
-from .plan import COMPLETE_STATUSES, MISSING_SAMPLE, Plan, PlannedStep
+from .plan import COMPLETE_STATUSES, MISSING_SAMPLE, Plan, PlannedStep, RecipeRefused
 from .resolve import build_step_feature
 
 if TYPE_CHECKING:
@@ -37,9 +37,12 @@ if TYPE_CHECKING:
     from mosaic.core.entry import Entry
     from mosaic.core.json_value import JsonValue
 
+    from .wire import Problem
+
 
 __all__ = [
     "CoverageShortfall",
+    "RecipeRefusedAtStep",
     "StepRefused",
     "preflight",
     "refuse_mixed_schemas",
@@ -84,6 +87,33 @@ class CoverageShortfall(StepRefused):
             f"deliberately, or complete the steps above it first.",
             {"covered": covered, "target": target, "detail": detail},
         )
+
+
+class RecipeRefusedAtStep(StepRefused):
+    """A step that this dataset refuses when the step re-plans itself.
+
+    The dataset can change after submit, as when an op of the graph writes the
+    tracks that a later step reads. A problem found then refuses the step it
+    names, and its attempt records the problems as a submission's refusal lists
+    them.
+
+    Attributes:
+        plan: The step's plan, holding only the problems at this step.
+    """
+
+    def __init__(self, step_id: str, plan: Plan) -> None:
+        self.plan: Plan = plan
+        problems: list[JsonValue] = [
+            {"step": problem.step, "where": problem.where, "message": problem.message}
+            for problem in plan.problems
+        ]
+        message = str(RecipeRefused(plan))
+        super().__init__("recipe_refused", step_id, message, {"problems": problems})
+
+    @property
+    def problems(self) -> tuple[Problem, ...]:
+        """The problems at this step, in the order the plan found them."""
+        return self.plan.problems
 
 
 def preflight(

@@ -20,6 +20,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Annotated, Self, TypedDict, final
 
@@ -28,6 +29,7 @@ from pydantic import Field, model_validator
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.subprocess_util import foreign_environment
+from mosaic.optional_dependency import Prerequisite
 from mosaic.user_paths import user_path
 from mosaic.core.pipeline.types import (
     EmitsLevel,
@@ -78,6 +80,12 @@ _EXTERNAL_VENV_PYTHON = Path(__file__).parent / "external" / ".venv" / "bin" / "
 KPMS_PYTHON_ENV = "MOSAIC_KPMS_PYTHON"
 KPMS_LICENSE_ENV = "MOSAIC_KPMS_LICENSE_ACCEPTED"
 
+_ACCEPT_LICENSE = (
+    "Read the terms at "
+    "https://github.com/dattalab/keypoint-moseq/blob/main/LICENSE.md, then set "
+    f"{KPMS_LICENSE_ENV}=1 to confirm your use is permitted."
+)
+
 LICENSE_NOTICE = (
     "[kpms] keypoint-MoSeq is licensed by the Harvard University Office of "
     "Technology Development for non-commercial research and academic use only, "
@@ -85,18 +93,19 @@ LICENSE_NOTICE = (
     "commercial use reaches fee-for-service arrangements, core facilities "
     "providing research services to (or with) for-profit third parties for a "
     "fee, and industry-sponsored or collaborative research projects granting "
-    "commercial rights to the sponsor or collaborator.\n"
-    "Read the terms at "
-    "https://github.com/dattalab/keypoint-moseq/blob/main/LICENSE.md, then set "
-    f"{KPMS_LICENSE_ENV}=1 to confirm your use is permitted."
+    "commercial rights to the sponsor or collaborator.\n" + _ACCEPT_LICENSE
+)
+
+_LICENSE_UNACCEPTED = (
+    "keypoint-MoSeq is licensed for non-commercial research and academic use "
+    "only, and this installation has not accepted its license. " + _ACCEPT_LICENSE
 )
 
 _NOT_FOUND_HELP = (
     "keypoint-moseq is not installed with mosaic and is never bundled in a "
-    "mosaic distribution: it lives in its own environment, which you build "
-    "yourself.  See external/README.md beside this module for the setup "
-    f"command, or point {KPMS_PYTHON_ENV} at an interpreter that already "
-    "has it."
+    "mosaic distribution. It runs in a separate environment. Build it with "
+    "the command in mosaic/behavior/feature_library/external/README.md, or "
+    f"point {KPMS_PYTHON_ENV} at an interpreter that already has it."
 )
 
 
@@ -129,9 +138,14 @@ def check_license_accepted() -> None:
     Raises:
         RuntimeError: with :data:`LICENSE_NOTICE` when acceptance is absent.
     """
-    if os.environ.get(KPMS_LICENSE_ENV, "").strip() == "1":
+    if license_accepted():
         return
     raise RuntimeError(LICENSE_NOTICE)
+
+
+def license_accepted() -> bool:
+    """Whether ``MOSAIC_KPMS_LICENSE_ACCEPTED`` is ``1``, whitespace aside."""
+    return os.environ.get(KPMS_LICENSE_ENV, "").strip() == "1"
 
 
 def resolve_kpms_python(kpms_python: str | None = None) -> Path:
@@ -158,6 +172,38 @@ def resolve_kpms_python(kpms_python: str | None = None) -> Path:
         msg = f"[kpms] Python interpreter not found: {resolved}.  {_NOT_FOUND_HELP}"
         raise KpmsNotFoundError(msg)
     return resolved
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class KpmsLicense:
+    """A prerequisite of :class:`KpmsFeature`: the accepted keypoint-MoSeq license.
+
+    Read from the environment, as :meth:`KpmsFeature._start_server` reads it.
+    """
+
+    def missing(self) -> str | None:
+        """How to accept the license, or ``None`` once it is accepted."""
+        return None if license_accepted() else _LICENSE_UNACCEPTED
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class KpmsEnvironment:
+    """A prerequisite of :class:`KpmsFeature`: an interpreter to run the server.
+
+    Checked for on the file system, without starting it. The catalog does not
+    read a step's ``kpms_python``. The interpreter is resolved from
+    ``MOSAIC_KPMS_PYTHON`` and the environment under ``external/.venv`` alone.
+    """
+
+    def missing(self) -> str | None:
+        """How to provide the environment, or ``None`` when one is found."""
+        try:
+            _ = resolve_kpms_python()
+        except KpmsNotFoundError:
+            return _NOT_FOUND_HELP
+        return None
 
 
 # --- Data conversion ---
@@ -373,6 +419,7 @@ class KpmsFeature:
         False  # decodes a whole sequence at once, so context is not a window
     )
     consumed_roots: tuple[str, ...] = ()
+    prerequisites: tuple[Prerequisite, ...] = (KpmsLicense(), KpmsEnvironment())
     emits: EmitsLevel = "individual"
     KpmsModelBundle = KpmsModelBundle
     KpmsModelArtifact = KpmsModelArtifact

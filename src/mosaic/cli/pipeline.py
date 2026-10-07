@@ -139,10 +139,11 @@ def catalog_command(as_json: JsonOption = False) -> None:
                 "type": entry.type,
                 "category": entry.category,
                 "resource_class": entry.declaration.resource_class,
+                "available": "no" if entry.unavailable else "yes",
             }
             for entry in catalog.entries
         ],
-        ["name", "type", "category", "resource_class"],
+        ["name", "type", "category", "resource_class", "available"],
     )
 
 
@@ -152,8 +153,17 @@ def plan_command(
     entry: EntriesOption = None,
     as_json: JsonOption = False,
 ) -> None:
-    """Resolve a recipe against a dataset: identities, coverage, what is left."""
-    from mosaic.core.pipeline.graph import plan_pipeline
+    """Resolve a recipe against a dataset: identities, coverage, what is left.
+
+    Exits 1 when the dataset refuses the recipe. Under ``--json`` the plan is
+    printed with its problems.
+    """
+    from mosaic.core.pipeline.graph import (
+        RecipeInvalid,
+        RecipeRefused,
+        plan_pipeline,
+        plan_wire,
+    )
     from mosaic.tracking.model_refs import ModelReferenceRefusedError
 
     ds = load_dataset(manifest)
@@ -164,6 +174,13 @@ def plan_command(
         fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
     except ModelReferenceRefusedError as refusal:
         fail(str(refusal))
+    except RecipeRefused as refusal:
+        if as_json:
+            emit_json(plan_wire(refusal.plan).model_dump(mode="json"))
+            raise typer.Exit(code=1) from refusal
+        fail(str(refusal))
+    except RecipeInvalid as invalid:
+        fail(str(invalid))
     _emit_plan(plan, as_json=as_json)
 
 
@@ -257,7 +274,7 @@ def run_command(
     as_json: JsonOption = False,
 ) -> None:
     """Run every step of a recipe here, in order, skipping what is already done."""
-    from mosaic.core.pipeline.graph import run_pipeline, submit_request
+    from mosaic.core.pipeline.graph import RecipeInvalid, run_pipeline, submit_request
     from mosaic.tracking.model_refs import ModelReferenceRefusedError
 
     ds = load_dataset(manifest)
@@ -279,6 +296,8 @@ def run_command(
         fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
     except ModelReferenceRefusedError as refusal:
         fail(str(refusal))
+    except RecipeInvalid as invalid:
+        fail(str(invalid))
     except Refusal as refusal:
         # A step's own refusal, or one raised inside a step's attempt, such as a
         # tracker's refusal of a codec. Either ends the run at that step.
@@ -355,7 +374,7 @@ def submit_command(
     Nothing is executed: the printed commands are, and any driver that can run
     them in dependency order will run the graph correctly.
     """
-    from mosaic.core.pipeline.graph import step_argv, submit_request
+    from mosaic.core.pipeline.graph import RecipeInvalid, step_argv, submit_request
     from mosaic.tracking.model_refs import ModelReferenceRefusedError
 
     ds = load_dataset(manifest)
@@ -374,6 +393,8 @@ def submit_command(
         fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
     except ModelReferenceRefusedError as refusal:
         fail(str(refusal))
+    except RecipeInvalid as invalid:
+        fail(str(invalid))
     request = submitted.request
     steps = [
         {

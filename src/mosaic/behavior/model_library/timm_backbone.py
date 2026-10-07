@@ -32,6 +32,8 @@ from typing import Any, Final, TypeGuard
 
 import numpy as np
 
+from mosaic.optional_dependency import OptionalModule
+
 DEFAULT_MODEL_NAME: Final = "timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"
 """The backbone loaded when ``model_name`` is not set.
 
@@ -72,30 +74,26 @@ than a third one.
 _TIMM_SOURCE_PREFIXES: Final = ("hf-hub:", "hf_hub:", "local-dir:")
 
 
+TORCH: Final = OptionalModule("torch", "deep-learning", "the identity networks")
+"""PyTorch, a prerequisite of every identity network."""
+
+TIMM: Final = OptionalModule(
+    "timm", "deep-learning", "the backbone-based identity networks"
+)
+"""timm, a prerequisite of the networks that stand on a timm backbone.
+
+timm requires torch. A feature declaring this one does not declare ``TORCH`` too.
+"""
+
+
 def import_torch() -> Any:
-    """Lazily import torch with a helpful error message."""
-    try:
-        import torch
-    except ImportError:
-        raise ImportError(
-            "PyTorch is required for the identity networks. "
-            "Install it with: pip install 'mosaic-behavior[deep-learning]'\n"
-            "See https://pytorch.org/get-started/locally/ for platform-specific "
-            "instructions."
-        ) from None
-    return torch
+    """Lazily import torch, raising naming the extra that installs it."""
+    return TORCH.load()
 
 
 def import_timm() -> Any:
-    """Lazily import timm with a helpful error message."""
-    try:
-        import timm
-    except ImportError:
-        raise ImportError(
-            "timm is required for the backbone-based identity networks. "
-            "Install it with: pip install 'mosaic-behavior[deep-learning]'"
-        ) from None
-    return timm
+    """Lazily import timm, raising naming the extra that installs it."""
+    return TIMM.load()
 
 
 def resolve_timm_model_id(model_name: str) -> str:

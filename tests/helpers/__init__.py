@@ -11,7 +11,7 @@ What lives where:
 - ``annotations`` -- keypoint annotation sets in their saved shape, and the file
   a revision of one is claimed by.
 - ``datasets`` -- the `Dataset` a test runs against.
-- ``catalogs`` -- declaration catalogs a graph test validates or plans against.
+- ``catalogs``: the declaration catalogs a graph test validates or plans against.
 - ``cli`` -- a ``mosaic`` command run for its ``--json`` output.
 - ``features`` -- the templates and per-sequence frames the global
   fit-then-apply features are tested on.
@@ -46,6 +46,7 @@ What lives where:
   the golden-file directory, which a test names from here rather than from its
   own location.
 - ``golden`` -- reading and rewriting the golden files under ``tests/data/``.
+- ``recipes``: the recipes a graph test validates, plans or runs.
 
 Fixtures stay in ``tests/conftest.py``, because pytest collects them only from
 there. Their bodies delegate here, so the logic has one home either way.
@@ -119,6 +120,7 @@ from tests.helpers.media import (
     write_painted_entry,
 )
 from tests.helpers.mock_dataset import MockDataset
+from tests.helpers.recipes import GUPPIES_RECIPE, guppies_recipe
 from tests.helpers.models import register_trained_model
 from tests.helpers.ops import minimal_op_params
 from tests.helpers.paths import GOLDEN_DIR, REPO_ROOT, SOURCE_ROOT, TESTS_ROOT
@@ -182,6 +184,7 @@ __all__ = [
     "CropLike",
     "FAKE_CONDA",
     "FFMPEG_TOOLCHAIN",
+    "GUPPIES_RECIPE",
     "FakeDetections",
     "FakeResult",
     "GOLDEN_DIR",
@@ -214,6 +217,7 @@ __all__ = [
     "catalog_without_contract",
     "fake_path_lookup",
     "golden_path",
+    "guppies_recipe",
     "healthy_probe",
     "clean_facts_cells",
     "clip_facts",

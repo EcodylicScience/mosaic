@@ -36,6 +36,7 @@ from mosaic.core.pipeline.graph import (
     PlanWire,
     Recipe,
     RecipeInvalid,
+    RecipeRefused,
     build_step_feature,
     plan_pipeline,
     plan_wire,
@@ -858,3 +859,48 @@ def test_two_inputs_resolving_to_one_run_are_refused_before_planning(
     (problem,) = raised.value.problems
     assert (problem.step, problem.where) == ("aggregate", "inputs")
     assert "They resolve to one run" in problem.message
+
+
+def test_inputs_that_resolve_to_one_run_only_here_are_a_dataset_problem(
+    tracked: Dataset,
+) -> None:
+    """A frame filter and the time filter equal to it validate as two runs.
+
+    At 30 frames per second, frame 30 and one second name the same frames, so
+    the plan resolves both steps to one run id and refuses the step reading both.
+    """
+    tracked.meta["fps_default"] = 30.0
+    recipe = Recipe.model_validate(
+        {
+            "steps": [
+                {
+                    "id": "by_frame",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "run": {"filter_start_frame": 30},
+                },
+                {
+                    "id": "by_time",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "run": {"filter_start_time": 1.0},
+                },
+                {
+                    "id": "aggregate",
+                    "type": "feature",
+                    "feature": "frame-aggregate",
+                    "inputs": [{"step": "by_frame"}, {"step": "by_time"}],
+                    "params": {"column": "speed"},
+                },
+            ]
+        }
+    )
+
+    with pytest.raises(RecipeRefused) as raised:
+        _ = plan_pipeline(tracked, recipe)
+
+    (problem,) = raised.value.problems
+    assert (problem.step, problem.where) == ("aggregate", "inputs")
+    assert "'by_frame' and 'by_time' run speed-angvel" in problem.message
+    assert "name one run on this dataset" in problem.message
+    assert raised.value.plan.run_ids["aggregate"] is None

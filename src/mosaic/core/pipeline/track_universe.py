@@ -33,9 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
-
-import pyarrow.parquet as pq
+from typing import TYPE_CHECKING
 
 from mosaic.core.pipeline.index import (
     feature_index,
@@ -46,6 +44,7 @@ from mosaic.core.pipeline.dataset_indexes import feature_storages
 from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.types import COLUMNS
+from mosaic.core.pipeline.writers import read_parquet_column_names
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -96,14 +95,8 @@ def is_track_shaped(path: Path) -> bool:
     about what a track is -- the failure mode being a table this offers and
     ``build_manifest`` then rejects.
     """
-    if not path.exists():
-        return False
-    try:
-        # pyarrow ships no type stubs here, so read_schema().names is Unknown.
-        names = cast("list[str]", pq.read_schema(path).names)  # pyright: ignore[reportUnknownMemberType]
-    except (OSError, ValueError):
-        return False
-    return {COLUMNS.x_col, COLUMNS.y_col} <= set(names)
+    names = read_parquet_column_names(path)
+    return names is not None and {COLUMNS.x_col, COLUMNS.y_col} <= set(names)
 
 
 def _sample_output(ds: Dataset, storage: str, run_id: str) -> Path | None:

@@ -16,9 +16,10 @@ from mosaic.core.pipeline.types import (
     TrackInputs,
 )
 from mosaic.core.params import Declared, Params
+from mosaic.optional_dependency import Prerequisite
 
 from ..registry import register_feature
-from .convert import _ensure_movement, from_movement_dataset, to_movement_dataset
+from .convert import MOVEMENT, from_movement_dataset, to_movement_dataset
 
 _CONFIDENCE_THRESHOLD_DESCRIPTION = (
     "Confidence cutoff below which a point is set to NaN. Skipped when "
@@ -76,6 +77,7 @@ class MovementFilterInterpolate:
     scope_dependent = False
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
+    prerequisites: tuple[Prerequisite, ...] = (MOVEMENT,)
     emits: EmitsLevel = "as-input"
 
     class Inputs(TrackInputs):
@@ -148,7 +150,7 @@ class MovementFilterInterpolate:
         if df is None or df.empty:
             return pd.DataFrame()
 
-        _ensure_movement()
+        _ = MOVEMENT.load()
         from movement.filtering import (
             filter_by_confidence,
             interpolate_over_time,

@@ -40,13 +40,15 @@ def plan_wire(plan: Plan) -> PlanWire:
     """Serialize *plan* with a structured reason and a bounded coverage summary.
 
     Full entry lists are left out. A step reports how many entries it holds and
-    would be asked for, plus a sample of what is missing.
+    would be asked for, plus a sample of what is missing. The plan's problems
+    are included. A plan that :class:`~.plan.RecipeRefused` contains has them.
     """
     return PlanWire(
         recipe_digest=plan.recipe_digest,
         scope_size=len(plan.scope),
         complete=plan.is_complete,
         steps=tuple(_step_wire(planned, plan) for planned in plan.steps),
+        problems=plan.problems,
     )
 
 

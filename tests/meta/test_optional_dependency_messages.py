@@ -36,7 +36,10 @@ _INSTALL_HINT = re.compile(r"mosaic-behavior\[([a-z0-9,\-]+)\]")
 _SELF_REFERENCE = re.compile(r"^mosaic-behavior\[([a-z0-9,\-]+)\]$")
 
 _HINT_WITNESS = "cli/run.py"
-_REQUIRE_WITNESS = "behavior/feature_library/global_tsne.py"
+_REQUIRE_WITNESSES = {
+    "require": "behavior/feature_library/global_tsne.py",
+    "OptionalModule": "behavior/feature_library/movement/convert.py",
+}
 """Files each walk below must have read, as paths under ``src/mosaic``.
 
 Named rather than counted: a threshold on how many files were read passes on a
@@ -100,15 +103,20 @@ def test_every_extra_named_in_a_message_is_declared() -> None:
 
 
 def test_every_require_call_names_a_declared_extra() -> None:
-    """The ``extra`` argument of ``optional_dependency.require`` must be real.
+    """The ``extra`` argument of ``require`` and ``OptionalModule`` must be real.
 
+    ``OptionalModule`` declares the arguments of ``require`` once, for a feature's
+    prerequisites, and its sentence names the extra as ``require``'s error does.
     Read out of the AST rather than by text search, so a call spread over several
     lines counts and a mention in a comment does not.
     """
     declared = set(_declared_extras())
     bad: list[str] = []
-    calling: set[str] = set()
+    calling: dict[str, set[str]] = {name: set() for name in _REQUIRE_WITNESSES}
     for path in _python_sources():
+        if path.name == "optional_dependency.py":
+            # It defines both, and ``OptionalModule.load`` forwards its fields.
+            continue
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -119,22 +127,23 @@ def test_every_require_call_names_a_declared_extra() -> None:
                 if isinstance(func, ast.Attribute)
                 else getattr(func, "id", "")
             )
-            if name != "require" or len(node.args) < 2:
+            if name not in calling or len(node.args) < 2:
                 continue
             extra = node.args[1]
             if not isinstance(extra, ast.Constant) or not isinstance(extra.value, str):
                 bad.append(f"{path.relative_to(REPO_ROOT)} passes a non-literal extra")
                 continue
-            calling.add(str(path.relative_to(SOURCE_ROOT)))
+            calling[name].add(str(path.relative_to(SOURCE_ROOT)))
             if extra.value not in declared:
                 bad.append(f"{path.relative_to(REPO_ROOT)} requires [{extra.value}]")
-    assert _REQUIRE_WITNESS in calling, (
-        f"the walk read no require() call in {_REQUIRE_WITNESS}, so it is not "
-        f"reading mosaic's own source; it found calls in {sorted(calling)}"
-    )
+    for name, witness in _REQUIRE_WITNESSES.items():
+        assert witness in calling[name], (
+            f"the walk found no {name}() call in {witness}, a file of mosaic's "
+            f"source. It found calls in {sorted(calling[name])}"
+        )
     assert not bad, (
-        "these require() calls name an extra pyproject.toml does not declare: "
-        + "; ".join(sorted(set(bad)))
+        "these require() and OptionalModule() calls name an extra pyproject.toml "
+        "does not declare: " + "; ".join(sorted(set(bad)))
     )
 
 

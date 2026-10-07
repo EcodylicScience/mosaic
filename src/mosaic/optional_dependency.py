@@ -16,14 +16,40 @@ So the extra name is passed in and rendered one way, and
 ``tests/meta/test_optional_dependency_messages.py`` checks every name used here
 against the declared extras. A rename that misses a call site fails there rather
 than in a user's terminal.
+
+A feature declares the packages and setups beyond the base install that it
+needs as ``prerequisites``, a tuple of :class:`Prerequisite`. The pipeline catalog
+and recipe validation read them through :func:`unmet`, which imports none of the
+modules it checks. A step type lacking one is offered as unavailable, with a
+sentence naming the package to install or the variable to set, and a recipe step
+running it is a problem.
 """
 
 from __future__ import annotations
 
 import importlib
+import importlib.util
+import sys
+from collections.abc import Iterable
+from dataclasses import dataclass
 from types import ModuleType
+from typing import Protocol, runtime_checkable
 
-__all__ = ["MissingOptionalDependency", "require"]
+__all__ = [
+    "MissingOptionalDependency",
+    "OptionalModule",
+    "Prerequisite",
+    "require",
+    "unmet",
+]
+
+
+def _install_hint(module: str, extra: str, purpose: str) -> str:
+    """The one sentence that names a missing module and the extra installing it."""
+    return (
+        f"{module} is required for {purpose}, and is not installed. "
+        f'Install it with: pip install "mosaic-behavior[{extra}]"'
+    )
 
 
 class MissingOptionalDependency(ImportError):
@@ -39,10 +65,7 @@ class MissingOptionalDependency(ImportError):
         self.module = module
         self.extra = extra
         self.purpose = purpose
-        super().__init__(
-            f"{module} is required for {purpose}, and is not installed. "
-            f'Install it with: pip install "mosaic-behavior[{extra}]"'
-        )
+        super().__init__(_install_hint(module, extra, purpose))
 
 
 def require(module: str, extra: str, purpose: str) -> ModuleType:
@@ -69,3 +92,73 @@ def require(module: str, extra: str, purpose: str) -> ModuleType:
         return importlib.import_module(module)
     except ImportError:
         raise MissingOptionalDependency(module, extra, purpose) from None
+
+
+@runtime_checkable
+class Prerequisite(Protocol):
+    """Something a feature needs that the base install does not provide.
+
+    A package an extra installs, or a setup the user enables, such as an accepted
+    license. A feature lists its prerequisites in a ``prerequisites`` class
+    attribute, and declares none when the base install runs it.
+    """
+
+    def missing(self) -> str | None:
+        """A sentence naming the missing package or setup and how to provide it.
+
+        ``None`` when the prerequisite is met. Answered without importing or
+        starting the package or program it checks, because the pipeline catalog
+        asks it of every feature.
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class OptionalModule:
+    """A module that one of mosaic's extras installs.
+
+    The arguments of :func:`require`, declared once. A feature lists it among its
+    prerequisites and imports the module through :meth:`load`. The catalog's
+    sentence and the run's error then name the same extra.
+
+    Attributes:
+        module: The top-level import name, e.g. ``"movement"``.
+        extra: The mosaic extra that installs it.
+        purpose: What needs it, as :func:`require` phrases it.
+    """
+
+    module: str
+    extra: str
+    purpose: str
+
+    def missing(self) -> str | None:
+        """The install hint when the module cannot be found, else ``None``.
+
+        ``find_spec`` locates a top-level module without importing it, and a
+        finder that refuses the name reads as missing. ``sys.modules`` is asked
+        first, because ``find_spec`` raises for a module built in place, as a
+        test stub is, whose ``__spec__`` is ``None``.
+        """
+        if self.module in sys.modules:
+            return None
+        try:
+            spec = importlib.util.find_spec(self.module)
+        except ImportError:
+            spec = None
+        if spec is not None:
+            return None
+        return _install_hint(self.module, self.extra, self.purpose)
+
+    def load(self) -> ModuleType:
+        """Import the module, or raise :class:`MissingOptionalDependency`."""
+        return require(self.module, self.extra, self.purpose)
+
+
+def unmet(prerequisites: Iterable[Prerequisite]) -> str | None:
+    """The unmet prerequisites' sentences, in declaration order, or ``None``."""
+    lacking = [
+        message
+        for message in (prerequisite.missing() for prerequisite in prerequisites)
+        if message is not None
+    ]
+    return " ".join(lacking) or None

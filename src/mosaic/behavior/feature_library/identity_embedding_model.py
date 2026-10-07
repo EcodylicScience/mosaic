@@ -30,6 +30,7 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.behavior.model_library.identity_embedding import DEFAULT_MODEL_NAME
+from mosaic.behavior.model_library.timm_backbone import TIMM
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -41,6 +42,7 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 from mosaic.core.params import Declared, Params
+from mosaic.optional_dependency import Prerequisite
 
 from ._identity_model_descriptions import (
     CHANNELS_DESCRIPTION,
@@ -168,6 +170,7 @@ class GlobalIdentityEmbedding:
         False  # trains per entry; a neighbour's rows carry another entry's labels
     )
     consumed_roots: tuple[str, ...] = ()
+    prerequisites: tuple[Prerequisite, ...] = (TIMM,)
     emits: EmitsLevel = "as-input"
     ModelArtifact = EmbeddingIdentityArtifact
 

@@ -40,6 +40,7 @@ from .types import (
     ParquetLoadSpec,
     resolve_order_col,
 )
+from .writers import read_parquet_column_names
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -630,6 +631,30 @@ def tracks_variants_for(
     and the way it would show is a hash that moved without the data moving.
     """
     return _resolve_tracks(ds, tracks_run_id, None, "empty").tracks_variants
+
+
+def tracks_table_columns(
+    ds: Dataset, tracks_run_id: str | None, scope: Scope
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    """The column names of each tracks table that *scope* resolves to.
+
+    Read from each parquet's footer and not its data. The resolver chooses the
+    table of each entry, as it does for a run. An entry without a table is left
+    out, and so is a table whose footer does not parse.
+
+    Args:
+        ds: The dataset whose tracks index to read.
+        tracks_run_id: Which variant to resolve, or ``None`` for whichever each
+            entry has. A variant without rows yet does not resolve a table.
+        scope: The entries to read.
+    """
+    resolved = _resolve_tracks(ds, tracks_run_id, scope, "empty")
+    found: dict[tuple[str, str], tuple[str, ...]] = {}
+    for entry, (path, _) in sorted(resolved.path_map.items()):
+        names = read_parquet_column_names(path)
+        if names is not None:
+            found[entry] = names
+    return found
 
 
 def refuse_mixed_track_schemas(

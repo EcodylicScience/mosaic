@@ -25,12 +25,13 @@ import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, TypeGuard, cast
 
 from pydantic import BaseModel
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.scope import Scope
+from mosaic.optional_dependency import Prerequisite, unmet
 
 if TYPE_CHECKING:
     from pydantic import ValidationError
@@ -360,6 +361,19 @@ def _param_defaults(cls: type, fields: frozenset[str]) -> dict[str, JsonValue]:
     return defaults
 
 
+def _prerequisites_of(cls: type) -> tuple[Prerequisite, ...]:
+    """The prerequisites *cls* declares, empty for a feature the base install runs."""
+    declared: object = getattr(cls, "prerequisites", ())
+    if not _is_tuple(declared):
+        return ()
+    return tuple(item for item in declared if isinstance(item, Prerequisite))
+
+
+def _is_tuple(value: object) -> TypeGuard[tuple[object, ...]]:
+    """Whether *value* is a tuple, read as a tuple of anything."""
+    return isinstance(value, tuple)
+
+
 def _keeps_track_frame(provides: Provides | None) -> bool | None:
     """Whether a declared output keeps the track frame, ``None`` when undeclared."""
     if provides is None:
@@ -421,6 +435,7 @@ def _feature_declaration(cls: type) -> Declaration:
         requires=requires,
         provides=provides,
         param_defaults=_param_defaults(cls, contract_fields(requires, provides)),
+        unavailable=unmet(_prerequisites_of(cls)),
     )
 
 
@@ -486,7 +501,9 @@ def declaration_catalog() -> DeclarationCatalog:
     Cached for the process, which is safe because both registries are filled by
     import side effect and are fixed once the modules that populate them have
     run. Anything registering a feature after the first call would not appear,
-    and nothing does that outside a test.
+    and only a test does that. A feature's prerequisites are evaluated once as
+    well. A package installed or a variable set after the first call is seen by
+    the next process.
 
     The result is JSON-serializable by construction, so an API can hand it
     straight to a browser and the canvas answers connection questions locally
@@ -571,6 +588,7 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
             reference_fields={},
             requires=requires,
             provides=provides,
+            unavailable=declared.unavailable,
         )
     cls = feature_class_for_slug(name) if kind == "feature" else op_class_for_kind(name)
     params_cls: object = getattr(cls, "Params", None)
@@ -593,6 +611,7 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
         reference_fields=reference_fields,
         requires=requires,
         provides=provides,
+        unavailable=declared.unavailable,
     )
 
 

@@ -2,22 +2,19 @@
 
 from __future__ import annotations
 
-from types import ModuleType
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 import pandas as pd
 
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types import COLUMNS
-from mosaic.optional_dependency import require
+from mosaic.optional_dependency import OptionalModule
 
-
-def _ensure_movement() -> ModuleType:
-    """Lazily import movement, raising a clear error if not installed."""
-    return require(
-        "movement", "movement", "the movement-library filtering and smoothing features"
-    )
+MOVEMENT: Final = OptionalModule(
+    "movement", "movement", "the movement-library filtering and smoothing features"
+)
+"""The movement library, a prerequisite of every feature in this package."""
 
 
 def to_movement_dataset(
@@ -49,7 +46,7 @@ def to_movement_dataset(
         Metadata needed by ``from_movement_dataset`` to convert back:
         ``individual_ids``, ``frame_index``, ``include_centroid``, ``pose_pairs``.
     """
-    _ensure_movement()
+    _ = MOVEMENT.load()
     from movement.io.load_poses import from_numpy
 
     id_col = COLUMNS.id_col

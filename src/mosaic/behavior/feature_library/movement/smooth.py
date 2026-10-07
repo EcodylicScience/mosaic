@@ -15,9 +15,10 @@ from mosaic.core.pipeline.types import (
     TrackInputs,
 )
 from mosaic.core.params import Declared, Params
+from mosaic.optional_dependency import Prerequisite
 
 from ..registry import register_feature
-from .convert import _ensure_movement, from_movement_dataset, to_movement_dataset
+from .convert import MOVEMENT, from_movement_dataset, to_movement_dataset
 
 _METHOD_DESCRIPTION = (
     "The movement library filter used to smooth the trajectory. savgol "
@@ -96,6 +97,7 @@ class MovementSmooth:
     scope_dependent = False
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
+    prerequisites: tuple[Prerequisite, ...] = (MOVEMENT,)
     emits: EmitsLevel = "as-input"
 
     class Inputs(TrackInputs):
@@ -159,7 +161,7 @@ class MovementSmooth:
         if df is None or df.empty:
             return pd.DataFrame()
 
-        _ensure_movement()
+        _ = MOVEMENT.load()
         from movement.filtering import rolling_filter, savgol_filter
 
         p = self.params

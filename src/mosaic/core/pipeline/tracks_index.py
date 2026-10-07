@@ -41,13 +41,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, get_args
 
 import pandas as pd
-import pyarrow.parquet as pq
 from typing_extensions import TypeIs
 
 from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types.data_config import COLUMNS
-from mosaic.core.pipeline.writers import read_parquet_table_columns
+from mosaic.core.pipeline.writers import (
+    read_parquet_column_names,
+    read_parquet_table_columns,
+)
 from mosaic.core.pipeline.composition import composition_drift
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.file_digest import MODEL_DIGEST_HEX
@@ -855,14 +857,8 @@ def count_keypoints(path: Path) -> int:
     cannot be opened one line later is a problem for ``readable_tracks_table`` to
     report, not for the index writer to raise from mid-append.
     """
-    if not path.exists():
-        return 0
-    try:
-        # pyarrow ships no type stubs here, so read_schema().names is Unknown.
-        names = cast("list[str]", pq.read_schema(path).names)  # pyright: ignore[reportUnknownMemberType]
-    except (OSError, ValueError):
-        return 0
-    return len(pose_column_pairs(names))
+    names = read_parquet_column_names(path)
+    return 0 if names is None else len(pose_column_pairs(names))
 
 
 def frame_extent(path: Path) -> tuple[int, int] | None:

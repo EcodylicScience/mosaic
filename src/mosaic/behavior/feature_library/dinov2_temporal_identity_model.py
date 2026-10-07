@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.behavior.model_library.timm_backbone import TORCH
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -43,6 +44,7 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 from mosaic.core.params import Declared, Params
+from mosaic.optional_dependency import Prerequisite
 
 from ._identity_model_descriptions import (
     CHANNELS_DESCRIPTION,
@@ -189,6 +191,7 @@ class GlobalIdentityDinoV2Temporal:
     scope_dependent = True
     accepts_overlap = False  # cuts clips within an entry, never across a boundary
     consumed_roots: tuple[str, ...] = ()
+    prerequisites: tuple[Prerequisite, ...] = (TORCH,)
     emits: EmitsLevel = "as-input"
     ModelArtifact = DinoV2TemporalIdentityArtifact
 

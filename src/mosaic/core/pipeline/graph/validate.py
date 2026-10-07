@@ -31,26 +31,40 @@ input lacks is a problem, and its message names the features that provide it. A
 column is a *caution* when an input may contain it, or when an undeclared step
 may produce it. Validation reports a caution, and a run is not refused for it. A
 step whose feature does not declare ``requires`` is listed in the report's
-``unchecked`` steps, and the columns that it reads are not checked.
+``unchecked`` steps, and the columns that it reads are not checked. A plan checks
+the columns again, with the columns of the tracks tables that each step reads
+(``check_recipe(tracks=...)``). A column that the schemas allow and every table
+lacks is then a problem.
+
+**A feature that this installation cannot run is a problem at the step's
+``feature``.** The problem's message is the sentence of the feature's unmet
+prerequisites, :attr:`~.compatibility.Declaration.unavailable`, which the editor
+catalog shows and an attach candidate is refused with. The rest of the step is
+still checked.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Final, TypeGuard
+from typing import TYPE_CHECKING, ClassVar, Final, TypeGuard
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from mosaic.core.json_value import JsonValue
 
-from .._utils import hash_params
+from .._utils import ResolvedScope, hash_params
 from ..column_contract import (
     NamedColumns,
     ParamValues,
     contract_fields,
     needs_of,
     param_values,
+)
+from ..run import (
+    MissingConsumedRootsDeclaration,
+    MissingScopeDeclaration,
+    compute_run_id,
 )
 from .columns import (
     UNKNOWN_COLUMNS,
@@ -100,6 +114,7 @@ from .wire import (
     Attachment,
     InputCandidate,
     InputCandidates,
+    InsertReport,
     Problem,
     StillNeeded,
     UnmetStatus,
@@ -123,6 +138,8 @@ __all__ = [
     "attach_candidates",
     "check_recipe",
     "input_candidates",
+    "insert_candidates",
+    "one_run_problems",
     "read_recipe",
     "reject_unless_valid",
     "resolved_columns",
@@ -170,25 +187,31 @@ def _stand_in(terms: object) -> str:
 
 
 def _feature_stand_in(spec: StepSpec, feature: Feature) -> str:
-    """The stand-in for a feature step, from the terms of its ``run_id``.
+    """The stand-in for a feature step: its ``run_id`` as far as the recipe decides it.
 
-    The terms are those that :func:`~mosaic.core.pipeline.run.compute_run_id`
-    hashes and the recipe decides. The tracks variant counts only for a step
-    reading ``tracks``, as it does in the identity.
+    :func:`~mosaic.core.pipeline.run.compute_run_id` hashes the step over a probe
+    scope and the tracks variant that the step names. A time filter is hashed as
+    written beside it, because converting it to frames takes the dataset's frame
+    rate. A frame filter and the time filter equal to it therefore have different
+    stand-ins, and a plan refuses the two inputs that resolve to one run.
     """
+    variant = spec.tracks_run_id if feature.inputs.has_tracks else None
+    probe = ResolvedScope(
+        entries=set(_PROBE_ENTRIES),
+        tracks_variants=() if variant is None else (variant,),
+    )
+    run_id, _ = compute_run_id(
+        feature,
+        spec.filter_start_frame,
+        spec.filter_end_frame,
+        probe,
+        overlap_frames=spec.overlap_frames,
+    )
     return _stand_in(
         {
             "feature": spec.feature,
-            "params": feature.params.identity_dump(),
-            "inputs": feature.inputs.model_dump(),
-            "tracks": spec.tracks_run_id if feature.inputs.has_tracks else None,
-            "run": [
-                spec.filter_start_frame,
-                spec.filter_end_frame,
-                spec.filter_start_time,
-                spec.filter_end_time,
-                spec.overlap_frames,
-            ],
+            "run_id": run_id,
+            "time": [spec.filter_start_time, spec.filter_end_time],
         }
     )
 
@@ -217,13 +240,14 @@ would these params be valid once a plan says what to run them over.
 class RecipeInvalid(ValueError):
     """A recipe cannot be run as written, carrying every fault found."""
 
+    lead: ClassVar[str] = "this recipe cannot be run"
+    """How the message opens, before the count of problems."""
+
     def __init__(self, problems: tuple[Problem, ...]) -> None:
         self.problems: tuple[Problem, ...] = problems
         listed = "\n".join(f"  - {problem}" for problem in problems)
         plural = "" if len(problems) == 1 else "s"
-        super().__init__(
-            f"this recipe cannot be run: {len(problems)} problem{plural}\n{listed}"
-        )
+        super().__init__(f"{self.lead}: {len(problems)} problem{plural}\n{listed}")
 
 
 def _runs(step: Step) -> tuple[str, str]:
@@ -268,8 +292,13 @@ class _Walk:
     cautions: list[Problem] = field(default_factory=list)
     unchecked: list[str] = field(default_factory=list)
     """The feature steps whose feature does not declare ``requires``, in walk order."""
+    measured_tracks: Mapping[str, ColumnSet] = field(
+        default_factory=dict[str, ColumnSet]
+    )
+    """The columns of the tracks that a step reads, keyed by step id, where a plan
+    has read them from the tables."""
     tracks: ColumnSet = field(init=False)
-    """The columns of the dataset's tracks, read once per walk."""
+    """The columns of the dataset's tracks, as the declarations describe them."""
 
     def __post_init__(self) -> None:
         self.tracks = tracks_columns(self.catalog)
@@ -277,6 +306,14 @@ class _Walk:
     def declaration_behind(self, step_id: str) -> Declaration | None:
         """What the step with this id runs, as a declaration."""
         return self.catalog.get(self.runs.get(step_id, ""))
+
+    def tracks_of(self, step_id: str) -> ColumnSet:
+        """The columns of the tracks that the step *step_id* reads.
+
+        The columns read from its tables, where a plan has read them, and else
+        the columns that the declarations describe.
+        """
+        return self.measured_tracks.get(step_id, self.tracks)
 
     def input_columns(self, item: str | StepRef) -> ColumnSet:
         """The columns of one input of a step: the tracks, or an earlier step's output.
@@ -289,8 +326,15 @@ class _Walk:
         return self.columns.get(item.step, UNKNOWN_COLUMNS)
 
     def merged_columns(self, step: FeatureStepSpec) -> ColumnSet:
-        """The columns of *step*'s merged input."""
-        return merged_input([self.input_columns(item) for item in step.inputs])
+        """The columns of *step*'s merged input, read with the tracks of *step*."""
+        return merged_input(
+            [
+                self.tracks_of(step.id)
+                if isinstance(item, str)
+                else self.input_columns(item)
+                for item in step.inputs
+            ]
+        )
 
     def level_behind(self, step_id: str) -> EntityLevel:
         """The resolved entity level of that step's output.
@@ -315,16 +359,26 @@ class _Walk:
 
     def run_of(self, item: str | StepRef) -> _InputRun | None:
         """The run that *item* reads, or ``None`` when its step did not check out."""
-        if isinstance(item, str):
-            return item
-        upstream = self.resolved.get(item.step)
-        if upstream is None or upstream.run_id is None:
-            return None
-        return upstream.storage_name, upstream.run_id
+        return _run_of(item, self.resolved)
+
+
+def _run_of(
+    item: str | StepRef, resolved: Mapping[str, ResolvedStep]
+) -> _InputRun | None:
+    """The run that *item* reads, or ``None`` when its step has no identity."""
+    if isinstance(item, str):
+        return item
+    upstream = resolved.get(item.step)
+    if upstream is None or upstream.run_id is None:
+        return None
+    return upstream.storage_name, upstream.run_id
 
 
 def check_recipe(
-    recipe: Recipe, catalog: DeclarationCatalog | None = None
+    recipe: Recipe,
+    catalog: DeclarationCatalog | None = None,
+    *,
+    tracks: Mapping[str, ColumnSet] | None = None,
 ) -> tuple[Problem, ...]:
     """Every reason *recipe* cannot be run, in topological order.
 
@@ -334,11 +388,15 @@ def check_recipe(
             when not given, which is what costs the feature-library import -- a
             caller already holding one (an API serving it to a canvas) passes it
             and pays nothing.
+        tracks: The columns of the tracks that each step reads, keyed by step
+            id, as a plan reads them from a dataset's tables. A step left out
+            reads the tracks as the registered schemas describe them, and a
+            column that they may contain is then a caution.
 
     Returns:
         The problems found, empty when the recipe is well formed.
     """
-    return _examine(recipe, catalog).problems
+    return _examine(recipe, catalog, tracks).problems
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,7 +408,11 @@ class _Examined:
     cycle: RecipeCycle | None = None
 
 
-def _examine(recipe: Recipe, catalog: DeclarationCatalog | None) -> _Examined:
+def _examine(
+    recipe: Recipe,
+    catalog: DeclarationCatalog | None,
+    tracks: Mapping[str, ColumnSet] | None = None,
+) -> _Examined:
     """Walk *recipe* in topological order, checking every step."""
     known = declaration_catalog() if catalog is None else catalog
     try:
@@ -361,7 +423,11 @@ def _examine(recipe: Recipe, catalog: DeclarationCatalog | None) -> _Examined:
         # has no meaning.
         return _Examined((Problem("", "steps", str(exc)),), _Walk(catalog=known), exc)
 
-    walk = _Walk(catalog=known, levels=resolved_levels(recipe, known))
+    walk = _Walk(
+        catalog=known,
+        levels=resolved_levels(recipe, known),
+        measured_tracks=tracks or {},
+    )
     problems: list[Problem] = []
     for step in ordered:
         problems.extend(_check_step(step, recipe, walk))
@@ -407,6 +473,10 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
         walk.unchecked.append(step.id)
 
     problems: list[Problem] = []
+    if declared.unavailable is not None:
+        # The rest of the step is still checked, because its params and its
+        # wiring are the author's to fix on any installation.
+        problems.append(Problem(step.id, where, declared.unavailable))
     overwrites = OVERWRITE_PARAM in step.params
     if overwrites:
         problems.append(
@@ -439,7 +509,7 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
     if edge is not None:
         problems.append(edge)
 
-    one_run = _one_run_problems(step, walk)
+    one_run = one_run_problems(step, walk.resolved, walk.runs, alike=_SAME_TERMS)
     if one_run:
         # The inputs model refuses a run listed twice, and its message names the
         # stand-ins. These problems name the steps instead.
@@ -475,16 +545,26 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
         walk.broken.add(step.id)
         problems.extend(_build_problems(step.id, exc))
         return problems
-    except ImportError as exc:
-        # A registered feature whose optional dependency is not installed here
-        # raises on construction. Reported rather than raised, because the
-        # recipe cannot be checked or run on this installation, and a validator
-        # that crashes answers an editor with nothing.
+    except (MissingScopeDeclaration, MissingConsumedRootsDeclaration) as exc:
+        # A feature registered without the declarations its identity reads. No
+        # plan can name its run, so the recipe cannot run on any dataset.
         walk.broken.add(step.id)
-        message = (
-            f"{name!r} needs an optional dependency that is not installed here: {exc}"
-        )
-        problems.append(Problem(step.id, where, message))
+        problems.append(Problem(step.id, where, str(exc)))
+        return problems
+    except ImportError as exc:
+        # A feature may import its optional packages on construction. An unmet
+        # declared prerequisite is reported above. An import that fails
+        # otherwise is a dependency the feature does not declare. It is
+        # reported as a problem. The recipe cannot be checked or run on this
+        # installation, and a validator that crashes answers an editor with
+        # nothing.
+        walk.broken.add(step.id)
+        if declared.unavailable is None:
+            message = (
+                f"{name!r} needs an optional dependency that is not installed "
+                f"here: {exc}"
+            )
+            problems.append(Problem(step.id, where, message))
         return problems
 
     problems.extend(_glob_reference_problems(step, name, built))
@@ -504,21 +584,43 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
     return problems
 
 
-def _one_run_problems(step: Step, walk: _Walk) -> list[Problem]:
-    """A problem for each run that several of *step*'s inputs read."""
+_SAME_TERMS: Final = "with the same params, inputs and run arguments"
+"""Why two steps resolve to one run on any dataset."""
+
+
+def one_run_problems(
+    step: Step,
+    resolved: Mapping[str, ResolvedStep],
+    runs: Mapping[str, str],
+    *,
+    alike: str,
+) -> list[Problem]:
+    """A problem at *step*'s inputs for each run that several of them read.
+
+    Args:
+        step: The step whose inputs are compared.
+        resolved: The identity of each step above it. An input whose step has
+            none reads no run here.
+        runs: What each step runs, by step id, for the message.
+        alike: Why the steps behind one run resolve to it, said after what they
+            run.
+
+    Returns:
+        One problem per run read more than once, empty when there is none.
+    """
     readers: dict[_InputRun, list[str]] = {}
     for item in _inputs_of(step):
-        run = walk.run_of(item)
+        run = _run_of(item, resolved)
         if run is not None:
             readers.setdefault(run, []).append(_input_label(item))
     return [
-        Problem(step.id, "inputs", _one_run_reason(labels, walk))
+        Problem(step.id, "inputs", _one_run_reason(labels, runs, alike))
         for labels in readers.values()
         if len(labels) > 1
     ]
 
 
-def _one_run_reason(labels: Sequence[str], walk: _Walk) -> str:
+def _one_run_reason(labels: Sequence[str], runs: Mapping[str, str], alike: str) -> str:
     """Why a step may not read the inputs *labels* together: they are one run."""
     named = list(dict.fromkeys(labels))
     if len(named) == 1:
@@ -529,9 +631,8 @@ def _one_run_reason(labels: Sequence[str], walk: _Walk) -> str:
     listed = " and ".join(
         [", ".join(repr(label) for label in named[:-1]), repr(named[-1])]
     )
-    runs = walk.runs[named[0]]
     return (
-        f"{listed} run {runs} with the same params, inputs and run arguments. "
+        f"{listed} run {runs[named[0]]} {alike}. "
         "They resolve to one run, and a step reads each run once"
     )
 
@@ -602,7 +703,8 @@ def _absent_message(step: FeatureStepSpec, need: NamedColumns, walk: _Walk) -> s
 
 def _supplied_by(step: FeatureStepSpec, need: NamedColumns, walk: _Walk) -> str:
     """Which inputs would supply *need*, as the end of a problem's message."""
-    providers = providers_of(need, walk.catalog, walk.tracks, besides=step.feature)
+    tracks = walk.tracks_of(step.id)
+    providers = providers_of(need, walk.catalog, tracks, besides=step.feature)
     if providers:
         named = "; ".join(provider_phrase(provider) for provider in providers)
         sentence = f"{named} {'provides' if len(providers) == 1 else 'provide'} it"
@@ -611,7 +713,7 @@ def _supplied_by(step: FeatureStepSpec, need: NamedColumns, walk: _Walk) -> str:
         if providers[0].feature == TRACKS_INPUT:
             return sentence[:1].upper() + sentence[1:]
         return sentence
-    if need_status(need, walk.tracks) == "possible":
+    if need_status(need, tracks) == "possible":
         return "The tracks input may contain it"
     return "Neither the tracks nor a registered feature provides it"
 
@@ -911,7 +1013,9 @@ def attach_candidates(
     its ``id``, wired to *after* through ``inputs`` below a feature, through
     ``tracks`` for a feature below a tracks-writing op, and through ``after`` for
     an op below an op. At the top level (*after* ``None``) an op needs no
-    reference and a feature reads the dataset's tracks.
+    reference and a feature reads the dataset's tracks. A step type that this
+    installation cannot run is refused wherever it would go, with its
+    declaration's ``unavailable`` sentence.
 
     The recipe must parse and be acyclic. It need not validate: a params error
     elsewhere does not change what may follow a step.
@@ -947,6 +1051,8 @@ def _attachment(
     catalog: DeclarationCatalog,
 ) -> Attachment:
     """Whether *name* may go directly below *above*, and wired how."""
+    if declared.unavailable is not None:
+        return _refused(declared.unavailable)
     is_op = declared.produces.kind == "op"
     base: dict[str, JsonValue] = (
         {"type": "op", "kind": name} if is_op else {"type": "feature", "feature": name}
@@ -983,6 +1089,234 @@ def _attachment(
     if not verdict:
         return _refused(verdict.reason)
     return _allowed({**base, "inputs": [TRACKS_INPUT], "tracks": {"step": above.id}})
+
+
+def insert_candidates(
+    recipe: Recipe, after: str | None, catalog: DeclarationCatalog | None = None
+) -> InsertReport:
+    """What may be inserted between *after* and the steps that read it first.
+
+    A step type is answered as :func:`attach_candidates` answers it below
+    *after*, with the same template. A step type that may be attached is still
+    refused, naming the child, when a child reading it in place of *after*
+    cannot read it beside its other inputs (:func:`~.compatibility.can_join`),
+    or would then lack a column that one of the child's requirements names. The
+    inserted output is read under the step type's default params. A requirement
+    does not refuse it when the child's inputs already lack its column, or when
+    the inserted output may contain the column or names unknown columns.
+
+    The children are the feature steps whose first input reads *after*: a
+    reference to it below a feature, ``tracks`` read from its variant below an
+    op, and the dataset's tracks when *after* is ``None``. An editor's outline
+    draws these steps below *after*. Each child reads the inserted step through
+    its first input, and its other inputs stay as they are. A step that reads
+    *after* through a later input only is not a child.
+
+    A step type that every child can read is refused, naming the step, when
+    the recipe with it inserted holds a problem at a step further below that
+    the recipe without it does not hold. A child that inherits its input's
+    entity level passes the inserted step's level down to its own readers.
+
+    Raises:
+        RecipeInvalid: The recipe has a cycle, or *after* is not a step of it.
+    """
+    attached = attach_candidates(recipe, after, catalog)
+    walk = _walked(recipe, catalog)
+    held = _problem_keys(recipe, catalog)
+    above = next((step for step in recipe.steps if step.id == after), None)
+    children = _children_of(recipe, above)
+    if above is None or isinstance(above, OpStepSpec):
+        source, level = walk.tracks, TRACKS_DECLARATION.produces.level
+    else:
+        source = walk.columns.get(above.id, UNKNOWN_COLUMNS)
+        level = walk.level_behind(above.id)
+    candidates: dict[str, Attachment] = {}
+    for name, attachment in attached.candidates.items():
+        declared = walk.catalog.get(name)
+        if not attachment.allowed or not children or declared is None:
+            candidates[name] = attachment
+            continue
+        inserted = _Inserted(
+            name=name,
+            producer=replace(
+                declared.produces, level=resolve_emits(declared.emits, [level])
+            ),
+            columns=output_columns(
+                declared.provides, merged_input([source]), declared.param_defaults
+            ),
+        )
+        reason = next(
+            (
+                found
+                for found in (
+                    _insert_refusal(child, above, inserted, walk) for child in children
+                )
+                if found
+            ),
+            "",
+        ) or _descendant_refusal(
+            _with_inserted(recipe, children, attachment.template),
+            held,
+            catalog,
+        )
+        candidates[name] = _refused(reason) if reason else attachment
+    return InsertReport(
+        after=after,
+        children=tuple(child.id for child in children),
+        candidates=candidates,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Inserted:
+    """A step type inserted below a step, as its children would read it.
+
+    Attributes:
+        name: Its feature slug or op kind.
+        producer: The producer that its children read, at its resolved level.
+        columns: The columns of its output under its default params.
+    """
+
+    name: str
+    producer: ProducerDecl
+    columns: ColumnSet
+
+
+_STEP: Final[TypeAdapter[Step]] = TypeAdapter(Step)
+
+_INSERTED_ID: Final = "inserted"
+"""The id that an inserted step takes, numbered when a step already has it."""
+
+
+def _problem_keys(
+    recipe: Recipe, catalog: DeclarationCatalog | None
+) -> frozenset[tuple[str, str, str]]:
+    """The problems that *recipe* holds, each as its step, location and message."""
+    report = validation_report(recipe.model_dump(mode="json"), catalog)
+    return frozenset(
+        (problem.step, problem.where, problem.message) for problem in report.problems
+    )
+
+
+def _with_inserted(
+    recipe: Recipe,
+    children: Sequence[FeatureStepSpec],
+    template: Mapping[str, JsonValue] | None,
+) -> Recipe:
+    """*recipe* with a step made from *template*, read by each of *children* first."""
+    new_id = _INSERTED_ID
+    number = 1
+    while new_id in recipe.ids:
+        new_id = f"{_INSERTED_ID}_{number}"
+        number += 1
+    readers = {child.id for child in children}
+    steps: list[Step] = []
+    for step in recipe.steps:
+        if isinstance(step, FeatureStepSpec) and step.id in readers:
+            inputs: list[str | StepRef] = [StepRef(step=new_id), *step.inputs[1:]]
+            reads_tracks = any(isinstance(item, str) for item in inputs)
+            step = step.model_copy(
+                update={
+                    "inputs": inputs,
+                    "tracks": step.tracks if reads_tracks else None,
+                }
+            )
+        steps.append(step)
+    steps.append(_STEP.validate_python({**(template or {}), "id": new_id}))
+    return recipe.model_copy(update={"steps": steps})
+
+
+def _descendant_refusal(
+    inserted: Recipe,
+    held: frozenset[tuple[str, str, str]],
+    catalog: DeclarationCatalog | None,
+) -> str:
+    """The first problem that *inserted* holds below the new step, ``""`` when none.
+
+    A problem that the recipe held before the insertion, and a problem at the
+    new step itself, are left out. The new step is the last of *inserted*.
+    """
+    new_id = inserted.steps[-1].id
+    report = validation_report(inserted.model_dump(mode="json"), catalog)
+    below = descendants_of(inserted, new_id) - {new_id}
+    for problem in report.problems:
+        key = (problem.step, problem.where, problem.message)
+        if problem.step in below and key not in held:
+            return f"{problem.step!r} would then be invalid: {problem.message}"
+    return ""
+
+
+def _reads_first(step: FeatureStepSpec, above: Step | None) -> bool:
+    """Whether the first input of *step* reads the output of *above*."""
+    if not step.inputs:
+        return False
+    first = step.inputs[0]
+    if above is None:
+        return isinstance(first, str) and step.tracks is None
+    if isinstance(above, OpStepSpec):
+        return (
+            isinstance(first, str)
+            and step.tracks is not None
+            and step.tracks.step == above.id
+        )
+    return isinstance(first, StepRef) and first.step == above.id
+
+
+def _children_of(recipe: Recipe, above: Step | None) -> list[FeatureStepSpec]:
+    """The feature steps whose first input reads *above*, in topological order."""
+    return [
+        step
+        for step in topological_order(recipe)
+        if isinstance(step, FeatureStepSpec) and _reads_first(step, above)
+    ]
+
+
+def _insert_refusal(
+    child: FeatureStepSpec, above: Step | None, inserted: _Inserted, walk: _Walk
+) -> str:
+    """Why *child* cannot read *inserted* first in place of *above*, ``""`` when it can."""
+    declared = walk.catalog.get(child.feature)
+    if declared is None:
+        return ""
+    producers: list[ProducerDecl] = []
+    now: list[ColumnSet] = []
+    then: list[ColumnSet] = []
+    for position, item in enumerate(child.inputs):
+        columns = (
+            walk.tracks_of(child.id)
+            if isinstance(item, str)
+            else walk.input_columns(item)
+        )
+        now.append(columns)
+        if position == 0:
+            producers.append(inserted.producer)
+            then.append(inserted.columns)
+            continue
+        producer = _producer_of(item, walk)
+        if producer is None:
+            return ""
+        producers.append(producer)
+        then.append(columns)
+    verdict = can_join(producers, declared.consumes)
+    if not verdict:
+        return f"{child.id!r} cannot read {inserted.name}: {verdict.reason}"
+    values = walk.values.get(child.id)
+    if values is None:
+        values = {**declared.param_defaults, **child.params}
+    merged_now, merged_then = merged_input(now), merged_input(then)
+    lost = [
+        need.label
+        for need in needs_of(declared.requires or (), values)
+        if need_status(need, merged_then) == "absent"
+        and need_status(need, merged_now) != "absent"
+    ]
+    if not lost:
+        return ""
+    reading = above.id if above is not None else TRACKS_INPUT
+    return (
+        f"{child.id!r} would read {inserted.name} in place of {reading!r}, and its "
+        f"merged input would then lack {'; '.join(lost)}"
+    )
 
 
 def resolved_columns(
@@ -1085,7 +1419,10 @@ def input_candidates(
         same = None if run is None else reading.get(run)
         if allowed and same is not None:
             # The one-run problem that validation would report for the wire.
-            allowed, reason = False, _one_run_reason([same, key], walk)
+            allowed, reason = (
+                False,
+                _one_run_reason([same, key], walk.runs, _SAME_TERMS),
+            )
         candidates[key] = InputCandidate(
             allowed=allowed,
             reason=reason,

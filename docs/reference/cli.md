@@ -889,6 +889,9 @@ $ mosaic pipeline validate [OPTIONS]
 
 Resolve a recipe against a dataset: identities, coverage, what is left.
 
+Exits 1 when the dataset refuses the recipe. Under ``--json`` the plan is
+printed with its problems.
+
 **Usage**:
 
 ```console

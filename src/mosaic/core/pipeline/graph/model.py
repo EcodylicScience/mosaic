@@ -121,6 +121,19 @@ class StepRun(GraphModel):
     filter_end_time: float | None = None
     overlap_frames: int = 0
 
+    @model_validator(mode="after")
+    def _one_filter_per_boundary(self) -> Self:
+        """Each boundary is set as a frame or as a time, as a run reads it."""
+        boundaries = (
+            ("start", self.filter_start_frame, self.filter_start_time),
+            ("end", self.filter_end_frame, self.filter_end_time),
+        )
+        for boundary, frame, time in boundaries:
+            if frame is not None and time is not None:
+                msg = f"set one of filter_{boundary}_frame and filter_{boundary}_time"
+                raise ValueError(msg)
+        return self
+
 
 class _StepBase(GraphModel):
     """What every step carries, whatever it runs."""
