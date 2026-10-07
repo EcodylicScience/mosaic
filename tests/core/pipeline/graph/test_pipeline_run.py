@@ -23,6 +23,8 @@ from mosaic.core.pipeline.graph import (
     Recipe,
     build_step_feature,
     plan_pipeline,
+    plan_wire,
+    recipe_digest,
     run_pipeline,
 )
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
@@ -301,7 +303,11 @@ def test_validate_opens_no_dataset(tmp_path: Path) -> None:
         ],
     )
 
-    assert json.loads(result.stdout) == {"valid": True, "problems": []}
+    assert json.loads(result.stdout) == {
+        "valid": True,
+        "digest": recipe_digest(Recipe.model_validate(CHAIN)),
+        "problems": [],
+    }
 
 
 def test_show_reads_the_graph_without_a_dataset(tmp_path: Path) -> None:
@@ -345,8 +351,13 @@ def test_plan_reports_identities_and_what_is_left(
         "templates",
         "scaler",
     ]
-    assert all(step["run_id"] != "-" for step in payload["steps"])
-    assert payload["steps"][1]["reason"] == "waiting on speed"
+    assert all(step["run_id"] is not None for step in payload["steps"])
+    assert payload["steps"][1]["reason"] == {
+        "kind": "deps_incomplete",
+        "blocking": ["speed"],
+    }
+    in_process = plan_pipeline(tracked, Recipe.model_validate(CHAIN))
+    assert payload == plan_wire(in_process).model_dump(mode="json")
 
 
 def test_run_executes_the_graph_and_then_finds_it_complete(

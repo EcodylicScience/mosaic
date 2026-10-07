@@ -30,12 +30,15 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
     CoverageShort,
     DepsIncomplete,
+    DepsIncompleteWire,
     IdentityUnresolved,
     Plan,
+    PlanWire,
     Recipe,
     RecipeInvalid,
     build_step_feature,
     plan_pipeline,
+    plan_wire,
 )
 from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.preprocess_layout import media_variants_root
@@ -616,6 +619,25 @@ def test_a_scope_dependent_step_is_asked_for_all_of_its_scope(
     again = plan_pipeline(tracked, recipe).step("templates")
 
     assert again.spec.entries == Scope(entries=[("", "seq_a"), ("", "seq_b")])
+
+
+# --- the plan as JSON -----------------------------------------------------------
+
+
+def test_the_plan_round_trips_through_json(tracked: Dataset) -> None:
+    """An editor previews a plan as its wire model, which parses back unchanged."""
+    wire = plan_wire(plan_pipeline(tracked, Recipe.model_validate(FIVE_STEPS)))
+
+    assert PlanWire.model_validate_json(wire.model_dump_json()) == wire
+    assert wire.scope_size == 2
+    steps = {planned.step: planned for planned in wire.steps}
+    speed = steps["speed"]
+    assert speed.coverage.target == 2
+    assert speed.coverage.covered == 0
+    assert speed.coverage.missing_sample == (("", "seq_a"), ("", "seq_b"))
+    assert not speed.coverage.has_more
+    assert speed.asked == 2
+    assert steps["templates"].reason == DepsIncompleteWire(blocking=("speed",))
 
 
 # --- an identity nothing can resolve yet ----------------------------------------

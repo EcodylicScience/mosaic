@@ -31,7 +31,13 @@ if TYPE_CHECKING:
 
     from .model import Request
 
-__all__ = ["RequestRollup", "RequestStatus", "StepAttempt", "request_rollup"]
+__all__ = [
+    "RequestRollup",
+    "RequestStatus",
+    "StepAttempt",
+    "request_rollup",
+    "request_verdict",
+]
 
 type RequestStatus = Literal["running", "finished", "failed", "cancelled"]
 """How a one-shot request ended, or that it has not.
@@ -113,7 +119,7 @@ def request_rollup(base_dir: Path | str, request: Request) -> RequestRollup:
         for step_id, execution_id in request.step_executions.items()
     )
     return RequestRollup(
-        request_id=request.request_id, status=_verdict(steps), steps=steps
+        request_id=request.request_id, status=request_verdict(steps), steps=steps
     )
 
 
@@ -134,8 +140,13 @@ def _attempt(logs: Path, step_id: str, execution_id: str) -> StepAttempt:
     )
 
 
-def _verdict(steps: tuple[StepAttempt, ...]) -> RequestStatus:
-    """The one-shot rules, in the order they decide.
+def request_verdict(steps: tuple[StepAttempt, ...]) -> RequestStatus:
+    """The one-shot verdict over *steps*, by the rules in the order they decide.
+
+    ``request_rollup`` calls it with each attempt as its run-log records it. A
+    control plane can end an attempt before any process writes its run-log, when
+    the dispatch fails or the attempt is stopped first. It passes that attempt
+    with the status it recorded, and the request then closes.
 
     Cancellation first, because a cancelled request is over however its other
     branches ended. Then completion. Then anything still moving -- which is what

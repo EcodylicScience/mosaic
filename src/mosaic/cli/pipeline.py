@@ -1,7 +1,8 @@
 """``mosaic pipeline``: read a graph, say what it would do, and do it.
 
-Six verbs over one recipe file, and the split between them is the split the
-library makes. ``validate`` asks only about the document and opens no dataset.
+Seven verbs, and the split between them is the split the library makes.
+``catalog`` lists the step types a recipe may run. ``validate`` asks only about
+the document and opens no dataset.
 ``plan`` and ``show`` resolve it against a dataset and write nothing. ``run``
 executes it here, in this process, one step after another -- which is what a
 notebook or a bare compute node has, and is not a lesser path than a queue.
@@ -84,15 +85,12 @@ and for mosaic-api. This command offers one flag and it is spelled ``--entry``.
 
 def _recipe(argument: str) -> "Recipe":
     """Parse the ``--recipe`` argument, failing cleanly on a bad document."""
-    from pydantic import ValidationError
+    from mosaic.core.pipeline.graph import RecipeInvalid, read_recipe
 
-    from mosaic.core.pipeline.graph import Recipe
-
-    document = load_json_arg(argument)
     try:
-        return Recipe.model_validate(document)
-    except ValidationError as exc:
-        fail(f"Not a valid recipe: {exc}")
+        return read_recipe(load_json_arg(argument))
+    except RecipeInvalid as exc:
+        fail(str(exc))
 
 
 def _scope(entries: list[str] | None) -> Scope | None:
@@ -105,32 +103,42 @@ def _scope(entries: list[str] | None) -> Scope | None:
 
 def validate_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
     """Check a recipe against the registries. Opens no dataset."""
-    from mosaic.core.pipeline.graph import check_recipe
+    from mosaic.core.pipeline.graph import validation_report
 
-    problems = check_recipe(_recipe(recipe))
+    report = validation_report(load_json_arg(recipe))
     if as_json:
-        emit_json(
-            {
-                "valid": not problems,
-                "problems": [
-                    {
-                        "step": problem.step,
-                        "where": problem.where,
-                        "message": problem.message,
-                    }
-                    for problem in problems
-                ],
-            }
-        )
-        if problems:
+        emit_json(report.model_dump(mode="json"))
+        if not report.valid:
             raise typer.Exit(code=1)
         return
-    if not problems:
+    if report.valid:
         typer.echo("This recipe is valid.")
         return
-    for problem in problems:
+    for problem in report.problems:
         typer.echo(str(problem), err=True)
     raise typer.Exit(code=1)
+
+
+def catalog_command(as_json: JsonOption = False) -> None:
+    """List the step types a recipe may run, with their params schemas under --json."""
+    from mosaic.core.pipeline.graph import editor_catalog
+
+    catalog = editor_catalog()
+    if as_json:
+        emit_json(catalog.model_dump(mode="json"))
+        return
+    render_table(
+        [
+            {
+                "name": entry.name,
+                "type": entry.type,
+                "category": entry.category,
+                "resource_class": entry.declaration.resource_class,
+            }
+            for entry in catalog.entries
+        ],
+        ["name", "type", "category", "resource_class"],
+    )
 
 
 def plan_command(
@@ -470,9 +478,12 @@ def _runs(step: object) -> str:
 
 
 def _emit_plan(plan: "Plan", *, as_json: bool) -> None:
-    """Render a plan as a table, or as the JSON an API would serve."""
-    from mosaic.core.pipeline.graph import asked_of
+    """Render a plan as a table, or as the JSON an API serves."""
+    from mosaic.core.pipeline.graph import plan_wire
 
+    if as_json:
+        emit_json(plan_wire(plan).model_dump(mode="json"))
+        return
     rows = [
         {
             "step": planned.step_id,
@@ -486,26 +497,6 @@ def _emit_plan(plan: "Plan", *, as_json: bool) -> None:
         }
         for planned in plan.steps
     ]
-    if as_json:
-        emit_json(
-            {
-                "recipe_digest": plan.recipe_digest,
-                "scope": sorted(list(pair) for pair in plan.scope),
-                "complete": plan.is_complete,
-                "steps": [
-                    {
-                        **row,
-                        "storage_name": planned.storage_name,
-                        "tracks_variant": planned.tracks_variant,
-                        "parents": list(planned.parents),
-                        "entries": [list(pair) for pair in asked_of(planned, plan)],
-                        "drift": len(planned.drift),
-                    }
-                    for row, planned in zip(rows, plan.steps, strict=True)
-                ],
-            }
-        )
-        return
     render_table(
         rows, ["step", "type", "runs", "run_id", "status", "coverage", "lane", "reason"]
     )
@@ -547,6 +538,7 @@ def _reason_cell(planned: "PlannedStep") -> str:
             return f"unresolvable: {reason.because}"
 
 
+_ = pipeline_app.command(name="catalog")(catalog_command)
 _ = pipeline_app.command(name="validate")(validate_command)
 _ = pipeline_app.command(name="plan")(plan_command)
 _ = pipeline_app.command(name="show")(show_command)

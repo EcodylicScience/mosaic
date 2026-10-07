@@ -846,12 +846,28 @@ $ mosaic pipeline [OPTIONS] COMMAND [ARGS]...
 
 **Commands**:
 
+* `catalog`: List the step types a recipe may run, with...
 * `validate`: Check a recipe against the registries.
 * `plan`: Resolve a recipe against a dataset:...
 * `show`: Print a recipe's steps and the references...
 * `submit`: Record a submission of a recipe, and print...
 * `run`: Run every step of a recipe here, in order,...
 * `status`: Say how far one submission got, from its...
+
+### `mosaic pipeline catalog`
+
+List the step types a recipe may run, with their params schemas under --json.
+
+**Usage**:
+
+```console
+$ mosaic pipeline catalog [OPTIONS]
+```
+
+**Options**:
+
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
 
 ### `mosaic pipeline validate`
 

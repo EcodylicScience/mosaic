@@ -43,7 +43,7 @@ embedding. The `tsne` step names no `pattern`: its `templates` field declares wh
 file it reads.
 
 ```bash
-mosaic pipeline validate -m dataset.yaml --recipe @recipe.json
+mosaic pipeline validate                 --recipe @recipe.json
 mosaic pipeline plan     -m dataset.yaml --recipe @recipe.json
 mosaic pipeline run      -m dataset.yaml --recipe @recipe.json
 ```

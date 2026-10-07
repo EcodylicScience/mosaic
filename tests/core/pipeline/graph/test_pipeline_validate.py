@@ -14,6 +14,8 @@ nothing selected.
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 import pytest
 
 from mosaic.core.pipeline.graph import (
@@ -23,6 +25,7 @@ from mosaic.core.pipeline.graph import (
     check_recipe,
     reject_unless_valid,
 )
+from mosaic.core.pipeline.graph import validate as validate_module
 
 type Document = dict[str, object]
 
@@ -130,9 +133,9 @@ def test_params_are_validated_against_the_feature_s_own_model() -> None:
                 }
             ]
         },
-        "params",
+        "params.not_a_field",
     )
-    assert "not_a_field" in problem.message
+    assert "not permitted" in problem.message
 
 
 def test_a_cycle_is_reported_once_and_stops_the_walk() -> None:
@@ -592,3 +595,37 @@ def test_a_preprocess_step_may_read_another_preprocess_step() -> None:
         )
         == ()
     )
+
+
+def test_a_field_the_params_model_refuses_is_reported_at_that_field() -> None:
+    problem = _at(
+        {
+            "steps": [
+                {
+                    "id": "tsne",
+                    "type": "feature",
+                    "feature": "global-tsne",
+                    "inputs": [{"step": "speed"}],
+                    "params": {"perplexity": "x"},
+                },
+                SPEED_STEP,
+            ]
+        },
+        "params.perplexity",
+    )
+    assert problem.step == "tsne"
+
+
+def test_a_missing_optional_dependency_is_a_problem_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A feature whose extra is not installed raises on construction."""
+
+    def _unavailable(_spec: object) -> NoReturn:
+        raise ImportError("lightning-action is required")
+
+    monkeypatch.setattr(validate_module, "build_step_feature", _unavailable)
+    problem = _at({"steps": [SPEED_STEP]}, "feature")
+
+    assert problem.step == "speed"
+    assert "not installed" in problem.message

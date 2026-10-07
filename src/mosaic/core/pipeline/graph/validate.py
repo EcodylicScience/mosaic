@@ -27,18 +27,26 @@ for a gap that no longer exists.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, TypeGuard
+
+from pydantic import ValidationError
+
+from mosaic.core.json_value import JsonValue
 
 from .compatibility import (
     TRACKS_DECLARATION,
     Declaration,
     EntityLevel,
     ProducerDecl,
+    can_connect,
     can_join,
     resolve_emits,
 )
+from .digest import recipe_digest
 from .model import (
+    TRACKS_INPUT,
     FeatureStepSpec,
     OpStepSpec,
     Recipe,
@@ -57,6 +65,7 @@ from .resolve import (
     resolve_step_spec,
 )
 from .topo import RecipeCycle, topological_order
+from .wire import AttachReport, Attachment, Problem, ValidationReport, render_location
 from ..preprocess_layout import PREPROCESS_KIND
 from mosaic.core.pipeline.types import ArtifactSpec
 from mosaic.core.params import Params
@@ -68,10 +77,13 @@ if TYPE_CHECKING:
 __all__ = [
     "EXCLUDED_KINDS",
     "OVERWRITE_PARAM",
-    "Problem",
     "RecipeInvalid",
+    "attach_candidates",
     "check_recipe",
+    "read_recipe",
     "reject_unless_valid",
+    "resolved_levels",
+    "validation_report",
 ]
 
 OVERWRITE_PARAM: Final = "overwrite"
@@ -114,26 +126,6 @@ scope would therefore refuse the ordinary transcode step for the one thing a
 recipe is *not* supposed to carry. So the question asked here is the honest one:
 would these params be valid once a plan says what to run them over.
 """
-
-
-@dataclass(frozen=True, slots=True)
-class Problem:
-    """One thing wrong with a recipe, at the place it is wrong.
-
-    Attributes:
-        step: The step id, or ``""`` for a fault of the graph as a whole.
-        where: Which part of the step -- ``feature``, ``kind``, ``inputs``,
-            ``tracks``, ``params.templates``, ``steps``.
-        message: What is wrong, phrased so it reads on its own.
-    """
-
-    step: str
-    where: str
-    message: str
-
-    def __str__(self) -> str:
-        at = f"step {self.step!r} " if self.step else ""
-        return f"{at}{self.where}: {self.message}"
 
 
 class RecipeInvalid(ValueError):
@@ -191,15 +183,6 @@ class _Walk:
 
     def record(self, step: Step, declared: Declaration, storage_name: str) -> None:
         """Take down what a step that checked out will offer to the ones below."""
-        self.levels[step.id] = resolve_emits(
-            declared.emits,
-            [
-                TRACKS_DECLARATION.produces.level
-                if isinstance(item, str)
-                else self.level_behind(item.step)
-                for item in _inputs_of(step)
-            ],
-        )
         self.resolved[step.id] = ResolvedStep(
             step_id=step.id,
             storage_name=storage_name,
@@ -236,7 +219,8 @@ def check_recipe(
         # has no meaning.
         return (Problem("", "steps", str(exc)),)
 
-    walk = _Walk(catalog=declaration_catalog() if catalog is None else catalog)
+    known = declaration_catalog() if catalog is None else catalog
+    walk = _Walk(catalog=known, levels=resolved_levels(recipe, known))
     problems: list[Problem] = []
     for step in ordered:
         problems.extend(_check_step(step, recipe, walk))
@@ -323,7 +307,22 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
             built = build_step_op_params(spec)
     except StepBuildError as exc:
         walk.broken.add(step.id)
-        problems.append(Problem(step.id, exc.stage, exc.detail))
+        problems.extend(_build_problems(step.id, exc))
+        return problems
+    except ImportError as exc:
+        # A registered feature whose optional dependency is not installed here
+        # raises on construction. Reported rather than raised, because the
+        # recipe cannot be checked or run on this installation, and a validator
+        # that crashes answers an editor with nothing.
+        walk.broken.add(step.id)
+        problems.append(
+            Problem(
+                step.id,
+                where,
+                f"{name!r} needs an optional dependency that is not installed "
+                f"here: {exc}",
+            )
+        )
         return problems
 
     problems.extend(_glob_reference_problems(step, name, built))
@@ -332,6 +331,21 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
         step, declared, spec.storage_name if isinstance(step, FeatureStepSpec) else ""
     )
     return problems
+
+
+def _build_problems(step_id: str, exc: StepBuildError) -> list[Problem]:
+    """What a failed construction reports: one problem per params field refused.
+
+    A params refusal is itemized at ``params.<field>`` so an editor can mark the
+    field. An inputs or slug refusal stays one problem at its stage, and so does
+    a params refusal no validator raised.
+    """
+    if exc.stage != "params" or not exc.errors:
+        return [Problem(step_id, exc.stage, exc.detail)]
+    return [
+        Problem(step_id, f"params.{location}" if location else "params", message)
+        for location, message in exc.errors
+    ]
 
 
 def _reference_site_problems(step: Step, name: str, kind: str) -> list[Problem]:
@@ -485,3 +499,207 @@ def reject_unless_valid(
     problems = check_recipe(recipe, catalog)
     if problems:
         raise RecipeInvalid(problems)
+
+
+def read_recipe(document: object) -> Recipe:
+    """Parse *document* as a recipe, reporting a malformed one as problems.
+
+    The one parse every reader shares, so a structural fault reads the same from
+    the CLI, from an API and from an editor. A pydantic error inside
+    ``steps[i]`` is reported at that step's id when the document gives it one.
+
+    Raises:
+        RecipeInvalid: Carrying one problem per structural fault.
+    """
+    try:
+        return Recipe.model_validate(document)
+    except ValidationError as exc:
+        problems = tuple(
+            _structural_problem(document, err["loc"], err["type"], err["msg"])
+            for err in exc.errors()
+        )
+        raise RecipeInvalid(problems) from exc
+
+
+def _structural_problem(
+    document: object, location: tuple[int | str, ...], kind: str, message: str
+) -> Problem:
+    """Place one pydantic error at the step it sits in, when that has an id."""
+    if len(location) < 2 or location[0] != "steps" or not isinstance(location[1], int):
+        return Problem("", render_location(location) or "recipe", message)
+    index = location[1]
+    rest = location[2:]
+    raw_step = _step_document(document, index)
+    tag = raw_step.get("type")
+    # pydantic names the union member it tried after the index, which is the
+    # step's own ``type`` and not a field of it.
+    if rest and isinstance(tag, str) and rest[0] == tag:
+        rest = rest[1:]
+    where = render_location(rest)
+    if not where and kind.startswith("union_tag"):
+        where = "type"
+    step_id = raw_step.get("id")
+    if isinstance(step_id, str) and step_id.strip():
+        return Problem(step_id, where or "step", message)
+    at = render_location(location[:2])
+    return Problem("", f"{at}.{where}" if where else at, message)
+
+
+def _step_document(document: object, index: int) -> Mapping[str, object]:
+    """The raw mapping at ``steps[index]``, or an empty one when there is none."""
+    steps = document.get("steps") if _is_mapping(document) else None
+    if not _is_list(steps) or not 0 <= index < len(steps):
+        return {}
+    raw = steps[index]
+    return raw if _is_mapping(raw) else {}
+
+
+def _is_mapping(value: object) -> TypeGuard[Mapping[str, object]]:
+    """Whether *value* is a JSON object, read through string keys."""
+    return isinstance(value, dict)
+
+
+def _is_list(value: object) -> TypeGuard[list[object]]:
+    """Whether *value* is a JSON array."""
+    return isinstance(value, list)
+
+
+def validation_report(
+    document: object, catalog: DeclarationCatalog | None = None
+) -> ValidationReport:
+    """Everything wrong with *document*, which need not parse.
+
+    Structural faults when it does not parse, and :func:`check_recipe`'s
+    findings when it does. Never raises for a fault in the document, because an
+    editor asks after every edit and a list of problems is the ordinary answer.
+    """
+    try:
+        recipe = read_recipe(document)
+    except RecipeInvalid as exc:
+        return ValidationReport(valid=False, digest=None, problems=exc.problems)
+    problems = check_recipe(recipe, catalog)
+    return ValidationReport(
+        valid=not problems, digest=recipe_digest(recipe), problems=problems
+    )
+
+
+def resolved_levels(
+    recipe: Recipe, catalog: DeclarationCatalog
+) -> dict[str, EntityLevel]:
+    """The entity level each step's output resolves to, keyed by step id.
+
+    A step's level depends only on its declaration and its inputs, so it is
+    answered for every step whose name the catalog declares, including one
+    whose params do not build. ``as-input`` resolves through the first input,
+    and a step the catalog does not declare is left out; a reader of it gets
+    ``individual``, which is what raw tracks give.
+
+    Raises:
+        RecipeCycle: The recipe has a cycle, so no step has an upstream.
+    """
+    levels: dict[str, EntityLevel] = {}
+    for step in topological_order(recipe):
+        declared = catalog.get(_runs(step)[0])
+        if declared is None:
+            continue
+        levels[step.id] = resolve_emits(
+            declared.emits,
+            [
+                TRACKS_DECLARATION.produces.level
+                if isinstance(item, str)
+                else levels.get(item.step, "individual")
+                for item in _inputs_of(step)
+            ],
+        )
+    return levels
+
+
+def attach_candidates(
+    recipe: Recipe, after: str | None, catalog: DeclarationCatalog | None = None
+) -> AttachReport:
+    """What may be added directly below *after*, and the step to add for each.
+
+    Every step type a graph may run is answered, allowed or refused with a
+    reason. An allowed one carries a template: the new step complete except for
+    its ``id``, wired to *after* through ``inputs`` below a feature, through
+    ``tracks`` for a feature below a tracks-writing op, and through ``after`` for
+    an op below an op. At the top level (*after* ``None``) an op needs no
+    reference and a feature reads the dataset's tracks.
+
+    The recipe must parse and be acyclic. It need not validate: a params error
+    elsewhere does not change what may follow a step.
+
+    Raises:
+        RecipeInvalid: The recipe has a cycle, or *after* names no step in it.
+    """
+    known = declaration_catalog() if catalog is None else catalog
+    try:
+        levels = resolved_levels(recipe, known)
+    except RecipeCycle as exc:
+        raise RecipeInvalid((Problem("", "steps", str(exc)),)) from exc
+    above: Step | None = None
+    if after is not None:
+        above = next((step for step in recipe.steps if step.id == after), None)
+        if above is None:
+            message = f"no step {after!r} in this recipe"
+            raise RecipeInvalid((Problem("", "after", message),))
+    candidates: dict[str, Attachment] = {}
+    for name in known.names():
+        declared = known.get(name)
+        if declared is None or name == TRACKS_INPUT or name in EXCLUDED_KINDS:
+            continue
+        candidates[name] = _attachment(name, declared, above, levels, known)
+    return AttachReport(after=after, candidates=candidates)
+
+
+def _attachment(
+    name: str,
+    declared: Declaration,
+    above: Step | None,
+    levels: dict[str, EntityLevel],
+    catalog: DeclarationCatalog,
+) -> Attachment:
+    """Whether *name* may go directly below *above*, and wired how."""
+    is_op = declared.produces.kind == "op"
+    base: dict[str, JsonValue] = (
+        {"type": "op", "kind": name} if is_op else {"type": "feature", "feature": name}
+    )
+    if above is None:
+        if is_op:
+            return _allowed(base)
+        verdict = can_connect(TRACKS_DECLARATION.produces, declared.consumes)
+        return (
+            _allowed({**base, "inputs": [TRACKS_INPUT]})
+            if verdict
+            else _refused(verdict.reason)
+        )
+
+    upstream = catalog.get(_runs(above)[0])
+    if upstream is None:
+        return _refused(f"step {above.id!r} runs nothing this installation declares")
+    if isinstance(above, FeatureStepSpec):
+        producer = replace(upstream.produces, level=levels.get(above.id, "individual"))
+        verdict = can_connect(producer, declared.consumes)
+        if not verdict:
+            return _refused(verdict.reason)
+        return _allowed({**base, "inputs": [{"step": above.id}]})
+
+    if is_op:
+        return _allowed({**base, "after": [above.id]})
+    if not upstream.produces.writes_tracks:
+        return _refused(
+            f"{above.id!r} runs {upstream.produces.name!r}, which writes no "
+            f"tracks variant for a feature to read"
+        )
+    verdict = can_connect(TRACKS_DECLARATION.produces, declared.consumes)
+    if not verdict:
+        return _refused(verdict.reason)
+    return _allowed({**base, "inputs": [TRACKS_INPUT], "tracks": {"step": above.id}})
+
+
+def _allowed(template: dict[str, JsonValue]) -> Attachment:
+    return Attachment(allowed=True, reason="", template=template)
+
+
+def _refused(reason: str) -> Attachment:
+    return Attachment(allowed=False, reason=reason, template=None)

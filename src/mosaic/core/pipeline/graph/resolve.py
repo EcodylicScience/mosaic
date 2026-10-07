@@ -21,10 +21,13 @@ all.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
+
+from pydantic import BaseModel
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.scope import Scope
@@ -54,6 +57,7 @@ from .model import (
     params_step_refs,
 )
 from .storage import storage_name_of
+from .wire import CatalogEntry, EditorCatalog, ReferenceKind, render_location
 
 __all__ = [
     "ReferenceSite",
@@ -66,6 +70,7 @@ __all__ = [
     "build_step_op_params",
     "declaration_catalog",
     "declared_version",
+    "editor_catalog",
     "feature_class_for_slug",
     "op_class_for_kind",
     "params_reference_site",
@@ -152,12 +157,23 @@ class StepBuildError(ValueError):
     message: the CLI names the available slugs for an unknown one and points at
     ``--inputs`` or ``--params`` for the other two, while recipe validation names
     the step the fault sits in.
+
+    *errors* holds the validator's findings as ``(location, message)`` pairs,
+    and is empty when no validator refused. Recipe validation reports one
+    problem per pair, which lets an editor mark the field at fault.
     """
 
-    def __init__(self, stage: "BuildStage", name: str, detail: str) -> None:
+    def __init__(
+        self,
+        stage: "BuildStage",
+        name: str,
+        detail: str,
+        errors: tuple[FieldError, ...] = (),
+    ) -> None:
         self.stage: BuildStage = stage
         self.name: str = name
         self.detail: str = detail
+        self.errors: tuple[FieldError, ...] = errors
         super().__init__(f"{name}: {detail}")
 
 
@@ -165,14 +181,25 @@ type BuildStage = Literal["slug", "inputs", "params"]
 """Which half of a step's declaration was rejected."""
 
 
-def _compact(exc: "ValidationError") -> str:
-    """Render a pydantic ``ValidationError`` as ``field: message; ...``."""
-    parts: list[str] = []
-    for err in exc.errors():
-        loc = ".".join(str(part) for part in err.get("loc", ()))
-        message = str(err.get("msg", ""))
-        parts.append(f"{loc}: {message}" if loc else message)
-    return "; ".join(parts)
+type FieldError = tuple[str, str]
+"""One validator finding: where in the model, rendered, and what is wrong."""
+
+
+def _field_errors(exc: "ValidationError") -> tuple[FieldError, ...]:
+    """A pydantic ``ValidationError`` as ``(location, message)`` pairs."""
+    return tuple((render_location(err["loc"]), str(err["msg"])) for err in exc.errors())
+
+
+def _build_error(
+    stage: "BuildStage", name: str, exc: "ValidationError"
+) -> StepBuildError:
+    """A refusal carrying the validator's findings, compacted and itemized."""
+    errors = _field_errors(exc)
+    detail = "; ".join(
+        f"{location}: {message}" if location else message
+        for location, message in errors
+    )
+    return StepBuildError(stage, name, detail, errors)
 
 
 def build_feature(
@@ -223,7 +250,7 @@ def build_feature(
             ["tracks"] if inputs_payload is None else inputs_payload
         )
     except ValidationError as exc:
-        raise StepBuildError("inputs", slug, _compact(exc)) from exc
+        raise _build_error("inputs", slug, exc) from exc
 
     if params is not None and not isinstance(params, dict):
         raise StepBuildError("params", slug, "params must be a mapping")
@@ -233,7 +260,7 @@ def build_feature(
         # and declares no ``__init__``, hence the targeted ignore.
         return cls(inputs_obj, params)  # pyright: ignore[reportCallIssue]
     except ValidationError as exc:
-        raise StepBuildError("params", slug, _compact(exc)) from exc
+        raise _build_error("params", slug, exc) from exc
 
 
 def build_op_params(kind: str, params: Mapping[str, JsonValue]) -> "Params":
@@ -259,7 +286,7 @@ def build_op_params(kind: str, params: Mapping[str, JsonValue]) -> "Params":
     try:
         return op_cls.Params.model_validate(params)
     except ValidationError as exc:
-        raise StepBuildError("params", kind, _compact(exc)) from exc
+        raise _build_error("params", kind, exc) from exc
 
 
 def build_step_feature(spec: "StepSpec") -> "Feature":
@@ -432,6 +459,84 @@ def declaration_catalog() -> DeclarationCatalog:
     return DeclarationCatalog(entries=entries)
 
 
+_TRACKS_SUMMARY: Final = (
+    "The dataset's standardized tracks, which every chain starts from."
+)
+"""What the editor catalog says of ``tracks``, which has no class to read."""
+
+
+@lru_cache(maxsize=1)
+def editor_catalog() -> EditorCatalog:
+    """Every step type a recipe may run here, with what an editor draws it from.
+
+    The declarations of :func:`declaration_catalog`, each joined to its params
+    JSON Schema, its version, a one-line summary, and the params fields that
+    accept a step reference. Kinds a graph may not run are left out, so an
+    editor offers only steps that validate. Cached for the process for the same
+    reason the declaration catalog is: both registries are fixed once their
+    modules have been imported.
+    """
+    from mosaic.version import installed_version
+
+    from .model import SCHEMA_VERSION
+    from .validate import EXCLUDED_KINDS
+
+    declarations = declaration_catalog()
+    entries: list[CatalogEntry] = []
+    for name in declarations.names():
+        declared = declarations.get(name)
+        if declared is None or name in EXCLUDED_KINDS:
+            continue
+        entries.append(_catalog_entry(name, declared))
+    return EditorCatalog(
+        schema_version=SCHEMA_VERSION,
+        mosaic_version=installed_version(),
+        entries=tuple(entries),
+    )
+
+
+def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
+    """One editor-catalog entry, read off the class behind *name*."""
+    kind = declared.produces.kind
+    if kind == "tracks":
+        return CatalogEntry(
+            name=name,
+            type="tracks",
+            version="",
+            category="",
+            summary=_TRACKS_SUMMARY,
+            declaration=declared,
+            params_schema=None,
+            reference_fields={},
+        )
+    cls = feature_class_for_slug(name) if kind == "feature" else op_class_for_kind(name)
+    params_cls: object = getattr(cls, "Params", None)
+    schema: dict[str, JsonValue] | None = None
+    if isinstance(params_cls, type) and issubclass(params_cls, BaseModel):
+        schema = params_cls.model_json_schema()
+    reference_fields: dict[str, ReferenceKind] = {}
+    for field_name, annotation in _params_field_types(kind, name).items():
+        site = _reference_site_of(annotation)
+        if site == "result" or site == "identifier":
+            reference_fields[field_name] = site
+    return CatalogEntry(
+        name=name,
+        type=kind,
+        version=declared_version(kind, name),
+        category=declared.category,
+        summary=_first_docstring_line(cls),
+        declaration=declared,
+        params_schema=schema,
+        reference_fields=reference_fields,
+    )
+
+
+def _first_docstring_line(cls: object) -> str:
+    """The summary line of *cls*'s docstring, or ``""`` when it has none."""
+    lines = (inspect.getdoc(cls) or "").strip().splitlines()
+    return lines[0] if lines else ""
+
+
 @dataclass(frozen=True, slots=True)
 class ResolvedStep:
     """What an earlier step in the walk turned out to be.
@@ -571,7 +676,11 @@ def params_reference_site(kind: str, name: str, field_name: str) -> ReferenceSit
     types = _params_field_types(kind, name)
     if field_name not in types:
         return "unknown"
-    annotation = types[field_name]
+    return _reference_site_of(types[field_name])
+
+
+def _reference_site_of(annotation: object) -> ReferenceSite:
+    """How a reference would substitute into a field declared as *annotation*."""
     if _is_reference_field(annotation):
         return "result"
     if _is_identifier_field(annotation):

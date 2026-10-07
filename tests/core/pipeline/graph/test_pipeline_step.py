@@ -14,6 +14,7 @@ because its index row landed a second later.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ from mosaic.core.pipeline.graph import (
     Plan,
     PlannedStep,
     Recipe,
+    StepAttempt,
     StepRefused,
     StepSpec,
     asked_of,
@@ -35,6 +37,7 @@ from mosaic.core.pipeline.graph import (
     load_recipe_for_request,
     recipe_path,
     request_rollup,
+    request_verdict,
     save_recipe,
     submit_request,
 )
@@ -646,6 +649,24 @@ def test_a_refused_step_closes_its_request_as_failed(tracked: Dataset) -> None:
         _ = execute_step(tracked, request, "templates")
 
     assert request_rollup(tracked.base_dir, request).status == "failed"
+
+
+def test_a_status_recorded_outside_the_run_logs_closes_the_request() -> None:
+    """A step whose dispatch failed does not write a run-log, and the step below
+    it is not dispatched. The control plane that recorded both ends passes them in."""
+    finished = StepAttempt("smooth", "e1", status="finished")
+    undispatched = StepAttempt("speed", "e2")
+    below = StepAttempt("delta", "e3")
+    assert request_verdict((finished, undispatched, below)) == "running"
+
+    failed = (
+        finished,
+        replace(undispatched, status="failed"),
+        replace(below, status="failed"),
+    )
+    assert request_verdict(failed) == "failed"
+    stopped = (finished, replace(undispatched, status="cancelled"), below)
+    assert request_verdict(stopped) == "cancelled"
 
 
 def test_two_dispatches_of_one_training_run_do_not_both_train(

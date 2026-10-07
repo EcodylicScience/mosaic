@@ -114,12 +114,19 @@ from .resolve import (
     build_step_op_params,
     declaration_catalog,
     declared_version,
+    editor_catalog,
     feature_class_for_slug,
     op_class_for_kind,
     params_reference_site,
     resolve_step_spec,
 )
-from .rollup import RequestRollup, RequestStatus, StepAttempt, request_rollup
+from .rollup import (
+    RequestRollup,
+    RequestStatus,
+    StepAttempt,
+    request_rollup,
+    request_verdict,
+)
 from .run import PipelineRun, run_pipeline
 from .step import STEP_RUN_KIND, StepOutcome, asked_of, execute_step
 from .scope import graph_writes_tracks, intended_scope, media_universe
@@ -144,13 +151,38 @@ from .topo import (
     parents_of,
     topological_order,
 )
+from .serialize import plan_wire
 from .validate import (
     EXCLUDED_KINDS,
     OVERWRITE_PARAM,
-    Problem,
     RecipeInvalid,
+    attach_candidates,
     check_recipe,
+    read_recipe,
     reject_unless_valid,
+    resolved_levels,
+    validation_report,
+)
+from .wire import (
+    MISSING_SAMPLE_WIRE,
+    AttachReport,
+    Attachment,
+    CatalogEntry,
+    CoverageShortWire,
+    CoverageWire,
+    DepsIncompleteWire,
+    EditorCatalog,
+    HeldOnParentsWire,
+    IdentityUnresolvedWire,
+    PlannedStepWire,
+    PlanWire,
+    Problem,
+    ReasonWire,
+    ReferenceKind,
+    StalledWire,
+    ValidationReport,
+    WaitingOnResourceWire,
+    render_location,
 )
 
 __all__ = [
@@ -258,6 +290,7 @@ __all__ = [
     "reject_unless_valid",
     "request_path",
     "request_rollup",
+    "request_verdict",
     "requests_root",
     "resolve_emits",
     "resolve_step_spec",
@@ -269,4 +302,28 @@ __all__ = [
     "storage_name_of",
     "submit_request",
     "topological_order",
+    "MISSING_SAMPLE_WIRE",
+    "AttachReport",
+    "Attachment",
+    "CatalogEntry",
+    "CoverageShortWire",
+    "CoverageWire",
+    "DepsIncompleteWire",
+    "EditorCatalog",
+    "HeldOnParentsWire",
+    "IdentityUnresolvedWire",
+    "PlannedStepWire",
+    "PlanWire",
+    "ReasonWire",
+    "ReferenceKind",
+    "StalledWire",
+    "ValidationReport",
+    "WaitingOnResourceWire",
+    "render_location",
+    "plan_wire",
+    "attach_candidates",
+    "read_recipe",
+    "resolved_levels",
+    "validation_report",
+    "editor_catalog",
 ]
