@@ -813,6 +813,32 @@ Deliberately separate from the live-object `Pipeline`, which holds feature
   (`declaration_catalog()`), so a canvas refuses a wire as it is drawn. The
   sharpest refusal is `can_join`'s: a multi-input join of mismatched entity
   granularity is a silent per-frame cartesian product.
+- **A feature declares the columns that it reads and writes, and one declaration
+  is checked at validation, at plan and before the feature runs.** `requires`
+  names the columns that `fit` and `apply` read from the merged input, and
+  `provides` the output's columns. Both are class attributes beside `emits`,
+  written with the references of
+  [`core/pipeline/column_contract.py`](src/mosaic/core/pipeline/column_contract.py):
+  a column by name, by a params field or by a template over the params, a prefix
+  family, `AnyOf`, `Keypoints`, `Payload` (any numeric payload column),
+  `Derived`, and `When` for a requirement under conditions on the params.
+  Validation propagates each step's guaranteed and possible columns through
+  `merge_naming`, with no dataset (`graph/columns.py`). A required column absent
+  from every input is a problem naming the providers readable by the step. A
+  column that an input may contain is a caution, and a caution does not refuse a
+  run. A step whose feature declares no `requires` is listed in
+  `ValidationReport.unchecked`. `plan_pipeline` checks again with the column
+  names in the parquet footers of the tracks tables that each step reads. A
+  column that the schemas only allow, such as `ANGLE` on `mosaic_v1`, then
+  resolves to met or to a problem in `Plan.problems`, and `RecipeRefused` is
+  raised. `run_feature` checks each entry's merged frame before `fit` and
+  `apply`, and an entry lacking a column fails with `MissingInputColumns`
+  through the per-entry error path. `input_candidates` and `insert_candidates`
+  answer from the same propagation. Every feature that mosaic registers declares
+  both, and
+  `tests/behavior/feature_library/test_column_contract_conformance.py` runs each
+  through a chain built from the declarations and compares its output with the
+  columns that validation predicts.
 - **A feature declares the packages and setups beyond the base install that
   it needs** in a `prerequisites` tuple: an `OptionalModule` for a package an
   extra installs (`src/mosaic/optional_dependency.py`), and `KpmsLicense` and

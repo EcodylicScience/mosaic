@@ -8,6 +8,113 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows
+
+**Every registered feature declares the columns that it reads and writes.**
+`requires` names the columns that `fit` and `apply` read from the merged input,
+and `provides` the columns of the output. Both are class attributes beside
+`emits`, written with the references of `mosaic.core.pipeline.column_contract`: a
+column by name, by a params field or by a template over the params, a prefix
+family, `AnyOf`, `Keypoints`, `Payload`, `Derived` and `When`. `run_feature`
+checks each entry's merged frame before `fit` and `apply`. An entry that lacks a
+column fails with `MissingInputColumns` through the per-entry error path, in one
+message form for every feature. A feature registered outside mosaic may declare
+neither, and validation lists its steps as unchecked.
+
+**Recipe validation checks each step's columns.** It propagates, with no
+dataset, the columns that each step's output is guaranteed to contain and the
+columns that it may contain. A required column absent from every input is a
+problem naming the providers readable by the step. A column that an input may
+contain is a caution, and a caution does not refuse a run.
+`ValidationReport.unchecked` lists the steps whose feature declares no
+`requires`, and the CLI prints them on one line.
+
+**A pipeline editor reads the graph as JSON.** `mosaic.core.pipeline.graph.wire`
+defines the shapes. The CLI's `--json` output and mosaic-api's responses are
+these models dumped.
+
+- `editor_catalog()`, and the new `mosaic pipeline catalog`, list every step type
+  that a recipe may run: its declaration, its params JSON Schema, the params
+  fields that accept a step reference, and `unavailable` when this installation
+  cannot run it.
+- `validation_report(document)` returns every problem, caution and unchecked
+  step of a document that need not parse.
+- `attach_candidates` returns the step types that may be added below a step.
+  `input_candidates` returns the earlier steps that may become an input of a
+  step. `insert_candidates` returns the step types that may be inserted between
+  a step and the steps whose first input reads it. A refused candidate names its
+  reason.
+- `plan_wire(plan)`, which `mosaic pipeline plan --json` prints, tags each reason
+  by kind and bounds the missing entries to a sample.
+- `request_verdict` is the rule of `request_rollup`, for a control plane that
+  ends an attempt before its run-log is written.
+
+**A plan refuses a recipe that the dataset cannot run.** `plan_pipeline` raises
+`RecipeRefused`, a `RecipeInvalid` that contains the plan and its problems
+(`Plan.problems`, `PlanWire.problems`). Each problem is placed where the recipe
+would change:
+
+- a time filter on a dataset without `meta.fps_default`, at
+  `run.filter_start_time` or `run.filter_end_time`, where a bare `ValueError` was
+  raised;
+- a required column that the tracks tables of a step lack, read from their
+  parquet footers, as `ANGLE` on `mosaic_v1` tracks;
+- two inputs of one step that resolve to one run only on the dataset.
+
+A queued step refused when it re-plans at its start raises
+`RecipeRefusedAtStep`, with the new `RefusalReason` `recipe_refused`, and exits
+65. `mosaic pipeline plan`,
+`submit` and `run` report a refusal and exit 1.
+
+**A feature declares its prerequisites beyond the base install.** Its
+`prerequisites` tuple of `OptionalModule`, `KpmsLicense` and `KpmsEnvironment`
+is evaluated, without importing the packages, into `Declaration.unavailable`: a
+sentence naming what to install or enable. Validation reports it at the step's
+`feature`, and `attach_candidates` refuses the feature with it.
+`movement-smooth`, `movement-filter-interpolate`, `feral`, `lightning-action`,
+`kpms` and the three identity models declare theirs.
+
+**The global fits skip non-finite rows.** A `speed-angvel` step with `step_size`
+writes NaN on each sequence's edge rows, and `global-kmeans` raised
+scikit-learn's "Input X contains NaN" on templates sampled from them.
+`extract-templates` now samples only rows finite in every template column, and
+`template_provenance.parquet` gains a `dropped` column. `global-kmeans`,
+`global-ward` and `global-tsne` fit on their finite templates, the rows that
+their apply reads, and the SMOTE path of `xgboost` synthesizes from the finite
+rows. The farthest-point template selection compares two rows over the columns
+finite in both, and takes each row once.
+
+**Identifiers that move.** `extract-templates` and `extract-labeled-templates`
+move to 0.2, the version segment only. A step reading their output hashes their
+run id, and its digest moves too: the t-SNE step of the plan golden moves from
+`0.4-d3058395ad` to `0.4-9ef3a62a39`.
+
+**Features that read or write differently.**
+
+- `approach-avoidance`, `pair-position` and `orientation-rel` accept a feature
+  output beside the tracks, and read `heading`'s `ANGLE` from it.
+- `ffgroups-metrics` declares `emits` `"individual"`, for the row per id and
+  group size that it writes.
+- `frame-aggregate` and `collective-motion-metrics` aggregate a table ordered by
+  its time, where pandas raised "cannot insert time, already exists".
+- The color path of `interaction-crop-pipeline` asks for NVENC, then SVT-AV1,
+  then OpenCV's writer, where a build without `av1_nvenc` failed the feature.
+
+**The toolkit does not own a params field.** The catalog lists every params
+field, `filter_expr` and `egocentric-crop`'s `output_root` among them. A control
+plane setting a field itself removes it from the schema that it serves, and
+refuses it in a recipe, as mosaic-api does.
+
+**New API.** `MissingInputColumns` and the reference types of `column_contract`;
+the wire models and `editor_catalog`, `read_recipe`, `validation_report`,
+`input_candidates`, `insert_candidates`, `resolved_columns`, `resolved_levels`,
+`plan_wire`, `request_verdict`, `RecipeRefused` and `RecipeRefusedAtStep` in
+`mosaic.core.pipeline.graph`; `OptionalModule`, `Prerequisite` and `unmet` in
+`mosaic.optional_dependency`; `BOOKKEEPING_COLS` and `NON_PAYLOAD_COLS` in
+`mosaic.core.pipeline.types`; `read_parquet_column_names` in
+`mosaic.core.pipeline.writers`; and `mosaic.core.narrowing`, where
+`is_str_mapping` moved from `mosaic.core.pipeline._utils`.
+
 ## 0.15.0: an H.264 copy of an entry needs no step, and a control plane can own a tracker's model
 
 **A `preprocess` variant with no steps and `codec: "h264"` is an H.264 copy of its
