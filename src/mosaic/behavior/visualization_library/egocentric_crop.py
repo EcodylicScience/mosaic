@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from functools import cached_property
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 
 import cv2
 import numpy as np
@@ -22,6 +22,13 @@ from pydantic import Field
 
 from mosaic.core.media.preprocess.appearance import apply_clahe, make_clahe, to_gray
 from mosaic.core.pipeline._utils import ResolvedScope
+from mosaic.core.pipeline.column_contract import (
+    Column,
+    Conditional,
+    Provides,
+    Requirement,
+    Template,
+)
 from mosaic.core.pose_columns import (
     configured_pose_pairs,
     frame_keypoint_centroid,
@@ -61,6 +68,7 @@ from ._crop_descriptions import (
     USE_CLAHE_DESCRIPTION,
 )
 from .helpers import (
+    CROP_CENTER_REQUIRES,
     compute_heading_angle,
     create_video_writer,
     infer_angle_degrees,
@@ -135,6 +143,36 @@ class EgocentricCrop:
     accepts_overlap = False  # opens the entry's own video
     consumed_roots: tuple[str, ...] = ("media_raw",)
     emits: EmitsLevel = "individual"
+    # ``angle_col`` and the ``heading_points`` keypoints are read where present,
+    # and the heading is 0 without them.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(COLUMNS.id_col),
+        Column(COLUMNS.frame_col),
+        *CROP_CENTER_REQUIRES,
+    )
+    # Under ``transform_keypoints`` the output contains ``<x_prefix><i>_crop`` and
+    # ``<y_prefix><i>_crop`` for each of ``pose.pose_n`` keypoints.
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column(COLUMNS.frame_col),
+            Column(COLUMNS.id_col),
+            Column(COLUMNS.group_col),
+            Column(COLUMNS.seq_col),
+            Column("center_x"),
+            Column("center_y"),
+            Column("heading_angle"),
+        ),
+        conditional=(
+            Conditional(
+                Template("{pose.x_prefix}", family=True),
+                when_param="transform_keypoints",
+            ),
+            Conditional(
+                Template("{pose.y_prefix}", family=True),
+                when_param="transform_keypoints",
+            ),
+        ),
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

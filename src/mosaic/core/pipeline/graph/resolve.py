@@ -355,6 +355,10 @@ def _param_defaults(cls: type, fields: frozenset[str]) -> dict[str, JsonValue]:
         if info is None or info.is_required():
             continue
         default: object = info.get_default(call_default_factory=True)
+        if isinstance(default, BaseModel):
+            # A nested params model, read as the object its fields dump to.
+            # Validated as it is, a model iterates into its field pairs.
+            default = default.model_dump(mode="json")
         try:
             defaults[name] = adapter.validate_python(default)
         except ValidationError:
@@ -371,13 +375,19 @@ def _prerequisites_of(cls: type) -> tuple[Prerequisite, ...]:
 
 
 def _keeps_track_frame(provides: Provides | None) -> bool | None:
-    """Whether a declared output keeps the track frame, ``None`` when undeclared."""
+    """Whether a declared output keeps the track frame.
+
+    ``None`` when undeclared, and when its payload families may include ``X``
+    and ``Y``.
+    """
     if provides is None:
         return None
     if provides.passthrough:
         return True
     written = {ref.name for ref in provides.adds if isinstance(ref, Column)}
-    return {COLUMNS.x_col, COLUMNS.y_col} <= written
+    if {COLUMNS.x_col, COLUMNS.y_col} <= written:
+        return True
+    return None if provides.payload_families else False
 
 
 def _feature_declaration(cls: type) -> Declaration:
@@ -535,7 +545,7 @@ def editor_catalog() -> EditorCatalog:
 
     The declarations of :func:`declaration_catalog`, each joined to its params
     JSON Schema, its version, a one-line summary, and the params fields that
-    accept a step reference. Kinds a graph may not run are left out, so an
+    accept a step reference. Kinds a graph may not run are left out, and an
     editor offers only steps that validate. Cached for the process for the same
     reason the declaration catalog is: both registries are fixed once their
     modules have been imported.

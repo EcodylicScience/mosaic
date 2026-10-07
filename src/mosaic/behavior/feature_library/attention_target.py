@@ -23,10 +23,16 @@ works.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import pandas as pd
 
+from mosaic.core.pipeline.column_contract import (
+    Column,
+    Provides,
+    Requirement,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -94,6 +100,25 @@ class AttentionTarget:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.frame_col),
+        Column("id1"),
+        Column("id2"),
+        Column("angle_diff_deg"),
+        Column("is_facing"),
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column(C.frame_col),
+            Column(C.id_col),
+            Column("attention_target_id"),
+            Column("attention_target_angle_diff_deg"),
+            Column("focal_group"),
+            Column("target_group"),
+            Column("attention_type"),
+        ),
+        conditional=kept(C.group_col, C.seq_col),
+    )
 
     class Inputs(Inputs[Result]):
         pass

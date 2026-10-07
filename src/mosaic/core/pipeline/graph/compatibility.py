@@ -120,7 +120,8 @@ class ProducerDecl:
         keeps_track_frame: Whether its output keeps the track frame: ``True``
             when it passes its input through or always writes ``X`` and ``Y``,
             ``False`` when its declared output lacks both, and ``None`` when its
-            output columns are undeclared.
+            output columns are undeclared or named after its input's payload
+            columns.
     """
 
     name: str

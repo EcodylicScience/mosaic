@@ -184,7 +184,9 @@ class FrameAggregate:
         out_col = p.output_column or f"{p.column}_{p.agg}"
 
         work = pd.DataFrame({order_col: df[order_col].to_numpy(), "_v": s.to_numpy()})
-        has_time = "time" in df.columns
+        # A table without frames is ordered by its time, which is then the group
+        # key and is not aggregated beside it.
+        has_time = "time" in df.columns and order_col != "time"
         if has_time:
             work["time"] = df["time"].to_numpy()
 

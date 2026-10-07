@@ -141,6 +141,20 @@ class PoseConfig(DeclaredModel):
         list[str] | None, Declared(_KEYPOINT_NAMES_DESCRIPTION)
     ] = None
 
+    def selected_indices(self) -> list[int]:
+        """The keypoint indices to read: ``pose_indices``, or every index below ``pose_n``."""
+        if self.pose_indices is None:
+            return list(range(self.pose_n))
+        return list(self.pose_indices)
+
+    def keypoint_columns(self) -> tuple[list[str], list[str]]:
+        """The x and the y column of each selected keypoint, in index order."""
+        indices = self.selected_indices()
+        return (
+            [f"{self.x_prefix}{index}" for index in indices],
+            [f"{self.y_prefix}{index}" for index in indices],
+        )
+
     @model_validator(mode="after")
     def _check_keypoint_names_length(self) -> Self:
         if self.keypoint_names is not None and len(self.keypoint_names) != self.pose_n:
@@ -180,3 +194,21 @@ ALIGN_COLS: frozenset[str] = frozenset(
     (COLUMNS.meta_set() - {COLUMNS.group_col, COLUMNS.seq_col}) | PAIR_COLS
 )
 META_COLS: frozenset[str] = frozenset(COLUMNS.meta_set() | PAIR_COLS)
+
+BOOKKEEPING_COLS: frozenset[str] = frozenset({"entity_level", "fps", "label", "split"})
+"""Columns that are neither identity nor measurement.
+
+A sampling rate, a ground-truth label, a train/test assignment and a level
+marker record facts about a run and say nothing about whom a row describes. A
+frame's payload excludes them as it excludes the identity columns, and a feature
+rebuilding its output drops them.
+
+The identity names are in ``META_COLS`` and absent here. The payload and the
+metadata passthrough both read them there. Two lists once disagreed, and
+``perspective`` was excluded from the payload by one and dropped from the
+metadata by the other.
+"""
+
+NON_PAYLOAD_COLS: frozenset[str] = META_COLS | BOOKKEEPING_COLS
+"""Every column that is not a measurement. The other columns of a frame are its
+payload, which a global model reads as one vector per row."""

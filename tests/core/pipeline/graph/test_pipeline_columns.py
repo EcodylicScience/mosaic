@@ -7,20 +7,32 @@ propagates, per step, the columns guaranteed and the columns possible. A
 required column absent from every input is a problem. A column that an input may
 contain is a caution.
 
-The recipe at the centre is a real analysis graph of 20 steps, copied from the
+The recipe at the center is a real analysis graph of 20 steps, copied from the
 guppies paper into ``tests/data``. It validates. Three copies of it, each wired
 wrong in a way that once failed only at run time, do not.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.json_value import JsonValue
+from mosaic.core.pipeline.column_contract import (
+    META_KEPT,
+    PAYLOAD_LABEL,
+    NamedColumns,
+    Payload,
+    Provides,
+)
 from mosaic.core.pipeline.graph import (
     TRACKS_INPUT,
+    UNKNOWN_COLUMNS,
+    ColumnSet,
+    DeclarationCatalog,
     FeatureStepSpec,
     Problem,
     Recipe,
@@ -37,6 +49,14 @@ from mosaic.core.pipeline.graph import (
     resolved_columns,
     validation_report,
 )
+from mosaic.core.pipeline.graph.columns import (
+    need_status,
+    output_columns,
+    provided_wire,
+    requires_wire,
+    tracks_columns,
+)
+from mosaic.core.pipeline.graph.wire import NeedStatus
 from tests.helpers import (
     GUPPIES_RECIPE,
     catalog_without_contract,
@@ -585,7 +605,7 @@ def test_an_undeclared_producer_never_causes_a_refusal() -> None:
             },
         ]
     }
-    report = validation_report(document)
+    report = validation_report(document, catalog_without_contract("track-subsample"))
 
     assert report.valid, report.problems
     unchecked = [caution for caution in report.cautions if caution.step == "bins"]
@@ -622,6 +642,183 @@ def test_a_document_that_does_not_parse_lists_no_unchecked_step() -> None:
     assert report.unchecked == ()
 
 
+@pytest.mark.parametrize(
+    ("available", "status"),
+    [
+        (ColumnSet(guaranteed=frozenset({"frame", "speed"})), "guaranteed"),
+        (ColumnSet(guaranteed_prefixes=frozenset({"poseX"})), "guaranteed"),
+        (
+            ColumnSet(guaranteed=frozenset({"frame"}), possible=frozenset({"speed"})),
+            "possible",
+        ),
+        (ColumnSet(possible_prefixes=frozenset({"poseX"})), "possible"),
+        (ColumnSet(guaranteed=frozenset({"frame", "id"}), unlisted=True), "possible"),
+        (UNKNOWN_COLUMNS, "unknown"),
+        (ColumnSet(guaranteed=frozenset({"frame", "id", "fps", "label"})), "absent"),
+    ],
+)
+def test_a_payload_requirement_reads_any_column_outside_the_bookkeeping(
+    available: ColumnSet, status: NeedStatus
+) -> None:
+    assert need_status(NamedColumns(payload=True), available) == status
+
+
+def _payload_catalog() -> DeclarationCatalog:
+    """The registries' catalog, with two declarations a payload test needs.
+
+    ``extract-templates`` requires a numeric payload and passes its input
+    through. The output of ``heading`` lacks a payload column, because it is
+    declared to write the identity columns alone.
+    """
+    catalog = declaration_catalog()
+    entries = dict(catalog.entries)
+    entries["extract-templates"] = replace(
+        entries["extract-templates"],
+        requires=(Payload(),),
+        provides=Provides(passthrough=True),
+    )
+    entries["heading"] = replace(
+        entries["heading"], provides=Provides(conditional=META_KEPT)
+    )
+    return DeclarationCatalog(entries=entries)
+
+
+def _templates_over(feature: str) -> dict[str, JsonValue]:
+    return {
+        "steps": [
+            {"id": "upstream", "type": "feature", "feature": feature},
+            {
+                "id": "templates",
+                "type": "feature",
+                "feature": "extract-templates",
+                "inputs": [{"step": "upstream"}],
+                "params": {"n_templates": 10},
+            },
+        ]
+    }
+
+
+def test_validation_meets_a_payload_requirement_with_any_measurement() -> None:
+    report = validation_report(_templates_over("speed-angvel"), _payload_catalog())
+
+    assert report.valid, report.problems
+    assert all(caution.step != "templates" for caution in report.cautions)
+    assert report.unchecked == ()
+
+
+def test_validation_refuses_a_payload_requirement_on_identity_columns_alone() -> None:
+    report = validation_report(_templates_over("heading"), _payload_catalog())
+
+    problems = [problem for problem in report.problems if problem.step == "templates"]
+    assert [problem.where for problem in problems] == ["inputs"]
+    assert problems[0].message.startswith(f"needs {PAYLOAD_LABEL}")
+
+
+def test_the_catalog_states_a_payload_requirement() -> None:
+    (need,) = requires_wire((Payload(),), {})
+
+    assert need.payload
+    assert need.label == PAYLOAD_LABEL
+    assert (need.columns, need.prefixes) == ((), ())
+
+
+# --- payload families -------------------------------------------------------------------
+
+_FAMILIES = Provides(conditional=META_KEPT, payload_families=True)
+"""An output named after its input's payload columns, as ``temporal-stack`` writes."""
+
+
+def test_a_payload_family_is_named_after_each_payload_column_of_the_input() -> None:
+    merged = ColumnSet(
+        guaranteed=frozenset({"frame", "id", "fps", "speed"}),
+        possible=frozenset({"frame", "id", "fps", "speed", "angvel"}),
+        guaranteed_prefixes=frozenset({"poseX"}),
+        possible_prefixes=frozenset({"poseX", "poseP"}),
+    )
+
+    output = output_columns(_FAMILIES, merged, {})
+
+    assert output.guaranteed == {"frame", "id"}
+    assert output.guaranteed_prefixes == {"speed", "poseX"}
+    assert output.possible_prefixes == {"speed", "angvel", "poseX", "poseP"}
+    assert output.admits("speed__t+05")
+    assert not output.admits("fps")
+
+
+@pytest.mark.parametrize(
+    ("need", "status"),
+    [
+        (NamedColumns(payload=True), "guaranteed"),
+        (NamedColumns(prefixes=("poseX",)), "guaranteed"),
+        (NamedColumns(columns=("speed",)), "possible"),
+        (NamedColumns(columns=("speed__pool_mean",)), "possible"),
+        (NamedColumns(columns=("vx",)), "absent"),
+    ],
+)
+def test_a_payload_family_meets_a_payload_need_and_guarantees_no_name(
+    need: NamedColumns, status: NeedStatus
+) -> None:
+    merged = ColumnSet(
+        guaranteed=frozenset({"frame", "id", "speed"}),
+        guaranteed_prefixes=frozenset({"poseX"}),
+    )
+
+    assert need_status(need, output_columns(_FAMILIES, merged, {})) == status
+
+
+def test_payload_families_keep_what_the_input_leaves_open() -> None:
+    """Families of an unbounded input are unbounded, and of the tracks unlisted."""
+    assert output_columns(_FAMILIES, UNKNOWN_COLUMNS, {}).unbounded
+
+    tracks = tracks_columns(declaration_catalog())
+    families = output_columns(_FAMILIES, tracks, {})
+    assert families.unlisted
+    assert families.vocabulary == tracks.vocabulary
+    assert families.admits("poseP0__t+00")
+
+
+def test_the_catalog_states_payload_families() -> None:
+    assert provided_wire(_FAMILIES, {}).payload_families
+    assert not provided_wire(Provides(passthrough=True), {}).payload_families
+
+
+@pytest.mark.parametrize("producer", ["scale-to-cm", "temporal-stack"])
+def test_an_output_named_after_its_input_may_feed_a_track_feature(
+    producer: str,
+) -> None:
+    """Its payload families may include ``X`` and ``Y``."""
+    catalog = declaration_catalog()
+
+    assert can_connect(
+        catalog.entries[producer].produces, catalog.entries["nearest-neighbor"].consumes
+    )
+
+
+def test_a_track_feature_below_a_conversion_in_place_is_not_refused() -> None:
+    """``convert`` returns a track-shaped table, which ``speed-angvel`` reads."""
+    report = validation_report(
+        {
+            "steps": [
+                {
+                    "id": "cm",
+                    "type": "feature",
+                    "feature": "scale-to-cm",
+                    "params": {"mode": "convert"},
+                },
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": [{"step": "cm"}],
+                },
+            ]
+        }
+    )
+
+    assert report.valid, report.problems
+    assert report.unchecked == ()
+
+
 # --- the wire ---------------------------------------------------------------------------
 
 
@@ -650,9 +847,18 @@ def test_the_catalog_states_each_feature_s_columns_under_its_defaults() -> None:
     assert bins.provides is not None
     assert "'Exp'" in [names.label for names in bins.provides.adds]
 
-    undeclared = entries["global-tsne"]
-    assert undeclared.requires is None
-    assert undeclared.provides is None
+    tsne = entries["global-tsne"]
+    assert tsne.requires is not None
+    assert [need.payload for need in tsne.requires] == [True]
+    assert tsne.provides is not None
+    assert [names.label for names in tsne.provides.adds] == ["'tsne_x'", "'tsne_y'"]
+
+    declarations = declaration_catalog()
+    for name, entry in entries.items():
+        declared = declarations.get(name)
+        assert declared is not None, name
+        assert (entry.requires is None) == (declared.requires is None), name
+        assert (entry.provides is None) == (declared.provides is None), name
 
 
 def test_the_cli_prints_cautions_beside_a_valid_verdict() -> None:

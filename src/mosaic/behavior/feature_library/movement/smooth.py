@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal, final
+from typing import Annotated, ClassVar, Literal, final
 
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import Provides, Requirement
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -18,7 +19,13 @@ from mosaic.core.params import Declared, Params
 from mosaic.optional_dependency import Prerequisite
 
 from ..registry import register_feature
-from .convert import MOVEMENT, from_movement_dataset, to_movement_dataset
+from .convert import (
+    MOVEMENT,
+    MOVEMENT_PROVIDES,
+    MOVEMENT_REQUIRES,
+    from_movement_dataset,
+    to_movement_dataset,
+)
 
 _METHOD_DESCRIPTION = (
     "The movement library filter used to smooth the trajectory. savgol "
@@ -99,6 +106,8 @@ class MovementSmooth:
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (MOVEMENT,)
     emits: EmitsLevel = "as-input"
+    requires: ClassVar[tuple[Requirement, ...]] = MOVEMENT_REQUIRES
+    provides: ClassVar[Provides] = MOVEMENT_PROVIDES
 
     class Inputs(TrackInputs):
         pass

@@ -9,6 +9,14 @@ import pandas as pd
 from pydantic import Field
 from xgboost import XGBClassifier
 
+from mosaic.core.pipeline.column_contract import (
+    META_COLUMNS_KEPT,
+    Column,
+    Payload,
+    Prefix,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -23,7 +31,12 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared
 
-from .helpers import ensure_columns, feature_columns, finite_rows, meta_columns
+from .helpers import (
+    ensure_columns,
+    feature_columns,
+    finite_rows,
+    meta_columns,
+)
 from .registry import register_feature
 
 _TEMPLATES_DESCRIPTION = (
@@ -126,6 +139,12 @@ class XgboostFeature:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    # Apply reads the template columns and writes one probability per class.
+    requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
+    provides: ClassVar[Provides] = Provides(
+        adds=(Prefix("prob_"), Column("predicted_label")),
+        conditional=META_COLUMNS_KEPT,
+    )
     ModelArtifact = XgboostModelArtifact
 
     class Inputs(Inputs[Result]):

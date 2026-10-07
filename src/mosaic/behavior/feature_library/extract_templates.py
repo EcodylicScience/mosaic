@@ -8,6 +8,12 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import (
+    Column,
+    Payload,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -102,6 +108,10 @@ class ExtractTemplates:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    # Fit reads each entry's sequence and samples its payload columns. Apply
+    # returns its input unchanged.
+    requires: ClassVar[tuple[Requirement, ...]] = (Column(C.seq_col), Payload())
+    provides: ClassVar[Provides] = Provides(passthrough=True)
     TemplatesArtifact = TemplatesArtifact
     ProvenanceArtifact = ProvenanceArtifact
 

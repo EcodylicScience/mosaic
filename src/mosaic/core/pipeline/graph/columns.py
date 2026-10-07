@@ -46,7 +46,14 @@ from ..column_contract import (
     resolve_names,
 )
 from ..loading import merge_naming
-from .compatibility import DeclarationCatalog
+from ..types.data_config import NON_PAYLOAD_COLS
+from .compatibility import (
+    TRACKS_DECLARATION,
+    ConsumerDecl,
+    Declaration,
+    DeclarationCatalog,
+    can_connect,
+)
 from .model import TRACKS_INPUT
 from .wire import (
     ColumnNames,
@@ -143,7 +150,13 @@ def _column_set(
 
 
 def _meets_a_family(need: NamedColumns, families: Collection[str]) -> bool:
-    """Whether a member of one of *families* may meet *need*."""
+    """Whether a member of one of *families* may meet *need*.
+
+    A member of any family meets a payload requirement, because a family is a
+    measurement such as the pose keypoints.
+    """
+    if need.payload and families:
+        return True
     if any(column.startswith(family) for column in need.columns for family in families):
         return True
     return any(
@@ -157,17 +170,21 @@ def _may_be_unlisted(need: NamedColumns, available: ColumnSet) -> bool:
     """Whether a column that no declaration names may meet *need* in *available*."""
     if not available.unlisted:
         return False
-    if need.prefixes:
+    if need.prefixes or need.payload:
         return True
     return any(column not in available.vocabulary for column in need.columns)
 
 
 def need_status(need: NamedColumns, available: ColumnSet) -> NeedStatus:
     """How a merged input described by *available* answers *need*."""
-    if need.met_by(available.guaranteed) or any(
-        family.startswith(prefix)
-        for prefix in need.prefixes
-        for family in available.guaranteed_prefixes
+    if (
+        need.met_by(available.guaranteed)
+        or (need.payload and bool(available.guaranteed_prefixes))
+        or any(
+            family.startswith(prefix)
+            for prefix in need.prefixes
+            for family in available.guaranteed_prefixes
+        )
     ):
         return "guaranteed"
     if need.met_by(available.possible) or _meets_a_family(
@@ -289,6 +306,11 @@ def output_columns(
 ) -> ColumnSet:
     """The columns of a step's output, from its declaration, params and input.
 
+    A family named after an input payload column is a prefix of the output:
+    guaranteed when the input guarantees the column, possible when it may
+    contain it. A family meets a payload requirement and makes a named column
+    possible. It does not guarantee a named column.
+
     Args:
         provides: The step's declared output, ``None`` when undeclared.
         merged: The columns of the step's merged input.
@@ -302,6 +324,15 @@ def output_columns(
     sure_prefixes = set(start.guaranteed_prefixes)
     maybe_prefixes = set(start.possible_prefixes)
     unbounded = start.unbounded
+    # The input that the output's columns are named after, by passthrough or by
+    # family. Its unlisted columns name output columns outside the vocabulary.
+    named_after = merged if provides.payload_families else start
+    if provides.payload_families:
+        sure_prefixes.update(_payload_names(merged.guaranteed))
+        sure_prefixes.update(merged.guaranteed_prefixes)
+        maybe_prefixes.update(_payload_names(merged.possible))
+        maybe_prefixes.update(merged.possible_prefixes)
+        unbounded = unbounded or merged.unbounded
     for ref in provides.adds:
         named = resolve_names(ref, values)
         unbounded = unbounded or named.unknown
@@ -328,9 +359,14 @@ def output_columns(
         sure_prefixes,
         maybe_prefixes,
         unbounded=unbounded,
-        unlisted=start.unlisted,
-        vocabulary=start.vocabulary,
+        unlisted=named_after.unlisted,
+        vocabulary=named_after.vocabulary,
     )
+
+
+def _payload_names(columns: Iterable[str]) -> list[str]:
+    """The payload columns among *columns*: those outside ``NON_PAYLOAD_COLS``."""
+    return [column for column in columns if column not in NON_PAYLOAD_COLS]
 
 
 def tracks_provides() -> Provides:
@@ -452,6 +488,7 @@ def providers_of(
     catalog: DeclarationCatalog,
     tracks: ColumnSet,
     besides: str = "",
+    consumer: ConsumerDecl | None = None,
 ) -> tuple[ColumnProvider, ...]:
     """The inputs whose output would contain *need*: the tracks, then features.
 
@@ -466,9 +503,16 @@ def providers_of(
         catalog: The declarations to search.
         tracks: The columns of the dataset's tracks.
         besides: A slug to leave out: the step's feature.
+        consumer: The step's consumer side. An input that it cannot read
+            (:func:`~mosaic.core.pipeline.graph.compatibility.can_connect`) is
+            left out.
     """
+
+    def readable(declaration: Declaration) -> bool:
+        return consumer is None or bool(can_connect(declaration.produces, consumer))
+
     found: list[ColumnProvider] = []
-    if need_status(need, tracks) == "guaranteed":
+    if need_status(need, tracks) == "guaranteed" and readable(TRACKS_DECLARATION):
         found.append(
             ColumnProvider(feature=TRACKS_INPUT, when_param="", when_present=())
         )
@@ -479,6 +523,7 @@ def providers_of(
             or declared.produces.kind != "feature"
             or declared.provides is None
             or name == besides
+            or not readable(declared)
         ):
             continue
         provider = _provider(name, declared.provides, declared.param_defaults, need)
@@ -512,6 +557,7 @@ def names_wire(named: NamedColumns) -> ColumnNames:
         prefixes=named.prefixes,
         params=named.params,
         unknown=named.unknown,
+        payload=named.payload,
     )
 
 
@@ -537,4 +583,5 @@ def provided_wire(provides: Provides, values: ParamValues) -> ProvidedColumns:
             )
             for conditional in provides.conditional
         ),
+        payload_families=provides.payload_families,
     )

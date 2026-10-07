@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from mosaic.core.pipeline.types import COLUMNS, META_COLS
+from mosaic.core.pipeline.types import COLUMNS, META_COLS, NON_PAYLOAD_COLS
 
 from .types import InterpolationConfig
 
@@ -28,24 +28,6 @@ __all__ = [
     "unwrap_diff",
     "wrap_angle",
 ]
-
-
-# Non-feature columns that are not identity either: a sampling rate, a ground-truth
-# label, a train/test assignment, a level marker. They are kept out of the feature
-# set like the identity columns, but a feature rebuilding its output does not carry
-# them -- they are bookkeeping about a run, not about who the row is.
-#
-# The identity names (id, sequence, group, frame, time, id1, id2, perspective) are
-# deliberately **not** listed here: they live in ``META_COLS``, so the exclusion
-# below and the passthrough in :func:`meta_columns` cannot drift apart. They did,
-# and the gap is where ``perspective`` fell through -- excluded from the features by
-# a list that named it, dropped from the metadata by a list that did not.
-_EXTRA_META = {"entity_level", "fps", "label", "split"}
-
-
-def _non_feature_columns(df: pd.DataFrame) -> set[str]:
-    """Every column of *df* that is not a measurement."""
-    return META_COLS | (_EXTRA_META & set(df.columns))
 
 
 def apply_exclude_cols(
@@ -69,13 +51,12 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
     """Return the sorted list of numeric feature column names in *df*.
 
     Excludes the identity columns (``META_COLS``) and the non-identity bookkeeping
-    ones (``entity_level``, ``fps``, ``label``, ``split``). Together with
+    ones (``BOOKKEEPING_COLS``), which is ``NON_PAYLOAD_COLS``: the numeric
+    payload that a ``Payload`` requirement names. Together with
     :func:`meta_columns` this partitions *df* by construction, which is the point:
     a feature that asks both questions cannot answer them with two different sets.
     """
-    return sorted(
-        set(df.select_dtypes(include="number").columns) - _non_feature_columns(df)
-    )
+    return sorted(set(df.select_dtypes(include="number").columns) - NON_PAYLOAD_COLS)
 
 
 def finite_rows(matrix: np.ndarray) -> np.ndarray:

@@ -17,11 +17,18 @@ Pipeline validation reads both from the declaration catalog.
 agree on the columns a feature reads.
 
 A reference names columns by name (:class:`Column`), by the value of a params
-field (:class:`ParamColumn`), or as a family sharing a prefix (:class:`Prefix`).
-A params field resolves from the step's params, which contain the field's default
-when the step does not set it. A requirement is a reference, a group that any one
-member meets (:class:`AnyOf`), or the columns that ``apply`` derives from other
-columns (:class:`Derived`).
+field (:class:`ParamColumn`), by a template over the params (:class:`Template`),
+or as a family sharing a prefix (:class:`Prefix`). A params field resolves from
+the step's params, which contain the field's default when the step does not set
+it. A requirement is a reference, a group that any one member meets
+(:class:`AnyOf`), the keypoint columns that a ``PoseConfig`` selects
+(:class:`Keypoints`), the columns that ``apply`` derives from other columns
+(:class:`Derived`), or any numeric payload column (:class:`Payload`). A global
+model reads every payload column of its merged input, whatever its name. A
+requirement that ``apply`` reads under some params only applies under conditions
+on them (:class:`When`). An output names its columns by reference, or names a
+family of columns after each payload column of its merged input
+(``Provides.payload_families``).
 """
 
 from __future__ import annotations
@@ -34,7 +41,12 @@ from typing import TYPE_CHECKING, Annotated, Final, Literal
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from mosaic.core.json_value import JsonValue
-from mosaic.core.pipeline.types.data_config import COLUMNS
+from mosaic.core.pipeline.types.data_config import (
+    COLUMNS,
+    META_COLS,
+    NON_PAYLOAD_COLS,
+    PoseConfig,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.types.feature import Feature
@@ -45,15 +57,25 @@ __all__ = [
     "ColumnRef",
     "Conditional",
     "Derived",
+    "Keypoints",
+    "META_COLUMNS_KEPT",
     "META_KEPT",
     "MissingInputColumns",
+    "NON_PAYLOAD_KEPT",
     "NamedColumns",
     "ORDER_COLUMN",
+    "PAYLOAD_LABEL",
+    "POSE_X",
+    "POSE_Y",
     "ParamColumn",
+    "ParamIs",
     "ParamValues",
+    "Payload",
     "Prefix",
     "Provides",
     "Requirement",
+    "Template",
+    "When",
     "check_input_columns",
     "contract_fields",
     "declared_names",
@@ -112,7 +134,28 @@ class Prefix:
     kind: Literal["prefix"] = "prefix"
 
 
-type ColumnRef = Annotated[Column | ParamColumn | Prefix, Field(discriminator="kind")]
+@dataclass(frozen=True, slots=True)
+class Template:
+    """A column, or a family of columns, whose name is a template over the params.
+
+    ``"{x_prefix}{pose_head_index}"`` names the head keypoint of ``pair-facing``.
+    A dotted field reads a nested params model, as ``"{pose.x_prefix}"`` reads a
+    ``PoseConfig``. A template whose field is unset or holds no scalar names
+    columns that cannot be listed.
+
+    Attributes:
+        template: The name, each ``{field}`` filled from the step's params.
+        family: Whether the name is the prefix of a family of columns.
+    """
+
+    template: str
+    family: bool = False
+    kind: Literal["template"] = "template"
+
+
+type ColumnRef = Annotated[
+    Column | ParamColumn | Prefix | Template, Field(discriminator="kind")
+]
 """One reference to a column or a family of columns."""
 
 
@@ -151,8 +194,89 @@ class Derived:
     kind: Literal["derived"] = "derived"
 
 
+@dataclass(frozen=True, slots=True)
+class Payload:
+    """A requirement that any numeric payload column meets.
+
+    A payload column is any column outside ``NON_PAYLOAD_COLS``: the identity
+    columns and the bookkeeping ones. ``extract-templates`` samples every
+    payload column of its merged input, and the global models fitted on the
+    templates read the same columns. A kind of column meets the requirement, and
+    a frame without a payload column leaves them nothing to read.
+
+    Validation, which reads names alone, counts any column outside
+    ``NON_PAYLOAD_COLS``. The check before ``apply`` reads the frame's numeric
+    columns.
+    """
+
+    kind: Literal["payload"] = "payload"
+
+
+@dataclass(frozen=True, slots=True)
+class Keypoints:
+    """Every keypoint coordinate column that a ``PoseConfig`` params field selects.
+
+    The columns are ``<x_prefix><i>`` and ``<y_prefix><i>`` for each index *i*
+    in ``pose_indices``, or below ``pose_n`` when ``pose_indices`` is unset
+    (:meth:`~mosaic.core.pipeline.types.data_config.PoseConfig.keypoint_columns`).
+    Each column is a requirement of its own.
+
+    Attributes:
+        field: The params field holding the ``PoseConfig``.
+    """
+
+    field: str = "pose"
+    kind: Literal["keypoints"] = "keypoints"
+
+
+@dataclass(frozen=True, slots=True)
+class ParamIs:
+    """A condition on one params field.
+
+    Attributes:
+        field: The params field. A dotted field reads a nested params model.
+        equals: The value that the field must hold. ``None`` tests whether the
+            field is set (see :func:`is_set`).
+        negated: Whether the condition holds in the opposite case: the field
+            unset, or holding another value.
+    """
+
+    field: str
+    equals: str | int | float | None = None
+    negated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class When:
+    """A requirement that ``apply`` reads only while conditions on its params hold.
+
+    ``approach-avoidance`` reads ``ANGLE`` while ``orientation_gate_cos`` is set.
+    A condition whose field cannot be read leaves the requirement unknown.
+
+    Attributes:
+        requirement: The requirement that applies.
+        conditions: The conditions, every one of which must hold.
+    """
+
+    requirement: Annotated[
+        Column | ParamColumn | Prefix | Template | AnyOf | Keypoints,
+        Field(discriminator="kind"),
+    ]
+    conditions: tuple[ParamIs, ...]
+    kind: Literal["when"] = "when"
+
+
 type Requirement = Annotated[
-    Column | ParamColumn | Prefix | AnyOf | Derived, Field(discriminator="kind")
+    Column
+    | ParamColumn
+    | Prefix
+    | Template
+    | AnyOf
+    | Keypoints
+    | Derived
+    | Payload
+    | When,
+    Field(discriminator="kind"),
 ]
 """One entry of a feature's ``requires``."""
 
@@ -186,11 +310,17 @@ class Provides:
         passthrough: Whether the output copies every column of its merged input.
         adds: Columns it always writes.
         conditional: Columns it writes under a condition.
+        payload_families: Whether the output writes a family of columns per
+            payload column of its merged input, each name beginning with that
+            column's name. ``temporal-stack`` writes ``speed__t+05`` and
+            ``speed__pool_mean`` from ``speed``. Params and data decide the rest
+            of each name. A family may include the input column.
     """
 
     passthrough: bool = False
     adds: tuple[ColumnRef, ...] = ()
     conditional: tuple[Conditional, ...] = ()
+    payload_families: bool = False
 
 
 def kept(*names: str) -> tuple[Conditional, ...]:
@@ -201,8 +331,34 @@ def kept(*names: str) -> tuple[Conditional, ...]:
 META_KEPT: Final[tuple[Conditional, ...]] = kept(*sorted(COLUMNS.meta_set()))
 """The identity columns, copied when present, as a feature joining them back does."""
 
+META_COLUMNS_KEPT: Final[tuple[Conditional, ...]] = kept(*sorted(META_COLS))
+"""The identity columns and the pair columns, copied when present.
+
+A feature that rebuilds its output from ``META_COLS`` keeps these, as
+``temporal-stack`` does.
+"""
+
+NON_PAYLOAD_KEPT: Final[tuple[Conditional, ...]] = kept(*sorted(NON_PAYLOAD_COLS))
+"""The identity and bookkeeping columns, copied when present.
+
+A global model's ``apply`` keeps these beside the columns that it writes, as
+``global-kmeans`` keeps every column except the payload that it assigns clusters
+from.
+"""
+
 ORDER_COLUMN: Final = AnyOf((Column(COLUMNS.frame_col), Column(COLUMNS.time_col)))
 """What ``resolve_order_col`` orders rows by: the frame, or else the time."""
+
+_POSE_DEFAULTS: Final = PoseConfig()
+
+POSE_X: Final = Prefix(_POSE_DEFAULTS.x_prefix)
+"""The keypoint x columns under ``PoseConfig``'s default prefix, ``poseX*``.
+
+A feature without a ``PoseConfig`` field reads its keypoints under this prefix.
+"""
+
+POSE_Y: Final = Prefix(_POSE_DEFAULTS.y_prefix)
+"""The keypoint y columns under ``PoseConfig``'s default prefix, ``poseY*``."""
 
 
 # --- reading a declaration -------------------------------------------------------
@@ -246,10 +402,15 @@ def declared_provides(owner: object) -> Provides | None:
     raise TypeError(msg)
 
 
+def _top_field(path: str) -> str:
+    """The params field that a dotted path into a nested model starts at."""
+    return path.split(".", 1)[0]
+
+
 def _template_fields(template: str) -> list[str]:
-    """The params fields that a fallback template reads."""
+    """The params fields that a template reads, each nested path by its first field."""
     return [
-        field_name
+        _top_field(field_name)
         for _, field_name, _, _ in string.Formatter().parse(template)
         if field_name
     ]
@@ -257,6 +418,8 @@ def _template_fields(template: str) -> list[str]:
 
 def _reference_fields(ref: ColumnRef) -> list[str]:
     """The params fields that resolving *ref* reads."""
+    if isinstance(ref, Template):
+        return _template_fields(ref.template)
     if not isinstance(ref, ParamColumn):
         return []
     found = [ref.field, *_template_fields(ref.fallback)]
@@ -268,13 +431,29 @@ def _reference_fields(ref: ColumnRef) -> list[str]:
 def _members(requirement: Requirement) -> tuple[ColumnRef, ...]:
     """The references of one requirement: an any-of group's members, or itself.
 
-    A derivation names its columns in a params value instead of a reference.
+    A conditional requirement contributes the references of the requirement it
+    applies. A derivation and a keypoint selection name their columns in a
+    params value instead of a reference, and a payload requirement names none.
     """
+    if isinstance(requirement, When):
+        return _members(requirement.requirement)
     if isinstance(requirement, AnyOf):
         return requirement.of
-    if isinstance(requirement, Derived):
+    if isinstance(requirement, Derived | Payload | Keypoints):
         return ()
     return (requirement,)
+
+
+def _value_fields(requirement: Requirement) -> list[str]:
+    """The params fields that a requirement reads outside its references."""
+    if isinstance(requirement, When):
+        return [
+            *(_top_field(condition.field) for condition in requirement.conditions),
+            *_value_fields(requirement.requirement),
+        ]
+    if isinstance(requirement, Derived | Keypoints):
+        return [requirement.field]
+    return []
 
 
 def _references(
@@ -302,9 +481,9 @@ def contract_fields(
         for field_name in _reference_fields(ref)
     ]
     found.extend(
-        requirement.field
+        field_name
         for requirement in requires or ()
-        if isinstance(requirement, Derived)
+        for field_name in _value_fields(requirement)
     )
     if provides is not None:
         found.extend(
@@ -325,6 +504,9 @@ def declared_names(
 
 
 # --- resolving references ---------------------------------------------------------
+
+PAYLOAD_LABEL: Final = "a numeric payload column"
+"""How a message names what a :class:`Payload` requirement needs."""
 
 type ParamValues = Mapping[str, JsonValue]
 """A step's params as JSON, every field that a declaration reads included."""
@@ -365,18 +547,23 @@ class NamedColumns:
             reference then names columns that cannot be listed. A requirement
             listed after a derivation that cannot be read is unknown too, because
             the derivation may write its column.
+        payload: Whether any payload column meets it, a column outside
+            ``NON_PAYLOAD_COLS``. :class:`Payload` resolves to this.
     """
 
     columns: tuple[str, ...] = ()
     prefixes: tuple[str, ...] = ()
     params: tuple[str, ...] = ()
     unknown: bool = False
+    payload: bool = False
 
     @property
     def label(self) -> str:
         """The names, quoted and joined with ``or``, as a message prints them."""
         names = [repr(name) for name in self.columns]
         names.extend(repr(f"{prefix}*") for prefix in self.prefixes)
+        if self.payload:
+            names.append(PAYLOAD_LABEL)
         if names:
             return " or ".join(names)
         fields = ", ".join(self.params)
@@ -385,6 +572,8 @@ class NamedColumns:
     def met_by(self, present: Collection[str]) -> bool:
         """Whether a frame with the columns *present* meets this requirement."""
         if any(name in present for name in self.columns):
+            return True
+        if self.payload and any(column not in NON_PAYLOAD_COLS for column in present):
             return True
         return any(
             column.startswith(prefix) for prefix in self.prefixes for column in present
@@ -403,6 +592,19 @@ def _listed(value: JsonValue) -> tuple[str, ...] | None:
     return None
 
 
+def _lookup(values: ParamValues, path: str) -> tuple[bool, JsonValue]:
+    """The value at a dotted *path* into *values*, and whether the path is there."""
+    first, *rest = path.split(".")
+    if first not in values:
+        return False, None
+    value = values[first]
+    for part in rest:
+        if not isinstance(value, dict) or part not in value:
+            return False, None
+        value = value[part]
+    return True, value
+
+
 def _render(template: str, values: ParamValues) -> str | None:
     """*template* with each ``{field}`` filled from *values*, or ``None`` when one is unset."""
     parts: list[str] = []
@@ -410,7 +612,7 @@ def _render(template: str, values: ParamValues) -> str | None:
         parts.append(literal)
         if not field_name:
             continue
-        value = values.get(field_name)
+        _, value = _lookup(values, field_name)
         if isinstance(value, bool) or not isinstance(value, str | int | float):
             return None
         if value == "":
@@ -439,6 +641,13 @@ def resolve_names(ref: ColumnRef, values: ParamValues) -> NamedColumns:
     if isinstance(ref, Prefix):
         return NamedColumns(prefixes=(ref.prefix,))
     read = tuple(_reference_fields(ref))
+    if isinstance(ref, Template):
+        rendered = _render(ref.template, values)
+        if rendered is None:
+            return NamedColumns(params=read, unknown=True)
+        if ref.family:
+            return NamedColumns(prefixes=(rendered,), params=read)
+        return NamedColumns(columns=(rendered,), params=read)
     unknown = NamedColumns(params=read, unknown=True)
     if ref.field not in values:
         return unknown
@@ -507,15 +716,54 @@ def _resolved(requirement: AnyOf | ColumnRef, values: ParamValues) -> NamedColum
     )
 
 
+def _pose_config(value: JsonValue) -> PoseConfig | None:
+    """*value* read as a ``PoseConfig``, ``None`` when it is not one."""
+    if not isinstance(value, dict):
+        return None
+    try:
+        return PoseConfig.model_validate(value)
+    except ValidationError:
+        return None
+
+
+def _keypoint_needs(requirement: Keypoints, values: ParamValues) -> list[NamedColumns]:
+    """One requirement per keypoint column that *requirement* selects.
+
+    One unknown requirement when its field does not hold a ``PoseConfig``.
+    """
+    params = (requirement.field,)
+    _, value = _lookup(values, requirement.field)
+    config = _pose_config(value)
+    if config is None:
+        return [NamedColumns(params=params, unknown=True)]
+    xs, ys = config.keypoint_columns()
+    return [
+        NamedColumns(columns=(name,), params=params)
+        for pair in zip(xs, ys, strict=True)
+        for name in pair
+    ]
+
+
+def _holds(condition: ParamIs, values: ParamValues) -> bool | None:
+    """Whether *condition* holds under *values*, ``None`` when its field is not there."""
+    present, value = _lookup(values, condition.field)
+    if not present:
+        return None
+    holds = is_set(value) if condition.equals is None else value == condition.equals
+    return holds != condition.negated
+
+
 def needs_of(
     requires: Sequence[Requirement], values: ParamValues
 ) -> tuple[NamedColumns, ...]:
     """Each requirement in *requires*, resolved against one step's params.
 
     A requirement is left out when its params field is unset, as an unset
-    ``subgroup_col`` is. A requirement is also left out when a derivation listed
-    before it writes a column that meets it. A derivation contributes one
-    requirement per column that it reads from the input.
+    ``subgroup_col`` is, or when a condition on it does not hold. A requirement
+    is also left out when a derivation listed before it writes a column that
+    meets it. A derivation contributes one requirement per column that it reads
+    from the input, and a keypoint selection one per column that it selects. A
+    payload requirement resolves to one that any payload column meets.
     """
     found: list[NamedColumns] = []
     written: set[str] = set()
@@ -537,13 +785,31 @@ def needs_of(
                 for source in _dedupe(read)
             )
             continue
-        need = _resolved(requirement, values)
-        if need.met_by(written):
-            continue
-        if derivation_unknown:
-            need = replace(need, unknown=True)
-        if need.columns or need.prefixes or need.unknown:
-            found.append(need)
+        unknown = derivation_unknown
+        applied: Column | ParamColumn | Prefix | Template | AnyOf | Keypoints | Payload
+        if isinstance(requirement, When):
+            outcomes = [
+                _holds(condition, values) for condition in requirement.conditions
+            ]
+            if any(outcome is False for outcome in outcomes):
+                continue
+            unknown = unknown or None in outcomes
+            applied = requirement.requirement
+        else:
+            applied = requirement
+        if isinstance(applied, Keypoints):
+            needs = _keypoint_needs(applied, values)
+        elif isinstance(applied, Payload):
+            needs = [NamedColumns(payload=True)]
+        else:
+            needs = [_resolved(applied, values)]
+        for need in needs:
+            if need.met_by(written):
+                continue
+            if unknown:
+                need = replace(need, unknown=True)
+            if need.columns or need.prefixes or need.unknown or need.payload:
+                found.append(need)
     return tuple(found)
 
 
@@ -578,11 +844,23 @@ class MissingInputColumns(ValueError):
         super().__init__(message)
 
 
-def check_input_columns(feature: Feature, columns: Iterable[object]) -> None:
+def check_input_columns(
+    feature: Feature,
+    columns: Iterable[object],
+    *,
+    numeric: Iterable[object] | None = None,
+) -> None:
     """Raise unless *columns* meet every requirement that *feature* declares.
 
     A feature without a ``requires`` declaration passes. So does a requirement
     whose params value cannot be read as column names.
+
+    Args:
+        feature: The feature about to apply.
+        columns: The columns of its merged frame.
+        numeric: The numeric columns among *columns*, which alone meet a
+            :class:`Payload` requirement. ``None`` reads every column as
+            numeric.
 
     Raises:
         MissingInputColumns: Naming every requirement the frame does not meet.
@@ -592,10 +870,11 @@ def check_input_columns(feature: Feature, columns: Iterable[object]) -> None:
         return
     values = param_values(feature.params, contract_fields(requires, None))
     present = frozenset(str(column) for column in columns)
+    numbers = present if numeric is None else frozenset(str(name) for name in numeric)
     missing = [
         need
         for need in needs_of(requires, values)
-        if not need.unknown and not need.met_by(present)
+        if not need.unknown and not need.met_by(numbers if need.payload else present)
     ]
     if missing:
         inputs = [

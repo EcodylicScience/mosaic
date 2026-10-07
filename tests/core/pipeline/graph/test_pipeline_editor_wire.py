@@ -132,6 +132,13 @@ def test_a_catalog_entry_carries_its_schema_version_and_summary() -> None:
     assert entries[TRACKS_INPUT].params_schema is None
 
 
+def test_a_catalog_summary_is_a_whole_sentence_below_the_name() -> None:
+    """The editor shows the summary under the name. It ends its one sentence."""
+    for entry in editor_catalog().entries:
+        assert not entry.summary.startswith(f"'{entry.name}'"), entry.name
+        assert entry.summary.endswith("."), entry.name
+
+
 # --- reading and validating -------------------------------------------------------
 
 

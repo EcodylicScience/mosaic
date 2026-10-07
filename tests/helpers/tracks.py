@@ -300,6 +300,8 @@ def add_tracks_variant(
     consumed_source_roots: tuple[str, ...] = ("tracks_raw",),
     std_format: str = "trex_v1",
     producer_run_id: str = "",
+    keypoints: int = 7,
+    pose_prefixes: tuple[str, str] = ("poseX", "poseY"),
 ) -> None:
     """Write a variant-addressed track table per sequence, through the real writer.
 
@@ -322,6 +324,9 @@ def add_tracks_variant(
     ``producer_run_id`` is the op run a tracked or inferred variant was bridged
     from, and empty for a conversion, as the real writers record it.
 
+    ``keypoints`` sets how many keypoints each table holds, and ``pose_prefixes``
+    the names of their x and y columns before the index.
+
     Uses ``write_tracks_row`` rather than a hand-built CSV, so the index it
     produces is the index production produces -- including the dedup that decides
     whether a second call adds a row or replaces one.
@@ -331,10 +336,11 @@ def add_tracks_variant(
     root = tracks_variant_root(dataset.get_root("tracks"), run_id)
     root.mkdir(parents=True, exist_ok=True)
     for sequence in sequences:
-        # Two individuals and seven keypoints, beyond what ``add_track_sequences``
-        # writes. That is what lets a *registered* feature actually run on this
-        # fixture -- including the social ones, which need a sequence to hold at
-        # least two ids -- which the chain-runner parity assertions depend on.
+        # Two individuals and seven keypoints by default, beyond what
+        # ``add_track_sequences`` writes. That is what lets a *registered*
+        # feature actually run on this fixture -- including the social ones,
+        # which need a sequence to hold at least two ids -- which the
+        # chain-runner parity assertions depend on.
         #
         # ``#wcentroid`` holds the values of X/Y because that is what a TREx table
         # looks like: one body centre under both names. This fixture once carried
@@ -342,9 +348,10 @@ def add_tracks_variant(
         table = track_table("", sequence, n_rows=n_rows, n_ids=2)
         table["X#wcentroid"] = table["X"]
         table["Y#wcentroid"] = table["Y"]
-        for keypoint in range(7):
-            table[f"poseX{keypoint}"] = table["X"] + keypoint
-            table[f"poseY{keypoint}"] = table["Y"] + keypoint
+        x_prefix, y_prefix = pose_prefixes
+        for keypoint in range(keypoints):
+            table[f"{x_prefix}{keypoint}"] = table["X"] + keypoint
+            table[f"{y_prefix}{keypoint}"] = table["Y"] + keypoint
         out_path = root / f"{make_entry_key('', sequence)}.parquet"
         table.to_parquet(out_path)
         write_tracks_row(

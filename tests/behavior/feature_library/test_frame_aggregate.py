@@ -151,6 +151,15 @@ def test_metadata_attached():
     np.testing.assert_allclose(out["time"], [0.0])
 
 
+def test_a_table_without_frames_is_aggregated_by_its_time():
+    """The time orders the rows and keys the result, and is not aggregated twice."""
+    df = _make_df({0: [1.0, 3.0], 1: [4.0, 6.0]}).drop(columns="frame")
+    out = _apply({"column": "value", "agg": "mean"}, df)
+    assert list(out.columns) == ["time", "value_mean", "sequence", "group"]
+    np.testing.assert_allclose(out["time"], [0.0, 0.02])
+    np.testing.assert_allclose(out["value_mean"], [2.0, 5.0])
+
+
 def test_output_column_override():
     df = _make_df({0: [1.0, 3.0]})
     out = _apply({"column": "value", "agg": "mean", "output_column": "custom_name"}, df)

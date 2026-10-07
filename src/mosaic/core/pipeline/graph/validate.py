@@ -548,7 +548,7 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
         return problems
     except (MissingScopeDeclaration, MissingConsumedRootsDeclaration) as exc:
         # A feature registered without the declarations its identity reads. No
-        # plan can name its run, so the recipe cannot run on any dataset.
+        # plan can name its run on any dataset.
         walk.broken.add(step.id)
         problems.append(Problem(step.id, where, str(exc)))
         return problems
@@ -704,8 +704,17 @@ def _absent_message(step: FeatureStepSpec, need: NamedColumns, walk: _Walk) -> s
 
 def _supplied_by(step: FeatureStepSpec, need: NamedColumns, walk: _Walk) -> str:
     """Which inputs would supply *need*, as the end of a problem's message."""
+    if need.payload:
+        return "The tracks input and every feature that writes a measurement provide it"
     tracks = walk.tracks_of(step.id)
-    providers = providers_of(need, walk.catalog, tracks, besides=step.feature)
+    declared = walk.catalog.get(step.feature)
+    providers = providers_of(
+        need,
+        walk.catalog,
+        tracks,
+        besides=step.feature,
+        consumer=None if declared is None else declared.consumes,
+    )
     if providers:
         named = "; ".join(provider_phrase(provider) for provider in providers)
         sentence = f"{named} {'provides' if len(providers) == 1 else 'provide'} it"
@@ -887,7 +896,7 @@ def reject_unless_valid(
 def read_recipe(document: object) -> Recipe:
     """Parse *document* as a recipe, reporting a malformed one as problems.
 
-    The one parse every reader shares, so a structural fault reads the same from
+    The one parse every reader shares. A structural fault reads the same from
     the CLI, from an API and from an editor. A pydantic error inside
     ``steps[i]`` is reported at that step's id when the document gives it one.
 
@@ -914,8 +923,8 @@ def _structural_problem(
     rest = location[2:]
     raw_step = _step_document(document, index)
     tag = raw_step.get("type")
-    # pydantic names the union member it tried after the index, which is the
-    # step's own ``type`` and not a field of it.
+    # pydantic names the union member it tried after the index: the step's own
+    # ``type``, not a field of it.
     if rest and isinstance(tag, str) and rest[0] == tag:
         rest = rest[1:]
     where = render_location(rest)
@@ -968,14 +977,14 @@ def resolved_levels(
 ) -> dict[str, EntityLevel]:
     """The entity level each step's output resolves to, keyed by step id.
 
-    A step's level depends only on its declaration and its inputs, so it is
+    A step's level depends only on its declaration and its inputs. It is
     answered for every step whose name the catalog declares, including one
     whose params do not build. ``as-input`` resolves through the first input,
     and a step the catalog does not declare is left out; a reader of it gets
-    ``individual``, which is what raw tracks give.
+    ``individual``, the level of raw tracks.
 
     Raises:
-        RecipeCycle: The recipe has a cycle, so no step has an upstream.
+        RecipeCycle: The recipe has a cycle, in which no step has an upstream.
     """
     levels: dict[str, EntityLevel] = {}
     for step in topological_order(recipe):
@@ -1434,7 +1443,11 @@ def input_candidates(
                 need=names_wire(need),
                 status=status,
                 providers=providers_of(
-                    need, walk.catalog, walk.tracks, besides=target.feature
+                    need,
+                    walk.catalog,
+                    walk.tracks,
+                    besides=target.feature,
+                    consumer=declared.consumes,
                 ),
             )
             for need, status in still

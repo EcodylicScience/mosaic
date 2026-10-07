@@ -8,6 +8,13 @@ import numpy as np
 import pandas as pd
 
 from mosaic.core.pose_columns import pose_column_pairs
+from mosaic.core.pipeline.column_contract import (
+    POSE_X,
+    AnyOf,
+    Column,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import COLUMNS
 from mosaic.optional_dependency import OptionalModule
 
@@ -15,6 +22,20 @@ MOVEMENT: Final = OptionalModule(
     "movement", "movement", "the movement-library filtering and smoothing features"
 )
 """The movement library, a prerequisite of every feature in this package."""
+
+MOVEMENT_REQUIRES: Final[tuple[Requirement, ...]] = (
+    Column(COLUMNS.id_col),
+    Column(COLUMNS.frame_col),
+    AnyOf((Column(COLUMNS.x_col), POSE_X)),
+)
+"""What :func:`to_movement_dataset` reads: the individual, the frame and a keypoint.
+
+A keypoint is the centroid ``X``/``Y`` or a pose pair. With ``include_centroid``
+false only a pose pair counts, and :func:`to_movement_dataset` raises without one.
+"""
+
+MOVEMENT_PROVIDES: Final = Provides(passthrough=True)
+"""What :func:`from_movement_dataset` returns: its input, with positions replaced."""
 
 
 def to_movement_dataset(

@@ -31,6 +31,7 @@ from pydantic import Field
 
 from mosaic.behavior.model_library.identity_embedding import DEFAULT_MODEL_NAME
 from mosaic.behavior.model_library.timm_backbone import TIMM
+from mosaic.core.pipeline.column_contract import Provides, Requirement
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -172,6 +173,9 @@ class GlobalIdentityEmbedding:
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (TIMM,)
     emits: EmitsLevel = "as-input"
+    # Fit reads crop images from disk, and apply returns its input unchanged.
+    requires: ClassVar[tuple[Requirement, ...]] = ()
+    provides: ClassVar[Provides] = Provides(passthrough=True)
     ModelArtifact = EmbeddingIdentityArtifact
 
     class Inputs(Inputs[Result]):

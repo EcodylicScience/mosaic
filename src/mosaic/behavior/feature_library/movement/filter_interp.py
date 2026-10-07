@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import Provides, Requirement
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -19,7 +20,13 @@ from mosaic.core.params import Declared, Params
 from mosaic.optional_dependency import Prerequisite
 
 from ..registry import register_feature
-from .convert import MOVEMENT, from_movement_dataset, to_movement_dataset
+from .convert import (
+    MOVEMENT,
+    MOVEMENT_PROVIDES,
+    MOVEMENT_REQUIRES,
+    from_movement_dataset,
+    to_movement_dataset,
+)
 
 _CONFIDENCE_THRESHOLD_DESCRIPTION = (
     "Confidence cutoff below which a point is set to NaN. Skipped when "
@@ -79,6 +86,8 @@ class MovementFilterInterpolate:
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (MOVEMENT,)
     emits: EmitsLevel = "as-input"
+    requires: ClassVar[tuple[Requirement, ...]] = MOVEMENT_REQUIRES
+    provides: ClassVar[Provides] = MOVEMENT_PROVIDES
 
     class Inputs(TrackInputs):
         pass

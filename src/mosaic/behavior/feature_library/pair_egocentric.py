@@ -8,12 +8,20 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, Final, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import (
+    ORDER_COLUMN,
+    Column,
+    Keypoints,
+    Provides,
+    Requirement,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -65,18 +73,58 @@ _CENTER_MODE_UNWIRED = (
     "branch needs an int this field refuses"
 )
 
+EGOCENTRIC_PAIR_COLUMNS: Final[tuple[str, ...]] = (
+    "A_speed",
+    "A_v_para",
+    "A_v_perp",
+    "A_ang_speed",
+    "A_heading_cos",
+    "A_heading_sin",
+    "AB_dist",
+    "AB_dx_egoA",
+    "AB_dy_egoA",
+    "rel_heading_cos",
+    "rel_heading_sin",
+    "B_speed",
+    "B_v_para",
+    "B_v_perp",
+    "B_ang_speed",
+)
+"""The measurements of one pair row, in output order.
+
+``pair-position`` writes the same columns from a centroid and a heading, and a
+step reading the output of one reads the output of the other.
+"""
+
+PAIR_EGOCENTRIC_PROVIDES: Final = Provides(
+    adds=(
+        Column(C.frame_col),
+        Column("perspective"),
+        Column("id1"),
+        Column("id2"),
+        Column(C.seq_col),
+        *(Column(name) for name in EGOCENTRIC_PAIR_COLUMNS),
+    ),
+    conditional=kept(C.group_col),
+)
+"""The output of ``pair-egocentric`` and ``pair-position``.
+
+Each renames the order column to ``frame``, whether its values are frames or times.
+Each reads ``sequence`` and copies it.
+"""
+
 
 @final
 @register_feature
 class PairEgocentricFeatures:
-    """
-    'pair-egocentric' -- per-sequence egocentric + kinematic features for dyads.
+    """Egocentric and kinematic features of every pair, from pose keypoints.
+
     Produces a row-wise DataFrame with columns:
-      - frame (if available) or time passthrough (only if it's the order col)
+      - frame: the order column's values, frames or else times
       - perspective: 0 for A->B, 1 for B->A
       - id1, id2: pair identifiers
       - feature columns (e.g., A_speed, AB_dx_egoA, ...)
-      - (optionally) group/sequence if present in df, for convenience
+      - sequence, and group when the input has it
 
     This feature is *stateless* (no fitting). It computes features for all C(n,2)
     pairs per sequence, cleans/interpolates pose per animal, inner-joins by the
@@ -94,6 +142,13 @@ class PairEgocentricFeatures:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.id_col),
+        Column(C.seq_col),
+        ORDER_COLUMN,
+        Keypoints(),
+    )
+    provides: ClassVar[Provides] = PAIR_EGOCENTRIC_PROVIDES
 
     class Inputs(TrackInputs):
         pass
@@ -137,7 +192,7 @@ class PairEgocentricFeatures:
         pass
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        x_cols, y_cols = self._column_names()
+        x_cols, y_cols = self.params.pose.keypoint_columns()
         pose_cols = x_cols + y_cols
         order_col = resolve_order_col(df)
         p = self.params
@@ -223,13 +278,6 @@ class PairEgocentricFeatures:
         return out
 
     # --- Internals ---
-    def _get_pose_indices(self) -> list[int]:
-        """Return the list of pose point indices to use."""
-        indices = self.params.pose.pose_indices
-        if indices is None:
-            return list(range(self.params.pose.pose_n))
-        return list(indices)
-
     def _map_anatomical_idx(self, param_name: str) -> int:
         """Map an anatomical index (neck_idx, tail_base_idx) to position in filtered array.
 
@@ -248,12 +296,6 @@ class PairEgocentricFeatures:
                 f"[pair-egocentric] {param_name}={val} is not in pose_indices={indices}. "
                 f"When using pose_indices, {param_name} must be one of the selected indices."
             )
-
-    def _column_names(self) -> tuple[list[str], list[str]]:
-        indices = self._get_pose_indices()
-        xs = [f"{self.params.pose.x_prefix}{i}" for i in indices]
-        ys = [f"{self.params.pose.y_prefix}{i}" for i in indices]
-        return xs, ys
 
     def _safe_unit(
         self, vx: np.ndarray, vy: np.ndarray, eps: float = 1e-8
@@ -274,7 +316,7 @@ class PairEgocentricFeatures:
     def _build_ego_block_for_joined(
         self, j: pd.DataFrame, fps: float, pose_cols: list[str]
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
-        indices = self._get_pose_indices()
+        indices = self.params.pose.selected_indices()
         n_pts = len(indices)
         neck = self._map_anatomical_idx("neck_idx")
         tail = self._map_anatomical_idx("tail_base_idx")
@@ -344,23 +386,7 @@ class PairEgocentricFeatures:
         rel_cos = np.cos(dth)
         rel_sin = np.sin(dth)
 
-        names = [
-            "A_speed",
-            "A_v_para",
-            "A_v_perp",
-            "A_ang_speed",
-            "A_heading_cos",
-            "A_heading_sin",
-            "AB_dist",
-            "AB_dx_egoA",
-            "AB_dy_egoA",
-            "rel_heading_cos",
-            "rel_heading_sin",
-            "B_speed",
-            "B_v_para",
-            "B_v_perp",
-            "B_ang_speed",
-        ]
+        names: list[str] = list(EGOCENTRIC_PAIR_COLUMNS)
 
         AtoB = np.vstack(
             [

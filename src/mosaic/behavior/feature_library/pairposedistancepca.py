@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
-from typing import Annotated, TypedDict, final
+from typing import Annotated, ClassVar, TypedDict, final
 
 import joblib
 import numpy as np
@@ -12,6 +12,15 @@ import pandas as pd
 from pydantic import Field
 from sklearn.decomposition import IncrementalPCA
 
+from mosaic.core.pipeline.column_contract import (
+    ORDER_COLUMN,
+    Column,
+    Keypoints,
+    Prefix,
+    Provides,
+    Requirement,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -85,9 +94,10 @@ class _BatchMeta:
 @final
 @register_feature
 class PairPoseDistancePCA:
-    """
-    'pair-posedistance-pca' — builds per-frame pairwise pose-distance features and
-    fits an IncrementalPCA globally; outputs PC scores per sequence (and perspective).
+    """Principal components of the pose distances between every pair, per frame.
+
+    Builds per-frame pairwise pose-distance features, fits an IncrementalPCA over
+    every sequence, and writes the PC scores per sequence and perspective.
 
     One row per **ordered** pair per frame: ``id1`` is the focal, ``id2`` the other,
     and ``perspective`` says which ordering, so the key is
@@ -105,6 +115,24 @@ class PairPoseDistancePCA:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.id_col),
+        Column(C.seq_col),
+        ORDER_COLUMN,
+        Keypoints(),
+    )
+    # One PC column per component, PC0 to PC<n_components - 1>. The frame column
+    # contains the order column's values, and is written when the input has frame.
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Prefix("PC"),
+            Column("perspective"),
+            Column("id1"),
+            Column("id2"),
+            Column(C.seq_col),
+        ),
+        conditional=kept(C.frame_col, C.group_col),
+    )
 
     class Inputs(TrackInputs):
         pass
@@ -224,27 +252,14 @@ class PairPoseDistancePCA:
         return out_df
 
     # ---------- Internals ----------
-    def _get_pose_indices(self) -> list[int]:
-        """Return the list of pose point indices to use."""
-        indices = self.params.pose.pose_indices
-        if indices is None:
-            return list(range(self.params.pose.pose_n))
-        return list(indices)
-
     def _effective_pose_n(self) -> int:
         """Return the number of pose points being used."""
-        return len(self._get_pose_indices())
-
-    def _column_names(self) -> tuple[list[str], list[str]]:
-        indices = self._get_pose_indices()
-        xs = [f"{self.params.pose.x_prefix}{i}" for i in indices]
-        ys = [f"{self.params.pose.y_prefix}{i}" for i in indices]
-        return xs, ys
+        return len(self.params.pose.selected_indices())
 
     def _prep_pairs(
         self, df: pd.DataFrame
     ) -> tuple[pd.DataFrame, list[tuple[str, int, int]]]:
-        x_cols, y_cols = self._column_names()
+        x_cols, y_cols = self.params.pose.keypoint_columns()
         pose_cols = x_cols + y_cols
         order_col = resolve_order_col(df)
 
@@ -304,7 +319,7 @@ class PairPoseDistancePCA:
     def _feature_batches(
         self, df: pd.DataFrame, for_fit: bool
     ) -> Iterator[tuple[np.ndarray, _BatchMeta, np.ndarray]]:
-        x_cols, y_cols = self._column_names()
+        x_cols, y_cols = self.params.pose.keypoint_columns()
         pose_cols = x_cols + y_cols
         order_col = resolve_order_col(df)
 

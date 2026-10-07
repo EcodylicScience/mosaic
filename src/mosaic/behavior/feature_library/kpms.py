@@ -22,12 +22,19 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Annotated, Self, TypedDict, final
+from typing import IO, TYPE_CHECKING, Annotated, ClassVar, Self, TypedDict, final
 
 import numpy as np
 from pydantic import Field, model_validator
 
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.column_contract import (
+    Column,
+    Provides,
+    Requirement,
+    Template,
+    kept,
+)
 from mosaic.core.pipeline.subprocess_util import foreign_environment
 from mosaic.optional_dependency import Prerequisite
 from mosaic.user_paths import user_path
@@ -421,6 +428,16 @@ class KpmsFeature:
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (KpmsLicense(), KpmsEnvironment())
     emits: EmitsLevel = "individual"
+    # Apply decodes each individual's keypoints in frame order. Its code names
+    # the frame and id columns literally, and so does this declaration.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column("frame"),
+        Template("{pose.x_prefix}", family=True),
+        Template("{pose.y_prefix}", family=True),
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(Column("frame"), Column("syllable")), conditional=kept("id")
+    )
     KpmsModelBundle = KpmsModelBundle
     KpmsModelArtifact = KpmsModelArtifact
 
@@ -482,11 +499,7 @@ class KpmsFeature:
 
         @model_validator(mode="after")
         def _check_latent_dim(self) -> Self:
-            if self.pose.pose_indices is not None:
-                num_keypoints = len(self.pose.pose_indices)
-            else:
-                num_keypoints = self.pose.pose_n
-            check_latent_dim(self.latent_dim, num_keypoints)
+            check_latent_dim(self.latent_dim, len(self.pose.selected_indices()))
             return self
 
     def __init__(

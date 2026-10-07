@@ -7,13 +7,22 @@ Extracted from features.py as part of feature_library modularization.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 from scipy.spatial.distance import pdist
 
+from mosaic.core.pipeline.column_contract import (
+    POSE_X,
+    POSE_Y,
+    Column,
+    Conditional,
+    Prefix,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
@@ -22,8 +31,10 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.types import (
     BodyScaleResult,
     DependencyLookup,
+    Inputs,
     InputStream,
-    TrackInputs,
+    Result,
+    TrackInput,
 )
 from mosaic.core.params import Declared, Params
 
@@ -75,8 +86,44 @@ class OrientationRelativeFeature:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.frame_col),
+        Column(C.id_col),
+        Column(C.orientation_col),
+        POSE_X,
+        POSE_Y,
+    )
+    # One dist_q<percent> column per quantile, and near_0 to near_<nearest_k - 1>.
+    # group and sequence are written whether or not the input has them, blank
+    # when it does not.
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column(C.frame_col),
+            Column("id1"),
+            Column("id2"),
+            Column("perspective"),
+            Column(C.seq_col),
+            Column(C.group_col),
+            Column("dx"),
+            Column("dy"),
+            Column("dtheta"),
+            Column("dist_min"),
+            Column("dist_median"),
+            Column("dist_max"),
+            Column("x_min"),
+            Column("x_median"),
+            Column("x_max"),
+            Column("y_min"),
+            Column("y_median"),
+            Column("y_max"),
+            Prefix("near_"),
+        ),
+        conditional=(Conditional(Prefix("dist_q"), when_param="quantiles"),),
+    )
 
-    class Inputs(TrackInputs):
+    # A table of positions joined with heading's ANGLE, as on mosaic_v1 tracks
+    # that do not record it. The requirements name the columns read.
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):

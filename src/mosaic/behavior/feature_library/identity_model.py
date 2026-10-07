@@ -31,6 +31,7 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.behavior.model_library.timm_backbone import DEFAULT_MODEL_NAME, TIMM
+from mosaic.core.pipeline.column_contract import Provides, Requirement
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -201,6 +202,9 @@ class GlobalIdentityModel:
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (TIMM,)
     emits: EmitsLevel = "as-input"
+    # Fit reads crop images from disk, and apply returns its input unchanged.
+    requires: ClassVar[tuple[Requirement, ...]] = ()
+    provides: ClassVar[Provides] = Provides(passthrough=True)
     ModelArtifact = ClassifierIdentityArtifact
 
     class Inputs(Inputs[Result]):

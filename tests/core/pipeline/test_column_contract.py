@@ -15,6 +15,7 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import TypeAdapter
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.json_value import JsonValue
@@ -24,12 +25,18 @@ from mosaic.core.pipeline.column_contract import (
     Column,
     Conditional,
     Derived,
+    Keypoints,
     MissingInputColumns,
+    PAYLOAD_LABEL,
     NamedColumns,
     ParamColumn,
+    ParamIs,
+    Payload,
     Prefix,
     Provides,
     Requirement,
+    Template,
+    When,
     check_input_columns,
     contract_fields,
     declared_provides,
@@ -43,6 +50,7 @@ from mosaic.core.pipeline.run import AllEntriesFailed, run_feature
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     Inputs,
+    NON_PAYLOAD_COLS,
     InputStream,
     LoadSpec,
     ParquetLoadSpec,
@@ -222,6 +230,126 @@ def test_a_derivation_that_cannot_be_read_leaves_what_follows_it_unknown(
     )
 
 
+def test_a_template_names_a_column_from_the_params() -> None:
+    """``pair-facing`` names its head keypoint from a prefix and an index."""
+    values: dict[str, JsonValue] = {
+        "x_prefix": "kpX",
+        "pose_head_index": 0,
+        "pose": {"x_prefix": "bodyX"},
+    }
+
+    assert resolve_names(Template("{x_prefix}{pose_head_index}"), values) == (
+        NamedColumns(columns=("kpX0",), params=("x_prefix", "pose_head_index"))
+    )
+    assert resolve_names(Template("{pose.x_prefix}", family=True), values) == (
+        NamedColumns(prefixes=("bodyX",), params=("pose",))
+    )
+
+
+@pytest.mark.parametrize(
+    "values",
+    [{"x_prefix": "kpX"}, {"x_prefix": "kpX", "pose_head_index": None}, {"pose": 3}],
+    ids=["missing", "unset", "not-a-model"],
+)
+def test_a_template_over_a_value_that_is_not_there_is_unknown(
+    values: dict[str, JsonValue],
+) -> None:
+    for template in ("{x_prefix}{pose_head_index}", "{pose.x_prefix}"):
+        assert resolve_names(Template(template), values).unknown
+
+
+def test_a_keypoint_selection_requires_each_keypoint_that_it_selects() -> None:
+    selected: dict[str, JsonValue] = {
+        "pose_indices": [3, 5],
+        "x_prefix": "kpX",
+        "y_prefix": "kpY",
+    }
+
+    needs = needs_of((Keypoints(),), {"pose": selected})
+    defaults = needs_of((Keypoints(),), {"pose": {"pose_n": 2}})
+
+    assert [need.columns for need in needs] == [
+        ("kpX3",),
+        ("kpY3",),
+        ("kpX5",),
+        ("kpY5",),
+    ]
+    assert [need.columns for need in defaults] == [
+        ("poseX0",),
+        ("poseY0",),
+        ("poseX1",),
+        ("poseY1",),
+    ]
+
+
+@pytest.mark.parametrize(
+    "values", [{}, {"pose": None}, {"pose": {"pose_n": "many"}}], ids=str
+)
+def test_a_keypoint_selection_that_cannot_be_read_is_unknown(
+    values: dict[str, JsonValue],
+) -> None:
+    assert needs_of((Keypoints(),), values) == (
+        NamedColumns(params=("pose",), unknown=True),
+    )
+
+
+_GATED_ANGLE = When(Column("ANGLE"), (ParamIs("orientation_gate_cos"),))
+"""``approach-avoidance`` reads ``ANGLE`` while its orientation gate is set."""
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ({"orientation_gate_cos": 0.866}, (NamedColumns(columns=("ANGLE",)),)),
+        ({"orientation_gate_cos": None}, ()),
+        ({}, (NamedColumns(columns=("ANGLE",), unknown=True),)),
+    ],
+    ids=["set", "unset", "missing"],
+)
+def test_a_conditional_requirement_applies_while_its_condition_holds(
+    values: dict[str, JsonValue], expected: tuple[NamedColumns, ...]
+) -> None:
+    assert needs_of((_GATED_ANGLE,), values) == expected
+
+
+def test_a_condition_tests_a_value_or_its_absence() -> None:
+    by_value = When(Column("ANGLE"), (ParamIs("heading_source", equals="orientation"),))
+    unless_scaled = When(Column("group"), (ParamIs("cm_per_pixel", negated=True),))
+
+    assert needs_of((by_value,), {"heading_source": "orientation"})
+    assert not needs_of((by_value,), {"heading_source": "auto"})
+    assert needs_of((unless_scaled,), {"cm_per_pixel": None})
+    assert not needs_of((unless_scaled,), {"cm_per_pixel": 0.1})
+
+
+def test_every_condition_must_hold() -> None:
+    head = When(
+        Template("poseX{pose_head_index}"),
+        (ParamIs("use_pixel_coords"), ParamIs("pose_head_index")),
+    )
+
+    assert needs_of((head,), {"use_pixel_coords": True, "pose_head_index": 0}) == (
+        NamedColumns(columns=("poseX0",), params=("pose_head_index",)),
+    )
+    assert not needs_of((head,), {"use_pixel_coords": False, "pose_head_index": 0})
+    assert not needs_of((head,), {"use_pixel_coords": True, "pose_head_index": None})
+
+
+def test_contract_fields_include_the_fields_that_conditions_and_selections_read() -> (
+    None
+):
+    requires: tuple[Requirement, ...] = (
+        _GATED_ANGLE,
+        Keypoints(),
+        Template("{x_prefix}{pose.pose_n}"),
+    )
+    assert contract_fields(requires, None) == {
+        "orientation_gate_cos",
+        "pose",
+        "x_prefix",
+    }
+
+
 def test_contract_fields_lists_every_params_field_the_declarations_read() -> None:
     requires: tuple[Requirement, ...] = (AnyOf((ParamColumn("speed_col"),)), _SPECS)
     provides = Provides(
@@ -396,6 +524,68 @@ def test_run_feature_fails_the_entry_that_lacks_a_column(tmp_path: Path) -> None
     assert len(errors) == 1
     assert "MissingInputColumns" in errors[0]
     assert "lacks 'feat_b' or 'feat_c'" in errors[0]
+
+
+# --- a payload requirement --------------------------------------------------------------
+
+
+class _ReadsPayload(_Undeclared):
+    """The stand-in, reading every numeric payload column, as a global model does."""
+
+    requires: ClassVar[tuple[Requirement, ...]] = (Column("frame"), Payload())
+
+
+def test_a_payload_requirement_is_met_by_any_measurement() -> None:
+    (need,) = needs_of((Payload(),), {})
+
+    assert need.payload
+    assert need.label == PAYLOAD_LABEL
+    assert need.met_by({"frame", "id", "speed"})
+    assert need.met_by({"poseX0"})
+    assert not need.met_by(NON_PAYLOAD_COLS)
+
+
+def test_a_payload_requirement_is_tagged_in_the_closed_set() -> None:
+    adapter = TypeAdapter(tuple[Requirement, ...])
+
+    dumped = adapter.dump_python((Payload(), Column("frame")), mode="json")
+
+    assert dumped == [{"kind": "payload"}, {"kind": "column", "name": "frame"}]
+    assert adapter.validate_python(dumped) == (Payload(), Column("frame"))
+    assert declared_requires(_ReadsPayload) == (Column("frame"), Payload())
+    assert contract_fields((Payload(),), None) == frozenset()
+
+
+def test_the_check_before_apply_reads_only_a_numeric_payload() -> None:
+    check_input_columns(
+        _ReadsPayload(), ["frame", "id", "speed"], numeric=["frame", "id", "speed"]
+    )
+
+    with pytest.raises(MissingInputColumns) as raised:
+        check_input_columns(
+            _ReadsPayload(), ["frame", "id", "trial"], numeric=["frame", "id"]
+        )
+    assert str(raised.value).endswith(f"lacks {PAYLOAD_LABEL}")
+    with pytest.raises(MissingInputColumns):
+        check_input_columns(_ReadsPayload(), ["frame", "id", "fps", "label"])
+
+
+def test_run_feature_fails_the_entry_without_a_numeric_payload(tmp_path: Path) -> None:
+    """A column of text is not a payload, and the check reads the frame's dtypes."""
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, ("g", "has"), ("g", "lacks"))
+    path = ds.get_root("tracks") / "g__lacks.parquet"
+    table = pd.read_parquet(path)
+    identity = ["frame", "time", "id", "group", "sequence"]
+    textual = table[identity].assign(trial="a")
+    textual.to_parquet(path)
+    execution_id = "TESTCOLUMNS3"
+
+    result = run_feature(ds, _ReadsPayload(), execution_id=execution_id)
+
+    assert result.failed_entries == (make_entry_key("g", "lacks"),)
+    log = run_log_path(ds.base_dir, execution_id).read_text()
+    assert f"lacks {PAYLOAD_LABEL}" in log
 
 
 def test_a_library_feature_reports_its_missing_neighbor_column(tmp_path: Path) -> None:

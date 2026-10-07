@@ -8,15 +8,15 @@ that has children (:class:`InsertReport`), what may be added as an input of a st
 (:class:`PlanWire`). The CLI's ``--json`` output and mosaic-api's responses are
 these models dumped, and the two agree on every shape.
 
-Models only. The functions that fill them live beside what they read --
+Models only. The functions that fill them live beside what they read:
 :func:`~mosaic.core.pipeline.graph.resolve.editor_catalog`,
 :func:`~mosaic.core.pipeline.graph.validate.validation_report`,
 :func:`~mosaic.core.pipeline.graph.validate.attach_candidates`,
 :func:`~mosaic.core.pipeline.graph.validate.insert_candidates`,
 :func:`~mosaic.core.pipeline.graph.validate.input_candidates` and
-:func:`~mosaic.core.pipeline.graph.serialize.plan_wire` -- and each of those
-modules imports this one. This module imports none of them, which keeps the
-import graph acyclic.
+:func:`~mosaic.core.pipeline.graph.serialize.plan_wire`. Each of those modules
+imports this one, and this module imports none of them, which keeps the import
+graph acyclic.
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ class Problem:
 
     Attributes:
         step: The step id, or ``""`` for a fault of the graph as a whole.
-        where: Which part of the step -- ``feature``, ``kind``, ``inputs``,
+        where: Which part of the step: ``feature``, ``kind``, ``inputs``,
             ``tracks``, ``params.templates``, ``steps``.
         message: What is wrong, phrased so it reads on its own.
     """
@@ -131,6 +131,9 @@ class ColumnNames(GraphModel):
         params: The params fields whose values named them, empty for a name
             the feature declares itself.
         unknown: Whether a params value could not be read as column names.
+        payload: Whether any numeric payload column meets it, a column that is
+            neither an identity nor a bookkeeping column. ``columns`` and
+            ``prefixes`` are then empty.
     """
 
     label: str
@@ -138,6 +141,7 @@ class ColumnNames(GraphModel):
     prefixes: tuple[str, ...]
     params: tuple[str, ...]
     unknown: bool
+    payload: bool
 
 
 class ConditionalColumns(GraphModel):
@@ -163,11 +167,14 @@ class ProvidedColumns(GraphModel):
         passthrough: Whether it copies every column of its merged input.
         adds: The columns it always writes.
         conditional: The columns it writes under a condition.
+        payload_families: Whether it writes a family of columns per payload
+            column of its merged input, each name beginning with that column's.
     """
 
     passthrough: bool
     adds: tuple[ColumnNames, ...]
     conditional: tuple[ConditionalColumns, ...]
+    payload_families: bool
 
 
 class CatalogEntry(GraphModel):
@@ -185,8 +192,8 @@ class CatalogEntry(GraphModel):
         reference_fields: The top-level params fields that accept a step
             reference, and how each substitutes. A JSON Schema cannot say this.
         requires: The columns it reads from its merged input, under its default
-            params. ``None`` when undeclared, which an editor shows as "column
-            requirements not declared".
+            params. ``None`` when undeclared, and validation then lists a step
+            that runs it as unchecked.
         provides: The columns of its output, under its default params. ``None``
             when undeclared.
         unavailable: What this installation lacks to run it, naming what to
@@ -225,8 +232,8 @@ class EditorCatalog(GraphModel):
 
 # ``Declaration.scope_takes`` is annotated with ``ScopeTakes``, which
 # ``compatibility`` imports for type checking only so a declaration's readers do
-# not load the op registry. This module loads it anyway, so pydantic resolves the
-# name here.
+# not load the op registry. This module loads it anyway and resolves the name for
+# pydantic here.
 _ = CatalogEntry.model_rebuild(_types_namespace={"ScopeTakes": ScopeTakes})
 
 

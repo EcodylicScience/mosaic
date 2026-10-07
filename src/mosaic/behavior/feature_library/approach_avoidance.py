@@ -13,33 +13,43 @@ Default decision logic follows trajognize AA:
 Optional sliding-window averaging can be enabled, but it is OFF by default
 to preserve trajognize-style framewise behavior.
 
-Output columns (per frame × pair):
-  - frame, id1, id2 (canonical order: id1 < id2)
+Output columns (per frame and ordered pair):
+  - frame, id1 (the focal), id2 (the other), perspective
   - label_id: primary non-directional AA label for visualization compatibility
   - aa_event: 1 if either direction is active
-  - aa_event_12: 1 if id1 approaches and id2 avoids
-  - aa_event_21: 1 if id2 approaches and id1 avoids
-  - sequence, group (metadata pass-through)
+  - aa_event_directed: 1 if id1 approaches and id2 avoids
+  - sequence, and group when the input has it
 """
 
 from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import Annotated, Literal, final
+from typing import Annotated, ClassVar, Literal, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import (
+    ORDER_COLUMN,
+    Column,
+    ParamIs,
+    Provides,
+    Requirement,
+    When,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
+    Inputs,
     InputStream,
-    TrackInputs,
+    Result,
+    TrackInput,
     resolve_order_col,
 )
 from mosaic.core.params import Declared, Params
@@ -124,8 +134,7 @@ _SMOOTH_WINDOW_SEC_DESCRIPTION = (
 @final
 @register_feature
 class ApproachAvoidance:
-    """
-    'approach-avoidance' — per-sequence AA event detection for all pairs.
+    """Approach-avoidance events between every pair of individuals in a sequence.
 
     For N animals per sequence, evaluates all N*(N-1)/2 unordered pairs, and
     writes each as two rows -- one per ordered pair, keyed by
@@ -151,8 +160,31 @@ class ApproachAvoidance:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.id_col),
+        Column(C.seq_col),
+        Column(C.x_col),
+        Column(C.y_col),
+        ORDER_COLUMN,
+        When(Column(C.orientation_col), (ParamIs("orientation_gate_cos"),)),
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column(C.frame_col),
+            Column("id1"),
+            Column("id2"),
+            Column("perspective"),
+            Column("label_id"),
+            Column("aa_event"),
+            Column("aa_event_directed"),
+            Column(C.seq_col),
+        ),
+        conditional=kept(C.group_col),
+    )
 
-    class Inputs(TrackInputs):
+    # A table of positions joined with heading's ANGLE, as on mosaic_v1 tracks
+    # that do not record it. The requirements name the columns read.
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):

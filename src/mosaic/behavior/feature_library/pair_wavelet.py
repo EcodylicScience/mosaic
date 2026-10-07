@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import (
+    ORDER_COLUMN,
+    Column,
+    Conditional,
+    ParamColumn,
+    Payload,
+    Prefix,
+    Provides,
+    Requirement,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -69,6 +80,7 @@ class PairWavelet:
     Returns a DataFrame with columns:
       - frame (or time if that was the order col)
       - perspective
+      - id1, id2 when the input has both
       - W_{col}_f{fi} (log-power, clamped, for each component x frequency)
       and (optionally) passthrough group/sequence if present in df.
 
@@ -88,6 +100,23 @@ class PairWavelet:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    # apply transforms the columns that cols names and needs only one of them.
+    # Unset, it transforms the pc_prefix columns, or else every payload column.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column("perspective"),
+        ORDER_COLUMN,
+        ParamColumn("cols"),
+        Payload(),
+    )
+    # One W_<column>_f<index> column per input column and frequency. The order
+    # column keeps its name: frame, or time when frame is absent.
+    provides: ClassVar[Provides] = Provides(
+        adds=(Prefix("W_"), Column("perspective")),
+        conditional=(
+            *kept(C.frame_col, "id1", "id2", C.seq_col, C.group_col),
+            Conditional(Column(C.time_col)),
+        ),
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

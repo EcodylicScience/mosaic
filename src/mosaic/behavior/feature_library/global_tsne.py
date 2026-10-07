@@ -16,6 +16,13 @@ import pandas as pd
 from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import (
+    NON_PAYLOAD_KEPT,
+    Column,
+    Payload,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -279,6 +286,13 @@ class GlobalTSNE:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    # Apply maps the template columns to two coordinates and keeps every other
+    # column. Templates sampled from the same input contain its numeric payload
+    # columns, which leaves the identity and bookkeeping ones.
+    requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
+    provides: ClassVar[Provides] = Provides(
+        adds=(Column("tsne_x"), Column("tsne_y")), conditional=NON_PAYLOAD_KEPT
+    )
     ModelArtifact = TSNEModelArtifact
     TSNECoordsArtifact = TSNECoordsArtifact
 

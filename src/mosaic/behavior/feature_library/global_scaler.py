@@ -8,6 +8,7 @@ import pandas as pd
 from pydantic import Field
 from sklearn.preprocessing import StandardScaler
 
+from mosaic.core.pipeline.column_contract import Payload, Provides, Requirement
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -81,6 +82,8 @@ class GlobalScaler:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
+    provides: ClassVar[Provides] = Provides(passthrough=True)
     ScalerModelArtifact = ScalerModelArtifact
     ScaledTemplatesArtifact = ScaledTemplatesArtifact
 

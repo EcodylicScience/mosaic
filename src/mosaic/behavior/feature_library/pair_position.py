@@ -13,26 +13,35 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import (
+    ORDER_COLUMN,
+    Column,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
+    Inputs,
     InputStream,
-    TrackInputs,
+    Result,
+    TrackInput,
     resolve_order_col,
 )
 from mosaic.core.params import Declared, Params
 
 from ._sampling_descriptions import SAMPLING_WITH_SMOOTHING_DESCRIPTION
 from .helpers import clean_tracks_grouped, ensure_columns, smooth_1d, unwrap_diff
+from .pair_egocentric import EGOCENTRIC_PAIR_COLUMNS, PAIR_EGOCENTRIC_PROVIDES
 from .registry import register_feature
 from .types import InterpolationConfig, SamplingConfig
 
@@ -42,8 +51,7 @@ _INTERPOLATION_DESCRIPTION = "Interpolation settings for missing position data."
 @final
 @register_feature
 class PairPositionFeatures:
-    """
-    'pair-position' -- per-sequence egocentric + kinematic features for all pairs.
+    """Egocentric and kinematic features of every pair, from position and heading.
 
     Unlike PairEgocentricFeatures which requires full pose keypoints, this feature
     works with minimal input: just (x, y, angle) per animal.
@@ -61,7 +69,7 @@ class PairPositionFeatures:
       - AB_dx_egoA, AB_dy_egoA: partner position in focal's egocentric frame
       - rel_heading_cos, rel_heading_sin: relative heading
       - B_speed, B_v_para, B_v_perp, B_ang_speed: partner kinematics
-      - (optionally) group, sequence for convenience
+      - sequence, and group when the input has it
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.pair_position.PairPositionFeatures.Params`.
@@ -75,8 +83,19 @@ class PairPositionFeatures:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.id_col),
+        Column(C.seq_col),
+        Column(C.x_col),
+        Column(C.y_col),
+        Column(C.orientation_col),
+        ORDER_COLUMN,
+    )
+    provides: ClassVar[Provides] = PAIR_EGOCENTRIC_PROVIDES
 
-    class Inputs(TrackInputs):
+    # A table of positions joined with heading's ANGLE, as on mosaic_v1 tracks
+    # that do not record it. The requirements name the columns read.
+    class Inputs(Inputs[TrackInput | Result]):
         pass
 
     class Params(Params):
@@ -147,21 +166,7 @@ class PairPositionFeatures:
                     "perspective",
                     "id1",
                     "id2",
-                    "A_speed",
-                    "A_v_para",
-                    "A_v_perp",
-                    "A_ang_speed",
-                    "A_heading_cos",
-                    "A_heading_sin",
-                    "AB_dist",
-                    "AB_dx_egoA",
-                    "AB_dy_egoA",
-                    "rel_heading_cos",
-                    "rel_heading_sin",
-                    "B_speed",
-                    "B_v_para",
-                    "B_v_perp",
-                    "B_ang_speed",
+                    *EGOCENTRIC_PAIR_COLUMNS,
                 ]
             )
 
@@ -307,24 +312,7 @@ class PairPositionFeatures:
         rel_cos = np.cos(dth)
         rel_sin = np.sin(dth)
 
-        # Feature names (matching PairEgocentricFeatures)
-        names = [
-            "A_speed",
-            "A_v_para",
-            "A_v_perp",
-            "A_ang_speed",
-            "A_heading_cos",
-            "A_heading_sin",
-            "AB_dist",
-            "AB_dx_egoA",
-            "AB_dy_egoA",
-            "rel_heading_cos",
-            "rel_heading_sin",
-            "B_speed",
-            "B_v_para",
-            "B_v_perp",
-            "B_ang_speed",
-        ]
+        names = list(EGOCENTRIC_PAIR_COLUMNS)
 
         # A->B perspective
         AtoB = np.vstack(

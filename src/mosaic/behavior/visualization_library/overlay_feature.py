@@ -23,12 +23,13 @@ body centre, which is what the renderer underneath already does.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 import pandas as pd
 from pydantic import Field
 
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.column_contract import Column, Provides, Requirement
 from mosaic.core.pipeline.types import (
     COLUMNS,
     EmitsLevel,
@@ -138,6 +139,20 @@ class Overlay:
     accepts_overlap = False  # It opens the entry's own video.
     consumed_roots: tuple[str, ...] = ("media_raw",)
     emits: EmitsLevel = "individual"
+    # The drawing reads the tracks and each input feature's labels from the
+    # dataset. The merged input names the entry, and contributes its counts where
+    # present. A dataset without groups names its entries with an empty group,
+    # which is read for an input without one.
+    requires: ClassVar[tuple[Requirement, ...]] = (Column(COLUMNS.seq_col),)
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column(COLUMNS.group_col),
+            Column(COLUMNS.seq_col),
+            Column("video"),
+            Column("n_ids"),
+            Column("n_frames"),
+        )
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

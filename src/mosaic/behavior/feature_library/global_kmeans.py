@@ -16,6 +16,13 @@ import pandas as pd
 from pydantic import Field
 from sklearn.cluster import KMeans as _SklearnKMeans
 
+from mosaic.core.pipeline.column_contract import (
+    NON_PAYLOAD_KEPT,
+    Column,
+    Payload,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -155,6 +162,13 @@ class GlobalKMeansClustering:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    # Apply assigns a cluster from the template columns and keeps every other
+    # column. Templates sampled from the same input contain its numeric payload
+    # columns, which leaves the identity and bookkeeping ones.
+    requires: ClassVar[tuple[Requirement, ...]] = (Column(C.frame_col), Payload())
+    provides: ClassVar[Provides] = Provides(
+        adds=(Column("cluster"),), conditional=NON_PAYLOAD_KEPT
+    )
     ModelArtifact = KMeansModelArtifact
     ClusterCentersArtifact = KMeansClusterCentersArtifact
     ClusterSizesArtifact = KMeansClusterSizesArtifact

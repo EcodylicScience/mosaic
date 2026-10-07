@@ -26,12 +26,13 @@ Example::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal, final
+from typing import Annotated, ClassVar, Literal, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import Provides, Requirement
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     COLUMNS,
@@ -115,6 +116,10 @@ class TrackSubsample:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    # The k-means methods read the pose, ``X``, ``Y`` and ``ANGLE`` when the input
+    # has them, and space the rows evenly otherwise.
+    requires: ClassVar[tuple[Requirement, ...]] = ()
+    provides: ClassVar[Provides] = Provides(passthrough=True)
 
     class Inputs(TrackInputs):
         pass

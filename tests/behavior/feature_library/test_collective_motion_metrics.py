@@ -471,6 +471,16 @@ def test_metadata_and_composition_names() -> None:
     assert "state" in out.columns
 
 
+def test_a_table_without_frames_is_measured_at_each_time() -> None:
+    """Ordered by its time, a table has one row per time, keyed by it."""
+    frames = pd.concat([_square([0.0] * 4, frame=0), _square([0.0] * 4, frame=1)])
+    by_frame = _apply(frames)
+    by_time = _apply(frames.drop(columns="frame"))
+    assert "frame" not in by_time.columns
+    np.testing.assert_allclose(by_time["time"], [0.0, 0.02])
+    np.testing.assert_allclose(by_time["polarization"], by_frame["polarization"])
+
+
 def test_mean_speed_only_when_requested() -> None:
     df = _square([0.0] * 4)
     df["speed"] = [1.0, 2.0, 3.0, 4.0]

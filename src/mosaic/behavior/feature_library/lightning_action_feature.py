@@ -30,6 +30,14 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.params import Declared
+from mosaic.core.pipeline.column_contract import (
+    META_COLUMNS_KEPT,
+    Column,
+    Payload,
+    Prefix,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -44,7 +52,11 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.optional_dependency import OptionalModule, Prerequisite
 
-from .helpers import ensure_columns, feature_columns, meta_columns
+from .helpers import (
+    ensure_columns,
+    feature_columns,
+    meta_columns,
+)
 from .registry import register_feature
 
 if TYPE_CHECKING:
@@ -174,6 +186,12 @@ class LightningActionFeature:
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (LIGHTNING_ACTION,)
     emits: EmitsLevel = "as-input"
+    # Apply reads the template columns and writes one probability per class.
+    requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
+    provides: ClassVar[Provides] = Provides(
+        adds=(Prefix("prob_"), Column("predicted_label")),
+        conditional=META_COLUMNS_KEPT,
+    )
     ModelArtifact = LightningActionModelArtifact
 
     class Inputs(Inputs[Result]):

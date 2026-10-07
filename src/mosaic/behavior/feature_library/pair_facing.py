@@ -31,12 +31,20 @@ from __future__ import annotations
 
 from itertools import permutations
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import (
+    ORDER_COLUMN,
+    Column,
+    Provides,
+    Requirement,
+    Template,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -127,6 +135,28 @@ class PairFacing:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.id_col),
+        ORDER_COLUMN,
+        Template("{x_prefix}{pose_head_index}"),
+        Template("{y_prefix}{pose_head_index}"),
+        Template("{x_prefix}{pose_abdomen_index}"),
+        Template("{y_prefix}{pose_abdomen_index}"),
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column(C.frame_col),
+            Column("id1"),
+            Column("id2"),
+            Column("perspective"),
+            Column("body_angle_deg"),
+            Column("bearing_deg"),
+            Column("angle_diff_deg"),
+            Column("distance"),
+            Column("is_facing"),
+        ),
+        conditional=kept(C.group_col, C.seq_col),
+    )
 
     class Inputs(TrackInputs):
         pass

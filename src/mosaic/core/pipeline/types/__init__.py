@@ -17,9 +17,11 @@ from mosaic.core.pipeline.types.artifacts import (
     TemplatesRef,
 )
 from mosaic.core.pipeline.types.data_config import (
+    BOOKKEEPING_COLS,
     COLUMNS,
     ID_COLS,
     META_COLS,
+    NON_PAYLOAD_COLS,
     PAIR_COLS,
     POSE_CONFIG_DESCRIPTION,
     Columns,
@@ -57,6 +59,7 @@ from mosaic.core.pipeline.types.results import (
 
 __all__ = [
     "ArtifactSpec",
+    "BOOKKEEPING_COLS",
     "BodyScaleResult",
     "COLUMNS",
     "Columns",
@@ -81,6 +84,7 @@ __all__ = [
     "LoadSpec",
     "META_COLS",
     "NNResult",
+    "NON_PAYLOAD_COLS",
     "NpzArtifact",
     "NpzLoadSpec",
     "PAIR_COLS",

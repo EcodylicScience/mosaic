@@ -14,12 +14,23 @@ same order parameters to a neighborhood around each focal individual.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Self, final
+from typing import Annotated, ClassVar, Self, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
+from mosaic.core.pipeline.column_contract import (
+    ORDER_COLUMN,
+    Column,
+    Conditional,
+    ParamColumn,
+    ParamIs,
+    Provides,
+    Requirement,
+    When,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -155,6 +166,9 @@ EMITTED_COLUMNS: frozenset[str] = frozenset(
     }
 )
 
+# The two emitted columns that a params value decides.
+_CONDITIONAL_COLUMNS: frozenset[str] = frozenset({"alpha_n_triangles", "mean_speed"})
+
 
 @final
 @register_feature
@@ -278,6 +292,33 @@ class CollectiveMotionMetrics:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"
+    # ``auto`` reads ``ANGLE`` when present.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.id_col),
+        Column(C.x_col),
+        Column(C.y_col),
+        ORDER_COLUMN,
+        ParamColumn("subgroup_col"),
+        ParamColumn("speed_col"),
+        When(
+            Column(C.orientation_col),
+            (ParamIs("heading_source", equals="orientation"),),
+        ),
+    )
+    # ``alpha_n_triangles`` is written when ``area_method`` is ``alpha_shape``. A
+    # declared condition tests whether a params field is set and cannot test its
+    # value. The column is therefore possible under every ``area_method``.
+    provides: ClassVar[Provides] = Provides(
+        adds=tuple(
+            Column(name) for name in sorted(EMITTED_COLUMNS - _CONDITIONAL_COLUMNS)
+        ),
+        conditional=(
+            Conditional(ParamColumn("subgroup_col"), when_param="subgroup_col"),
+            Conditional(Column("mean_speed"), when_param="speed_col"),
+            Conditional(Column("alpha_n_triangles")),
+            *kept(C.frame_col, C.time_col, C.seq_col, C.group_col),
+        ),
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass
@@ -542,7 +583,7 @@ class CollectiveMotionMetrics:
             "n_at_centroid": pd.NamedAgg(column="_at_centroid", aggfunc="sum"),
             "group_angvel": pd.NamedAgg(column="_angvel", aggfunc="mean"),
         }
-        if C.time_col in work.columns:
+        if C.time_col in work.columns and C.time_col not in keys:
             named[C.time_col] = pd.NamedAgg(column=C.time_col, aggfunc="first")
         # Identity travels with the frame, not from row 0 of the whole input.
         # With overlap the input spans the neighbouring sequences and row 0 is

@@ -18,6 +18,13 @@ from scipy.cluster.hierarchy import fcluster
 from scipy.cluster.hierarchy import linkage as _sch_linkage
 from sklearn.neighbors import NearestNeighbors
 
+from mosaic.core.pipeline.column_contract import (
+    NON_PAYLOAD_KEPT,
+    Column,
+    Payload,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -94,6 +101,13 @@ class GlobalWardClustering:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    # Apply assigns a cluster from the template columns and keeps every other
+    # column. Templates sampled from the same input contain its numeric payload
+    # columns, which leaves the identity and bookkeeping ones.
+    requires: ClassVar[tuple[Requirement, ...]] = (Column(C.frame_col), Payload())
+    provides: ClassVar[Provides] = Provides(
+        adds=(Column("cluster"),), conditional=NON_PAYLOAD_KEPT
+    )
     ModelArtifact = WardModelArtifact
 
     class Inputs(Inputs[Result]):

@@ -10,6 +10,12 @@ import pandas as pd
 from pydantic import Field, model_validator
 
 from mosaic.core.helpers import load_labels_for_feature_frames
+from mosaic.core.pipeline.column_contract import (
+    Column,
+    Payload,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -124,6 +130,16 @@ class ExtractLabeledTemplates:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    # Fit aligns each entry's labels by frame and samples its payload columns.
+    # Apply passes its input through with the split and the aligned label.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.seq_col),
+        Column(C.frame_col),
+        Payload(),
+    )
+    provides: ClassVar[Provides] = Provides(
+        passthrough=True, adds=(Column("split"), Column("label"))
+    )
     LabeledTemplatesArtifact = LabeledTemplatesArtifact
     LabeledProvenanceArtifact = LabeledProvenanceArtifact
 

@@ -163,9 +163,10 @@ def _windowed_delta(
 @final
 @register_feature
 class NearestNeighborDelta:
-    """
-    Per-sequence feature that measures how a focal individual changes position/heading/speed over
-    the next `diff_numframes` frames relative to its nearest neighbor at the current frame.
+    """Change in a focal individual's position, heading and speed, by its nearest neighbor.
+
+    Measures how the focal changes position/heading/speed over the next
+    `diff_numframes` frames relative to its nearest neighbor at the current frame.
 
     Expected inputs (via tracks or an Inputs() that merges tracks + nearest-neighbor feature):
       - position/heading/speed columns for the focal (`x`, `y`, `ANGLE`, `speed_col`)

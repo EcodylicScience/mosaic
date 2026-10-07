@@ -52,9 +52,10 @@ _FIELD_RENAMES_DESCRIPTION = (
 @final
 @register_feature
 class IdTagColumns:
-    """
-    Attach per-id label fields (from labels/<label_kind>) to each frame, so they can
-    be merged via Inputs() and used as categories (e.g., focal/nonfocal).
+    """Attach per-id label fields from labels/<label_kind> to each frame.
+
+    The fields are merged via Inputs() and used as categories (e.g.,
+    focal/nonfocal).
 
     Outputs per row (same granularity as input tracks/feature):
       frame/time/id/group/sequence + one column per requested label field.

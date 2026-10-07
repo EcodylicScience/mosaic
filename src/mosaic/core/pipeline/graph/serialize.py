@@ -75,7 +75,7 @@ def _step_wire(planned: PlannedStep, plan: Plan) -> PlannedStepWire:
 def _coverage_wire(planned: PlannedStep) -> CoverageWire:
     """The step's coverage as counts and a sorted sample of what is missing.
 
-    A single artifact answering for every entry covers its whole target, so it
+    A single artifact answering for every entry covers its whole target and
     reports nothing missing.
     """
     coverage = planned.coverage

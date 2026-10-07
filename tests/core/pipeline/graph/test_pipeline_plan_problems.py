@@ -1,7 +1,7 @@
 """The problems a dataset finds with a recipe that validates.
 
-Validation decides from declarations alone, so a time filter is valid on any
-dataset and a column that the track schemas allow is only a caution. A plan reads
+Validation decides from declarations alone. A time filter is valid on any
+dataset there, and a column that the track schemas allow is only a caution. A plan reads
 the dataset. A time filter without a frame rate, and a required column that every
 tracks table lacks, are problems there, each at the place in the recipe that would
 change. ``plan_pipeline`` raises them together as ``RecipeRefused``, and a step

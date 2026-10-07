@@ -33,6 +33,7 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.behavior.model_library.timm_backbone import TORCH
+from mosaic.core.pipeline.column_contract import Provides, Requirement
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -193,6 +194,9 @@ class GlobalIdentityDinoV2Temporal:
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (TORCH,)
     emits: EmitsLevel = "as-input"
+    # Fit reads crop images from disk, and apply returns its input unchanged.
+    requires: ClassVar[tuple[Requirement, ...]] = ()
+    provides: ClassVar[Provides] = Provides(passthrough=True)
     ModelArtifact = DinoV2TemporalIdentityArtifact
 
     class Inputs(Inputs[Result]):

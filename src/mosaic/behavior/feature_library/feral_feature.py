@@ -39,6 +39,15 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
+from mosaic.core.pipeline.column_contract import (
+    AnyOf,
+    Column,
+    Conditional,
+    Prefix,
+    Provides,
+    Requirement,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -521,6 +530,25 @@ class FeralFeature:
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (FERAL,)
     emits: EmitsLevel = "as-input"
+    # Apply predicts each frame of the crop videos that its input names: one per
+    # row of an interaction crop table, or one per individual of an egocentric
+    # crop table. A pair input, one with id1 and id2, keeps its pair columns,
+    # and any other input keeps id. A condition cannot name an absent column,
+    # so id is left to the data.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        AnyOf((Column("video_path"), Column(C.id_col))),
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(Column(C.frame_col), Prefix("prob_"), Column("predicted_label")),
+        conditional=(
+            *(
+                Conditional(Column(name), when_present=Column("id1"))
+                for name in ("id1", "id2", "perspective", "interaction_id")
+            ),
+            Conditional(Column(C.id_col)),
+            *kept(C.group_col, C.seq_col),
+        ),
+    )
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "nonempty"

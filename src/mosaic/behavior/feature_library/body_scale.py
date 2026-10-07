@@ -7,13 +7,20 @@ Extracted from features.py as part of feature_library modularization.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import ClassVar, final
 
 import numpy as np
 import pandas as pd
 from scipy.spatial.distance import pdist
 
 from mosaic.core.pose_columns import pose_column_pairs
+from mosaic.core.pipeline.column_contract import (
+    POSE_X,
+    POSE_Y,
+    Column,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
     EmitsLevel,
@@ -57,6 +64,22 @@ class BodyScaleFeature:
     accepts_overlap = False  # measures one entry, and refuses a multi-entry frame
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.frame_col),
+        Column(C.id_col),
+        POSE_X,
+        POSE_Y,
+    )
+    # The group and sequence are written blank when the input lacks them.
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column(C.frame_col),
+            Column(C.id_col),
+            Column("scale"),
+            Column(C.seq_col),
+            Column(C.group_col),
+        )
+    )
 
     class Inputs(TrackInputs):
         pass

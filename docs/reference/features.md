@@ -22,7 +22,7 @@ factory rather than being a literal, so there is no value to print.
 
 Version `0.3` &middot; `mosaic.behavior.feature_library.approach_avoidance.ApproachAvoidance`
 
-'approach-avoidance' — per-sequence AA event detection for all pairs.
+Approach-avoidance events between every pair of individuals in a sequence.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -174,7 +174,7 @@ No parameters.
 
 Version `0.3` &middot; `mosaic.behavior.feature_library.nn_delta_response.NearestNeighborDelta`
 
-Per-sequence feature that measures how a focal individual changes position/heading/speed over the next `diff_numframes` frames relative to its nearest neighbor at the current frame.
+Change in a focal individual's position, heading and speed, by its nearest neighbor.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -228,7 +228,7 @@ Orientation-aware relative features between animal pairs, order-agnostic to pose
 
 Version `0.1` &middot; `mosaic.behavior.feature_library.pair_egocentric.PairEgocentricFeatures`
 
-'pair-egocentric' -- per-sequence egocentric + kinematic features for dyads. Produces a row-wise DataFrame with columns:   - frame (if available) or time passthrough (only if it's the order col)   - perspective: 0 for A->B, 1 for B->A   - id1, id2: pair identifiers   - feature columns (e.g., A_speed, AB_dx_egoA, ...)   - (optionally) group/sequence if present in df, for convenience
+Egocentric and kinematic features of every pair, from pose keypoints.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -305,7 +305,7 @@ Detect pairwise interaction segments from trajectory data.
 
 Version `0.2` &middot; `mosaic.behavior.feature_library.pairposedistancepca.PairPoseDistancePCA`
 
-'pair-posedistance-pca' — builds per-frame pairwise pose-distance features and fits an IncrementalPCA globally; outputs PC scores per sequence (and perspective).
+Principal components of the pose distances between every pair, per frame.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -341,7 +341,7 @@ Version `0.2` &middot; `mosaic.behavior.feature_library.pairposedistancepca.Pair
 
 Version `0.1` &middot; `mosaic.behavior.feature_library.pair_position.PairPositionFeatures`
 
-'pair-position' -- per-sequence egocentric + kinematic features for all pairs.
+Egocentric and kinematic features of every pair, from position and heading.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -1479,7 +1479,7 @@ Render one annotated video per sequence, from tracks and drawn labels.
 
 Version `0.1` &middot; `mosaic.behavior.feature_library.id_tag_columns.IdTagColumns`
 
-Attach per-id label fields (from labels/<label_kind>) to each frame, so they can be merged via Inputs() and used as categories (e.g., focal/nonfocal).
+Attach per-id label fields from labels/<label_kind> to each frame.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |

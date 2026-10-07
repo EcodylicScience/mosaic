@@ -11,11 +11,12 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Tuple, Any, Optional, Dict
+from typing import Tuple, Any, Final, Optional, Dict
 import numpy as np
 import pandas as pd
 import cv2
 
+from mosaic.core.pipeline.column_contract import AnyOf, Column, Requirement, Template
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.types import COLUMNS
 from mosaic.core.schema import LEGACY_SCHEMA, schema_family
@@ -68,6 +69,21 @@ def require_pixel_positions(ds: Any, group: str, sequence: str, who: str) -> Non
         "rather than video pixels. Run `mosaic upgrade-tracks` to convert the "
         "table to pixels."
     )
+
+
+CROP_CENTER_REQUIRES: Final[tuple[Requirement, ...]] = (
+    Column(COLUMNS.seq_col),
+    AnyOf((Template("{pose.x_prefix}", family=True), Column(COLUMNS.x_col))),
+    AnyOf((Template("{pose.y_prefix}", family=True), Column(COLUMNS.y_col))),
+)
+"""The columns that the crop features read to find a video and center a crop.
+
+The sequence names the entry's video. The group is read where present, and a
+dataset without groups names its videos with an empty one. ``default`` averages
+the pose keypoints and falls back to the body center, ``xy`` reads the body
+center, and a pose index reads one keypoint. Every mode therefore reads a
+keypoint or the body center on each axis.
+"""
 
 
 # =============================================================================

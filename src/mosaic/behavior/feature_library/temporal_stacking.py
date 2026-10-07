@@ -7,13 +7,19 @@ Gaussian-smoothed frames at time offsets and optional pooled statistics.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 from scipy.ndimage import gaussian_filter1d
 
+from mosaic.core.pipeline.column_contract import (
+    META_COLUMNS_KEPT,
+    Payload,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     EmitsLevel,
@@ -245,6 +251,16 @@ class TemporalStackingFeature:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    # ``apply`` also sorts a pair input, one with ``id1`` and ``id2``, by
+    # ``frame``. A requirement cannot depend on the input's other columns.
+    requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
+    # Each numeric payload column is written as ``<column>__t<offset>`` per
+    # offset, or unchanged without the stack, and as
+    # ``<column>__pool_mean``, ``__pool_var`` or ``__pool_std`` per pooled
+    # statistic. The bookkeeping columns are dropped.
+    provides: ClassVar[Provides] = Provides(
+        conditional=META_COLUMNS_KEPT, payload_families=True
+    )
 
     class Inputs(Inputs[Result]):
         pass

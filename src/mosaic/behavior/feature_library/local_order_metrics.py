@@ -15,12 +15,23 @@ sizes even as the global state changes.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal, Self, TypeAlias, final
+from typing import Annotated, ClassVar, Literal, Self, TypeAlias, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
+from mosaic.core.pipeline.column_contract import (
+    META_KEPT,
+    ORDER_COLUMN,
+    Column,
+    Conditional,
+    ParamColumn,
+    ParamIs,
+    Provides,
+    Requirement,
+    When,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -248,6 +259,25 @@ class LocalOrderMetrics:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    # ``auto`` reads ``ANGLE`` when present.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.id_col),
+        Column(C.x_col),
+        Column(C.y_col),
+        ORDER_COLUMN,
+        ParamColumn("subgroup_col"),
+        When(
+            Column(C.orientation_col),
+            (ParamIs("heading_source", equals="orientation"),),
+        ),
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=tuple(Column(name) for name in sorted(EMITTED_COLUMNS)),
+        conditional=(
+            Conditional(ParamColumn("subgroup_col"), when_param="subgroup_col"),
+            *META_KEPT,
+        ),
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

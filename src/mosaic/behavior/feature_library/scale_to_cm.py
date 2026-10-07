@@ -35,13 +35,26 @@ input away.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal, Self, final
+from typing import Annotated, ClassVar, Literal, Self, final
 
 import pandas as pd
 from pydantic import model_validator
 
+from mosaic.core.pipeline.column_contract import (
+    META_KEPT,
+    AnyOf,
+    Column,
+    Conditional,
+    ParamColumn,
+    ParamIs,
+    Prefix,
+    Provides,
+    Requirement,
+    When,
+)
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
+    NON_PAYLOAD_COLS,
     EmitsLevel,
     DependencyLookup,
     Inputs,
@@ -176,6 +189,38 @@ class ScaleToCm:
     )
     consumed_roots: tuple[str, ...] = ("media_raw",)
     emits: EmitsLevel = "individual"
+    # ``apply`` reads the group and sequence to find the calibration, unless
+    # ``cm_per_pixel`` is set. The scaled columns are met by one column that
+    # ``columns`` names or by one length column. ``apply`` refuses an input that
+    # lacks a column that ``columns`` names.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *(
+            When(Column(name), (ParamIs("cm_per_pixel", negated=True),))
+            for name in (C.group_col, C.seq_col)
+        ),
+        AnyOf(
+            (
+                ParamColumn("columns"),
+                *(Column(name) for name in sorted(_LENGTH_NAMES)),
+                *(Prefix(prefix) for prefix in _LENGTH_PREFIXES),
+            )
+        ),
+    )
+    # ``derive`` writes ``<column><suffix>`` per scaled column beside the
+    # identity columns. ``convert`` returns its input with the scaled columns
+    # replaced, the bookkeeping columns included. A declared output cannot test
+    # the value of ``mode``. In both modes each scaled column begins with the
+    # name of the input column it scales.
+    provides: ClassVar[Provides] = Provides(
+        conditional=(
+            *META_KEPT,
+            *(
+                Conditional(Column(name))
+                for name in sorted(NON_PAYLOAD_COLS - C.meta_set())
+            ),
+        ),
+        payload_families=True,
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass

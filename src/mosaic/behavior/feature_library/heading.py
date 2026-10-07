@@ -32,9 +32,10 @@ from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.column_contract import (
     META_KEPT,
     ORDER_COLUMN,
+    POSE_X,
+    POSE_Y,
     Column,
     ParamColumn,
-    Prefix,
     Provides,
     Requirement,
 )
@@ -101,8 +102,8 @@ class HeadingFeature:
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),
         ORDER_COLUMN,
-        Prefix("poseX"),
-        Prefix("poseY"),
+        POSE_X,
+        POSE_Y,
     )
     provides: ClassVar[Provides] = Provides(
         adds=(ParamColumn("output_col"),), conditional=META_KEPT

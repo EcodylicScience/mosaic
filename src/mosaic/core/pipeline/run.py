@@ -1311,9 +1311,17 @@ def _run_feature_impl(
         ctx.check_cancel()
 
         def input_factory() -> Iterator[tuple[str, pd.DataFrame]]:
-            return iter_manifest(
+            # A fit reads the frames that apply reads, and an entry lacking a
+            # declared column fails the fit with the message apply's check gives.
+            for entry_key, frame in iter_manifest(
                 manifest, filter_factory=filter_factory, cross_join=cross_join
-            )
+            ):
+                check_input_columns(
+                    feature,
+                    frame.columns,
+                    numeric=frame.select_dtypes(include="number").columns,
+                )
+                yield entry_key, frame
 
         feature.fit(InputStream(input_factory, n_entries=len(manifest)))
         feature.save_state(run_root)
@@ -1612,7 +1620,11 @@ def _run_feature_impl(
         # the entry's merged frame is checked against it too. A missing column
         # fails the entry with one message, before apply reads anything.
         try:
-            check_input_columns(feature, df.columns)
+            check_input_columns(
+                feature,
+                df.columns,
+                numeric=df.select_dtypes(include="number").columns,
+            )
         except MissingInputColumns as exc:
             _entry_failed(group, sequence, exc)
             return

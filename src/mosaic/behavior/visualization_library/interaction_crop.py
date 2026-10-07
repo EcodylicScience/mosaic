@@ -15,17 +15,19 @@ from __future__ import annotations
 
 from functools import cached_property
 from pathlib import Path
-from typing import Annotated, Any, final
+from typing import Annotated, Any, ClassVar, final
 
 import cv2
 import numpy as np
 import pandas as pd
+from av.codec.codec import UnknownCodecError
 from mosaic_media import MediaProbeError
 from mosaic_media.io import FFmpegVideoWriter
 from pydantic import Field
 
 from mosaic.core.media.preprocess.appearance import apply_clahe, make_clahe, to_gray
 from mosaic.core.pipeline._utils import ResolvedScope
+from mosaic.core.pipeline.column_contract import Column, Provides, Requirement
 from mosaic.core.pose_columns import (
     configured_pose_pairs,
     frame_keypoint_centroid,
@@ -67,6 +69,7 @@ from mosaic.behavior.visualization_library._crop_descriptions import (
     USE_CLAHE_DESCRIPTION,
 )
 from mosaic.behavior.visualization_library.helpers import (
+    CROP_CENTER_REQUIRES,
     create_video_writer,
     infer_angle_degrees,
     require_pixel_positions,
@@ -84,6 +87,29 @@ _OUTPUT_ROOT_DESCRIPTION = (
     "root, or to media/interaction_crops/ when the feature runs outside "
     "run_feature."
 )
+
+
+def color_crop_writer(
+    path: Path, width: int, height: int, fps: float
+) -> FFmpegVideoWriter | cv2.VideoWriter:
+    """Open the writer of a color crop, encoding AV1 on NVENC or else on SVT-AV1.
+
+    The writer's NVENC probe raises ``UnknownCodecError`` on an ffmpeg build
+    without ``av1_nvenc``. SVT-AV1 is then asked for. A build that encodes
+    neither is written through OpenCV's writer.
+    """
+    for hwaccel in (True, False):
+        try:
+            # SVT-AV1 preset 9 is the writer's translation of x264's "fast",
+            # the preset named here while the writer encoded H.264.
+            return FFmpegVideoWriter(
+                path, width, height, fps=fps, hwaccel=hwaccel, av1_preset=9
+            )
+        except UnknownCodecError:
+            continue
+        except (RuntimeError, MediaProbeError):
+            break
+    return create_video_writer(path, fps, (width, height))
 
 
 @final
@@ -124,6 +150,33 @@ class InteractionCropPipeline:
     accepts_overlap = False  # opens the entry's own video
     consumed_roots: tuple[str, ...] = ("media_raw",)
     emits: EmitsLevel = "pair"
+    # ``angle_col`` and the ``heading_points`` keypoints are read where present,
+    # and the heading is 0 without them.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column("id1"),
+        Column("id2"),
+        Column("perspective"),
+        Column("interaction_id"),
+        Column("interaction_start"),
+        Column("interaction_end"),
+        Column(C.id_col),
+        Column(C.frame_col),
+        *CROP_CENTER_REQUIRES,
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column(C.group_col),
+            Column(C.seq_col),
+            Column("id1"),
+            Column("id2"),
+            Column("perspective"),
+            Column("interaction_id"),
+            Column("start_frame"),
+            Column("end_frame"),
+            Column("n_frames"),
+            Column("video_path"),
+        )
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass
@@ -398,17 +451,7 @@ class InteractionCropPipeline:
         # FFmpegVideoWriter supports NVENC GPU encoding for BGR output;
         # grayscale requires cv2.VideoWriter (FFmpeg writer expects BGR24)
         if not p.grayscale:
-            try:
-                writer = FFmpegVideoWriter(
-                    video_out,
-                    crop_w,
-                    crop_h,
-                    fps=output_fps,
-                    hwaccel=True,
-                    preset="fast",
-                )
-            except (RuntimeError, MediaProbeError):
-                writer = create_video_writer(video_out, output_fps, (crop_w, crop_h))
+            writer = color_crop_writer(video_out, crop_w, crop_h, output_fps)
         else:
             codec = cv2.VideoWriter_fourcc(*"mp4v")
             writer = cv2.VideoWriter(

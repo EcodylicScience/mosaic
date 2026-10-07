@@ -22,6 +22,13 @@ import numpy as np
 from pydantic import Field
 from sklearn.decomposition import PCA
 
+from mosaic.core.pipeline.column_contract import (
+    Column,
+    Payload,
+    Provides,
+    Requirement,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -164,6 +171,12 @@ class ArHmmFeature:
     )
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    # Apply decodes each individual's payload columns in frame order. Its code
+    # names the frame and id columns literally, and so does this declaration.
+    requires: ClassVar[tuple[Requirement, ...]] = (Column("frame"), Payload())
+    provides: ClassVar[Provides] = Provides(
+        adds=(Column("frame"), Column("syllable")), conditional=kept("id")
+    )
     ModelArtifact = ArHmmModelArtifact
 
     class Inputs(Inputs[Result]):

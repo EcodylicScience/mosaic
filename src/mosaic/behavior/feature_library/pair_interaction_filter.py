@@ -17,12 +17,25 @@ from __future__ import annotations
 
 from itertools import combinations
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, Final, final
 
 import numpy as np
 import pandas as pd
 from scipy.ndimage import binary_closing, binary_opening
 
+from mosaic.core.pipeline.column_contract import (
+    ORDER_COLUMN,
+    POSE_X,
+    POSE_Y,
+    AnyOf,
+    Column,
+    ParamIs,
+    Provides,
+    Requirement,
+    Template,
+    When,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -187,6 +200,13 @@ _POSE_HEAD_INDEX_DESCRIPTION = (
 )
 
 
+_HEAD_X: Final = Template(POSE_X.prefix + "{pose_head_index}")
+"""The x column of the keypoint that ``pose_head_index`` names."""
+
+_HEAD_Y: Final = Template(POSE_Y.prefix + "{pose_head_index}")
+"""The y column of the keypoint that ``pose_head_index`` names."""
+
+
 @final
 @register_feature
 class PairInteractionFilter:
@@ -223,6 +243,43 @@ class PairInteractionFilter:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    # The position columns follow use_pixel_coords and pose_head_index: the head
+    # keypoint, x_pixels/y_pixels where present and else X/Y, or X/Y.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.id_col),
+        Column(C.orientation_col),
+        ORDER_COLUMN,
+        *(
+            When(position, (ParamIs("use_pixel_coords"), ParamIs("pose_head_index")))
+            for position in (_HEAD_X, _HEAD_Y)
+        ),
+        *(
+            When(
+                AnyOf((Column(pixels), Column(center))),
+                (
+                    ParamIs("use_pixel_coords"),
+                    ParamIs("pose_head_index", negated=True),
+                ),
+            )
+            for pixels, center in (("x_pixels", C.x_col), ("y_pixels", C.y_col))
+        ),
+        *(
+            When(Column(center), (ParamIs("use_pixel_coords", negated=True),))
+            for center in (C.x_col, C.y_col)
+        ),
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column(C.frame_col),
+            Column("id1"),
+            Column("id2"),
+            Column("perspective"),
+            Column("interaction_id"),
+            Column("interaction_start"),
+            Column("interaction_end"),
+        ),
+        conditional=kept(C.group_col, C.seq_col),
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass
@@ -293,8 +350,8 @@ class PairInteractionFilter:
 
         # Determine which columns to use for position
         if p.use_pixel_coords and p.pose_head_index is not None:
-            x_col = f"poseX{p.pose_head_index}"
-            y_col = f"poseY{p.pose_head_index}"
+            x_col = f"{POSE_X.prefix}{p.pose_head_index}"
+            y_col = f"{POSE_Y.prefix}{p.pose_head_index}"
             ensure_columns(df, [x_col, y_col])
         elif p.use_pixel_coords:
             # Try pixel columns, fall back to X/Y

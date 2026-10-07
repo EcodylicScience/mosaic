@@ -19,21 +19,21 @@ entries, which pinned artifact, which resolved feature versions — lives in a
 **It can be checked before anything happens.** Validation runs before the dataset is
 touched and reports all of its problems at once. It decides from declarations alone,
 with no dataset at all. An editor can therefore refuse a wire as it is drawn. Each
-feature declares the entity level of its output. Some features also declare the
-columns they read from their merged input (`requires`) and the columns of their
-output (`provides`). Validation walks the recipe and works out, for each step, the
-columns its input is guaranteed to contain and the columns it may contain. A required
-column absent from every input is a problem, and the problem names the inputs
-providing it. A required column is a caution when an input may contain it. The tracks
-may contain each column allowed by a schema. They may also contain columns outside
-every schema and feature declaration, such as SLEAP's `poseP0`. A column that an
-undeclared feature may produce is a caution too. A caution does not block a run. A
-step whose feature does not declare its requirements is listed as unchecked, and the
-columns that it reads are not checked. The same declaration is checked against
-each entry's merged frame before the feature runs. Validation and execution therefore
-agree on the columns a feature reads. The sharpest refusal is a multi-input join of
-mismatched entity granularity. Merging such inputs on the frame alone pairs every row
-of one input with every row of the other in the same frame.
+feature declares the entity level of its output. Each feature mosaic registers also
+declares the columns it reads from its merged input (`requires`) and the columns of its
+output (`provides`). A feature registered outside mosaic may declare neither. Validation
+walks the recipe and works out, for each step, the columns its input is guaranteed to
+contain and the columns it may contain. A required column absent from every input is a
+problem, and the problem names the inputs providing it. A required column is a caution
+when an input may contain it. The tracks may contain each column allowed by a schema.
+They may also contain columns outside every schema and feature declaration, such as
+SLEAP's `poseP0`. A column that an undeclared feature may produce is a caution too. A
+caution does not block a run. A step whose feature does not declare its requirements is
+listed as unchecked, and the columns that it reads are not checked. The same declaration
+is checked against each entry's merged frame before the feature runs. Validation and
+execution therefore agree on the columns a feature reads. The sharpest refusal is a
+multi-input join of mismatched entity granularity. Merging such inputs on the frame
+alone pairs every row of one input with every row of the other in the same frame.
 
 **It can hold an op.** `Pipeline` cannot express a tracker or a transcode; a recipe
 can, which is why a whole workflow from video to embedding is one document rather
