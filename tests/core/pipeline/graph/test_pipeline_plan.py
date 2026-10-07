@@ -826,3 +826,35 @@ def test_an_invalid_recipe_is_refused_before_the_dataset_is_read(
         )
 
     assert "no-such-thing" in str(raised.value)
+
+
+def test_two_inputs_resolving_to_one_run_are_refused_before_planning(
+    tracked: Dataset,
+) -> None:
+    """Planning gives the two speed steps one run id, which one step reads once."""
+
+    def speed(step_id: str) -> Document:
+        return {"id": step_id, "type": "feature", "feature": "speed-angvel"}
+
+    recipe = Recipe.model_validate(
+        {
+            "steps": [
+                speed("speed_a"),
+                speed("speed_b"),
+                {
+                    "id": "aggregate",
+                    "type": "feature",
+                    "feature": "frame-aggregate",
+                    "inputs": [{"step": "speed_a"}, {"step": "speed_b"}],
+                    "params": {"column": "speed"},
+                },
+            ]
+        }
+    )
+
+    with pytest.raises(RecipeInvalid) as raised:
+        _ = plan_pipeline(tracked, recipe)
+
+    (problem,) = raised.value.problems
+    assert (problem.step, problem.where) == ("aggregate", "inputs")
+    assert "They resolve to one run" in problem.message

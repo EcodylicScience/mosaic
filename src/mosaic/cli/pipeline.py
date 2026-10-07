@@ -111,6 +111,11 @@ def validate_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
         if not report.valid:
             raise typer.Exit(code=1)
         return
+    for caution in report.cautions:
+        typer.echo(f"caution: {caution}", err=True)
+    if report.unchecked:
+        steps = ", ".join(report.unchecked)
+        typer.echo(f"Columns not checked for {steps}", err=True)
     if report.valid:
         typer.echo("This recipe is valid.")
         return

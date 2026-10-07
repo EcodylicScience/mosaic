@@ -22,6 +22,12 @@ input to a consumer. :func:`can_join` asks whether a *set* of producers can be
 aligned into one frame, and that is where the cartesian-product refusal lives --
 the second wire into a join is refusable when the first was not. The enumeration
 a palette wants is built on both.
+
+**A declaration also contains a feature's column contract**, ``requires`` and
+``provides`` from :mod:`~mosaic.core.pipeline.column_contract`: the columns it
+reads from its merged input and the columns of its output. :func:`can_connect`
+reads one fact of it, whether a producer's output keeps the track frame.
+Validation reads the rest, propagating each step's columns through the recipe.
 """
 
 from __future__ import annotations
@@ -30,7 +36,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
+from mosaic.core.json_value import JsonValue
+
+from ..column_contract import Provides, Requirement
 from ..loading import alignment_verdict
+from ..types.data_config import COLUMNS
 from ..types.feature import EmitsLevel
 
 if TYPE_CHECKING:
@@ -52,6 +62,7 @@ __all__ = [
     "columns_for_level",
     "compatible_consumers",
     "compatible_producers",
+    "join_verdicts",
     "possible_connections",
     "resolve_emits",
 ]
@@ -106,6 +117,10 @@ class ProducerDecl:
         writes_media: Whether it writes or relinks media other steps read. What
             makes an ordering-only edge from it meaningful, and what
             ``validate`` pairs against ``reads_media``.
+        keeps_track_frame: Whether its output keeps the track frame: ``True``
+            when it passes its input through or always writes ``X`` and ``Y``,
+            ``False`` when its declared output lacks both, and ``None`` when its
+            output columns are undeclared.
     """
 
     name: str
@@ -113,6 +128,7 @@ class ProducerDecl:
     level: EntityLevel
     writes_tracks: bool = False
     writes_media: bool = False
+    keeps_track_frame: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,15 +141,13 @@ class ConsumerDecl:
         accepts_tracks: Whether the raw ``tracks`` literal is a valid input.
         accepts_features: Whether another feature's output is a valid input.
         requires_track_shape: Whether an input must carry the track frame --
-            positions and pose passed through. **Advisory, and deliberately not
-            enforced here.** ``TrackInputs`` accepts a ``Result`` from a
-            track-*producing* feature, and that producer set is open: mosaic
-            documents it as inexpressible in the type and checks it at input
-            resolution, by looking at whether the resolved output carries the
-            position columns. Refusing every feature here would refuse
-            ``trajectory-smooth -> speed-angvel``, which is an ordinary chain --
-            a false refusal, which is worse than a missed one. A canvas may
-            render it as a caution.
+            positions and pose passed through. ``TrackInputs`` declares it, and
+            accepts a ``Result`` only from a feature whose output keeps the
+            track frame. :func:`can_connect` refuses a producer whose
+            declaration says its output does not (``speed-angvel``), allows one
+            whose declaration says it does (``trajectory-smooth``), and allows a
+            producer with undeclared output columns. Input resolution checks
+            that producer's resolved output at run time.
         takes_no_inputs: Whether it must have none at all, which is what an
             ``Inputs`` requiring empty means.
         cross_joins: Whether it deliberately joins across entity levels.
@@ -196,15 +210,29 @@ class Declaration:
     ``False`` for a step that is not an op. The feature-side twin lives on the
     feature class and is read from there.
     """
+    requires: tuple[Requirement, ...] | None = None
+    """The columns a feature reads from its merged input, ``None`` when undeclared."""
+    provides: Provides | None = None
+    """The columns of a feature's output, ``None`` when undeclared."""
+    param_defaults: Mapping[str, JsonValue] = field(
+        default_factory=dict[str, JsonValue]
+    )
+    """The default of every params field that ``requires`` or ``provides`` reads.
+
+    A reference resolves to it for a step that does not set the field. It is
+    read off the params model when the catalog is built, and a reader of the
+    declaration resolves a reference without the registry.
+    """
 
 
 @dataclass(frozen=True, slots=True)
 class DeclarationCatalog:
     """Every step type this installation knows, keyed by the name a recipe writes.
 
-    JSON-serializable by construction -- frozen dataclasses of strings and bools
-    -- because the same object is what an API hands a browser so the canvas can
-    answer connection questions without a round trip.
+    Its declarations are frozen dataclasses. The editor catalog
+    (:class:`~mosaic.core.pipeline.graph.wire.EditorCatalog`) serializes each one
+    as JSON for an API to hand a browser, and the canvas then answers connection
+    questions without a round trip.
     """
 
     entries: Mapping[str, Declaration] = field(
@@ -224,7 +252,9 @@ class DeclarationCatalog:
 
 
 TRACKS_DECLARATION: Declaration = Declaration(
-    produces=ProducerDecl(name="tracks", kind="tracks", level="individual"),
+    produces=ProducerDecl(
+        name="tracks", kind="tracks", level="individual", keeps_track_frame=True
+    ),
     consumes=ConsumerDecl(name="tracks", kind="feature", takes_no_inputs=True),
     emits="individual",
 )
@@ -283,10 +313,10 @@ _ALLOWED: Verdict = Verdict(allowed=True)
 def can_connect(producer: ProducerDecl, consumer: ConsumerDecl) -> Verdict:
     """May *producer*'s output be **an** input to *consumer*?
 
-    One wire in isolation: the right sort of thing, an accepted input type, and a
-    level the consumer can work with at all. Whether a *set* of wires into one
-    consumer can be aligned is :func:`can_join`, and a canvas drawing the second
-    wire into a join needs both.
+    One wire in isolation: the right sort of thing, an accepted input type, and,
+    for a consumer of a track-shaped table, a producer whose output keeps the
+    track frame. Whether a *set* of wires into one consumer can be aligned is
+    :func:`can_join`, and a canvas drawing the second wire into a join needs both.
     """
     if consumer.takes_no_inputs:
         return Verdict(
@@ -305,7 +335,17 @@ def can_connect(producer: ProducerDecl, consumer: ConsumerDecl) -> Verdict:
         return Verdict(
             False, f"{consumer.name} reads tracks only, not another feature's output"
         )
-    # ``requires_track_shape`` is deliberately not a refusal here; see the field.
+    if (
+        consumer.requires_track_shape
+        and producer.kind == "feature"
+        and producer.keeps_track_frame is False
+    ):
+        reason = (
+            f"{consumer.name} reads a track-shaped table, and {producer.name} "
+            f"neither passes its input through nor writes {COLUMNS.x_col} and "
+            f"{COLUMNS.y_col}"
+        )
+        return Verdict(False, reason)
     return _ALLOWED
 
 
@@ -360,14 +400,43 @@ def possible_connections(
         refused ones greyed out with their reason rather than hiding them.
     """
     wanted = sorted(catalog.names() if candidates is None else candidates)
-    answers: dict[str, Verdict] = {}
+    offered: dict[str, ProducerDecl] = {}
     for name in wanted:
         declared = catalog.get(name)
-        if declared is None:
-            answers[name] = Verdict(False, f"nothing declares {name!r}")
-            continue
-        answers[name] = can_join([*existing, declared.produces], consumer)
-    return answers
+        if declared is not None:
+            offered[name] = declared.produces
+    verdicts = join_verdicts(consumer, offered, existing)
+    return {
+        name: verdicts[name]
+        if name in verdicts
+        else Verdict(False, f"nothing declares {name!r}")
+        for name in wanted
+    }
+
+
+def join_verdicts(
+    consumer: ConsumerDecl,
+    offered: Mapping[str, ProducerDecl],
+    existing: Sequence[ProducerDecl] = (),
+) -> dict[str, Verdict]:
+    """Whether each of *offered* may join *existing* as an input of *consumer*.
+
+    The rule :func:`possible_connections` answers for every declared step type,
+    for producers a caller has already resolved: the steps of one recipe, each
+    at its resolved entity level.
+
+    Args:
+        consumer: The step being wired into.
+        offered: The producers that may be added, keyed by what names each.
+        existing: The producers already feeding *consumer*, resolved.
+
+    Returns:
+        One verdict per offered producer, keyed as *offered* is.
+    """
+    return {
+        name: can_join([*existing, producer], consumer)
+        for name, producer in offered.items()
+    }
 
 
 def compatible_producers(

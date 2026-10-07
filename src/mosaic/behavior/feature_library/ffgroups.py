@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
@@ -9,6 +9,12 @@ from numba import njit  # pyright: ignore[reportUnknownVariableType]
 from numpy.lib.stride_tricks import sliding_window_view
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import (
+    Column,
+    Provides,
+    Requirement,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -227,6 +233,24 @@ class FFGroups:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.frame_col),
+        Column(C.id_col),
+        Column(C.x_col),
+        Column(C.y_col),
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column(C.frame_col),
+            Column(C.id_col),
+            Column("group_membership"),
+            Column("group_size"),
+            Column("event"),
+            Column(C.seq_col),
+            Column(C.group_col),
+        ),
+        conditional=kept(C.time_col),
+    )
 
     class Inputs(TrackInputs):
         pass

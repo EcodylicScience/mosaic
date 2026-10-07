@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import (
+    Column,
+    ParamColumn,
+    Provides,
+    Requirement,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -64,6 +71,18 @@ class IdTagColumns:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    requires: ClassVar[tuple[Requirement, ...]] = ()
+    # ``fields=None`` attaches every field in the labels file, and only the data
+    # names those columns. An empty list attaches none.
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column(C.group_col),
+            Column(C.seq_col),
+            Column(C.id_col),
+            ParamColumn("fields", renamed_by="field_renames", unset="unknown"),
+        ),
+        conditional=kept(C.frame_col, C.time_col),
+    )
 
     class Inputs(TrackInputs):
         pass

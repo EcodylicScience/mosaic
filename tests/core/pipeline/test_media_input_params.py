@@ -13,6 +13,7 @@ runs, and show that ``media`` changes an identity only when it is set.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,9 @@ register_ops()
 
 VARIANT = "preprocess.0.1-3f2a9c01d4"
 OTHER_VARIANT = "preprocess.0.1-0123456789"
+
+STAND_IN = re.compile(r"\b0\.0-[0-9a-f]{10}\b")
+"""The shape of the identifier that validation substitutes for a step reference."""
 
 CONSUMERS: dict[str, dict[str, JsonValue]] = {
     "trex": {},
@@ -402,7 +406,7 @@ def test_a_recipe_refusal_never_names_the_stand_in_identifier(
 
     (problem,) = check_recipe(recipe)
 
-    assert "0000000000" not in problem.message
+    assert STAND_IN.search(problem.message) is None, problem.message
     expected = "`media` names derived media (the output of a preprocess step): "
     assert expected in problem.message
 

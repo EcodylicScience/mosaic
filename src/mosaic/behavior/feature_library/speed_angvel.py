@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 from scipy.signal import savgol_filter
 
+from mosaic.core.pipeline.column_contract import (
+    META_KEPT,
+    ORDER_COLUMN,
+    Column,
+    Conditional,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -20,7 +28,6 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import ensure_columns
 from .registry import register_feature
 
 _STEP_SIZE_DESCRIPTION = (
@@ -157,6 +164,26 @@ class SpeedAngvel:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.id_col),
+        Column(C.x_col),
+        Column(C.y_col),
+        ORDER_COLUMN,
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(Column("speed"), Column("vx"), Column("vy")),
+        conditional=(
+            Conditional(Column("angvel"), when_present=Column(C.orientation_col)),
+            Conditional(Column("speed_smooth"), when_param="smooth_window"),
+            Conditional(Column("speed_step"), when_param="step_size"),
+            Conditional(
+                Column("angvel_step"),
+                when_param="step_size",
+                when_present=Column(C.orientation_col),
+            ),
+            *META_KEPT,
+        ),
+    )
 
     class Inputs(TrackInputs):
         pass
@@ -201,7 +228,6 @@ class SpeedAngvel:
             return pd.DataFrame()
 
         order_col = resolve_order_col(df)
-        ensure_columns(df, [C.id_col, C.x_col, C.y_col])
         df = df.sort_values([C.id_col, order_col]).reset_index(drop=True)
 
         out_parts: list[pd.DataFrame] = []

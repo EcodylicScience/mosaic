@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -40,7 +40,16 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.types import Feature
     from mosaic.core.params import Params
 
+from ..column_contract import (
+    Column,
+    Provides,
+    contract_fields,
+    declared_provides,
+    declared_requires,
+)
+from ..types.data_config import COLUMNS
 from ..types.feature import EmitsLevel
+from .columns import provided_wire, requires_wire, tracks_provides
 from .compatibility import (
     TRACKS_DECLARATION,
     ConsumerDecl,
@@ -326,6 +335,41 @@ def _accepts(inputs_cls: type, payload: list[object]) -> bool:
     return True
 
 
+def _param_defaults(cls: type, fields: frozenset[str]) -> dict[str, JsonValue]:
+    """The default of each of *fields* on *cls*'s params model, as JSON.
+
+    A field with no default, or one whose default is not JSON, is left out: a
+    reference reading it resolves as unknown until a step sets it.
+    """
+    from pydantic import TypeAdapter, ValidationError
+
+    params_cls: object = getattr(cls, "Params", None)
+    if not (isinstance(params_cls, type) and issubclass(params_cls, BaseModel)):
+        return {}
+    adapter: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
+    defaults: dict[str, JsonValue] = {}
+    for name in sorted(fields):
+        info = params_cls.model_fields.get(name)
+        if info is None or info.is_required():
+            continue
+        default: object = info.get_default(call_default_factory=True)
+        try:
+            defaults[name] = adapter.validate_python(default)
+        except ValidationError:
+            continue
+    return defaults
+
+
+def _keeps_track_frame(provides: Provides | None) -> bool | None:
+    """Whether a declared output keeps the track frame, ``None`` when undeclared."""
+    if provides is None:
+        return None
+    if provides.passthrough:
+        return True
+    written = {ref.name for ref in provides.adds if isinstance(ref, Column)}
+    return {COLUMNS.x_col, COLUMNS.y_col} <= written
+
+
 def _feature_declaration(cls: type) -> Declaration:
     """Read one feature class as a producer and a consumer."""
     from mosaic.core.pipeline.loading import CROSS_JOIN_FEATURES
@@ -340,6 +384,8 @@ def _feature_declaration(cls: type) -> Declaration:
     # so the fallback is for a class handed in from outside the registry.
     declared: object = getattr(cls, "emits", "as-input")
     emits: EmitsLevel = declared if declared in _EMITS_LEVELS else "as-input"  # pyright: ignore[reportAssignmentType]
+    requires = declared_requires(cls)
+    provides = declared_provides(cls)
 
     accepts_tracks = inputs_cls is not None and _accepts(inputs_cls, [TRACKS_INPUT])
     accepts_features = inputs_cls is not None and _accepts(
@@ -355,6 +401,7 @@ def _feature_declaration(cls: type) -> Declaration:
             level=resolve_emits(emits),
             writes_tracks=False,
             writes_media=False,
+            keeps_track_frame=_keeps_track_frame(provides),
         ),
         consumes=ConsumerDecl(
             name=slug,
@@ -371,6 +418,9 @@ def _feature_declaration(cls: type) -> Declaration:
         # Optional on a feature and defaulted to cpu, which is what every
         # feature but a declared-heavy one is.
         resource_class=str(getattr(cls, "resource_class", "") or "cpu"),
+        requires=requires,
+        provides=provides,
+        param_defaults=_param_defaults(cls, contract_fields(requires, provides)),
     )
 
 
@@ -450,7 +500,8 @@ def declaration_catalog() -> DeclarationCatalog:
     # imported; this is idempotent and is what every other reader of OPS does.
     register_ops()
 
-    entries: dict[str, Declaration] = {TRACKS_INPUT: TRACKS_DECLARATION}
+    tracks = replace(TRACKS_DECLARATION, requires=(), provides=tracks_provides())
+    entries: dict[str, Declaration] = {TRACKS_INPUT: tracks}
     for cls in FEATURES.values():
         declared = _feature_declaration(cls)
         entries[declared.produces.name] = declared
@@ -497,6 +548,16 @@ def editor_catalog() -> EditorCatalog:
 
 def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
     """One editor-catalog entry, read off the class behind *name*."""
+    requires = (
+        None
+        if declared.requires is None
+        else requires_wire(declared.requires, declared.param_defaults)
+    )
+    provides = (
+        None
+        if declared.provides is None
+        else provided_wire(declared.provides, declared.param_defaults)
+    )
     kind = declared.produces.kind
     if kind == "tracks":
         return CatalogEntry(
@@ -508,6 +569,8 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
             declaration=declared,
             params_schema=None,
             reference_fields={},
+            requires=requires,
+            provides=provides,
         )
     cls = feature_class_for_slug(name) if kind == "feature" else op_class_for_kind(name)
     params_cls: object = getattr(cls, "Params", None)
@@ -528,6 +591,8 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
         declaration=declared,
         params_schema=schema,
         reference_fields=reference_fields,
+        requires=requires,
+        provides=provides,
     )
 
 

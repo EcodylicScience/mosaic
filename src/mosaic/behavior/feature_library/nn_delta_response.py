@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import (
+    AnyOf,
+    Column,
+    Conditional,
+    ParamColumn,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -101,6 +109,13 @@ _TAG_COLS_DESCRIPTION = (
 )
 
 
+_SPEED_FALLBACK = "speed"
+"""The speed column read when the table lacks ``speed_col``."""
+
+_NN_ID_FALLBACK = "nn_fishID"
+"""The neighbor id column read when the table lacks ``nn_id_col``."""
+
+
 def _row_lags(g: pd.DataFrame, lag_col: str | None, default_lag: int) -> np.ndarray:
     """Per-row lag in frames for one individual's rows.
 
@@ -177,6 +192,46 @@ class NearestNeighborDelta:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    # A tracker does not measure speed. A feature such as speed-angvel derives
+    # it, and the speed column comes from that feature's output.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.frame_col),
+        Column(C.id_col),
+        Column(C.x_col),
+        Column(C.y_col),
+        Column(C.orientation_col),
+        AnyOf((ParamColumn("speed_col"), Column(_SPEED_FALLBACK))),
+        AnyOf((ParamColumn("nn_id_col"), Column(_NN_ID_FALLBACK))),
+    )
+    provides: ClassVar[Provides] = Provides(
+        passthrough=True,
+        adds=(
+            Column("nn_id"),
+            Column("neighbor_x"),
+            Column("neighbor_y"),
+            Column("dx"),
+            Column("dy"),
+            Column("dt"),
+            Column("dangle"),
+            Column("dspeed"),
+        ),
+        conditional=(
+            Conditional(
+                Column("neighbor_focal"), when_present=ParamColumn("focal_col")
+            ),
+            Conditional(Column("dx_back"), when_param="emit_backward"),
+            Conditional(Column("dy_back"), when_param="emit_backward"),
+            Conditional(
+                Column("dt_frames"),
+                when_param="diff_numframes_col",
+                when_present=ParamColumn("diff_numframes_col"),
+            ),
+            Conditional(
+                ParamColumn("tag_cols", prefix="neighbor_"),
+                when_present=ParamColumn("tag_cols"),
+            ),
+        ),
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass
@@ -246,39 +301,10 @@ class NearestNeighborDelta:
 
         p = self.params
 
-        # Resolve required columns with a few fallbacks
-        speed_col = (
-            p.speed_col
-            if p.speed_col in df.columns
-            else ("speed" if "speed" in df.columns else None)
-        )
-        nn_id_col = (
-            p.nn_id_col
-            if p.nn_id_col in df.columns
-            else ("nn_fishID" if "nn_fishID" in df.columns else None)
-        )
-        missing: list[str] = []
-        if speed_col is None:
-            missing.append(
-                f"a speed column ({p.speed_col!r}, or 'speed'). Tracks tables carry "
-                "no speed of their own -- it is derived, so it belongs to a "
-                "feature: run 'speed-angvel' first, or point speed_col= at a "
-                "column this table actually has"
-            )
-        if nn_id_col is None:
-            missing.append(f"a neighbor id column ({p.nn_id_col!r}, or 'nn_fishID')")
-        if C.frame_col not in df:
-            missing.append(repr(C.frame_col))
-        if C.id_col not in df:
-            missing.append(repr(C.id_col))
-        if missing:
-            raise ValueError(
-                f"{self.name} cannot run on this table: it needs "
-                + "; ".join(missing)
-                + ". This used to return an empty frame instead, so a run over a "
-                "table missing one of these reported success having computed "
-                "nothing."
-            )
+        # The params' columns where the table has them, else the fallbacks the
+        # declaration accepts in their place.
+        speed_col = p.speed_col if p.speed_col in df.columns else _SPEED_FALLBACK
+        nn_id_col = p.nn_id_col if p.nn_id_col in df.columns else _NN_ID_FALLBACK
 
         order_col = resolve_order_col(df)
         df = df.sort_values([order_col, C.id_col]).reset_index(drop=True)

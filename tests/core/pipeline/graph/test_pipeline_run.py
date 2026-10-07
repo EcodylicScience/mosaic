@@ -18,6 +18,7 @@ from typer.testing import CliRunner, Result
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.graph import validate as validate_module
 from mosaic.core.pipeline.graph import (
     CoverageShortfall,
     Recipe,
@@ -31,7 +32,7 @@ from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.run_log import read_run, run_log_dir
 from mosaic.core.scope import Scope
-from tests.helpers import add_tracks_variant, make_dataset
+from tests.helpers import add_tracks_variant, catalog_without_contract, make_dataset
 
 runner = CliRunner()
 
@@ -290,6 +291,14 @@ def test_validate_exits_non_zero_and_names_the_fault(tmp_path: Path) -> None:
     assert "no-such-feature" in result.output
 
 
+@pytest.fixture
+def undeclared_below_speed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Validation reads a catalog in which the features below ``speed`` declare no columns."""
+    catalog = catalog_without_contract("extract-templates", "global-scaler")
+    monkeypatch.setattr(validate_module, "declaration_catalog", lambda: catalog)
+
+
+@pytest.mark.usefixtures("undeclared_below_speed")
 def test_validate_opens_no_dataset(tmp_path: Path) -> None:
     """It takes no manifest at all, which is the property rather than a default."""
     result = runner.invoke(
@@ -303,11 +312,25 @@ def test_validate_opens_no_dataset(tmp_path: Path) -> None:
         ],
     )
 
-    assert json.loads(result.stdout) == {
-        "valid": True,
-        "digest": recipe_digest(Recipe.model_validate(CHAIN)),
-        "problems": [],
-    }
+    payload = json.loads(result.stdout)
+    assert payload["valid"] is True
+    assert payload["digest"] == recipe_digest(Recipe.model_validate(CHAIN))
+    assert payload["problems"] == []
+    # Neither feature below speed-angvel declares the columns it reads. Both
+    # are listed as unchecked, which is not a caution and leaves the recipe valid.
+    assert payload["unchecked"] == ["templates", "scaler"]
+    assert payload["cautions"] == []
+
+
+@pytest.mark.usefixtures("undeclared_below_speed")
+def test_validate_names_the_unchecked_steps_in_one_line(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app, ["pipeline", "validate", "--recipe", f"@{_recipe_file(tmp_path, CHAIN)}"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stderr.splitlines() == ["Columns not checked for templates, scaler"]
+    assert "caution" not in result.output
 
 
 def test_show_reads_the_graph_without_a_dataset(tmp_path: Path) -> None:

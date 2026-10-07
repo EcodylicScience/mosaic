@@ -553,7 +553,7 @@ Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 | `group_size_col` | `string` | `"group_size"` |  | The column recording the group size. |
 | `exp_col` | `string` | `"Exp"` |  | The column recording the experimental condition identifier. |
 | `trial_col` | `string` | `"Trial"` |  | The column recording the trial identifier. |
-| `category_specs` | list of any | _constructed_ |  | Specs for derived category columns, each a dict with source_col, new_col, quantile (default 0.75) and op, adding a boolean column comparing source_col against its quantile. Any op value other than <= is treated as >, without raising. A spec whose source_col is absent from the table is skipped and adds nothing. |
+| `category_specs` | list of any | _constructed_ |  | Specs for derived category columns, each a dict with source_col, new_col, quantile (default 0.75) and op, adding a boolean column comparing source_col against its quantile. Any op value other than <= is treated as >, without raising. The specs run in list order before the category columns are read, and a spec may write focal_category_col or neighbor_category_col. A run refuses an entry whose table lacks the source_col of a spec, unless an earlier spec writes it. |
 | `exclude_cols` | list of `string` | _constructed_ |  | Column names whose truthy rows are dropped before computation. A name absent from the table is skipped rather than raising. |
 | `nonfocal_flag_col` | `string` | `"Focal_fish"` |  | Name of the column flagging nonfocal animals, read only when focal_category_col is unset or absent from the table. |
 | `nonfocal_flag_value` | `boolean` | `false` |  | The value in nonfocal_flag_col marking an animal as nonfocal, read under the same condition as nonfocal_flag_col. |

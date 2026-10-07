@@ -6,7 +6,7 @@ pipeline infrastructure they depend on.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -81,6 +81,12 @@ def entity_level_of(columns: Iterable[str]) -> str:
     return "individual" if COLUMNS.id_col in present else "global"
 
 
+def alignment_keys(column_sets: Sequence[Iterable[str]]) -> frozenset[str]:
+    """The columns that a merge of these inputs joins on: the shared ``ALIGN_COLS``."""
+    sets = [set(columns) for columns in column_sets]
+    return frozenset(_ALIGN_COLS.intersection(*sets)) if sets else frozenset()
+
+
 def alignment_verdict(column_sets: Sequence[Iterable[str]]) -> AlignmentVerdict:
     """Can these inputs be joined? The rule behind :class:`MultiInputAlignmentError`.
 
@@ -95,7 +101,7 @@ def alignment_verdict(column_sets: Sequence[Iterable[str]]) -> AlignmentVerdict:
     read as sharing identity with a pair-level frame.
     """
     sets = [set(columns) for columns in column_sets]
-    keys = frozenset(_ALIGN_COLS.intersection(*sets)) if sets else frozenset()
+    keys = alignment_keys(sets)
     levels = tuple(entity_level_of(columns) for columns in sets)
     identity = keys & ID_COLS
     concrete = {level for level in levels if level != "global"}
@@ -111,6 +117,67 @@ def alignment_verdict(column_sets: Sequence[Iterable[str]]) -> AlignmentVerdict:
     if not keys:
         return AlignmentVerdict(keys, levels, False, "no shared alignment columns")
     return AlignmentVerdict(keys, levels, True, "")
+
+
+@dataclass(frozen=True, slots=True)
+class MergeNaming:
+    """What merging one more input does to the column names.
+
+    Attributes:
+        keys: The columns joined on, sorted.
+        dropped: The incoming identity columns that the merged side already
+            contains, dropped from the incoming input.
+        renamed: Each incoming payload column that the merged side already
+            contains, mapped to its numbered name ``<column>__<position>``.
+        columns: Every column of the merged frame afterwards.
+    """
+
+    keys: tuple[str, ...]
+    dropped: tuple[str, ...]
+    renamed: Mapping[str, str]
+    columns: frozenset[str]
+
+
+def merge_naming(
+    merged: Iterable[str], incoming: Iterable[str], position: int
+) -> MergeNaming:
+    """The column names after merging *incoming*, the input at *position*.
+
+    The naming rule of a multi-input merge, apart from the data. The merge
+    applies it, and pipeline validation applies it to declared column sets. The
+    two then agree on the columns of a step's merged input.
+
+    A collided ``META_COLS`` column is **dropped** from the incoming input, and
+    not numbered. Identity is either joined on or constant within an entry, and
+    the two copies state the same value. A numbered ``perspective__1`` is
+    numeric and outside every exclusion list, and was once read downstream as a
+    measurement and fitted as data. Only payload keeps the ``__<position>``
+    suffix.
+
+    Args:
+        merged: The columns merged so far.
+        incoming: The next input's columns.
+        position: The next input's declared position among the step's inputs.
+    """
+    left = frozenset(merged)
+    right = frozenset(incoming)
+    keys = alignment_keys([left, right])
+    collided = sorted((right - keys) & left)
+    dropped = tuple(column for column in collided if column in META_COLS)
+    renamed = {
+        column: f"{column}__{position}"
+        for column in collided
+        if column not in META_COLS
+    }
+    kept = (right - frozenset(dropped) - frozenset(renamed)) | frozenset(
+        renamed.values()
+    )
+    return MergeNaming(
+        keys=tuple(sorted(keys)),
+        dropped=dropped,
+        renamed=renamed,
+        columns=left | kept,
+    )
 
 
 def load_parquet_dataframe(
@@ -133,6 +200,12 @@ def load_parquet_dataframe(
     return df
 
 
+def _column_names(df: pd.DataFrame) -> list[str]:
+    """*df*'s column labels as strings, the only labels a parquet file stores."""
+    labels: list[object] = list(df.columns)
+    return [str(label) for label in labels]
+
+
 def _merge_parquet_inputs(
     dfs: Iterable[tuple[int, pd.DataFrame]], *, cross_join: bool = False
 ) -> pd.DataFrame | None:
@@ -148,11 +221,7 @@ def _merge_parquet_inputs(
     the multiplicity check below, which allows a one-to-many join (a per-frame table
     against a per-frame-per-id one) while refusing many-to-many.
 
-    A collided ``META_COLS`` column is **dropped** from the later input rather than
-    numbered. Identity is either joined on or constant within an entry, so the two
-    copies say the same thing; numbering one is what let ``perspective__1`` --
-    numeric, and matching no exclusion list -- be read downstream as a measurement
-    and fitted as data. Only genuine payload keeps the ``__<n>`` suffix.
+    Collided columns are named by :func:`merge_naming`.
     """
     it = iter(dfs)
     first = next(it, None)
@@ -161,12 +230,15 @@ def _merge_parquet_inputs(
     merged = first[1]
 
     for declared, df_next in it:
-        verdict = alignment_verdict([merged.columns, df_next.columns])
+        merged_columns = _column_names(merged)
+        next_columns = _column_names(df_next)
+        verdict = alignment_verdict([merged_columns, next_columns])
         if not verdict.compatible and not cross_join:
             raise MultiInputAlignmentError(
                 f"cannot merge input {declared}: {verdict.reason}"
             )
-        on_cols = sorted(verdict.keys)
+        naming = merge_naming(merged_columns, next_columns, declared)
+        on_cols = list(naming.keys)
         if not on_cols:
             raise MultiInputAlignmentError(
                 f"cannot merge input {declared}: no shared alignment columns"
@@ -178,15 +250,10 @@ def _merge_parquet_inputs(
                 f"cannot merge input {declared}: {on_cols} is not unique on either "
                 "side, so the join would multiply rows"
             )
-        collided = [
-            c for c in df_next.columns if c not in on_cols and c in merged.columns
-        ]
-        identity = [c for c in collided if c in META_COLS]
-        if identity:
-            df_next = df_next.drop(columns=identity)
-        rename_map = {c: f"{c}__{declared}" for c in collided if c not in META_COLS}
-        if rename_map:
-            df_next = df_next.rename(columns=rename_map)
+        if naming.dropped:
+            df_next = df_next.drop(columns=list(naming.dropped))
+        if naming.renamed:
+            df_next = df_next.rename(columns=dict(naming.renamed))
         merged = merged.merge(df_next, how="inner", on=on_cols)
 
     if merged.empty:

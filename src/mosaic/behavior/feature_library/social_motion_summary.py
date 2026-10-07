@@ -2,12 +2,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Self, final
+from typing import Annotated, ClassVar, Self, final
 
 import numpy as np
 import pandas as pd
 from pydantic import model_validator
 
+from mosaic.core.pipeline.column_contract import (
+    ORDER_COLUMN,
+    Column,
+    Conditional,
+    ParamColumn,
+    Provides,
+    Requirement,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -22,7 +31,6 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import ensure_columns
 from .registry import register_feature
 
 _FPS_DESCRIPTION = (
@@ -51,35 +59,38 @@ _COMPUTE_BURST_COAST_DESCRIPTION = (
     "Also emit a burst-and-coast gait summary: kick_rate and burst_coast_ratio."
 )
 
+_METRIC_COLUMNS: tuple[str, ...] = (
+    "nn_align",
+    "frac_nn_ahead",
+    "nn_bearing_x",
+    "nn_bearing_y",
+    "speed_match_nn",
+    "speed_match_group",
+    "speed_cv",
+    "speed_rcv",
+    "accel_mean",
+    "accel_med",
+    "accel_cv",
+    "accel_rcv",
+    "jerk_mean",
+    "jerk_med",
+    "jerk_cv",
+    "jerk_rcv",
+)
+"""The metrics of every output row."""
+
+_BURST_COAST_COLUMNS: tuple[str, ...] = ("kick_rate", "burst_coast_ratio")
+"""Emitted only with ``compute_burst_coast``."""
+
+_COUNT_COLUMNS: tuple[str, ...] = ("n_frames", "n_social_frames", "n_accel", "n_jerk")
+"""Emitted only with ``subgroup_col`` set."""
+
 # Every column this feature emits, for the subgroup_col collision check. A
 # subgroup column sharing a name with an output would give the assembled frame
 # two identically-labeled columns. The conditional ones are listed too: the set
 # is what the feature *may* emit, not what a particular run does.
 EMITTED_COLUMNS: frozenset[str] = frozenset(
-    {
-        "nn_align",
-        "frac_nn_ahead",
-        "nn_bearing_x",
-        "nn_bearing_y",
-        "speed_match_nn",
-        "speed_match_group",
-        "speed_cv",
-        "speed_rcv",
-        "accel_mean",
-        "accel_med",
-        "accel_cv",
-        "accel_rcv",
-        "jerk_mean",
-        "jerk_med",
-        "jerk_cv",
-        "jerk_rcv",
-        "kick_rate",
-        "burst_coast_ratio",
-        "n_frames",
-        "n_social_frames",
-        "n_accel",
-        "n_jerk",
-    }
+    (*_METRIC_COLUMNS, *_BURST_COAST_COLUMNS, *_COUNT_COLUMNS)
 )
 
 
@@ -309,6 +320,27 @@ class SocialMotionSummary:
     accepts_overlap = False
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.id_col),
+        ORDER_COLUMN,
+        ParamColumn("speed_col"),
+        ParamColumn("subgroup_col"),
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(Column(C.id_col), *(Column(name) for name in _METRIC_COLUMNS)),
+        conditional=(
+            Conditional(ParamColumn("subgroup_col"), when_param="subgroup_col"),
+            *(
+                Conditional(Column(name), when_param="subgroup_col")
+                for name in _COUNT_COLUMNS
+            ),
+            *(
+                Conditional(Column(name), when_param="compute_burst_coast")
+                for name in _BURST_COAST_COLUMNS
+            ),
+            *kept(C.seq_col, C.group_col),
+        ),
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass
@@ -480,10 +512,6 @@ class SocialMotionSummary:
 
         p = self.params
         order_col = resolve_order_col(df)
-        required = [C.id_col, order_col, p.speed_col]
-        if p.subgroup_col is not None:
-            required.append(p.subgroup_col)
-        ensure_columns(df, required)
         df = df.sort_values([C.id_col, order_col]).reset_index(drop=True)
 
         has_gm = "group_membership" in df.columns

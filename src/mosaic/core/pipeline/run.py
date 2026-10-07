@@ -38,6 +38,7 @@ from ._utils import (
     hash_params,
     json_ready,
 )
+from .column_contract import MissingInputColumns, check_input_columns
 from .identity_scheme import (
     FEATURE_IDENTITY_SCHEME,
     write_identity_scheme,
@@ -1606,6 +1607,15 @@ def _run_feature_impl(
         ctx.check_cancel()
         group, sequence = resolve_sequence_identity(entry_key, resolved.entry_map)
         meta = build_feature_meta(group, sequence, run_root)
+
+        # Pipeline validation checks the recipe against this declaration, and
+        # the entry's merged frame is checked against it too. A missing column
+        # fails the entry with one message, before apply reads anything.
+        try:
+            check_input_columns(feature, df.columns)
+        except MissingInputColumns as exc:
+            _entry_failed(group, sequence, exc)
+            return
 
         # Cache hits are resolved up-front in the pre-pass; any entry reaching
         # here needs (re)computation.

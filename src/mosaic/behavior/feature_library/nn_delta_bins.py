@@ -2,12 +2,21 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.column_contract import (
+    AnyOf,
+    Column,
+    Derived,
+    ParamColumn,
+    Provides,
+    Requirement,
+    kept,
+)
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
     EmitsLevel,
@@ -64,8 +73,11 @@ _CATEGORY_SPECS_DESCRIPTION = (
     "Specs for derived category columns, each a dict with source_col, "
     "new_col, quantile (default 0.75) and op, adding a boolean column "
     "comparing source_col against its quantile. Any op value other than "
-    "<= is treated as >, without raising. A spec whose source_col is "
-    "absent from the table is skipped and adds nothing."
+    "<= is treated as >, without raising. The specs run in list order "
+    "before the category columns are read, and a spec may write "
+    "focal_category_col or neighbor_category_col. A run refuses an entry "
+    "whose table lacks the source_col of a spec, unless an earlier spec "
+    "writes it."
 )
 
 _EXCLUDE_COLS_DESCRIPTION = (
@@ -82,6 +94,10 @@ _NONFOCAL_FLAG_VALUE_DESCRIPTION = (
     "The value in nonfocal_flag_col marking an animal as nonfocal, read "
     "under the same condition as nonfocal_flag_col."
 )
+
+
+_RESPONSE_COLUMNS: tuple[str, ...] = ("neighbor_x", "neighbor_y", "dangle", "dspeed")
+"""The nn-delta-response columns that every bin is computed from."""
 
 
 def _binned_mean_fast(
@@ -185,6 +201,35 @@ class NearestNeighborDeltaBins:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"
+    # In the order apply reads them. The response columns come first. The
+    # category specs then derive their columns, which may be the category
+    # columns. Rows are written per focal category, or else per neighbor
+    # category, and a frame with neither column bins nothing.
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        *(Column(name) for name in _RESPONSE_COLUMNS),
+        Derived("category_specs", name_key="new_col", source_key="source_col"),
+        AnyOf(
+            (ParamColumn("focal_category_col"), ParamColumn("neighbor_category_col"))
+        ),
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column("dim"),
+            ParamColumn("exp_col"),
+            ParamColumn("trial_col"),
+            Column("center_category"),
+            Column("neighbor_category"),
+            ParamColumn("group_size_col", fallback="group_size"),
+            Column("metric"),
+            Column("bin_idx"),
+            Column("value"),
+            Column("bin_x"),
+            Column("bin_y"),
+            Column("sum_value"),
+            Column("count"),
+        ),
+        conditional=kept(C.group_col, C.seq_col),
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass
@@ -259,7 +304,7 @@ class NearestNeighborDeltaBins:
         if df.empty:
             return pd.DataFrame()
 
-        required = ["neighbor_x", "neighbor_y", "dangle", "dspeed"]
+        required = list(_RESPONSE_COLUMNS)
 
         # helper to coalesce suffix-split columns (e.g., focal_fish_x, focal_fish_y)
         def _coalesce_column(base: str):
@@ -291,9 +336,6 @@ class NearestNeighborDeltaBins:
         # Drop rows missing required numeric inputs
         df = df.dropna(subset=required)
         if df.empty:
-            return pd.DataFrame()
-
-        if not all(col in df.columns for col in required):
             return pd.DataFrame()
 
         # Optionally derive category columns from specs

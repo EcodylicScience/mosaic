@@ -8,10 +8,8 @@ case here runs in a subprocess where constructing a dataset raises.
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
-from dataclasses import asdict
 
 import pytest
 
@@ -19,12 +17,14 @@ from mosaic.core.pipeline.graph import (
     ConsumerDecl,
     Declaration,
     DeclarationCatalog,
+    EditorCatalog,
     ProducerDecl,
     can_connect,
     can_join,
     compatible_consumers,
     compatible_producers,
     declaration_catalog,
+    editor_catalog,
     possible_connections,
     resolve_emits,
 )
@@ -81,17 +81,39 @@ def test_a_consumer_taking_no_inputs_refuses_everything() -> None:
     assert "no pipeline inputs" in verdict.reason
 
 
-def test_a_track_shaped_consumer_does_not_refuse_a_feature_here() -> None:
-    """Advisory, not a refusal, because refusing it would be wrong more often.
+def test_a_track_input_refuses_a_producer_that_drops_the_track_frame() -> None:
+    """Decided from the producer's declared output columns.
 
-    ``TrackInputs`` accepts a ``Result`` from a track-*producing* feature, and
-    that set is open -- ``trajectory-smooth -> speed-angvel`` is an ordinary
-    chain. Refusing every feature would refuse that, which is a false refusal;
-    the real check reads the resolved output's columns at input resolution.
+    A producer passing its input through, or writing ``X`` and ``Y``, keeps the
+    track frame. A producer whose declared output lacks both does not. A producer
+    with undeclared output columns is allowed, and input resolution checks its
+    resolved output at run time. Refusing it would refuse every undeclared track
+    producer, ``movement-smooth -> speed-angvel`` among them.
     """
+    keeps = ProducerDecl(
+        name="trajectory-smooth",
+        kind="feature",
+        level="individual",
+        keeps_track_frame=True,
+    )
+    drops = ProducerDecl(
+        name="nearest-neighbor",
+        kind="feature",
+        level="individual",
+        keeps_track_frame=False,
+    )
+    undeclared = ProducerDecl(
+        name="movement-smooth", kind="feature", level="individual"
+    )
+
     assert can_connect(TRACKS, TRACK_SHAPED)
-    assert can_connect(SPEED, TRACK_SHAPED)
-    assert TRACK_SHAPED.requires_track_shape
+    assert can_connect(keeps, TRACK_SHAPED)
+    assert can_connect(undeclared, TRACK_SHAPED)
+    refused = can_connect(drops, TRACK_SHAPED)
+    assert not refused
+    assert "neither passes its input through nor writes X and Y" in refused.reason
+    # A consumer of any table takes it.
+    assert can_connect(drops, JOINER)
 
 
 def test_a_features_only_consumer_refuses_raw_tracks() -> None:
@@ -178,10 +200,14 @@ def test_possible_connections_narrows_once_a_wire_is_taken(
 def test_possible_connections_answers_for_every_candidate(
     small_catalog: DeclarationCatalog,
 ) -> None:
-    """Refused candidates are reported with a reason, never omitted."""
+    """Each candidate is answered, a refused one with the reason ``can_join`` gives."""
     answers = possible_connections(JOINER, small_catalog, existing=[PAIRWISE])
     assert set(answers) == set(small_catalog.names())
-    assert all(verdict.reason for verdict in answers.values() if not verdict)
+    assert not all(answers.values())
+    for name, verdict in answers.items():
+        declared = small_catalog.get(name)
+        assert declared is not None
+        assert verdict == can_join([PAIRWISE, declared.produces], JOINER), name
 
 
 def test_an_undeclared_candidate_is_refused_by_name(
@@ -254,10 +280,15 @@ def test_the_catalog_covers_every_feature_and_op() -> None:
 
 
 def test_the_catalog_round_trips_through_json() -> None:
-    """Phase 5 serves this object, so a client answers with the same code path."""
-    catalog = declaration_catalog()
-    payload = {name: asdict(declared) for name, declared in catalog.entries.items()}
-    assert json.loads(json.dumps(payload)) == payload
+    """An API serves the declarations, and a client answers with the same code path.
+
+    Each one is served inside its editor-catalog entry, and reads back from that
+    JSON equal to the declaration validation reads, column contract included.
+    """
+    served = EditorCatalog.model_validate_json(editor_catalog().model_dump_json())
+    declarations = declaration_catalog()
+    for entry in served.entries:
+        assert entry.declaration == declarations.get(entry.name), entry.name
 
 
 def test_declarations_are_read_off_what_a_class_declares() -> None:

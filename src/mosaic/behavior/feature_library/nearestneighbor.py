@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import final
+from typing import ClassVar, final
 
 import numpy as np
 import pandas as pd
 
+from mosaic.core.pipeline.column_contract import (
+    META_KEPT,
+    ORDER_COLUMN,
+    Column,
+    Conditional,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -18,7 +26,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Params
 
-from .helpers import ego_rotate, ensure_columns, wrap_angle
+from .helpers import ego_rotate, wrap_angle
 from .registry import register_feature
 
 
@@ -46,6 +54,29 @@ class NearestNeighbor:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.id_col),
+        Column(C.x_col),
+        Column(C.y_col),
+        ORDER_COLUMN,
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column("nn_id"),
+            Column("nn_delta_x"),
+            Column("nn_delta_y"),
+            Column("nn_dist"),
+            Column("nn_delta_x_ego"),
+            Column("nn_delta_y_ego"),
+            Column("nn_ego_unrotated"),
+        ),
+        conditional=(
+            Conditional(
+                Column("nn_delta_angle"), when_present=Column(C.orientation_col)
+            ),
+            *META_KEPT,
+        ),
+    )
 
     class Inputs(TrackInputs):
         pass
@@ -84,7 +115,6 @@ class NearestNeighbor:
             return pd.DataFrame()
 
         order_col = resolve_order_col(df)
-        ensure_columns(df, [C.id_col, C.x_col, C.y_col])
         df = df.sort_values(order_col).reset_index(drop=True)
 
         angles = (

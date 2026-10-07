@@ -27,6 +27,7 @@ from mosaic.core.pipeline.graph import (
     check_recipe,
     declaration_catalog,
     editor_catalog,
+    input_candidates,
     params_reference_site,
     read_recipe,
     render_location,
@@ -302,7 +303,12 @@ def test_a_params_error_elsewhere_does_not_block_the_picker() -> None:
 
 
 def test_every_template_is_wired_the_way_validation_accepts() -> None:
-    """A template plus an id validates, apart from params the author must fill."""
+    """A template plus an id validates, apart from the parts the author still adds.
+
+    Those are params the author must fill, and required columns that its one
+    input lacks. ``input_candidates`` reports each such column as still needed,
+    and validation reports the same column as a problem.
+    """
     recipe = read_recipe(BRANCH)
     for above in (None, *(step.id for step in recipe.steps)):
         report = attach_candidates(recipe, above)
@@ -312,12 +318,24 @@ def test_every_template_is_wired_the_way_validation_accepts() -> None:
             grown = Recipe.model_validate(
                 {"steps": [*BRANCH_STEPS, {"id": "added", **attachment.template}]}
             )
+            needed = (
+                {
+                    still.need.label
+                    for still in input_candidates(grown, "added").still_needs
+                    if still.status == "absent"
+                }
+                if attachment.template.get("type") == "feature"
+                else set[str]()
+            )
             wiring = [
                 problem
                 for problem in check_recipe(grown)
                 if problem.step == "added"
                 and not problem.where.startswith("params")
                 and "not installed" not in problem.message
+                and not any(
+                    problem.message.startswith(f"needs {label},") for label in needed
+                )
             ]
             assert not wiring, (above, name, wiring)
 

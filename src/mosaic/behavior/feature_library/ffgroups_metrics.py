@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
 
 from mosaic.core.helpers import chunk_sequence
+from mosaic.core.pipeline.column_contract import (
+    ORDER_COLUMN,
+    Column,
+    Conditional,
+    ParamColumn,
+    Provides,
+    Requirement,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -22,7 +31,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import apply_exclude_cols, ensure_columns
+from .helpers import apply_exclude_cols
 from .registry import register_feature
 
 _GROUP_COL_DESCRIPTION = (
@@ -83,7 +92,37 @@ class FFGroupsMetrics:
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
-    emits: EmitsLevel = "unidentified"
+    # Its rows are one per id and group size, each about one individual.
+    emits: EmitsLevel = "individual"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.x_col),
+        Column(C.y_col),
+        Column(C.id_col),
+        ParamColumn("speed_col"),
+        ORDER_COLUMN,
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(
+            Column(C.id_col),
+            Column("group_size"),
+            Column("fractime_norm2"),
+            Column("avg_duration_frame"),
+            Column("med_duration_frame"),
+            Column("ftime_periphery"),
+            Column("ftime_periphery_norm"),
+            Column("chunk_id"),
+            Column("chunk_start_frame"),
+            Column("chunk_end_frame"),
+            Column("chunk_start_time"),
+            Column("chunk_end_time"),
+        ),
+        conditional=(
+            *kept(C.seq_col),
+            Conditional(
+                ParamColumn("group_col"), when_present=ParamColumn("group_col")
+            ),
+        ),
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass
@@ -137,8 +176,6 @@ class FFGroupsMetrics:
         df = apply_exclude_cols(df, self.params.exclude_cols)
         if df.empty:
             return pd.DataFrame()
-
-        ensure_columns(df, [C.x_col, C.y_col, self.params.speed_col, C.id_col])
 
         summaries: list[pd.DataFrame] = []
         for chunk_id, chunk_df, meta in chunk_sequence(

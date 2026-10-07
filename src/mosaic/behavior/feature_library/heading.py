@@ -22,13 +22,22 @@ results rather than one column that quietly changed meaning.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal, final
+from typing import Annotated, ClassVar, Literal, final
 
 import numpy as np
 import pandas as pd
 
 from mosaic.core.kinematics import angle_from_pca, angle_from_two_points
 from mosaic.core.pose_columns import pose_column_pairs
+from mosaic.core.pipeline.column_contract import (
+    META_KEPT,
+    ORDER_COLUMN,
+    Column,
+    ParamColumn,
+    Prefix,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
     EmitsLevel,
@@ -39,7 +48,6 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import ensure_columns
 from .registry import register_feature
 
 HeadingMethod = Literal["two_point", "pca"]
@@ -90,6 +98,15 @@ class HeadingFeature:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(C.id_col),
+        ORDER_COLUMN,
+        Prefix("poseX"),
+        Prefix("poseY"),
+    )
+    provides: ClassVar[Provides] = Provides(
+        adds=(ParamColumn("output_col"),), conditional=META_KEPT
+    )
 
     class Inputs(TrackInputs):
         pass
@@ -130,8 +147,9 @@ class HeadingFeature:
 
         p = self.params
         order_col = resolve_order_col(df)
-        ensure_columns(df, [C.id_col])
         pose_pairs = pose_column_pairs(list(df.columns))
+        # The declaration asks for a column of each prefix. A keypoint is a
+        # poseX/poseY pair of one suffix, which a prefix cannot express.
         if not pose_pairs:
             raise ValueError(
                 f"{self.name} needs pose keypoint columns (poseX*/poseY*) and this "

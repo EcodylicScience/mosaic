@@ -23,11 +23,20 @@ level down -- a bridged tracks row records the media composition it consumed and
 the inventory compares it -- so such a graph now reads as drifted rather than as
 done, and refusing the edge would refuse the ordinary ``transcode -> trex`` shape
 for a gap that no longer exists.
+
+**Columns are checked against each feature's declared contract.** The walk
+propagates the output columns of every feature step (:mod:`.columns`) and checks
+each step's ``requires`` against its merged input. A required column that every
+input lacks is a problem, and its message names the features that provide it. A
+column is a *caution* when an input may contain it, or when an undeclared step
+may produce it. Validation reports a caution, and a run is not refused for it. A
+step whose feature does not declare ``requires`` is listed in the report's
+``unchecked`` steps, and the columns that it reads are not checked.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Final, TypeGuard
 
@@ -35,6 +44,25 @@ from pydantic import ValidationError
 
 from mosaic.core.json_value import JsonValue
 
+from .._utils import hash_params
+from ..column_contract import (
+    NamedColumns,
+    ParamValues,
+    contract_fields,
+    needs_of,
+    param_values,
+)
+from .columns import (
+    UNKNOWN_COLUMNS,
+    ColumnSet,
+    merged_input,
+    names_wire,
+    need_status,
+    output_columns,
+    provider_phrase,
+    providers_of,
+    tracks_columns,
+)
 from .compatibility import (
     TRACKS_DECLARATION,
     Declaration,
@@ -42,6 +70,7 @@ from .compatibility import (
     ProducerDecl,
     can_connect,
     can_join,
+    join_verdicts,
     resolve_emits,
 )
 from .digest import recipe_digest
@@ -58,20 +87,33 @@ from .model import (
 from .resolve import (
     ResolvedStep,
     StepBuildError,
+    StepSpec,
     build_step_feature,
     build_step_op_params,
     declaration_catalog,
     params_reference_site,
     resolve_step_spec,
 )
-from .topo import RecipeCycle, topological_order
-from .wire import AttachReport, Attachment, Problem, ValidationReport, render_location
+from .topo import RecipeCycle, descendants_of, topological_order
+from .wire import (
+    AttachReport,
+    Attachment,
+    InputCandidate,
+    InputCandidates,
+    Problem,
+    StillNeeded,
+    UnmetStatus,
+    ValidationReport,
+    render_location,
+)
 from ..preprocess_layout import PREPROCESS_KIND
 from mosaic.core.pipeline.types import ArtifactSpec
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
+    from mosaic.core.pipeline.types import Feature
+
     from .compatibility import DeclarationCatalog
 
 __all__ = [
@@ -80,8 +122,10 @@ __all__ = [
     "RecipeInvalid",
     "attach_candidates",
     "check_recipe",
+    "input_candidates",
     "read_recipe",
     "reject_unless_valid",
+    "resolved_columns",
     "resolved_levels",
     "validation_report",
 ]
@@ -107,14 +151,56 @@ EXCLUDED_KINDS: Final[dict[str, str]] = {
 }
 """Ops a graph may not run, and why -- ownership rather than capability."""
 
-_PLACEHOLDER_IDENTIFIER: Final = "0.0-0000000000"
-"""Stands in for an identifier only a dataset can supply.
 
-Validation asks whether a step is *constructible*, which needs its references
-substituted with something of the right shape rather than with the right value.
-An ordinary-looking identifier keeps a params model that requires a non-empty one
-from failing for something the recipe is not responsible for.
-"""
+def _stand_in(terms: object) -> str:
+    """A stand-in for a step's identifier, which only a dataset can supply.
+
+    Validation asks whether a step is *constructible*. Each reference is then
+    substituted with a value of the right shape. An ordinary-looking identifier
+    keeps a params model that requires a non-empty one from failing for something
+    the recipe is not responsible for.
+
+    The stand-in is a digest of the identity terms that the recipe decides, and
+    two steps share one when those terms agree, and only then. Planning resolves such
+    steps to one run id, and validation refuses them as two inputs of one step.
+    Two steps running one feature over one input share a storage name, and with
+    different params their stand-ins tell them apart.
+    """
+    return f"0.0-{hash_params(terms)}"
+
+
+def _feature_stand_in(spec: StepSpec, feature: Feature) -> str:
+    """The stand-in for a feature step, from the terms of its ``run_id``.
+
+    The terms are those that :func:`~mosaic.core.pipeline.run.compute_run_id`
+    hashes and the recipe decides. The tracks variant counts only for a step
+    reading ``tracks``, as it does in the identity.
+    """
+    return _stand_in(
+        {
+            "feature": spec.feature,
+            "params": feature.params.identity_dump(),
+            "inputs": feature.inputs.model_dump(),
+            "tracks": spec.tracks_run_id if feature.inputs.has_tracks else None,
+            "run": [
+                spec.filter_start_frame,
+                spec.filter_end_frame,
+                spec.filter_start_time,
+                spec.filter_end_time,
+                spec.overlap_frames,
+            ],
+        }
+    )
+
+
+def _op_stand_in(spec: StepSpec) -> str:
+    """The stand-in for an op step, from its kind and its params as written.
+
+    An op's identity reads fields that ``identity_dump`` leaves out, such as
+    ``media``. Every params field therefore counts.
+    """
+    return _stand_in({"kind": spec.op_kind, "params": dict(spec.params)})
+
 
 _PROBE_ENTRIES: Final[tuple[tuple[str, str], ...]] = (("", "__probe__"),)
 """A scope of one, standing in for the one a plan supplies.
@@ -152,14 +238,22 @@ def _inputs_of(step: Step) -> tuple[str | StepRef, ...]:
     return tuple(step.inputs) if isinstance(step, FeatureStepSpec) else ()
 
 
+type _InputRun = str | tuple[str, str]
+"""The run that one input of a step reads, keyed as a feature's inputs model keys it.
+
+``tracks``, or an earlier step's storage name and stand-in.
+"""
+
+
 @dataclass
 class _Walk:
     """What the topological walk has established about the steps behind it.
 
-    Held rather than recomputed because three checks need it: an edge needs the
+    Recorded once because four checks need it: an edge needs the
     upstream's declaration and its *resolved* entity level, a ``tracks``
-    reference needs to know what the referenced step runs, and construction needs
-    the storage names the substitution reads.
+    reference needs to know what the referenced step runs, construction needs
+    the storage names the substitution reads, and a column check needs the
+    columns of each upstream's output.
     """
 
     catalog: DeclarationCatalog
@@ -167,10 +261,36 @@ class _Walk:
     levels: dict[str, EntityLevel] = field(default_factory=dict)
     resolved: dict[str, ResolvedStep] = field(default_factory=dict)
     broken: set[str] = field(default_factory=set)
+    columns: dict[str, ColumnSet] = field(default_factory=dict)
+    """The output columns of each feature step that checked out."""
+    values: dict[str, ParamValues] = field(default_factory=dict)
+    """The built params of each such step, every field its contract reads."""
+    cautions: list[Problem] = field(default_factory=list)
+    unchecked: list[str] = field(default_factory=list)
+    """The feature steps whose feature does not declare ``requires``, in walk order."""
+    tracks: ColumnSet = field(init=False)
+    """The columns of the dataset's tracks, read once per walk."""
+
+    def __post_init__(self) -> None:
+        self.tracks = tracks_columns(self.catalog)
 
     def declaration_behind(self, step_id: str) -> Declaration | None:
         """What the step with this id runs, as a declaration."""
         return self.catalog.get(self.runs.get(step_id, ""))
+
+    def input_columns(self, item: str | StepRef) -> ColumnSet:
+        """The columns of one input of a step: the tracks, or an earlier step's output.
+
+        :data:`UNKNOWN_COLUMNS` for a step that did not check out. A column it
+        supplies is then a caution.
+        """
+        if isinstance(item, str):
+            return self.tracks
+        return self.columns.get(item.step, UNKNOWN_COLUMNS)
+
+    def merged_columns(self, step: FeatureStepSpec) -> ColumnSet:
+        """The columns of *step*'s merged input."""
+        return merged_input([self.input_columns(item) for item in step.inputs])
 
     def level_behind(self, step_id: str) -> EntityLevel:
         """The resolved entity level of that step's output.
@@ -181,19 +301,26 @@ class _Walk:
         """
         return self.levels.get(step_id, "individual")
 
-    def record(self, step: Step, declared: Declaration, storage_name: str) -> None:
+    def record(
+        self, step: Step, declared: Declaration, storage_name: str, stand_in: str
+    ) -> None:
         """Take down what a step that checked out will offer to the ones below."""
         self.resolved[step.id] = ResolvedStep(
             step_id=step.id,
             storage_name=storage_name,
-            run_id=_PLACEHOLDER_IDENTIFIER,
-            tracks_variant=(
-                _PLACEHOLDER_IDENTIFIER if declared.produces.writes_tracks else ""
-            ),
-            model_run_id=(
-                _PLACEHOLDER_IDENTIFIER if declared.category == "train" else ""
-            ),
+            run_id=stand_in,
+            tracks_variant=stand_in if declared.produces.writes_tracks else "",
+            model_run_id=stand_in if declared.category == "train" else "",
         )
+
+    def run_of(self, item: str | StepRef) -> _InputRun | None:
+        """The run that *item* reads, or ``None`` when its step did not check out."""
+        if isinstance(item, str):
+            return item
+        upstream = self.resolved.get(item.step)
+        if upstream is None or upstream.run_id is None:
+            return None
+        return upstream.storage_name, upstream.run_id
 
 
 def check_recipe(
@@ -211,20 +338,46 @@ def check_recipe(
     Returns:
         The problems found, empty when the recipe is well formed.
     """
+    return _examine(recipe, catalog).problems
+
+
+@dataclass(frozen=True, slots=True)
+class _Examined:
+    """The problems that one walk of a recipe found, and the walk's record."""
+
+    problems: tuple[Problem, ...]
+    walk: _Walk
+    cycle: RecipeCycle | None = None
+
+
+def _examine(recipe: Recipe, catalog: DeclarationCatalog | None) -> _Examined:
+    """Walk *recipe* in topological order, checking every step."""
+    known = declaration_catalog() if catalog is None else catalog
     try:
         ordered = topological_order(recipe)
     except RecipeCycle as exc:
         # Nothing else can be checked: every remaining question is asked of a
         # step's upstreams, and a cycle is exactly the state in which "upstream"
         # has no meaning.
-        return (Problem("", "steps", str(exc)),)
+        return _Examined((Problem("", "steps", str(exc)),), _Walk(catalog=known), exc)
 
-    known = declaration_catalog() if catalog is None else catalog
     walk = _Walk(catalog=known, levels=resolved_levels(recipe, known))
     problems: list[Problem] = []
     for step in ordered:
         problems.extend(_check_step(step, recipe, walk))
-    return tuple(problems)
+    return _Examined(tuple(problems), walk)
+
+
+def _walked(recipe: Recipe, catalog: DeclarationCatalog | None) -> _Walk:
+    """The walk of *recipe*, for an answer that needs every step's columns.
+
+    Raises:
+        RecipeInvalid: The recipe has a cycle.
+    """
+    examined = _examine(recipe, catalog)
+    if examined.cycle is not None:
+        raise RecipeInvalid(examined.problems) from examined.cycle
+    return examined.walk
 
 
 def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
@@ -250,6 +403,8 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
             Problem(step.id, where, f"no registered {expected_kind} is named {name!r}")
         ]
     walk.runs[step.id] = name
+    if isinstance(step, FeatureStepSpec) and declared.requires is None:
+        walk.unchecked.append(step.id)
 
     problems: list[Problem] = []
     overwrites = OVERWRITE_PARAM in step.params
@@ -284,6 +439,14 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
     if edge is not None:
         problems.append(edge)
 
+    one_run = _one_run_problems(step, walk)
+    if one_run:
+        # The inputs model refuses a run listed twice, and its message names the
+        # stand-ins. These problems name the steps instead.
+        walk.broken.add(step.id)
+        problems.extend(one_run)
+        return problems
+
     spec = resolve_step_spec(
         recipe, step.id, walk.resolved, entries=Scope(entries=list(_PROBE_ENTRIES))
     )
@@ -302,9 +465,12 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
         )
     try:
         if isinstance(step, FeatureStepSpec):
-            built = build_step_feature(spec).params
+            feature = build_step_feature(spec)
+            built = feature.params
+            stand_in = _feature_stand_in(spec, feature)
         else:
             built = build_step_op_params(spec)
+            stand_in = _op_stand_in(spec)
     except StepBuildError as exc:
         walk.broken.add(step.id)
         problems.extend(_build_problems(step.id, exc))
@@ -315,22 +481,139 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
         # recipe cannot be checked or run on this installation, and a validator
         # that crashes answers an editor with nothing.
         walk.broken.add(step.id)
-        problems.append(
-            Problem(
-                step.id,
-                where,
-                f"{name!r} needs an optional dependency that is not installed "
-                f"here: {exc}",
-            )
+        message = (
+            f"{name!r} needs an optional dependency that is not installed here: {exc}"
         )
+        problems.append(Problem(step.id, where, message))
         return problems
 
     problems.extend(_glob_reference_problems(step, name, built))
+    if isinstance(step, FeatureStepSpec):
+        # An edge refusal already says why these inputs cannot feed this step,
+        # so the columns they lack would restate it.
+        problems.extend(
+            _column_problems(step, declared, built, walk, checked=edge is None)
+        )
 
     walk.record(
-        step, declared, spec.storage_name if isinstance(step, FeatureStepSpec) else ""
+        step,
+        declared,
+        spec.storage_name if isinstance(step, FeatureStepSpec) else "",
+        stand_in,
     )
     return problems
+
+
+def _one_run_problems(step: Step, walk: _Walk) -> list[Problem]:
+    """A problem for each run that several of *step*'s inputs read."""
+    readers: dict[_InputRun, list[str]] = {}
+    for item in _inputs_of(step):
+        run = walk.run_of(item)
+        if run is not None:
+            readers.setdefault(run, []).append(_input_label(item))
+    return [
+        Problem(step.id, "inputs", _one_run_reason(labels, walk))
+        for labels in readers.values()
+        if len(labels) > 1
+    ]
+
+
+def _one_run_reason(labels: Sequence[str], walk: _Walk) -> str:
+    """Why a step may not read the inputs *labels* together: they are one run."""
+    named = list(dict.fromkeys(labels))
+    if len(named) == 1:
+        return (
+            f"{named[0]!r} appears {len(labels)} times among the inputs, and a "
+            "step reads each input once"
+        )
+    listed = " and ".join(
+        [", ".join(repr(label) for label in named[:-1]), repr(named[-1])]
+    )
+    runs = walk.runs[named[0]]
+    return (
+        f"{listed} run {runs} with the same params, inputs and run arguments. "
+        "They resolve to one run, and a step reads each run once"
+    )
+
+
+def _column_problems(
+    step: FeatureStepSpec,
+    declared: Declaration,
+    built: Params,
+    walk: _Walk,
+    *,
+    checked: bool,
+) -> list[Problem]:
+    """Record the columns of *step*'s output, and check its inputs against it.
+
+    A required column that the merged input cannot contain is a problem. Columns
+    it may contain, and columns that an undeclared step may produce, are
+    cautions, one of each kind per step. A step whose feature does not declare
+    ``requires`` is not checked, and :func:`_check_step` lists it as unchecked.
+    """
+    values = param_values(built, contract_fields(declared.requires, declared.provides))
+    merged = walk.merged_columns(step)
+    walk.values[step.id] = values
+    walk.columns[step.id] = output_columns(declared.provides, merged, values)
+    if not checked or declared.requires is None:
+        return []
+
+    problems: list[Problem] = []
+    maybe: list[str] = []
+    unchecked: list[str] = []
+    for need in needs_of(declared.requires, values):
+        status = need_status(need, merged)
+        if status == "absent":
+            problems.append(
+                Problem(step.id, "inputs", _absent_message(step, need, walk))
+            )
+        elif status == "possible":
+            maybe.append(need.label)
+        elif status == "unknown":
+            unchecked.append(need.label)
+    if maybe:
+        message = (
+            f"{', '.join(maybe)} may be missing from its merged input. An input "
+            "may contain it, and none guarantees it"
+        )
+        walk.cautions.append(Problem(step.id, "inputs", message))
+    if unchecked:
+        message = (
+            f"{', '.join(unchecked)} cannot be checked. A step it reads from does "
+            "not declare its columns, or a params value does not name a column"
+        )
+        walk.cautions.append(Problem(step.id, "inputs", message))
+    return problems
+
+
+def _input_label(item: str | StepRef) -> str:
+    """One input as a message names it: ``tracks`` or the step's id."""
+    return item if isinstance(item, str) else item.step
+
+
+def _absent_message(step: FeatureStepSpec, need: NamedColumns, walk: _Walk) -> str:
+    """The problem for a required column that every input lacks, naming its providers."""
+    inputs = ", ".join(_input_label(item) for item in step.inputs) or "no inputs"
+    return (
+        f"needs {need.label}, and its merged input from {inputs} lacks it. "
+        f"{_supplied_by(step, need, walk)}"
+    )
+
+
+def _supplied_by(step: FeatureStepSpec, need: NamedColumns, walk: _Walk) -> str:
+    """Which inputs would supply *need*, as the end of a problem's message."""
+    providers = providers_of(need, walk.catalog, walk.tracks, besides=step.feature)
+    if providers:
+        named = "; ".join(provider_phrase(provider) for provider in providers)
+        sentence = f"{named} {'provides' if len(providers) == 1 else 'provide'} it"
+        # The tracks lead the list, and their phrase is capitalized to open the
+        # sentence. A slug keeps its case.
+        if providers[0].feature == TRACKS_INPUT:
+            return sentence[:1].upper() + sentence[1:]
+        return sentence
+    if need_status(need, walk.tracks) == "possible":
+        return "The tracks input may contain it"
+    return "Neither the tracks nor a registered feature provides it"
 
 
 def _build_problems(step_id: str, exc: StepBuildError) -> list[Problem]:
@@ -338,7 +621,7 @@ def _build_problems(step_id: str, exc: StepBuildError) -> list[Problem]:
 
     A params refusal is itemized at ``params.<field>`` so an editor can mark the
     field. An inputs or slug refusal stays one problem at its stage, and so does
-    a params refusal no validator raised.
+    a params refusal raised outside a validator.
     """
     if exc.stage != "params" or not exc.errors:
         return [Problem(step_id, exc.stage, exc.detail)]
@@ -473,13 +756,10 @@ def _edge_problem(step: Step, declared: Declaration, walk: _Walk) -> Problem | N
     """
     producers: list[ProducerDecl] = []
     for item in _inputs_of(step):
-        if isinstance(item, str):
-            producers.append(TRACKS_DECLARATION.produces)
-            continue
-        upstream = walk.declaration_behind(item.step)
-        if upstream is None:
+        producer = _producer_of(item, walk)
+        if producer is None:
             return None
-        producers.append(replace(upstream.produces, level=walk.level_behind(item.step)))
+        producers.append(producer)
     verdict = can_join(producers, declared.consumes)
     return None if verdict else Problem(step.id, "inputs", verdict.reason)
 
@@ -570,16 +850,23 @@ def validation_report(
     """Everything wrong with *document*, which need not parse.
 
     Structural faults when it does not parse, and :func:`check_recipe`'s
-    findings when it does. Never raises for a fault in the document, because an
-    editor asks after every edit and a list of problems is the ordinary answer.
+    findings, the walk's cautions and its unchecked steps when it does. It does
+    not raise for a fault in the document, because an editor asks after every
+    edit and a list of problems is the ordinary answer.
     """
     try:
         recipe = read_recipe(document)
     except RecipeInvalid as exc:
-        return ValidationReport(valid=False, digest=None, problems=exc.problems)
-    problems = check_recipe(recipe, catalog)
+        return ValidationReport(
+            valid=False, digest=None, problems=exc.problems, cautions=(), unchecked=()
+        )
+    examined = _examine(recipe, catalog)
     return ValidationReport(
-        valid=not problems, digest=recipe_digest(recipe), problems=problems
+        valid=not examined.problems,
+        digest=recipe_digest(recipe),
+        problems=examined.problems,
+        cautions=tuple(examined.walk.cautions),
+        unchecked=tuple(examined.walk.unchecked),
     )
 
 
@@ -687,14 +974,159 @@ def _attachment(
     if is_op:
         return _allowed({**base, "after": [above.id]})
     if not upstream.produces.writes_tracks:
-        return _refused(
+        reason = (
             f"{above.id!r} runs {upstream.produces.name!r}, which writes no "
-            f"tracks variant for a feature to read"
+            "tracks variant for a feature to read"
         )
+        return _refused(reason)
     verdict = can_connect(TRACKS_DECLARATION.produces, declared.consumes)
     if not verdict:
         return _refused(verdict.reason)
     return _allowed({**base, "inputs": [TRACKS_INPUT], "tracks": {"step": above.id}})
+
+
+def resolved_columns(
+    recipe: Recipe, catalog: DeclarationCatalog | None = None
+) -> dict[str, ColumnSet]:
+    """The output columns of each feature step that checked out, keyed by step id.
+
+    They are the columns that validation checks each step's requirements
+    against. An undeclared step's output is :data:`~.columns.UNKNOWN_COLUMNS`.
+    A step that did not check out is left out, and the steps below it read its
+    output as ``UNKNOWN_COLUMNS`` too.
+
+    Raises:
+        RecipeInvalid: The recipe has a cycle.
+    """
+    return dict(_walked(recipe, catalog).columns)
+
+
+def input_candidates(
+    recipe: Recipe, step: str, catalog: DeclarationCatalog | None = None
+) -> InputCandidates:
+    """The steps that may be added as an input of *step*, and its unmet requirements.
+
+    An editor asks this while a step's inputs are being added. Each step outside
+    *step*'s descendants and current inputs is answered, and ``tracks`` too, by
+    :func:`~.compatibility.join_verdicts` beside the inputs already wired in.
+    Each answer lists the columns of the candidate's output and the step's unmet
+    requirements that it would meet.
+
+    A requirement that the current inputs do not meet is reported as still
+    needed. It is not a reason to refuse a candidate, because the next wire into
+    a join may supply it. A candidate resolving to the run of a current input is
+    refused, with the problem that validation reports for the wire.
+
+    Raises:
+        RecipeInvalid: The recipe has a cycle, *step* is not a step of it, or
+            *step* does not run a registered feature.
+    """
+    walk = _walked(recipe, catalog)
+    target = next((each for each in recipe.steps if each.id == step), None)
+    if target is None:
+        raise RecipeInvalid((Problem("", "step", f"no step {step!r} in this recipe"),))
+    if not isinstance(target, FeatureStepSpec):
+        message = f"{step!r} runs an op, and an op does not take pipeline inputs"
+        raise RecipeInvalid((Problem(step, "kind", message),))
+    declared = walk.catalog.get(target.feature)
+    if declared is None or declared.produces.kind != "feature":
+        message = f"no registered feature is named {target.feature!r}"
+        raise RecipeInvalid((Problem(step, "feature", message),))
+
+    values = walk.values.get(step)
+    if values is None:
+        # The step did not build. Its params as written, over the defaults,
+        # stand in, and a value of the wrong shape resolves as unknown.
+        values = {**declared.param_defaults, **target.params}
+    current = [walk.input_columns(item) for item in target.inputs]
+    merged_now = merged_input(current)
+    still: list[tuple[NamedColumns, UnmetStatus]] = []
+    for need in needs_of(declared.requires or (), values):
+        status = need_status(need, merged_now)
+        if status != "guaranteed":
+            still.append((need, status))
+
+    existing = [
+        producer
+        for producer in (_producer_of(item, walk) for item in target.inputs)
+        if producer is not None
+    ]
+    taken = {_input_label(item) for item in target.inputs}
+    excluded = descendants_of(recipe, step)
+    offered: dict[str, ProducerDecl] = {}
+    supplied: dict[str, tuple[JsonValue, ColumnSet]] = {}
+    if TRACKS_INPUT not in taken:
+        offered[TRACKS_INPUT] = TRACKS_DECLARATION.produces
+        supplied[TRACKS_INPUT] = (TRACKS_INPUT, walk.tracks)
+    for other in topological_order(recipe):
+        if other.id in excluded or other.id in taken:
+            continue
+        upstream = walk.catalog.get(_runs(other)[0])
+        if upstream is None:
+            continue
+        offered[other.id] = replace(
+            upstream.produces, level=walk.level_behind(other.id)
+        )
+        reference: JsonValue = {"step": other.id}
+        supplied[other.id] = (reference, walk.columns.get(other.id, UNKNOWN_COLUMNS))
+
+    reading: dict[_InputRun, str] = {}
+    for current_item in target.inputs:
+        run = walk.run_of(current_item)
+        if run is not None:
+            reading.setdefault(run, _input_label(current_item))
+
+    candidates: dict[str, InputCandidate] = {}
+    for key, verdict in join_verdicts(declared.consumes, offered, existing).items():
+        item, columns = supplied[key]
+        grown = merged_input([*current, columns])
+        allowed, reason = verdict.allowed, verdict.reason
+        run = None if key == TRACKS_INPUT else walk.run_of(StepRef(step=key))
+        same = None if run is None else reading.get(run)
+        if allowed and same is not None:
+            # The one-run problem that validation would report for the wire.
+            allowed, reason = False, _one_run_reason([same, key], walk)
+        candidates[key] = InputCandidate(
+            allowed=allowed,
+            reason=reason,
+            input=item,
+            supplies=tuple(sorted(columns.guaranteed)),
+            may_supply=tuple(sorted(columns.possible - columns.guaranteed)),
+            supplies_unknown=columns.unbounded,
+            meets=tuple(
+                need.label
+                for need, _ in still
+                if need_status(need, grown) == "guaranteed"
+            ),
+        )
+    return InputCandidates(
+        step=step,
+        still_needs=tuple(
+            StillNeeded(
+                need=names_wire(need),
+                status=status,
+                providers=providers_of(
+                    need, walk.catalog, walk.tracks, besides=target.feature
+                ),
+            )
+            for need, status in still
+        ),
+        candidates=candidates,
+    )
+
+
+def _producer_of(item: str | StepRef, walk: _Walk) -> ProducerDecl | None:
+    """What one input offers as a producer, at its resolved level.
+
+    ``None`` for a step the catalog does not declare, which validation has
+    already reported.
+    """
+    if isinstance(item, str):
+        return TRACKS_DECLARATION.produces
+    upstream = walk.declaration_behind(item.step)
+    if upstream is None:
+        return None
+    return replace(upstream.produces, level=walk.level_behind(item.step))
 
 
 def _allowed(template: dict[str, JsonValue]) -> Attachment:

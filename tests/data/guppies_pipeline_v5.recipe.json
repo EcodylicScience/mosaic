@@ -1,0 +1,661 @@
+{
+  "schema_version": 1,
+  "name": "guppies behavior pipeline v5 (analysis graph; reads mosaic_cm_v1 tracks at 30 Hz)",
+  "steps": [
+    {
+      "id": "smooth",
+      "after": [],
+      "type": "feature",
+      "feature": "trajectory-smooth",
+      "inputs": [
+        "tracks"
+      ],
+      "tracks": null,
+      "params": {
+        "speed_threshold": 40.0,
+        "fps": 30,
+        "expand_frames": 8,
+        "interpolate_centroid": true,
+        "interpolate_pose": false,
+        "savgol_window": null,
+        "savgol_polyorder": 1
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": null,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "ff20",
+      "after": [],
+      "type": "feature",
+      "feature": "ffgroups",
+      "inputs": [
+        {
+          "step": "smooth",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "window_size": 31,
+        "min_event_duration": 60,
+        "distance_cutoff": 20
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "ff10",
+      "after": [],
+      "type": "feature",
+      "feature": "ffgroups",
+      "inputs": [
+        {
+          "step": "smooth",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "window_size": 31,
+        "min_event_duration": 60,
+        "distance_cutoff": 10
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "speed",
+      "after": [],
+      "type": "feature",
+      "feature": "speed-angvel",
+      "inputs": [
+        {
+          "step": "smooth",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "step_size": 4,
+        "smooth_window": 5,
+        "fps": 30
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": null,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "nn",
+      "after": [],
+      "type": "feature",
+      "feature": "nearest-neighbor",
+      "inputs": [
+        {
+          "step": "smooth",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {},
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": null,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "ffgm_main",
+      "after": [],
+      "type": "feature",
+      "feature": "ffgroups-metrics",
+      "inputs": [
+        {
+          "step": "smooth",
+          "pattern": ""
+        },
+        {
+          "step": "ff20",
+          "pattern": ""
+        },
+        {
+          "step": "speed",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {},
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "ffgm_10",
+      "after": [],
+      "type": "feature",
+      "feature": "ffgroups-metrics",
+      "inputs": [
+        {
+          "step": "smooth",
+          "pattern": ""
+        },
+        {
+          "step": "ff10",
+          "pattern": ""
+        },
+        {
+          "step": "speed",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {},
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "interaction_summary",
+      "after": [],
+      "type": "feature",
+      "feature": "social-motion-summary",
+      "inputs": [
+        {
+          "step": "nn",
+          "pattern": ""
+        },
+        {
+          "step": "speed",
+          "pattern": ""
+        },
+        {
+          "step": "ff10",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "fps": 30,
+        "speed_col": "speed_smooth"
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "interaction_by_gsize",
+      "after": [],
+      "type": "feature",
+      "feature": "social-motion-summary",
+      "inputs": [
+        {
+          "step": "nn",
+          "pattern": ""
+        },
+        {
+          "step": "speed",
+          "pattern": ""
+        },
+        {
+          "step": "ff10",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "fps": 30,
+        "speed_col": "speed_smooth",
+        "subgroup_col": "group_size"
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "focal_tags",
+      "after": [],
+      "type": "feature",
+      "feature": "id-tag-columns",
+      "inputs": [
+        "tracks"
+      ],
+      "tracks": null,
+      "params": {
+        "label_kind": "id_tags",
+        "fields": [
+          "focal"
+        ],
+        "field_renames": {
+          "focal": "Focal_fish"
+        }
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": null,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "delta_focal_n10",
+      "after": [],
+      "type": "feature",
+      "feature": "nn-delta-response",
+      "inputs": [
+        {
+          "step": "smooth",
+          "pattern": ""
+        },
+        {
+          "step": "nn",
+          "pattern": ""
+        },
+        {
+          "step": "speed",
+          "pattern": ""
+        },
+        {
+          "step": "focal_tags",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "speed_col": "speed_smooth",
+        "diff_numframes": 10
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "bins_focal_n10",
+      "after": [],
+      "type": "feature",
+      "feature": "nn-delta-bins",
+      "inputs": [
+        {
+          "step": "delta_focal_n10",
+          "pattern": ""
+        },
+        {
+          "step": "focal_tags",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "nbins": 45,
+        "binmax": 14,
+        "max_for_avg": 5,
+        "antisymm": true,
+        "exp_col": "group",
+        "trial_col": "sequence",
+        "focal_category_col": "Focal_fish",
+        "neighbor_category_col": "neighbor_focal"
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "delta_focal_bf_n10",
+      "after": [],
+      "type": "feature",
+      "feature": "nn-delta-response",
+      "inputs": [
+        {
+          "step": "smooth",
+          "pattern": ""
+        },
+        {
+          "step": "nn",
+          "pattern": ""
+        },
+        {
+          "step": "speed",
+          "pattern": ""
+        },
+        {
+          "step": "focal_tags",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "speed_col": "speed_smooth",
+        "diff_numframes": 10,
+        "tag_cols": [
+          "bad_frame"
+        ]
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "bins_focal_bf_n10",
+      "after": [],
+      "type": "feature",
+      "feature": "nn-delta-bins",
+      "inputs": [
+        {
+          "step": "delta_focal_bf_n10",
+          "pattern": ""
+        },
+        {
+          "step": "focal_tags",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "nbins": 45,
+        "binmax": 14,
+        "max_for_avg": 5,
+        "antisymm": true,
+        "exp_col": "group",
+        "trial_col": "sequence",
+        "focal_category_col": "Focal_fish",
+        "neighbor_category_col": "neighbor_focal",
+        "exclude_cols": [
+          "bad_frame",
+          "neighbor_bad_frame"
+        ]
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "delta_model_n10",
+      "after": [],
+      "type": "feature",
+      "feature": "nn-delta-response",
+      "inputs": [
+        {
+          "step": "smooth",
+          "pattern": ""
+        },
+        {
+          "step": "nn",
+          "pattern": ""
+        },
+        {
+          "step": "speed",
+          "pattern": ""
+        },
+        {
+          "step": "ff10",
+          "pattern": ""
+        },
+        {
+          "step": "focal_tags",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "speed_col": "speed_smooth",
+        "emit_backward": true,
+        "tag_cols": [
+          "speed_smooth",
+          "bad_frame"
+        ],
+        "diff_numframes": 10
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "delta_focal_n30",
+      "after": [],
+      "type": "feature",
+      "feature": "nn-delta-response",
+      "inputs": [
+        {
+          "step": "smooth",
+          "pattern": ""
+        },
+        {
+          "step": "nn",
+          "pattern": ""
+        },
+        {
+          "step": "speed",
+          "pattern": ""
+        },
+        {
+          "step": "focal_tags",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "speed_col": "speed_smooth",
+        "diff_numframes": 30
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "bins_focal_n30",
+      "after": [],
+      "type": "feature",
+      "feature": "nn-delta-bins",
+      "inputs": [
+        {
+          "step": "delta_focal_n30",
+          "pattern": ""
+        },
+        {
+          "step": "focal_tags",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "nbins": 45,
+        "binmax": 14,
+        "max_for_avg": 5,
+        "antisymm": true,
+        "exp_col": "group",
+        "trial_col": "sequence",
+        "focal_category_col": "Focal_fish",
+        "neighbor_category_col": "neighbor_focal"
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "delta_focal_bf_n30",
+      "after": [],
+      "type": "feature",
+      "feature": "nn-delta-response",
+      "inputs": [
+        {
+          "step": "smooth",
+          "pattern": ""
+        },
+        {
+          "step": "nn",
+          "pattern": ""
+        },
+        {
+          "step": "speed",
+          "pattern": ""
+        },
+        {
+          "step": "focal_tags",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "speed_col": "speed_smooth",
+        "diff_numframes": 30,
+        "tag_cols": [
+          "bad_frame"
+        ]
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "bins_focal_bf_n30",
+      "after": [],
+      "type": "feature",
+      "feature": "nn-delta-bins",
+      "inputs": [
+        {
+          "step": "delta_focal_bf_n30",
+          "pattern": ""
+        },
+        {
+          "step": "focal_tags",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "nbins": 45,
+        "binmax": 14,
+        "max_for_avg": 5,
+        "antisymm": true,
+        "exp_col": "group",
+        "trial_col": "sequence",
+        "focal_category_col": "Focal_fish",
+        "neighbor_category_col": "neighbor_focal",
+        "exclude_cols": [
+          "bad_frame",
+          "neighbor_bad_frame"
+        ]
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    },
+    {
+      "id": "delta_model_n30",
+      "after": [],
+      "type": "feature",
+      "feature": "nn-delta-response",
+      "inputs": [
+        {
+          "step": "smooth",
+          "pattern": ""
+        },
+        {
+          "step": "nn",
+          "pattern": ""
+        },
+        {
+          "step": "speed",
+          "pattern": ""
+        },
+        {
+          "step": "ff10",
+          "pattern": ""
+        },
+        {
+          "step": "focal_tags",
+          "pattern": ""
+        }
+      ],
+      "tracks": null,
+      "params": {
+        "speed_col": "speed_smooth",
+        "emit_backward": true,
+        "tag_cols": [
+          "speed_smooth",
+          "bad_frame"
+        ],
+        "diff_numframes": 30
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 300.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    }
+  ]
+}

@@ -11,6 +11,7 @@ What lives where:
 - ``annotations`` -- keypoint annotation sets in their saved shape, and the file
   a revision of one is claimed by.
 - ``datasets`` -- the `Dataset` a test runs against.
+- ``catalogs`` -- declaration catalogs a graph test validates or plans against.
 - ``cli`` -- a ``mosaic`` command run for its ``--json`` output.
 - ``features`` -- the templates and per-sequence frames the global
   fit-then-apply features are tested on.
@@ -60,6 +61,7 @@ from tests.helpers.annotations import (
     pose_set,
     revision_file,
 )
+from tests.helpers.catalogs import catalog_without_contract
 from tests.helpers.cli import invoke_json
 from tests.helpers.datasets import make_dataset
 from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
@@ -209,6 +211,7 @@ __all__ = [
     "add_tracks_variant",
     "add_transcode_derivative",
     "assert_no_literal_tilde",
+    "catalog_without_contract",
     "fake_path_lookup",
     "golden_path",
     "healthy_probe",

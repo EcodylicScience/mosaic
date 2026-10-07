@@ -49,7 +49,12 @@ mosaic pipeline run      -m dataset.yaml --recipe @recipe.json
 ```
 
 `validate` runs before the dataset is touched and reports every problem rather than
-the first. `plan` says what each step will be called and what is already done, without
+the first. It also checks the columns that each step reads against the columns of its
+inputs. A required column that every input lacks is a problem, and the problem names
+the inputs providing it. A column that an input may contain is a caution. A caution
+does not block `run`. A step whose feature does not declare its column requirements
+is named on one line as not checked.
+`plan` says what each step will be called and what is already done, without
 submitting anything. On first use the recipe is copied to
 `<dataset>/.mosaic/pipelines/<digest>.json`, so the dataset records which pipelines
 were applied to it.

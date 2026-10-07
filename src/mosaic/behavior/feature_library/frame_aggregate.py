@@ -17,10 +17,17 @@ emitted) does not affect mean/median/min/max/std; for sum/count, pass
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal, final
+from typing import Annotated, ClassVar, Literal, final
 
 import pandas as pd
 
+from mosaic.core.pipeline.column_contract import (
+    ORDER_COLUMN,
+    ParamColumn,
+    Provides,
+    Requirement,
+    kept,
+)
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     EmitsLevel,
@@ -35,7 +42,6 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import ensure_columns
 from .registry import register_feature
 
 
@@ -107,6 +113,11 @@ class FrameAggregate:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"
+    requires: ClassVar[tuple[Requirement, ...]] = (ParamColumn("column"), ORDER_COLUMN)
+    provides: ClassVar[Provides] = Provides(
+        adds=(ParamColumn("output_column", fallback="{column}_{agg}"),),
+        conditional=kept(C.frame_col, C.time_col, C.seq_col, C.group_col),
+    )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass
@@ -158,7 +169,6 @@ class FrameAggregate:
 
         p = self.params
         order_col = resolve_order_col(df)
-        ensure_columns(df, [p.column])
 
         if p.filter_expr:
             df = df.query(p.filter_expr)

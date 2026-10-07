@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, final
+from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
 from scipy.signal import savgol_filter
 
+from mosaic.core.pipeline.column_contract import (
+    ORDER_COLUMN,
+    Column,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     COLUMNS,
@@ -102,6 +108,10 @@ class TrajectorySmooth:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    requires: ClassVar[tuple[Requirement, ...]] = (Column(COLUMNS.id_col), ORDER_COLUMN)
+    provides: ClassVar[Provides] = Provides(
+        passthrough=True, adds=(Column("bad_frame"),)
+    )
 
     class Inputs(TrackInputs):
         pass
@@ -160,10 +170,6 @@ class TrajectorySmooth:
         df = df.copy()
         df = df.sort_values(order_col).reset_index(drop=True)
         id_col = COLUMNS.id_col
-
-        if id_col not in df.columns:
-            raise ValueError(f"Missing id column '{id_col}'.")
-
         pose_pairs = pose_column_pairs(df.columns)
 
         out_parts = []

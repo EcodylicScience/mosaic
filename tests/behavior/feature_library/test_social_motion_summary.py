@@ -23,6 +23,10 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.social_motion_summary import SocialMotionSummary
+from mosaic.core.pipeline.column_contract import (
+    MissingInputColumns,
+    check_input_columns,
+)
 
 
 def _make_merged_df() -> pd.DataFrame:
@@ -315,10 +319,13 @@ def test_subgroup_col_collision_is_refused_at_construction() -> None:
             SocialMotionSummary(params={"subgroup_col": bad})
 
 
-def test_missing_subgroup_column_raises() -> None:
+def test_missing_subgroup_column_is_refused_before_apply() -> None:
+    """The column ``subgroup_col`` names is a declared requirement once it is set."""
     df = _make_split_df().drop(columns=["group_size"])
-    with pytest.raises(ValueError, match="Missing required columns"):
-        SocialMotionSummary(params={"fps": 1.0, "subgroup_col": "group_size"}).apply(df)
+    feature = SocialMotionSummary(params={"fps": 1.0, "subgroup_col": "group_size"})
+    with pytest.raises(MissingInputColumns, match="'group_size'"):
+        check_input_columns(feature, df.columns)
+    check_input_columns(SocialMotionSummary(params={"fps": 1.0}), df.columns)
 
 
 def test_nan_subgroup_rows_are_dropped() -> None:

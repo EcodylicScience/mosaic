@@ -2,14 +2,16 @@
 
 One model per answer an editor asks for: the step types on offer
 (:class:`EditorCatalog`), what is wrong with a recipe (:class:`ValidationReport`),
-what may follow a step (:class:`AttachReport`) and what a recipe would do to one
-dataset (:class:`PlanWire`). The CLI's ``--json`` output and mosaic-api's
-responses are these models dumped, so the two cannot disagree about a shape.
+what may follow a step (:class:`AttachReport`), what may be added as an input of
+a step (:class:`InputCandidates`) and what a recipe would do to one dataset
+(:class:`PlanWire`). The CLI's ``--json`` output and mosaic-api's responses are
+these models dumped, and the two agree on every shape.
 
 Models only. The functions that fill them live beside what they read --
 :func:`~mosaic.core.pipeline.graph.resolve.editor_catalog`,
 :func:`~mosaic.core.pipeline.graph.validate.validation_report`,
-:func:`~mosaic.core.pipeline.graph.validate.attach_candidates` and
+:func:`~mosaic.core.pipeline.graph.validate.attach_candidates`,
+:func:`~mosaic.core.pipeline.graph.validate.input_candidates` and
 :func:`~mosaic.core.pipeline.graph.serialize.plan_wire` -- and each of those
 modules imports this one. This module imports none of them, which keeps the
 import graph acyclic.
@@ -35,18 +37,27 @@ __all__ = [
     "AttachReport",
     "Attachment",
     "CatalogEntry",
+    "ColumnNames",
+    "ColumnProvider",
+    "ConditionalColumns",
     "CoverageShortWire",
     "CoverageWire",
     "DepsIncompleteWire",
     "EditorCatalog",
     "HeldOnParentsWire",
     "IdentityUnresolvedWire",
+    "InputCandidate",
+    "InputCandidates",
+    "NeedStatus",
     "PlanWire",
     "PlannedStepWire",
     "Problem",
+    "ProvidedColumns",
     "ReasonWire",
     "ReferenceKind",
     "StalledWire",
+    "StillNeeded",
+    "UnmetStatus",
     "ValidationReport",
     "WaitingOnResourceWire",
     "render_location",
@@ -107,6 +118,55 @@ how a model is named. See ``params_reference_site``.
 """
 
 
+class ColumnNames(GraphModel):
+    """The columns one requirement or one output entry names, for given params.
+
+    Attributes:
+        label: The names as a message prints them.
+        columns: Column names. A requirement is met by any one of them.
+        prefixes: Prefixes of column families, met by any column they begin.
+        params: The params fields whose values named them, empty for a name
+            the feature declares itself.
+        unknown: Whether a params value could not be read as column names.
+    """
+
+    label: str
+    columns: tuple[str, ...]
+    prefixes: tuple[str, ...]
+    params: tuple[str, ...]
+    unknown: bool
+
+
+class ConditionalColumns(GraphModel):
+    """Columns that an output contains only under a condition.
+
+    Attributes:
+        names: The columns.
+        when_param: A params field that must be set, ``""`` for none.
+        when_present: A column the merged input must contain, ``None`` for none.
+
+    With no condition named, the data decides.
+    """
+
+    names: ColumnNames
+    when_param: str
+    when_present: ColumnNames | None
+
+
+class ProvidedColumns(GraphModel):
+    """The columns of a step type's output, under its default params.
+
+    Attributes:
+        passthrough: Whether it copies every column of its merged input.
+        adds: The columns it always writes.
+        conditional: The columns it writes under a condition.
+    """
+
+    passthrough: bool
+    adds: tuple[ColumnNames, ...]
+    conditional: tuple[ConditionalColumns, ...]
+
+
 class CatalogEntry(GraphModel):
     """One step type an editor may offer.
 
@@ -121,6 +181,11 @@ class CatalogEntry(GraphModel):
         params_schema: Its params model as JSON Schema, ``None`` for ``tracks``.
         reference_fields: The top-level params fields that accept a step
             reference, and how each substitutes. A JSON Schema cannot say this.
+        requires: The columns it reads from its merged input, under its default
+            params. ``None`` when undeclared, which an editor shows as "column
+            requirements not declared".
+        provides: The columns of its output, under its default params. ``None``
+            when undeclared.
     """
 
     name: str
@@ -131,6 +196,8 @@ class CatalogEntry(GraphModel):
     declaration: Declaration
     params_schema: dict[str, JsonValue] | None
     reference_fields: dict[str, ReferenceKind]
+    requires: tuple[ColumnNames, ...] | None
+    provides: ProvidedColumns | None
 
 
 class EditorCatalog(GraphModel):
@@ -159,14 +226,22 @@ class ValidationReport(GraphModel):
     """Everything wrong with one recipe document.
 
     Attributes:
-        valid: Whether it has no problems.
+        valid: Whether its problems are empty. Cautions do not count.
         digest: Its ``recipe_digest`` when it parsed, else ``None``.
         problems: Every problem, in topological order after any structural ones.
+        cautions: The findings validation could not confirm, in topological
+            order: a column an input may lack, or a column from an undeclared
+            step, which cannot be checked. A caution does not block a run.
+        unchecked: The ids of the steps whose feature does not declare its
+            column requirements, in topological order. Their inputs' columns are not
+            checked, and they do not block a run.
     """
 
     valid: bool
     digest: str | None
     problems: tuple[Problem, ...]
+    cautions: tuple[Problem, ...]
+    unchecked: tuple[str, ...]
 
 
 class Attachment(GraphModel):
@@ -194,6 +269,95 @@ class AttachReport(GraphModel):
 
     after: str | None
     candidates: dict[str, Attachment]
+
+
+type UnmetStatus = Literal["possible", "unknown", "absent"]
+"""How a step's merged input answers a requirement it does not guarantee.
+
+``possible``: an input may contain it, depending on the data or on a condition the
+recipe does not decide. ``unknown``: an input comes from an undeclared step.
+``absent``: every input lacks it.
+"""
+
+type NeedStatus = Literal["guaranteed"] | UnmetStatus
+"""How a step's merged input answers one requirement: ``guaranteed`` when an
+input always contains it, else one of :data:`UnmetStatus`."""
+
+
+class ColumnProvider(GraphModel):
+    """An input that would contain a needed column: the tracks, or a feature's output.
+
+    Attributes:
+        feature: The feature's slug, or ``tracks`` for the dataset's tracks.
+        when_param: A params field it must have set to write the column, ``""``
+            when it always writes it.
+        when_present: A column its input must contain for it to write the
+            column, empty when none.
+    """
+
+    feature: str
+    when_param: str
+    when_present: tuple[str, ...]
+
+
+class StillNeeded(GraphModel):
+    """A column a step reads that its inputs do not guarantee.
+
+    Attributes:
+        need: The requirement, under the step's params.
+        status: How the current inputs answer it.
+        providers: The features whose output would contain it.
+    """
+
+    need: ColumnNames
+    status: UnmetStatus
+    providers: tuple[ColumnProvider, ...]
+
+
+class InputCandidate(GraphModel):
+    """Whether one earlier step, or the tracks, may be added as an input.
+
+    Attributes:
+        allowed: Whether it may be wired in beside the existing inputs.
+        reason: Why not, ``""`` when allowed.
+        input: The item to append to the step's ``inputs``: ``"tracks"`` or
+            ``{"step": <id>}``.
+        supplies: The columns its output is guaranteed to contain, sorted.
+        may_supply: The columns its output may contain beyond those, sorted.
+        supplies_unknown: Whether its output may also contain undeclared
+            columns, because a step behind it declares none.
+        meets: The labels of the step's unmet requirements that adding it would
+            guarantee.
+    """
+
+    allowed: bool
+    reason: str
+    input: JsonValue
+    supplies: tuple[str, ...]
+    may_supply: tuple[str, ...]
+    supplies_unknown: bool
+    meets: tuple[str, ...]
+
+
+class InputCandidates(GraphModel):
+    """The inputs that may be added to one step, and the step's unmet requirements.
+
+    A step still being wired reports its unmet requirements here, and is not
+    refused for them, because the next input may supply them. Validation of the
+    finished recipe reports an absent one as a problem.
+
+    Attributes:
+        step: The step asked about.
+        still_needs: Its requirements that its current inputs do not guarantee,
+            in declaration order.
+        candidates: One per earlier step and for ``tracks``, keyed by step id or
+            ``tracks``. The step itself, its descendants and its current inputs
+            are left out.
+    """
+
+    step: str
+    still_needs: tuple[StillNeeded, ...]
+    candidates: dict[str, InputCandidate]
 
 
 class CoverageWire(GraphModel):
