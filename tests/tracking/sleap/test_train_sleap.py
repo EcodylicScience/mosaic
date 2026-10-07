@@ -17,6 +17,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.core.pipeline.ops import run_op
@@ -35,7 +36,7 @@ from mosaic.tracking.sleap.run import SleapNotFoundError
 from mosaic.tracking.sleap import training as training_module
 from mosaic.tracking.sleap.training import sleap_device_overrides, sleap_train_config
 
-from tests.helpers import dotted_values, is_section, make_dataset, write_sleap_model
+from tests.helpers import dotted_values, make_dataset, write_sleap_model
 
 register_ops()
 
@@ -450,7 +451,7 @@ def test_every_injected_override_composes_against_the_config(
     argv = seen[0]
     config_dir = Path(argv[argv.index("--config-dir") + 1])
     written = yaml.safe_load((config_dir / "config.yaml").read_text())
-    assert is_section(written)
+    assert is_str_mapping(written)
     declared = dotted_values(written)
     assignments = _assignments(argv)
     assert assignments, "the run under test must inject something"

@@ -8,8 +8,6 @@ The table names every feature that declares one.
 
 from __future__ import annotations
 
-from typing import TypeGuard
-
 import pytest
 
 from mosaic.behavior.feature_library.feral_feature import FERAL
@@ -20,6 +18,7 @@ from mosaic.behavior.feature_library.lightning_action_feature import (
 from mosaic.behavior.feature_library.movement.convert import MOVEMENT
 from mosaic.behavior.feature_library.registry import FEATURES
 from mosaic.behavior.model_library.timm_backbone import TIMM, TORCH
+from mosaic.core.narrowing import is_object_tuple
 from mosaic.optional_dependency import Prerequisite
 
 EXPECTED: dict[str, tuple[Prerequisite, ...]] = {
@@ -51,9 +50,5 @@ def test_every_declared_prerequisite_answers_missing(cls: type) -> None:
     """Each declaration is a tuple of ``Prerequisite``, the shape the catalog reads."""
     declared: object = getattr(cls, "prerequisites", ())
 
-    assert _is_tuple(declared)
+    assert is_object_tuple(declared)
     assert all(isinstance(item, Prerequisite) for item in declared)
-
-
-def _is_tuple(value: object) -> TypeGuard[tuple[object, ...]]:
-    return isinstance(value, tuple)

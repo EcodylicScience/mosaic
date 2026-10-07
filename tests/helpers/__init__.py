@@ -133,7 +133,7 @@ from tests.helpers.source_scan import (
     names_read,
     source_tree,
 )
-from tests.helpers.documents import dotted_values, is_section
+from tests.helpers.documents import dotted_values
 from tests.helpers.stand_in_features import CropLike, PlainFeature
 from tests.helpers.training import FakeTrainer, healthy_probe, write_data_yaml
 from tests.helpers.tracks import (
@@ -241,7 +241,6 @@ __all__ = [
     "invoke_json",
     "install_fake_ultralytics",
     "isolate_tool_location",
-    "is_section",
     "latest_events",
     "latest_snapshot",
     "make_dataset",

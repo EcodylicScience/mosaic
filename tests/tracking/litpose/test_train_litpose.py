@@ -16,6 +16,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.core.pipeline.ops import run_op
 from mosaic.tracking import register_ops
@@ -28,7 +29,7 @@ from mosaic.tracking.litpose.training import (
 from mosaic.tracking.ops.train import trained_model_index
 from mosaic.tracking.ops.train_litpose import TrainLitposeParams
 
-from tests.helpers import dotted_values, is_section, make_dataset, write_litpose_model
+from tests.helpers import dotted_values, make_dataset, write_litpose_model
 
 register_ops()
 
@@ -448,7 +449,7 @@ def test_a_finished_run_is_reused_unless_overwrite_says_otherwise(
 def _template() -> dict[str, object]:
     """The vendored config, flattened to the dotted keys an override names."""
     loaded = yaml.safe_load(default_config_path().read_text())
-    assert is_section(loaded)
+    assert is_str_mapping(loaded)
     return dotted_values(loaded)
 
 

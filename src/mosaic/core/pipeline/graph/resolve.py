@@ -25,11 +25,12 @@ import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import TYPE_CHECKING, Final, Literal, TypeGuard, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 from pydantic import BaseModel
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.narrowing import is_object_tuple
 from mosaic.core.scope import Scope
 from mosaic.optional_dependency import Prerequisite, unmet
 
@@ -364,14 +365,9 @@ def _param_defaults(cls: type, fields: frozenset[str]) -> dict[str, JsonValue]:
 def _prerequisites_of(cls: type) -> tuple[Prerequisite, ...]:
     """The prerequisites *cls* declares, empty for a feature the base install runs."""
     declared: object = getattr(cls, "prerequisites", ())
-    if not _is_tuple(declared):
+    if not is_object_tuple(declared):
         return ()
     return tuple(item for item in declared if isinstance(item, Prerequisite))
-
-
-def _is_tuple(value: object) -> TypeGuard[tuple[object, ...]]:
-    """Whether *value* is a tuple, read as a tuple of anything."""
-    return isinstance(value, tuple)
 
 
 def _keeps_track_frame(provides: Provides | None) -> bool | None:

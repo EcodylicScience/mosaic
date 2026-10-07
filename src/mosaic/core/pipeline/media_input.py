@@ -19,7 +19,7 @@ from typing import Annotated, ClassVar, Self
 from pydantic import model_validator
 
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
-from mosaic.core.pipeline._utils import is_str_mapping
+from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.preprocess_layout import PREPROCESS_KIND
 

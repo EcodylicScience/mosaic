@@ -33,12 +33,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Iterator, TypeGuard
+from typing import Final, Iterator
 
 import cv2
 import numpy as np
 import yaml
 from mosaic_media import Verdict
+from mosaic.core.narrowing import is_str_mapping
 from mosaic.user_paths import user_path
 
 from .facts_columns import ProbeMetadata, facts_to_row, store_facts
@@ -165,15 +166,6 @@ class StoreIdentity:
 _EMPTY_STORE_IDENTITY = StoreIdentity()
 
 
-def _is_str_dict(value: object) -> TypeGuard[dict[str, object]]:
-    """Narrow a parsed YAML document root to a string-keyed mapping.
-
-    A ``metadata.yaml`` document root is a string-keyed mapping; this asserts
-    that shape so ``.get`` returns ``object`` (not ``Unknown``) for callers.
-    """
-    return isinstance(value, dict)
-
-
 def imgstore_store_identity(path: Path | str) -> StoreIdentity:
     """Read a store's Motif identity fields import-free from ``metadata.yaml``.
 
@@ -195,7 +187,7 @@ def imgstore_store_identity(path: Path | str) -> StoreIdentity:
             loaded = yaml.safe_load(f)
     except Exception:
         return _EMPTY_STORE_IDENTITY
-    if not _is_str_dict(loaded):
+    if not is_str_mapping(loaded):
         return _EMPTY_STORE_IDENTITY
     root = loaded
 
@@ -205,7 +197,7 @@ def imgstore_store_identity(path: Path | str) -> StoreIdentity:
 
     store_descriptor = root.get(_STORE_MD_KEY)
     store_uuid = ""
-    if _is_str_dict(store_descriptor):
+    if is_str_mapping(store_descriptor):
         uuid_value = store_descriptor.get("uuid")
         store_uuid = uuid_value if isinstance(uuid_value, str) else ""
 

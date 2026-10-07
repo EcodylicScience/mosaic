@@ -32,6 +32,7 @@ from typing import Any, Final, TypeGuard
 
 import numpy as np
 
+from mosaic.core.narrowing import is_str_mapping
 from mosaic.optional_dependency import OptionalModule
 
 DEFAULT_MODEL_NAME: Final = "timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"
@@ -135,16 +136,6 @@ def _is_object_sequence(value: object) -> TypeGuard[Sequence[object]]:
     return not isinstance(value, (str, bytes)) and isinstance(value, Sequence)
 
 
-def _is_string_keyed_mapping(value: object) -> TypeGuard[Mapping[str, object]]:
-    """Whether *value* may be read as a mapping from string keys to objects.
-
-    The key type is asserted rather than checked: every caller reads through
-    ``.get()`` with a string literal, which returns the default on a mapping
-    keyed some other way rather than failing.
-    """
-    return isinstance(value, Mapping)
-
-
 def as_sequence(value: object) -> Sequence[object] | None:
     """*value* as a non-string sequence, or None if it is not one.
 
@@ -233,18 +224,18 @@ def resolve_backbone_data_config(backbone: object) -> BackboneDataConfig:
         The backbone's declared input size and normalization statistics.
     """
     declared: object = getattr(backbone, "pretrained_cfg", None)
-    if not _is_string_keyed_mapping(declared) or not declared:
+    if not is_str_mapping(declared) or not declared:
         return FALLBACK_DATA_CONFIG
     timm = import_timm()
     resolved: object = timm.data.resolve_model_data_config(backbone)
-    if not _is_string_keyed_mapping(resolved):
+    if not is_str_mapping(resolved):
         return FALLBACK_DATA_CONFIG
     return data_config_from_mapping(resolved)
 
 
 def data_config_from_metadata(stored: object) -> BackboneDataConfig | None:
     """A checkpoint's recorded recipe, or None if it recorded none usable."""
-    if not _is_string_keyed_mapping(stored):
+    if not is_str_mapping(stored):
         return None
     image_size = _pair_of_ints(stored.get("image_size"))
     mean = _triple(stored.get("mean"))

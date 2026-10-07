@@ -47,11 +47,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, ClassVar, Final, TypeGuard
+from typing import TYPE_CHECKING, ClassVar, Final
 
 from pydantic import TypeAdapter, ValidationError
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.narrowing import is_object_list, is_str_mapping
 
 from .._utils import ResolvedScope, hash_params
 from ..column_contract import (
@@ -929,21 +930,11 @@ def _structural_problem(
 
 def _step_document(document: object, index: int) -> Mapping[str, object]:
     """The raw mapping at ``steps[index]``, or an empty one when there is none."""
-    steps = document.get("steps") if _is_mapping(document) else None
-    if not _is_list(steps) or not 0 <= index < len(steps):
+    steps = document.get("steps") if is_str_mapping(document) else None
+    if not is_object_list(steps) or not 0 <= index < len(steps):
         return {}
     raw = steps[index]
-    return raw if _is_mapping(raw) else {}
-
-
-def _is_mapping(value: object) -> TypeGuard[Mapping[str, object]]:
-    """Whether *value* is a JSON object, read through string keys."""
-    return isinstance(value, dict)
-
-
-def _is_list(value: object) -> TypeGuard[list[object]]:
-    """Whether *value* is a JSON array."""
-    return isinstance(value, list)
+    return raw if is_str_mapping(raw) else {}
 
 
 def validation_report(

@@ -41,7 +41,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, get_args
 
 import pandas as pd
-from typing_extensions import TypeIs
 
 from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
 from mosaic.core.pose_columns import pose_column_pairs
@@ -53,7 +52,8 @@ from mosaic.core.pipeline.writers import (
 from mosaic.core.pipeline.composition import composition_drift
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.file_digest import MODEL_DIGEST_HEX
-from mosaic.core.pipeline._utils import atomic_write, hash_params, is_str_mapping
+from mosaic.core.narrowing import is_object_list, is_str_mapping
+from mosaic.core.pipeline._utils import atomic_write, hash_params
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
     RunIndexRowBase,
@@ -740,13 +740,9 @@ def _holds(node: object, values: frozenset[str]) -> bool:
         return node in values
     if is_str_mapping(node):
         return any(_holds(child, values) for child in node.values())
-    if _is_list(node):
+    if is_object_list(node):
         return any(_holds(child, values) for child in node)
     return False
-
-
-def _is_list(node: object) -> TypeIs[list[object]]:
-    return isinstance(node, list)
 
 
 def _ambiguous_variant_message(entry: tuple[str, str], variants: list[str]) -> str:

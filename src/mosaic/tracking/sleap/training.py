@@ -27,10 +27,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Final, Literal, TypedDict, TypeGuard
+from typing import Final, Literal, TypedDict
 
 import yaml
 
+from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.tracking.common.toolenv import subprocess_env, tool_invocation
@@ -202,11 +203,6 @@ untouched.
 """
 
 
-def _is_section(value: object) -> TypeGuard[Mapping[str, object]]:
-    """Is *value* a nested section of the document rather than a leaf?"""
-    return isinstance(value, dict)
-
-
 def _declared_keys(node: Mapping[str, object], prefix: str = "") -> frozenset[str]:
     """Every dotted key *node* carries, at every depth.
 
@@ -218,7 +214,7 @@ def _declared_keys(node: Mapping[str, object], prefix: str = "") -> frozenset[st
     for name, value in node.items():
         dotted = f"{prefix}{name}"
         keys.add(dotted)
-        if _is_section(value):
+        if is_str_mapping(value):
             keys |= _declared_keys(value, f"{dotted}.")
     return frozenset(keys)
 

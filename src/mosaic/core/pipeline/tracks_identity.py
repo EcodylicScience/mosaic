@@ -38,7 +38,9 @@ from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ._utils import atomic_write, is_str_mapping, json_ready
+from mosaic.core.narrowing import is_str_mapping
+
+from ._utils import atomic_write, json_ready
 from .index_lock import index_lock
 from .op_identity import op_run_id, parse_op_run_id
 
