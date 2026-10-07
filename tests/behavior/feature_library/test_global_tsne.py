@@ -20,9 +20,11 @@ def _make_feature(
     return GlobalTSNE(inputs=inputs, params=params)
 
 
-def _fit_feature(tmp_path: Path, n_templates: int = 100) -> GlobalTSNE:
+def _fit_feature(
+    tmp_path: Path, n_templates: int = 100, nan_rows: tuple[int, ...] = ()
+) -> GlobalTSNE:
     """Create, load, and fit a GlobalTSNE feature."""
-    templates = make_templates(n_templates, 5)
+    templates = make_templates(n_templates, 5, nan_rows=nan_rows)
     template_path = write_templates(tmp_path, templates)
 
     feat = _make_feature(
@@ -71,6 +73,15 @@ class TestFitAndSave:
 
         data = np.load(tmp_path / "run" / "global_tsne_templates.npz")
         assert data["Y"].shape == (80, 2)
+
+    def test_fit_skips_templates_with_nan(self, tmp_path: Path) -> None:
+        """A template set with NaN rows fits on its finite rows, which apply maps."""
+        feat = _fit_feature(tmp_path, n_templates=100, nan_rows=(0, 7, 99))
+        feat.save_state(tmp_path / "run")
+
+        data = np.load(tmp_path / "run" / "global_tsne_templates.npz")
+        assert data["Y"].shape == (97, 2)
+        assert np.isfinite(data["Y"]).all()
 
     def test_fit_raises_without_templates(self) -> None:
         feat = _make_feature(

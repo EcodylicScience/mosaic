@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 import pytest
@@ -238,6 +239,35 @@ class TestXgboostFit:
         assert feat._model is not None
         assert isinstance(feat._model, list)
         assert len(feat._model) == 3
+
+    def test_smote_fit_with_nan_rows(self, tmp_path: Path) -> None:
+        """SMOTE synthesizes from the finite rows, and the rows holding NaN still train.
+
+        XGBoost reads NaN as a missing value. SMOTE interpolates whole vectors
+        and refuses NaN, so a labeled template set with NaN rows failed its fit.
+        """
+        templates_path = _make_templates_parquet(tmp_path / "templates")
+        templates = pd.read_parquet(templates_path)
+        templates.loc[[0, 60], "feat_4"] = np.nan
+        templates.to_parquet(templates_path, index=False)
+        feat = XgboostFeature(
+            XgboostFeature.Inputs((Result(feature="upstream"),)),
+            params={
+                "templates": {"feature": "extract-labeled-templates"},
+                "default_class": 0,
+                "use_smote": True,
+                "n_estimators": 10,
+                "max_depth": 3,
+            },
+        )
+        _ = feat.load_state(tmp_path / "run", {"templates": templates_path}, {})
+
+        feat.fit(InputStream(lambda: iter([]), n_entries=0))
+        feat.save_state(tmp_path / "run")
+
+        bundle = joblib.load(tmp_path / "run" / "xgboost_model.joblib")
+        assert isinstance(bundle["model"], XGBClassifier)
+        assert bundle["classes"] == [0, 1, 2]
 
     def test_fit_with_evaluation(self, tmp_path: Path) -> None:
         """When test split is present, metrics should be computed."""

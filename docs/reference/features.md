@@ -618,7 +618,7 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 
 ### `extract-labeled-templates`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates`
+Version `0.2` &middot; `mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates`
 
 Extract labeled, split-annotated templates from upstream features.
 
@@ -677,7 +677,7 @@ Extract labeled, split-annotated templates from upstream features.
 
 ### `extract-templates`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.extract_templates.ExtractTemplates`
+Version `0.2` &middot; `mosaic.behavior.feature_library.extract_templates.ExtractTemplates`
 
 Subsample per-sequence data into a representative template matrix.
 

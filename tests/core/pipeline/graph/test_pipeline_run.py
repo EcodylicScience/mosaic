@@ -145,6 +145,71 @@ def _table(dataset: Dataset, run_id: str, name: str) -> pd.DataFrame:
     return pd.read_parquet(found[0])
 
 
+CLUSTERING: Document = {
+    "schema_version": 1,
+    "name": "simple clustering",
+    "steps": [
+        {
+            "id": "smooth",
+            "type": "feature",
+            "feature": "trajectory-smooth",
+            "inputs": ["tracks"],
+        },
+        {
+            "id": "speed",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": [{"step": "smooth"}],
+            "params": {"step_size": 4},
+        },
+        {
+            "id": "groups",
+            "type": "feature",
+            "feature": "ffgroups-metrics",
+            "inputs": [{"step": "speed"}, {"step": "smooth"}],
+        },
+        {
+            "id": "templates",
+            "type": "feature",
+            "feature": "extract-templates",
+            "inputs": [{"step": "groups"}, {"step": "speed"}],
+            "params": {"n_templates": 500},
+        },
+        {
+            "id": "kmeans",
+            "type": "feature",
+            "feature": "global-kmeans",
+            "inputs": [{"step": "templates"}],
+            "params": {"templates": {"step": "templates"}, "k": 1, "n_init": 1},
+        },
+    ],
+}
+"""A k-means fit over a windowed feature, which leaves NaN at each sequence's edges.
+
+``speed-angvel`` with ``step_size: 4`` writes NaN ``speed_step`` on the first
+and last rows of every sequence. The pool holds more rows than the fixture, and
+every row is a candidate template. The fixture's individuals move at a constant
+speed: the finite templates are one point and ``k`` is 1.
+"""
+
+
+def test_a_global_fit_runs_over_a_feature_with_nan_edges(tracked: Dataset) -> None:
+    """Templates are sampled from the finite rows, and k-means fits on them.
+
+    The fit once raised scikit-learn's "Input X contains NaN", because the
+    templates included the edge rows.
+    """
+    done = run_pipeline(tracked, Recipe.model_validate(CLUSTERING))
+
+    assert [outcome.state for outcome in done.outcomes] == ["ran"] * 5
+    templates_run = done.outcomes[3].run_id
+    assert templates_run is not None
+    provenance = _table(tracked, templates_run, "template_provenance.parquet")
+    assert (provenance["dropped"] > 0).all()
+    templates = _table(tracked, templates_run, "templates.parquet")
+    assert templates.notna().all().all()
+
+
 def test_a_run_records_the_identifiers_the_plan_resolved(tracked: Dataset) -> None:
     """The plan is a preview, and here the preview turns out to have been right."""
     recipe = Recipe.model_validate(CHAIN)

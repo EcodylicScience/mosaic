@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.global_scaler import GlobalScaler
+from mosaic.core.pipeline.types import InputStream
 from tests.helpers import make_sequence_df, make_templates, write_templates
 
 
@@ -75,6 +76,31 @@ class TestFitAndSave:
         for col in scaled.columns:
             assert abs(means[col]) < 0.1
             assert abs(stds[col] - 1.0) < 0.1
+
+    def test_fit_reads_nan_as_missing_per_column(self, tmp_path: Path) -> None:
+        """A template set with NaN rows fits, and the scaled rows keep their NaN.
+
+        The scaler fits each column on its finite values, and its apply keeps a
+        NaN where its input holds one, so its fit drops no row.
+        """
+        templates = make_templates(100, 3, offset=5.0, scale=2.0, nan_rows=(0, 7))
+        template_path = write_templates(tmp_path, templates)
+        feat = _make_feature(
+            params={
+                "templates": {
+                    "feature": "extract-templates",
+                    "pattern": "templates.parquet",
+                },
+            }
+        )
+        _ = feat.load_state(tmp_path / "run", {"templates": template_path}, {})
+        feat.fit(InputStream(lambda: iter([]), n_entries=0))
+        feat.save_state(tmp_path / "run")
+
+        scaled = pd.read_parquet(tmp_path / "run" / "scaled_templates.parquet")
+        assert scaled.shape == templates.shape
+        assert scaled.loc[[0, 7], "feat_2"].isna().all()
+        assert scaled.drop(index=[0, 7]).notna().all().all()
 
     def test_model_bundle_contents(self, tmp_path: Path) -> None:
         templates = make_templates(50, 2, offset=5.0, scale=2.0)

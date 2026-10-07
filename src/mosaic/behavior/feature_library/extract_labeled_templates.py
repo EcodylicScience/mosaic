@@ -28,7 +28,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import feature_columns
+from .helpers import farthest_first, feature_columns
 from .registry import register_feature
 from .types import PoolConfig
 from mosaic.core.pipeline.writers import write_parquet_atomic
@@ -114,7 +114,11 @@ class ExtractLabeledTemplates:
 
     category = "global"
     name = "extract-labeled-templates"
-    version = "0.1"
+    # 0.2: farthest_first compares rows over their finite columns, draws its
+    # first row from those with a finite value, and selects each row once. A
+    # row containing NaN made every distance NaN, a first row with no finite
+    # value made every distance 0, and either way the selection repeated row 0.
+    version = "0.2"
     parallelizable = False
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -294,27 +298,6 @@ class ExtractLabeledTemplates:
         test_set = set(indices[:n_test])
         return ["test" if i in test_set else "train" for i in range(n_entries)]
 
-    def _farthest_first(
-        self, pool: np.ndarray, n_select: int
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Select n_select points by iterative farthest-point sampling.
-
-        Returns (selected_points, selected_indices) so callers can subset
-        parallel arrays (e.g. entry labels).
-        """
-        first = int(self._rng.integers(0, int(pool.shape[0])))
-        selected: list[int] = [first]
-        distances = np.sum((pool - pool[selected[0]]) ** 2, axis=1)
-
-        while len(selected) < min(n_select, pool.shape[0]):
-            farthest = int(np.argmax(distances))
-            selected.append(farthest)
-            new_distances = np.sum((pool - pool[farthest]) ** 2, axis=1)
-            distances = np.minimum(distances, new_distances)
-
-        sel = np.array(selected)
-        return pool[sel], sel
-
     def _apply_farthest_first_per_class(self) -> None:
         """Apply farthest-first selection per (split, label) group.
 
@@ -348,7 +331,7 @@ class ExtractLabeledTemplates:
                     continue
 
                 if subset.shape[0] > target:
-                    selected, sel_idx = self._farthest_first(subset, target)
+                    selected, sel_idx = farthest_first(subset, target, self._rng)
                     template_blocks.append(selected)
                     if self._template_entries is not None:
                         entry_blocks.append(self._template_entries[mask][sel_idx])

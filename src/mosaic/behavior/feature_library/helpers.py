@@ -20,7 +20,9 @@ __all__ = [
     "clean_tracks_grouped",
     "ego_rotate",
     "ensure_columns",
+    "farthest_first",
     "feature_columns",
+    "finite_rows",
     "meta_columns",
     "smooth_1d",
     "unwrap_diff",
@@ -74,6 +76,54 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
     return sorted(
         set(df.select_dtypes(include="number").columns) - _non_feature_columns(df)
     )
+
+
+def finite_rows(matrix: np.ndarray) -> np.ndarray:
+    """Return a boolean mask of the rows of *matrix* that are finite in every column.
+
+    A global model reads a row as one vector, and a clustering or embedding
+    library refuses a vector holding NaN or infinity. Its fit and its apply both
+    read only the rows this mask keeps.
+    """
+    return np.isfinite(matrix).all(axis=1)
+
+
+def _finite_squared_distances(pool: np.ndarray, row: int) -> np.ndarray:
+    """The squared distance of each row of *pool* from *row*, over the columns finite in both."""
+    difference = pool - pool[row]
+    return np.where(np.isfinite(difference), difference**2, 0.0).sum(axis=1)
+
+
+def farthest_first(
+    pool: np.ndarray, n_select: int, rng: np.random.Generator
+) -> tuple[np.ndarray, np.ndarray]:
+    """Select up to *n_select* distinct rows of *pool* by greedy farthest-point sampling.
+
+    *rng* draws the first row from the rows with a finite value. Each next row
+    is the unselected one farthest from the rows selected so far, by the
+    squared distance over the columns finite in both rows. A non-finite value
+    counts as missing, and a row containing one is compared on its other
+    columns. A row with no finite value is at distance 0 from every row. It is
+    selected only when every unselected row is at distance 0.
+
+    Returns:
+        The selected rows and their indices, for subsetting parallel arrays
+        such as the entry labels.
+    """
+    n_rows = int(pool.shape[0])
+    with_finite_value = np.flatnonzero(np.isfinite(pool).any(axis=1))
+    candidates = with_finite_value if with_finite_value.size else np.arange(n_rows)
+    first = int(candidates[rng.integers(0, candidates.size)])
+    selected: list[int] = [first]
+    distances = _finite_squared_distances(pool, first)
+    distances[first] = -np.inf
+    while len(selected) < min(n_select, n_rows):
+        farthest = int(np.argmax(distances))
+        selected.append(farthest)
+        distances = np.minimum(distances, _finite_squared_distances(pool, farthest))
+        distances[farthest] = -np.inf
+    indices = np.array(selected)
+    return pool[indices], indices
 
 
 def meta_columns(df: pd.DataFrame) -> list[str]:

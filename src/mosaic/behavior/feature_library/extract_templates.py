@@ -26,7 +26,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import ensure_columns, feature_columns
+from .helpers import ensure_columns, farthest_first, feature_columns, finite_rows
 from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
 from .registry import register_feature
 from .types import PoolConfig
@@ -63,7 +63,12 @@ class TemplatesArtifact(TemplatesRef):
 
 
 class ProvenanceArtifact(ParquetArtifact):
-    """Per-entry template provenance (template_provenance.parquet)."""
+    """Per-entry template provenance (template_provenance.parquet).
+
+    One row per entry: its ``group`` and ``sequence``, the ``count`` and
+    ``proportion`` of the templates sampled from it, and the rows ``dropped``
+    from sampling because a template column was not finite.
+    """
 
     feature: str = "extract-templates"
     pattern: str = "template_provenance.parquet"
@@ -79,13 +84,19 @@ class ExtractTemplates:
     inputs, builds a candidate pool with proportional per-entry
     contribution, and selects templates using the configured strategy.
 
+    Only rows finite in every template column are sampled, because the global
+    models fitted on templates read a row as one vector and refuse NaN. A
+    feature computed over a window leaves NaN at a sequence's edges, as
+    ``speed-angvel`` with ``step_size`` does. The provenance records how many
+    rows of each entry were dropped.
+
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.extract_templates.ExtractTemplates.Params`.
     """
 
     category = "global"
     name = "extract-templates"
-    version = "0.1"
+    version = "0.2"
     parallelizable = False
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -124,6 +135,7 @@ class ExtractTemplates:
         self._templates: np.ndarray | None = None
         self._template_entries: np.ndarray | None = None
         self._entry_map: dict[int, tuple[str, str]] = {}
+        self._dropped: dict[int, int] = {}
         self._provenance: pd.DataFrame | None = None
         self._rng = np.random.default_rng(self.params.random_state)
 
@@ -137,6 +149,7 @@ class ExtractTemplates:
         self._templates = None
         self._template_entries = None
         self._entry_map = {}
+        self._dropped = {}
         self._provenance = None
 
         path = run_root / TEMPLATES_ARTIFACT_NAME
@@ -173,14 +186,38 @@ class ExtractTemplates:
             self.params.strategy == "farthest_first"
             and self._templates.shape[0] > n_templates
         ):
-            self._templates, sel_idx = self._farthest_first(
-                self._templates, n_templates
+            self._templates, sel_idx = farthest_first(
+                self._templates, n_templates, self._rng
             )
             if self._template_entries is not None:
                 self._template_entries = self._template_entries[sel_idx]
 
         # Compute per-entry provenance
         self._provenance = self._build_provenance()
+
+    def _sampled_rows(self, df: pd.DataFrame, entry_idx: int) -> np.ndarray:
+        """The rows of one entry that may be sampled, as a template-column matrix.
+
+        Keeps the rows finite in every template column and records how many it
+        dropped against *entry_idx*.
+        """
+        assert self._feature_columns is not None
+        matrix = df[self._feature_columns].to_numpy(dtype=np.float64)
+        keep = finite_rows(matrix)
+        self._dropped[entry_idx] = int(matrix.shape[0] - np.count_nonzero(keep))
+        return matrix[keep]
+
+    def _no_data(self) -> RuntimeError:
+        """The error for a fit that sampled nothing, naming the rows it dropped."""
+        dropped = sum(self._dropped.values())
+        if dropped:
+            msg = (
+                "[extract-templates] No row of the inputs is finite in every "
+                f"template column. {dropped} rows were dropped."
+            )
+        else:
+            msg = "[extract-templates] No data in inputs."
+        return RuntimeError(msg)
 
     def _fit_reservoir(
         self,
@@ -212,8 +249,7 @@ class ExtractTemplates:
                 self._entry_map[n_entries] = (group, sequence)
             entry_idx = n_entries
 
-            cols = self._feature_columns
-            matrix = df[cols].to_numpy(dtype=np.float64)
+            matrix = self._sampled_rows(df, entry_idx)
             n_rows = matrix.shape[0]
 
             # Apply per-entry cap
@@ -259,8 +295,7 @@ class ExtractTemplates:
                 n_seen += n_rows
 
         if reservoir is None or filled == 0:
-            msg = "[extract-templates] No data in inputs."
-            raise RuntimeError(msg)
+            raise self._no_data()
 
         self._templates = reservoir[:filled]
         self._template_entries = entry_indices[:filled]
@@ -270,9 +305,8 @@ class ExtractTemplates:
         inputs: Callable[[], Iterator[tuple[str, pd.DataFrame]]],
         pool_size: int,
     ) -> None:
-        from mosaic.core.pipeline.types import COLUMNS as C
-
-        # Pass 1: count rows per entry, capture feature_columns and metadata
+        # Pass 1: count the rows each entry may contribute, and capture
+        # feature_columns and metadata
         entry_counts: dict[str, int] = {}
         entry_idx_map: dict[str, int] = {}
         for entry_key, df in inputs():
@@ -287,11 +321,11 @@ class ExtractTemplates:
                 )
                 sequence = str(df[C.seq_col].iloc[0])
                 self._entry_map[idx] = (group, sequence)
-            entry_counts[entry_key] = len(df)
+            sampled = self._sampled_rows(df, entry_idx_map[entry_key])
+            entry_counts[entry_key] = sampled.shape[0]
 
-        if not entry_counts:
-            msg = "[extract-templates] No data in inputs."
-            raise RuntimeError(msg)
+        if sum(entry_counts.values()) == 0:
+            raise self._no_data()
 
         # Compute quotas
         quotas = self._compute_quotas(entry_counts, pool_size)
@@ -299,15 +333,13 @@ class ExtractTemplates:
         # Pass 2: sample exactly quota rows per entry
         blocks: list[np.ndarray] = []
         label_blocks: list[np.ndarray] = []
-        cols = self._feature_columns
-        assert cols is not None
 
         for entry_key, df in inputs():
             quota = quotas.get(entry_key, 0)
             if quota <= 0:
                 continue
-            matrix = df[cols].to_numpy(dtype=np.float64)
             entry_idx = entry_idx_map[entry_key]
+            matrix = self._sampled_rows(df, entry_idx)
             if matrix.shape[0] <= quota:
                 blocks.append(matrix)
                 label_blocks.append(np.full(matrix.shape[0], entry_idx, dtype=np.int32))
@@ -355,27 +387,6 @@ class ExtractTemplates:
 
         return quotas
 
-    def _farthest_first(
-        self, pool: np.ndarray, n_select: int
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Select n_select points by iterative farthest-point sampling.
-
-        Returns (selected_points, selected_indices) so callers can subset
-        parallel arrays (e.g. entry labels).
-        """
-        first = int(self._rng.integers(0, int(pool.shape[0])))
-        selected: list[int] = [first]
-        distances = np.sum((pool - pool[selected[0]]) ** 2, axis=1)
-
-        while len(selected) < min(n_select, pool.shape[0]):
-            farthest = int(np.argmax(distances))
-            selected.append(farthest)
-            new_distances = np.sum((pool - pool[farthest]) ** 2, axis=1)
-            distances = np.minimum(distances, new_distances)
-
-        sel = np.array(selected)
-        return pool[sel], sel
-
     def _build_provenance(self) -> pd.DataFrame:
         """Build per-entry template provenance table.
 
@@ -401,6 +412,7 @@ class ExtractTemplates:
                     "sequence": sequence,
                     "count": count,
                     "proportion": float(count) / total if total > 0 else 0.0,
+                    "dropped": self._dropped.get(entry_idx, 0),
                 }
             )
         return pd.DataFrame(rows)

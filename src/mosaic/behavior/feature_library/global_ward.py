@@ -36,7 +36,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared
 
-from .helpers import ensure_columns
+from .helpers import ensure_columns, finite_rows
 from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
 from .registry import register_feature
 
@@ -178,6 +178,9 @@ class GlobalWardClustering:
             raise RuntimeError(msg)
 
         templates = self._templates.astype(np.float64, copy=False)
+        if templates.ndim == 2:
+            # Fitted on the rows that apply assigns, the finite ones.
+            templates = templates[finite_rows(templates)]
 
         if templates.ndim != 2 or templates.shape[0] < 2:
             msg = (
@@ -217,7 +220,7 @@ class GlobalWardClustering:
 
         arr = df[self._feature_columns].to_numpy(dtype=np.float32, copy=False)
 
-        mask = np.isfinite(arr).all(axis=1)
+        mask = finite_rows(arr)
         idx = np.flatnonzero(mask).tolist()
         valid = df.iloc[idx].reset_index(drop=True)
         meta_cols = sorted(set(valid.columns) - set(self._feature_columns))

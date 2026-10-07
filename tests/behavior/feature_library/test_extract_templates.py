@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.extract_templates import ExtractTemplates
-from mosaic.core.pipeline.types import Result
+from mosaic.core.pipeline.types import InputStream, Result
 
 InputFactory = Callable[[], Iterator[tuple[str, pd.DataFrame]]]
 
@@ -446,6 +447,73 @@ class TestSaveLoad:
 
 
 # --- Edge cases ---
+
+
+type Allocation = Literal["reservoir", "exact"]
+
+
+def _with_edges(df: pd.DataFrame, n_edge: int) -> pd.DataFrame:
+    """*df* with ``feat_0`` NaN on its first and last *n_edge* rows.
+
+    The shape a windowed feature leaves, as ``speed-angvel`` with ``step_size``
+    does. One row also holds an infinity, which is not finite either.
+    """
+    edged = df.copy()
+    windowed = edged["feat_0"].to_numpy(dtype=np.float64, copy=True)
+    windowed[:n_edge] = np.nan
+    windowed[-n_edge:] = np.nan
+    edged["feat_0"] = windowed
+    divided = edged["feat_1"].to_numpy(dtype=np.float64, copy=True)
+    divided[n_edge] = np.inf
+    edged["feat_1"] = divided
+    return edged
+
+
+class TestNonFiniteRows:
+    """Only rows finite in every template column are sampled."""
+
+    @pytest.mark.parametrize("allocation", ["reservoir", "exact"])
+    def test_only_finite_rows_are_sampled(
+        self, tmp_path: Path, allocation: Allocation
+    ) -> None:
+        df_a = _with_edges(_make_df(40, sequence="seq_a"), 4)
+        df_b = _with_edges(_make_df(30, sequence="seq_b"), 2)
+        feat = _make_feature(
+            params={"n_templates": 500, "pool": {"allocation": allocation}}
+        )
+
+        templates, provenance = _fit_and_save(
+            feat, _make_factory([("a", df_a), ("b", df_b)]), tmp_path
+        )
+
+        assert np.isfinite(templates.to_numpy()).all()
+        assert len(templates) == (40 - 9) + (30 - 5)
+        prov = provenance.set_index("sequence")
+        assert prov.loc["seq_a", "dropped"] == 9
+        assert prov.loc["seq_b", "dropped"] == 5
+        assert prov.loc["seq_a", "count"] == 31
+
+    def test_an_entry_without_a_dropped_row_records_zero(self, tmp_path: Path) -> None:
+        feat = _make_feature(params={"n_templates": 10})
+
+        _, provenance = _fit_and_save(
+            feat, _make_factory([("a", _make_df(20, sequence="seq_a"))]), tmp_path
+        )
+
+        assert provenance.iloc[0]["dropped"] == 0
+
+    @pytest.mark.parametrize("allocation", ["reservoir", "exact"])
+    def test_no_finite_row_raises_naming_the_dropped_rows(
+        self, allocation: Allocation
+    ) -> None:
+        df = _make_df(6, sequence="seq_a")
+        df["feat_0"] = np.nan
+        feat = _make_feature(
+            params={"n_templates": 10, "pool": {"allocation": allocation}}
+        )
+
+        with pytest.raises(RuntimeError, match="6 rows were dropped"):
+            feat.fit(InputStream(_make_factory([("a", df)]), n_entries=1))
 
 
 class TestEdgeCases:

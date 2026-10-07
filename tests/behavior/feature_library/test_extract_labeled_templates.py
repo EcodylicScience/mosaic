@@ -346,6 +346,41 @@ class TestFarthestFirstLabeled:
         assert (templates["label"] == 0).sum() == 10
         assert (templates["label"] == 1).sum() == 10
 
+    def test_rows_holding_nan_leave_the_selection_distinct(
+        self, tmp_path: Path
+    ) -> None:
+        """A NaN cell is compared as missing, and the selection does not repeat a row.
+
+        Every tenth row holds one NaN. Each distance to such a row was NaN, and
+        argmax then chose row 0 for every later pick.
+        """
+        n = 200
+        labels = np.array([0] * 100 + [1] * 100)
+        labels_lookup = _setup_labels_lookup(
+            tmp_path / "labels" / "behavior",
+            [("g", "s1", labels)],
+        )
+        feat = _make_feature_with_labels(
+            labels_lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_per_class": 20,
+                "strategy": "farthest_first",
+                "pool": {"size": 80},
+                "test_fraction": 0.0,
+            },
+        )
+        df = _make_labeled_df(n, sequence="s1", group="g")
+        df.loc[df.index % 10 == 0, "feat_1"] = np.nan
+        feat.fit(_make_factory([("g__s1", df)]))
+
+        run_root = tmp_path / "run"
+        feat.save_state(run_root)
+        templates = pd.read_parquet(run_root / "templates.parquet")
+
+        assert len(templates) == 40
+        assert not templates.duplicated().any()
+
 
 class TestSaveLoadLabeled:
     def test_save_load_round_trip(self, tmp_path: Path) -> None:

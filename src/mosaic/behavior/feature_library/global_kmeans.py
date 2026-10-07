@@ -38,7 +38,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared
 
-from .helpers import ensure_columns
+from .helpers import ensure_columns, finite_rows
 from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
 from .registry import register_feature
 from mosaic.core.pipeline.writers import write_parquet_atomic
@@ -243,12 +243,15 @@ class GlobalKMeansClustering:
             msg = "[global-kmeans] No templates loaded. Check load_state."
             raise RuntimeError(msg)
 
-        self._templates = self._templates.astype(np.float32, copy=False)
+        # Fitted on the rows that apply assigns, the finite ones.
+        templates = self._templates.astype(np.float32, copy=False)
+        self._templates = templates[finite_rows(templates)]
 
         if self._templates.shape[0] < self.params.k:
             msg = (
-                f"Not enough samples to fit KMeans: "
-                f"n={self._templates.shape[0]} < k={self.params.k}"
+                f"Not enough finite templates to fit KMeans: "
+                f"n={self._templates.shape[0]} of {templates.shape[0]} < "
+                f"k={self.params.k}"
             )
             raise ValueError(msg)
 
@@ -272,7 +275,7 @@ class GlobalKMeansClustering:
 
         arr = df[self._feature_columns].to_numpy(dtype=np.float32, copy=False)
 
-        mask = np.isfinite(arr).all(axis=1)
+        mask = finite_rows(arr)
         idx = np.flatnonzero(mask).tolist()
         valid = df.iloc[idx].reset_index(drop=True)
         meta_cols = sorted(set(valid.columns) - set(self._feature_columns))

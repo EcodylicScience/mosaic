@@ -21,10 +21,13 @@ def _make_feature(
 
 
 def _fit_feature(
-    tmp_path: Path, n_templates: int = 200, n_clusters: int = 5
+    tmp_path: Path,
+    n_templates: int = 200,
+    n_clusters: int = 5,
+    nan_rows: tuple[int, ...] = (),
 ) -> GlobalWardClustering:
     """Create, load, and fit a GlobalWardClustering feature."""
-    templates = make_templates(n_templates, 5)
+    templates = make_templates(n_templates, 5, nan_rows=nan_rows)
     template_path = write_templates(tmp_path, templates)
 
     feat = _make_feature(
@@ -73,6 +76,14 @@ class TestFitAndSave:
 
         bundle = joblib.load(tmp_path / "run" / "model.joblib")
         assert bundle["linkage_matrix"].shape == (n_templates - 1, 4)
+
+    def test_fit_skips_templates_with_nan(self, tmp_path: Path) -> None:
+        """A template set with NaN rows fits on its finite rows, which apply assigns."""
+        feat = _fit_feature(tmp_path, n_templates=200, nan_rows=(0, 7, 199))
+        feat.save_state(tmp_path / "run")
+
+        bundle = joblib.load(tmp_path / "run" / "model.joblib")
+        assert bundle["linkage_matrix"].shape == (197 - 1, 4)
 
     def test_fit_raises_without_templates(self) -> None:
         feat = _make_feature(

@@ -32,7 +32,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, DeclaredModel
 from mosaic.optional_dependency import require
 
-from .helpers import ensure_columns
+from .helpers import ensure_columns, finite_rows
 from .registry import register_feature
 from mosaic.core.pipeline._utils import atomic_savez
 
@@ -357,7 +357,9 @@ class GlobalTSNE:
             msg = "[global-tsne] No templates loaded. Check load_state."
             raise RuntimeError(msg)
 
+        # Fitted on the rows that apply maps, the finite ones.
         templates = self._templates.astype(np.float32, copy=False)
+        templates = templates[finite_rows(templates)]
 
         perplexity = self.params.perplexity
         knn_method = self.params.knn_method.lower()
@@ -414,7 +416,7 @@ class GlobalTSNE:
         ensure_columns(df, self._feature_columns)
         features = df[self._feature_columns].to_numpy(dtype=np.float32, copy=False)
 
-        valid_mask = np.isfinite(features).all(axis=1)
+        valid_mask = finite_rows(features)
         valid_features = features[valid_mask]
 
         coords = np.full((features.shape[0], 2), np.nan, dtype=np.float32)

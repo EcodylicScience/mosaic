@@ -21,10 +21,13 @@ def _make_feature(
 
 
 def _fit_feature(
-    tmp_path: Path, n_templates: int = 200, k: int = 5
+    tmp_path: Path,
+    n_templates: int = 200,
+    k: int = 5,
+    nan_rows: tuple[int, ...] = (),
 ) -> GlobalKMeansClustering:
     """Create, load, and fit a GlobalKMeansClustering feature."""
-    templates = make_templates(n_templates, 5)
+    templates = make_templates(n_templates, 5, nan_rows=nan_rows)
     template_path = write_templates(tmp_path, templates)
 
     feat = _make_feature(
@@ -80,6 +83,18 @@ class TestFitAndSave:
 
         sizes = pd.read_parquet(tmp_path / "run" / "cluster_sizes.parquet")
         assert sizes["count"].sum() == 200
+
+    def test_fit_skips_templates_with_nan(self, tmp_path: Path) -> None:
+        """A template set with NaN rows fits on its finite rows, which apply assigns."""
+        feat = _fit_feature(tmp_path, n_templates=200, k=5, nan_rows=(0, 7, 199))
+        feat.save_state(tmp_path / "run")
+
+        sizes = pd.read_parquet(tmp_path / "run" / "cluster_sizes.parquet")
+        assert sizes["count"].sum() == 197
+
+    def test_fit_counts_only_finite_templates_against_k(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="finite templates"):
+            _ = _fit_feature(tmp_path, n_templates=6, k=5, nan_rows=(0, 1))
 
     def test_fit_raises_without_templates(self) -> None:
         feat = _make_feature(

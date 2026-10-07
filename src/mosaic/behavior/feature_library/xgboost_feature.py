@@ -23,7 +23,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared
 
-from .helpers import ensure_columns, feature_columns, meta_columns
+from .helpers import ensure_columns, feature_columns, finite_rows, meta_columns
 from .registry import register_feature
 
 _TEMPLATES_DESCRIPTION = (
@@ -249,12 +249,15 @@ class XgboostFeature:
             features = features[indices_array]
             labels = labels[indices_array]
 
-        # SMOTE oversampling
+        # SMOTE oversampling. XGBoost reads NaN as a missing value, and SMOTE
+        # interpolates between whole vectors and refuses one. The synthetic rows
+        # come from the finite rows, and the rest are kept as they are.
         if self.params.use_smote:
+            finite = finite_rows(features)
             smote = SMOTE(random_state=self.params.random_state)
-            resampled = smote.fit_resample(features, labels)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-            features = np.asarray(resampled[0])  # pyright: ignore[reportUnknownArgumentType]
-            labels = np.asarray(resampled[1])  # pyright: ignore[reportUnknownArgumentType]
+            resampled = smote.fit_resample(features[finite], labels[finite])  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+            features = np.vstack([np.asarray(resampled[0]), features[~finite]])  # pyright: ignore[reportUnknownArgumentType]
+            labels = np.concatenate([np.asarray(resampled[1]), labels[~finite]])  # pyright: ignore[reportUnknownArgumentType]
 
         return features, labels
 

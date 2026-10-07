@@ -33,6 +33,7 @@ def make_templates(
     *,
     offset: float = 0.0,
     scale: float = 1.0,
+    nan_rows: tuple[int, ...] = (),
 ) -> pd.DataFrame:
     """A templates table of `feat_0 .. feat_<n_features-1>`.
 
@@ -43,6 +44,9 @@ def make_templates(
             mean.
         scale: Multiplies every drawn value, so a test can assert on a known
             standard deviation.
+        nan_rows: The rows whose last feature is set to NaN after the draw, as
+            a windowed feature leaves a sequence's edge rows. The other values
+            are those of the same draw without it.
 
     Returns:
         The templates, one column per feature and no metadata columns.
@@ -51,7 +55,10 @@ def make_templates(
     data: dict[str, object] = {}
     for i in range(n_features):
         data[f"feat_{i}"] = rng.standard_normal(n_rows) * scale + offset
-    return pd.DataFrame(data)
+    templates = pd.DataFrame(data)
+    if nan_rows:
+        templates.loc[list(nan_rows), f"feat_{n_features - 1}"] = np.nan
+    return templates
 
 
 def make_sequence_df(
