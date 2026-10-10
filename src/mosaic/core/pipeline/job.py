@@ -33,10 +33,10 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from ._utils import new_execution_id
 from .progress import NullProgressCallback, ProgressCallback
@@ -77,6 +77,15 @@ class CancelToken:
     def raise_if_cancelled(self) -> None:
         if self._event.is_set():
             raise Cancelled()
+
+
+CancelCheck: TypeAlias = Callable[[], bool]
+"""Returns True when the work in progress is to be cancelled."""
+
+
+def cancel_check(token: CancelToken | None) -> CancelCheck | None:
+    """Return the check that asks *token* whether to cancel, or ``None`` without one."""
+    return None if token is None else token.is_cancelled
 
 
 def install_signal_handler(token: CancelToken) -> None:

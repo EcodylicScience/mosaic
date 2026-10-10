@@ -67,5 +67,7 @@
   "temporal-stack/from-speed-angvel-pinned": "0.4-39870e7911",
   "track-subsample/default": "0.2-ee8b9de750",
   "trajectory-smooth/default": "0.1-2346da87b7",
+  "vame/scope-a": "0.1-41f95befb4",
+  "vame/scope-ab": "0.1-7ac5c99474",
   "xgboost/templates": "0.1-a47147dc32"
 }

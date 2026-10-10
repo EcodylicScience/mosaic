@@ -84,5 +84,5 @@ def test_a_selected_index_past_pose_n_resolves() -> None:
 
 def test_a_name_without_declared_names_is_refused() -> None:
     """``kp0`` names a keypoint for a library, and is not a reference a recipe makes."""
-    with pytest.raises(ValueError, match="no keypoint names"):
+    with pytest.raises(ValueError, match="not given keypoint names"):
         _ = PoseConfig(pose_n=3).resolve_keypoints(["kp0"], who="t")

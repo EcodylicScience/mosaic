@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import re
 import zlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -69,6 +69,39 @@ def track_table(
             "feat_a": np.random.default_rng(seed).random(len(frame)),
         }
     )
+
+
+def keypoint_rows(
+    frames: Iterable[int],
+    individual: int | str | None = None,
+    *,
+    n_keypoints: int,
+    confidence: float | Sequence[float] = 0.9,
+    offset: float = 0.0,
+) -> pd.DataFrame:
+    """Return one individual's scored keypoints, a row per frame of *frames*, in order.
+
+    Keypoint ``k`` at frame ``f`` is at ``(p, -p)``, where
+    ``p = offset + f + k / 10``. Its ``poseP`` score is *confidence*, or
+    ``confidence[k]`` when *confidence* is a sequence. Each row also contains
+    ``frame``, ``time`` at 30 fps, an empty ``group`` and ``sequence``, and ``id``
+    unless *individual* is None.
+    """
+    frame = np.asarray(list(frames), dtype=np.int64)
+    scores = np.broadcast_to(np.asarray(confidence, dtype=np.float64), n_keypoints)
+    columns: dict[str, object] = {
+        "frame": frame,
+        "time": frame / 30.0,
+        "group": "",
+        "sequence": "",
+    }
+    if individual is not None:
+        columns["id"] = [individual] * len(frame)
+    for k in range(n_keypoints):
+        columns[f"poseX{k}"] = offset + frame + k / 10
+        columns[f"poseY{k}"] = -(offset + frame + k / 10)
+        columns[f"poseP{k}"] = np.full(len(frame), scores[k])
+    return pd.DataFrame(columns)
 
 
 def add_track_sequences(
@@ -386,10 +419,10 @@ def add_tracks_table(
         std_format: As in :func:`add_tracks_variant`.
         producer_run_id: As in :func:`add_tracks_variant`.
     """
+    from mosaic.behavior.feature_library.helpers import entry_identity
     from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 
-    group = str(table["group"].iloc[0]) if "group" in table.columns else ""
-    sequence = str(table["sequence"].iloc[0])
+    group, sequence = entry_identity(table)
     root = tracks_variant_root(dataset.get_root("tracks"), run_id)
     root.mkdir(parents=True, exist_ok=True)
     out_path = root / f"{make_entry_key(group, sequence)}.parquet"

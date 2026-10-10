@@ -9,9 +9,9 @@ agents when working with code in this repository.
 behavior analysis. Given pose tracks (per-frame keypoints with identities), it
 produces standardized parquet track tables, behavioral features (kinematic,
 social, spectral, reduction), unsupervised embeddings and clusters
-(t-SNE / k-means / Ward / ARHMM / keypoint-MoSeq), supervised classifiers
-(XGBoost, Lightning-Action, FERAL), visual identification models from egocentric
-crops, and annotated overlay videos / timelines.
+(t-SNE / k-means / Ward / ARHMM / keypoint-MoSeq / VAME), supervised
+classifiers (XGBoost, Lightning-Action, FERAL), visual identification models
+from egocentric crops, and annotated overlay videos / timelines.
 
 If pose tracks are not yet available, mosaic also covers the upstream pipeline:
 frame sampling for annotation, and pose-model training from CVAT / COCO /
@@ -250,9 +250,9 @@ basedpyright src/mosaic/core/dataset.py    # one file
 ```
 
 `src/mosaic/behavior/feature_library/external/` has its own execution
-environment (it runs keypoint-MoSeq in an isolated venv) and is excluded from
-the uv workspace — see `[tool.basedpyright]` and `[tool.uv.workspace]` in
-`pyproject.toml`.
+environment (it runs keypoint-MoSeq and VAME in isolated venvs) and is
+excluded from the uv workspace. See `[tool.basedpyright]` and
+`[tool.uv.workspace]` in `pyproject.toml`.
 
 ### Documentation
 
@@ -316,6 +316,13 @@ fails when a marker is selected twice or not at all.
   `tests`, on push as well as on pull request. Formatting is a merge gate, not a
   suggestion. It was once scoped to the files a pull request touched, which meant
   it never ran at all on a repository that pushes to `main`.
+
+**`slow.yml` also builds the VAME environment**, from the committed lock under
+`src/mosaic/behavior/feature_library/external/vame-env/`. The vame integration
+tests run against it there instead of skipping. The build downloads
+about 3.4 GB of CUDA wheels, too much for a job on every push. `MOSAIC_CI_VAME=1`
+promotes an unresolved environment from "skip" to "broken environment", the
+same role `MOSAIC_CI_TRACKING=1` plays for the `tracking` job above.
 
 Not gated: `basedpyright`, which carries a pre-existing backlog of ~11k
 strict-mode errors. So before reporting work done, run what CI will not:
@@ -646,8 +653,8 @@ Two flavors:
   which is the whole reason they are features rather than columns.
 - **global** (fit-then-apply) — trained on a collection of sequences, then
   applied (e.g. `global-scaler`, `global-tsne`, `global-kmeans`,
-  `global-ward`, `xgboost`, `arhmm`, `kpms`, `lightning-action`, `feral`,
-  `global-identity-model`). `kpms` is license-restricted — see
+  `global-ward`, `xgboost`, `arhmm`, `kpms`, `vame`, `lightning-action`,
+  `feral`, `global-identity-model`). `kpms` is license-restricted. See
   "`feature_library/external/` is sandboxed" below.
 
 The `media` features (`overlay`, `egocentric-crop`, `interaction-crop-pipeline`)
@@ -661,7 +668,7 @@ everything else.
 
 `feral` (the FERAL V-JEPA behavior classifier) is a global fit-then-apply
 feature but runs **in-process** — it imports the installed `feral` package
-directly, unlike the sandboxed keypoint-MoSeq runner in
+directly, unlike the sandboxed keypoint-MoSeq and VAME runners in
 `feature_library/external/`. Each feature also declares a `category` used for
 grouping/display; beyond per-frame and global, the taxonomy includes `summary`
 (per-sequence aggregations, e.g. `frame-aggregate`), `tag` (e.g.
@@ -841,13 +848,14 @@ Deliberately separate from the live-object `Pipeline`, which holds feature
   columns that validation predicts.
 - **A feature declares the packages and setups beyond the base install that
   it needs** in a `prerequisites` tuple: an `OptionalModule` for a package an
-  extra installs (`src/mosaic/optional_dependency.py`), and `KpmsLicense` and
-  `KpmsEnvironment` for kpms. `declaration_catalog()` evaluates them into
-  `Declaration.unavailable`, once per process and without importing the
-  packages. The editor catalog lists that sentence as `unavailable`, validation
-  reports it at the step's `feature`, and `attach_candidates` refuses the
-  feature with it. A feature imports the package through the same declaration
-  (`OptionalModule.load()`), and the catalog and the run name one extra.
+  extra installs (`src/mosaic/optional_dependency.py`), `KpmsLicense` for
+  kpms, and a `RunnerInterpreter` over its tool's ladder for kpms and vame.
+  `declaration_catalog()` evaluates them into `Declaration.unavailable`, once
+  per process and without importing the packages. The editor catalog lists that
+  sentence as `unavailable`, validation reports it at the step's `feature`, and
+  `attach_candidates` refuses the feature with it. A feature imports the
+  package through the same declaration (`OptionalModule.load()`), and the
+  catalog and the run name one extra.
 - **`reject_unless_valid` runs before the dataset is touched** and reports every
   problem rather than the first. `overwrite` is refused in `params` on presence,
   and `extract-frames` is excluded by *ownership* -- mosaic-api embeds its frozen
@@ -887,6 +895,7 @@ src/mosaic/
 │   ├── pipeline/               # feature execution engine, typed protocol
 │   │   ├── types/              # Inputs, Result, ArtifactSpec, ...
 │   │   ├── toolenv.py          # the MOSAIC_<TOOL>_CONDA_ENV / _BIN location ladder
+│   │   ├── subprocess_util.py  # supervised_popen_kwargs(), LineChild: a child's lines on a queue
 │   │   ├── run.py              # run_feature() orchestration
 │   │   ├── manifest.py         # unified manifest + per-sequence iterator
 │   │   ├── loading.py          # sequence identity / NN-lookup construction
@@ -913,6 +922,8 @@ src/mosaic/
 │   │   ├── facts_columns.py    # MediaFacts / verdict <-> media-index row mapping
 │   │   └── preprocess/         # MEDIA_STEPS: the built-in steps, Placement, shared CLAHE / gray
 │   ├── schema.py               # track-schema validation (e.g. trex_v1)
+│   ├── pose_columns.py         # keypoint column names, arrays and reference resolution
+│   ├── individuals.py          # a tracks table split by individual; the repeated-row refusal
 │   ├── params.py               # Params + the declaration vocabulary every parameter model shares
 │   ├── entry.py                # Entry / CameraEntry: the (group, sequence) aliases
 │   ├── strict_model.py         # StrictModel: the pydantic base, extra="forbid"
@@ -921,8 +932,11 @@ src/mosaic/
 │   └── track_library/          # track converters (CalMS21, TREx, SLEAP, DeepLabCut, Ultralytics)
 ├── behavior/
 │   ├── feature_library/        # ~35+ per-frame + global features (plugin)
+│   │   ├── runner_client.py    # RunnerProcess: the client side of the runner wire
+│   │   ├── vame_sessions.py    # vame's session building and latent placement (pure)
+│   │   ├── vame_feature.py     # the vame feature
 │   │   ├── movement/           # optional movement-library integration
-│   │   └── external/           # keypoint-moseq subprocess runner (own venv)
+│   │   └── external/           # keypoint-MoSeq and VAME runners (own venvs)
 │   ├── label_library/          # label converters (BORIS, CalMS21)
 │   ├── model_library/          # identity networks (timm classifier / embedding, DINOv2 temporal)
 │   └── visualization_library/  # overlay renderer + the media features (overlay, crops)
@@ -1186,9 +1200,10 @@ chosen names and the index row recorded only the second.
   `X`/`Y` under a name promising a detected landmark, which is the same
   plausible-but-not-measured column the forbidden set exists to refuse. The
   features that are *defined* on keypoints (`heading`, `body-scale`,
-  `orientation-rel`, `kpms`, the `pair-*` family) refuse a table without them,
-  naming themselves; the ones that only prefer them (`egocentric-crop`,
-  `interaction-crop-pipeline`, the overlay) fall back to the body centre.
+  `orientation-rel`, `kpms`, `vame`, the `pair-*` family) refuse a table
+  without them, naming themselves; the ones that only prefer them
+  (`egocentric-crop`, `interaction-crop-pipeline`, the overlay) fall back to the
+  body centre.
 - **`trex_v2`** — `mosaic_v1` plus what TREx genuinely measures (`SPEED`,
   `ANGLE`, `X#wcentroid`, the midline family), also in pixels. TREx's own bare
   `X`/`Y` are the *head* and are preserved as `X#head`/`Y#head`.
@@ -1314,31 +1329,60 @@ there is no rendered API reference to carry the explanation instead.
 
 ### `feature_library/external/` is sandboxed
 
-keypoint-MoSeq lives in its own venv and is invoked via subprocess. It has a
-separate basedpyright execution environment and is excluded from the uv
-workspace (`[tool.uv.workspace]` in `pyproject.toml`). Don't import it
-directly from the main mosaic package.
+keypoint-MoSeq and VAME each live in a separate venv and are invoked via
+subprocess. One basedpyright execution environment covers both runners, and
+both environments are excluded from the uv workspace (`[tool.uv.workspace]` in
+`pyproject.toml`). Don't import either library directly from the main mosaic
+package.
 
-**The subprocess boundary is a licensing requirement, not a packaging
-convenience.** keypoint-MoSeq is licensed by Harvard OTD for non-commercial
-research and academic use only; mosaic is AGPL-3.0-or-later, and AGPL section 7
-forbids adding a "non-commercial only" restriction to a covered work. Importing
-it would make a combined work that could not be distributed at all. So:
-keypoint-moseq must never be folded into mosaic's own dependencies, and never
-bundled into a packaged installer.
+**For keypoint-MoSeq the subprocess boundary is a licensing requirement.**
+keypoint-MoSeq is licensed by Harvard OTD for non-commercial research and
+academic use only; mosaic is AGPL-3.0-or-later, and AGPL section 7 forbids
+adding a "non-commercial only" restriction to a covered work. Importing it
+would make a combined work that could not be distributed at all. Do not fold
+keypoint-moseq into mosaic's dependencies or bundle it into a packaged
+installer.
 
-The environment is not built by anything in the repo — the user builds it, and
+VAME is GPL-3.0, which does not restrict use, and section 13 of the AGPL and
+of the GPL each permit combining a work under the other. Mosaic's runner
+imports VAME in a process of VAME's environment, and mosaic's distribution
+does not convey VAME. The GPL source obligation falls on whoever conveys a
+built environment.
+
+**Both runners speak one wire.** `runner_wire.py` imports only the standard
+library and pydantic, and serves a runner: requests arrive as JSON lines on
+its standard input, and replies (`Ready`, `Done`, `Failed`, `Event`) leave as
+JSON lines on its standard output, with an array crossing as a file in a
+per-attempt exchange directory. `kpms_protocol.py` and `vame_protocol.py`
+declare each tool's payloads. `kpms_server.py` and `vame_runner.py` are the two
+programs. Each imports its library only inside a request handler, after
+`claim_stdout()` has pointed `sys.stdout` at standard error. Mosaic's side,
+`RunnerProcess` in `behavior/feature_library/runner_client.py`, starts one
+child lazily at the first request, keeps it running across `save_state` and
+later requests, and starts a fresh one after it exits for any reason.
+
+**A cancel is a hard cancel.** A fired `cancel_token` kills the runner's whole
+process group and the request raises `Cancelled`, with no sentinel and no
+grace period, unlike the cooperative cancel that Ultralytics training uses
+below. Both tools discard a fit's state on any exit. Stopping at once costs
+nothing that a grace period would save.
+
+Installing mosaic builds neither environment. The user builds it, and
 [`external/README.md`](src/mosaic/behavior/feature_library/external/README.md)
+(for VAME, [`external/vame-env/README.md`](src/mosaic/behavior/feature_library/external/vame-env/README.md))
 is the documented bootstrap, with the license terms attached to that step.
-`KpmsFeature._start_server` refuses to spawn until
-`MOSAIC_KPMS_LICENSE_ACCEPTED=1`; `MOSAIC_KPMS_PYTHON` locates an interpreter,
-matching the `MOSAIC_TREX_BIN` / `MOSAIC_SLEAP_BIN` convention. The check sits
-at the spawn and deliberately not in `__init__`, because constructing a feature
-(as `mosaic reconcile` does for every run it re-addresses) is not use of
-keypoint-MoSeq. [NOTICE](NOTICE) records this arrangement and the other
-third-party terms — notably TRex, which requires a paid license for company use.
-A reader-facing licensing page is being written and is not yet published, so
-nothing under `docs/` carries these terms today.
+Every request `KpmsFeature` makes checks `MOSAIC_KPMS_LICENSE_ACCEPTED=1`
+before it can start a runner. The refusal therefore covers every caller and
+does not depend on `__init__`, because constructing a feature (as `mosaic
+reconcile` does for every run it re-addresses) is not use of keypoint-MoSeq.
+`MOSAIC_KPMS_PYTHON` and `MOSAIC_VAME_PYTHON` locate an interpreter, and
+`MOSAIC_KPMS_CONDA_ENV` and `MOSAIC_VAME_CONDA_ENV` a conda environment,
+matching the `MOSAIC_TREX_BIN` / `MOSAIC_TREX_CONDA_ENV` convention.
+[NOTICE](NOTICE) records this arrangement and the other third-party terms,
+notably TRex, which requires a paid license for company use. A reader-facing
+licensing page is being written and is not yet published. Until then,
+[`docs/installation.md`](docs/installation.md) states the keypoint-MoSeq and
+VAME terms and links NOTICE for the rest.
 
 ### `tracking/external/` is where Ultralytics runs
 
@@ -1353,11 +1397,15 @@ mosaic's side: `ULTRALYTICS_ENV` on the same five-step location ladder every oth
 external tool uses, plus `probe_ultralytics`, `ultralytics_tracker_defaults` and
 `run_ultralytics_tool`. One subprocess per entry.
 
-`tests/meta/test_ultralytics_separation.py` holds both directions: no mosaic module
-outside the runner may import Ultralytics, no extra or bundle may declare it, and
-the runner may not import mosaic. **The separation is complete** — tracking,
-single-model inference and model training all run out of process, so
-`pip install -e ".[all]"` resolves no AGPL-licensed dependency.
+`tests/meta/test_external_tool_separation.py` checks both directions for each of
+Ultralytics, keypoint-MoSeq and VAME. A mosaic module outside a tool's runner may
+not import the tool. Mosaic's base dependencies, extras, dependency groups and
+`uv.lock` may not declare it. The programs that run in its environment may not
+import mosaic. `SEPARATED_TOOLS` in `tests/helpers/environment.py` lists each
+tool's libraries, environments and programs. **For Ultralytics the separation is
+complete.** Tracking, single-model inference and model training all run out of
+process, and `pip install -e ".[all]"` does not resolve an AGPL-licensed
+dependency.
 
 **Two environments, because POLO cannot share one with upstream.**
 `ultralytics-env/` runs the tracker and `infer-pose`; `polo-env/` runs

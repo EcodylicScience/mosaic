@@ -2,8 +2,7 @@
 
 Each test drives a runner program that ``write_fake_runner`` writes, under this
 interpreter, placed through the binary rung of the tool's location ladder. The
-program appends its process id to a file when it starts, which counts the
-spawns.
+program records its start in a journal, which counts the spawns.
 """
 
 from __future__ import annotations
@@ -18,18 +17,20 @@ from pydantic import BaseModel
 
 from mosaic.behavior.feature_library.external.runner_wire import Event
 from mosaic.behavior.feature_library.runner_client import (
-    CancelCheck,
     OnStart,
     RunnerCommandError,
     RunnerProcess,
     RunnerVersionError,
 )
-from mosaic.core.pipeline.job import Cancelled
+from mosaic.core.pipeline.job import CancelCheck, Cancelled
 from mosaic.core.pipeline.toolenv import ToolEnv, ToolExitError, ToolNotFoundError
 from tests.helpers import (
+    FAKE_HANDLERS,
+    RunnerJournal,
     appender_program,
     assert_process_exited,
     assert_stopped_writing,
+    journal_source,
     wait_for,
     write_fake_runner,
 )
@@ -51,43 +52,13 @@ _ENV = ToolEnv(
     not_found=_FakeNotFound,
 )
 
-HANDLERS = """
-from pydantic import BaseModel
-
-STARTS = Path({starts!r})
-with STARTS.open("a") as starts:
-    starts.write(f"{{os.getpid()}}\\n")
-{preamble}
-
-class Echoed(BaseModel):
-    text: str
-
-
-def echo(payload, emit):
-    return Echoed(text=str(payload["text"]))
-
+HANDLERS = (
+    FAKE_HANDLERS
+    + """
 
 def note(payload, emit):
     sys.stderr.write(str(payload["text"]) + "\\n")
     sys.stderr.flush()
-
-
-def count(payload, emit):
-    for number in range(int(payload["up_to"])):
-        emit("counted", {{"number": number}})
-
-
-def nap(payload, emit):
-    emit("napping")
-    time.sleep(float(payload["seconds"]))
-
-
-def fail(payload, emit):
-    raise ValueError("the handler failed")
-
-
-def interrupt(payload, emit):
-    raise KeyboardInterrupt
 
 
 def crash(payload, emit):
@@ -107,18 +78,11 @@ def linger(payload, emit):
         threading.Thread(target=time.sleep, args=(3600,)).start()
 
 
-DISPATCH = {{
-    "echo": echo,
-    "note": note,
-    "count": count,
-    "nap": nap,
-    "fail": fail,
-    "interrupt": interrupt,
-    "crash": crash,
-    "garble": garble,
-    "linger": linger,
-}}
+DISPATCH.update(note=note, crash=crash, garble=garble, linger=linger)
 """
+)
+"""The handlers of :data:`FAKE_HANDLERS`, and ``note``, ``crash``, ``garble`` and
+``linger``."""
 
 _NOISE = 'print("activating the environment", flush=True)'
 """Prints a line before ``Ready``, as an activation script run by ``conda run`` may."""
@@ -128,7 +92,8 @@ _serve = runner_wire.serve
 
 
 def _serve_unless_first(dispatch, tool, version, *, protocol, heartbeat_seconds):
-    if len(STARTS.read_text().split()) > 1:
+    records = [json.loads(line) for line in JOURNAL.read_text().splitlines()]
+    if sum(record["command"] == "start" for record in records) > 1:
         _serve(
             dispatch,
             tool,
@@ -170,19 +135,12 @@ class _Runners:
 
     def __init__(self, directory: Path) -> None:
         self._directory = directory
+        self.journal = RunnerJournal(directory / "journal.jsonl")
         self._made: list[RunnerProcess] = []
-
-    @property
-    def starts(self) -> list[int]:
-        """The process id of each runner program started so far, in order."""
-        path = self._directory / "starts.txt"
-        return [int(line) for line in path.read_text().split()] if path.exists() else []
 
     def program(self, *, version: str = "1.0", preamble: str = "") -> Path:
         """Write the runner program, with *preamble* run after it records its start."""
-        handlers = HANDLERS.format(
-            starts=str(self._directory / "starts.txt"), preamble=preamble
-        )
+        handlers = journal_source(self.journal.path) + preamble + "\n" + HANDLERS
         return write_fake_runner(self._directory, handlers, version=version)
 
     def make(
@@ -193,6 +151,7 @@ class _Runners:
         preamble: str = "",
         on_start: OnStart | None = None,
         interpreter: Path = Path(sys.executable),
+        scratch_dir: Path | None = None,
     ) -> RunnerProcess:
         runner = RunnerProcess(
             _ENV.placed(bin_path=interpreter),
@@ -200,6 +159,7 @@ class _Runners:
             failure=_FakeExit,
             version=required,
             on_start=on_start,
+            scratch_dir=scratch_dir,
         )
         self._made.append(runner)
         return runner
@@ -226,7 +186,7 @@ def test_one_runner_serves_successive_requests(runners: _Runners) -> None:
     assert runner.request("echo", _Text(text="hello")) == {"text": "hello"}
     assert runner.request("echo", _Text(text="again")) == {"text": "again"}
 
-    assert len(runners.starts) == 1, "the second request reused the runner"
+    assert len(runners.journal.starts()) == 1, "the second request reused the runner"
 
 
 def test_a_missing_interpreter_is_refused_at_the_first_request(
@@ -255,7 +215,7 @@ def test_locate_resolves_the_interpreter_and_starts_no_runner(
 
     assert located.argv == [sys.executable]
     assert located.source == "the binary this run was placed with"
-    assert runners.starts == []
+    assert runners.journal.starts() == []
 
 
 def test_a_runner_of_another_version_is_refused(runners: _Runners) -> None:
@@ -268,7 +228,7 @@ def test_a_runner_of_another_version_is_refused(runners: _Runners) -> None:
     assert "fake 2.0" in message
     assert "requires 1.0" in message
     assert "Build the fake tool's environment." in message
-    (pid,) = runners.starts
+    (pid,) = runners.journal.starts()
     assert_process_exited(pid)
 
 
@@ -328,7 +288,7 @@ def test_a_command_that_raised_is_raised_with_the_runners_traceback(
     assert 'raise ValueError("the handler failed")' in failed.value.traceback
     assert failed.value.traceback in str(failed.value)
     assert runner.request("echo", _Text(text="after")) == {"text": "after"}
-    assert len(runners.starts) == 1, "the runner served on after the failure"
+    assert len(runners.journal.starts()) == 1, "the runner served on after the failure"
 
 
 def test_a_command_interrupted_in_the_runner_is_cancelled(runners: _Runners) -> None:
@@ -366,7 +326,7 @@ def test_a_cancel_kills_a_quiet_command_within_about_a_second(
         )
 
     assert time.monotonic() - napping[0] < 2.5
-    (pid,) = runners.starts
+    (pid,) = runners.journal.starts()
     assert_process_exited(pid)
 
 
@@ -382,7 +342,7 @@ def test_a_raising_event_callback_stops_the_runner(runners: _Runners) -> None:
         _ = runner.request("nap", _Nap(seconds=60), on_event=refuse)
 
     assert runner.request("echo", _Text(text="next")) == {"text": "next"}
-    first, _second = runners.starts
+    first, _second = runners.journal.starts()
     assert_process_exited(first)
 
 
@@ -409,7 +369,7 @@ def test_a_crashed_runner_is_started_again_with_on_start(runners: _Runners) -> N
     assert runner.request("echo", _Text(text="second")) == {"text": "second"}
 
     assert started == [runner, runner]
-    assert len(runners.starts) == 2
+    assert len(runners.journal.starts()) == 2
     assert runner.log().count("started\n") == 2
 
 
@@ -422,7 +382,7 @@ def test_a_closed_runner_is_started_again_with_on_start(runners: _Runners) -> No
     assert runner.request("echo", _Text(text="second")) == {"text": "second"}
 
     assert started == [runner, runner]
-    assert len(runners.starts) == 2
+    assert len(runners.journal.starts()) == 2
 
 
 def test_a_runner_that_exits_before_the_request_of_on_start_fails(
@@ -449,10 +409,10 @@ def test_a_runner_that_exits_before_the_request_of_on_start_fails(
 
     assert failed.value.returncode == 0
     assert started == [runner]
-    assert len(runners.starts) == 1
+    assert len(runners.journal.starts()) == 1
     assert runner.request("echo", _Text(text="second")) == {"text": "second"}
     assert started == [runner, runner]
-    assert len(runners.starts) == 2
+    assert len(runners.journal.starts()) == 2
 
 
 @pytest.mark.parametrize(
@@ -478,7 +438,7 @@ def test_on_start_that_catches_the_crash_of_its_runner_fails_the_request(
 
     assert failed.value.returncode == 3
     assert started == [runner]
-    assert len(runners.starts) == 1
+    assert len(runners.journal.starts()) == 1
 
 
 def test_a_cancel_reaches_the_request_of_on_start(runners: _Runners) -> None:
@@ -499,7 +459,7 @@ def test_a_cancel_reaches_the_request_of_on_start(runners: _Runners) -> None:
         _ = runner.request("echo", _Text(text="hello"), cancel=lambda: bool(napping))
 
     assert time.monotonic() - napping[0] < 2.5
-    (pid,) = runners.starts
+    (pid,) = runners.journal.starts()
     assert_process_exited(pid)
 
 
@@ -511,9 +471,40 @@ def test_close_stops_the_runner_and_returns_its_log(runners: _Runners) -> None:
     log = runner.close()
 
     assert "a line for the log" in log
-    (pid,) = runners.starts
+    (pid,) = runners.journal.starts()
     assert_process_exited(pid)
     assert runner.log() == "", "close removed the log"
+
+
+def test_a_kept_log_receives_the_log_once_and_the_rest_at_close(
+    runners: _Runners, tmp_path: Path
+) -> None:
+    """The kept file's earlier text stays, and each line of the log is appended once."""
+    kept = tmp_path / "run" / "runner.log"
+    kept.parent.mkdir()
+    _ = kept.write_text("an earlier attempt\n")
+    runner = runners.make()
+    _ = runner.request("note", _Text(text="before keep_log"))
+
+    runner.keep_log(kept)
+    runner.keep_log(kept)
+
+    text = kept.read_text()
+    assert text.startswith("an earlier attempt\n")
+    assert text.count("before keep_log") == 1
+    _ = runner.request("note", _Text(text="after keep_log"))
+    assert "after keep_log" not in kept.read_text()
+
+    _ = runner.close()
+
+    text = kept.read_text()
+    assert text.count("before keep_log") == 1
+    assert text.count("after keep_log") == 1
+    assert text.index("before keep_log") < text.index("after keep_log")
+    assert sorted(path.name for path in kept.parent.iterdir()) == ["runner.log"]
+    _ = runner.request("note", _Text(text="after close"))
+    _ = runner.close()
+    assert "after close" not in kept.read_text(), "close forgot the kept file"
 
 
 @pytest.mark.parametrize(
@@ -535,7 +526,7 @@ def test_close_kills_the_children_that_a_runner_started(
     _ = runner.close(grace=0.5)
 
     assert time.monotonic() - started < 5.0
-    (pid,) = runners.starts
+    (pid,) = runners.journal.starts()
     assert_process_exited(pid)
     assert_stopped_writing(ticks, "the runner's child went on writing after close()")
 
@@ -546,4 +537,26 @@ def test_a_second_close_does_nothing(runners: _Runners) -> None:
     assert "logged once" in runner.close()
 
     assert runner.close() == ""
-    assert len(runners.starts) == 1
+    assert len(runners.journal.starts()) == 1
+
+
+def test_the_runners_until_close_share_one_exchange_directory(
+    runners: _Runners, tmp_path: Path
+) -> None:
+    """A runner started after a crash finds the files that the first was given."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    runner = runners.make(scratch_dir=scratch)
+    exchange = runner.exchange_dir()
+    _ = (exchange / "track.npz").write_bytes(b"tracks")
+    with pytest.raises(_FakeExit):
+        _ = runner.request("crash")
+    assert runner.request("echo", _Text(text="again")) == {"text": "again"}
+
+    assert runner.exchange_dir() == exchange
+    assert exchange.parent == scratch
+    assert (exchange / "track.npz").read_bytes() == b"tracks"
+    _ = runner.close()
+
+    assert list(scratch.iterdir()) == []
+    assert runner.exchange_dir().is_dir(), "the first call after close creates one"

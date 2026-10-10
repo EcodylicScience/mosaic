@@ -59,8 +59,8 @@ reading a file you already have rather than an integration you opted into.
 
 ## Tools that run in their own environment
 
-Six of the tools mosaic drives are **not installed by mosaic**. Install each one
-yourself, then tell mosaic where it went, and mosaic launches it there.
+Seven of the tools mosaic drives are **not installed by mosaic**. Install each
+one yourself, then tell mosaic where it went, and mosaic launches it there.
 
 | Install it yourself | Used by | Tell mosaic where it is |
 | ------------------- | ------- | ----------------------- |
@@ -70,13 +70,22 @@ yourself, then tell mosaic where it went, and mosaic launches it there.
 | [**Ultralytics**](https://github.com/ultralytics/ultralytics) | `mosaic track ultralytics`, the `infer-pose` and `train-pose` ops | `MOSAIC_ULTRALYTICS_CONDA_ENV`, or `MOSAIC_ULTRALYTICS_BIN` for the environment's `yolo` script |
 | [**POLO**](https://github.com/mooch443/POLO) | the `infer-points` and `train-points` ops | `MOSAIC_POLO_CONDA_ENV`, or `MOSAIC_POLO_BIN` for the environment's `yolo` script |
 | [**keypoint-MoSeq**](https://keypoint-moseq.readthedocs.io) | the `kpms` feature | `MOSAIC_KPMS_CONDA_ENV`, or `MOSAIC_KPMS_PYTHON` for the environment's interpreter |
+| [**VAME**](https://github.com/EthoML/VAME) | the `vame` feature | `MOSAIC_VAME_CONDA_ENV`, or `MOSAIC_VAME_PYTHON` for the environment's interpreter |
 
 A `_CONDA_ENV` variable names a conda environment, which mosaic activates with `conda
 run`. A `_BIN` or `_PYTHON` variable names a path directly. With neither set, mosaic
 looks on `$PATH`. For keypoint-MoSeq it looks in the environment built under
-`src/mosaic/behavior/feature_library/external` instead. A tool's location does not
-enter a `run_id`. Two machines that place a tool differently therefore agree on what
-a run is called.
+`src/mosaic/behavior/feature_library/external` instead, and for VAME under
+`.../external/vame-env`. A tool's location does not enter a `run_id`. Two machines
+that place a tool differently therefore agree on what a run is called.
+
+Mosaic looks for a conda environment in each directory that `CONDA_ENVS_DIRS` lists,
+then in the `envs` directory of the conda installation, then in `~/.conda/envs`. Only
+the name `base` names the installation itself. An environment kept elsewhere, such as in
+an `envs_dirs` directory of `.condarc`, needs its directory in `CONDA_ENVS_DIRS`, or the
+tool's `_BIN` or `_PYTHON` variable instead. Otherwise keypoint-MoSeq and VAME refuse
+the environment, and any other tool runs by its bare name, which `conda run` resolves on
+`$PATH`.
 
 ### Video codecs each tool reads
 
@@ -231,7 +240,7 @@ uv sync --python 3.13
 export MOSAIC_KPMS_LICENSE_ACCEPTED=1
 ```
 
-Built here, mosaic finds the interpreter on its own. Built anywhere else, name it:
+Built here, mosaic finds the interpreter by itself. Built anywhere else, name it:
 `export MOSAIC_KPMS_PYTHON=/path/to/env/bin/python`, or, for a conda environment,
 `export MOSAIC_KPMS_CONDA_ENV=kpms`.
 
@@ -240,6 +249,34 @@ exactly `1`. Harvard OTD licenses keypoint-MoSeq for non-commercial research and
 academic use only, and setting the variable asserts that your use is permitted;
 [`external/README.md`](https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/behavior/feature_library/external/README.md)
 has the terms in full.
+
+### VAME
+
+Built the same way, in a separate directory:
+
+```bash
+cd src/mosaic/behavior/feature_library/external/vame-env
+uv sync --python 3.12
+```
+
+Built here, mosaic finds the interpreter by itself. Built anywhere else, name it:
+`export MOSAIC_VAME_PYTHON=/path/to/env/bin/python`, or, for a conda environment,
+`export MOSAIC_VAME_CONDA_ENV=vame`. On a GPU older than Turing, such as a GTX
+1080 Ti, reinstall torch from the cu126 index as the
+[environment's README](https://github.com/EcodylicScience/mosaic/blob/main/src/mosaic/behavior/feature_library/external/vame-env/README.md#older-gpus-need-torch-from-another-index)
+describes, or run on the CPU.
+
+VAME is licensed GPL-3.0, which does not restrict running it. Whoever conveys a
+built environment conveys VAME's source under the GPL. The environment's README
+and NOTICE describe the obligation.
+
+`vame`'s `device` parameter chooses `cpu`, `cuda` or `mps` directly, or `auto`,
+which tries CUDA, then MPS, then the CPU. It does not enter the run
+identifier. One recipe runs under one name on a laptop and on a GPU server.
+The device changes the trained model. CPU and MPS fits differ materially from
+each other and from a GPU fit. Only training on the CPU is bit-reproducible.
+Two CPU fits of one recipe give identical models. The model bundle and the run
+log record the device that ran.
 
 ### FERAL
 
@@ -260,12 +297,13 @@ native-Windows build and need **WSL2**:
 | Capability                                                        | Native Windows          | WSL2 / Linux | macOS |
 | ----------------------------------------------------------------- | ----------------------- | ------------ | ----- |
 | Core analysis (indexing, tracks, features, clustering, ARHMM, XGBoost, visualization) | Yes | Yes | Yes |
-| keypoint-MoSeq (`kpms`) -- JAX                                    | No                      | Yes          | Yes   |
+| keypoint-MoSeq (`kpms`)                                           | Untested                | Yes          | Yes   |
+| VAME (`vame`)                                                     | Untested, CPU only from PyPI | Yes     | Apple silicon, macOS 14+ |
 | FERAL (`feral`) -- `decord`                                       | No                      | Yes          | Yes   |
 | GPU kNN (`faiss`, `faiss-gpu`)                                    | No (`faiss-cpu` works)  | Yes          | n/a   |
 | imgstore recordings (reading is native)                           | Partial                 | Yes          | Yes   |
 | TRex tracking and pose-model training                             | Partial                 | Yes          | Yes   |
 
-For any **No** or **Partial** capability, install **WSL2** (`wsl --install` in an
-admin PowerShell) and follow the Linux setup above inside Ubuntu. Under WSL, keep the
-repository and your datasets under home (`~/`) rather than `/mnt/c`.
+For any **No**, **Partial** or **Untested** capability, install **WSL2** (`wsl --install`
+in an admin PowerShell) and follow the Linux setup above inside Ubuntu. Under WSL, keep
+the repository and your datasets under home (`~/`) rather than `/mnt/c`.

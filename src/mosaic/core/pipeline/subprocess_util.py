@@ -6,12 +6,14 @@ Two shapes spawn a child with :func:`supervised_popen_kwargs`:
 * :class:`LineChild` keeps a child running and exchanges lines with it on its
   standard input and output.
 
-Either way the child leads a new process group, and :func:`terminate_group`
+On POSIX the child leads a new process group, and :func:`terminate_group`
 signals the whole group. TREx relaunches itself, and a signal to the direct
-child alone leaves the relaunched process running. On Linux a child receives
-SIGTERM when the thread that spawned it exits, and so when its parent process
-dies (``PR_SET_PDEATHSIG``). Output is read on threads. The caller polls a
-cancel predicate while the child runs, and a full pipe cannot block the child.
+child alone leaves the relaunched process running. On Windows the direct child
+alone is signaled, and a runner ends when its standard input closes. On Linux
+a child receives SIGTERM when the thread that spawned it exits, and so when its
+parent process dies (``PR_SET_PDEATHSIG``). Output is read on threads. The
+caller polls a cancel predicate while the child runs, and a full pipe cannot
+block the child.
 """
 
 from __future__ import annotations
@@ -203,12 +205,13 @@ class SupervisedPopenKwargs(TypedDict):
 def supervised_popen_kwargs() -> SupervisedPopenKwargs:
     """Return the :class:`subprocess.Popen` keywords of a supervised child.
 
-    The child leads a new session and a new process group, which
-    :func:`terminate_group` signals as a whole. On Linux the child also receives
-    SIGTERM when the thread that spawned it exits (:func:`set_pdeathsig`). Its
-    pipes are text, decoded as UTF-8 with each invalid byte replaced. A reader
-    thread then reads a stream to its end despite invalid UTF-8 in it, which a
-    tool's decoder library can print.
+    On POSIX the child leads a new session and a new process group, which
+    :func:`terminate_group` signals as a whole. On Windows the direct child alone
+    is signaled, and a runner ends when its standard input closes. On Linux the
+    child also receives SIGTERM when the thread that spawned it exits
+    (:func:`set_pdeathsig`). Its pipes are text, decoded as UTF-8 with each
+    invalid byte replaced. A reader thread then reads a stream to its end despite
+    invalid UTF-8 in it, which a tool's decoder library can print.
     """
     return SupervisedPopenKwargs(
         start_new_session=sys.platform != "win32",

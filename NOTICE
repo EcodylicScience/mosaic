@@ -180,6 +180,31 @@ keypoint-MoSeq
                to pose dynamics. Nature Methods 21:1329-1339.
                https://doi.org/10.1038/s41592-024-02318-2
 
+VAME
+  Origin:      https://github.com/EthoML/VAME, the maintained fork of
+               the original LINCellularNeuroscience/VAME
+  Authors:     Kevin Luxem and Pavol Bauer, original developers; now
+               maintained by EthoML
+  License:     GPL-3.0. The project ships the GPL v3 text and states
+               "License: GPLv3", with no "or later" grant.
+  Driven by:   the vame feature, which starts the interpreter of an
+               environment the user builds at
+               src/mosaic/behavior/feature_library/external/vame-env/ and
+               exchanges newline-delimited JSON with it over its standard
+               input and output. Mosaic does not import the package, and
+               its extras, dependency groups and uv.lock do not name it.
+  Obligation:  none on running it. The GPL does not restrict use.
+               Mosaic's runner, licensed AGPL-3.0-or-later like the rest
+               of mosaic, runs in VAME's process, a combination that
+               section 13 of both licenses permits. Whoever conveys a
+               built environment conveys VAME under GPL-3.0, with its
+               source.
+  Citation:    Luxem, K., Mocellin, P., Fuhrmann, F., Kuersch, J.,
+               Miller, S. R., Palop, J. J., Remy, S., Bauer, P. (2022).
+               Identifying behavioral structure from deep variational
+               embeddings of animal motion. Communications Biology
+               5:1267. https://doi.org/10.1038/s42003-022-04080-7
+
 Ultralytics YOLO
   Origin:      https://github.com/ultralytics/ultralytics
   Copyright:   (C) Ultralytics
@@ -463,7 +488,7 @@ group, the transitive closure with each distribution's license resolved
 from PyPI metadata and flagged when it is not permissive. It reads license
 metadata only, so it does not see libraries bundled inside a wheel -- the
 FFmpeg builds in av and opencv-python, or the CUDA runtime in xgboost --
-which are described above instead. By default it reads mosaic's own lock
-and the isolated keypoint-MoSeq lock. Pass --lock for the Ultralytics and
-POLO environment locks, which carry the AGPL-licensed distributions and
-are not read by default.
+which are described above instead. By default it reads mosaic's lock,
+the isolated keypoint-MoSeq lock and the isolated VAME lock. Pass --lock
+for the Ultralytics and POLO environment locks, which list the
+AGPL-licensed distributions and are not read by default.

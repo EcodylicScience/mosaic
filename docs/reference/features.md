@@ -3,7 +3,7 @@
 
 # Features
 
-45 features are registered. Each one runs as
+46 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -124,10 +124,10 @@ Per-(frame, id) local order parameters (Tunstrom et al. 2013, Fig 7B/D).
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"body-scale"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
 
 ### `movement-filter-interpolate`
 
@@ -219,10 +219,10 @@ Orientation-aware relative features between animal pairs, order-agnostic to pose
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"body-scale"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
 
 ### `pair-egocentric`
 
@@ -235,8 +235,8 @@ Egocentric and kinematic features of every pair, from pose keypoints.
 | `interpolation` | `InterpolationConfig` | _constructed_ |  | Interpolation settings for missing pose data. |
 | `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate and smoothing settings. |
 | `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
-| `neck_idx` | `integer` | `3` |  | Index of the neck keypoint in the pose array. Paired with tail_base_idx to compute heading. The direction runs from the tail-base to the neck, the direction the animal faces. When pose.pose_indices is set, this index must be one of the selected indices. |
-| `tail_base_idx` | `integer` | `6` |  | Index of the tail-base keypoint in the pose array. Paired with neck_idx to compute heading. The direction runs from the tail-base to the neck, the direction the animal faces. When pose.pose_indices is set, this index must be one of the selected indices. |
+| `neck_idx` | `integer` | `3` |  | Index of the neck keypoint in the pose array. Paired with tail_base_idx to compute heading. The direction runs from the tail-base to the neck, the direction the animal faces. It must name a selected keypoint, one listed in pose.pose_indices when that is set and one from 0 to pose.pose_n - 1 otherwise. |
+| `tail_base_idx` | `integer` | `6` |  | Index of the tail-base keypoint in the pose array. Paired with neck_idx to compute heading. The direction runs from the tail-base to the neck, the direction the animal faces. It must name a selected keypoint, one listed in pose.pose_indices when that is set and one from 0 to pose.pose_n - 1 otherwise. |
 | `center_mode` | `string` | `"mean"` |  | How the animal's center point is computed from its pose keypoints. Every accepted value averages all keypoints. Selecting a single keypoint by index needs an integer, which this field does not accept. **Unwired:** every accepted value averages all keypoints -- the per-keypoint branch needs an int this field refuses. |
 
 ??? note "`InterpolationConfig`"
@@ -256,7 +256,7 @@ Egocentric and kinematic features of every pair, from pose keypoints.
     | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
     | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
     | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates its own (kp0, kp1, ...). |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates them (kp0, kp1, ...). |
 
 ??? note "`SamplingConfig`"
 
@@ -335,7 +335,7 @@ Principal components of the pose distances between every pair, per frame.
     | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
     | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
     | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates its own (kp0, kp1, ...). |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates them (kp0, kp1, ...). |
 
 ### `pair-position`
 
@@ -437,10 +437,10 @@ Build temporal context windows over per-sequence feature data.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"nearest-neighbor"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
 
 ### `track-subsample`
 
@@ -466,7 +466,7 @@ Subsample tracks rows for downstream per-row features.
     | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
     | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
     | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates its own (kp0, kp1, ...). |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates them (kp0, kp1, ...). |
 
 ### `trajectory-smooth`
 
@@ -602,10 +602,10 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"arhmm"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"arhmm_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -695,10 +695,10 @@ Subsample per-sequence data into a representative template matrix.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"nearest-neighbor"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
 
 ??? note "`PoolConfig`"
 
@@ -791,10 +791,10 @@ Train a DINOv2 + temporal identity model from individual sequences.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"global-identity-dinov2-temporal"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"dinov2_temporal_identity_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -830,10 +830,10 @@ Train an identity model from frozen backbone embeddings + k-NN.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"global-identity-embedding"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"identity_embedding_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -873,10 +873,10 @@ Train a visual identity model from individual animal sequences.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"global-identity-model"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"identity_classifier_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -918,10 +918,10 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"global-kmeans"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -931,10 +931,10 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"nearest-neighbor"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
 
 ??? note "`ParquetLoadSpec`"
 
@@ -953,10 +953,10 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `""` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"templates.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -995,10 +995,10 @@ Fit a StandardScaler on templates and scale per-sequence data.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"global-scaler"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"scaler.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -1008,10 +1008,10 @@ Fit a StandardScaler on templates and scale per-sequence data.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `""` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"templates.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -1078,10 +1078,10 @@ Fit an openTSNE embedding on templates and map per-sequence data.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"global-tsne"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"embedding.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -1091,10 +1091,10 @@ Fit an openTSNE embedding on templates and map per-sequence data.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `""` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"templates.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -1125,10 +1125,10 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"nearest-neighbor"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
 
 ??? note "`ParquetLoadSpec`"
 
@@ -1147,10 +1147,10 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `""` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"templates.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -1160,10 +1160,10 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"global-ward"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -1171,7 +1171,7 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
 
 Version `0.1` &middot; `mosaic.behavior.feature_library.kpms.KpmsFeature`
 
-Unified keypoint-MoSeq feature: fit + apply in a runner process.
+Fits keypoint-MoSeq to keypoint tracks and applies it, in a runner process.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -1209,10 +1209,10 @@ Unified keypoint-MoSeq feature: fit + apply in a runner process.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"kpms"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"kpms_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -1225,7 +1225,7 @@ Unified keypoint-MoSeq feature: fit + apply in a runner process.
     | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
     | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
     | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates its own (kp0, kp1, ...). |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates them (kp0, kp1, ...). |
 
 ### `lightning-action`
 
@@ -1268,10 +1268,10 @@ Supervised temporal action segmentation via lightning-action.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `""` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"templates.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -1281,10 +1281,10 @@ Supervised temporal action segmentation via lightning-action.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"lightning-action"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"lightning_action_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -1298,6 +1298,93 @@ Supervised temporal action segmentation via lightning-action.
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
     | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+
+### `vame`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.vame_feature.VameFeature`
+
+Fits VAME to keypoint tracks, and embeds each frame in its latent space.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `model` | `VameModelArtifact` \| `None` | `null` |  | A fitted VAME model to apply. Unset, the feature fits a new model. With a model set, the settings that build and preprocess the sessions must equal the model's. |
+| `vame_python` | `string` \| `None` | `null` |  | Path to a Python interpreter with VAME installed. Unset, resolution reads MOSAIC_VAME_CONDA_ENV, then MOSAIC_VAME_PYTHON, then the in-repository environment under feature_library/external/vame-env/.venv. |
+| `device` | `"auto"` \| `"cpu"` \| `"cuda"` \| `"mps"` | `"auto"` |  | Where VAME trains and embeds. The value auto selects CUDA, then MPS, then the CPU, as VAME does. The run identifier leaves the device out. One recipe therefore runs under one name on any machine. Training on different devices gives different models, and only training on the CPU is bit-reproducible. The model bundle and the run log record the device that ran. |
+| `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
+| `centered_reference_keypoint` | `integer` \| `string` | _required_ |  | The keypoint that egocentric alignment moves to the origin of each frame, as a keypoint index or a keypoint name. It must be one of the selected keypoints. |
+| `orientation_reference_keypoint` | `integer` \| `string` | _required_ |  | The keypoint whose direction from the centered reference keypoint egocentric alignment rotates onto a fixed axis, as a keypoint index or a keypoint name. It must be one of the selected keypoints, and a keypoint other than the centered one. |
+| `run_lowconf_cleaning` | `boolean` | `true` |  | Replace each point whose confidence is below pose_confidence by linear interpolation along its series. Off, every frame with a missing point ends its session, and max_gap_frames must be 0. |
+| `pose_confidence` | `number` | `0.99` |  | The confidence below which low-confidence cleaning replaces a point. Confidence is read from the confidence columns when every selected keypoint has one, and is otherwise 1 for every finite point. |
+| `run_outlier_cleaning` | `boolean` | `true` |  | Replace each point whose absolute z-score exceeds iqr_factor times the interquartile range of its series' z-scores, by linear interpolation. |
+| `iqr_factor` | `integer` | `4` |  | The multiple of the interquartile range beyond which outlier cleaning replaces a point. |
+| `run_savgol_filtering` | `boolean` | `true` |  | Smooth each coordinate series with a Savitzky-Golay filter. |
+| `savgol_length` | `integer` | `5` |  | The Savitzky-Golay filter's window. It is odd, longer than savgol_order, and at most time_window. [frames] |
+| `savgol_order` | `integer` | `2` | >= `0` | The order of the Savitzky-Golay filter's polynomial. |
+| `run_rescaling` | `boolean` | `false` |  | Divide each session's positions by the session's median distance between the two reference keypoints, after the other preprocessing. A session is a run of an individual's frames that no gap longer than max_gap_frames splits. |
+| `max_gap_frames` | `integer` | `30` | >= `0` | The longest gap inside a session that low-confidence cleaning fills by interpolation. It must be 0 without run_lowconf_cleaning. A gap is a run in which either reference keypoint lacks a finite point at or above pose_confidence. A longer gap splits the individual into separate sessions, and a gap at its start or end is trimmed. The rows of these gaps do not receive a latent, and their count is reported. The missing points of the other keypoints are interpolated however long they run. A session is excluded when one of them lacks such a point at every frame. [frames] |
+| `test_fraction` | `number` | `0.1` | > `0`, < `1` | The fraction of the training data that VAME sets aside to compute the test loss. Training saves the model of the epoch with the lowest test reconstruction loss, among the epochs with a KL weight above 0.99. |
+| `split_mode` | `"mode_1"` \| `"mode_2"` | `"mode_2"` |  | How VAME chooses the test data. mode_1 takes the first test_fraction of the concatenated sessions, and mode_2 a random contiguous chunk of that fraction from each session. |
+| `random_state` | `integer` | `42` |  | Seeds every random number generator that training draws from. |
+| `zdims` | `integer` | `30` | >= `1` | The dimensions of the latent space. Each dimension is one output column, vame_z0 to vame_z{zdims-1}. |
+| `time_window` | `integer` | `30` | >= `1` | The window that the encoder reads to produce one latent. Each latent is written on the row at the center of its window. [frames] |
+| `max_epochs` | `integer` | `500` |  | VAME trains from epoch 1 to epoch max_epochs - 1, unless model_convergence stops it first. VAME saves a model only from the first epoch whose KL weight exceeds 0.99. A max_epochs that ends training earlier is refused. [epochs] |
+| `model_convergence` | `integer` | `50` |  | How long VAME may train in a row without saving a model. It stops training at the next epoch without a save. Every epoch before the first one whose KL weight exceeds 0.99 is one without a save. A model_convergence that stops training earlier is refused. [epochs] |
+| `batch_size` | `integer` | `256` | >= `4` | The windows of one training batch. A test batch contains a quarter of them. |
+| `beta` | `number` | `1.0` |  | The factor on the KL loss, which the annealed KL weight scales. |
+| `learning_rate` | `number` | `0.0005` |  | The learning rate of the Adam optimizer. |
+| `prediction_decoder` | `boolean` | `true` |  | Train a second decoder that predicts the frames after each window. The first decoder reconstructs the window. |
+| `prediction_steps` | `integer` | `15` | >= `1` | How far past each window the prediction decoder predicts. It is at most time_window. [frames] |
+| `noise` | `boolean` | `false` |  | Add Gaussian noise to the training input, scaled by each input series' standard deviation in the window. |
+| `scheduler` | `boolean` | `true` |  | Multiply the learning rate by scheduler_gamma when the loss of each epoch's last training batch has not fallen a relative 1e-3 below its lowest value for more than scheduler_step_size epochs. Off, the learning rate stays constant. |
+| `scheduler_step_size` | `integer` | `100` |  | How long the loss of each epoch's last training batch may go without improving. The scheduler lowers the learning rate at the next epoch without an improvement. [epochs] |
+| `scheduler_gamma` | `number` | `0.2` |  | The factor by which the scheduler multiplies the learning rate. |
+| `softplus` | `boolean` | `false` |  | Pass the encoder's log-variance through a softplus activation. |
+| `steps_per_epoch` | `integer` \| `None` | `null` |  | The batches of one training epoch, at least 1. Unset, an epoch draws one window per training frame. |
+| `hidden_size_layer_1` | `integer` | `256` |  | The hidden units of each of the encoder's two recurrent layers. |
+| `dropout_encoder` | `number` | `0.0` |  | The dropout probability between the encoder's two recurrent layers. |
+| `hidden_size_rec` | `integer` | `256` |  | The hidden units of the reconstruction decoder's recurrent layer. |
+| `hidden_size_pred` | `integer` | `256` |  | The hidden units of the prediction decoder's recurrent layer. |
+| `mse_reconstruction_reduction` | `"sum"` \| `"mean"` | `"sum"` |  | How the reconstruction loss reduces over a batch: sum or mean. |
+| `mse_prediction_reduction` | `"sum"` \| `"mean"` | `"sum"` |  | How the prediction loss reduces over a batch: sum or mean. |
+| `kmeans_loss` | `integer` | `30` |  | The cluster loss sums the square roots of this many of the largest singular values of the latent Gram matrix. |
+| `kmeans_lambda` | `number` | `0.1` |  | The weight of the cluster loss. |
+| `anneal_function` | `"linear"` \| `"sigmoid"` | `"linear"` |  | The schedule on which the KL weight rises after kl_start: linear or sigmoid. |
+| `kl_start` | `integer` | `2` | >= `0` | The last epoch at which the KL weight is 0. [epochs] |
+| `annealtime` | `integer` | `4` | >= `1` | How the KL weight rises after kl_start. The linear schedule raises the weight to 1 at epoch kl_start + annealtime, and the sigmoid schedule is centered on epoch annealtime. [epochs] |
+| `embed_batch_size` | `integer` | `64` | >= `1` | How many windows VAME encodes at once when it applies a model. It changes latents only at float32 rounding, about 1e-6. |
+| `embed_chunk_frames` | `integer` | `50000` | >= `1` | The longest stretch of a session that one embedding call reads. A longer session is embedded in chunks that overlap by time_window - 1. Chunking changes latents only at float32 rounding. Lower it when embedding runs out of memory. It is at least time_window. [frames] |
+| `scratch_dir` | `string` \| `None` | `null` |  | The directory in which the feature creates its exchange directory for the runner's files. Unset, the system's temporary directory. |
+
+??? note "`JoblibLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
+
+??? note "`PoseConfig`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `pose_n` | `integer` | `7` |  | Total number of pose keypoints per individual, before any subset selection by pose_indices. |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  | Zero-based keypoint indices to use, as positions into the full keypoint set. Unset uses every keypoint counted by pose_n. |
+    | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
+    | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
+    | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates them (kp0, kp1, ...). |
+
+??? note "`VameModelArtifact`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"vame"` |  | Feature name whose output to consume. |
+    | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
+    | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
+    | `pattern` | `string` | `"vame_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
 ### `xgboost`
 
@@ -1335,10 +1422,10 @@ XGBoost behavior classifier as a pipeline feature.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `""` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"templates.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -1359,10 +1446,10 @@ XGBoost behavior classifier as a pipeline feature.
     | --- | --- | --- | --- | --- |
     | `feature` | `string` | `"xgboost"` |  | Feature name whose output to consume. |
     | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
-    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result (attempt identity, not content identity). |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
     | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
-    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run carried on. Empty for a clean run; non-empty means a partial one, and the producing run's outputs are missing exactly these entities. |
-    | `entries_written` | `integer` | `0` |  | How many entries the producing run left holding a valid output row, cache hits included -- so a resumed run and a fresh one report the same number over the same scope. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"xgboost_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
@@ -1409,7 +1496,7 @@ Generate egocentric (animal-centered) video crops.
     | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
     | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
     | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates its own (kp0, kp1, ...). |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates them (kp0, kp1, ...). |
 
 ### `interaction-crop-pipeline`
 
@@ -1449,7 +1536,7 @@ Generate egocentric crop videos for detected interaction segments.
     | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
     | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
     | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
-    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates its own (kp0, kp1, ...). |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates them (kp0, kp1, ...). |
 
 ### `overlay`
 

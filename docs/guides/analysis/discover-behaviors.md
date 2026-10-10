@@ -99,6 +99,100 @@ non-commercial research and academic use only — see
 [installation](../../installation.md#keypoint-moseq). `arhmm` is mosaic's own
 implementation and carries no such restriction.
 
+## Embed with VAME
+
+`vame` also fits directly on keypoints, training a recurrent variational
+autoencoder on windows of egocentrically aligned motion and embedding each
+window in a continuous latent space, at the window's center frame. It runs in
+an environment you build. See [installation](../../installation.md#vame).
+
+Fit on some sequences, then apply the fitted model to others with `model` set,
+the same pattern `kpms` uses:
+
+```python
+from mosaic.behavior.feature_library import VameFeature
+from mosaic.core.scope import Scope
+
+pose_settings = {
+    "pose": {
+        "pose_n": 5,
+        "keypoint_names": ["snout", "left_ear", "right_ear", "center", "tail_base"],
+    },
+    "centered_reference_keypoint": "center",
+    "orientation_reference_keypoint": "snout",
+}
+
+fitted = ds.run_feature(
+    VameFeature(VameFeature.Inputs(("tracks",)), params=pose_settings),
+    scope=Scope(entries=fit_entries),
+)
+applied = ds.run_feature(
+    VameFeature(
+        VameFeature.Inputs(("tracks",)),
+        params={
+            **pose_settings,
+            "model": VameFeature.VameModelArtifact().from_result(fitted),
+        },
+    ),
+    scope=Scope(entries=other_entries),
+)
+```
+
+Apply refuses a run whose pose, reference keypoint, session (`time_window`,
+`max_gap_frames`) or preprocessing settings differ from the model's.
+
+Cluster the latents the same way as the embedding above:
+
+```python
+from mosaic.behavior.feature_library import ExtractTemplates, GlobalKMeansClustering
+
+templates = ds.run_feature(ExtractTemplates(
+    Inputs((fitted,)), params={"n_templates": 2000},
+))
+clusters_result = ds.run_feature(GlobalKMeansClustering(
+    Inputs((fitted,)),
+    params={
+        "templates": ExtractTemplates.TemplatesArtifact().from_result(templates),
+        "k": 20,
+    },
+))
+other_clusters_result = ds.run_feature(GlobalKMeansClustering(
+    Inputs((applied,)),
+    params={
+        "model": GlobalKMeansClustering.ModelArtifact().from_result(clusters_result),
+    },
+))
+```
+
+The second call applies the first call's model, placing `other_entries` in the
+fit's cluster space instead of fitting a new one.
+
+Fitting concatenates the chunks of the training set before it samples training
+windows. A chunk is a session, or under the default `split_mode`, `mode_2`, one
+of the two parts of a session around its test chunk. Some windows straddle a
+join between two chunks. The fit report's `straddling_fraction` is the fraction
+of training windows that straddle a join. A session too short to train or embed
+on, or lacking a usable keypoint, is excluded instead and named in the same
+report. The report is part of the
+model bundle (`vame_model.joblib`), and each exclusion is also reported as a
+run-log phase.
+
+Render the motifs on the video with `overlay`:
+
+```python
+from mosaic.behavior.visualization_library import Overlay
+
+ds.run_feature(Overlay(
+    Inputs((clusters_result,)),
+    params={"color_by": clusters_result.feature, "hide_unlabeled": True},
+))
+```
+
+`color_by` names an input result by its feature storage name, which
+`clusters_result.feature` contains, and colors each individual by its cluster.
+Without `hide_unlabeled`, an individual with no cluster label at a frame draws
+in its fallback identity color instead of being skipped.
+
 ## Score the result
 
 When you do have annotations, `compute_cluster_label_agreement` scores clusters against

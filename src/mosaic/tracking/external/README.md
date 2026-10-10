@@ -37,9 +37,11 @@ AGPL-licensed dependency. Training was the last path to move, and the hardest,
 because a cancelled run had to keep stopping the way it always had -- see
 "Cancelling a training run" below.
 
-The same reasoning puts keypoint-MoSeq in
-[`src/mosaic/behavior/feature_library/external/`](../../behavior/feature_library/external/README.md);
-[NOTICE](../../../../NOTICE) records both, and the other third-party terms.
+The same reasoning puts keypoint-MoSeq's environment in
+[`src/mosaic/behavior/feature_library/external/`](../../behavior/feature_library/external/README.md)
+and VAME's in
+[`src/mosaic/behavior/feature_library/external/vame-env/`](../../behavior/feature_library/external/vame-env/README.md).
+[NOTICE](../../../../NOTICE) records all three, and the other third-party terms.
 
 **Building the environment installs Ultralytics from its own publisher under its
 own terms.** Mosaic asks for none of them on your behalf: you are the licensee,

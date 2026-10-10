@@ -1,7 +1,9 @@
 """:mod:`mosaic.core.entry`, :mod:`mosaic.core.params` and
 :mod:`mosaic.core.strict_model` declare the vocabulary a mosaic model declares
 its fields with, and each stays importable without dragging in the rest of the
-package.
+package. :mod:`mosaic.core.individuals` splits a tracks table into its
+individuals for both ``core.pipeline`` and the feature library, and imports
+neither.
 
 The checks below read each file's own ast rather than measuring an import at
 run time, because an ast walk covers the full tree and so catches an import
@@ -24,13 +26,14 @@ from types import ModuleType
 import pytest
 
 import mosaic.core.entry as entry_module
+import mosaic.core.individuals as individuals_module
 import mosaic.core.params as params_module
 import mosaic.core.strict_model as strict_model_module
-from tests.helpers import source_tree
+from tests.helpers import imports_of, source_tree
 
-LEAF_MODULES = (entry_module, params_module, strict_model_module)
-"""The three modules the leaf rule covers, for the guard that reads all of
-them the same way."""
+LEAF_MODULES = (entry_module, individuals_module, params_module, strict_model_module)
+"""The modules the leaf rule covers, for the guard that reads all of them the
+same way."""
 
 
 def _mosaic_imports(path: Path) -> set[str]:
@@ -41,23 +44,11 @@ def _mosaic_imports(path: Path) -> set[str]:
     import counts too, spelled with its dot count, since a module living
     inside the mosaic package reaches back into it at any level.
     """
-    tree = source_tree(path)
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            found.update(
-                alias.name
-                for alias in node.names
-                if alias.name == "mosaic" or alias.name.startswith("mosaic.")
-            )
-        elif isinstance(node, ast.ImportFrom):
-            if node.level > 0:
-                found.add("." * node.level + (node.module or ""))
-            elif node.module and (
-                node.module == "mosaic" or node.module.startswith("mosaic.")
-            ):
-                found.add(node.module)
-    return found
+    return {
+        imported.module
+        for imported in imports_of(path, scope="anywhere", relative=True)
+        if imported.module.startswith(".") or imported.in_package("mosaic")
+    }
 
 
 def _dynamic_import_names(path: Path) -> set[str]:
@@ -66,7 +57,7 @@ def _dynamic_import_names(path: Path) -> set[str]:
     A bare name match over every identifier in the tree, not an import check.
     :func:`_mosaic_imports` reads ``ast.Import`` and ``ast.ImportFrom`` only.
     ``importlib.import_module("mosaic.core.dataset")`` inside a function is a
-    call to it, which that walk reports as no import at all. None of the three
+    call to it. That walk does not count a call as an import. None of these
     modules has a use for either name. The coarse match therefore costs nothing
     and covers every spelling: the module imported, the module imported from,
     the attribute reached and the builtin called.
@@ -99,6 +90,16 @@ def test_entry_has_no_mosaic_imports() -> None:
     assert _mosaic_imports(Path(entry_module.__file__)) == set()
 
 
+def test_individuals_has_no_mosaic_imports() -> None:
+    """``core.individuals`` imports only modules outside mosaic.
+
+    ``core.pipeline.resample_tracks`` and the features both import it. An
+    import of ``COLUMNS`` from ``core.pipeline.types`` puts the pipeline package on
+    the import path of a module that the pipeline imports.
+    """
+    assert _mosaic_imports(Path(individuals_module.__file__)) == set()
+
+
 def test_strict_model_has_no_mosaic_imports() -> None:
     """``StrictModel`` imports pydantic and the standard library only."""
     assert _mosaic_imports(Path(strict_model_module.__file__)) == set()
@@ -111,12 +112,12 @@ def test_params_imports_only_strict_model() -> None:
 
 @pytest.mark.parametrize("module", LEAF_MODULES, ids=lambda module: module.__name__)
 def test_no_leaf_defers_an_import_through_importlib(module: ModuleType) -> None:
-    """A dynamic import is the way past the three guards above.
+    """A dynamic import is the way past the guards above.
 
     ``importlib.import_module("mosaic.core.dataset")`` in a function body is a
     call rather than an import. The whole pipeline arrives behind it.
-    ``__import__`` does the same. Naming either in one of these three modules
-    fails here.
+    ``__import__`` does the same. Naming either in one of these modules fails
+    here.
     """
     named = _dynamic_import_names(Path(module.__file__ or ""))
     deferred = (

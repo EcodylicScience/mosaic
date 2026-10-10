@@ -20,6 +20,7 @@ import ast
 from pathlib import Path
 
 import mosaic
+from tests.helpers import inside_a_virtualenv
 
 SOURCE_ROOT = Path(mosaic.__file__).parent
 
@@ -88,9 +89,15 @@ def _reports(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
 
 
 def _unreported_totals() -> list[str]:
-    """Every function declaring a total that nothing then reports against."""
+    """Every function declaring a total that nothing then reports against.
+
+    An environment built for an external tool inside the package, such as VAME's,
+    contains third-party code, which the walk skips.
+    """
     offenders: list[str] = []
     for path in sorted(SOURCE_ROOT.rglob("*.py")):
+        if inside_a_virtualenv(path, SOURCE_ROOT):
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         # One hop is allowed, and only into this module's own functions: a job
         # may declare its total and hand the context to a helper that runs the

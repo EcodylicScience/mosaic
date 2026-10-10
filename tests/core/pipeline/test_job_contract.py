@@ -17,7 +17,12 @@ import pytest
 
 from mosaic.core.pipeline._utils import hash_params, new_execution_id
 from mosaic.core.pipeline.index import feature_index, feature_index_path
-from mosaic.core.pipeline.job import CancelToken, Cancelled, job_context
+from mosaic.core.pipeline.job import (
+    CancelToken,
+    Cancelled,
+    cancel_check,
+    job_context,
+)
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.run_log import (
@@ -220,6 +225,17 @@ def test_inert_token_does_not_cancel(tmp_path: Path):
     # default token never fires
     result = run_feature(ds, _Stateless())
     assert read_run(_run_dir(ds), result.execution_id)["status"] == "finished"
+
+
+def test_a_cancel_check_asks_the_token() -> None:
+    token = CancelToken()
+    check = cancel_check(token)
+
+    assert check is not None
+    assert check() is False
+    token.cancel()
+    assert check() is True
+    assert cancel_check(None) is None
 
 
 # --- failure ---------------------------------------------------------------

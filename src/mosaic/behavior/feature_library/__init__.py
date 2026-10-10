@@ -80,6 +80,7 @@ from . import (
     temporal_stacking,
     track_subsample,
     trajectory_smooth,
+    vame_feature,
     xgboost_feature,
 )
 from .arhmm import ArHmmFeature
@@ -121,6 +122,7 @@ from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
 from .track_subsample import TrackSubsample
 from .trajectory_smooth import TrajectorySmooth
+from .vame_feature import VameFeature
 from .xgboost_feature import XgboostFeature
 
 # Imported unconditionally, like every module above. None of the three imports
@@ -201,6 +203,7 @@ __all__ = [
     "TemporalStackingFeature",
     "TrackSubsample",
     "TrajectorySmooth",
+    "VameFeature",
     "XgboostFeature",
     # Optional, present only when their extra is installed. Named here anyway,
     # matching how the feral and lightning-action entries below are already
@@ -252,5 +255,6 @@ __all__ = [
     "temporal_stacking",
     "track_subsample",
     "trajectory_smooth",
+    "vame_feature",
     "xgboost_feature",
 ]

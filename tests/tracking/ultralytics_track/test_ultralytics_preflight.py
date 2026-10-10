@@ -4,8 +4,8 @@ Most of this file needs nothing installed: the tracker tables are mosaic's own
 declaration, and the refusals over them are decided from that declaration alone.
 The last section is the one that reaches outside, and it reaches into the
 *Ultralytics* environment rather than mosaic's own, because mosaic's own no
-longer holds Ultralytics -- that is the whole subject of
-``tests/meta/test_ultralytics_separation.py``.
+longer contains Ultralytics. ``tests/meta/test_external_tool_separation.py``
+checks that.
 
 **Why mosaic transcribes those tables at all.** Every detection-affecting setting
 is passed explicitly and enters the run identifier, so an upstream retune must
@@ -27,6 +27,7 @@ test that pinned the call is gone.
 from __future__ import annotations
 
 import tomllib
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 import pytest
@@ -51,24 +52,28 @@ from mosaic.tracking.ultralytics_track.tracker_defaults import (
     resolve_tracker_config,
 )
 
-from tests.helpers import SOURCE_ROOT
+from tests.helpers import ULTRALYTICS_TOOL, project_requirements
 
 # Selected by CI's `tracking` job with `-m tracker` rather than by a filename
 # list in the workflow, so a new file here is covered the day it lands.
 pytestmark = pytest.mark.tracker
 
-_EXTERNAL = SOURCE_ROOT / "tracking" / "external"
-ENVIRONMENT_DIRECTORIES: Final = ("ultralytics-env", "polo-env")
+ENVIRONMENT_DIRECTORIES: Final = [
+    pytest.param(
+        environment.source_directory,
+        id=PurePosixPath(environment.directory).name,
+    )
+    for environment in ULTRALYTICS_TOOL.environments
+]
 """Every environment that runs an Ultralytics-family library, by directory.
 
-Two, because POLO ships under the distribution name ``ultralytics`` and so cannot
-share one with upstream. Every claim below is made of both: they run the same
-program, so a declaration that landed in one and not the other is a difference
-nothing else would report.
+Every claim below is made of each. They run the same program, and a declaration
+present in one and absent from the other is a difference that only this file
+reports.
 """
 
-_REQUIREMENTS: Final = TypeAdapter(list[str])
-"""Reads a ``[project] dependencies`` array as the list of strings it is.
+_OVERRIDES: Final = TypeAdapter(list[str])
+"""Reads ``[tool.uv] override-dependencies`` as the list of strings it is.
 
 Validated rather than asserted so the shape is checked where it is read, and so
 nothing here has to narrow ``tomllib``'s untyped document by hand.
@@ -80,7 +85,7 @@ nothing here has to narrow ``tomllib``'s untyped document by hand.
 
 @pytest.mark.parametrize("directory", ENVIRONMENT_DIRECTORIES)
 def test_an_external_environment_declares_what_its_runner_needs(
-    directory: str,
+    directory: Path,
 ) -> None:
     """Every requirement whose absence is invisible until a run is under way.
 
@@ -101,9 +106,8 @@ def test_an_external_environment_declares_what_its_runner_needs(
     present the hazard is invisible, so reading the declaration is the only thing
     that can catch a removal.
     """
-    manifest = _EXTERNAL / directory / "pyproject.toml"
-    document = tomllib.loads(manifest.read_text())
-    declared = _REQUIREMENTS.validate_python(document["project"]["dependencies"])
+    manifest = directory / "pyproject.toml"
+    declared = project_requirements(manifest).dependencies
 
     assert any(spec.startswith("ultralytics") for spec in declared), (
         f"{manifest} declares no ultralytics; this test has lost its subject"
@@ -125,7 +129,7 @@ def test_an_external_environment_declares_what_its_runner_needs(
 
 @pytest.mark.parametrize("directory", ENVIRONMENT_DIRECTORIES)
 def test_an_external_environment_offers_augmentation_without_a_second_cv2(
-    directory: str,
+    directory: Path,
 ) -> None:
     """The albumentations opt-in follows the process that reads it, and costs no cv2.
 
@@ -135,15 +139,12 @@ def test_an_external_environment_offers_augmentation_without_a_second_cv2(
     requires the headless build and Ultralytics requires the GUI one, and pip and
     uv both install the pair without complaint.
     """
-    manifest = _EXTERNAL / directory / "pyproject.toml"
-    document = tomllib.loads(manifest.read_text())
-
-    extras = document["project"]["optional-dependencies"]
-    augment = _REQUIREMENTS.validate_python(extras["augment"])
+    manifest = directory / "pyproject.toml"
+    augment = project_requirements(manifest).extras["augment"]
     assert [spec.split(">")[0] for spec in augment] == ["albumentations"]
 
-    overrides = _REQUIREMENTS.validate_python(
-        document["tool"]["uv"]["override-dependencies"]
+    overrides = _OVERRIDES.validate_python(
+        tomllib.loads(manifest.read_text())["tool"]["uv"]["override-dependencies"]
     )
     assert any(
         spec.startswith("opencv-python ") and "never" in spec for spec in overrides
@@ -154,7 +155,7 @@ def test_an_external_environment_offers_augmentation_without_a_second_cv2(
 
 
 @pytest.mark.parametrize("directory", ENVIRONMENT_DIRECTORIES)
-def test_a_locked_external_environment_resolves_one_cv2(directory: str) -> None:
+def test_a_locked_external_environment_resolves_one_cv2(directory: Path) -> None:
     """The declaration above, confirmed against what the lock actually pins.
 
     A manifest says what was asked for; the lock says what a build gets, and it
@@ -162,14 +163,14 @@ def test_a_locked_external_environment_resolves_one_cv2(directory: str) -> None:
     unbuildable -- the override records it rather than removing it -- so this
     asserts the marker rather than the absence.
     """
-    lock = (_EXTERNAL / directory / "uv.lock").read_text()
+    lock = (directory / "uv.lock").read_text()
 
     assert 'name = "opencv-python-headless"' in lock, (
-        f"{directory}/uv.lock pins no headless OpenCV, so a synced environment "
-        "has no cv2 for ultralytics to import"
+        f"{directory.name}/uv.lock does not pin a headless OpenCV. A synced "
+        "environment then lacks the cv2 that ultralytics imports."
     )
     assert '{ name = "opencv-python", marker = "sys_platform == \'never\'" }' in lock, (
-        f"{directory}/uv.lock does not record the GUI OpenCV wheel as excluded, "
+        f"{directory.name}/uv.lock does not record the GUI OpenCV wheel as excluded, "
         "so a build can install it beside the headless one"
     )
 

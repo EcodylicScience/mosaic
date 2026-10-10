@@ -22,6 +22,7 @@ import numpy as np
 from pydantic import Field
 from sklearn.decomposition import PCA
 
+from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.column_contract import (
     Column,
     Payload,
@@ -46,7 +47,7 @@ from mosaic.core.params import (
 )
 
 from .arhmm_model import ARHMM, fit_numba, predict_numba
-from .helpers import feature_columns, iter_individuals
+from .helpers import feature_columns, label_individuals
 from .registry import register_feature
 
 if TYPE_CHECKING:
@@ -345,25 +346,12 @@ class ArHmmFeature:
         print(f"[arhmm] Fit complete: {n_states} active states.", file=sys.stderr)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        import pandas as pd
-
         if self._model is None or self._feature_columns is None:
             msg = "AR-HMM not fitted — call fit() or load_state() first."
             raise RuntimeError(msg)
 
         cols = self._feature_columns
-        results: list[pd.DataFrame] = []
-
-        for individual, rows in iter_individuals(df):
-            syllables = self._apply_one(rows, cols)
-            result = pd.DataFrame(
-                {"frame": rows["frame"].to_numpy(), "syllable": syllables}
-            )
-            if individual is not None:
-                result["id"] = individual
-            results.append(result)
-
-        return pd.concat(results, ignore_index=True)
+        return label_individuals(df, lambda _, rows: self._apply_one(rows, cols))
 
     def save_state(self, run_root: Path) -> None:
         if self._model is None or self._feature_columns is None:

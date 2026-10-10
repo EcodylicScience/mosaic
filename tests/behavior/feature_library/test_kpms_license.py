@@ -2,19 +2,19 @@
 
 Covers :func:`~mosaic.behavior.feature_library.kpms.check_license_accepted`,
 :data:`~mosaic.behavior.feature_library.kpms.KPMS_ENV`, and the order in which
-``KpmsFeature`` applies them. It also covers ``KpmsLicense`` and
-``KpmsEnvironment``, the prerequisites of the pipeline catalog, which give the
-same answers. None of this needs the external environment, so these run in the
-default (non-slow) suite -- unlike ``test_kpms_integration.py``, which needs a
-real keypoint-moseq install.
+``KpmsFeature`` applies them. It also covers ``KpmsLicense``, the pipeline
+catalog's prerequisite, which gives the same answer.
+``tests/behavior/feature_library/test_feature_prerequisites.py`` covers kpms's
+``RunnerInterpreter`` with the other interpreter prerequisites. These tests do not
+need the external environment and run in the default (non-slow) suite.
+``test_kpms_integration.py`` needs a keypoint-moseq install.
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.kpms import (
@@ -22,7 +22,6 @@ from mosaic.behavior.feature_library.kpms import (
     KPMS_ENV,
     KPMS_LICENSE_ENV,
     KPMS_PYTHON_ENV,
-    KpmsEnvironment,
     KpmsFeature,
     KpmsLicense,
     KpmsNotFoundError,
@@ -30,31 +29,31 @@ from mosaic.behavior.feature_library.kpms import (
 )
 from mosaic.core.pipeline.toolenv import tool_invocation
 from mosaic.core.pipeline.types import InputStream
-from tests.helpers import fake_path_lookup, isolate_tool_location
+from tests.helpers import (
+    fake_path_lookup,
+    isolate_tool_location,
+    keypoint_rows,
+    kpms_params,
+)
 
 
 @pytest.fixture(autouse=True)
-def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def clean_env(monkeypatch: pytest.MonkeyPatch, scratch: Path) -> None:
     """Unset every variable the ladder reads for kpms, and fake ``$PATH``.
 
     A developer entitled to run keypoint-MoSeq will have the acceptance
     exported and a real environment built, and every refusal test below would
-    pass vacuously on their machine without this.
+    pass vacuously on their machine without this. A feature creates its
+    exchange directory in *scratch*.
     """
     monkeypatch.delenv(KPMS_LICENSE_ENV, raising=False)
     isolate_tool_location(monkeypatch, KPMS_ENV, found={})
 
 
-def _make_feature(kpms_python: str | None = None) -> KpmsFeature:
-    params: dict[str, object] = {
-        "pose": {"pose_n": 3, "keypoint_names": ["nose", "left", "right"]},
-        "anterior_bodyparts": ["nose"],
-        "posterior_bodyparts": ["left", "right"],
-        "latent_dim": 4,
-    }
-    if kpms_python is not None:
-        params["kpms_python"] = kpms_python
-    return KpmsFeature(inputs=KpmsFeature.Inputs(("tracks",)), params=params)
+def _make_feature(**overrides: object) -> KpmsFeature:
+    return KpmsFeature(
+        inputs=KpmsFeature.Inputs(("tracks",)), params=kpms_params(**overrides)
+    )
 
 
 def _one_track() -> InputStream:
@@ -63,13 +62,7 @@ def _one_track() -> InputStream:
     The license and the interpreter are asked for at the first request, which
     sends a track.
     """
-    rows = pd.DataFrame(
-        {
-            "frame": np.arange(5),
-            **{f"poseX{k}": np.arange(5.0) + k for k in range(3)},
-            **{f"poseY{k}": np.arange(5.0) - k for k in range(3)},
-        }
-    )
+    rows = keypoint_rows(range(5), n_keypoints=3)
     return InputStream(lambda: iter([("g__s", rows)]), 1)
 
 
@@ -116,41 +109,22 @@ def test_nothing_but_one_accepts(monkeypatch: pytest.MonkeyPatch, value: str) ->
 # --- interpreter resolution, on the shared ladder ---------------------------
 
 
-def test_repo_venv_is_the_external_directory() -> None:
-    assert KPMS_ENV.repo_venv is not None
-    assert (KPMS_ENV.repo_venv / "kpms_server.py").is_file()
-    assert (KPMS_ENV.repo_venv / "pyproject.toml").is_file()
-
-
-def test_nothing_configured_names_the_unbuilt_interpreter_and_how_to_get_one(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    isolate_tool_location(monkeypatch, KPMS_ENV, found={}, repo_venv=tmp_path)
-
-    with pytest.raises(KpmsNotFoundError) as exc:
-        tool_invocation(KPMS_ENV, executable="python")
-
-    message = str(exc.value)
-    assert str(tmp_path / ".venv" / "bin" / "python") in message
-    assert "never bundled" in message
-    assert KPMS_PYTHON_ENV in message
-    assert KPMS_CONDA_ENV_VAR in message
-    assert "external/README.md" in message
-
-
 def test_a_named_conda_env_beats_the_bin_var(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     conda = tmp_path / "bin" / "conda"
     conda.parent.mkdir(parents=True)
     conda.touch()
+    python = tmp_path / "envs" / "kpms" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.touch()
     fake_path_lookup(monkeypatch, {"conda": str(conda)})
     monkeypatch.setenv(KPMS_CONDA_ENV_VAR, "kpms")
     monkeypatch.setenv(KPMS_PYTHON_ENV, "/should-not-be-used")
 
     got = tool_invocation(KPMS_ENV, executable="python")
 
-    assert got == [str(conda), "run", "--no-capture-output", "-n", "kpms", "python"]
+    assert got == [str(conda), "run", "--no-capture-output", "-n", "kpms", str(python)]
 
 
 def test_the_bin_var_beats_the_in_repository_environment(
@@ -179,22 +153,34 @@ def test_the_param_beats_the_bin_var(
 # --- order -----------------------------------------------------------------
 
 
-def test_license_is_checked_before_the_filesystem() -> None:
+def test_license_is_checked_before_the_filesystem(scratch: Path) -> None:
     """With neither acceptance nor an environment, the license answer wins.
 
     The refusal must not depend on whether an interpreter happens to be
     installed, so this asserts the license error rather than
     :class:`KpmsNotFoundError`.
     """
-    with pytest.raises(RuntimeError, match="non-commercial"):
-        _make_feature().fit(_one_track())
+    with (
+        closing(_make_feature()) as feature,
+        pytest.raises(RuntimeError, match="non-commercial"),
+    ):
+        feature.fit(_one_track())
+
+    assert list(scratch.iterdir()) == [], "close left the exchange directory"
 
 
-def test_accepted_then_missing_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_accepted_then_missing_interpreter(
+    monkeypatch: pytest.MonkeyPatch, scratch: Path
+) -> None:
     monkeypatch.setenv(KPMS_LICENSE_ENV, "1")
     monkeypatch.setenv(KPMS_PYTHON_ENV, "/nonexistent/kpms/bin/python")
-    with pytest.raises(KpmsNotFoundError, match="/nonexistent/kpms/bin/python"):
-        _make_feature().fit(_one_track())
+    with (
+        closing(_make_feature()) as feature,
+        pytest.raises(KpmsNotFoundError, match="/nonexistent/kpms/bin/python"),
+    ):
+        feature.fit(_one_track())
+
+    assert list(scratch.iterdir()) == [], "close left the exchange directory"
 
 
 def test_the_kpms_python_param_places_the_feature_on_the_interpreter_it_names(
@@ -202,7 +188,7 @@ def test_the_kpms_python_param_places_the_feature_on_the_interpreter_it_names(
 ) -> None:
     """The feature places its runner with ``params.kpms_python``.
 
-    ``MOSAIC_KPMS_PYTHON`` names an interpreter that exists, so a refusal can
+    ``MOSAIC_KPMS_PYTHON`` names an interpreter that exists. A refusal can then
     only come from the parameter. Without ``.placed(bin_path=...)`` from the
     parameter, the environment variable would resolve instead, and this test
     would pass for the wrong reason.
@@ -211,9 +197,10 @@ def test_the_kpms_python_param_places_the_feature_on_the_interpreter_it_names(
     existing = tmp_path / "env-python"
     existing.touch()
     monkeypatch.setenv(KPMS_PYTHON_ENV, str(existing))
-    feature = _make_feature(kpms_python="/nonexistent/param/python")
-
-    with pytest.raises(KpmsNotFoundError) as exc:
+    with (
+        closing(_make_feature(kpms_python="/nonexistent/param/python")) as feature,
+        pytest.raises(KpmsNotFoundError) as exc,
+    ):
         feature.fit(_one_track())
 
     message = str(exc.value)
@@ -244,18 +231,3 @@ def test_the_license_prerequisite_is_met_once_accepted(
     assert "keypoint-moseq/blob/main/LICENSE.md" in unaccepted
     monkeypatch.setenv(KPMS_LICENSE_ENV, " 1 ")
     assert KpmsLicense().missing() is None
-
-
-def test_the_environment_prerequisite_is_met_by_an_interpreter(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Resolved as the spawn resolves it, without starting the interpreter."""
-    absent = KpmsEnvironment().missing()
-
-    assert absent is not None
-    assert KPMS_PYTHON_ENV in absent
-    assert "external/README.md" in absent
-    interpreter = tmp_path / "python"
-    interpreter.touch()
-    monkeypatch.setenv(KPMS_PYTHON_ENV, str(interpreter))
-    assert KpmsEnvironment().missing() is None

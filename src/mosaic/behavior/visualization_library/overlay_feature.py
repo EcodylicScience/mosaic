@@ -39,6 +39,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
+from ..feature_library.helpers import entry_identity
 from ..feature_library.registry import register_feature
 from .playback import play_video
 
@@ -254,8 +255,7 @@ class Overlay:
                 "is what resolves the media and the run root."
             )
 
-        group = self._cell(df, COLUMNS.group_col)
-        sequence = self._cell(df, COLUMNS.seq_col)
+        group, sequence = entry_identity(df)
         params = self.params
         out_path = self._run_root / f"{make_entry_key(group, sequence)}.mp4"
 
@@ -319,8 +319,3 @@ class Overlay:
             if isinstance(item, Result):
                 found[item.feature] = item.run_id
         return found
-
-    @staticmethod
-    def _cell(df: pd.DataFrame, column: str) -> str:
-        """One entry-identifying cell, or ``""`` where the table carries none."""
-        return str(df[column].iloc[0]) if column in df.columns else ""

@@ -15,10 +15,15 @@ What lives where:
 - ``cli`` -- a ``mosaic`` command run for its ``--json`` output.
 - ``features`` -- the templates and per-sequence frames the global
   fit-then-apply features are tested on.
+- ``latents`` names the frames at the centers of VAME's windows, and checks that
+  a vame output table places a finite latent on each.
+- ``column_contract`` checks a feature's output against the columns that
+  validation predicts from its declaration.
+- ``kpms`` contains the params of a kpms feature on three named keypoints.
 - ``stand_in_features`` -- features that do nothing but declare the source
   roots they consume, for the tests of what a source change reaches.
-- ``tracks`` -- track tables, tracks variants, raw TREx, SLEAP and DeepLabCut
-  exports.
+- ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
+  TREx, SLEAP and DeepLabCut exports.
 - ``trex``, ``sleap``, ``litpose`` and ``ultralytics`` contain recording
   stand-ins for the tools that those trackers run, installed over each tracker's
   seams, and ``inference`` the same for the environments of ``infer-pose`` and
@@ -26,9 +31,11 @@ What lives where:
 - ``decode_probe`` contains a fake ``python`` for a tool environment, which stands
   in for the interpreter that runs the codec check's decode probe.
 - ``runner_programs`` imports a runner program under its bare name for one test,
-  and writes fake runners that serve a test's handlers over the runner wire.
-- ``processes`` contains a child program that appends to a file, and checks
-  of whether a process stopped writing to it or exited.
+  writes fake runners that serve a test's handlers over the runner wire, and
+  checks that a runner program answers ``Ready`` and ``shutdown``.
+- ``processes`` contains a child program that appends to a file, checks of
+  whether a process stopped writing to it or exited, the line children of a
+  test, and a cancel fired once a condition is true.
 - ``media`` -- media files, media-index rows, transcode derivatives.
 - ``variants`` -- media variant files and their index rows, and a count of the
   index reads a variant's consumers make.
@@ -41,14 +48,20 @@ What lives where:
   toolchain, the variables and ``$PATH`` an external tool is located through,
   the modules each CI job must install, and which files under the
   package root a structural walk should skip -- installed third-party code, and
-  mosaic's own code that runs in an environment built for an external tool.
+  mosaic's code that runs in an environment built for an external tool. It
+  also names the tools that run in those environments, and the libraries,
+  programs and environments of each.
 - ``mock_dataset`` -- the duck-typed stand-in, for the pipeline tests that want
   no real roots.
 - ``source_scan`` -- reads a module's source as a tree, for the tests that
-  assert what a code path reads and what it calls.
+  assert what a code path reads, calls and imports.
+- ``pyproject_requirements``: the requirements a ``pyproject.toml`` declares,
+  the distributions they name, and what an extra installs through its
+  self-references.
 - ``paths`` -- the repository, the source package, the ``tests`` directory and
   the golden-file directory, which a test names from here rather than from its
-  own location.
+  own location. It also names the programs of the external tools, relative to
+  the package root.
 - ``golden`` -- reading and rewriting the golden files under ``tests/data/``.
 - ``recipes``: the recipes a graph test validates, plans or runs.
 
@@ -67,6 +80,7 @@ from tests.helpers.annotations import (
     revision_file,
 )
 from tests.helpers.catalogs import catalog_without_contract
+from tests.helpers.column_contract import assert_writes_declared_columns
 from tests.helpers.cli import invoke_json
 from tests.helpers.datasets import make_dataset
 from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
@@ -76,6 +90,14 @@ from tests.helpers.environment import (
     CI_REQUIRED_MODULES,
     FAKE_CONDA,
     FFMPEG_TOOLCHAIN,
+    KPMS_TOOL,
+    SEPARATED_TOOLS,
+    ULTRALYTICS_TOOL,
+    VAME_TOOL,
+    CiJob,
+    EnvironmentMarker,
+    SeparatedEnvironment,
+    SeparatedTool,
     assert_no_literal_tilde,
     fake_path_lookup,
     inside_a_virtualenv,
@@ -91,6 +113,8 @@ from tests.helpers.features import (
     make_templates,
     write_templates,
 )
+from tests.helpers.kpms import kpms_params
+from tests.helpers.latents import assert_latents_at_centers, window_centers
 from tests.helpers.golden import (
     UPDATE_GOLDEN_ENV,
     golden_path,
@@ -125,20 +149,51 @@ from tests.helpers.media import (
 )
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.processes import (
+    LineChildren,
     appender_program,
     assert_process_exited,
     assert_stopped_writing,
+    cancel_when,
     wait_for,
 )
 from tests.helpers.recipes import GUPPIES_RECIPE, guppies_recipe
 from tests.helpers.models import register_trained_model
 from tests.helpers.ops import minimal_op_params
-from tests.helpers.paths import GOLDEN_DIR, REPO_ROOT, SOURCE_ROOT, TESTS_ROOT
+from tests.helpers.paths import (
+    GOLDEN_DIR,
+    KPMS_PROTOCOL,
+    KPMS_SERVER,
+    REPO_ROOT,
+    SOURCE_ROOT,
+    TESTS_ROOT,
+    VAME_PROTOCOL,
+    VAME_RUNNER,
+)
 from tests.helpers.runlog import entry_error_lines, latest_events, latest_snapshot
-from tests.helpers.runner_programs import import_runner_program, write_fake_runner
+from tests.helpers.results import model_reference, result_outputs, result_run_root
+from tests.helpers.runner_programs import (
+    FAKE_HANDLERS,
+    RUNNER_LINE_SECONDS,
+    EventRecorder,
+    RunnerJournal,
+    assert_ready_then_shutdown,
+    import_runner_program,
+    journal_source,
+    write_fake_runner,
+)
 from tests.helpers.scope import resolved_scope, scope_over
+from tests.helpers.pyproject_requirements import (
+    SELF_REFERENCE,
+    distribution_names,
+    project_requirements,
+    requirements_reaching,
+    self_referenced_extras,
+)
 from tests.helpers.source_scan import (
+    ImportedName,
     functions_named,
+    imports_in,
+    imports_of,
     module_tree,
     names_called_by,
     names_read,
@@ -151,6 +206,7 @@ from tests.helpers.tracks import (
     add_track_sequences,
     add_tracks_table,
     add_tracks_variant,
+    keypoint_rows,
     published_table,
     set_tracks_cell,
     track_sequences,
@@ -194,19 +250,38 @@ __all__ = [
     "CI_IDENTITY_MODULES",
     "CI_REQUIRED_MODULES",
     "CropLike",
+    "EnvironmentMarker",
+    "EventRecorder",
     "FAKE_CONDA",
+    "FAKE_HANDLERS",
     "FFMPEG_TOOLCHAIN",
     "GUPPIES_RECIPE",
     "FakeDetections",
     "FakeResult",
     "GOLDEN_DIR",
+    "ImportedName",
     "KEYPOINTS_PAYLOAD",
+    "KPMS_PROTOCOL",
+    "KPMS_SERVER",
+    "KPMS_TOOL",
+    "LineChildren",
     "MOUSE",
     "PlainFeature",
     "REPO_ROOT",
+    "RUNNER_LINE_SECONDS",
+    "RunnerJournal",
+    "SELF_REFERENCE",
+    "SEPARATED_TOOLS",
     "SOURCE_ROOT",
+    "CiJob",
+    "SeparatedEnvironment",
+    "SeparatedTool",
     "TESTS_ROOT",
     "ULTRALYTICS_KEYPOINTS",
+    "ULTRALYTICS_TOOL",
+    "VAME_PROTOCOL",
+    "VAME_RUNNER",
+    "VAME_TOOL",
     "FakeInference",
     "FakeLitpose",
     "FakeSleap",
@@ -227,18 +302,25 @@ __all__ = [
     "add_tracks_variant",
     "add_transcode_derivative",
     "appender_program",
+    "assert_latents_at_centers",
     "assert_no_literal_tilde",
     "assert_process_exited",
+    "assert_ready_then_shutdown",
     "assert_stopped_writing",
+    "assert_writes_declared_columns",
+    "cancel_when",
     "catalog_without_contract",
     "fake_path_lookup",
     "golden_path",
     "guppies_recipe",
     "import_runner_program",
+    "imports_in",
+    "imports_of",
     "healthy_probe",
     "clean_facts_cells",
     "clip_facts",
     "count_index_reads",
+    "distribution_names",
     "dot_image",
     "dotted_values",
     "entry_error_lines",
@@ -258,6 +340,9 @@ __all__ = [
     "invoke_json",
     "install_fake_ultralytics",
     "isolate_tool_location",
+    "journal_source",
+    "keypoint_rows",
+    "kpms_params",
     "latest_events",
     "latest_snapshot",
     "make_dataset",
@@ -265,6 +350,7 @@ __all__ = [
     "make_sequence_df",
     "make_templates",
     "minimal_op_params",
+    "model_reference",
     "missing_ffmpeg_tools",
     "module_tree",
     "names_called_by",
@@ -272,6 +358,7 @@ __all__ = [
     "paint_frame_code",
     "point_at_a_store",
     "point_predictions",
+    "project_requirements",
     "pose_per_frame",
     "pose_predictions",
     "pose_frame",
@@ -284,12 +371,16 @@ __all__ = [
     "regenerate_command",
     "register_trained_model",
     "require_ffmpeg",
+    "requirements_reaching",
     "resolved_scope",
+    "result_outputs",
+    "result_run_root",
     "revision_file",
     "run_id_digest",
     "runs_in_an_external_environment",
     "sandbox_home",
     "scope_over",
+    "self_referenced_extras",
     "set_tracks_cell",
     "source_tree",
     "store_dataset",
@@ -298,6 +389,7 @@ __all__ = [
     "updating_golden",
     "video_store_maker",
     "wait_for",
+    "window_centers",
     "track_sequences",
     "track_table",
     "ultralytics_probe_response",

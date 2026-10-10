@@ -1,9 +1,9 @@
 """Where an external tool lives, and how it is launched.
 
-Mosaic drives several tools too heavy to share its own environment -- TRex
-pins ``python=3.11``, SLEAP brings PyTorch and Qt, Lightning Pose brings
-PyTorch and DALI -- so each is reached through its own environment and
-located the same five ways, in the same order:
+Mosaic drives several tools too heavy to share mosaic's environment. TRex pins
+``python=3.11``, SLEAP brings PyTorch and Qt, and Lightning Pose brings PyTorch
+and DALI. Each tool runs in a separate environment and is located the same five
+ways, in the same order:
 
 1. ``ToolEnv.conda_env``,
 2. ``ToolEnv.bin_path``,
@@ -17,12 +17,12 @@ written three times, along with ``conda run`` construction, the two exception
 shapes, and the ``MPLBACKEND`` fix below. What differs between the tools is the
 values :class:`ToolEnv` holds.
 
-**A tool that is only an interpreter, with no console script of its own,**
-declares :attr:`ToolEnv.repo_venv` and takes the fifth rung from it instead of
-``$PATH``: keypoint-MoSeq and VAME name no executable a ``$PATH`` lookup could
-single out, so that lookup would otherwise find mosaic's own ``python``. For
-such a tool, a path resolved from any of rungs 2, 4 or 5 must be a file, or
-the tool's own :class:`ToolNotFoundError` names it.
+A tool that is only an interpreter declares :attr:`ToolEnv.repo_venv` and
+takes the fifth rung from that directory instead of ``$PATH``. Keypoint-MoSeq
+and VAME do not install a console script, and a ``$PATH`` lookup of ``python``
+finds mosaic's interpreter. For such a tool, every rung must find an
+interpreter file. A rung that finds none raises the tool's
+:class:`ToolNotFoundError`, naming the rung and the paths it read.
 
 **The ladder resolves placement, never identity.** Which environment a tool ran
 in is a property of the machine, so none of these values reaches a ``run_id``:
@@ -55,6 +55,7 @@ __all__ = [
     "PROBE_DEADLINE_FLOOR_SECONDS",
     "interpreter_refusal",
     "locate_tool",
+    "missing_interpreter",
     "missing_output_error",
     "subprocess_env",
     "tool_invocation",
@@ -211,11 +212,9 @@ class ToolEnv:
         display_var: The variable naming this tool's ``DISPLAY``, for a tool
             that needs one. Empty means the tool runs without a display, which
             is every tool but TRex.
-        repo_venv: The directory holding this tool's own ``.venv``, for a tool
-            that is only an interpreter and so has no console script a
-            ``$PATH`` lookup could single out. ``None`` (the default) leaves
-            step 5 of the ladder as ``$PATH``, as every tool with a console
-            script of its own uses it.
+        repo_venv: For an interpreter-only tool, the directory that contains
+            its ``.venv``. ``None``, the default, keeps ``$PATH`` as step 5 of
+            the ladder for a tool with a console script.
         conda_env: Step 1 of the ladder. Empty defers to ``conda_env_var``.
         bin_path: Step 2 of the ladder. Empty defers to ``bin_var``.
         display: ``DISPLAY`` for the tool's subprocess. Empty defers to
@@ -262,32 +261,39 @@ class ToolEnv:
         )
 
 
-def _conda_env_executable(conda: str, env_name: str, executable: str) -> Path | None:
-    """``<prefix>/bin/<executable>`` for env *env_name*, when it is there.
+def _user_envs_dir() -> Path:
+    """Return ``~/.conda/envs``, the env directory that conda adds for the user.
 
-    Derived from the ``conda`` executable's own location rather than by asking
-    conda, which would cost a subprocess on every launch. Both layouts a conda
-    installation uses are tried -- ``<root>/envs/<name>`` for a named env under
-    the base installation, and ``<root>`` itself for the base env -- plus every
-    directory ``CONDA_ENVS_DIRS`` names, which is how an env outside the base
-    installation is found. ``None`` when no candidate holds the executable, which
-    leaves the caller with the bare name and today's behaviour.
+    The conda rung reads it only here. A test substitutes this function to search
+    a directory that does not depend on the machine the suite runs on.
     """
-    roots: list[Path] = []
-    for entry in os.environ.get("CONDA_ENVS_DIRS", "").split(os.pathsep):
-        if entry:
-            roots.append(user_path(entry) / env_name)
+    return user_path("~/.conda/envs")
+
+
+def _conda_env_prefixes(conda: str, env_name: str) -> list[Path]:
+    """Return the prefixes that conda env *env_name* may be installed at, in order.
+
+    They derive from the location of the ``conda`` executable, which costs no
+    subprocess on a launch. The env named ``base`` is the installation itself.
+    Any other name is looked up in each directory that ``CONDA_ENVS_DIRS`` lists,
+    then in the installation's ``envs``, then in ``~/.conda/envs``, the user's
+    env directory. The ``envs_dirs`` of a ``.condarc`` file are not read.
+    """
     base = user_path(conda).resolve().parent.parent
-    roots.append(base / "envs" / env_name)
-    roots.append(base)
-    for prefix in roots:
-        candidate = prefix / "bin" / executable
-        if candidate.is_file():
-            return candidate
-    return None
+    if env_name == "base":
+        return [base]
+    roots = [
+        user_path(entry)
+        for entry in os.environ.get("CONDA_ENVS_DIRS", "").split(os.pathsep)
+        if entry
+    ]
+    roots.extend((base / "envs", _user_envs_dir()))
+    return [root / env_name for root in roots]
 
 
-def conda_invocation(env: ToolEnv, env_name: str, executable: str) -> list[str]:
+def conda_invocation(
+    env: ToolEnv, env_name: str, executable: str, *, source: str
+) -> list[str]:
     """An argv prefix running *executable* inside conda env *env_name*.
 
     ``conda run`` rather than a bare path into the environment's ``bin``, so the
@@ -307,6 +313,22 @@ def conda_invocation(env: ToolEnv, env_name: str, executable: str) -> list[str]:
     made ``conda run`` the right wrapper: ``CONDA_PREFIX`` is still set, because
     ``conda run`` sets it for the environment it was asked for, not for the path
     it ends up executing.
+
+    A tool with a console script is run by its bare name when the search does not
+    find it in a prefix of *env_name*. A tool declaring :attr:`ToolEnv.repo_venv`
+    is refused instead.
+
+    Args:
+        env: The tool's placement.
+        env_name: The conda environment to run *executable* in.
+        executable: The program to run.
+        source: The rung that named *env_name*, as :attr:`ToolInvocation.source`
+            words it.
+
+    Raises:
+        ToolNotFoundError: The subclass named by ``env.not_found``, when
+            ``conda`` is not found, or when *env* declares ``repo_venv`` and the
+            search does not find *executable*.
     """
     conda = shutil.which("conda") or os.environ.get("CONDA_EXE")
     if conda is None:
@@ -318,8 +340,16 @@ def conda_invocation(env: ToolEnv, env_name: str, executable: str) -> list[str]:
     # `shutil.which` already returns an absolute path; the `CONDA_EXE` fallback
     # does not, and this value becomes argv[0] below.
     conda = str(user_path(conda))
-    resolved = _conda_env_executable(conda, env_name, executable)
-    target = str(resolved) if resolved is not None else executable
+    candidates = [
+        _installed_executable(prefix, executable, "conda")
+        for prefix in _conda_env_prefixes(conda, env_name)
+    ]
+    resolved = next((path for path in candidates if path.is_file()), None)
+    if resolved is None and env.repo_venv is not None:
+        searched = ", ".join(str(path.parent) for path in candidates)
+        claim = f"is not a file in any of {searched}"
+        raise env.not_found(interpreter_refusal(env, executable, source, claim))
+    target = executable if resolved is None else str(resolved)
     return [conda, "run", "--no-capture-output", "-n", env_name, target]
 
 
@@ -357,18 +387,18 @@ def locate_tool(env: ToolEnv, *, executable: str) -> ToolInvocation:
     Precedence, first match wins: ``env.conda_env``, ``env.bin_path``,
     ``env.conda_env_var``, ``env.bin_var``, then ``env.repo_venv`` if *env*
     declares one, else ``$PATH``. What a caller chose beats what the machine
-    says, so one run can be placed elsewhere without disturbing the others;
-    :meth:`ToolEnv.placed` is how a caller chooses.
+    says. One run can then be placed elsewhere without disturbing the others,
+    and :meth:`ToolEnv.placed` is how a caller chooses.
 
     Raises:
         ToolNotFoundError: The subclass named by ``env.not_found``, when
-            neither the tool nor ``conda`` can be located, or when a path
-            resolved for a tool declaring ``repo_venv`` is not a file.
+            neither the tool nor ``conda`` can be located, or when a rung finds
+            no interpreter file for a tool declaring ``repo_venv``.
     """
     if env.conda_env:
+        source = f"the conda environment '{env.conda_env}' that this run was placed in"
         return ToolInvocation(
-            conda_invocation(env, env.conda_env, executable),
-            f"the conda environment '{env.conda_env}' that this run was placed in",
+            conda_invocation(env, env.conda_env, executable, source=source), source
         )
     if env.bin_path:
         source = "the binary this run was placed with"
@@ -378,9 +408,9 @@ def locate_tool(env: ToolEnv, *, executable: str) -> ToolInvocation:
 
     env_conda = os.environ.get(env.conda_env_var)
     if env_conda:
+        source = f"the conda environment '{env_conda}' named by {env.conda_env_var}"
         return ToolInvocation(
-            conda_invocation(env, env_conda, executable),
-            f"the conda environment '{env_conda}' named by {env.conda_env_var}",
+            conda_invocation(env, env_conda, executable, source=source), source
         )
     env_bin = os.environ.get(env.bin_var)
     if env_bin:
@@ -409,49 +439,74 @@ def locate_tool(env: ToolEnv, *, executable: str) -> ToolInvocation:
 
 
 def _repo_venv_root(env: ToolEnv) -> Path | None:
-    """The directory :func:`tool_invocation` reads *env*'s in-repository venv from.
+    """Return the directory that rung 5 reads *env*'s in-repository venv from.
 
-    A seam over :attr:`ToolEnv.repo_venv` rather than a direct read: rung 5
-    reads its directory only here, so a test can substitute the location for
-    a venv not built on the machine the suite runs on.
+    Rung 5 reads :attr:`ToolEnv.repo_venv` only here. A test substitutes this
+    function to place the venv independently of the machine the suite runs on.
     """
     return env.repo_venv
 
 
 def _repo_interpreter(env: ToolEnv, root: Path, source: str) -> str:
-    """The interpreter under *root*'s own ``.venv``, read in place of ``$PATH``.
+    """Return the interpreter in the ``.venv`` under *root*, read in place of ``$PATH``.
 
     Raises:
         ToolNotFoundError: The subclass named by ``env.not_found``, naming
             *source*, when the venv under *root* has not been built.
     """
-    venv = root / ".venv"
-    resolved = (
-        venv / "Scripts" / "python.exe"
-        if sys.platform == "win32"
-        else venv / "bin" / "python"
-    )
+    resolved = _installed_executable(root / ".venv", "python", "venv")
     _require_interpreter(env, resolved, source)
     return str(resolved)
 
 
+_EnvironmentKind = Literal["venv", "conda"]
+"""The kinds of environment that the ladder reads an executable from."""
+
+
+def _installed_executable(
+    prefix: Path, executable: str, kind: _EnvironmentKind
+) -> Path:
+    """Return the path at which an environment of *kind* installs *executable*.
+
+    On POSIX, both kinds install every executable in ``<prefix>/bin``. On Windows,
+    each executable has an ``.exe`` suffix. A venv installs every one in
+    ``<prefix>/Scripts``. Conda installs its interpreter in *prefix* itself and
+    console scripts in ``<prefix>/Scripts``.
+    """
+    if sys.platform != "win32":
+        return prefix / "bin" / executable
+    if kind == "conda" and executable == "python":
+        return prefix / "python.exe"
+    return prefix / "Scripts" / f"{executable}.exe"
+
+
 def _require_interpreter(env: ToolEnv, resolved: Path, source: str) -> None:
-    """For a tool declaring :attr:`ToolEnv.repo_venv`, refuse a *resolved* that
-    is not a file.
+    """Refuse a *resolved* that is not a file, for a tool declaring ``repo_venv``.
 
-    A tool with no console script of its own has no locator to confirm an
-    install against, so a wrong *resolved* would otherwise flow straight into
-    the subprocess call and surface there as a bare, unhelpful
-    ``FileNotFoundError`` instead of the tool's own typed refusal. A tool with
-    a console script gets no such check.
+    Such a tool does not have a locator that confirms an install. This check
+    confirms the interpreter instead, and a missing one raises the tool's typed
+    refusal before any subprocess starts. A tool with a console script is not
+    checked.
 
-    The refusal names *resolved* and *source*, then appends the tool's own
-    ``not_found.default_message``: a path alone is not install help, and
-    each tool's install help belongs with the tool rather than with the three
-    rungs that call this.
+    The refusal names *resolved* and *source* and ends with
+    ``env.not_found.default_message``, the install help that each tool declares.
     """
     if env.repo_venv is not None and not resolved.is_file():
         raise env.not_found(interpreter_refusal(env, resolved, source, "is not a file"))
+
+
+def missing_interpreter(env: ToolEnv) -> str | None:
+    """Return the tool's install help, or ``None`` when its ladder locates ``python``.
+
+    The interpreter is located as starting the tool locates it, without starting
+    it. A feature's catalog prerequisite answers with this for a tool that is only
+    an interpreter.
+    """
+    try:
+        _ = tool_invocation(env, executable="python")
+    except ToolNotFoundError:
+        return env.not_found.default_message
+    return None
 
 
 def interpreter_refusal(

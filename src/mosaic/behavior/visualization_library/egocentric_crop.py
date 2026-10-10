@@ -47,6 +47,7 @@ from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.types.feature import DependencyLookup
 from mosaic.user_paths import user_path
 
+from ..feature_library.helpers import entry_identity
 from ..feature_library.registry import register_feature
 from ._crop_descriptions import (
     ANGLE_COL_DESCRIPTION,
@@ -341,14 +342,7 @@ class EgocentricCrop:
             return pd.DataFrame()
 
         p = self.params
-        group = (
-            str(df[COLUMNS.group_col].iloc[0])
-            if COLUMNS.group_col in df.columns
-            else ""
-        )
-        sequence = (
-            str(df[COLUMNS.seq_col].iloc[0]) if COLUMNS.seq_col in df.columns else ""
-        )
+        group, sequence = entry_identity(df)
 
         # ``xy`` reads the body centre whether or not the table has keypoints, so
         # it needs the units check unconditionally. Without the first clause a

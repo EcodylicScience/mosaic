@@ -5,7 +5,9 @@ has to be looked for everywhere a reader could sit. These functions parse that
 region and report the field names it reads. :func:`names_called_by` answers the
 neighboring question about calls, and a negative assertion about a call belongs
 beside the positive one: a body that calls neither of two functions passes an
-"it does not call the wrong one" test without doing the work.
+"it does not call the wrong one" test without doing the work. :func:`imports_in`
+and :func:`imports_of` answer the question about imports, for the guards over
+which modules a file imports.
 
 A read counts only off the names that hold the object in the scanned region.
 ``np.load``, ``joblib.load`` and ``json.load`` are attribute reads named
@@ -31,16 +33,95 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Collection, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
+from typing import Literal
 
 
-def source_tree(path: Path) -> ast.AST:
+def source_tree(path: Path) -> ast.Module:
     """Parses the file at *path*."""
     return ast.parse(path.read_text(encoding="utf-8"))
 
 
-def module_tree(module: ModuleType) -> ast.AST:
+ImportScope = Literal["module", "anywhere"]
+"""Where :func:`imports_in` reads import statements.
+
+``"module"`` reads the statements of the module body. ``"anywhere"`` reads every
+scope, function bodies and ``TYPE_CHECKING`` blocks included.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class ImportedName:
+    """One name that an import statement imports.
+
+    ``import a.b as c`` imports module ``a.b`` as ``c``, and ``from a import b as
+    c`` imports ``b`` from module ``a`` as ``c``.
+
+    Attributes:
+        line: The line of the statement.
+        module: The module imported, or imported from. A relative module is
+            spelled with its leading dots.
+        name: The name imported from :attr:`module`, or ``None`` for an
+            ``import`` statement.
+        asname: The name it is bound to, or ``None`` when the statement gives
+            none.
+    """
+
+    line: int
+    module: str
+    name: str | None
+    asname: str | None
+
+    def in_package(self, package: str) -> bool:
+        """Whether :attr:`module` is *package* or a module inside it.
+
+        The dot counts. ``ultralytics_track`` is a mosaic module apart from
+        ``ultralytics``, and ``mosaic_media`` is a distribution apart from
+        ``mosaic``.
+        """
+        return self.module == package or self.module.startswith(f"{package}.")
+
+
+def imports_in(
+    tree: ast.Module, *, scope: ImportScope, relative: bool
+) -> list[ImportedName]:
+    """Returns every name that *tree* imports, in the order of lines.
+
+    Each name of a statement is reported, so ``from a import b, c`` is two. A
+    caller that also reads other nodes of the source parses it once and passes
+    the tree here.
+
+    Args:
+        tree: The parsed source.
+        scope: Where to read import statements.
+        relative: Whether to report a relative import. ``False`` passes over
+            one, since it names a module inside the importing package.
+    """
+    statements: Iterable[ast.AST] = tree.body if scope == "module" else ast.walk(tree)
+    found: list[ImportedName] = []
+    for node in statements:
+        if isinstance(node, ast.Import):
+            found.extend(
+                ImportedName(node.lineno, alias.name, None, alias.asname)
+                for alias in node.names
+            )
+        elif isinstance(node, ast.ImportFrom) and (relative or node.level == 0):
+            module = "." * node.level + (node.module or "")
+            found.extend(
+                ImportedName(node.lineno, module, alias.name, alias.asname)
+                for alias in node.names
+            )
+    return sorted(found, key=lambda imported: imported.line)
+
+
+def imports_of(path: Path, *, scope: ImportScope, relative: bool) -> list[ImportedName]:
+    """Returns :func:`imports_in` of the file at *path*."""
+    return imports_in(source_tree(path), scope=scope, relative=relative)
+
+
+def module_tree(module: ModuleType) -> ast.Module:
     """Parses the whole of *module*, for a scan with no function to narrow to."""
     return source_tree(Path(module.__file__ or ""))
 

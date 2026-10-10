@@ -8,13 +8,19 @@ raises TypeError at verdict time rather than here.
 """
 
 import ast
+from pathlib import Path
 
 import pytest
 from mosaic_media import DEFAULT_THRESHOLDS
 
 from mosaic.media_probe_config import media_thresholds
 
-from tests.helpers import inside_a_virtualenv, runs_in_an_external_environment
+from tests.helpers import (
+    imports_in,
+    inside_a_virtualenv,
+    runs_in_an_external_environment,
+    source_tree,
+)
 
 
 def test_defaults_are_the_documented_integers() -> None:
@@ -61,7 +67,6 @@ def test_the_module_reads_no_mosaic_core() -> None:
     # importing it. Reading its source and asserting it names no mosaic.core
     # import guards that intent without importing the heavy packages here.
     import sys
-    from pathlib import Path
 
     module = sys.modules["mosaic.media_probe_config"]
     assert module.__file__ is not None
@@ -71,7 +76,7 @@ def test_the_module_reads_no_mosaic_core() -> None:
 
 
 def _uses_upstream_default_thresholds(tree: ast.Module) -> bool:
-    """True when this module reads `mosaic_media.DEFAULT_THRESHOLDS`.
+    """True when the module parsed as *tree* reads `mosaic_media.DEFAULT_THRESHOLDS`.
 
     Parsed, never grepped. A substring search for the name would flag a comment,
     a docstring, or -- the case that matters in a toolkit full of thresholds --
@@ -80,35 +85,33 @@ def _uses_upstream_default_thresholds(tree: ast.Module) -> bool:
     violation is reading the upstream one instead of resolving through
     `media_thresholds`.
     """
-    aliases = {"mosaic_media"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "mosaic_media" and alias.asname is not None:
-                    aliases.add(alias.asname)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            from_upstream = module == "mosaic_media" or module.startswith(
-                "mosaic_media."
-            )
-            if from_upstream and any(
-                alias.name == "DEFAULT_THRESHOLDS" for alias in node.names
-            ):
-                return True
-        if isinstance(node, ast.Attribute) and node.attr == "DEFAULT_THRESHOLDS":
-            value = node.value
-            if isinstance(value, ast.Name) and value.id in aliases:
-                return True
-    return False
+    upstream = [
+        imported
+        for imported in imports_in(tree, scope="anywhere", relative=False)
+        if imported.in_package("mosaic_media")
+    ]
+    if any(imported.name == "DEFAULT_THRESHOLDS" for imported in upstream):
+        return True
+    aliases = {"mosaic_media"} | {
+        imported.asname
+        for imported in upstream
+        if imported.module == "mosaic_media"
+        and imported.name is None
+        and imported.asname is not None
+    }
+    return any(
+        isinstance(node, ast.Attribute)
+        and node.attr == "DEFAULT_THRESHOLDS"
+        and isinstance(node.value, ast.Name)
+        and node.value.id in aliases
+        for node in ast.walk(tree)
+    )
 
 
 def test_every_derive_call_in_mosaic_resolves_thresholds() -> None:
     # The failure this guards against is a call site added later that reads the
     # upstream default directly, silently ignoring the deployment's
     # configuration for that one path.
-    from pathlib import Path
-
     import mosaic
 
     root = Path(mosaic.__file__).parent
@@ -128,7 +131,7 @@ def test_every_derive_call_in_mosaic_resolves_thresholds() -> None:
         ):
             continue
         scanned.add(source.relative_to(root).as_posix())
-        if _uses_upstream_default_thresholds(ast.parse(source.read_text())):
+        if _uses_upstream_default_thresholds(source_tree(source)):
             offenders.append(str(source.relative_to(root)))
     # A walk that reads nothing reports no offenders and proves nothing, and an
     # exclusion one predicate too broad is how that happens. So it names a module

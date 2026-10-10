@@ -214,17 +214,16 @@ def resolve_keypoint_refs(
 ) -> list[int]:
     """Resolve keypoint references, by index or by name, to indices.
 
-    A parameter naming keypoints accepts either form, so a recipe can say
-    ``"left_wrist"`` where a name list is given and ``9`` where none is. Both are
-    checked against the table's keypoint count: an out-of-range index is the
-    same mistake as an unknown name, and silently reading NaN for it would hide
-    the typo in a plausible-looking output column.
+    A parameter naming keypoints accepts either form. A recipe can say
+    ``"left_wrist"`` where a name list is given and ``9`` where none is. Both
+    forms are checked against the table's keypoint count, and an out-of-range
+    index raises as an unknown name does.
 
     Args:
         refs: Keypoint indices or names, in the order wanted.
         names: The keypoint names, in index order, or ``None`` when none were
             given.
-        n_keypoints: How many keypoints the table carries.
+        n_keypoints: How many keypoints the table contains.
         who: The caller, for the message.
 
     Returns:
@@ -240,7 +239,7 @@ def resolve_keypoint_refs(
         if isinstance(ref, str):
             if not names:
                 raise ValueError(
-                    f"{who} names keypoint {ref!r} but was given no keypoint names; "
+                    f"{who} names keypoint {ref!r} but was not given keypoint names; "
                     "pass keypoint_names or refer to keypoints by index"
                 )
             if ref not in lookup:

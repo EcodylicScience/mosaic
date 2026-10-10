@@ -27,6 +27,7 @@ from typing import Annotated, ClassVar, Literal, final
 import numpy as np
 import pandas as pd
 
+from mosaic.core.individuals import iter_individuals
 from mosaic.core.kinematics import angle_from_pca, angle_from_two_points
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.column_contract import (
@@ -146,7 +147,6 @@ class HeadingFeature:
         if df.empty:
             return pd.DataFrame()
 
-        p = self.params
         order_col = resolve_order_col(df)
         pose_pairs = pose_column_pairs(list(df.columns))
         # The declaration asks for a column of each prefix. A keypoint is a
@@ -158,17 +158,16 @@ class HeadingFeature:
                 "with only a centroid has no body axis to read."
             )
 
-        df = df.sort_values([C.id_col, order_col]).reset_index(drop=True)
-        angle = np.full(len(df), np.nan, dtype=float)
-
-        for _, sub in df.groupby(C.id_col, sort=False):
-            idx = sub.index.to_numpy()
+        # Sorting by id first yields the individuals in id order.
+        df = df.sort_values(C.id_col, kind="stable")
+        parts: list[pd.DataFrame] = []
+        for _, rows in iter_individuals(df, order_col):
             xy = np.stack(
                 [
                     np.stack(
                         [
-                            sub[x_col].to_numpy(dtype=float),
-                            sub[y_col].to_numpy(dtype=float),
+                            rows[x_col].to_numpy(dtype=float),
+                            rows[y_col].to_numpy(dtype=float),
                         ],
                         axis=-1,
                     )
@@ -176,11 +175,19 @@ class HeadingFeature:
                 ],
                 axis=1,
             )  # (T, L, 2)
-            angle[idx] = self._heading(xy, len(pose_pairs))
+            parts.append(self._with_heading(rows, self._heading(xy, len(pose_pairs))))
+        # A row without an id belongs to no individual and keeps a NaN heading.
+        unidentified = df[df[C.id_col].isna()].sort_values(order_col, kind="stable")
+        if not unidentified.empty:
+            angle = np.full(len(unidentified), np.nan)
+            parts.append(self._with_heading(unidentified, angle))
+        return pd.concat(parts, ignore_index=True)
 
-        out = pd.DataFrame({p.output_col: angle}, index=df.index)
-        meta = C.meta_set() & set(df.columns)
-        return out.join(df[sorted(meta)])
+    def _with_heading(self, rows: pd.DataFrame, angle: np.ndarray) -> pd.DataFrame:
+        """Return *angle* as the heading of *rows*, beside their identity columns."""
+        out = pd.DataFrame({self.params.output_col: angle})
+        meta = C.meta_set() & set(rows.columns)
+        return out.join(rows[sorted(meta)].reset_index(drop=True))
 
     def _heading(self, xy: np.ndarray, n_keypoints: int) -> np.ndarray:
         """One individual's heading, by the chosen method.

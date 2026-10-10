@@ -7,17 +7,19 @@ feature_library to avoid code duplication.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
+from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.types import COLUMNS, META_COLS, NON_PAYLOAD_COLS
 
 from .types import InterpolationConfig
 
 if TYPE_CHECKING:
+    import numpy.typing as npt
     from pandas._typing import Scalar
 
 __all__ = [
@@ -26,10 +28,11 @@ __all__ = [
     "clean_tracks_grouped",
     "ego_rotate",
     "ensure_columns",
+    "entry_identity",
     "farthest_first",
     "feature_columns",
     "finite_rows",
-    "iter_individuals",
+    "label_individuals",
     "meta_columns",
     "smooth_1d",
     "unwrap_diff",
@@ -114,31 +117,51 @@ def farthest_first(
     return pool[indices], indices
 
 
-def iter_individuals(
-    df: pd.DataFrame, order_col: str = COLUMNS.frame_col
-) -> Iterator[tuple[Scalar | None, pd.DataFrame]]:
-    """Yield the rows of each individual in *df*, ordered by *order_col*.
-
-    Individuals come in the order in which their ids first appear in *df*. A
-    table without an id column is one individual, yielded with ``None``. A row
-    whose id is missing belongs to no individual and is not yielded.
+def label_individuals(
+    df: pd.DataFrame,
+    label: Callable[[Scalar | None, pd.DataFrame], npt.ArrayLike],
+    column: str = "syllable",
+) -> pd.DataFrame:
+    """Label each individual's rows of *df*, as :func:`iter_individuals` yields them.
 
     Args:
-        df: The rows to split. Left unchanged.
-        order_col: The column that orders each individual's rows.
+        df: The rows to label. Left unchanged.
+        label: Called with each individual's id and rows. It returns one label
+            per row.
+        column: The column of the labels.
 
-    Yields:
-        ``(id, rows)`` per individual, the rows sorted by *order_col* and indexed
-        from 0. Rows with equal *order_col* values keep their order in *df*.
+    Returns:
+        The frame and the label of each individual's rows, and the id when *df*
+        has an id column. The individuals come in the order of
+        :func:`iter_individuals`, each in frame order.
     """
-    if COLUMNS.id_col not in df.columns:
-        yield None, df.sort_values(order_col, kind="stable").reset_index(drop=True)
-        return
-    for individual, rows in df.groupby(COLUMNS.id_col, sort=False):
-        yield (
-            individual,
-            rows.sort_values(order_col, kind="stable").reset_index(drop=True),
+    labeled: list[pd.DataFrame] = []
+    for individual, rows in iter_individuals(df):
+        result = pd.DataFrame(
+            {
+                COLUMNS.frame_col: rows[COLUMNS.frame_col].to_numpy(),
+                column: label(individual, rows),
+            }
         )
+        if individual is not None:
+            result[COLUMNS.id_col] = individual
+        labeled.append(result)
+    return pd.concat(labeled, ignore_index=True)
+
+
+def entry_identity(df: pd.DataFrame) -> tuple[str, str]:
+    """Return the group and the sequence of *df*'s first row, as text.
+
+    A table without the column, or without rows, has ``""`` for it.
+    """
+    group = ""
+    sequence = ""
+    if not df.empty:
+        if COLUMNS.group_col in df.columns:
+            group = str(df[COLUMNS.group_col].iloc[0])
+        if COLUMNS.seq_col in df.columns:
+            sequence = str(df[COLUMNS.seq_col].iloc[0])
+    return group, sequence
 
 
 def meta_columns(df: pd.DataFrame) -> list[str]:

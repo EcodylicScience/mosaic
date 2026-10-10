@@ -17,12 +17,13 @@ nothing. Both are easy to undo by accident while editing.
 
 from __future__ import annotations
 
-import ast
 import subprocess
 import sys
 from pathlib import Path
 
 import mosaic.core.pipeline.graph as graph_pkg
+
+from tests.helpers import imports_of
 
 _REGISTRY_MODULE = "mosaic.behavior.feature_library"
 
@@ -64,31 +65,22 @@ def test_importing_the_graph_package_does_not_import_the_feature_library() -> No
     assert "OK" in proc.stdout
 
 
-def _module_level_imports(source: str) -> set[str]:
-    """Every module imported at module scope, ignoring imports inside functions.
-
-    A walk of the top-level body rather than ``ast.walk``, which is the whole
-    point: an import inside a function is deferred and costs nothing until it is
-    called, and that is the sanctioned way for ``resolve`` to reach the registry.
-    """
-    tree = ast.parse(source)
-    found: set[str] = set()
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            found.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            found.add(node.module)
-    return found
-
-
 def test_only_resolve_reaches_the_registry_and_only_inside_a_function() -> None:
-    """No module in the package may import the feature library at module scope."""
+    """No module in the package may import the feature library at module scope.
+
+    Only the statements of the module body are read. An import inside a function
+    is deferred and costs nothing until the function is called. ``resolve``
+    imports the registry that way.
+    """
     package_root = Path(graph_pkg.__file__).parent
-    offenders: list[str] = []
-    for module in sorted(package_root.glob("*.py")):
-        imported = _module_level_imports(module.read_text())
-        if any(name.startswith(_REGISTRY_MODULE) for name in imported):
-            offenders.append(module.name)
+    offenders = [
+        module.name
+        for module in sorted(package_root.glob("*.py"))
+        if any(
+            imported.in_package(_REGISTRY_MODULE)
+            for imported in imports_of(module, scope="module", relative=False)
+        )
+    ]
     assert not offenders, (
         f"{', '.join(offenders)} import the feature library at module scope. "
         f"Move the import inside the function that needs it, as resolve.py does."

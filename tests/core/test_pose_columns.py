@@ -205,7 +205,7 @@ def test_an_unknown_name_names_the_known_ones() -> None:
 
 
 def test_a_name_without_a_name_list_is_refused() -> None:
-    with pytest.raises(ValueError, match="no keypoint names"):
+    with pytest.raises(ValueError, match="not given keypoint names"):
         _ = resolve_keypoint_refs(["nose"], None, 3, who="t")
 
 

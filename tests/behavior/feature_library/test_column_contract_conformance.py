@@ -67,7 +67,12 @@ from mosaic.core.pipeline.types import (
     LoadSpec,
     ParquetLoadSpec,
 )
-from tests.helpers import make_dataset, require_ffmpeg, write_h264_mp4
+from tests.helpers import (
+    assert_writes_declared_columns,
+    make_dataset,
+    require_ffmpeg,
+    write_h264_mp4,
+)
 
 PARAMS: dict[str, dict[str, JsonValue]] = {
     "approach-avoidance": {"orientation_gate_cos": None},
@@ -173,6 +178,10 @@ UNRUN: dict[str, str] = {
     ),
     "movement-filter-interpolate": "no CI job installs the movement extra",
     "movement-smooth": "no CI job installs the movement extra",
+    "vame": (
+        "it trains VAME in a separate environment, and the slow "
+        "test_vame_integration.py compares its output with its declaration"
+    ),
 }
 """Declared features whose chain runs in no CI job, and why.
 
@@ -527,18 +536,10 @@ def test_a_feature_writes_the_columns_it_declares(slug: str, tmp_path: Path) -> 
     provides = declared_provides(FEATURES[_class_name(slug)])
     assert provides is not None
 
-    written = {str(column) for column in output.columns}
-    assert not output.empty, f"{slug} wrote an empty frame"
-    missing = predicted.guaranteed - written
-    assert not missing, f"{slug} declares {sorted(missing)} and did not write them"
-    assert not predicted.unbounded, f"{slug}'s declared output is unbounded"
     passed: set[str] = (
         {str(column) for column in merged.columns} if provides.passthrough else set()
     )
-    undeclared = sorted(
-        column for column in written - passed if not predicted.admits(column)
-    )
-    assert not undeclared, f"{slug} wrote {undeclared}, which it does not declare"
+    assert_writes_declared_columns(slug, predicted, output, passed)
 
 
 @pytest.mark.parametrize("slug", SLUGS)

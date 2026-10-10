@@ -26,7 +26,7 @@ from mosaic.core.params import (
     Params,
 )
 from mosaic.core.scope import Scope
-from tests.helpers import MockDataset, add_track_sequences
+from tests.helpers import MockDataset, add_track_sequences, result_run_root
 
 # --- Mock features ---
 
@@ -202,9 +202,7 @@ def test_stateless_basic(tmp_path: Path) -> None:
     assert result.run_id is not None and len(result.run_id) > 0
 
     # Output parquets exist
-    from mosaic.core.pipeline.index import feature_run_root
-
-    run_root = feature_run_root(ds, result.feature, result.run_id)
+    run_root = result_run_root(ds, result)
     parquets = sorted(run_root.glob("*.parquet"))
     assert len(parquets) == 2
 
@@ -229,9 +227,7 @@ def test_entries_selects_arbitrary_subset(tmp_path: Path) -> None:
     feature = _StatelessFeature()
     result = run_feature(ds, feature, scope=Scope(entries=[("g1", "s1"), ("g2", "s1")]))
 
-    from mosaic.core.pipeline.index import feature_run_root
-
-    run_root = feature_run_root(ds, result.feature, result.run_id)
+    run_root = result_run_root(ds, result)
     parquets = sorted(p.name for p in run_root.glob("*.parquet"))
     assert parquets == ["g1__s1.parquet", "g2__s1.parquet"]
 
@@ -249,9 +245,7 @@ def test_stateful_fit_and_apply(tmp_path: Path) -> None:
     result = run_feature(ds, feature)
 
     # State file written
-    from mosaic.core.pipeline.index import feature_run_root
-
-    run_root = feature_run_root(ds, result.feature, result.run_id)
+    run_root = result_run_root(ds, result)
     state_path = run_root / "state.json"
     assert state_path.exists()
 
@@ -288,9 +282,7 @@ def test_overwrite_false_skips(tmp_path: Path) -> None:
 
     # First run
     result1 = run_feature(ds, feature)
-    from mosaic.core.pipeline.index import feature_run_root
-
-    run_root = feature_run_root(ds, result1.feature, result1.run_id)
+    run_root = result_run_root(ds, result1)
     parquets = sorted(run_root.glob("*.parquet"))
     assert len(parquets) == 1
     mtime_before = os.path.getmtime(parquets[0])
@@ -315,9 +307,7 @@ def test_global_marker(tmp_path: Path) -> None:
     assert result.feature == "test-global"
 
     # No parquet files in run root
-    from mosaic.core.pipeline.index import feature_run_root
-
-    run_root = feature_run_root(ds, result.feature, result.run_id)
+    run_root = result_run_root(ds, result)
     parquets = list(run_root.glob("*.parquet"))
     assert len(parquets) == 0
 
@@ -336,9 +326,7 @@ def test_frame_filter(tmp_path: Path) -> None:
     feature = _StatelessFeature()
     result = run_feature(ds, feature, filter_start_frame=5, filter_end_frame=15)
 
-    from mosaic.core.pipeline.index import feature_run_root
-
-    run_root = feature_run_root(ds, result.feature, result.run_id)
+    run_root = result_run_root(ds, result)
     parquets = sorted(run_root.glob("*.parquet"))
     assert len(parquets) == 1
 
@@ -586,10 +574,8 @@ def test_cache_hit_skips_without_loading_input(tmp_path: Path) -> None:
 def test_check_output_recomputes_corrupt_parquet(tmp_path: Path) -> None:
     ds = MockDataset(tmp_path)
     add_track_sequences(ds, ("g", "s1"), ("g", "s2"), n_rows=10)
-    from mosaic.core.pipeline.index import feature_run_root
-
     r1 = run_feature(ds, _StatelessFeature())
-    run_root = feature_run_root(ds, r1.feature, r1.run_id)
+    run_root = result_run_root(ds, r1)
     s1_out = run_root / "g__s1.parquet"
     s2_mtime = os.path.getmtime(run_root / "g__s2.parquet")
 
@@ -612,12 +598,10 @@ def test_corrupt_output_recomputes_on_default_path(tmp_path: Path) -> None:
     # output: a truncated/corrupt footer falls through to recompute that entry.
     ds = MockDataset(tmp_path)
     add_track_sequences(ds, ("g", "s1"), ("g", "s2"), n_rows=10)
-    from mosaic.core.pipeline.index import feature_run_root
-
     f1 = _CountingStateless()
     r1 = run_feature(ds, f1)
     assert f1.apply_calls == 2
-    run_root = feature_run_root(ds, r1.feature, r1.run_id)
+    run_root = result_run_root(ds, r1)
     s1_out = run_root / "g__s1.parquet"
     s2_mtime = os.path.getmtime(run_root / "g__s2.parquet")
 
@@ -636,10 +620,8 @@ def test_corrupt_output_recomputes_on_default_path(tmp_path: Path) -> None:
 def test_custom_check_output_triggers_recompute(tmp_path: Path) -> None:
     ds = MockDataset(tmp_path)
     add_track_sequences(ds, ("g", "s1"))
-    from mosaic.core.pipeline.index import feature_run_root
-
     r1 = run_feature(ds, _SidecarFeature())
-    run_root = feature_run_root(ds, r1.feature, r1.run_id)
+    run_root = result_run_root(ds, r1)
     flag = run_root / "sidecar.flag"
     assert flag.exists()
     flag.unlink()
@@ -696,14 +678,12 @@ class _ThroughputFeature(_StatelessFeature):
 
 
 def test_hash_excluded_param_reuses_cache(tmp_path: Path) -> None:
-    from mosaic.core.pipeline.index import feature_run_root
-
     ds = MockDataset(tmp_path)
     add_track_sequences(ds, ("g", "s1"))
 
     # First run at batch_size=4.
     r1 = run_feature(ds, _ThroughputFeature(params={"batch_size": 4}))
-    run_root = feature_run_root(ds, r1.feature, r1.run_id)
+    run_root = result_run_root(ds, r1)
     parquet = sorted(run_root.glob("*.parquet"))[0]
     mtime_before = os.path.getmtime(parquet)
 

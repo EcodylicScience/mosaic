@@ -186,11 +186,12 @@ venvPath = "."
 venv = ".venv"
 reportMissingTypeStubs = false
 executionEnvironments = [
-    # The runner directory, for the reason given for the Ultralytics runner below:
-    # it resolves the bare sibling imports (`runner_wire`, `kpms_protocol`) that a
-    # program launched from there gets. Every other import resolves from `.venv`,
-    # so numpy has one module identity on both sides of the wire. The runner
-    # declares the rules that its unresolved keypoint-moseq imports fire.
+    # The runners' directory, for the reason given for the Ultralytics runner
+    # below. It resolves the bare sibling imports of a program launched from
+    # there: `runner_wire` and each tool's protocol module (`kpms_protocol`,
+    # `vame_protocol`). Every other import resolves from `.venv`, and numpy then
+    # has one module identity on both sides of the wire. Each runner disables the
+    # rules that its unresolved keypoint-moseq or VAME imports report.
     { root = "src/mosaic/behavior/feature_library/external", extraPaths = ["src/mosaic/behavior/feature_library/external"] },
     # The runner directory, because that is what resolves the bare
     # `ultralytics_protocol` import a script run from there gets for free. That
@@ -348,6 +349,7 @@ requires-dist = ["astunparse", "dm-tree", "gast", "nvidia-nvimgcodec-cu11", "six
 [tool.uv.workspace]
 exclude = [
     "src/mosaic/behavior/feature_library/external",
+    "src/mosaic/behavior/feature_library/external/vame-env",
     "src/mosaic/tracking/external/ultralytics-env",
     "src/mosaic/tracking/external/polo-env",
 ]

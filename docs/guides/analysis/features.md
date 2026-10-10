@@ -59,8 +59,8 @@ pair.
 order parameters, and the discrete states they imply), `local-order-metrics`,
 `ffgroups` and `ffgroups-metrics`, `frame-aggregate`, `social-motion-summary`.
 
-**Models fitted over a collection.** t-SNE, k-means, Ward, AR-HMM, keypoint-MoSeq and
-the supervised classifiers. See [Find behaviors without
+**Models fitted over a collection.** t-SNE, k-means, Ward, AR-HMM, keypoint-MoSeq,
+VAME and the supervised classifiers. See [Find behaviors without
 labels](discover-behaviors.md), [Train a behavior classifier](train-a-classifier.md)
 and [Identify individuals by appearance](identify-individuals.md); each feature is
 listed with its parameters under *Global* in the

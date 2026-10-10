@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import savgol_filter
 
+from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     Column,
@@ -24,7 +25,6 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 from mosaic.core.pose_columns import pose_column_pairs
 
-from .helpers import iter_individuals
 from .registry import register_feature
 
 

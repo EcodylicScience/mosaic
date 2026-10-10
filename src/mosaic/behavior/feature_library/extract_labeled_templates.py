@@ -34,7 +34,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import farthest_first, feature_columns
+from .helpers import ensure_columns, entry_identity, farthest_first, feature_columns
 from .registry import register_feature
 from .types import PoolConfig
 from mosaic.core.pipeline.writers import write_parquet_atomic
@@ -383,9 +383,9 @@ class ExtractLabeledTemplates:
         for _entry_key, df in inputs():
             if self._feature_columns is None:
                 self._feature_columns = feature_columns(df)
+                ensure_columns(df, [C.seq_col])
 
-            group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
-            sequence = str(df[C.seq_col].iloc[0])
+            group, sequence = entry_identity(df)
             entry_idx = n_entries
             self._entry_map[entry_idx] = (group, sequence)
             split = split_assignments[n_entries]
@@ -537,9 +537,9 @@ class ExtractLabeledTemplates:
         for entry_key, df in inputs():
             if self._feature_columns is None:
                 self._feature_columns = feature_columns(df)
+                ensure_columns(df, [C.seq_col])
 
-            group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
-            sequence = str(df[C.seq_col].iloc[0])
+            group, sequence = entry_identity(df)
 
             if entry_key not in entry_idx_map:
                 idx = len(entry_idx_map)
@@ -599,8 +599,7 @@ class ExtractLabeledTemplates:
         assert cols is not None
 
         for entry_key, df in inputs():
-            group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
-            sequence = str(df[C.seq_col].iloc[0])
+            group, sequence = entry_identity(df)
             split = entry_splits[entry_key]
             entry_idx = entry_idx_map[entry_key]
 
@@ -685,8 +684,8 @@ class ExtractLabeledTemplates:
         return pd.DataFrame(rows)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
-        sequence = str(df[C.seq_col].iloc[0])
+        ensure_columns(df, [C.seq_col])
+        group, sequence = entry_identity(df)
 
         # Add split assignment
         split = self._sequence_splits.get((group, sequence), "train")

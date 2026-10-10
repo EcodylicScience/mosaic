@@ -8,7 +8,6 @@ why one ``reconcile`` call makes three full passes over every index it has.
 
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 import pandas as pd
@@ -20,6 +19,8 @@ from mosaic.core.pipeline.inventory.contributors import (
     register_inventory_contributor,
     registered_inventory_kinds,
 )
+
+from tests.helpers import imports_of
 
 
 # --- one read per index per scan ---------------------------------------------
@@ -130,17 +131,15 @@ def test_the_inventory_names_no_tracking_module() -> None:
     import mosaic.core.pipeline.inventory as package
 
     package_root = Path(package.__file__).parent
-    offenders: list[str] = []
-    for source in sorted(package_root.rglob("*.py")):
-        for node in ast.walk(ast.parse(source.read_text())):
-            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-                ("mosaic.tracking", "mosaic.behavior")
-            ):
-                offenders.append(f"{source.name}:{node.lineno}")
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name.startswith(("mosaic.tracking", "mosaic.behavior")):
-                        offenders.append(f"{source.name}:{node.lineno}")
+    offenders = sorted(
+        {
+            f"{source.name}:{imported.line}"
+            for source in package_root.rglob("*.py")
+            for imported in imports_of(source, scope="anywhere", relative=False)
+            if imported.in_package("mosaic.tracking")
+            or imported.in_package("mosaic.behavior")
+        }
+    )
 
     assert offenders == [], (
         f"the inventory reaches up into a domain package: {offenders}"

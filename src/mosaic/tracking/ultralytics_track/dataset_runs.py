@@ -35,7 +35,7 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.entry_claim import claim, phase_activity
 from mosaic.core.pipeline.index_csv import IndexCSV, index_records
-from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext
+from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, cancel_check
 from mosaic.core.pipeline.markers import clear_phase_marker
 from mosaic.core.pipeline.media_input import media_identity_terms
 from mosaic.core.pipeline.op_identity import op_run_id
@@ -383,7 +383,7 @@ def run_ultralytics(
             max_runtime=max_runtime,
             conda_env=ultralytics_conda_env,
             bin_path=ultralytics_bin,
-            cancel_check=cancel.is_cancelled if cancel is not None else None,
+            cancel_check=cancel_check(cancel),
         )
     except ProcessCancelled as exc:
         raise Cancelled() from exc

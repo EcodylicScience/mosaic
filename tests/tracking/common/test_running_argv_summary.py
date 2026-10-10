@@ -1,9 +1,8 @@
-"""The ``Running: <summary>`` log line, proved against real trackers.
+"""The ``Running: <summary>`` log line of the TRex and SLEAP launches.
 
-``tests/core/pipeline/test_tool_env.py`` covers the shared tool-placement
-primitives on their own terms. This test needs TRex and SLEAP to launch
-through, so it lives here, in ``tests/tracking/common/``, beside the
-trackers rather than beside the generic ``ToolEnv`` tests.
+``tests/core/pipeline/test_tool_env.py`` tests the shared tool-placement
+primitives. This test launches through the TRex and SLEAP modules, and it
+belongs in ``tests/tracking/common/`` beside the tests of those trackers.
 """
 
 from __future__ import annotations
@@ -29,7 +28,10 @@ def test_every_running_line_is_the_summary_of_the_argv_run(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """One function prints an argv, so a program after ``-c`` is never quoted."""
+    """Checks the log line of each launch against ``command_summary`` of its argv.
+
+    ``command_summary`` renders a program after ``-c`` as ``<program>``.
+    """
     module = {"trex": trex_run, "sleap": sleap_run, "sleap-train": sleap_training}[site]
     launched: list[list[str]] = []
     summarized: list[list[str]] = []

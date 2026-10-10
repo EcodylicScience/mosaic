@@ -8,6 +8,7 @@ import pandas as pd
 from pydantic import Field
 from scipy.signal import savgol_filter
 
+from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.column_contract import (
     META_KEPT,
     ORDER_COLUMN,
@@ -28,7 +29,6 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import iter_individuals
 from .registry import register_feature
 
 _STEP_SIZE_DESCRIPTION = (

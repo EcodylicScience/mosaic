@@ -15,7 +15,13 @@ import mosaic.core.media.read_target as read_target
 from mosaic.core.media.video_io import MultiVideoReader
 from mosaic.media_probe_config import media_thresholds
 
-from tests.helpers import inside_a_virtualenv, runs_in_an_external_environment
+from tests.helpers import (
+    imports_in,
+    imports_of,
+    inside_a_virtualenv,
+    runs_in_an_external_environment,
+    source_tree,
+)
 
 WriteVideo = Callable[..., None]
 
@@ -268,36 +274,33 @@ def test_multi_video_reader_plain_video_branch_is_gated(
     reader.close()
 
 
-def _imports_a_mosaic_media_reader(tree: ast.Module) -> bool:
-    """True when *tree* imports ``VideoReader`` or ``MultiVideoReader`` from
-    ``mosaic_media.io``, in any import form."""
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom):
-            continue
-        module = node.module or ""
-        if module != "mosaic_media.io" and not module.startswith("mosaic_media.io."):
-            continue
-        if any(
-            alias.name in {"VideoReader", "MultiVideoReader"} for alias in node.names
-        ):
-            return True
-    return False
+_UPSTREAM_READER_NAMES = {"VideoReader", "MultiVideoReader"}
 
 
-def _imports_the_gate(tree: ast.Module) -> bool:
-    """True when *tree* imports ``verified_read_facts`` from the read-target gate
-    module, absolute or relative."""
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom):
-            continue
-        if not any(alias.name == "verified_read_facts" for alias in node.names):
-            continue
-        module = node.module or ""
-        if module == "mosaic.core.media.read_target":
-            return True
-        if node.level >= 1 and module.endswith("read_target"):
-            return True
-    return False
+def _imports_a_mosaic_media_reader(path: Path) -> bool:
+    """True when the module at *path* imports ``VideoReader`` or
+    ``MultiVideoReader`` from ``mosaic_media.io``, in any import form."""
+    return any(
+        imported.in_package("mosaic_media.io")
+        and imported.name in _UPSTREAM_READER_NAMES
+        for imported in imports_of(path, scope="anywhere", relative=False)
+    )
+
+
+def _imports_the_gate(path: Path) -> bool:
+    """True when the module at *path* imports ``verified_read_facts`` from the
+    read-target gate module, absolute or relative."""
+    return any(
+        imported.name == "verified_read_facts"
+        and (
+            imported.module == "mosaic.core.media.read_target"
+            or (
+                imported.module.startswith(".")
+                and imported.module.endswith("read_target")
+            )
+        )
+        for imported in imports_of(path, scope="anywhere", relative=True)
+    )
 
 
 def test_only_the_gate_and_its_two_reader_modules_import_mosaic_media_readers() -> None:
@@ -317,8 +320,7 @@ def test_only_the_gate_and_its_two_reader_modules_import_mosaic_media_readers() 
             source, root
         ):
             continue
-        tree = ast.parse(source.read_text())
-        if _imports_a_mosaic_media_reader(tree):
+        if _imports_a_mosaic_media_reader(source):
             reader_importers.add(str(source.relative_to(root)))
 
     assert reader_importers == {
@@ -327,55 +329,38 @@ def test_only_the_gate_and_its_two_reader_modules_import_mosaic_media_readers() 
     }
 
     gate_importers = {
-        module
-        for module in reader_importers
-        if _imports_the_gate(ast.parse((root / module).read_text()))
+        module for module in reader_importers if _imports_the_gate(root / module)
     }
     assert gate_importers, "the guard must not pass by matching an empty set"
     assert gate_importers == reader_importers
 
 
-_UPSTREAM_READER_NAMES = {"VideoReader", "MultiVideoReader"}
-
-
 def _imports_an_upstream_reader_directly(tree: ast.Module) -> bool:
-    """True when *tree* imports ``VideoReader`` or ``MultiVideoReader`` from
-    ``mosaic_media``, in any form: a ``from mosaic_media[.submodule...] import``
-    naming either name directly (``from mosaic_media import VideoReader``,
-    ``from mosaic_media.io import ...``, ``from mosaic_media.io.reader import
-    ...``); a submodule bound by name (``from mosaic_media import io`` then
-    ``io.VideoReader``); or a module-level ``import mosaic_media[.submodule]``
-    (any alias, e.g. ``import mosaic_media.io as mmio``) followed by an
-    attribute chain of any depth ending in one of those names.
+    """True when the module parsed as *tree* imports ``VideoReader`` or
+    ``MultiVideoReader`` from ``mosaic_media``, in any form: a ``from
+    mosaic_media[.submodule...] import`` naming either name directly (``from
+    mosaic_media import VideoReader``, ``from mosaic_media.io import ...``,
+    ``from mosaic_media.io.reader import ...``); a submodule bound by name
+    (``from mosaic_media import io`` then ``io.VideoReader``); or a module-level
+    ``import mosaic_media[.submodule]`` (any alias, e.g. ``import mosaic_media.io
+    as mmio``) followed by an attribute chain of any depth ending in one of those
+    names.
     """
+    upstream = [
+        imported
+        for imported in imports_in(tree, scope="anywhere", relative=False)
+        if imported.in_package("mosaic_media")
+    ]
+    if any(imported.name in _UPSTREAM_READER_NAMES for imported in upstream):
+        return True
     aliases = {"mosaic_media"}
+    for imported in upstream:
+        if imported.name is None:
+            if imported.asname is not None:
+                aliases.add(imported.asname)
+        else:
+            aliases.add(imported.asname or imported.name)
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname is not None and (
-                    alias.name == "mosaic_media"
-                    or alias.name.startswith("mosaic_media.")
-                ):
-                    aliases.add(alias.asname)
-        if isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            from_upstream = module == "mosaic_media" or module.startswith(
-                "mosaic_media."
-            )
-            if from_upstream:
-                for alias in node.names:
-                    if alias.name not in _UPSTREAM_READER_NAMES:
-                        aliases.add(alias.asname or alias.name)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            from_upstream = module == "mosaic_media" or module.startswith(
-                "mosaic_media."
-            )
-            if from_upstream and any(
-                alias.name in _UPSTREAM_READER_NAMES for alias in node.names
-            ):
-                return True
         if isinstance(node, ast.Attribute) and node.attr in _UPSTREAM_READER_NAMES:
             root_value = node.value
             while isinstance(root_value, ast.Attribute):
@@ -408,7 +393,7 @@ def test_only_the_two_reader_modules_may_construct_an_upstream_reader() -> None:
             source, root
         ):
             continue
-        if _imports_an_upstream_reader_directly(ast.parse(source.read_text())):
+        if _imports_an_upstream_reader_directly(source_tree(source)):
             matched.add(str(source.relative_to(root)))
 
     offenders = sorted(matched - allowed)

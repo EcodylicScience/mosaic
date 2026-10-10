@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
+from mosaic.core.individuals import refuse_repeated_rows
 from mosaic.core.pipeline.column_contract import (
     META_KEPT,
     ORDER_COLUMN,
@@ -56,7 +57,11 @@ from .collective_math import (
     unit_headings,
     unit_radial,
 )
-from .helpers import apply_exclude_cols, ensure_columns
+from .helpers import (
+    apply_exclude_cols,
+    ensure_columns,
+    entry_identity,
+)
 from .registry import register_feature
 
 RadiusUnits: TypeAlias = Literal["position", "body_scale"]
@@ -423,12 +428,7 @@ class LocalOrderMetrics:
                 f"feature instead."
             )
             raise ValueError(msg)
-        if df.duplicated(subset=[order_col, C.id_col]).any():
-            msg = (
-                f"local-order-metrics needs one row per ({order_col}, id) but the "
-                f"input has duplicates."
-            )
-            raise ValueError(msg)
+        refuse_repeated_rows(df, "local-order-metrics", order_col)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -508,16 +508,6 @@ class LocalOrderMetrics:
         # emitted, so a body_scale resolution stays auditable row by row.
         radius_of_row = np.full(n, np.nan, dtype=float)
 
-        def _entry_of(rows: pd.DataFrame) -> tuple[str, str]:
-            """The entry a frame's rows belong to. Constant within a frame."""
-            group_name = (
-                str(rows[C.group_col].iloc[0]) if C.group_col in rows.columns else ""
-            )
-            sequence_name = (
-                str(rows[C.seq_col].iloc[0]) if C.seq_col in rows.columns else ""
-            )
-            return group_name, sequence_name
-
         # ffgroups marks a non-event row with -1. That is a pooled pseudo-group,
         # not a subgroup: treating it as one would invent neighborhoods out of
         # animals that were never grouped. Those rows keep the sentinels.
@@ -532,7 +522,7 @@ class LocalOrderMetrics:
             if bool(g["_skip"].iloc[0]):
                 continue
             idx = g.index.to_numpy()
-            radius = radius_by_entry[_entry_of(g)]
+            radius = radius_by_entry[entry_identity(g)]
             radius_of_row[idx] = radius
             r2 = radius * radius
             gx = g["_x"].to_numpy(dtype=float)

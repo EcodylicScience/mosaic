@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from mosaic.core.individuals import iter_individuals, refuse_repeated_rows
 from mosaic.core.pipeline.types import COLUMNS
 
 if TYPE_CHECKING:
@@ -364,18 +365,12 @@ def _resample_one_id(
     plan: tuple[list[str], list[str], list[str]],
     source: str,
 ) -> pd.DataFrame:
-    """One individual's rows, re-gridded onto the target rate."""
+    """One individual's rows, given in frame order, re-gridded onto the target rate."""
     interpolated, gathered, identity = plan
-    block = block.sort_values(COLUMNS.frame_col)
+    refuse_repeated_rows(block, source or "this table")
     native_frames = block[COLUMNS.frame_col].to_numpy(dtype=float)
     if native_frames.size < 2:
         return block.iloc[0:0]
-    if np.any(np.diff(native_frames) <= 0.0):
-        raise ValueError(
-            f"{source or 'this table'} repeats a frame number for one individual, "
-            "so its rows do not describe one time axis and no sample can be "
-            "placed between them. Fix the source table rather than resampling it."
-        )
 
     native_times = native_frames / native_fps
     target = _target_frames(
@@ -484,7 +479,7 @@ def resample_entry_table(
     plan = _column_plan(frame)
     blocks = [
         _resample_one_id(block, native_fps, target_fps, prefilter, plan, source)
-        for _, block in frame.groupby(COLUMNS.id_col, sort=False)
+        for _, block in iter_individuals(frame)
     ]
     kept = [block for block in blocks if not block.empty]
     if not kept:

@@ -17,11 +17,10 @@ from __future__ import annotations
 
 import ast
 from collections import Counter
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
 
-from tests.helpers import SOURCE_ROOT, TESTS_ROOT, source_tree
+from tests.helpers import SOURCE_ROOT, TESTS_ROOT, imports_of, source_tree
 
 _SUPPORT_DIRECTORIES: Final = frozenset({"helpers", "data"})
 """The directories of ``tests/`` for shared code and data files."""
@@ -57,16 +56,6 @@ def _area_directories() -> list[Path]:
         and (relative := path.relative_to(TESTS_ROOT)).parts[0]
         not in _SUPPORT_DIRECTORIES
     )
-
-
-def _imported_modules(tree: ast.AST) -> Iterator[tuple[int, str]]:
-    """Each absolute import in *tree*, as its line and the module it names."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            yield node.lineno, node.module
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                yield node.lineno, alias.name
 
 
 def _where(path: Path, line: int) -> str:
@@ -175,12 +164,14 @@ def test_a_test_module_imports_the_suite_only_through_the_helpers() -> None:
     importing a helper submodule bypasses the facade that lets a helper move
     between submodules without touching a caller.
     """
-    offenders = [
-        f"{_where(path, line)} imports {module}"
-        for path in _suite_modules()
-        for line, module in _imported_modules(source_tree(path))
-        if module.split(".")[0] == "tests" and module != "tests.helpers"
-    ]
+    offenders = sorted(
+        {
+            f"{_where(path, imported.line)} imports {imported.module}"
+            for path in _suite_modules()
+            for imported in imports_of(path, scope="anywhere", relative=False)
+            if imported.in_package("tests") and imported.module != "tests.helpers"
+        }
+    )
 
     assert not offenders, (
         "import shared test code as `from tests.helpers import X`, moving it into "

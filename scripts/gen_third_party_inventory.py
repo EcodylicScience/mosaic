@@ -30,10 +30,12 @@ Those sources are answered from OVERRIDES, keyed by source URL rather than by
 name, and a non-registry source with no override is reported unknown rather than
 guessed.
 
-Two locks are read by default. The main one resolves mosaic-behavior itself. The
-second, under feature_library/external, resolves the isolated environment that
-runs keypoint-MoSeq -- the only non-commercial component in the tree, and
-invisible to any tool that reads the main lock alone.
+Three locks are read by default. The main one resolves mosaic-behavior itself.
+The second, under feature_library/external, resolves the isolated environment
+that runs keypoint-MoSeq, the only non-commercial component in the tree. The
+third, under feature_library/external/vame-env, resolves the isolated
+environment that runs VAME. Both are invisible to a tool that reads the main
+lock alone.
 
 Counts are per distribution, not per lock entry, and the difference is real: a
 package resolved for more than one platform gets one `[[package]]` entry each,
@@ -76,6 +78,7 @@ REPOSITORY_ROOT: Final = Path(__file__).resolve().parent.parent
 DEFAULT_LOCKS: Final = (
     REPOSITORY_ROOT / "uv.lock",
     REPOSITORY_ROOT / "src/mosaic/behavior/feature_library/external/uv.lock",
+    REPOSITORY_ROOT / "src/mosaic/behavior/feature_library/external/vame-env/uv.lock",
 )
 PYPI_ENDPOINT: Final = "https://pypi.org/pypi"
 USER_AGENT: Final = "mosaic-third-party-inventory"

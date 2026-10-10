@@ -3,22 +3,24 @@
 ``tests/tracking/trex/test_trex_invocation.py``,
 ``tests/tracking/sleap/test_sleap_invocation.py`` and
 ``tests/tracking/litpose/test_litpose_invocation.py`` cover the five-step ladder
-once per tool, which is what proves each tool still resolves the way it did.
-This covers what those three cannot: the parts of the shared machinery that no
-single tool exercises fully -- the environment overlay, an explicitly chosen
-matplotlib backend, the in-repository interpreter rung, and the two exception
-shapes.
+once per tool, and prove that each tool still resolves the way it did.
+This covers the parts of the shared machinery that no single tool exercises
+fully: the environment overlay, an explicitly chosen matplotlib backend, the
+in-repository interpreter rung, the interpreter prerequisite, the conda env
+search, and the two exception shapes.
 
-The argv-summary test needs a real tracker to log through, so it lives in
+The argv-summary test logs through a real tracker and is in
 ``tests/tracking/common/test_running_argv_summary.py``.
 """
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TypeAlias
 
 import pytest
 
@@ -28,6 +30,7 @@ from mosaic.core.pipeline.toolenv import (
     ToolInvocation,
     ToolNotFoundError,
     locate_tool,
+    missing_interpreter,
     missing_output_error,
     subprocess_env,
     tool_invocation,
@@ -220,7 +223,7 @@ def _build_in_repo_python(root: Path, *, win32: bool = False) -> Path:
 
 
 def test_a_tool_without_the_in_repo_field_still_reaches_path() -> None:
-    """``_DIRECT`` declares no in-repository venv, so nothing about it changes."""
+    """``_DIRECT`` declares ``repo_venv=None`` and resolves from ``$PATH``."""
     assert tool_invocation(_DIRECT, executable="runme") == ["/p/bin/runme"]
 
 
@@ -233,34 +236,79 @@ def test_the_in_repo_rung_is_reached_once_every_other_rung_is_unset(
     assert tool_invocation(env, executable="python") == [str(interpreter)]
 
 
-def _conda_argv(env_name: str) -> list[str]:
-    return [FAKE_CONDA, "run", "--no-capture-output", "-n", env_name, "python"]
+def _conda_env_with(tmp_path: Path, env_name: str, executable: str) -> str:
+    """Build a conda installation under *tmp_path* with an env that has *executable*.
+
+    The installation is ``<tmp_path>/root``. Returns the path of its ``conda``.
+    """
+    conda = tmp_path / "root" / "bin" / "conda"
+    conda.parent.mkdir(parents=True)
+    conda.touch()
+    env_bin = tmp_path / "root" / "envs" / env_name / "bin"
+    env_bin.mkdir(parents=True)
+    (env_bin / executable).touch()
+    return str(conda)
+
+
+@dataclass(frozen=True)
+class _Machine:
+    """The interpreters that rungs 1 to 4 find for a tool declaring ``repo_venv``."""
+
+    explicit: Path
+    conda: str
+    conda_python: Path
+
+
+def _machine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Machine:
+    """Build an explicit interpreter and a conda env ``toolenv`` with a ``python``."""
+    explicit = tmp_path / "explicit-python"
+    explicit.touch()
+    conda = _conda_env_with(tmp_path, "toolenv", "python")
+    fake_path_lookup(monkeypatch, {"conda": conda})
+    conda_python = tmp_path / "root" / "envs" / "toolenv" / "bin" / "python"
+    return _Machine(explicit=explicit, conda=conda, conda_python=conda_python)
+
+
+def _conda_argv(machine: _Machine) -> list[str]:
+    return [
+        machine.conda,
+        "run",
+        "--no-capture-output",
+        "-n",
+        "toolenv",
+        str(machine.conda_python),
+    ]
 
 
 def _via_placed_conda_env(
-    env: ToolEnv, explicit: Path, monkeypatch: pytest.MonkeyPatch
+    env: ToolEnv, machine: _Machine, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[ToolEnv, list[str]]:
-    return env.placed(conda_env="toolenv"), _conda_argv("toolenv")
+    return env.placed(conda_env="toolenv"), _conda_argv(machine)
 
 
 def _via_placed_bin_path(
-    env: ToolEnv, explicit: Path, monkeypatch: pytest.MonkeyPatch
+    env: ToolEnv, machine: _Machine, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[ToolEnv, list[str]]:
-    return env.placed(bin_path=explicit), [str(explicit)]
+    return env.placed(bin_path=machine.explicit), [str(machine.explicit)]
 
 
 def _via_conda_env_var(
-    env: ToolEnv, explicit: Path, monkeypatch: pytest.MonkeyPatch
+    env: ToolEnv, machine: _Machine, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[ToolEnv, list[str]]:
     monkeypatch.setenv("MOSAIC_FAKE_CONDA_ENV", "toolenv")
-    return env, _conda_argv("toolenv")
+    return env, _conda_argv(machine)
 
 
 def _via_bin_var(
-    env: ToolEnv, explicit: Path, monkeypatch: pytest.MonkeyPatch
+    env: ToolEnv, machine: _Machine, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[ToolEnv, list[str]]:
-    monkeypatch.setenv("MOSAIC_FAKE_BIN", str(explicit))
-    return env, [str(explicit)]
+    monkeypatch.setenv("MOSAIC_FAKE_BIN", str(machine.explicit))
+    return env, [str(machine.explicit)]
+
+
+_Place: TypeAlias = Callable[
+    [ToolEnv, _Machine, pytest.MonkeyPatch], tuple[ToolEnv, list[str]]
+]
 
 
 @pytest.mark.parametrize(
@@ -269,18 +317,16 @@ def _via_bin_var(
     ids=["placed-conda-env", "placed-bin-path", "conda-env-var", "bin-var"],
 )
 def test_every_earlier_rung_wins_over_a_built_in_repo_venv(
-    place: Callable[[ToolEnv, Path, pytest.MonkeyPatch], tuple[ToolEnv, list[str]]],
+    place: _Place,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Rungs 1 to 4 all take precedence over a venv that the in-repo rung would find."""
     _build_in_repo_python(tmp_path)
     env = _with_repo_venv(tmp_path)
-    explicit = tmp_path / "explicit-python"
-    explicit.touch()
-    fake_path_lookup(monkeypatch, {"conda": FAKE_CONDA})
+    machine = _machine(tmp_path, monkeypatch)
 
-    placed, expected = place(env, explicit, monkeypatch)
+    placed, expected = place(env, machine, monkeypatch)
 
     assert tool_invocation(placed, executable="python") == expected
 
@@ -302,18 +348,16 @@ def test_every_earlier_rung_wins_over_a_built_in_repo_venv(
     ids=["placed-conda-env", "placed-bin-path", "conda-env-var", "bin-var"],
 )
 def test_an_invocation_names_the_rung_that_it_came_from(
-    place: Callable[[ToolEnv, Path, pytest.MonkeyPatch], tuple[ToolEnv, list[str]]],
+    place: _Place,
     source: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A message about a tool that cannot be started names where it was located."""
     env = _with_repo_venv(tmp_path)
-    explicit = tmp_path / "explicit-python"
-    explicit.touch()
-    fake_path_lookup(monkeypatch, {"conda": FAKE_CONDA})
+    machine = _machine(tmp_path, monkeypatch)
 
-    placed, expected = place(env, explicit, monkeypatch)
+    placed, expected = place(env, machine, monkeypatch)
 
     assert locate_tool(placed, executable="python") == ToolInvocation(
         argv=expected, source=source
@@ -383,11 +427,10 @@ def test_a_missing_bin_var_is_refused_naming_the_variable(
 def test_a_missing_sibling_executable_is_refused_in_a_repo_venv_tool(
     tmp_path: Path,
 ) -> None:
-    """``_from_bin``'s sibling-mode branches carry the same file check.
+    """``_from_bin`` applies the same file check in sibling mode.
 
-    No tool combines sibling mode with ``repo_venv`` today -- every tool
-    declaring one has a single interpreter and so is placed in direct mode --
-    but the check sits in shared code and must hold for sibling mode too.
+    Every tool that declares ``repo_venv`` has a single interpreter and is placed
+    in direct mode. The check is in shared code and applies to sibling mode too.
     """
     env = replace(_SIBLING, repo_venv=tmp_path)
     placed_bin = tmp_path / "placed-bin" / "other"
@@ -419,7 +462,7 @@ def test_a_missing_in_repo_venv_is_refused_naming_the_resolved_path(
 def test_a_missing_in_repo_venv_also_carries_the_tools_own_install_help(
     tmp_path: Path,
 ) -> None:
-    """The path alone is not install help: the tool's own hint must appear too."""
+    """The refusal ends with the tool's install hint as well as the path."""
     env = _with_repo_venv(tmp_path)
 
     with pytest.raises(_FakeNotFound) as refused:
@@ -431,17 +474,42 @@ def test_a_missing_in_repo_venv_also_carries_the_tools_own_install_help(
 def test_isolating_an_in_repo_venv_tool_does_not_redirect_one_with_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Isolating a repo_venv tool leaves one that declares none on ``$PATH``.
-
-    It must not catch a tool isolated beside it that declares no
-    ``repo_venv`` -- that one still resolves its fifth rung from ``$PATH``.
-    """
+    """Isolating a repo_venv tool leaves one that declares none on ``$PATH``."""
     with_venv = _with_repo_venv(tmp_path)
     isolate_tool_location(
         monkeypatch, with_venv, _DIRECT, found={"runme": "/p/bin/runme"}
     )
 
     assert tool_invocation(_DIRECT, executable="runme") == ["/p/bin/runme"]
+
+
+# --- the interpreter prerequisite -------------------------------------------
+
+
+def test_an_unlocated_interpreter_is_answered_with_the_tools_install_help(
+    tmp_path: Path,
+) -> None:
+    """No rung locates ``python``, and the in-repository environment is not built."""
+    missing = missing_interpreter(_with_repo_venv(tmp_path))
+
+    assert missing == _FakeNotFound.default_message
+
+
+def test_a_located_interpreter_is_not_started(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[object] = []
+
+    def refuse_to_start(*args: object, **kwargs: object) -> None:
+        started.append(args)
+        msg = "locating the interpreter started a process"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(subprocess, "Popen", refuse_to_start)
+    _ = _build_in_repo_python(tmp_path)
+
+    assert missing_interpreter(_with_repo_venv(tmp_path)) is None
+    assert started == []
 
 
 # --- the environment ------------------------------------------------------
@@ -480,18 +548,6 @@ def test_the_overlay_wins_over_the_inherited_environment(
 
 
 # --- which install a named conda env actually runs -------------------------
-
-
-def _conda_env_with(tmp_path: Path, env_name: str, executable: str) -> str:
-    """A conda layout under *tmp_path*: ``<root>/bin/conda`` and one env holding
-    *executable*. Returns the path to the fake ``conda``."""
-    conda = tmp_path / "root" / "bin" / "conda"
-    conda.parent.mkdir(parents=True)
-    conda.touch()
-    env_bin = tmp_path / "root" / "envs" / env_name / "bin"
-    env_bin.mkdir(parents=True)
-    (env_bin / executable).touch()
-    return str(conda)
 
 
 def test_a_named_conda_env_runs_its_own_executable_not_one_earlier_on_path(
@@ -543,6 +599,104 @@ def test_conda_envs_dirs_locates_an_env_outside_the_base_installation(
     got = tool_invocation(_DIRECT.placed(conda_env="toolenv"), executable="runme")
 
     assert got[-1] == str(elsewhere / "runme")
+
+
+def test_the_users_env_directory_locates_an_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Conda keeps a user's envs in ``~/.conda/envs``, after the installation's."""
+    conda = _conda_env_with(tmp_path, "unused", "runme")
+    user_envs = tmp_path / "home" / ".conda" / "envs"
+    runme = user_envs / "toolenv" / "bin" / "runme"
+    runme.parent.mkdir(parents=True)
+    runme.touch()
+    isolate_tool_location(
+        monkeypatch, _DIRECT, found={"conda": conda}, user_envs=user_envs
+    )
+
+    got = tool_invocation(_DIRECT.placed(conda_env="toolenv"), executable="runme")
+
+    assert got[-1] == str(runme)
+
+
+def test_the_env_named_base_is_the_installation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conda = _conda_env_with(tmp_path, "unused", "runme")
+    runme = tmp_path / "root" / "bin" / "runme"
+    runme.touch()
+    fake_path_lookup(monkeypatch, {"conda": conda})
+
+    got = tool_invocation(_DIRECT.placed(conda_env="base"), executable="runme")
+
+    assert got[-1] == str(runme)
+
+
+def test_an_absent_env_does_not_run_the_installations_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The installation's ``bin/python`` belongs to the env named ``base`` alone."""
+    conda = _conda_env_with(tmp_path, "unused", "python")
+    (tmp_path / "root" / "bin" / "python").touch()
+    fake_path_lookup(monkeypatch, {"conda": conda})
+
+    got = tool_invocation(_DIRECT.placed(conda_env="no-such-env"), executable="python")
+
+    assert got[-1] == "python"
+
+
+def test_the_conda_rung_resolves_the_windows_interpreter_on_win32(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Conda on Windows installs an env's interpreter in the env's prefix."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    conda = _conda_env_with(tmp_path, "unused", "python")
+    interpreter = tmp_path / "root" / "envs" / "toolenv" / "python.exe"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.touch()
+    fake_path_lookup(monkeypatch, {"conda": conda})
+    monkeypatch.setenv("MOSAIC_FAKE_CONDA_ENV", "toolenv")
+    env = _with_repo_venv(tmp_path / "repo")
+
+    assert tool_invocation(env, executable="python")[-1] == str(interpreter)
+    assert missing_interpreter(env) is None
+
+
+def test_the_conda_rung_resolves_a_windows_console_script_on_win32(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Conda on Windows installs console scripts in the env's ``Scripts``."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    conda = _conda_env_with(tmp_path, "unused", "runme")
+    script = tmp_path / "root" / "envs" / "toolenv" / "Scripts" / "runme.exe"
+    script.parent.mkdir(parents=True)
+    script.touch()
+    fake_path_lookup(monkeypatch, {"conda": conda})
+
+    got = tool_invocation(_DIRECT.placed(conda_env="toolenv"), executable="runme")
+
+    assert got[-1] == str(script)
+
+
+def test_an_absent_env_refuses_a_tool_that_is_only_an_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal names the conda rung and the directories that it searched."""
+    conda = _conda_env_with(tmp_path, "unused", "python")
+    (tmp_path / "root" / "bin" / "python").touch()
+    fake_path_lookup(monkeypatch, {"conda": conda})
+    monkeypatch.setenv("MOSAIC_FAKE_CONDA_ENV", "no-such-env")
+    env = _with_repo_venv(tmp_path / "repo")
+
+    with pytest.raises(_FakeNotFound) as refused:
+        tool_invocation(env, executable="python")
+
+    message = str(refused.value)
+    rung = "the conda environment 'no-such-env' named by MOSAIC_FAKE_CONDA_ENV"
+    assert rung in message
+    assert str(tmp_path / "root" / "envs" / "no-such-env" / "bin") in message
+    assert _FakeNotFound.default_message in message
+    assert missing_interpreter(env) == _FakeNotFound.default_message
 
 
 # --- the exceptions -------------------------------------------------------

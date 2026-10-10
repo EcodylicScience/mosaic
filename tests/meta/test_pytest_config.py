@@ -9,23 +9,26 @@ from __future__ import annotations
 
 import shlex
 import tomllib
+from dataclasses import dataclass
 
 import pytest
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from tests.helpers import REPO_ROOT
+from tests.helpers import REPO_ROOT, SEPARATED_TOOLS, CiJob
 
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
+_WORKFLOWS_RUNNING_PYTEST = ("ci.yml", "slow.yml")
 
 _UNCLAIMED_MARKERS = frozenset({"slow", "media"})
 """The markers that no CI job selects by name.
 
-``slow`` divides each job's selection by cost rather than by environment, and
-``media`` marks a test needing the ffmpeg toolchain, which every job installs.
-Every other marker is a job marker: it names the job whose environment its tests
-need.
+``slow`` divides each job's selection by cost. It also selects ``slow.yml``,
+the only workflow that builds VAME's environment. A test needing VAME's
+environment is therefore marked ``slow``. ``media`` marks a test needing the
+ffmpeg toolchain, which every job installs. Every other marker is a job marker:
+it names the job whose environment its tests need.
 """
 
 
@@ -52,6 +55,13 @@ def _declared_markers() -> list[str]:
 
 class _Step(BaseModel):
     run: str = ""
+    env: dict[str, object] = {}
+    working_directory: str = Field(default="", alias="working-directory")
+
+    @property
+    def arguments(self) -> list[str]:
+        """The words of :attr:`run`, without its comments."""
+        return shlex.split(self.run, comments=True)
 
 
 class _Job(BaseModel):
@@ -62,22 +72,44 @@ class _Workflow(BaseModel):
     jobs: dict[str, _Job]
 
 
+@dataclass(frozen=True, slots=True)
+class _PytestJob:
+    """A job that runs pytest.
+
+    Attributes:
+        job: The job.
+        step: The step that runs pytest.
+        expression: The ``-m`` expression that the step passes. Empty when it
+            passes none.
+    """
+
+    job: _Job
+    step: _Step
+    expression: str
+
+
+def _pytest_jobs(workflow: str) -> dict[str, _PytestJob]:
+    """Each job of *workflow* that runs pytest, by name."""
+    text = (WORKFLOWS / workflow).read_text()
+    document = _Workflow.model_validate(yaml.safe_load(text))
+    found: dict[str, _PytestJob] = {}
+    for name, job in document.jobs.items():
+        for step in job.steps:
+            arguments = step.arguments
+            if "pytest" not in arguments:
+                continue
+            selects = "-m" in arguments
+            expression = arguments[arguments.index("-m") + 1] if selects else ""
+            found[name] = _PytestJob(job, step, expression)
+    return found
+
+
 def _marker_expressions(workflow: str) -> dict[str, str]:
     """Each job of *workflow* that runs pytest, and the ``-m`` expression it passes.
 
     A job passing no ``-m`` maps to the empty string.
     """
-    text = (WORKFLOWS / workflow).read_text()
-    document = _Workflow.model_validate(yaml.safe_load(text))
-    expressions: dict[str, str] = {}
-    for name, job in document.jobs.items():
-        for step in job.steps:
-            arguments = shlex.split(step.run, comments=True)
-            if "pytest" not in arguments:
-                continue
-            selects = "-m" in arguments
-            expressions[name] = arguments[arguments.index("-m") + 1] if selects else ""
-    return expressions
+    return {name: job.expression for name, job in _pytest_jobs(workflow).items()}
 
 
 def _terms(expression: str) -> set[str]:
@@ -170,6 +202,68 @@ def test_the_slow_workflow_runs_the_slow_tests_no_job_marker_claims() -> None:
     expected = {"slow", *(f"not {marker}" for marker in _job_markers())}
 
     assert _terms(_marker_expressions("slow.yml")["slow"]) == expected
+
+
+def _building_jobs() -> list[CiJob]:
+    """The CI jobs that build an environment of a separated tool."""
+    built = {
+        environment.built_by
+        for tool in SEPARATED_TOOLS
+        for environment in tool.environments
+        if environment.built_by is not None
+    }
+    return sorted(built, key=lambda job: job.variable)
+
+
+def _job_id(job: CiJob) -> str:
+    return job.variable
+
+
+@pytest.mark.parametrize("ci_job", _building_jobs(), ids=_job_id)
+def test_the_job_selected_by_a_building_marker_builds_and_requires_the_environment(
+    ci_job: CiJob,
+) -> None:
+    """Checks the job that ``SEPARATED_TOOLS`` names against the workflows.
+
+    The job whose ``-m`` expression selects the marker builds each environment
+    that the registry records it building, and its pytest step sets the
+    variable. ``tests/conftest.py`` reads that variable and refuses to start
+    when an environment does not resolve. Without the variable, or without the
+    build, the tests that need the environment skip and the job passes.
+    """
+    selecting = {
+        f"{workflow}:{name}": job
+        for workflow in _WORKFLOWS_RUNNING_PYTEST
+        for name, job in _pytest_jobs(workflow).items()
+        if ci_job.marker in _terms(job.expression)
+    }
+    assert len(selecting) == 1, (
+        f"jobs selecting {ci_job.marker!r}: {sorted(selecting)}. The registry "
+        f"records one job that builds environments under {ci_job.variable}."
+    )
+    [(name, selected)] = selecting.items()
+
+    assert ci_job.variable in selected.step.env, (
+        f"{name} does not set {ci_job.variable} in its pytest step. The tests "
+        "that need the environment then skip, and the job passes."
+    )
+    builds = [
+        step.working_directory
+        for step in selected.job.steps
+        if step.arguments[:2] == ["uv", "sync"]
+    ]
+    unbuilt = sorted(
+        environment.directory
+        for tool in SEPARATED_TOOLS
+        for environment in tool.environments
+        if environment.built_by == ci_job
+        and not any(
+            build.endswith(f"src/mosaic/{environment.directory}") for build in builds
+        )
+    )
+    assert not unbuilt, (
+        f"{name} does not build {unbuilt}. It runs `uv sync` in {builds}."
+    )
 
 
 def test_an_empty_parameter_set_fails_collection() -> None:

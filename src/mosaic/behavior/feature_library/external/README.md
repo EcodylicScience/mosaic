@@ -6,7 +6,8 @@ it, and never ships it. This directory holds the environment's definition
 (`pyproject.toml`, `uv.lock`) and the program that mosaic starts in it and
 drives over its standard input and output (`kpms_server.py`, with
 `kpms_protocol.py` and `runner_wire.py` beside it). You build the environment
-yourself, once.
+yourself, once. VAME's program, `vame_runner.py` in this directory, runs in the
+environment that [`vame-env/`](vame-env/README.md) defines.
 
 ## Before you install: the license
 
@@ -75,10 +76,13 @@ or as a direct path:
 export MOSAIC_KPMS_PYTHON=/path/to/env/bin/python
 ```
 
-Resolution order, first match wins: the feature's `kpms_python` parameter,
-`MOSAIC_KPMS_CONDA_ENV`, `MOSAIC_KPMS_PYTHON`, then `.venv/bin/python` here.
-Wherever it resolves is deliberately excluded from the run identity hash, so
-moving between machines does not recompute a fitted model.
+Such an environment needs Python 3.10 or later, and the runner program needs
+pydantic 2.5 or later in it.
+
+Resolution takes the first match among the feature's `kpms_python` parameter,
+`MOSAIC_KPMS_CONDA_ENV`, `MOSAIC_KPMS_PYTHON` and `.venv/bin/python` here, in
+that order. The resolved path is excluded from the run identity hash. Moving
+between machines then does not recompute a fitted model.
 
 ## Check it works
 

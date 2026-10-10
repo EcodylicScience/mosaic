@@ -81,6 +81,23 @@ def test_each_individual_gets_its_own_heading() -> None:
     assert out["ANGLE"].to_numpy() == pytest.approx(np.zeros(6))
 
 
+def test_rows_come_in_id_order_and_rows_without_an_id_keep_a_nan_heading() -> None:
+    """A row without an id belongs to no individual, and follows the rest by frame."""
+    front = np.array([[1.0, 0.0], [2.0, 0.0]])
+    rear = np.array([[0.0, 0.0], [1.0, 0.0]])
+    df = _frame(front, rear, n_ids=3)
+    df["id"] = df["id"].astype(float)
+    df.loc[[0, 1], "id"] = np.nan
+
+    out = HeadingFeature().apply(df.iloc[::-1])
+
+    assert out["id"].tolist()[:4] == [1.0, 1.0, 2.0, 2.0]
+    assert out["id"].iloc[4:].isna().all()
+    assert out["frame"].tolist() == [0, 1, 0, 1, 0, 1]
+    assert out["ANGLE"].iloc[:4].to_numpy() == pytest.approx(np.zeros(4))
+    assert out["ANGLE"].iloc[4:].isna().all()
+
+
 def test_an_out_of_range_landmark_refuses_instead_of_falling_back() -> None:
     """The converters silently substituted the principal axis here.
 

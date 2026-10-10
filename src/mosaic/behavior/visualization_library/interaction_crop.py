@@ -48,6 +48,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
+from mosaic.behavior.feature_library.helpers import entry_identity
 from mosaic.behavior.feature_library.registry import register_feature
 from mosaic.behavior.visualization_library._crop_descriptions import (
     ANGLE_COL_DESCRIPTION,
@@ -323,8 +324,7 @@ class InteractionCropPipeline:
         cv2.setNumThreads(2)  # prevent OpenCV from saturating all cores
 
         p = self.params
-        group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
-        sequence = str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
+        group, sequence = entry_identity(df)
 
         # ``xy`` reads the body centre whether or not the table has keypoints, so
         # it needs the units check unconditionally. Without the first clause a

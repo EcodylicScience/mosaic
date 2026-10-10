@@ -8,22 +8,29 @@ naming a codec in the ones that did not.
 
 The two predicates below are the same question pointed inwards, and they are two
 questions rather than one. :func:`inside_a_virtualenv` asks whether a file is
-installed third-party code -- two of mosaic's own directories are where a user
-builds an environment for an external tool, so a walk of the package tree can
-reach a whole site-packages. :func:`runs_in_an_external_environment` asks whether
-a file is mosaic's own but runs on the far side of one of those boundaries, where
-it may take no import from mosaic at all. A walk wants whichever it actually
-means, and often both.
+installed third-party code. A user builds each external tool's environment
+under one of the :data:`EXTERNAL_ENVIRONMENT_TREES`, and a walk of the package
+tree then includes a whole site-packages.
+:func:`runs_in_an_external_environment` asks whether a file is part of mosaic
+but runs in one of those environments, where it may not import mosaic. A walk
+wants whichever it means, and often both.
 
 They live here rather than in the guards that use them because a second copy is
 how two guards come to disagree, and because the substring spelling of the second
 was written wrong in three of them before it was written right in one.
 
+:data:`SEPARATED_TOOLS` names the tools that run in those environments, with each
+tool's libraries, distribution, environments, programs and allowed importers. It
+contains data only. An environment names its ``ToolEnv`` as a
+``"module:attribute"`` string, which a check imports when it runs. This module
+therefore does not import the feature library, which declares the kpms and VAME
+environments.
+
 :func:`isolate_tool_location` and :func:`fake_path_lookup` stand in for the
 machine an external tool is located on: the variables its location ladder reads,
-and ``$PATH``. They patch the two seams the ladder looks through -- ``shutil.which``
-and the in-repository-venv root -- so a test names what is installed rather than
-how the lookup is reached.
+and ``$PATH``. They patch the ladder's seams: ``shutil.which``, the root of the
+in-repository venv, and the user's ``~/.conda/envs``. A test then declares the
+installed tools without patching the lookup itself.
 
 ``require_ffmpeg`` is a plain function rather than a fixture because the helpers
 that need it are plain functions too -- ``add_media_sequence`` writes videos and
@@ -34,14 +41,28 @@ the same outcome.
 
 from __future__ import annotations
 
+import importlib
 import shutil
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Final, Literal
 
 import pytest
 
 from mosaic.core.pipeline import toolenv
 from mosaic.core.pipeline.toolenv import ToolEnv
+from tests.helpers.paths import (
+    FEATURE_RUNNERS,
+    KPMS_PROTOCOL,
+    KPMS_SERVER,
+    RUNNER_WIRE,
+    SOURCE_ROOT,
+    ULTRALYTICS_PROTOCOL,
+    ULTRALYTICS_RUNNER,
+    VAME_PROTOCOL,
+    VAME_RUNNER,
+)
 
 # Both binaries. Probing shells out to ``ffprobe``; the transcode op and the
 # raw-H.264 packet scan shell out to ``ffmpeg``, and it is the one that goes
@@ -129,13 +150,12 @@ def require_ffmpeg() -> None:
 def inside_a_virtualenv(source: Path, root: Path) -> bool:
     """True when *source* is installed third-party code rather than mosaic's own.
 
-    Two directories under ``src/mosaic/`` are where a user builds an environment
-    for an external tool -- the keypoint-MoSeq runner's and the Ultralytics
-    tracking runner's -- so a walk of the package tree can reach a whole
-    site-packages. It finds hits that are not mosaic's code at all: ``pandas``'s
-    own ``frame.py`` carries ``df.to_parquet("df.parquet.gzip", ...)`` in a
-    docstring example, which reads exactly like a final path, and the Ultralytics
-    environment's site-packages holds Ultralytics itself.
+    A user builds each external tool's environment under one of the
+    :data:`EXTERNAL_ENVIRONMENT_TREES`, and a walk of the package tree then
+    includes a whole site-packages. It finds hits outside mosaic's code:
+    ``pandas``'s ``frame.py`` contains ``df.to_parquet("df.parquet.gzip", ...)``
+    in a docstring example, which reads like a final path, and the Ultralytics
+    environment's site-packages contains Ultralytics itself.
 
     Detected two ways because a virtualenv directory can be called anything: a
     ``site-packages`` component *below the package root*, or a ``pyvenv.cfg`` in a
@@ -193,6 +213,180 @@ def runs_in_an_external_environment(source: Path, root: Path) -> bool:
     )
 
 
+EnvironmentMarker = Literal["tracker", "slow"]
+"""The marker that selects the CI job building an external environment."""
+
+
+@dataclass(frozen=True, slots=True)
+class CiJob:
+    """A CI job that builds external environments.
+
+    Attributes:
+        marker: The marker that selects the job's tests.
+        variable: The variable that the job sets. With it set,
+            ``tests/conftest.py`` refuses to start when an environment that the
+            job builds does not resolve.
+    """
+
+    marker: EnvironmentMarker
+    variable: str
+
+
+TRACKING_JOB: Final = CiJob("tracker", "MOSAIC_CI_TRACKING")
+"""The ``tracking`` job of ``ci.yml``, which builds the Ultralytics and POLO environments."""
+
+VAME_JOB: Final = CiJob("slow", "MOSAIC_CI_VAME")
+"""The ``slow.yml`` workflow, which builds the VAME environment."""
+
+
+@dataclass(frozen=True, slots=True)
+class SeparatedEnvironment:
+    """One environment that a separated tool runs in.
+
+    Attributes:
+        directory: The directory of its ``pyproject.toml``, relative to the
+            package root.
+        tool_env: The :class:`ToolEnv` that locates it, as ``"module:attribute"``,
+            imported by :meth:`located_by`.
+        built_by: The CI job that builds it, or ``None`` for an environment
+            that only its user builds.
+        located_in_directory: Whether the ``ToolEnv`` declares
+            :attr:`directory` as its ``repo_venv``. A tool that is only an
+            interpreter is located there. A tool with a console script is
+            located on ``$PATH``.
+    """
+
+    directory: str
+    tool_env: str
+    built_by: CiJob | None
+    located_in_directory: bool
+
+    @property
+    def source_directory(self) -> Path:
+        """Returns :attr:`directory` in the repository checkout."""
+        return SOURCE_ROOT / self.directory
+
+    def located_by(self) -> ToolEnv:
+        """Imports and returns the :class:`ToolEnv` that :attr:`tool_env` names."""
+        module_name, _, attribute = self.tool_env.partition(":")
+        found: object = getattr(importlib.import_module(module_name), attribute)
+        if not isinstance(found, ToolEnv):
+            kind = type(found).__name__
+            message = f"{self.tool_env} names a {kind}. A ToolEnv is expected."
+            raise TypeError(message)
+        return found
+
+
+@dataclass(frozen=True, slots=True)
+class SeparatedTool:
+    """A tool that runs in environments the user builds, outside mosaic's process.
+
+    Paths are relative to the package root, and distributions are spelled as
+    :func:`~tests.helpers.distribution_names` spells them.
+
+    Attributes:
+        name: The tool's name, for messages.
+        license: Its license terms, for messages.
+        libraries: The import names that only :attr:`allowed_importers` import.
+        distribution: The distribution that installs them. An install of mosaic
+            does not declare it.
+        environments: The environments it runs in.
+        programs: The files that run in its environments. They do not import
+            mosaic.
+        allowed_importers: The programs that import its libraries.
+        mosaic_distributions: The mosaic-authored distributions that its
+            environments may declare.
+    """
+
+    name: str
+    license: str
+    libraries: tuple[str, ...]
+    distribution: str
+    environments: tuple[SeparatedEnvironment, ...]
+    programs: frozenset[str]
+    allowed_importers: frozenset[str]
+    mosaic_distributions: frozenset[str]
+
+
+ULTRALYTICS_TOOL: Final = SeparatedTool(
+    name="Ultralytics",
+    license="AGPL-3.0",
+    libraries=("ultralytics",),
+    distribution="ultralytics",
+    # Two environments, because POLO ships under the distribution name
+    # `ultralytics` and so cannot share one with upstream. Both run the same
+    # runner program.
+    environments=(
+        SeparatedEnvironment(
+            "tracking/external/ultralytics-env",
+            "mosaic.tracking.common.ultralytics_env:ULTRALYTICS_ENV",
+            TRACKING_JOB,
+            located_in_directory=False,
+        ),
+        SeparatedEnvironment(
+            "tracking/external/polo-env",
+            "mosaic.tracking.common.ultralytics_env:POLO_ENV",
+            TRACKING_JOB,
+            located_in_directory=False,
+        ),
+    ),
+    programs=frozenset({ULTRALYTICS_RUNNER, ULTRALYTICS_PROTOCOL}),
+    allowed_importers=frozenset({ULTRALYTICS_RUNNER}),
+    # The environment may declare mosaic-media because it is Apache-2.0, a license
+    # that AGPL-3.0 absorbs, and the user who builds the environment is the only
+    # party that combines the two. A separate distribution is not enough.
+    # mosaic-behavior is one too, and its `src/` must stay commercially
+    # relicensable.
+    mosaic_distributions=frozenset({"mosaic_media"}),
+)
+"""Ultralytics and the POLO fork: tracking, pose and point inference, and training."""
+
+KPMS_TOOL: Final = SeparatedTool(
+    name="keypoint-MoSeq",
+    license="non-commercial research and academic use only",
+    libraries=("keypoint_moseq", "jax_moseq"),
+    distribution="keypoint_moseq",
+    # A CI job does not build it. Its built-environment check skips in CI.
+    environments=(
+        SeparatedEnvironment(
+            FEATURE_RUNNERS,
+            "mosaic.behavior.feature_library.kpms:KPMS_ENV",
+            None,
+            located_in_directory=True,
+        ),
+    ),
+    programs=frozenset({KPMS_SERVER, KPMS_PROTOCOL, RUNNER_WIRE}),
+    allowed_importers=frozenset({KPMS_SERVER}),
+    mosaic_distributions=frozenset(),
+)
+"""keypoint-MoSeq, behind the kpms feature."""
+
+VAME_TOOL: Final = SeparatedTool(
+    name="VAME",
+    license="GPL-3.0",
+    libraries=("vame",),
+    distribution="vame_py",
+    environments=(
+        SeparatedEnvironment(
+            f"{FEATURE_RUNNERS}/vame-env",
+            "mosaic.behavior.feature_library.vame_feature:VAME_ENV",
+            VAME_JOB,
+            located_in_directory=True,
+        ),
+    ),
+    programs=frozenset({VAME_RUNNER, VAME_PROTOCOL, RUNNER_WIRE}),
+    allowed_importers=frozenset({VAME_RUNNER}),
+    mosaic_distributions=frozenset(),
+)
+"""VAME, behind the vame feature."""
+
+SEPARATED_TOOLS: Final = (ULTRALYTICS_TOOL, KPMS_TOOL, VAME_TOOL)
+"""Every tool that runs in an environment the user builds, outside mosaic's process.
+
+A separation check reads only the tools listed here.
+"""
+
+
 def sandbox_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> Path:
     """Point ``~`` at *home* for the running test, and work from a clean cwd.
 
@@ -219,12 +413,12 @@ def sandbox_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> Path:
 FAKE_CONDA = "/p/bin/conda"
 """A conda executable for a fake ``$PATH``, two levels deep for a reason.
 
-``conda_invocation`` resolves an environment's own executable by climbing
-``parent.parent`` from the conda binary and probing ``<base>/bin/<executable>``
-on the real filesystem. A one-level fake such as ``/p/conda`` makes that base
-``/``, so the probe finds ``/bin/python`` wherever the host has one, and the
-result depends on the machine rather than on the code. ``/p`` exists nowhere,
-so every candidate misses and the bare name is used.
+``conda_invocation`` takes the conda installation as ``parent.parent`` of the
+conda binary and probes the installation's ``envs`` and, for the env named
+``base``, its ``bin``, on the real filesystem. A one-level fake such as
+``/p/conda`` makes that installation ``/``, and the probe then reads the host's
+``/bin``. ``/p`` exists nowhere. Every candidate misses, and the bare name is
+used.
 """
 
 
@@ -241,13 +435,19 @@ def fake_path_lookup(monkeypatch: pytest.MonkeyPatch, found: Mapping[str, str]) 
     monkeypatch.setattr(toolenv.shutil, "which", which)
 
 
-_NO_REPO_VENV = Path("/p/no-venv")
-"""A root for the in-repository-interpreter rung that is never built.
+_NO_USER_ENVS = Path("/p/no-home/.conda/envs")
+"""A ``~/.conda/envs`` for a test that isolates a tool's location.
 
-Exists nowhere, like :data:`FAKE_CONDA`, so a test isolating a tool that
-declares :attr:`~mosaic.core.pipeline.toolenv.ToolEnv.repo_venv` gets a
-deterministic refusal from that rung by default, regardless of whether a real
-venv happens to be built on the machine the suite runs on.
+It exists nowhere, like :data:`FAKE_CONDA`. A developer's ``~/.conda/envs`` may
+contain an env with the name that a test places a tool in.
+"""
+
+_NO_REPO_VENV = Path("/p/no-venv")
+"""A root of the in-repository venv for a test that isolates a tool's location.
+
+It exists nowhere, like :data:`FAKE_CONDA`. That rung then refuses each tool
+declaring :attr:`~mosaic.core.pipeline.toolenv.ToolEnv.repo_venv` by default,
+whether or not the venv is built on the suite's machine.
 """
 
 
@@ -256,6 +456,7 @@ def isolate_tool_location(
     *envs: ToolEnv,
     found: Mapping[str, str],
     repo_venv: Path = _NO_REPO_VENV,
+    user_envs: Path = _NO_USER_ENVS,
 ) -> None:
     """Unset what the location ladder reads for *envs*, and fake ``$PATH``.
 
@@ -263,15 +464,15 @@ def isolate_tool_location(
     and conda's own ``CONDA_EXE`` and ``CONDA_ENVS_DIRS``. A developer may export
     any of them, and a test of which rung wins would then report the machine
     rather than the code. ``$PATH`` lookups answer from *found*, as
-    :func:`fake_path_lookup` does.
+    :func:`fake_path_lookup` does. The conda rung reads *user_envs* in place of
+    ``~/.conda/envs``, and the default directory exists nowhere.
 
-    The redirect is keyed on the declared directory, not on tool identity: every
-    ``ToolEnv`` whose ``repo_venv`` equals one declared by *envs* -- a ``.placed``
-    variant sharing the same directory included -- reads *repo_venv* instead of
-    its own declared directory, even when that ``ToolEnv`` itself is not among
-    *envs*. Every other ``ToolEnv`` reads its own ``repo_venv``, or ``$PATH`` when
-    it declares none. A test that wants to simulate a present venv passes a
-    directory holding one; the default simulates none built at all.
+    The redirect is keyed on the declared directory. Every ``ToolEnv`` whose
+    ``repo_venv`` equals one that *envs* declare reads *repo_venv* in place of
+    that directory, a ``.placed`` variant and a ``ToolEnv`` outside *envs*
+    included. Every other ``ToolEnv`` reads the ``repo_venv`` that it declares,
+    or ``$PATH`` when it declares none. A test simulates a built venv by passing
+    a directory that contains one. The default simulates an unbuilt venv.
     """
     for env in envs:
         for variable in (env.conda_env_var, env.bin_var, env.display_var):
@@ -280,6 +481,11 @@ def isolate_tool_location(
     for variable in ("CONDA_EXE", "CONDA_ENVS_DIRS"):
         monkeypatch.delenv(variable, raising=False)
     fake_path_lookup(monkeypatch, found)
+
+    def resolve_user_envs() -> Path:
+        return user_envs
+
+    monkeypatch.setattr(toolenv, "_user_envs_dir", resolve_user_envs)
     declared = {env.repo_venv for env in envs if env.repo_venv is not None}
     if declared:
 

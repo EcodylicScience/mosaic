@@ -27,9 +27,11 @@ the script directly, as above, bypasses nothing but that reminder.
 """
 
 # JAX, jax_moseq and keypoint-moseq are installed in the keypoint-MoSeq
-# environment only. In mosaic's environment their imports resolve to nothing, and
-# every value read from them has an unknown type, which the last three rules
-# report.
+# environment only. The rules disabled below report the consequences:
+# - reportMissingImports: their imports do not resolve in mosaic's environment;
+# - reportUnknownMemberType, reportUnknownVariableType and
+#   reportUnknownArgumentType: every value read from them has an unknown type,
+#   and the command handlers and their helpers compute with those values.
 # pyright: reportMissingImports=false
 # pyright: reportUnknownMemberType=false
 # pyright: reportUnknownVariableType=false
@@ -38,14 +40,12 @@ the script directly, as above, bypasses nothing but that reminder.
 from __future__ import annotations
 
 import functools
-import importlib.metadata
+import importlib
 import logging
 import os
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Final, SupportsIndex, TypedDict, TypeVar
-
-from pydantic import JsonValue
 
 from kpms_protocol import (
     AddTrack,
@@ -56,7 +56,15 @@ from kpms_protocol import (
     Payload,
     SaveModel,
 )
-from runner_wire import Dispatch, Emit, Handler, claim_stdout, serve
+from runner_wire import (
+    Dispatch,
+    Emit,
+    claim_stdout,
+    installed_version,
+    log_to_stderr,
+    serve,
+    serving,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -125,18 +133,6 @@ def load_libraries() -> None:
 
     np.bincount = bincount
     jax.config.update("jax_enable_x64", True)
-
-
-def installed_version() -> str:
-    """keypoint-moseq's installed version, read without importing it.
-
-    An environment without keypoint-moseq reports ``not installed``. Its first
-    command then fails at the import.
-    """
-    try:
-        return importlib.metadata.version(TOOL)
-    except importlib.metadata.PackageNotFoundError:
-        return "not installed"
 
 
 # --- Server state ---
@@ -464,25 +460,24 @@ def _try_load_checkpoint(
 # --- Dispatch ---
 
 
-def _serving(model: type[_P], handle: Callable[[_P], None]) -> Handler:
-    """The handler that loads the libraries and runs *handle* on a *model* payload."""
+def _loading(handle: Callable[[_P], None]) -> Callable[[_P, Emit], None]:
+    """Return *handle* as a handler that calls :func:`load_libraries` first."""
 
-    def handler(payload: Mapping[str, JsonValue], emit: Emit) -> None:
-        log.info("command: %s", model.command)
+    def loaded(request: _P, emit: Emit) -> None:
         load_libraries()
-        handle(model.model_validate(payload))
+        handle(request)
 
-    return handler
+    return loaded
 
 
 def dispatch(server: KpmsServer) -> Dispatch:
     """The handler of each command, run on *server*."""
     return {
-        AddTrack.command: _serving(AddTrack, server.handle_add_track),
-        Fit.command: _serving(Fit, server.handle_fit),
-        LoadModel.command: _serving(LoadModel, server.handle_load_model),
-        Apply.command: _serving(Apply, server.handle_apply),
-        SaveModel.command: _serving(SaveModel, server.handle_save_model),
+        AddTrack.command: serving(AddTrack, _loading(server.handle_add_track)),
+        Fit.command: serving(Fit, _loading(server.handle_fit)),
+        LoadModel.command: serving(LoadModel, _loading(server.handle_load_model)),
+        Apply.command: serving(Apply, _loading(server.handle_apply)),
+        SaveModel.command: serving(SaveModel, _loading(server.handle_save_model)),
     }
 
 
@@ -491,10 +486,8 @@ def dispatch(server: KpmsServer) -> Dispatch:
 
 def main() -> None:
     protocol = claim_stdout()
-    logging.basicConfig(
-        level=logging.INFO, format="[%(name)s] %(levelname)s: %(message)s"
-    )
-    serve(dispatch(KpmsServer()), TOOL, installed_version(), protocol=protocol)
+    log_to_stderr()
+    serve(dispatch(KpmsServer()), TOOL, installed_version(TOOL), protocol=protocol)
 
 
 if __name__ == "__main__":

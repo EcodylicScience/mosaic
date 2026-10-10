@@ -286,12 +286,12 @@ def _build_nn_filter(
 
 
 def _close_feature(feature: Feature) -> None:
-    """Release *feature*'s held resource, once, if it declares one.
+    """Call ``close()`` on *feature* when it declares :class:`ClosesResources`.
 
-    Shared by ``run_feature`` and ``process_apply_worker``: both close from a
-    ``finally`` around the work they each did on their own instance. See
-    :class:`ClosesResources`. A raising ``close()`` is logged and never
-    replaces whatever exception is already propagating.
+    ``run_feature`` and ``process_apply_worker`` each call this from a
+    ``finally`` around their work on an instance. A ``close()`` that raises is
+    reported on standard error and does not replace the exception or the result
+    of that work.
     """
     if isinstance(feature, ClosesResources):
         try:
@@ -324,12 +324,12 @@ def process_apply_worker(
     main-process bind at ``run_feature`` doesn't propagate across process
     workers. Features without ``bind_dataset`` are unaffected.
 
-    This worker's instance is built fresh for this one call and reached by
-    nothing else, so it is the one place that can release a resource it opened
-    -- ``run_feature``'s own close of the main-process instance (``apply``
-    never runs there under this mode) does not reach it. ``bind_dataset``,
-    ``load_state`` and ``apply`` all run inside the guarded region, since any
-    of the three may acquire the resource that ``close()`` must then release.
+    The worker builds its instance for this one call, and only this call refers
+    to it. The worker therefore closes the instance itself. ``run_feature``
+    closes the main-process instance, on which ``apply`` does not run in this
+    mode. ``bind_dataset``, ``load_state`` and ``apply`` all run inside the
+    ``try``, because each of them may acquire the resource that ``close()``
+    releases.
     """
     mod = importlib.import_module(module_name)
     cls = getattr(mod, class_name)
@@ -1585,22 +1585,20 @@ def _run_feature_impl(
     pending: dict[Future[pd.DataFrame], tuple[FeatureMeta, CoreSelector | None]] = {}
 
     def _entry_failed(group: str, sequence: str, exc: Exception) -> None:
-        """One entity's ``apply`` raised: report it and carry on, unless cancelled.
+        """Record that one entity's ``apply`` raised, unless the run was cancelled.
 
         Shared by the inline and parallel-drain paths deliberately. They used to
         hold two copies of a bare ``print``, which is how one of them could be
         repaired and the other left reporting success.
 
-        ``ctx.entry_failed_unless_cancelled`` decides whether this is a lost
-        entity or a cancel: a tool an entry's ``apply`` drives can be killed by
-        a cancel and raise its own exception for it, and while the attempt's
-        cancel token is set that call raises
-        :class:`~mosaic.core.pipeline.job.Cancelled` instead of recording a
-        failure. The stderr line below runs only once that call has decided the
-        entity is really lost, so a cancelled entry is never printed as a
-        failure -- it is what a human running the CLI directly reads, and the
-        record that survives the queue either way, since the child's stderr
-        goes to DEVNULL there.
+        ``ctx.entry_failed_unless_cancelled`` decides between a lost entity and
+        a cancel. A cancel can kill a tool that an entry's ``apply`` drives, and
+        ``apply`` then raises the tool's error. While the attempt's cancel token
+        is set, that call raises :class:`~mosaic.core.pipeline.job.Cancelled`
+        instead of recording a failure. The line on standard error is printed
+        only after that call records the entity as lost, for a human who runs
+        the CLI directly. A queued run keeps the run-log record alone, because
+        the queue discards the child's standard error.
         """
         ctx.entry_failed_unless_cancelled(make_entry_key(group, sequence), exc)
         print(

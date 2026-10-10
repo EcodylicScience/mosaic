@@ -1,10 +1,15 @@
-"""One individual's rows at a time, in the order a feature reads them."""
+"""One individual's rows at a time, in frame order.
+
+The features and the resampling of a tracks table read one individual at a time.
+Each refuses an individual with two rows of one frame.
+"""
 
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
-from mosaic.behavior.feature_library.helpers import iter_individuals
+from mosaic.core.individuals import iter_individuals, refuse_repeated_rows
 
 
 def _rows() -> pd.DataFrame:
@@ -80,3 +85,36 @@ def test_rows_at_one_frame_keep_their_order() -> None:
     [(_, ordered)] = list(iter_individuals(rows))
 
     assert ordered["value"].tolist() == [*range(1, 41, 2), 40, *range(0, 40, 2)]
+
+
+# --- Repeated rows ---
+
+
+def test_rows_of_distinct_frames_per_id_are_accepted() -> None:
+    refuse_repeated_rows(_rows(), "feature")
+
+
+def test_a_repeated_frame_is_named_with_its_id() -> None:
+    rows = pd.DataFrame({"frame": [1, 2, 2, 2], "id": ["a", "a", "b", "a"]})
+
+    with pytest.raises(
+        ValueError, match=r"^feature: frame 2 of id a appears in more than one row$"
+    ):
+        refuse_repeated_rows(rows, "feature")
+
+
+def test_a_repeated_frame_of_a_table_without_ids_is_named() -> None:
+    """A table without an id column is one individual."""
+    with pytest.raises(
+        ValueError, match=r"^feature: frame 3 appears in more than one row$"
+    ):
+        refuse_repeated_rows(_rows().drop(columns="id"), "feature")
+
+
+def test_another_column_can_key_the_rows() -> None:
+    rows = _rows()
+    rows.loc[[10, 12], "time"] = 0.0
+
+    refuse_repeated_rows(rows, "feature")
+    with pytest.raises(ValueError, match=r"^feature: time 0.0 of id 7 appears"):
+        refuse_repeated_rows(rows, "feature", order_col="time")

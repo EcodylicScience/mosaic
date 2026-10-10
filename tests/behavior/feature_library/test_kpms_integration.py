@@ -26,29 +26,25 @@ from mosaic.behavior.feature_library.kpms import (
     KPMS_LICENSE_ENV,
     KPMS_PYTHON_ENV,
     KpmsFeature,
-    KpmsNotFoundError,
 )
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.run import run_feature
-from mosaic.core.pipeline.toolenv import tool_invocation
+from mosaic.core.pipeline.toolenv import missing_interpreter
 from mosaic.core.pipeline.types import Result
-from tests.helpers import add_tracks_table, make_dataset
-
-
-def _kpms_python_found() -> bool:
-    """Whether an interpreter resolves, by the same ladder the feature uses."""
-    try:
-        _ = tool_invocation(KPMS_ENV, executable="python")
-    except KpmsNotFoundError:
-        return False
-    return True
+from tests.helpers import (
+    add_tracks_table,
+    kpms_params,
+    make_dataset,
+    model_reference,
+    result_outputs,
+    result_run_root,
+)
 
 
 pytestmark = [
     pytest.mark.slow,
     pytest.mark.skipif(
-        not _kpms_python_found(),
+        missing_interpreter(KPMS_ENV) is not None,
         reason=(
             f"no keypoint-moseq interpreter found; build the environment under "
             f"feature_library/external or set {KPMS_PYTHON_ENV}"
@@ -65,16 +61,9 @@ _VARIANT: Final = "convert-synthetic.0.1-aaaaaaaaaa"
 
 _NUM_FRAMES: Final = 300
 
-_PARAMS: Final[dict[str, object]] = {
-    "num_iters_ar": 10,
-    "num_iters_full": 10,
-    "num_iters_apply": 10,
-    "remove_outliers": False,
-    "pose": {"pose_n": 3, "keypoint_names": ["nose", "left", "right"]},
-    "anterior_bodyparts": ["nose"],
-    "posterior_bodyparts": ["left", "right"],
-    "latent_dim": 4,
-}
+_PARAMS: Final = kpms_params(
+    num_iters_ar=10, num_iters_full=10, num_iters_apply=10, remove_outliers=False
+)
 
 
 def _synthetic_tracks() -> list[pd.DataFrame]:
@@ -119,16 +108,8 @@ def _feature(**overrides: object) -> KpmsFeature:
     )
 
 
-def _run_root(ds: Dataset, result: Result) -> Path:
-    assert result.run_id is not None
-    return feature_run_root(ds, result.feature, result.run_id)
-
-
 def _syllables(ds: Dataset, result: Result) -> dict[str, pd.DataFrame]:
-    outputs = {
-        path.stem: pd.read_parquet(path)
-        for path in _run_root(ds, result).glob("*.parquet")
-    }
+    outputs = result_outputs(ds, result)
     assert len(outputs) == 6
     for name, table in outputs.items():
         assert len(table) == _NUM_FRAMES, name
@@ -141,7 +122,7 @@ def test_fit_apply_rerun_and_apply_a_named_model(dataset: Dataset) -> None:
 
     assert fitted.failed_entries == ()
     syllables = _syllables(dataset, fitted)
-    run_root = _run_root(dataset, fitted)
+    run_root = result_run_root(dataset, fitted)
     assert (run_root / "kpms_model.joblib").is_file()
     assert (run_root / "kpms_server.log").read_text()
     print("\n--- Syllable diagnostics ---")
@@ -155,9 +136,7 @@ def test_fit_apply_rerun_and_apply_a_named_model(dataset: Dataset) -> None:
     assert again.cache_hit is True
     assert again.run_id == fitted.run_id
 
-    applied = run_feature(
-        dataset, _feature(model={"feature": fitted.feature, "run_id": fitted.run_id})
-    )
+    applied = run_feature(dataset, _feature(model=model_reference(fitted)))
 
     assert applied.failed_entries == ()
     assert applied.run_id != fitted.run_id

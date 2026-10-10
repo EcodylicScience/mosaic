@@ -106,7 +106,7 @@ _CONFIDENCE_PREFIX_DESCRIPTION = (
 _KEYPOINT_NAMES_DESCRIPTION = (
     "Human-readable name for each keypoint, ordered to match the keypoint "
     "columns. Its length must equal pose_n when set. Unset, a feature that "
-    "needs names generates its own (kp0, kp1, ...)."
+    "needs names generates them (kp0, kp1, ...)."
 )
 
 

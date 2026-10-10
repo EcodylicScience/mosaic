@@ -286,7 +286,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
             labels_path,
             idle_timeout=params.idle_timeout,
             max_runtime=params.max_runtime,
-            cancel_check=ctx.cancel_token.is_cancelled if ctx.cancel_token else None,
+            cancel_check=ctx.cancel_token.is_cancelled,
         )
         require_sleap_nn(probe)
         require_identity_labels(probe, params.head, labels_path)
@@ -318,7 +318,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
             overrides=overrides,
             idle_timeout=params.idle_timeout,
             max_runtime=params.max_runtime,
-            cancel_check=ctx.cancel_token.is_cancelled if ctx.cancel_token else None,
+            cancel_check=ctx.cancel_token.is_cancelled,
             on_activity=phase_activity(ctx, run_root, marker, params.idle_timeout),
             on_output=epoch_reporter(ctx, params.max_epochs),
         )

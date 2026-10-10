@@ -48,17 +48,17 @@ from .types import (
 _NECK_IDX_DESCRIPTION = (
     "Index of the neck keypoint in the pose array. Paired with "
     "tail_base_idx to compute heading. The direction runs from the "
-    "tail-base to the neck, the direction the animal faces. When "
-    "pose.pose_indices is set, this index must be one of the selected "
-    "indices."
+    "tail-base to the neck, the direction the animal faces. It must "
+    "name a selected keypoint, one listed in pose.pose_indices when that "
+    "is set and one from 0 to pose.pose_n - 1 otherwise."
 )
 
 _TAIL_BASE_IDX_DESCRIPTION = (
     "Index of the tail-base keypoint in the pose array. Paired with "
     "neck_idx to compute heading. The direction runs from the "
-    "tail-base to the neck, the direction the animal faces. When "
-    "pose.pose_indices is set, this index must be one of the selected "
-    "indices."
+    "tail-base to the neck, the direction the animal faces. It must "
+    "name a selected keypoint, one listed in pose.pose_indices when that "
+    "is set and one from 0 to pose.pose_n - 1 otherwise."
 )
 
 _CENTER_MODE_DESCRIPTION = (

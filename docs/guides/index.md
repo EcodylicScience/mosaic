@@ -32,7 +32,7 @@ a tracker may not give you a speed.
 Everything computed from tracks is a **feature**, and there are five kinds.
 **Per-frame** features put a value on every row — kinematics, heading, neighbors, pair
 geometry. **Global** features are fitted once across many sequences and then applied —
-scalers, t-SNE, AR-HMM, keypoint-MoSeq, the classifiers. **Summary** features reduce
+scalers, t-SNE, AR-HMM, keypoint-MoSeq, VAME, the classifiers. **Summary** features reduce
 many rows to few. **Media** features write an image or video that something else reads,
 such as an annotated overlay. **Tag** features add identity columns. All five run and
 cache the same way, which is what lets them chain.

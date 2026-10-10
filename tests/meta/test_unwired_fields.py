@@ -56,6 +56,7 @@ from mosaic.core.pipeline.types.data_config import COLUMNS, PoseConfig
 from tests.helpers import (
     TESTS_ROOT,
     functions_named,
+    imports_in,
     module_tree,
     names_read,
     runs_in_an_external_environment,
@@ -245,19 +246,14 @@ def test_the_subsampling_reads_drop_nan() -> None:
 # --- FeralTrainingConfig.wandb_project --------------------------------------
 
 
-def _reaches_the_wandb_package(tree: ast.AST) -> bool:
+def _reaches_the_wandb_package(tree: ast.Module) -> bool:
     """Whether *tree* imports or names the ``wandb`` package."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            if any(alias.name.split(".")[0] == "wandb" for alias in node.names):
-                return True
-        elif isinstance(node, ast.ImportFrom):
-            if (node.module or "").split(".")[0] == "wandb":
-                return True
-        elif isinstance(node, ast.Name):
-            if node.id == "wandb":
-                return True
-    return False
+    imported = imports_in(tree, scope="anywhere", relative=False)
+    if any(name.in_package("wandb") for name in imported):
+        return True
+    return any(
+        isinstance(node, ast.Name) and node.id == "wandb" for node in ast.walk(tree)
+    )
 
 
 @pytest.mark.xfail(

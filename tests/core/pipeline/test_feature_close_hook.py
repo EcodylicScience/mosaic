@@ -1,8 +1,8 @@
 """``run_feature`` calls a closable feature's ``close()`` exactly once per attempt.
 
-A feature that holds a resource across its lifetime -- a subprocess, an open
-connection -- declares ``close()`` and ``run_feature`` releases it whether the
-attempt finished, failed, or was cancelled. ``run_feature`` is the only caller
+A feature that keeps a resource open, such as a subprocess or a connection,
+declares ``close()``. ``run_feature`` releases the resource whether the attempt
+finished, failed, or was cancelled. ``run_feature`` is the only caller
 for the instance it is handed. A defect here is a leaked resource that shows up
 only under load.
 """
@@ -173,7 +173,7 @@ def test_close_runs_once_on_a_cache_hit(tmp_path: Path) -> None:
     assert cached.close_calls == 1
 
 
-# --- a raising close() never replaces the original error ------------------
+# --- a raising close() does not replace the original error ----------------
 
 
 def test_a_raising_close_does_not_mask_the_fit_error(
@@ -194,7 +194,7 @@ def test_a_raising_close_does_not_mask_the_fit_error(
     assert "close boom" in capsys.readouterr().err
 
 
-# --- a cancel surfaced through apply ends the attempt cancelled -----------
+# --- a cancel raised through apply ends the attempt cancelled -------------
 
 
 def test_apply_raising_cancelled_on_the_last_entry_with_the_token_set_is_not_an_entry_error(
@@ -203,9 +203,8 @@ def test_apply_raising_cancelled_on_the_last_entry_with_the_token_set_is_not_an_
     """A tool an entry's ``apply`` drives can notice a cancel and raise it itself.
 
     Once the token is set, that raised ``Cancelled`` ends the attempt as
-    cancelled rather than being recorded as a lost entity -- otherwise the
-    earlier entries' success plus this one's "failure" would read as a run that
-    finished having lost one entry, with no cancellation on the record at all.
+    cancelled. The run-log records the cancel, and it does not record the entry
+    as lost.
     """
     ds = make_dataset(tmp_path)
     add_track_sequences(ds, ("g", "s1"), ("g", "s2"), ("g", "s3"))
@@ -229,13 +228,13 @@ def test_apply_raising_cancelled_on_the_last_entry_with_the_token_set_is_not_an_
     assert "apply failed" not in capsys.readouterr().err
 
 
-# --- process_apply_worker closes its own instance ------------------------
+# --- process_apply_worker closes the instance that it builds ---------------
 
 # A process-pool worker reconstructs its feature from a module and class
 # name plus pickled inputs/params dumps (see process_apply_worker), builds
-# and discards its own instance, and returns only the applied DataFrame -- so
-# ``self.close_calls`` never reaches back to the test. Module-level globals
-# are the one channel out, monkeypatched per test so pytest restores them.
+# and discards an instance, and returns only the applied DataFrame. The test
+# cannot read ``self.close_calls`` of that instance. Module-level globals are
+# the one channel out, monkeypatched per test so pytest restores them.
 _worker_events: list[str] = []
 _worker_apply_raises: Exception | None = None
 _worker_close_raises: Exception | None = None

@@ -14,10 +14,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mosaic.behavior.feature_library.helpers import iter_individuals
 from mosaic.behavior.feature_library.kpms import kpms_keypoint_arrays, recording_key
+from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.types import PoseConfig
 from mosaic.core.pose_columns import KeypointArrays
+from tests.helpers import keypoint_rows
 
 _ENTRY = "g__s"
 
@@ -30,19 +31,20 @@ def _table(
     Keypoint ``k`` of individual ``i`` at frame ``f`` is at
     ``(100 i + f + k / 10, -(100 i + f + k / 10))`` and scores ``0.5 + k / 100``.
     """
-    rows: list[dict[str, float]] = []
-    for frame in range(n_frames):
-        for individual in ids if ids is not None else [None]:
-            row: dict[str, float] = {"frame": frame}
-            base = frame + 100.0 * (individual or 0)
-            if individual is not None:
-                row["id"] = individual
-            for k in range(n_keypoints):
-                row[f"poseX{k}"] = base + k / 10
-                row[f"poseY{k}"] = -(base + k / 10)
-                row[f"poseP{k}"] = 0.5 + k / 100
-            rows.append(row)
-    return pd.DataFrame(rows)
+    scores = [0.5 + k / 100 for k in range(n_keypoints)]
+    per_individual = [
+        keypoint_rows(
+            range(n_frames),
+            individual,
+            n_keypoints=n_keypoints,
+            confidence=scores,
+            offset=100.0 * (individual or 0),
+        )
+        for individual in (ids if ids is not None else [None])
+    ]
+    return pd.concat(per_individual).sort_values(
+        "frame", kind="stable", ignore_index=True
+    )
 
 
 def _expected_position(

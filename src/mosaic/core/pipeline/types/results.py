@@ -15,24 +15,24 @@ _FEATURE_DESCRIPTION = "Feature name whose output to consume."
 _RUN_ID_DESCRIPTION = "Specific run ID, or None for latest finished run."
 
 _EXECUTION_ID_DESCRIPTION = (
-    "ULID of the attempt that produced this result (attempt identity, not "
-    "content identity)."
+    "ULID of the attempt that produced this result. It identifies the attempt, "
+    "and run_id identifies the content."
 )
 
 _CACHE_HIT_DESCRIPTION = "Whether the producing run was fully served from cache."
 
 _FAILED_ENTRIES_DESCRIPTION = (
-    "Entry keys whose apply raised while the run carried on. Empty for a clean "
-    "run; non-empty means a partial one, and the producing run's outputs are "
-    "missing exactly these entities."
+    "Entry keys whose apply raised while the run continued. Empty for a clean "
+    "run. A non-empty list marks a partial run, and its outputs are missing "
+    "these entities."
 )
 
 _COLUMN_DESCRIPTION = "Column name to extract from the parquet output."
 
 _ENTRIES_WRITTEN_DESCRIPTION = (
-    "How many entries the producing run left holding a valid output row, cache "
-    "hits included -- so a resumed run and a fresh one report the same number "
-    "over the same scope."
+    "How many entries have a valid output row from the producing run, cache "
+    "hits included. A resumed run and a fresh one therefore report the same "
+    "number over the same scope."
 )
 
 

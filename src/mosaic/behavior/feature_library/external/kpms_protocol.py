@@ -6,14 +6,15 @@ files that a payload names by path, and each payload names the arrays of its
 files.
 
 This module imports only the standard library and pydantic, which both
-environments install, and keeps the syntax of Python 3.11, the oldest that the
-keypoint-MoSeq environment allows. The runner imports it by its bare name, and
-mosaic as ``mosaic.behavior.feature_library.external.kpms_protocol``.
+environments install, and keeps the syntax of Python 3.10. The environment built
+here runs Python 3.11 or later, and an existing keypoint-MoSeq environment may run
+3.10. The runner imports it by its bare name, and mosaic as
+``mosaic.behavior.feature_library.external.kpms_protocol``.
 """
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal, Self, TypeAlias
+from typing import ClassVar, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -89,7 +90,7 @@ class FitConfig(BaseModel):
     checkpoint_dir: str | None = None
 
     @model_validator(mode="after")
-    def _check_latent_dim(self) -> Self:
+    def _check_latent_dim(self) -> FitConfig:
         effective = (
             self.use_bodyparts if self.use_bodyparts is not None else self.bodyparts
         )

@@ -12,27 +12,40 @@ directory, and mosaic imports it as
 sibling module or ``mosaic``.
 
 A runner's module scope imports the standard library, pydantic and its siblings,
-and writes nothing. Its ``main()`` claims standard output first and then
-serves::
+and writes nothing. Its ``main()`` claims standard output first, then logs to
+standard error and serves::
 
     def main() -> None:
         protocol = claim_stdout()
-        serve(DISPATCH, "vame", installed_version(), protocol=protocol)
+        log_to_stderr()
+        serve(DISPATCH, "vame", installed_version("vame-py"), protocol=protocol)
 
-A handler imports the tool's libraries (vame, torch, jax, keypoint_moseq) when it
+:func:`serving` builds each handler of ``DISPATCH`` from a payload model. A
+handler imports the tool's libraries (vame, torch, jax, keypoint_moseq) when it
 runs. Their output at import is then written to standard error, and a test
 imports a runner without side effects.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
+import logging
 import os
 import queue
 import sys
 import threading
 import traceback
 from collections.abc import Callable, Mapping
-from typing import Annotated, Final, Literal, NoReturn, Protocol, TextIO, TypeAlias
+from typing import (
+    Annotated,
+    Final,
+    Literal,
+    NoReturn,
+    Protocol,
+    TextIO,
+    TypeAlias,
+    TypeVar,
+)
 
 from pydantic import (
     BaseModel,
@@ -45,6 +58,7 @@ from pydantic import (
 
 __all__ = [
     "HEARTBEAT",
+    "NOT_INSTALLED",
     "REPLIES",
     "SHUTDOWN",
     "Dispatch",
@@ -58,7 +72,10 @@ __all__ = [
     "Reply",
     "Request",
     "claim_stdout",
+    "installed_version",
+    "log_to_stderr",
     "serve",
+    "serving",
 ]
 
 SHUTDOWN: Final = "shutdown"
@@ -67,11 +84,18 @@ SHUTDOWN: Final = "shutdown"
 HEARTBEAT: Final = "heartbeat"
 """The name of the event that :func:`serve` writes while a command runs."""
 
+NOT_INSTALLED: Final = "not installed"
+"""The version that :func:`installed_version` reports for a missing distribution."""
+
 _ABANDON_GRACE_SECONDS: Final = 2.0
 """How long a command may run after the end of input before the runner exits."""
 
 _READ_SIZE: Final = 65536
 """The most bytes of standard input that one read takes."""
+
+_M = TypeVar("_M", bound=BaseModel)
+
+_log = logging.getLogger(__name__)
 
 
 class _Envelope(BaseModel):
@@ -177,6 +201,40 @@ Dispatch: TypeAlias = Mapping[str, Handler]
 """The handler of each command that a runner serves."""
 
 
+def serving(model: type[_M], handle: Callable[[_M, Emit], BaseModel | None]) -> Handler:
+    """Return the handler that validates its payload as *model* and runs *handle*.
+
+    A payload that *model* refuses raises ``ValidationError``. :func:`serve`
+    answers the error with ``Failed(error)``.
+    """
+
+    def handler(payload: Mapping[str, JsonValue], emit: Emit) -> BaseModel | None:
+        return handle(model.model_validate(payload), emit)
+
+    return handler
+
+
+def installed_version(distribution: str) -> str:
+    """Return the installed version of *distribution*, read without importing it.
+
+    An environment without the distribution reports :data:`NOT_INSTALLED`. The
+    runner's first command that imports it then fails.
+    """
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return NOT_INSTALLED
+
+
+def log_to_stderr() -> None:
+    """Log records of INFO and above to standard error, each under its logger's name."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(name)s] %(levelname)s: %(message)s",
+        stream=sys.stderr,
+    )
+
+
 def claim_stdout() -> TextIO:
     """Reserve standard output for the protocol, and return the protocol stream.
 
@@ -212,8 +270,8 @@ def serve(
       and ``KeyboardInterrupt`` with ``Failed(cancelled)``;
     - :data:`SHUTDOWN` is answered with ``Done`` and ends the loop.
 
-    While a handler runs, a :data:`HEARTBEAT` event is written every
-    *heartbeat_seconds*.
+    Each command that runs a handler is logged at INFO. While a handler runs, a
+    :data:`HEARTBEAT` event is written every *heartbeat_seconds*.
 
     The end of input between commands ends the loop. The end of input during a
     command means that the parent has gone. The runner then exits with status 1
@@ -255,6 +313,7 @@ def serve(
             continue
         if not session.begin():
             return
+        _log.info("command: %s", request.command)
         try:
             reply = _run(handler, request.payload, writer, heartbeat_seconds)
         finally:

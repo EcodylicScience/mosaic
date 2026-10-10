@@ -40,6 +40,7 @@ from mosaic.core.params import Declared, Params
 
 from .helpers import (
     ensure_columns,
+    entry_identity,
     wrap_angle,
 )
 from .registry import register_feature
@@ -188,8 +189,7 @@ class OrientationRelativeFeature:
                 "table carries none. It places each keypoint in a neighbour's "
                 "frame; a table with only a centroid has no keypoints to place."
             )
-        group = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
-        sequence = str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
+        group, sequence = entry_identity(df)
         global_scale = self._scale_for(group, sequence)
         quantiles = self.params.quantiles
         nearest_k = self.params.nearest_k

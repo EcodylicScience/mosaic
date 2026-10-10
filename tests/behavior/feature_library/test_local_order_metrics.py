@@ -325,7 +325,9 @@ def test_pair_shaped_input_is_refused() -> None:
 
 def test_duplicated_frame_id_is_refused() -> None:
     df = pd.concat([_frame(PLUS, [0.0] * 5)] * 2, ignore_index=True)
-    with pytest.raises(ValueError, match="duplicates"):
+    with pytest.raises(
+        ValueError, match=r"local-order-metrics: frame 0 of id 0 appears in more"
+    ):
         _apply(df)
 
 

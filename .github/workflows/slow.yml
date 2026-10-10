@@ -9,6 +9,10 @@ name: Slow tests
 # A workflow of its own rather than a job in `ci.yml`: that workflow cancels an
 # in-progress run on the same ref, so a push to `main` would cancel a scheduled
 # run there.
+#
+# It also builds the VAME environment, which the VAME integration tests run
+# against. A build downloads about 3.4 GB of CUDA wheels, too much for every
+# push, and the tests are slow and claimed by no job marker.
 
 on:
   schedule:
@@ -19,7 +23,8 @@ on:
 jobs:
   slow:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Long enough for the VAME environment's build as well as the tests.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,8 +52,18 @@ jobs:
           uv pip install -e '.'
           uv pip install --group test
 
+      # Built as a user builds it, from the committed lock. The integration
+      # tests train on the CPU.
+      - name: Build the VAME environment
+        working-directory: mosaic/src/mosaic/behavior/feature_library/external/vame-env
+        run: uv sync --python 3.12
+
       - name: Test
         working-directory: mosaic
         env:
           PYTHONHASHSEED: random
+          # With it set, the suite refuses to start when the VAME environment
+          # does not resolve. The integration tests would otherwise skip.
+          MOSAIC_CI_VAME: "1"
+          MOSAIC_VAME_PYTHON: ${{ github.workspace }}/mosaic/src/mosaic/behavior/feature_library/external/vame-env/.venv/bin/python
         run: uv run --no-sync pytest -q -m "slow and not tracker and not identity and not feral" --durations=25

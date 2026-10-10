@@ -16,7 +16,6 @@ import json
 import os
 import subprocess
 import sys
-import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -45,7 +44,7 @@ from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.sleap.run import SLEAP_ENV
 
 from tests.helpers import (
-    FakeToolPython,
+    cancel_when,
     index_media_sequence,
     install_fake_litpose,
     install_fake_sleap,
@@ -649,18 +648,6 @@ def test_lightning_pose_probes_the_environment_that_its_run_placed(
     assert unplaced.calls() == []
 
 
-def _cancel_once_probed(token: CancelToken, python: FakeToolPython) -> None:
-    """Cancel *token* once *python* has started a probe, from another thread."""
-
-    def watch() -> None:
-        deadline = time.monotonic() + 60
-        while not python.calls() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        token.cancel()
-
-    threading.Thread(target=watch, daemon=True).start()
-
-
 def test_a_cancelled_sleap_run_stops_its_probe(
     tmp_path: Path, write_cfr_mp4: WriteVideo, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -671,7 +658,7 @@ def test_a_cancelled_sleap_run_stops_its_probe(
     sleap = install_fake_sleap(monkeypatch)
     params = SleapParams(model_paths=[str(write_sleap_model(tmp_path / "model"))])
     token = CancelToken()
-    _cancel_once_probed(token, python)
+    _ = cancel_when(lambda: bool(python.calls()), token, message="no probe started")
     started = time.monotonic()
 
     with pytest.raises(Cancelled):
@@ -693,7 +680,7 @@ def test_a_cancelled_lightning_pose_run_stops_its_probe(
     litpose = install_fake_litpose(monkeypatch)
     params = LitposeParams(model_path=str(write_litpose_model(tmp_path / "model")))
     token = CancelToken()
-    _cancel_once_probed(token, python)
+    _ = cancel_when(lambda: bool(python.calls()), token, message="no probe started")
     started = time.monotonic()
 
     with pytest.raises(Cancelled):

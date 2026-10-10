@@ -28,14 +28,13 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from mosaic.core.pipeline.subprocess_util import (
     IdleTimeoutExpired,
-    LineChild,
     ProcessCancelled,
     WallClockTimeoutExpired,
     command_summary,
@@ -45,7 +44,12 @@ from mosaic.core.pipeline.subprocess_util import (
     terminate_group,
 )
 from mosaic.core.pipeline.toolenv import subprocess_env
-from tests.helpers import appender_program, assert_stopped_writing, wait_for
+from tests.helpers import (
+    LineChildren,
+    appender_program,
+    assert_stopped_writing,
+    wait_for,
+)
 
 # A child that prints one line every 0.1 s -- an order of magnitude below any
 # idle window used here, so it must never trip the watchdog.
@@ -433,34 +437,8 @@ REPORTS_SEARCH_VARIABLES = (
 )
 
 
-class _Children:
-    """Spawns the line children of one test, each logging into *directory*."""
-
-    def __init__(self, directory: Path) -> None:
-        self._directory = directory
-        self._spawned: list[LineChild] = []
-
-    def spawn(self, program: str, env: Mapping[str, str] | None = None) -> LineChild:
-        log_path = self._directory / f"child-{len(self._spawned)}.log"
-        child = LineChild(_argv(program), log_path=log_path, env=env)
-        self._spawned.append(child)
-        return child
-
-    def close_all(self) -> None:
-        for child in self._spawned:
-            child.close(grace=1.0)
-
-
-@pytest.fixture
-def children(tmp_path: Path) -> Iterator[_Children]:
-    """Line children that are closed when the test ends, whatever its outcome."""
-    spawned = _Children(tmp_path)
-    yield spawned
-    spawned.close_all()
-
-
-def test_lines_round_trip_through_a_line_child(children: _Children) -> None:
-    child = children.spawn(ECHO)
+def test_lines_round_trip_through_a_line_child(line_children: LineChildren) -> None:
+    child = line_children.spawn(_argv(ECHO))
 
     for text in ("first", "a line with spaces", "caf\u00e9"):
         child.send(text)
@@ -472,26 +450,26 @@ def test_lines_round_trip_through_a_line_child(children: _Children) -> None:
 
 @pytest.mark.parametrize("line", ["two\nlines", "two\rlines"])
 def test_a_line_that_holds_a_line_break_is_refused(
-    children: _Children, line: str
+    line_children: LineChildren, line: str
 ) -> None:
     """A Python child reads either break as the end of a line."""
-    child = children.spawn(ECHO)
+    child = line_children.spawn(_argv(ECHO))
 
     with pytest.raises(ValueError, match="line break"):
         child.send(line)
 
 
-def test_the_end_of_the_childs_output_is_none(children: _Children) -> None:
-    child = children.spawn(EXITS_AFTER_ONE_LINE)
+def test_the_end_of_the_childs_output_is_none(line_children: LineChildren) -> None:
+    child = line_children.spawn(_argv(EXITS_AFTER_ONE_LINE))
 
     assert child.next_line(timeout=10) == "last words"
     assert child.next_line(timeout=10) is None
     assert child.next_line(timeout=10) is None, "the end is reported again"
 
 
-def test_a_send_to_an_exited_child_does_not_raise(children: _Children) -> None:
+def test_a_send_to_an_exited_child_does_not_raise(line_children: LineChildren) -> None:
     """The exit is reported once, by the end of the child's output."""
-    child = children.spawn(EXITS_AFTER_ONE_LINE)
+    child = line_children.spawn(_argv(EXITS_AFTER_ONE_LINE))
     assert child.next_line(timeout=10) == "last words"
     assert child.next_line(timeout=10) is None
 
@@ -500,9 +478,9 @@ def test_a_send_to_an_exited_child_does_not_raise(children: _Children) -> None:
     assert child.next_line(timeout=10) is None
 
 
-def test_close_after_the_child_exited(children: _Children) -> None:
+def test_close_after_the_child_exited(line_children: LineChildren) -> None:
     """Closing keeps the child's exit status, and a second close does nothing."""
-    child = children.spawn(EXITS_AFTER_ONE_LINE)
+    child = line_children.spawn(_argv(EXITS_AFTER_ONE_LINE))
     assert child.next_line(timeout=10) == "last words"
     assert child.next_line(timeout=10) is None
 
@@ -514,13 +492,15 @@ def test_close_after_the_child_exited(children: _Children) -> None:
     assert child.exit_code == 3
 
 
-def test_close_waits_grace_between_sigterm_and_sigkill(children: _Children) -> None:
+def test_close_waits_grace_between_sigterm_and_sigkill(
+    line_children: LineChildren,
+) -> None:
     """A child that ignores SIGTERM is killed *grace* seconds after it.
 
     ``terminate_group`` waits 5 s by default. A close passes its *grace* on and
     returns long before that.
     """
-    child = children.spawn(IGNORES_SIGTERM)
+    child = line_children.spawn(_argv(IGNORES_SIGTERM))
     assert child.next_line(timeout=10) == "ready"
     started = time.monotonic()
 
@@ -530,26 +510,28 @@ def test_close_waits_grace_between_sigterm_and_sigkill(children: _Children) -> N
     assert child.exit_code == -signal.SIGKILL
 
 
-def test_a_send_after_close_is_refused(children: _Children) -> None:
-    child = children.spawn(ECHO)
+def test_a_send_after_close_is_refused(line_children: LineChildren) -> None:
+    child = line_children.spawn(_argv(ECHO))
     child.close()
 
     with pytest.raises(ValueError, match=r"after close\(\)"):
         child.send("late")
 
 
-def test_a_call_after_the_end_of_output_asks_no_cancel(children: _Children) -> None:
+def test_a_call_after_the_end_of_output_asks_no_cancel(
+    line_children: LineChildren,
+) -> None:
     """The end of output is reported whatever the cancel predicate answers."""
-    child = children.spawn(EXITS_AFTER_ONE_LINE)
+    child = line_children.spawn(_argv(EXITS_AFTER_ONE_LINE))
     assert child.next_line(timeout=10) == "last words"
     assert child.next_line(timeout=10) is None
 
     assert child.next_line(cancel_check=lambda: True) is None
 
 
-def test_a_cancel_is_polled_while_no_line_arrives(children: _Children) -> None:
+def test_a_cancel_is_polled_while_no_line_arrives(line_children: LineChildren) -> None:
     """A silent child is killed within a poll or two of the cancel."""
-    child = children.spawn(GOES_SILENT)
+    child = line_children.spawn(_argv(GOES_SILENT))
     assert child.next_line(timeout=10) == "start"
     started = time.monotonic()
 
@@ -561,9 +543,11 @@ def test_a_cancel_is_polled_while_no_line_arrives(children: _Children) -> None:
     assert excinfo.value.argv[0] == sys.executable
 
 
-def test_a_cancel_is_polled_while_lines_keep_arriving(children: _Children) -> None:
+def test_a_cancel_is_polled_while_lines_keep_arriving(
+    line_children: LineChildren,
+) -> None:
     """A child that prints every 0.1 s does not delay the cancel."""
-    child = children.spawn(NEVER_STOPS)
+    child = line_children.spawn(_argv(NEVER_STOPS))
     fires_at = time.monotonic() + 0.5
 
     def after_half_a_second() -> bool:
@@ -578,9 +562,9 @@ def test_a_cancel_is_polled_while_lines_keep_arriving(children: _Children) -> No
 
 
 def test_a_line_child_silent_past_the_idle_window_is_killed(
-    children: _Children,
+    line_children: LineChildren,
 ) -> None:
-    child = children.spawn(GOES_SILENT)
+    child = line_children.spawn(_argv(GOES_SILENT))
     assert child.next_line(timeout=10) == "start"
 
     with pytest.raises(IdleTimeoutExpired) as excinfo:
@@ -590,13 +574,13 @@ def test_a_line_child_silent_past_the_idle_window_is_killed(
     assert not child.alive
 
 
-def test_a_send_restarts_the_idle_window(children: _Children) -> None:
+def test_a_send_restarts_the_idle_window(line_children: LineChildren) -> None:
     """A child waiting for its next line is not idle, however long it waits.
 
     The greeting is read after the send and arrived before it, and the window
     still starts at the send.
     """
-    child = children.spawn(GREETS_THEN_ANSWERS_SLOWLY)
+    child = line_children.spawn(_argv(GREETS_THEN_ANSWERS_SLOWLY))
     time.sleep(1.5)
 
     child.send("two")
@@ -606,9 +590,9 @@ def test_a_send_restarts_the_idle_window(children: _Children) -> None:
 
 
 def test_a_line_child_with_no_line_within_the_timeout_is_killed(
-    children: _Children,
+    line_children: LineChildren,
 ) -> None:
-    child = children.spawn(GOES_SILENT)
+    child = line_children.spawn(_argv(GOES_SILENT))
     assert child.next_line(timeout=10) == "start"
 
     with pytest.raises(WallClockTimeoutExpired) as excinfo:
@@ -619,9 +603,11 @@ def test_a_line_child_with_no_line_within_the_timeout_is_killed(
 
 
 def test_a_line_childs_standard_error_is_written_to_its_log(
-    children: _Children,
+    line_children: LineChildren,
 ) -> None:
-    child = children.spawn("import sys\nsys.stderr.write('to the log\\n')\n")
+    child = line_children.spawn(
+        _argv("import sys\nsys.stderr.write('to the log\\n')\n")
+    )
     assert child.next_line(timeout=10) is None
     child.close()
 
@@ -629,7 +615,7 @@ def test_a_line_childs_standard_error_is_written_to_its_log(
 
 
 def test_a_tools_child_inherits_no_python_search_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, children: _Children
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, line_children: LineChildren
 ) -> None:
     """``PYTHONPATH`` and ``PYTHONHOME`` name this interpreter's sources.
 
@@ -639,7 +625,7 @@ def test_a_tools_child_inherits_no_python_search_path(
     monkeypatch.setenv("PYTHONPATH", str(tmp_path / "parent-sources"))
     monkeypatch.setenv("PYTHONHOME", sys.prefix)
 
-    child = children.spawn(REPORTS_SEARCH_VARIABLES, env=subprocess_env())
+    child = line_children.spawn(_argv(REPORTS_SEARCH_VARIABLES), env=subprocess_env())
 
     assert child.next_line(timeout=30) == "PYTHONPATH=<unset>"
     assert child.next_line(timeout=30) == "PYTHONHOME=<unset>"
@@ -687,11 +673,13 @@ def test_terminate_group_reaps_a_grandchild(tmp_path: Path) -> None:
 
 
 def test_close_kills_what_an_exited_child_left_in_its_group(
-    children: _Children, tmp_path: Path
+    line_children: LineChildren, tmp_path: Path
 ) -> None:
     """A grandchild that outlives a child exiting at the end of its input is killed."""
     ticks = tmp_path / "ticks.txt"
-    child = children.spawn(_with_grandchild(str(ticks), then="sys.stdin.read()\n"))
+    child = line_children.spawn(
+        _argv(_with_grandchild(str(ticks), then="sys.stdin.read()\n"))
+    )
     wait_for(lambda: ticks.exists() and ticks.stat().st_size > 0, 30)
 
     child.close(grace=5.0)

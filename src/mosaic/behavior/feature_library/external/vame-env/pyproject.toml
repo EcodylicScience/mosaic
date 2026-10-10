@@ -1,0 +1,28 @@
+[project]
+name = "mosaic-vame-env"
+version = "0.1.0"
+description = "Isolated environment for VAME"
+# hmmlearn 0.3.3, which VAME requires, publishes wheels for Python 3.13 and
+# earlier only. On Python 3.14 uv builds it from source, with a C++ compiler.
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    # VAME is GPL-3.0 and mosaic is AGPL-3.0-or-later. Section 13 of each
+    # license permits combining a work under the other, and mosaic's runner
+    # beside this directory imports VAME in this environment's process.
+    # mosaic's dependencies do not name VAME: this file declares an environment
+    # the user builds, and whoever conveys a built environment conveys VAME
+    # under the GPL, with its source. See README.md here and NOTICE at the
+    # repository root.
+    #
+    # Pinned to one version. The vame feature refuses a runner that reports
+    # another version, because a run identifier must not name a VAME that did
+    # not run.
+    "vame-py==0.14.4",
+    "pydantic",
+]
+
+[tool.uv]
+# VAME's package turns off bytecode writing when it is imported. Without
+# bytecode compiled at install, each process that imports VAME compiles it
+# again.
+compile-bytecode = true

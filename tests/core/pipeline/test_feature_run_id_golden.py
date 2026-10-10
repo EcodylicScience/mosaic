@@ -124,6 +124,11 @@ _TEMPLATES_REF: dict[str, object] = {
     "load": {"kind": "parquet"},
 }
 
+_VAME_REFERENCES: dict[str, object] = {
+    "centered_reference_keypoint": 0,
+    "orientation_reference_keypoint": 1,
+}
+
 CASES: tuple[Case, ...] = (
     # --- every default-constructible feature, default everything ---
     *(
@@ -279,6 +284,22 @@ CASES: tuple[Case, ...] = (
         case_id="arhmm/from-pair-wavelet/scope-ab",
         feature="arhmm",
         inputs=[{"feature": "pair-wavelet"}],
+        scope=(("", "seq_a"), ("", "seq_b")),
+    ),
+    # The default sweep cannot construct vame, which requires its two reference
+    # keypoints.
+    Case(
+        case_id="vame/scope-a",
+        feature="vame",
+        inputs=["tracks"],
+        params=_VAME_REFERENCES,
+        scope=(("", "seq_a"),),
+    ),
+    Case(
+        case_id="vame/scope-ab",
+        feature="vame",
+        inputs=["tracks"],
+        params=_VAME_REFERENCES,
         scope=(("", "seq_a"), ("", "seq_b")),
     ),
     # --- identity models: stream fitters, so the scope IS the training set ---

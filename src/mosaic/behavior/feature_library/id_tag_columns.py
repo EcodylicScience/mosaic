@@ -26,6 +26,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
+from .helpers import entry_identity
 from .registry import register_feature
 
 _LABELS_DESCRIPTION = (
@@ -159,8 +160,7 @@ class IdTagColumns:
         if df.empty:
             return pd.DataFrame()
 
-        group_val = str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
-        sequence_val = str(df[C.seq_col].iloc[0]) if C.seq_col in df.columns else ""
+        group_val, sequence_val = entry_identity(df)
         labels = self._labels.get((group_val, sequence_val))
         if not labels:
             return pd.DataFrame()

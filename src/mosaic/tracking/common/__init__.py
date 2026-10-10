@@ -6,7 +6,7 @@ mint a run identifier, claim each entry's working directory, decide per phase
 whether the recorded marker still proves the work, run what is stale, record
 what completed, bridge the output into ``tracks/``, and write a row. That
 algorithm lives here once, calling into :mod:`mosaic.core.pipeline.toolenv` to
-locate the tool in its own environment.
+locate the tool's environment.
 
 This package imports ``core`` and nothing from ``behavior``; ``core`` imports
 nothing from here. A tracker's own module keeps what is genuinely its own -- the

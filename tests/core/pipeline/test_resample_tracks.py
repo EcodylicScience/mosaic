@@ -258,7 +258,9 @@ def test_a_repeated_frame_for_one_individual_is_refused() -> None:
     """Two rows for one moment do not describe an axis to interpolate along."""
     frame = _table(30.0, n=100, ids=(0,))
     frame.loc[frame.index[50], "frame"] = 49
-    with pytest.raises(ValueError, match="repeats a frame number"):
+    with pytest.raises(
+        ValueError, match=r"^this table: frame 49 of id 0 appears in more than one row$"
+    ):
         _ = resample_entry_table(frame, 25.0)
 
 

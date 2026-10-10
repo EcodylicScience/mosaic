@@ -4,12 +4,12 @@ Fits an AR-HMM model and applies it to extract per-frame syllable labels. A
 runner program in a separate environment, located through :data:`KPMS_ENV`,
 fits and applies the model. One runner serves a feature from its first request
 until :meth:`KpmsFeature.close`, which avoids repeated JAX startup costs. The
-kpms package does NOT need to be installed in the mosaic environment.
+mosaic environment does not need the kpms package.
 
-keypoint-MoSeq is licensed for non-commercial research and academic use only
-and is never bundled with mosaic; see :data:`LICENSE_NOTICE` and
-``docs/licensing.md``. Nothing in this module imports it. The licensed code runs
-only in the runner's interpreter, which a feature starts only after
+keypoint-MoSeq is licensed for non-commercial research and academic use only,
+and mosaic does not bundle it. :data:`LICENSE_NOTICE` and ``external/README.md``
+state the terms. This module does not import it. The licensed code runs only in
+the runner's interpreter, which a feature starts only after
 :func:`check_license_accepted`.
 """
 
@@ -17,9 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import sys
-import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -39,6 +37,8 @@ import numpy as np
 from pydantic import Field, model_validator
 
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.individuals import iter_individuals
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.column_contract import (
     Column,
     Provides,
@@ -46,13 +46,12 @@ from mosaic.core.pipeline.column_contract import (
     Template,
     kept,
 )
-from mosaic.core.pipeline.job import CancelToken
+from mosaic.core.pipeline.job import CancelCheck, CancelToken, cancel_check
 from mosaic.optional_dependency import Prerequisite
 from mosaic.core.pipeline.toolenv import (
     ToolEnv,
     ToolExitError,
     ToolNotFoundError,
-    tool_invocation,
 )
 from mosaic.core.pose_columns import KeypointArrays, keypoint_arrays, keypoint_suffixes
 from mosaic.core.pipeline.types import (
@@ -81,9 +80,9 @@ from .external.kpms_protocol import (
     SaveModel,
     check_latent_dim,
 )
-from .helpers import iter_individuals
+from .helpers import entry_identity, label_individuals
 from .registry import register_feature
-from .runner_client import CancelCheck, RunnerProcess
+from .runner_client import RunnerInterpreter, RunnerProcess
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -98,7 +97,11 @@ KPMS_MODEL_FILE: Final = "kpms_model.joblib"
 """The model that :meth:`KpmsFeature.save_state` writes to its run root."""
 
 KPMS_SERVER_LOG: Final = "kpms_server.log"
-"""The runner's standard error, which :meth:`KpmsFeature.save_state` writes."""
+"""The runners' standard error in the run root.
+
+:meth:`KpmsFeature.save_state` appends the log of the fit, and
+:meth:`KpmsFeature.close` the rest.
+"""
 
 _Unsaved = Literal["tracks", "fit"]
 """The state of a runner that is not recorded in a file."""
@@ -158,8 +161,8 @@ class KpmsExitError(ToolExitError):
     tool_name = "The keypoint-MoSeq runner"
 
 
-# keypoint-moseq has no console script, so rung 5 reads the interpreter under
-# external/.venv.
+# keypoint-moseq does not install a console script. Rung 5 reads the interpreter
+# under external/.venv.
 KPMS_ENV: Final = ToolEnv(
     tool="keypoint-moseq",
     conda_env_var=KPMS_CONDA_ENV_VAR,
@@ -214,26 +217,6 @@ class KpmsLicense:
     def missing(self) -> str | None:
         """How to accept the license, or ``None`` once it is accepted."""
         return None if license_accepted() else _LICENSE_UNACCEPTED
-
-
-@final
-@dataclass(frozen=True, slots=True)
-class KpmsEnvironment:
-    """A prerequisite of :class:`KpmsFeature`: an interpreter for the runner.
-
-    Resolved through :data:`KPMS_ENV`, the ladder that starting the runner
-    walks, without starting it. The catalog does not read a step's
-    ``kpms_python``. Only the machine's rungs answer: ``MOSAIC_KPMS_CONDA_ENV``,
-    ``MOSAIC_KPMS_PYTHON`` and the environment under ``external/.venv``.
-    """
-
-    def missing(self) -> str | None:
-        """How to provide the environment, or ``None`` when one is found."""
-        try:
-            _ = tool_invocation(KPMS_ENV, executable="python")
-        except ToolNotFoundError:
-            return _NOT_FOUND_HELP
-        return None
 
 
 # --- Data conversion ---
@@ -398,7 +381,7 @@ class KpmsModelArtifact(JoblibArtifact[KpmsModelBundle]):
 @final
 @register_feature
 class KpmsFeature:
-    """Unified keypoint-MoSeq feature: fit + apply in a runner process.
+    """Fits keypoint-MoSeq to keypoint tracks and applies it, in a runner process.
 
     !!! warning "Non-commercial license"
 
@@ -422,8 +405,8 @@ class KpmsFeature:
     :meth:`close`. A fitted model therefore stays in the runner through
     :meth:`save_state` for :meth:`apply`. :meth:`load_state` does not start a
     runner. When it finds a model to apply, it raises unless the license is
-    accepted and the interpreter is located. A runner that exits is started again by the
-    next request, and loads the model of :meth:`load_state` or
+    accepted and the interpreter is located. A runner that exits is started
+    again by the next request, and loads the model of :meth:`load_state` or
     :meth:`save_state`. A runner that exits after a fit begins and before
     :meth:`save_state` loses tracks or a model that no file records. The next
     request then raises. A fired ``cancel_token`` kills the runner during its
@@ -444,7 +427,10 @@ class KpmsFeature:
         False  # decodes a whole sequence at once, so context is not a window
     )
     consumed_roots: tuple[str, ...] = ()
-    prerequisites: tuple[Prerequisite, ...] = (KpmsLicense(), KpmsEnvironment())
+    prerequisites: tuple[Prerequisite, ...] = (
+        KpmsLicense(),
+        RunnerInterpreter(KPMS_ENV),
+    )
     emits: EmitsLevel = "individual"
     # Apply decodes each individual's keypoints in frame order. Its code names
     # the frame and id columns literally, and so does this declaration.
@@ -540,7 +526,6 @@ class KpmsFeature:
         # The tracks or the fit in the runner that no file records. A runner
         # started in its place lacks them, and its start raises.
         self._unsaved: _Unsaved | None = None
-        self._exchange: Path | None = None
 
     # --- Runner ---
 
@@ -549,17 +534,17 @@ class KpmsFeature:
 
         Every request checks the license before it can start a runner. The
         refusal therefore covers every caller (CLI, notebooks, mosaic-api), and
-        it does not depend on whether an environment is present. ``__init__`` does not
-        check it, because constructing a KpmsFeature is not use of
+        it does not depend on whether an environment is present. ``__init__``
+        does not check it, because constructing a KpmsFeature is not use of
         keypoint-MoSeq. ``mosaic reconcile`` constructs every feature that it
         re-addresses, and ``reconcile_features._build`` catches only
         ``ValidationError``, ``ValueError`` and ``TypeError``. Its sweep
         therefore passes a dataset that ran kpms without the license.
         """
         check_license_accepted()
-        token = self.cancel_token
-        cancel = None if token is None else token.is_cancelled
-        _ = self._runner.request(payload.command, payload, cancel=cancel)
+        _ = self._runner.request(
+            payload.command, payload, cancel=cancel_check(self.cancel_token)
+        )
 
     def _prepare(self, runner: RunnerProcess, cancel: CancelCheck | None) -> None:
         """Load the model into a runner that has started.
@@ -581,23 +566,20 @@ class KpmsFeature:
     @contextmanager
     def _exchange_file(self, name: str) -> Generator[Path]:
         """Yield a path for *name* in the exchange directory, and remove it on exit."""
-        if self._exchange is None:
-            self._exchange = Path(tempfile.mkdtemp(prefix="mosaic-kpms-"))
-        path = self._exchange / name
+        path = self._runner.exchange_dir() / name
         try:
             yield path
         finally:
             path.unlink(missing_ok=True)
 
     def close(self) -> None:
-        """Stop the runner, and remove the exchange directory.
+        """Stop the runner, append its log to the run root, and remove its files.
 
+        The log in the run root receives the runner's standard error that
+        :meth:`save_state` did not append, and the exchange directory is removed.
         A second call does nothing. A later request starts a new runner.
         """
         _ = self._runner.close()
-        if self._exchange is not None:
-            shutil.rmtree(self._exchange, ignore_errors=True)
-            self._exchange = None
 
     # --- Track sending ---
 
@@ -624,6 +606,7 @@ class KpmsFeature:
         # A runner of an earlier run contains that run's state. It is stopped,
         # and the next request starts one that loads the model found here.
         self.close()
+        self._runner.keep_log(run_root / KPMS_SERVER_LOG)
         self._model = None
         self._unsaved = None
 
@@ -697,23 +680,13 @@ class KpmsFeature:
         self._unsaved = "fit"
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        import pandas as pd
-
-        group = str(df["group"].iloc[0]) if "group" in df.columns else ""
-        sequence = str(df["sequence"].iloc[0]) if "sequence" in df.columns else ""
-        key = make_entry_key(group, sequence)
-
-        results: list[pd.DataFrame] = []
-        for individual, rows in iter_individuals(df):
-            syllables = self._apply_one(recording_key(key, individual), rows)
-            result = pd.DataFrame(
-                {"frame": rows["frame"].to_numpy(), "syllable": syllables}
-            )
-            if individual is not None:
-                result["id"] = individual
-            results.append(result)
-
-        return pd.concat(results, ignore_index=True)
+        key = make_entry_key(*entry_identity(df))
+        return label_individuals(
+            df,
+            lambda individual, rows: self._apply_one(
+                recording_key(key, individual), rows
+            ),
+        )
 
     def _apply_one(
         self, key: str, df: pd.DataFrame
@@ -737,12 +710,17 @@ class KpmsFeature:
         return np.asarray(labels, dtype=np.int32).reshape(-1)
 
     def save_state(self, run_root: Path) -> None:
-        run_root.mkdir(parents=True, exist_ok=True)
+        """Write the model and the runner's log to *run_root*, and keep the runner.
+
+        The runner writes the model to a temporary file in *run_root*, which
+        then replaces the model's path. :meth:`load_state` takes a file at that
+        path as the run's model, and a runner killed during the write leaves
+        none there.
+        """
         model_path = run_root / KPMS_MODEL_FILE
-        self._request(SaveModel(path=str(model_path)))
+        atomic_write(
+            model_path, lambda target: self._request(SaveModel(path=str(target)))
+        )
         self._model = model_path
         self._unsaved = None
-
-        server_log = self._runner.log()
-        if server_log:
-            _ = (run_root / KPMS_SERVER_LOG).write_text(server_log)
+        self._runner.keep_log(run_root / KPMS_SERVER_LOG)

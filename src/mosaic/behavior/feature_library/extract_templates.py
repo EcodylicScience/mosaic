@@ -32,7 +32,13 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import ensure_columns, farthest_first, feature_columns, finite_rows
+from .helpers import (
+    ensure_columns,
+    entry_identity,
+    farthest_first,
+    feature_columns,
+    finite_rows,
+)
 from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
 from .registry import register_feature
 from .types import PoolConfig
@@ -252,11 +258,7 @@ class ExtractTemplates:
 
             # Track entry metadata
             if n_entries not in self._entry_map:
-                group = (
-                    str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
-                )
-                sequence = str(df[C.seq_col].iloc[0])
-                self._entry_map[n_entries] = (group, sequence)
+                self._entry_map[n_entries] = entry_identity(df)
             entry_idx = n_entries
 
             matrix = self._sampled_rows(df, entry_idx)
@@ -326,11 +328,7 @@ class ExtractTemplates:
             if entry_key not in entry_idx_map:
                 idx = len(entry_idx_map)
                 entry_idx_map[entry_key] = idx
-                group = (
-                    str(df[C.group_col].iloc[0]) if C.group_col in df.columns else ""
-                )
-                sequence = str(df[C.seq_col].iloc[0])
-                self._entry_map[idx] = (group, sequence)
+                self._entry_map[idx] = entry_identity(df)
             sampled = self._sampled_rows(df, entry_idx_map[entry_key])
             entry_counts[entry_key] = sampled.shape[0]
 

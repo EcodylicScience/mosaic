@@ -42,6 +42,7 @@ import pytest
 from mosaic_media.io.writer import FFmpegVideoWriter
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.toolenv import ToolNotFoundError, tool_invocation
 
 # The plain helpers live in `tests.helpers`; only the ones the fixtures below
 # call are imported here. Test modules import from the facade, never from
@@ -51,6 +52,8 @@ from tests.helpers import (
     CI_IDENTITY_MODULES,
     CI_REQUIRED_MODULES,
     FFMPEG_TOOLCHAIN,
+    SEPARATED_TOOLS,
+    LineChildren,
     MediaClip,
     add_media_sequence,
     add_track_sequences,
@@ -79,27 +82,29 @@ CI_REQUIRED_BINARIES = FFMPEG_TOOLCHAIN
 
 
 def _refuse_an_unresolvable_external_environment() -> None:
-    """Under the tracking job, an environment that is not there is an error.
+    """Refuse to start when an environment that this CI job builds does not resolve.
 
-    **Both** of them: the tracker and pose inference run upstream Ultralytics, and
-    point inference runs the POLO fork, which cannot share an environment with it.
-    Each is checked, because a skip in either place is a suite that reports green
-    having compared nothing -- the tracker-table drift check against the release
-    that runs it, and the point-inference path against a real fork, which nothing
-    exercised at all before it had an environment to run in.
+    It checks each environment of ``SEPARATED_TOOLS`` whose building job sets its
+    variable: ``MOSAIC_CI_TRACKING`` for the Ultralytics and POLO environments,
+    and ``MOSAIC_CI_VAME`` for VAME's. Without the check, the tests that need an
+    environment skip, and the job passes without running them: the tracker-table
+    drift check, the point-inference path against the POLO fork, and the VAME
+    integration tests.
 
-    Resolved through `tool_invocation` -- the same five-step ladder a real run
-    walks -- rather than by reading the four variables here, so this check and the
-    lookup it stands in for cannot come to disagree about what "the environment is
-    there" means.
-
-    Imported inside the call: only the tracking job asks, and the import reaches
-    the whole pipeline package.
+    Each environment is resolved through `tool_invocation`, the five-step ladder
+    of a real run. This check and the lookup that it stands in for then agree on
+    whether the environment is there. Locating VAME's environment imports the
+    feature library, which happens only once ``MOSAIC_CI_VAME`` is set.
     """
-    from mosaic.core.pipeline.toolenv import ToolNotFoundError, tool_invocation
-    from mosaic.tracking.common.ultralytics_env import POLO_ENV, ULTRALYTICS_ENV
-
-    for env in (ULTRALYTICS_ENV, POLO_ENV):
+    built = (
+        environment
+        for tool in SEPARATED_TOOLS
+        for environment in tool.environments
+        if environment.built_by is not None
+        and os.environ.get(environment.built_by.variable)
+    )
+    for environment in built:
+        env = environment.located_by()
         try:
             _ = tool_invocation(env, executable="python")
         except ToolNotFoundError as absent:
@@ -171,9 +176,9 @@ def pytest_configure() -> None:
 
     Local runs are unaffected: a developer without ``imgstore`` installed still
     gets skips, which is the point of ``importorskip``. Only CI, which installs
-    them explicitly, treats their absence as a broken environment. The tracking
-    job's dependency is an external environment rather than an import, and is
-    held to the same standard by the call at the end.
+    them explicitly, treats their absence as a broken environment. A job that
+    builds an external environment depends on that environment, and the call at
+    the end refuses to start when it does not resolve.
     """
     _refuse_two_opencv_builds()
     if not os.environ.get("CI"):
@@ -191,8 +196,7 @@ def pytest_configure() -> None:
             "that the test step does not re-sync the environment away "
             "(uv run --no-sync)."
         )
-    if os.environ.get("MOSAIC_CI_TRACKING"):
-        _refuse_an_unresolvable_external_environment()
+    _refuse_an_unresolvable_external_environment()
     absent = [name for name in CI_REQUIRED_BINARIES if shutil.which(name) is None]
     if absent:
         raise pytest.UsageError(
@@ -242,6 +246,17 @@ def requires_ffmpeg() -> None:
     directly. One answer, two shapes.
     """
     _require_ffmpeg()
+
+
+@pytest.fixture
+def line_children(tmp_path: Path) -> Iterator[LineChildren]:
+    """Line children that are closed when the test ends, whatever its outcome.
+
+    Each child's standard error is appended to a separate file in *tmp_path*.
+    """
+    spawned = LineChildren(tmp_path)
+    yield spawned
+    spawned.close_all()
 
 
 @pytest.fixture
@@ -504,8 +519,7 @@ def runner_module() -> Iterator[ModuleType]:
     from mosaic.tracking.external import runner as runner_package
 
     with import_runner_program(
-        Path(runner_package.__file__).parent,
-        "ultralytics_runner",
+        Path(runner_package.__file__).parent / "ultralytics_runner.py",
         ("ultralytics_protocol",),
     ) as program:
         yield program

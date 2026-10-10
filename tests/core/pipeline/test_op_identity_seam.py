@@ -16,6 +16,7 @@ copy that gets forgotten is always the one a planner reads.
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
 import textwrap
 
@@ -23,6 +24,8 @@ import pytest
 
 from mosaic.core.pipeline.ops import OPS, IdentityDeferred, Op, OpIdentity
 from mosaic.tracking import register_ops
+
+from tests.helpers import imports_in
 
 register_ops()
 
@@ -102,23 +105,21 @@ def _delegated_bodies(source: str, owner: type) -> list[str]:
     Only the modules the body itself imports are followed, and only by name, so
     this cannot wander: it resolves exactly what the code in front of it names.
     """
-    tree = ast.parse(source)
     bodies: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or node.module is None:
+    for imported in imports_in(ast.parse(source), scope="anywhere", relative=False):
+        if imported.name is None:
             continue
         try:
-            module = __import__(node.module, fromlist=[a.name for a in node.names])
+            module = importlib.import_module(imported.module)
         except Exception:  # pragma: no cover - an optional extra is absent
             continue
-        for alias in node.names:
-            target = getattr(module, alias.name, None)
-            if target is None or not callable(target):
-                continue
-            try:
-                bodies.append(textwrap.dedent(inspect.getsource(target)))
-            except (OSError, TypeError):  # pragma: no cover
-                continue
+        target: object = getattr(module, imported.name, None)
+        if target is None or not callable(target):
+            continue
+        try:
+            bodies.append(textwrap.dedent(inspect.getsource(target)))
+        except (OSError, TypeError):  # pragma: no cover
+            continue
     # The op's own module globals too, for a body that calls a sibling directly.
     for name in _calls_in(source):
         target = getattr(inspect.getmodule(owner), name, None)

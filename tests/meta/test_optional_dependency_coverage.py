@@ -32,8 +32,6 @@ from __future__ import annotations
 
 import ast
 import importlib.metadata
-import re
-import tomllib
 from collections import defaultdict
 from pathlib import Path
 
@@ -43,6 +41,8 @@ from tests.helpers import (
     CI_REQUIRED_MODULES,
     REPO_ROOT,
     TESTS_ROOT,
+    distribution_names,
+    project_requirements,
 )
 
 PYPROJECT = REPO_ROOT / "pyproject.toml"
@@ -53,15 +53,6 @@ def _suite_sources() -> list[Path]:
     return sorted(
         path for path in TESTS_ROOT.rglob("*.py") if "__pycache__" not in path.parts
     )
-
-
-def _canonical(distribution: str) -> str:
-    """A distribution name in the one spelling both sides can be compared in.
-
-    ``opencv-python`` and ``opencv_python`` name the same thing, and metadata and
-    pyproject do not agree on which to write.
-    """
-    return distribution.lower().replace("-", "_")
 
 
 def _probe_targets(attribute: str, *, literal_required: bool) -> dict[str, set[str]]:
@@ -149,24 +140,12 @@ def _core_import_names() -> set[str]:
     ``pyyaml`` -> ``yaml`` and ``opencv-python`` -> ``cv2`` renames come from the
     environment instead of from a list that would drift on its own.
     """
-    with PYPROJECT.open("rb") as handle:
-        project = tomllib.load(handle)["project"]
-    assert isinstance(project, dict)
-    # The distribution name is the leading run of name characters; everything
-    # after it is an extras bracket, a version specifier or an environment
-    # marker. Parsed here rather than with `packaging`, which this project does
-    # not declare and which would make the test depend on a transitive.
-    declared = {
-        _canonical(match.group(0))
-        for spec in project["dependencies"]
-        if (match := re.match(r"[A-Za-z0-9._-]+", str(spec)))
+    declared = distribution_names(project_requirements(PYPROJECT).dependencies)
+    return {
+        module
+        for module, dists in importlib.metadata.packages_distributions().items()
+        if distribution_names(dists) & declared
     }
-
-    names: set[str] = set()
-    for module, dists in importlib.metadata.packages_distributions().items():
-        if any(_canonical(dist) in declared for dist in dists):
-            names.add(module)
-    return names
 
 
 def test_every_guarded_module_is_required_by_some_ci_job() -> None:

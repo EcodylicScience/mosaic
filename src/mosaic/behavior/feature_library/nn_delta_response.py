@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.column_contract import (
     AnyOf,
     Column,
@@ -30,7 +31,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 
 from ._sampling_descriptions import SAMPLING_FPS_ONLY_DESCRIPTION
-from .helpers import ego_rotate, iter_individuals, wrap_angle
+from .helpers import ego_rotate, wrap_angle
 from .registry import register_feature
 from .types import SamplingConfig
 

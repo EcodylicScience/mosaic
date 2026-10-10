@@ -8,6 +8,104 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a `vame` feature embeds keypoints, and `kpms` fits and applies in one run
+
+**New feature `vame`.** It trains a recurrent variational autoencoder on windows
+of egocentrically aligned keypoints and embeds each window in a continuous
+latent space, at the window's center frame. It runs in a separate environment
+you build, the same way keypoint-MoSeq does. See
+[installation](docs/installation.md#vame). Mosaic's extras, dependency groups
+and `uv.lock` do not install `vame-py`.
+
+**`kpms` fits and applies in one run.** Its runner now uses the same wire as
+vame's, sending requests and replies as JSON lines over standard input and
+output instead of a Unix domain socket. The runner survives `save_state` instead
+of shutting down before `apply` runs. After a fresh fit, every entry used to
+fail at apply. The same run now applies the fitted model to every entry.
+
+**A cancel of either runner is a hard cancel.** A fired cancel kills the
+runner's whole process group at once, without a cooperative sentinel. A stopped
+fit's weights are discarded either way. For every feature, an entry whose
+`apply` raises after a cancel ends the run `cancelled` without recording an
+`entry_error`.
+
+**A `_CONDA_ENV` name runs the named environment's executables.** Mosaic looks
+for the environment in each directory that `CONDA_ENVS_DIRS` lists, then in the
+installation's `envs`, then in `~/.conda/envs`, in the Windows layout on
+Windows. It reads the installation itself only for the name `base`. For an
+environment found in neither `CONDA_ENVS_DIRS` nor the installation's `envs`,
+every launch of the environment's `python` used to run the installation's
+instead: SLEAP's probe and labels export, Lightning Pose, the Ultralytics and
+POLO runners, and the decoder probe. They now run the environment's `python`, or
+the bare name, which `conda run` resolves. `kpms` and `vame` refuse an
+environment found in none of these directories. Add its directory to
+`CONDA_ENVS_DIRS`, or set `MOSAIC_KPMS_PYTHON` or `MOSAIC_VAME_PYTHON` instead.
+
+**External tools run without mosaic's `PYTHONPATH` and `PYTHONHOME`.** With
+them, a tool's interpreter imported the packages of mosaic's environment,
+`mosaic` included.
+
+**Three corrections to the features that read keypoints.**
+
+- `pair-egocentric` used to read a negative `neck_idx` or `tail_base_idx` from
+  the end of the keypoints without raising, and failed on an out-of-range one
+  with a bare `IndexError`. It now refuses both before building a pair.
+- `kpms` and `arhmm` now read a table with no `id` column in frame order. Their
+  output changes only for such a table whose rows were not already sorted by
+  frame.
+- Extracting a keypoint's position now sets both of its coordinates to NaN
+  when either one is not finite. `kpms` already treated such a keypoint as
+  missing.
+
+**Names moved or removed.**
+
+- `mosaic.tracking.common.toolenv` is now `mosaic.core.pipeline.toolenv`.
+  `mosaic.tracking.common` no longer re-exports `BinMode`, `ToolEnv`,
+  `ToolExitError`, `ToolNotFoundError`, `conda_invocation`, `subprocess_env` or
+  `tool_invocation`. Import them from `mosaic.core.pipeline.toolenv`.
+- `kpms` declares `RunnerInterpreter(KPMS_ENV)` where it declared the removed
+  prerequisite `KpmsEnvironment`. `vame` declares `RunnerInterpreter(VAME_ENV)`.
+- `resolve_kpms_python` is removed. `locate_tool(KPMS_ENV, executable="python")`
+  returns the invocation that starts the kpms runner's interpreter.
+- The kpms runner's socket protocol is removed: the request and response models
+  of `kpms_protocol`, its `encode_array`, `decode_array`, `send_message` and
+  `receive_message`, and `kpms_server`'s `serve`, `recv_request` and
+  `prctl_set_pdeathsig`. `kpms_protocol` now declares the payloads of the
+  runner's commands, which mosaic sends in requests of `runner_wire`. The runner
+  ships inside mosaic, and only mosaic builds its requests.
+- `_process_apply_worker` in `mosaic.core.pipeline.run` is now
+  `process_apply_worker`.
+
+**Names added.**
+
+- `MOSAIC_KPMS_CONDA_ENV` names a conda environment for the kpms runner,
+  matching `MOSAIC_TREX_CONDA_ENV` and the rest.
+- `MOSAIC_VAME_PYTHON` and `MOSAIC_VAME_CONDA_ENV` locate the vame runner's
+  interpreter, matching `MOSAIC_KPMS_PYTHON` and `MOSAIC_KPMS_CONDA_ENV`.
+- A feature may declare an optional `close()`, through the `ClosesResources`
+  protocol. `run_feature` calls it once per attempt, in a `finally` around the
+  run, to release a long-lived resource such as a subprocess.
+- New API: `ClosesResources` in `mosaic.core.pipeline.types`; `locate_tool`,
+  `ToolInvocation`, `ToolEnv.repo_venv`, `missing_interpreter` and
+  `interpreter_refusal` in `mosaic.core.pipeline.toolenv`; `LineChild`,
+  `SupervisedPopenKwargs` and `supervised_popen_kwargs` in
+  `mosaic.core.pipeline.subprocess_util`; `CancelCheck` and `cancel_check` in
+  `mosaic.core.pipeline.job`; `DatasetRoots` in `mosaic.core.pipeline.index`;
+  `PoseConfig.names` and `PoseConfig.resolve_keypoints`; `KeypointArrays`,
+  `keypoint_arrays`, `keypoint_suffixes`, `reindex_contiguous` and
+  `resolve_keypoint_refs` in `mosaic.core.pose_columns`; the module
+  `mosaic.core.individuals`, with `iter_individuals` and `refuse_repeated_rows`;
+  `label_individuals` and `entry_identity` in
+  `mosaic.behavior.feature_library.helpers`; `RunnerProcess`,
+  `RunnerInterpreter`, `RunnerCommandError`, `RunnerVersionError` and `OnStart`
+  in `mosaic.behavior.feature_library.runner_client`; `KPMS_ENV`,
+  `KpmsExitError` and `KpmsFeature.close` in `kpms`; `VameFeature`, `VAME_ENV`,
+  `VameNotFoundError` and `VameExitError` in `vame_feature`; the module
+  `vame_sessions`; and the runner modules `runner_wire`, `vame_protocol` and
+  `vame_runner` in `feature_library/external/`.
+
+No run identifier moves.
+
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows
 
 **Every registered feature declares the columns that it reads and writes.**

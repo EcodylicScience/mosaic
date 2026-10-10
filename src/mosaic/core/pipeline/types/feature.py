@@ -43,25 +43,24 @@ class InputStream:
 
 
 class Feature(Protocol):
-    """Feature protocol -- 7 attributes, 4 methods.
+    """Declares the 7 attributes and 4 methods that every feature implements.
 
-    Optional hooks. ``run_feature`` finds each of these with ``hasattr`` (or
-    ``isinstance`` for ``close``) before using it, so a feature that implements
-    only the four required methods never triggers one:
+    ``run_feature`` uses each optional hook below only when the feature defines
+    it, which it tests with ``hasattr`` or, for ``close``, with ``isinstance``. A
+    feature that implements only the four required methods does not trigger any
+    of them.
 
-    - ``bind_dataset(ds)`` -- for a feature that reopens a dataset's media
-      itself (crops, overlay) rather than reading only the table it is handed.
-    - ``set_scope(resolved)`` -- for a feature that re-resolves tracks of its
-      own, so the run's chosen variant reaches it too.
-    - ``progress_callback`` / ``cancel_token`` -- attributes a trainer sets on
-      itself at construction; ``run_feature`` overwrites each with the
-      attempt's own progress sink and cancel token, so a fit's epoch-level
-      progress and a cooperative mid-fit cancel reach the same run-log as
-      everything else in the attempt.
-    - ``close()`` -- see :class:`ClosesResources`.
-    - ``check_output(self, meta, run_root) -> bool`` -- a cache hit's own output
-      validator, used only when ``run_feature``'s ``check_output`` parameter is
-      set.
+    - ``bind_dataset(ds)``: binds the dataset to a feature that reopens its media
+      (crops, overlay) in addition to the table that the feature is handed.
+    - ``set_scope(resolved)``: passes the run's chosen tracks variant to a
+      feature that resolves tracks itself.
+    - ``progress_callback`` and ``cancel_token``: attributes that a trainer sets
+      at construction. ``run_feature`` replaces each with the progress sink and
+      cancel token of the attempt. A fit's epoch-level progress then enters the
+      attempt's run-log, and a cancel of the attempt stops the fit.
+    - ``close()``: see :class:`ClosesResources`.
+    - ``check_output(self, meta, run_root) -> bool``: validates the output of a
+      cache hit, called only when ``run_feature`` is given ``check_output``.
     """
 
     name: str
@@ -196,25 +195,25 @@ class Feature(Protocol):
 
 @runtime_checkable
 class ClosesResources(Protocol):
-    """A feature that holds a resource across its lifetime and must release it.
+    """Declares the ``close()`` hook of a feature that keeps a resource open.
 
-    A long-lived subprocess or connection does not fit the four required
-    methods: it outlives ``save_state`` and must still go down after a raising
-    ``fit``, a cancel, or a run that found every entry cached. ``run_feature``
-    calls ``close()`` exactly once per attempt, in a ``finally`` around its
-    work, regardless of how that work ended.
+    A long-lived subprocess or connection outlives ``save_state``. It must still
+    stop after a raising ``fit``, after a cancel, and after a run that found
+    every entry cached. ``run_feature`` calls ``close()`` once per attempt, in a
+    ``finally`` around its work.
 
-    ``close()`` must be idempotent: a second call does nothing. The instance
-    stays usable afterwards, reacquiring its resource lazily if
-    ``run_feature`` is called with it again -- a notebook running one
-    instance twice, for example.
+    ``close()`` must be idempotent, and a second call does nothing. The instance
+    stays usable afterwards and reacquires its resource lazily when
+    ``run_feature`` is called with it again, as in a notebook that runs one
+    instance twice.
 
-    A cancel in thread-parallel mode shuts the executor down without waiting
-    for threads already running ``apply``, so ``close()`` can run while one of
-    those is still in flight on the same instance. A parallelizable closer
-    must tolerate that ordering: an ``apply`` reacquiring the resource after
-    ``close()`` returns is the lazy-reacquire case above, not a leak the
-    cancel introduced.
+    A cancel in thread-parallel mode shuts the executor down without waiting for
+    the threads that are running ``apply``. ``close()`` can then run while
+    ``apply`` is still running on the same instance, and a parallelizable
+    feature must allow that order. If such an ``apply`` reacquires the resource
+    after ``close()`` returns, the resource stays open until the process exits
+    or until the instance's next ``close()``. ``run_feature`` makes that call at
+    the end of the instance's next run.
     """
 
     def close(self) -> None: ...

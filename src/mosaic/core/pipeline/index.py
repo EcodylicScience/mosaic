@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Protocol
 
 import pandas as pd
 
@@ -14,11 +14,17 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 
-def feature_run_root(ds: Dataset, feature_name: str, run_id: str) -> Path:
+class DatasetRoots(Protocol):
+    """A dataset's named roots, the one part of it that feature paths read."""
+
+    def get_root(self, key: str, /) -> Path: ...
+
+
+def feature_run_root(ds: DatasetRoots, feature_name: str, run_id: str) -> Path:
     return ds.get_root("features") / feature_name / run_id
 
 
-def feature_index_path(ds: Dataset, feature_name: str) -> Path:
+def feature_index_path(ds: DatasetRoots, feature_name: str) -> Path:
     return ds.get_root("features") / feature_name / "index.csv"
 
 

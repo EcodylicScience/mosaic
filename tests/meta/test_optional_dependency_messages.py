@@ -22,18 +22,17 @@ what the deprecated aliases exist to prevent, so they are checked too.
 from __future__ import annotations
 
 import ast
-import re
-import tomllib
 from pathlib import Path
-from typing import cast
 
-from tests.helpers import REPO_ROOT, SOURCE_ROOT, inside_a_virtualenv
-
-# `pip install "mosaic-behavior[x,y]"`, in any of the quoting styles the source
-# uses. The distribution name is part of the pattern deliberately: a message
-# naming `mosaic[...]` is a bug rather than something to check the extras of.
-_INSTALL_HINT = re.compile(r"mosaic-behavior\[([a-z0-9,\-]+)\]")
-_SELF_REFERENCE = re.compile(r"^mosaic-behavior\[([a-z0-9,\-]+)\]$")
+from tests.helpers import (
+    REPO_ROOT,
+    SELF_REFERENCE,
+    SOURCE_ROOT,
+    inside_a_virtualenv,
+    project_requirements,
+    requirements_reaching,
+    self_referenced_extras,
+)
 
 _HINT_WITNESS = "cli/run.py"
 _REQUIRE_WITNESSES = {
@@ -49,8 +48,7 @@ exactly how a walk comes to read thousands of the wrong ones.
 
 
 def _declared_extras() -> dict[str, list[str]]:
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-    return cast(dict[str, list[str]], pyproject["project"]["optional-dependencies"])
+    return project_requirements(REPO_ROOT / "pyproject.toml").extras
 
 
 def _python_sources() -> list[Path]:
@@ -75,7 +73,10 @@ def _python_sources() -> list[Path]:
 
 
 def test_every_extra_named_in_a_message_is_declared() -> None:
-    """A ``pip install "mosaic-behavior[x]"`` hint must name a real extra."""
+    """A ``pip install "mosaic-behavior[x]"`` hint must name a real extra.
+
+    A hint is found in any of the quoting styles that the source uses.
+    """
     declared = set(_declared_extras())
     bad: list[str] = []
     hinting: set[str] = set()
@@ -83,12 +84,13 @@ def test_every_extra_named_in_a_message_is_declared() -> None:
         if path.name == "optional_dependency.py":
             # Its module docstring quotes the historical bug verbatim.
             continue
-        for match in _INSTALL_HINT.finditer(path.read_text()):
+        for match in SELF_REFERENCE.finditer(path.read_text()):
             hinting.add(str(path.relative_to(SOURCE_ROOT)))
-            for name in match.group(1).split(","):
-                if name.strip() not in declared:
-                    rel = path.relative_to(REPO_ROOT)
-                    bad.append(f"{rel} names [{name.strip()}]")
+            bad.extend(
+                f"{path.relative_to(REPO_ROOT)} names [{name}]"
+                for name in self_referenced_extras(match.group(0))
+                if name not in declared
+            )
     # The walk proves it happened before its verdict is believed: an exclusion
     # one predicate too broad would find nothing and report a green invariant it
     # never checked.
@@ -157,12 +159,11 @@ def test_every_self_reference_resolves() -> None:
     dangling: list[str] = []
     for name, specs in extras.items():
         for spec in specs:
-            match = _SELF_REFERENCE.match(spec.strip())
-            if match is None:
-                continue
-            for referenced in match.group(1).split(","):
-                if referenced.strip() not in extras:
-                    dangling.append(f"[{name}] -> [{referenced.strip()}]")
+            dangling.extend(
+                f"[{name}] -> [{referenced}]"
+                for referenced in self_referenced_extras(spec)
+                if referenced not in extras
+            )
     assert not dangling, (
         "these extras reference an extra that does not exist; pip would warn and "
         "install the base instead: " + "; ".join(sorted(dangling))
@@ -178,22 +179,7 @@ def test_the_documented_bundle_lands_torch_and_the_retired_aliases_are_gone() ->
     """
     extras = _declared_extras()
 
-    def resolve(name: str, seen: set[str] | None = None) -> list[str]:
-        seen = seen if seen is not None else set()
-        if name in seen:
-            return []
-        seen.add(name)
-        out: list[str] = []
-        for spec in extras.get(name, []):
-            match = _SELF_REFERENCE.match(spec.strip())
-            if match is None:
-                out.append(spec)
-                continue
-            for referenced in match.group(1).split(","):
-                out.extend(resolve(referenced.strip(), seen))
-        return out
-
-    resolved = resolve("all")
+    resolved = requirements_reaching(extras, "all")
     assert any(spec.startswith("torch") for spec in resolved), (
         "[all] must land torch; it is what the documented install points at"
     )

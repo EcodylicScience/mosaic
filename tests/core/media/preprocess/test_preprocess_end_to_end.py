@@ -26,7 +26,6 @@ import mosaic.tracking.pose_training.localizer_inference as localizer_inference
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.video_io import open_frame_reader
-from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.preprocess_layout import media_variant_path
 from mosaic.core.pipeline.run import run_feature
@@ -34,7 +33,12 @@ from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
 from mosaic.tracking.pose_training.localizer_inference import LocalizerFrame
 
-from tests.helpers import dot_image, make_dataset, write_painted_entry
+from tests.helpers import (
+    dot_image,
+    make_dataset,
+    result_run_root,
+    write_painted_entry,
+)
 
 pytestmark = pytest.mark.media
 
@@ -183,8 +187,7 @@ def test_a_feature_frame_range_selects_source_frames(tracked: _Tracked) -> None:
 
     result = run_feature(ds, SpeedAngvel(), filter_start_frame=40, filter_end_frame=80)
 
-    assert result.run_id is not None
-    run_root = feature_run_root(ds, result.feature, result.run_id)
+    run_root = result_run_root(ds, result)
     outputs = list(run_root.glob("*.parquet"))
     assert len(outputs) == 1, "the frame range selected no rows"
     table = pd.read_parquet(outputs[0]).sort_values("frame").reset_index(drop=True)
