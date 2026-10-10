@@ -144,9 +144,9 @@ keypoint-MoSeq
   Driven by:   the kpms feature, which starts the interpreter of an
                environment the user builds at
                src/mosaic/behavior/feature_library/external/ and exchanges
-               newline-delimited JSON over a Unix domain socket. Mosaic
-               never imports the package, and it appears in no extra, no
-               dependency group and not in uv.lock.
+               newline-delimited JSON with it over its standard input and
+               output. Mosaic does not import the package, and its extras,
+               dependency groups and uv.lock do not name it.
   Obligation:
 
       "End User shall not use the Software for Commercial use and any such

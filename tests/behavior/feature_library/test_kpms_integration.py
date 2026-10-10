@@ -1,4 +1,4 @@
-"""Integration tests for KpmsFeature (requires a real keypoint-moseq install).
+"""KpmsFeature through ``run_feature`` against a real keypoint-moseq install.
 
 These skip unless both of its preconditions hold: an interpreter that has
 keypoint-moseq, and the license acceptance that ``KpmsFeature`` requires before
@@ -6,12 +6,16 @@ it will spawn one. The acceptance is a skip condition rather than something the
 suite sets on the user's behalf -- a test run that accepted a non-commercial
 license for whoever happened to invoke it would be a hole in the very check
 these tests exercise.
+
+One dataset is fitted and applied in one run, run again as a cache hit, and
+applied by a run that names the fitted model.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Final
 
 import numpy as np
 import pandas as pd
@@ -24,13 +28,18 @@ from mosaic.behavior.feature_library.kpms import (
     KpmsFeature,
     KpmsNotFoundError,
 )
+from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.toolenv import tool_invocation
+from mosaic.core.pipeline.types import Result
+from tests.helpers import add_tracks_table, make_dataset
 
 
 def _kpms_python_found() -> bool:
     """Whether an interpreter resolves, by the same ladder the feature uses."""
     try:
-        tool_invocation(KPMS_ENV, executable="python")
+        _ = tool_invocation(KPMS_ENV, executable="python")
     except KpmsNotFoundError:
         return False
     return True
@@ -51,8 +60,24 @@ pytestmark = [
     ),
 ]
 
+_VARIANT: Final = "convert-synthetic.0.1-aaaaaaaaaa"
+"""The tracks variant that contains the synthetic tracks."""
 
-def _make_synthetic_tracks() -> list[tuple[str, pd.DataFrame]]:
+_NUM_FRAMES: Final = 300
+
+_PARAMS: Final[dict[str, object]] = {
+    "num_iters_ar": 10,
+    "num_iters_full": 10,
+    "num_iters_apply": 10,
+    "remove_outliers": False,
+    "pose": {"pose_n": 3, "keypoint_names": ["nose", "left", "right"]},
+    "anterior_bodyparts": ["nose"],
+    "posterior_bodyparts": ["left", "right"],
+    "latent_dim": 4,
+}
+
+
+def _synthetic_tracks() -> list[pd.DataFrame]:
     """Six sequences, two motion modes, 3 keypoints (triangle), 300 frames.
 
     Three keypoints in an asymmetric triangle (nose at top, left/right at
@@ -62,157 +87,78 @@ def _make_synthetic_tracks() -> list[tuple[str, pd.DataFrame]]:
     - "horizontal" (3 seqs): constant +x velocity
     - "vertical"   (3 seqs): constant +y velocity
     """
-    num_frames = 300
-    tracks: list[tuple[str, pd.DataFrame]] = []
-
-    # Triangle keypoint offsets from center of mass
     offsets = [(0.0, 1.0), (-0.8, -0.5), (0.8, -0.5)]
-
-    modes = [
-        ("horizontal", 1.0, 0.0),
-        ("vertical", 0.0, 1.0),
-    ]
-    seqs_per_mode = 3
-
+    modes = [("horizontal", 1.0, 0.0), ("vertical", 0.0, 1.0)]
+    tracks: list[pd.DataFrame] = []
     for mode_name, vx, vy in modes:
-        for i in range(seqs_per_mode):
-            seq_name = f"{mode_name}_{i}"
-            t = np.arange(num_frames, dtype=np.float64)
-            cx = vx * t
-            cy = vy * t
+        for i in range(3):
+            t = np.arange(_NUM_FRAMES, dtype=np.float64)
             data: dict[str, object] = {
-                "frame": np.arange(num_frames),
+                "frame": np.arange(_NUM_FRAMES),
                 "group": "grp",
-                "sequence": seq_name,
+                "sequence": f"{mode_name}_{i}",
             }
             for k, (dx, dy) in enumerate(offsets):
-                data[f"poseX{k}"] = cx + dx
-                data[f"poseY{k}"] = cy + dy
-            tracks.append((f"grp__{seq_name}", pd.DataFrame(data)))
-
+                data[f"poseX{k}"] = vx * t + dx
+                data[f"poseY{k}"] = vy * t + dy
+            tracks.append(pd.DataFrame(data))
     return tracks
 
 
-def _make_feature(
-    params: dict[str, object] | None = None,
-) -> KpmsFeature:
-    inputs = KpmsFeature.Inputs(("tracks",))
-    return KpmsFeature(inputs=inputs, params=params)
-
-
-def _make_inputs(
-    tracks: list[tuple[str, pd.DataFrame]],
-):
-    def inputs_fn():
-        yield from tracks
-
-    return inputs_fn
-
-
 @pytest.fixture
-def run_root(tmp_path: Path) -> Path:
-    return tmp_path / "kpms_run"
+def dataset(tmp_path: Path) -> Dataset:
+    ds = make_dataset(tmp_path)
+    for table in _synthetic_tracks():
+        add_tracks_table(ds, _VARIANT, table)
+    return ds
 
 
-@pytest.fixture
-def feature_params() -> dict[str, object]:
-    return {
-        "num_iters_ar": 10,
-        "num_iters_full": 10,
-        "num_iters_apply": 10,
-        "remove_outliers": False,
-        "pose": {"pose_n": 3, "keypoint_names": ["nose", "left", "right"]},
-        "anterior_bodyparts": ["nose"],
-        "posterior_bodyparts": ["left", "right"],
-        "latent_dim": 4,
+def _feature(**overrides: object) -> KpmsFeature:
+    return KpmsFeature(
+        inputs=KpmsFeature.Inputs(("tracks",)), params={**_PARAMS, **overrides}
+    )
+
+
+def _run_root(ds: Dataset, result: Result) -> Path:
+    assert result.run_id is not None
+    return feature_run_root(ds, result.feature, result.run_id)
+
+
+def _syllables(ds: Dataset, result: Result) -> dict[str, pd.DataFrame]:
+    outputs = {
+        path.stem: pd.read_parquet(path)
+        for path in _run_root(ds, result).glob("*.parquet")
     }
+    assert len(outputs) == 6
+    for name, table in outputs.items():
+        assert len(table) == _NUM_FRAMES, name
+        assert table["syllable"].dtype in (np.int32, np.int64), name
+    return outputs
 
 
-def test_fit_and_apply(
-    run_root: Path,
-    feature_params: dict[str, object],
-) -> None:
-    tracks = _make_synthetic_tracks()
-    feat = _make_feature(feature_params)
+def test_fit_apply_rerun_and_apply_a_named_model(dataset: Dataset) -> None:
+    fitted = run_feature(dataset, _feature())
 
-    loaded = feat.load_state(run_root, {}, {})
-    assert loaded is False
-
-    feat.fit(_make_inputs(tracks))
-
-    results: dict[str, np.ndarray] = {}
-    for name, df in tracks:
-        result = feat.apply(df)
-        assert "frame" in result.columns
-        assert "syllable" in result.columns
-        assert len(result) == len(df)
-        assert result["syllable"].dtype in (np.int32, np.int64)
-        results[name] = result["syllable"].values
-
-    # Diagnostic: syllable distributions per track
+    assert fitted.failed_entries == ()
+    syllables = _syllables(dataset, fitted)
+    run_root = _run_root(dataset, fitted)
+    assert (run_root / "kpms_model.joblib").is_file()
+    assert (run_root / "kpms_server.log").read_text()
     print("\n--- Syllable diagnostics ---")
-    for name, syllables in results.items():
-        unique, counts = np.unique(syllables, return_counts=True)
-        dist = ", ".join(f"{u}:{c}" for u, c in zip(unique, counts))
+    for name, table in sorted(syllables.items()):
+        unique, counts = np.unique(table["syllable"], return_counts=True)
+        dist = ", ".join(f"{u}:{c}" for u, c in zip(unique, counts, strict=True))
         print(f"  {name}: {dist}")
 
-    names = list(results)
-    for i, a in enumerate(names):
-        for b in names[i + 1 :]:
-            sa, sb = results[a], results[b]
-            total = len(sa) + len(sb)
-            # For each shared syllable, count frames in both tracks
-            shared_labels = set(np.unique(sa)) & set(np.unique(sb))
-            worst = 0
-            worst_label = -1
-            for label in shared_labels:
-                shared_frames = int((sa == label).sum()) + int((sb == label).sum())
-                if shared_frames > worst:
-                    worst = shared_frames
-                    worst_label = label
-            pct = 100 * worst / total if total > 0 else 0
-            print(f"  overlap({a}, {b}): {pct:.0f}% (syllable {worst_label})")
+    again = run_feature(dataset, _feature())
 
-    feat.save_state(run_root)
+    assert again.cache_hit is True
+    assert again.run_id == fitted.run_id
 
+    applied = run_feature(
+        dataset, _feature(model={"feature": fitted.feature, "run_id": fitted.run_id})
+    )
 
-def test_save_and_reload(
-    run_root: Path,
-    feature_params: dict[str, object],
-) -> None:
-    tracks = _make_synthetic_tracks()
-
-    # Fit and save
-    feat1 = _make_feature(feature_params)
-    feat1.load_state(run_root, {}, {})
-    feat1.fit(_make_inputs(tracks))
-    feat1.save_state(run_root)
-
-    # Reload
-    feat2 = _make_feature(feature_params)
-    loaded = feat2.load_state(run_root, {}, {})
-    assert loaded is True
-
-    _, df = tracks[0]
-    result = feat2.apply(df)
-    assert "frame" in result.columns
-    assert "syllable" in result.columns
-    assert len(result) == len(df)
-
-    feat2.save_state(run_root)
-
-
-def test_server_log_saved(
-    run_root: Path,
-    feature_params: dict[str, object],
-) -> None:
-    tracks = _make_synthetic_tracks()
-    feat = _make_feature(feature_params)
-    feat.load_state(run_root, {}, {})
-    feat.fit(_make_inputs(tracks))
-    feat.save_state(run_root)
-
-    log_path = run_root / "kpms_server.log"
-    assert log_path.exists()
-    log_text = log_path.read_text()
-    assert len(log_text) > 0
+    assert applied.failed_entries == ()
+    assert applied.run_id != fitted.run_id
+    _ = _syllables(dataset, applied)

@@ -13,7 +13,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +22,7 @@ import pytest
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
 from mosaic.core.pipeline.index_lock import IndexLockTimeout, index_lock, lock_path_for
+from tests.helpers import wait_for
 
 
 # --- P7: index writes are serialized ------------------------------------------
@@ -231,10 +231,11 @@ def test_a_failed_lock_acquisition_raises_rather_than_writing_unlocked(
         ]
     )
     try:
-        deadline = time.monotonic() + 30
-        while not (tmp_path / "held").exists():
-            assert time.monotonic() < deadline, "holder never acquired the lock"
-            time.sleep(0.02)
+        wait_for(
+            lambda: (tmp_path / "held").exists(),
+            30,
+            "the holder did not acquire the lock",
+        )
 
         with pytest.raises(IndexLockTimeout):
             with index_lock(index_path, timeout=0.5):

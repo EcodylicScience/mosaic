@@ -25,7 +25,9 @@ import pytest
 from mosaic.core.pipeline.toolenv import (
     ToolEnv,
     ToolExitError,
+    ToolInvocation,
     ToolNotFoundError,
+    locate_tool,
     missing_output_error,
     subprocess_env,
     tool_invocation,
@@ -281,6 +283,62 @@ def test_every_earlier_rung_wins_over_a_built_in_repo_venv(
     placed, expected = place(env, explicit, monkeypatch)
 
     assert tool_invocation(placed, executable="python") == expected
+
+
+@pytest.mark.parametrize(
+    ("place", "source"),
+    [
+        (
+            _via_placed_conda_env,
+            "the conda environment 'toolenv' that this run was placed in",
+        ),
+        (_via_placed_bin_path, "the binary this run was placed with"),
+        (
+            _via_conda_env_var,
+            "the conda environment 'toolenv' named by MOSAIC_FAKE_CONDA_ENV",
+        ),
+        (_via_bin_var, "the value of MOSAIC_FAKE_BIN"),
+    ],
+    ids=["placed-conda-env", "placed-bin-path", "conda-env-var", "bin-var"],
+)
+def test_an_invocation_names_the_rung_that_it_came_from(
+    place: Callable[[ToolEnv, Path, pytest.MonkeyPatch], tuple[ToolEnv, list[str]]],
+    source: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A message about a tool that cannot be started names where it was located."""
+    env = _with_repo_venv(tmp_path)
+    explicit = tmp_path / "explicit-python"
+    explicit.touch()
+    fake_path_lookup(monkeypatch, {"conda": FAKE_CONDA})
+
+    placed, expected = place(env, explicit, monkeypatch)
+
+    assert locate_tool(placed, executable="python") == ToolInvocation(
+        argv=expected, source=source
+    )
+    assert tool_invocation(placed, executable="python") == expected
+
+
+def test_the_in_repo_rung_names_its_directory(tmp_path: Path) -> None:
+    env = _with_repo_venv(tmp_path)
+    interpreter = _build_in_repo_python(tmp_path)
+
+    assert locate_tool(env, executable="python") == ToolInvocation(
+        argv=[str(interpreter)],
+        source=f"the in-repository environment under {tmp_path}",
+    )
+
+
+def test_the_path_rung_names_the_name_that_it_looked_up() -> None:
+    """A locator is the name looked up, whatever the executable is."""
+    assert locate_tool(_DIRECT, executable="runme") == ToolInvocation(
+        argv=["/p/bin/runme"], source="the $PATH lookup of 'runme'"
+    )
+    assert locate_tool(_LOCATED, executable="python") == ToolInvocation(
+        argv=["/p/bin/python"], source="the $PATH lookup of 'finder'"
+    )
 
 
 def test_the_in_repo_rung_resolves_the_windows_layout_on_win32(

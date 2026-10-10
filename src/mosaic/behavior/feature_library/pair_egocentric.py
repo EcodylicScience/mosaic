@@ -192,10 +192,16 @@ class PairEgocentricFeatures:
         pass
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        x_cols, y_cols = self.params.pose.keypoint_columns()
-        pose_cols = x_cols + y_cols
-        order_col = resolve_order_col(df)
         p = self.params
+        x_cols, y_cols = p.pose.keypoint_columns()
+        pose_cols = x_cols + y_cols
+        [neck] = p.pose.resolve_keypoints(
+            [p.neck_idx], who="[pair-egocentric] neck_idx"
+        )
+        [tail] = p.pose.resolve_keypoints(
+            [p.tail_base_idx], who="[pair-egocentric] tail_base_idx"
+        )
+        order_col = resolve_order_col(df)
 
         required = [C.id_col, C.seq_col] + pose_cols
         ensure_columns(df, required)
@@ -205,7 +211,7 @@ class PairEgocentricFeatures:
         group_cols = [C.seq_col, C.id_col]
 
         df_small = clean_tracks_grouped(
-            df_small, group_cols, pose_cols, order_col, self.params.interpolation
+            df_small, group_cols, pose_cols, order_col, p.interpolation
         )
 
         # Build dyads (all C(n,2) pairs per sequence)
@@ -246,7 +252,7 @@ class PairEgocentricFeatures:
                     pass
 
             frames, AtoB, BtoA, names = self._build_ego_block_for_joined(
-                j, fps, pose_cols
+                j, fps, x_cols, y_cols, neck, tail
             )
 
             # produce row-wise DataFrames
@@ -278,25 +284,6 @@ class PairEgocentricFeatures:
         return out
 
     # --- Internals ---
-    def _map_anatomical_idx(self, param_name: str) -> int:
-        """Map an anatomical index (neck_idx, tail_base_idx) to position in filtered array.
-
-        If pose_indices is set, the param value is treated as an absolute pose point index
-        and mapped to its position in pose_indices. If pose_indices is None, returns the
-        value directly as an index into the full array.
-        """
-        val = int(getattr(self.params, param_name))
-        indices = self.params.pose.pose_indices
-        if indices is None:
-            return val
-        try:
-            return list(indices).index(val)
-        except ValueError:
-            raise ValueError(
-                f"[pair-egocentric] {param_name}={val} is not in pose_indices={indices}. "
-                f"When using pose_indices, {param_name} must be one of the selected indices."
-            )
-
     def _safe_unit(
         self, vx: np.ndarray, vy: np.ndarray, eps: float = 1e-8
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -314,19 +301,27 @@ class PairEgocentricFeatures:
         return xs.mean(axis=1), ys.mean(axis=1)
 
     def _build_ego_block_for_joined(
-        self, j: pd.DataFrame, fps: float, pose_cols: list[str]
+        self,
+        j: pd.DataFrame,
+        fps: float,
+        x_cols: list[str],
+        y_cols: list[str],
+        neck: int,
+        tail: int,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
-        indices = self.params.pose.selected_indices()
-        n_pts = len(indices)
-        neck = self._map_anatomical_idx("neck_idx")
-        tail = self._map_anatomical_idx("tail_base_idx")
+        """Measure one pair from its joined rows.
+
+        *neck* and *tail* are positions in *x_cols* and *y_cols*, as
+        :meth:`PoseConfig.resolve_keypoints` returns them.
+        """
+        n_pts = len(x_cols)
         win = self.params.sampling.smooth_win
         mode = self.params.center_mode
 
-        xa = j[[f"{self.params.pose.x_prefix}{k}_A" for k in indices]].to_numpy()
-        ya = j[[f"{self.params.pose.y_prefix}{k}_A" for k in indices]].to_numpy()
-        xb = j[[f"{self.params.pose.x_prefix}{k}_B" for k in indices]].to_numpy()
-        yb = j[[f"{self.params.pose.y_prefix}{k}_B" for k in indices]].to_numpy()
+        xa = j[[f"{column}_A" for column in x_cols]].to_numpy()
+        ya = j[[f"{column}_A" for column in y_cols]].to_numpy()
+        xb = j[[f"{column}_B" for column in x_cols]].to_numpy()
+        yb = j[[f"{column}_B" for column in y_cols]].to_numpy()
         frames = j[C.frame_col].to_numpy()
 
         # optional smoothing

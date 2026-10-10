@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.kpms import (
@@ -55,8 +57,20 @@ def _make_feature(kpms_python: str | None = None) -> KpmsFeature:
     return KpmsFeature(inputs=KpmsFeature.Inputs(("tracks",)), params=params)
 
 
-def _empty_stream() -> InputStream:
-    return InputStream(lambda: iter([]), 0)
+def _one_track() -> InputStream:
+    """One entry with the three keypoints that :func:`_make_feature` names.
+
+    The license and the interpreter are asked for at the first request, which
+    sends a track.
+    """
+    rows = pd.DataFrame(
+        {
+            "frame": np.arange(5),
+            **{f"poseX{k}": np.arange(5.0) + k for k in range(3)},
+            **{f"poseY{k}": np.arange(5.0) - k for k in range(3)},
+        }
+    )
+    return InputStream(lambda: iter([("g__s", rows)]), 1)
 
 
 # --- acceptance ------------------------------------------------------------
@@ -173,25 +187,25 @@ def test_license_is_checked_before_the_filesystem() -> None:
     :class:`KpmsNotFoundError`.
     """
     with pytest.raises(RuntimeError, match="non-commercial"):
-        _make_feature().fit(_empty_stream())
+        _make_feature().fit(_one_track())
 
 
 def test_accepted_then_missing_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(KPMS_LICENSE_ENV, "1")
     monkeypatch.setenv(KPMS_PYTHON_ENV, "/nonexistent/kpms/bin/python")
     with pytest.raises(KpmsNotFoundError, match="/nonexistent/kpms/bin/python"):
-        _make_feature().fit(_empty_stream())
+        _make_feature().fit(_one_track())
 
 
 def test_the_kpms_python_param_places_the_feature_on_the_interpreter_it_names(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``_start_server`` places the feature with ``params.kpms_python``.
+    """The feature places its runner with ``params.kpms_python``.
 
     ``MOSAIC_KPMS_PYTHON`` names an interpreter that exists, so a refusal can
-    only come from the parameter: if ``_start_server`` dropped
-    ``.placed(bin_path=self.params.kpms_python)``, the environment variable
-    would resolve instead and this test would pass for the wrong reason.
+    only come from the parameter. Without ``.placed(bin_path=...)`` from the
+    parameter, the environment variable would resolve instead, and this test
+    would pass for the wrong reason.
     """
     monkeypatch.setenv(KPMS_LICENSE_ENV, "1")
     existing = tmp_path / "env-python"
@@ -200,7 +214,7 @@ def test_the_kpms_python_param_places_the_feature_on_the_interpreter_it_names(
     feature = _make_feature(kpms_python="/nonexistent/param/python")
 
     with pytest.raises(KpmsNotFoundError) as exc:
-        feature.fit(_empty_stream())
+        feature.fit(_one_track())
 
     message = str(exc.value)
     assert "/nonexistent/param/python" in message

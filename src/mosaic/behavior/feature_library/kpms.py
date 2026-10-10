@@ -1,28 +1,39 @@
 """Unified keypoint-MoSeq feature.
 
-Fits an AR-HMM model and applies it to extract per-frame syllable labels,
-using a persistent subprocess server to avoid repeated JAX startup costs.
-The kpms package does NOT need to be installed in the mosaic environment -- only
-in a separate one, located through :data:`KPMS_ENV`.
+Fits an AR-HMM model and applies it to extract per-frame syllable labels. A
+runner program in a separate environment, located through :data:`KPMS_ENV`,
+fits and applies the model. One runner serves a feature from its first request
+until :meth:`KpmsFeature.close`, which avoids repeated JAX startup costs. The
+kpms package does NOT need to be installed in the mosaic environment.
 
 keypoint-MoSeq is licensed for non-commercial research and academic use only
 and is never bundled with mosaic; see :data:`LICENSE_NOTICE` and
-``docs/licensing.md``. Nothing in this module imports it -- the licensed code
-runs only in the separate interpreter spawned by
-:meth:`KpmsFeature._start_server`, which is where the terms are enforced.
+``docs/licensing.md``. Nothing in this module imports it. The licensed code runs
+only in the runner's interpreter, which a feature starts only after
+:func:`check_license_accepted`.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import socket
-import subprocess
+import shutil
 import sys
 import tempfile
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Annotated, ClassVar, Final, Self, TypedDict, final
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    ClassVar,
+    Final,
+    Literal,
+    Self,
+    TypedDict,
+    final,
+)
 
 import numpy as np
 from pydantic import Field, model_validator
@@ -35,9 +46,15 @@ from mosaic.core.pipeline.column_contract import (
     Template,
     kept,
 )
-from mosaic.core.pipeline.subprocess_util import foreign_environment
+from mosaic.core.pipeline.job import CancelToken
 from mosaic.optional_dependency import Prerequisite
-from mosaic.core.pipeline.toolenv import ToolEnv, ToolNotFoundError, tool_invocation
+from mosaic.core.pipeline.toolenv import (
+    ToolEnv,
+    ToolExitError,
+    ToolNotFoundError,
+    tool_invocation,
+)
+from mosaic.core.pose_columns import KeypointArrays, keypoint_arrays, keypoint_suffixes
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -54,31 +71,43 @@ from mosaic.core.params import (
     Params,
 )
 
+from .external.kpms_protocol import (
+    AddTrack,
+    Apply,
+    Fit,
+    FitConfig,
+    LoadModel,
+    Payload,
+    SaveModel,
+    check_latent_dim,
+)
+from .helpers import iter_individuals
 from .registry import register_feature
+from .runner_client import CancelCheck, RunnerProcess
 
 if TYPE_CHECKING:
     import pandas as pd
-
-from .external.kpms_protocol import (
-    AddTrackRequest,
-    ApplyRequest,
-    ApplyResponse,
-    FitConfig,
-    FitRequest,
-    LoadModelRequest,
-    ReadyResponse,
-    SaveModelRequest,
-    ShutdownRequest,
-    check_latent_dim,
-    decode_array,
-    encode_array,
-    receive_message,
-    send_message,
-)
+    from pandas._typing import Scalar
 
 log = logging.getLogger(__name__)
 
-_KPMS_SERVER_SCRIPT = Path(__file__).parent / "external" / "kpms_server.py"
+KPMS_SERVER_SCRIPT: Final = Path(__file__).parent / "external" / "kpms_server.py"
+"""The runner program, which runs in the keypoint-MoSeq environment."""
+
+KPMS_MODEL_FILE: Final = "kpms_model.joblib"
+"""The model that :meth:`KpmsFeature.save_state` writes to its run root."""
+
+KPMS_SERVER_LOG: Final = "kpms_server.log"
+"""The runner's standard error, which :meth:`KpmsFeature.save_state` writes."""
+
+_Unsaved = Literal["tracks", "fit"]
+"""The state of a runner that is not recorded in a file."""
+
+_UNSAVED_NAMES: Final[dict[_Unsaved, str]] = {
+    "tracks": "the tracks sent for the fit",
+    "fit": "the fitted model",
+}
+"""Each state's name in the refusal of a runner started in place of an exited one."""
 
 KPMS_CONDA_ENV_VAR = "MOSAIC_KPMS_CONDA_ENV"
 KPMS_PYTHON_ENV = "MOSAIC_KPMS_PYTHON"
@@ -118,6 +147,15 @@ class KpmsNotFoundError(ToolNotFoundError):
     """Raised when no Python interpreter with keypoint-moseq can be located."""
 
     default_message = _NOT_FOUND_HELP
+
+
+class KpmsExitError(ToolExitError):
+    """Raised when the keypoint-MoSeq runner exits during a command.
+
+    Also raised when the runner writes a line that breaks the runner protocol.
+    """
+
+    tool_name = "The keypoint-MoSeq runner"
 
 
 # keypoint-moseq has no console script, so rung 5 reads the interpreter under
@@ -169,7 +207,8 @@ def license_accepted() -> bool:
 class KpmsLicense:
     """A prerequisite of :class:`KpmsFeature`: the accepted keypoint-MoSeq license.
 
-    Read from the environment, as :meth:`KpmsFeature._start_server` reads it.
+    Read from the environment, as :func:`check_license_accepted` reads it before
+    the feature starts its runner.
     """
 
     def missing(self) -> str | None:
@@ -180,12 +219,12 @@ class KpmsLicense:
 @final
 @dataclass(frozen=True, slots=True)
 class KpmsEnvironment:
-    """A prerequisite of :class:`KpmsFeature`: an interpreter to run the server.
+    """A prerequisite of :class:`KpmsFeature`: an interpreter for the runner.
 
-    Resolved through :data:`KPMS_ENV`, the ladder the spawn walks, without
-    starting it. The catalog does not read a step's ``kpms_python``, so only
-    the machine's rungs answer: ``MOSAIC_KPMS_CONDA_ENV``, ``MOSAIC_KPMS_PYTHON``
-    and the environment under ``external/.venv``.
+    Resolved through :data:`KPMS_ENV`, the ladder that starting the runner
+    walks, without starting it. The catalog does not read a step's
+    ``kpms_python``. Only the machine's rungs answer: ``MOSAIC_KPMS_CONDA_ENV``,
+    ``MOSAIC_KPMS_PYTHON`` and the environment under ``external/.venv``.
     """
 
     def missing(self) -> str | None:
@@ -200,70 +239,53 @@ class KpmsEnvironment:
 # --- Data conversion ---
 
 
-def _tracks_df_to_kpms_arrays(
-    df: pd.DataFrame,
-    pose_prefix_x: str = "poseX",
-    pose_prefix_y: str = "poseY",
-    pose_confidence_prefix: str = "poseP",
-) -> tuple[
-    np.ndarray[tuple[int, int, int], np.dtype[np.float32]],
-    np.ndarray[tuple[int, int], np.dtype[np.float32]],
-]:
-    """Convert a single-sequence track DataFrame to keypoint-moseq arrays.
+def recording_key(entry_key: str, individual: Scalar | None) -> str:
+    """Name one individual of an entry as a keypoint-MoSeq recording."""
+    if individual is None:
+        return entry_key
+    return f"{entry_key}__id{individual}"
 
-    Returns
-    -------
-    coords : ndarray, shape (T, K, 2)
-    confidences : ndarray, shape (T, K)
+
+def kpms_keypoint_arrays(rows: pd.DataFrame, pose: PoseConfig) -> KeypointArrays:
+    """Read every keypoint in *rows*, as keypoint-MoSeq takes them.
+
+    Every suffix with an x column under ``pose.x_prefix`` is read, in keypoint
+    order, whatever ``pose_n`` says. keypoint-MoSeq narrows to ``pose_indices``
+    itself, as positions among these keypoints, through ``use_bodyparts``.
+
+    Args:
+        rows: One individual's rows.
+        pose: The column prefixes.
+
+    Returns:
+        The arrays, one row per row of *rows*.
+
+    Raises:
+        ValueError: When *rows* lacks an x column under ``pose.x_prefix``.
     """
-    x_cols = sorted(
-        [c for c in df.columns if c.startswith(pose_prefix_x)],
-        key=lambda c: int(c[len(pose_prefix_x) :]),
-    )
-    y_cols = [f"{pose_prefix_y}{c[len(pose_prefix_x) :]}" for c in x_cols]
-    num_keypoints = len(x_cols)
-    num_frames = len(df)
-
-    if num_keypoints == 0:
+    suffixes = keypoint_suffixes(rows.columns, pose.x_prefix)
+    if not suffixes:
         msg = (
-            f"No keypoint columns found with prefix '{pose_prefix_x}'. "
-            f"Available columns: {list(df.columns)}"
+            f"No keypoint columns found with prefix '{pose.x_prefix}'. "
+            f"Available columns: {list(rows.columns)}"
         )
         raise ValueError(msg)
-
-    coords: np.ndarray[tuple[int, int, int], np.dtype[np.float32]] = np.empty(
-        (num_frames, num_keypoints, 2), dtype=np.float32
+    arrays = keypoint_arrays(
+        rows,
+        x_prefix=pose.x_prefix,
+        y_prefix=pose.y_prefix,
+        confidence_prefix=pose.confidence_prefix,
+        suffixes=suffixes,
     )
-    x_vals: np.ndarray[tuple[int, int], np.dtype[np.float32]] = np.asarray(
-        df[x_cols], dtype=np.float32
-    )
-    y_vals: np.ndarray[tuple[int, int], np.dtype[np.float32]] = np.asarray(
-        df[y_cols], dtype=np.float32
-    )
-    coords[:, :, 0] = x_vals
-    coords[:, :, 1] = y_vals
-
-    conf_cols = [f"{pose_confidence_prefix}{c[len(pose_prefix_x) :]}" for c in x_cols]
-    confidences: np.ndarray[tuple[int, int], np.dtype[np.float32]]
-    if all(c in df.columns for c in conf_cols):
-        confidences = np.asarray(df[conf_cols], dtype=np.float32)
-    else:
-        confidences = np.ones((num_frames, num_keypoints), dtype=np.float32)
-
-    # Replace Inf/NaN coords with NaN and zero out their confidences.
-    bad_mask = ~np.isfinite(coords)
-    bad_any = bad_mask.any(axis=2)
-    n_bad = int(bad_any.sum())
-    if n_bad > 0:
-        coords[bad_mask] = np.nan
-        confidences[bad_any] = 0.0
-        pct = 100 * n_bad / (num_frames * num_keypoints)
+    n_missing = int(np.isnan(arrays.position).any(axis=2).sum())
+    if n_missing > 0:
+        percent = 100 * n_missing / arrays.confidence.size
         print(
-            f"[kpms] Replaced {n_bad} non-finite keypoint observations ({pct:.1f}%) with NaN",
+            f"[kpms] Replaced {n_missing} non-finite keypoint observations "
+            f"({percent:.1f}%) with NaN",
             file=sys.stderr,
         )
-
-    return coords, confidences
+    return arrays
 
 
 _MODEL_DESCRIPTION = "A pre-fitted model to load. Unset, the feature fits a new model."
@@ -376,7 +398,7 @@ class KpmsModelArtifact(JoblibArtifact[KpmsModelBundle]):
 @final
 @register_feature
 class KpmsFeature:
-    """Unified keypoint-MoSeq feature: fit + apply via persistent subprocess.
+    """Unified keypoint-MoSeq feature: fit + apply in a runner process.
 
     !!! warning "Non-commercial license"
 
@@ -390,10 +412,22 @@ class KpmsFeature:
         paid exception cures it.
 
         mosaic does not install, bundle, or import keypoint-moseq. It runs in a
-        separate environment you build yourself, reached over a socket, and
-        will not start until you set ``MOSAIC_KPMS_LICENSE_ACCEPTED=1`` to
-        confirm your use is permitted. ``external/README.md`` in this package
-        is the setup, and ``NOTICE`` records the terms.
+        separate environment you build yourself, as a program that mosaic
+        drives over its standard input and output, and will not start until you
+        set ``MOSAIC_KPMS_LICENSE_ACCEPTED=1`` to confirm your use is
+        permitted. ``external/README.md`` in this package is the setup, and
+        ``NOTICE`` records the terms.
+
+    The runner starts at the feature's first request and serves it until
+    :meth:`close`. A fitted model therefore stays in the runner through
+    :meth:`save_state` for :meth:`apply`. :meth:`load_state` does not start a
+    runner. When it finds a model to apply, it raises unless the license is
+    accepted and the interpreter is located. A runner that exits is started again by the
+    next request, and loads the model of :meth:`load_state` or
+    :meth:`save_state`. A runner that exits after a fit begins and before
+    :meth:`save_state` loses tracks or a model that no file records. The next
+    request then raises. A fired ``cancel_token`` kills the runner during its
+    command, which then raises :class:`~mosaic.core.pipeline.job.Cancelled`.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.kpms.KpmsFeature.Params`.
@@ -493,184 +527,91 @@ class KpmsFeature:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._proc: subprocess.Popen[bytes] | None = None
-        self._conn: socket.socket | None = None
-        self._stderr_file: IO[str] | None = None
-        self._bodypart_names: list[str] | None = None
-        self._server_log: str = ""
-        self._socket_path: str | None = None
-        self._tmpdir: str | None = None
+        self.cancel_token: CancelToken | None = None
+        self._runner = RunnerProcess(
+            KPMS_ENV.placed(bin_path=self.params.kpms_python),
+            KPMS_SERVER_SCRIPT,
+            failure=KpmsExitError,
+            version=None,
+            on_start=self._prepare,
+        )
+        # The model file that a started runner loads.
+        self._model: Path | None = None
+        # The tracks or the fit in the runner that no file records. A runner
+        # started in its place lacks them, and its start raises.
+        self._unsaved: _Unsaved | None = None
+        self._exchange: Path | None = None
 
-    # --- Server lifecycle ---
+    # --- Runner ---
 
-    def _start_server(self) -> None:
-        if self._conn is not None:
-            return
+    def _request(self, payload: Payload) -> None:
+        """Run *payload*'s command in the runner, after checking the license.
 
-        # The license check sits here, at the only spawn, and deliberately not
-        # in __init__: constructing a KpmsFeature is not use of keypoint-MoSeq.
-        # `mosaic reconcile` builds every feature it re-addresses, and
-        # ``reconcile_features._build`` catches only ValidationError /
-        # ValueError / TypeError -- a check in the constructor would abort that
-        # whole sweep for any dataset that has ever run kpms, over a question
-        # that recomputing an identifier never asks. Gating the spawn instead
-        # covers every caller (CLI, notebooks, mosaic-api) with one check.
-        #
-        # Before resolving the interpreter, so the answer does not depend on
-        # whether an environment happens to be present.
+        Every request checks the license before it can start a runner. The
+        refusal therefore covers every caller (CLI, notebooks, mosaic-api), and
+        it does not depend on whether an environment is present. ``__init__`` does not
+        check it, because constructing a KpmsFeature is not use of
+        keypoint-MoSeq. ``mosaic reconcile`` constructs every feature that it
+        re-addresses, and ``reconcile_features._build`` catches only
+        ``ValidationError``, ``ValueError`` and ``TypeError``. Its sweep
+        therefore passes a dataset that ran kpms without the license.
+        """
         check_license_accepted()
-        invocation = tool_invocation(
-            KPMS_ENV.placed(bin_path=self.params.kpms_python), executable="python"
-        )
+        token = self.cancel_token
+        cancel = None if token is None else token.is_cancelled
+        _ = self._runner.request(payload.command, payload, cancel=cancel)
 
-        self._tmpdir = tempfile.mkdtemp(prefix="kpms_")
-        socket_path = str(Path(self._tmpdir) / "kpms.sock")
-        self._socket_path = socket_path
+    def _prepare(self, runner: RunnerProcess, cancel: CancelCheck | None) -> None:
+        """Load the model into a runner that has started.
 
-        self._stderr_file = tempfile.NamedTemporaryFile(
-            mode="w", prefix="kpms_log_", suffix=".log", delete=False
-        )
-        self._proc = subprocess.Popen(
-            [*invocation, str(_KPMS_SERVER_SCRIPT), socket_path],
-            stderr=self._stderr_file,
-            env=foreign_environment(),
-        )
-        self._server_log = ""
-
-        # Poll until socket file appears
-        import time
-
-        deadline = time.monotonic() + 120
-        while not Path(socket_path).exists():
-            if self._proc.poll() is not None:
-                self._read_server_log()
-                msg = (
-                    f"[kpms] Server exited with code {self._proc.returncode} "
-                    f"during startup.\n{self._server_log}"
-                )
-                raise RuntimeError(msg)
-            if time.monotonic() > deadline:
-                self._proc.kill()
-                msg = "[kpms] Server did not create socket within 120s"
-                raise RuntimeError(msg)
-            time.sleep(0.1)
-
-        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        conn.connect(socket_path)
-        self._conn = conn
-
-        line = receive_message(conn)
-        ReadyResponse.model_validate_json(line)
-        log.info("[kpms] Server ready.")
-
-    def _send(
-        self,
-        request: AddTrackRequest
-        | FitRequest
-        | LoadModelRequest
-        | ApplyRequest
-        | SaveModelRequest
-        | ShutdownRequest,
-    ) -> None:
-        if self._conn is None:
-            msg = "[kpms] Server not started"
+        Raises:
+            RuntimeError: The exited runner had tracks or a fit that no file
+                records.
+        """
+        if self._unsaved is not None:
+            msg = (
+                "[kpms] The keypoint-MoSeq runner exited with "
+                f"{_UNSAVED_NAMES[self._unsaved]}, which no file records. Fit again."
+            )
             raise RuntimeError(msg)
-        send_message(self._conn, request)
+        if self._model is not None:
+            load = LoadModel(path=str(self._model))
+            _ = runner.request(load.command, load, cancel=cancel)
 
-    def _receive_json(self) -> dict[str, object]:
-        if self._conn is None:
-            msg = "[kpms] Server not started"
-            raise RuntimeError(msg)
-        import json
-
-        line = receive_message(self._conn)
-        data: dict[str, object] = json.loads(line)
-        if data.get("status") == "error":
-            tb = data.get("traceback", "")
-            detail = data.get("message", "(no message)")
-            msg = f"[kpms] Server error: {detail}"
-            if tb:
-                msg += f"\n\nServer traceback:\n{tb}"
-            raise RuntimeError(msg)
-        return data
-
-    def _receive_ok(self) -> None:
-        self._receive_json()
-
-    def _receive_apply(self) -> ApplyResponse:
-        data = self._receive_json()
-        return ApplyResponse.model_validate(data)
-
-    def _read_server_log(self) -> None:
-        if self._stderr_file is not None:
-            self._stderr_file.flush()
-            log_path = Path(self._stderr_file.name)
-            if log_path.exists():
-                self._server_log = log_path.read_text()
-
-    def _shutdown_server(self) -> None:
-        if self._conn is None:
-            return
+    @contextmanager
+    def _exchange_file(self, name: str) -> Generator[Path]:
+        """Yield a path for *name* in the exchange directory, and remove it on exit."""
+        if self._exchange is None:
+            self._exchange = Path(tempfile.mkdtemp(prefix="mosaic-kpms-"))
+        path = self._exchange / name
         try:
-            self._send(ShutdownRequest(command="shutdown"))
-            self._receive_ok()
-        except Exception:
-            pass
-        try:
-            self._conn.close()
-        except Exception:
-            pass
-        self._conn = None
+            yield path
+        finally:
+            path.unlink(missing_ok=True)
 
-        if self._proc is not None:
-            try:
-                self._proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
-            self._proc = None
+    def close(self) -> None:
+        """Stop the runner, and remove the exchange directory.
 
-        self._read_server_log()
-
-        if self._stderr_file is not None:
-            try:
-                self._stderr_file.close()
-            except Exception:
-                pass
-            try:
-                Path(self._stderr_file.name).unlink(missing_ok=True)
-            except Exception:
-                pass
-            self._stderr_file = None
-
-        if self._socket_path is not None:
-            Path(self._socket_path).unlink(missing_ok=True)
-            self._socket_path = None
-        if self._tmpdir is not None:
-            import shutil
-
-            shutil.rmtree(self._tmpdir, ignore_errors=True)
-            self._tmpdir = None
+        A second call does nothing. A later request starts a new runner.
+        """
+        _ = self._runner.close()
+        if self._exchange is not None:
+            shutil.rmtree(self._exchange, ignore_errors=True)
+            self._exchange = None
 
     # --- Track sending ---
 
     def _send_track(self, key: str, df: pd.DataFrame) -> None:
-        pose = self.params.pose
-        coords, conf = _tracks_df_to_kpms_arrays(
-            df, pose.x_prefix, pose.y_prefix, pose.confidence_prefix
-        )
+        arrays = kpms_keypoint_arrays(df, self.params.pose)
+        coords, conf = arrays.position, arrays.confidence
         if self.params.downsample_rate is not None and self.params.downsample_rate > 1:
             rate = self.params.downsample_rate
             coords = coords[::rate]
             conf = conf[::rate]
-        self._send(
-            AddTrackRequest(
-                command="add_track",
-                key=key,
-                coords=encode_array(coords),  # pyright: ignore[reportArgumentType] # cross-env numpy
-                conf=encode_array(conf),  # pyright: ignore[reportArgumentType] # cross-env numpy
-            )
-        )
-        self._receive_ok()
+        with self._exchange_file("track.npz") as track:
+            np.savez(track, coords=coords, conf=conf)
+            self._request(AddTrack(key=key, track=str(track)))
+        self._unsaved = "tracks"
 
     # --- Feature protocol ---
 
@@ -680,53 +621,47 @@ class KpmsFeature:
         artifact_paths: dict[str, Path],
         dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
-        # Branch 1: cached model in run_root
-        cached_path = run_root / "kpms_model.joblib"
+        # A runner of an earlier run contains that run's state. It is stopped,
+        # and the next request starts one that loads the model found here.
+        self.close()
+        self._model = None
+        self._unsaved = None
+
+        # The cached model of this run root, else a pre-fitted model.
+        cached_path = run_root / KPMS_MODEL_FILE
         if cached_path.exists():
-            self._start_server()
-            self._send(LoadModelRequest(command="load_model", path=str(cached_path)))
-            self._receive_ok()
-            return True
-
-        # Branch 2: pre-fitted model from artifact_paths
-        if self.params.model is not None and "model" in artifact_paths:
-            self._start_server()
-            self._send(
-                LoadModelRequest(
-                    command="load_model", path=str(artifact_paths["model"])
-                )
-            )
-            self._receive_ok()
-            return True
-
-        return False
+            model = cached_path
+        elif self.params.model is not None and "model" in artifact_paths:
+            model = artifact_paths["model"]
+        else:
+            return False
+        # A run that applies a model is refused here, once, before any entry
+        # is read. The two checks do not start a process. The license comes
+        # first, as at a request.
+        check_license_accepted()
+        _ = self._runner.locate()
+        self._model = model
+        return True
 
     def fit(self, inputs: InputStream) -> None:
-        self._start_server()
-
         pose = self.params.pose
         bodypart_names: list[str] | None = pose.keypoint_names
+        self._model = None
+        self._unsaved = None
 
         for entry_key, df in inputs():
-            if "id" in df.columns:
-                id_col: pd.Series[int] = df["id"]
-                for ind_id, sub in df.groupby(id_col, sort=False):  # pyright: ignore[reportUnknownMemberType]
-                    sub = sub.sort_values("frame").reset_index(drop=True)
-                    key = f"{entry_key}__id{ind_id}"
-                    self._send_track(key, sub)
-            else:
-                self._send_track(entry_key, df)
+            for individual, rows in iter_individuals(df):
+                self._send_track(recording_key(entry_key, individual), rows)
 
-            # Auto-detect bodypart names from first track if not configured
+            # Name the keypoints of the first track when the pose names none.
             if bodypart_names is None:
-                x_cols = [c for c in df.columns if c.startswith(pose.x_prefix)]
-                bodypart_names = [f"kp{i}" for i in range(len(x_cols))]
+                bodypart_names = pose.names(
+                    len(keypoint_suffixes(df.columns, pose.x_prefix))
+                )
 
         if bodypart_names is None:
             msg = "[kpms] No tracks found -- nothing to fit."
             raise RuntimeError(msg)
-
-        self._bodypart_names = bodypart_names
 
         # Derive use_bodyparts from pose_indices
         use_bodyparts: list[str] | None = None
@@ -758,8 +693,8 @@ class KpmsFeature:
             num_iters_full=params.num_iters_full,
             location_aware=params.location_aware,
         )
-        self._send(FitRequest(command="fit", config=config))
-        self._receive_ok()
+        self._request(Fit(config=config))
+        self._unsaved = "fit"
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         import pandas as pd
@@ -769,69 +704,45 @@ class KpmsFeature:
         key = make_entry_key(group, sequence)
 
         results: list[pd.DataFrame] = []
-
-        if "id" in df.columns:
-            id_col: pd.Series[int] = df["id"]
-            for ind_id, sub in df.groupby(id_col, sort=False):  # pyright: ignore[reportUnknownMemberType]
-                sub = sub.sort_values("frame").reset_index(drop=True)
-                rec_key = f"{key}__id{ind_id}"
-                syllables = self._apply_one(rec_key, sub)
-                result = pd.DataFrame(
-                    {
-                        "frame": sub["frame"].values,
-                        "syllable": syllables,
-                    }
-                )
-                result["id"] = ind_id
-                results.append(result)
-        else:
-            syllables = self._apply_one(key, df)
-            results.append(
-                pd.DataFrame(
-                    {
-                        "frame": df["frame"].values,
-                        "syllable": syllables,
-                    }
-                )
+        for individual, rows in iter_individuals(df):
+            syllables = self._apply_one(recording_key(key, individual), rows)
+            result = pd.DataFrame(
+                {"frame": rows["frame"].to_numpy(), "syllable": syllables}
             )
+            if individual is not None:
+                result["id"] = individual
+            results.append(result)
 
         return pd.concat(results, ignore_index=True)
 
     def _apply_one(
         self, key: str, df: pd.DataFrame
     ) -> np.ndarray[tuple[int], np.dtype[np.int32]]:
-        pose = self.params.pose
-        coords, conf = _tracks_df_to_kpms_arrays(
-            df, pose.x_prefix, pose.y_prefix, pose.confidence_prefix
-        )
-        request = ApplyRequest(
-            command="apply",
-            key=key,
-            num_iters=self.params.num_iters_apply,
-            coords=encode_array(coords),  # pyright: ignore[reportArgumentType] # cross-env numpy
-            conf=encode_array(conf),  # pyright: ignore[reportArgumentType] # cross-env numpy
-        )
-        self._send(request)
-        response = self._receive_apply()
-        return decode_array(response.syllables)  # pyright: ignore[reportReturnType] # cross-env numpy
+        arrays = kpms_keypoint_arrays(df, self.params.pose)
+        with (
+            self._exchange_file("track.npz") as track,
+            self._exchange_file("syllables.npz") as syllables,
+        ):
+            np.savez(track, coords=arrays.position, conf=arrays.confidence)
+            self._request(
+                Apply(
+                    key=key,
+                    num_iters=self.params.num_iters_apply,
+                    track=str(track),
+                    syllables=str(syllables),
+                )
+            )
+            with np.load(syllables) as written:
+                labels = written["syllables"]
+        return np.asarray(labels, dtype=np.int32).reshape(-1)
 
     def save_state(self, run_root: Path) -> None:
         run_root.mkdir(parents=True, exist_ok=True)
-        model_path = run_root / "kpms_model.joblib"
-        self._send(SaveModelRequest(command="save_model", path=str(model_path)))
-        self._receive_ok()
-        self._shutdown_server()
+        model_path = run_root / KPMS_MODEL_FILE
+        self._request(SaveModel(path=str(model_path)))
+        self._model = model_path
+        self._unsaved = None
 
-        if self._server_log:
-            (run_root / "kpms_server.log").write_text(self._server_log)
-
-    def __del__(self) -> None:
-        # __init__ may have raised before setting _proc (e.g. params validation),
-        # and __del__ still runs on the half-built object.
-        proc = getattr(self, "_proc", None)
-        if proc is not None:
-            try:
-                self._shutdown_server()
-            except Exception:
-                if proc.poll() is None:
-                    proc.kill()
+        server_log = self._runner.log()
+        if server_log:
+            _ = (run_root / KPMS_SERVER_LOG).write_text(server_log)

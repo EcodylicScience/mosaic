@@ -1,4 +1,12 @@
-"""Bidirectional conversion between mosaic DataFrames and movement xarray Datasets."""
+"""Bidirectional conversion between mosaic DataFrames and movement xarray Datasets.
+
+Pose columns are read here and not through
+:func:`~mosaic.core.pose_columns.keypoint_arrays`, because a movement dataset is a
+different computation from the arrays that function returns for one individual.
+It places every individual on one frame axis, the union of their frames. It scores
+an absent point NaN, and a point with a finite position and no score column 1,
+keypoint by keypoint. It can add the body center as a ``centroid`` keypoint.
+"""
 
 from __future__ import annotations
 

@@ -47,11 +47,14 @@ __all__ = [
     "BinMode",
     "ToolEnv",
     "ToolExitError",
+    "ToolInvocation",
     "ToolNotFoundError",
     "captured_output",
     "conda_invocation",
     "display_overlay",
     "PROBE_DEADLINE_FLOOR_SECONDS",
+    "interpreter_refusal",
+    "locate_tool",
     "missing_output_error",
     "subprocess_env",
     "tool_invocation",
@@ -320,8 +323,36 @@ def conda_invocation(env: ToolEnv, env_name: str, executable: str) -> list[str]:
     return [conda, "run", "--no-capture-output", "-n", env_name, target]
 
 
+@dataclass(frozen=True, slots=True)
+class ToolInvocation:
+    """How a tool is launched, and which rung of the ladder located it.
+
+    Attributes:
+        argv: The argv prefix that launches the executable.
+        source: The rung that located the executable, worded for a message:
+            a conda environment and what chose it, the binary placed for this
+            run, a ``MOSAIC_<TOOL>_BIN`` value, the in-repository environment
+            or the ``$PATH`` lookup.
+    """
+
+    argv: list[str]
+    source: str
+
+
 def tool_invocation(env: ToolEnv, *, executable: str) -> list[str]:
     """Resolve how to launch *executable*, as an argv prefix.
+
+    It is the argv of :func:`locate_tool`, which also names the rung.
+
+    Raises:
+        ToolNotFoundError: The subclass named by ``env.not_found``, as
+            :func:`locate_tool` raises it.
+    """
+    return locate_tool(env, executable=executable).argv
+
+
+def locate_tool(env: ToolEnv, *, executable: str) -> ToolInvocation:
+    """Resolve how to launch *executable*, and name the rung that located it.
 
     Precedence, first match wins: ``env.conda_env``, ``env.bin_path``,
     ``env.conda_env_var``, ``env.bin_var``, then ``env.repo_venv`` if *env*
@@ -335,40 +366,46 @@ def tool_invocation(env: ToolEnv, *, executable: str) -> list[str]:
             resolved for a tool declaring ``repo_venv`` is not a file.
     """
     if env.conda_env:
-        return conda_invocation(env, env.conda_env, executable)
+        return ToolInvocation(
+            conda_invocation(env, env.conda_env, executable),
+            f"the conda environment '{env.conda_env}' that this run was placed in",
+        )
     if env.bin_path:
-        return [
-            _from_bin(
-                env,
-                env.bin_path,
-                executable,
-                source="the binary this run was placed with",
-            )
-        ]
+        source = "the binary this run was placed with"
+        return ToolInvocation(
+            [_from_bin(env, env.bin_path, executable, source=source)], source
+        )
 
     env_conda = os.environ.get(env.conda_env_var)
     if env_conda:
-        return conda_invocation(env, env_conda, executable)
+        return ToolInvocation(
+            conda_invocation(env, env_conda, executable),
+            f"the conda environment '{env_conda}' named by {env.conda_env_var}",
+        )
     env_bin = os.environ.get(env.bin_var)
     if env_bin:
-        return [
-            _from_bin(env, env_bin, executable, source=f"the value of {env.bin_var}")
-        ]
+        source = f"the value of {env.bin_var}"
+        return ToolInvocation(
+            [_from_bin(env, env_bin, executable, source=source)], source
+        )
 
     root = _repo_venv_root(env)
     if root is not None:
-        return [_repo_interpreter(env, root)]
+        source = f"the in-repository environment under {root}"
+        return ToolInvocation([_repo_interpreter(env, root, source)], source)
 
     # A locator is looked up in order to find something beside it; without one
     # the executable is what is looked up, and what is found is what runs.
-    found = shutil.which(env.locator or executable)
+    looked_up = env.locator or executable
+    source = f"the $PATH lookup of '{looked_up}'"
+    found = shutil.which(looked_up)
     if found is None:
         raise env.not_found()
     if not env.locator:
-        return [found]
+        return ToolInvocation([found], source)
     # Resolved, because a uv or pipx tool install links its scripts into
     # ~/.local/bin, and what sits beside the link is not the environment.
-    return [str(Path(found).resolve().parent / executable)]
+    return ToolInvocation([str(Path(found).resolve().parent / executable)], source)
 
 
 def _repo_venv_root(env: ToolEnv) -> Path | None:
@@ -381,12 +418,12 @@ def _repo_venv_root(env: ToolEnv) -> Path | None:
     return env.repo_venv
 
 
-def _repo_interpreter(env: ToolEnv, root: Path) -> str:
+def _repo_interpreter(env: ToolEnv, root: Path, source: str) -> str:
     """The interpreter under *root*'s own ``.venv``, read in place of ``$PATH``.
 
     Raises:
-        ToolNotFoundError: The subclass named by ``env.not_found``, when the
-            venv under *root* has not been built.
+        ToolNotFoundError: The subclass named by ``env.not_found``, naming
+            *source*, when the venv under *root* has not been built.
     """
     venv = root / ".venv"
     resolved = (
@@ -394,7 +431,7 @@ def _repo_interpreter(env: ToolEnv, root: Path) -> str:
         if sys.platform == "win32"
         else venv / "bin" / "python"
     )
-    _require_interpreter(env, resolved, f"the in-repository environment under {root}")
+    _require_interpreter(env, resolved, source)
     return str(resolved)
 
 
@@ -414,10 +451,26 @@ def _require_interpreter(env: ToolEnv, resolved: Path, source: str) -> None:
     rungs that call this.
     """
     if env.repo_venv is not None and not resolved.is_file():
-        raise env.not_found(
-            f"The {env.tool} interpreter '{resolved}', {source}, is not a "
-            f"file. {env.not_found.default_message}"
-        )
+        raise env.not_found(interpreter_refusal(env, resolved, source, "is not a file"))
+
+
+def interpreter_refusal(
+    env: ToolEnv, interpreter: str | Path, source: str, claim: str
+) -> str:
+    """Return a refusal of a tool's interpreter, ending with the tool's install help.
+
+    Args:
+        env: The tool's placement.
+        interpreter: The interpreter's path.
+        source: The rung that located it, as :attr:`ToolInvocation.source`
+            words it.
+        claim: What is wrong with the interpreter, a predicate such as
+            ``is not a file``.
+    """
+    return (
+        f"The {env.tool} interpreter '{interpreter}', {source}, {claim}. "
+        f"{env.not_found.default_message}"
+    )
 
 
 def _from_bin(

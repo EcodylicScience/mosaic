@@ -69,12 +69,14 @@ yourself, then tell mosaic where it went, and mosaic launches it there.
 | [**Lightning Pose**](https://lightning-pose.readthedocs.io) | `mosaic track litpose`, the `train-litpose` op | `MOSAIC_LITPOSE_CONDA_ENV`, or `MOSAIC_LITPOSE_BIN` |
 | [**Ultralytics**](https://github.com/ultralytics/ultralytics) | `mosaic track ultralytics`, the `infer-pose` and `train-pose` ops | `MOSAIC_ULTRALYTICS_CONDA_ENV`, or `MOSAIC_ULTRALYTICS_BIN` for the environment's `yolo` script |
 | [**POLO**](https://github.com/mooch443/POLO) | the `infer-points` and `train-points` ops | `MOSAIC_POLO_CONDA_ENV`, or `MOSAIC_POLO_BIN` for the environment's `yolo` script |
-| [**keypoint-MoSeq**](https://keypoint-moseq.readthedocs.io) | the `kpms` feature | `MOSAIC_KPMS_PYTHON`, the environment's interpreter |
+| [**keypoint-MoSeq**](https://keypoint-moseq.readthedocs.io) | the `kpms` feature | `MOSAIC_KPMS_CONDA_ENV`, or `MOSAIC_KPMS_PYTHON` for the environment's interpreter |
 
 A `_CONDA_ENV` variable names a conda environment, which mosaic activates with `conda
-run`; a `_BIN` variable names a path directly. With neither set, mosaic looks on
-`$PATH`. Where a tool is installed never enters a `run_id`, so two machines that place
-it differently still agree on what a run is called.
+run`. A `_BIN` or `_PYTHON` variable names a path directly. With neither set, mosaic
+looks on `$PATH`. For keypoint-MoSeq it looks in the environment built under
+`src/mosaic/behavior/feature_library/external` instead. A tool's location does not
+enter a `run_id`. Two machines that place a tool differently therefore agree on what
+a run is called.
 
 ### Video codecs each tool reads
 
@@ -230,7 +232,8 @@ export MOSAIC_KPMS_LICENSE_ACCEPTED=1
 ```
 
 Built here, mosaic finds the interpreter on its own. Built anywhere else, name it:
-`export MOSAIC_KPMS_PYTHON=/path/to/env/bin/python`.
+`export MOSAIC_KPMS_PYTHON=/path/to/env/bin/python`, or, for a conda environment,
+`export MOSAIC_KPMS_CONDA_ENV=kpms`.
 
 Mosaic will not start keypoint-MoSeq until `MOSAIC_KPMS_LICENSE_ACCEPTED` is set to
 exactly `1`. Harvard OTD licenses keypoint-MoSeq for non-commercial research and
@@ -257,7 +260,7 @@ native-Windows build and need **WSL2**:
 | Capability                                                        | Native Windows          | WSL2 / Linux | macOS |
 | ----------------------------------------------------------------- | ----------------------- | ------------ | ----- |
 | Core analysis (indexing, tracks, features, clustering, ARHMM, XGBoost, visualization) | Yes | Yes | Yes |
-| keypoint-MoSeq (`kpms`) -- JAX + Unix sockets                     | No                      | Yes          | Yes   |
+| keypoint-MoSeq (`kpms`) -- JAX                                    | No                      | Yes          | Yes   |
 | FERAL (`feral`) -- `decord`                                       | No                      | Yes          | Yes   |
 | GPU kNN (`faiss`, `faiss-gpu`)                                    | No (`faiss-cpu` works)  | Yes          | n/a   |
 | imgstore recordings (reading is native)                           | Partial                 | Yes          | Yes   |

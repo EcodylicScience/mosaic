@@ -7,12 +7,18 @@ feature_library to avoid code duplication.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 
 from mosaic.core.pipeline.types import COLUMNS, META_COLS, NON_PAYLOAD_COLS
 
 from .types import InterpolationConfig
+
+if TYPE_CHECKING:
+    from pandas._typing import Scalar
 
 __all__ = [
     "apply_exclude_cols",
@@ -23,6 +29,7 @@ __all__ = [
     "farthest_first",
     "feature_columns",
     "finite_rows",
+    "iter_individuals",
     "meta_columns",
     "smooth_1d",
     "unwrap_diff",
@@ -105,6 +112,33 @@ def farthest_first(
         distances[farthest] = -np.inf
     indices = np.array(selected)
     return pool[indices], indices
+
+
+def iter_individuals(
+    df: pd.DataFrame, order_col: str = COLUMNS.frame_col
+) -> Iterator[tuple[Scalar | None, pd.DataFrame]]:
+    """Yield the rows of each individual in *df*, ordered by *order_col*.
+
+    Individuals come in the order in which their ids first appear in *df*. A
+    table without an id column is one individual, yielded with ``None``. A row
+    whose id is missing belongs to no individual and is not yielded.
+
+    Args:
+        df: The rows to split. Left unchanged.
+        order_col: The column that orders each individual's rows.
+
+    Yields:
+        ``(id, rows)`` per individual, the rows sorted by *order_col* and indexed
+        from 0. Rows with equal *order_col* values keep their order in *df*.
+    """
+    if COLUMNS.id_col not in df.columns:
+        yield None, df.sort_values(order_col, kind="stable").reset_index(drop=True)
+        return
+    for individual, rows in df.groupby(COLUMNS.id_col, sort=False):
+        yield (
+            individual,
+            rows.sort_values(order_col, kind="stable").reset_index(drop=True),
+        )
 
 
 def meta_columns(df: pd.DataFrame) -> list[str]:

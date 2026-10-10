@@ -24,11 +24,11 @@ but it does mean the boundary is not where the code claims it is.
 Top level rather than under the core subpackage on purpose, the same shape as
 ``mosaic.runlog`` and ``mosaic.media_probe_config``: importing any ``core``
 submodule runs ``core/__init__``, which pulls ``Dataset`` and the video readers,
-hence pandas, cv2 and numpy. Every layer needs this rule -- ``cli``, ``core``,
-``tracking.model_refs``, ``behavior.feature_library.kpms`` -- and a consumer
-that needs one path rule should not pay for those to get it. ``core.stored_paths``
-is the right shape but the wrong scope: its subject is the cells an index stores,
-and it is a consumer of this rule rather than its home.
+hence pandas, cv2 and numpy. Every layer needs this rule, among them ``cli``,
+``core``, ``tracking.model_refs`` and ``behavior.visualization_library.playback``,
+and a consumer that needs one path rule should not pay for those to get it.
+``core.stored_paths`` is the right shape but the wrong scope. Its subject is the
+cells an index stores, and it consumes this rule.
 """
 
 from __future__ import annotations

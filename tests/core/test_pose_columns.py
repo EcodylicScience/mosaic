@@ -22,10 +22,15 @@ import pandas as pd
 import pytest
 
 from mosaic.core.pose_columns import (
+    KeypointArrays,
     configured_pose_pairs,
     frame_keypoint_centroid,
+    keypoint_arrays,
     keypoint_centroid,
+    keypoint_suffixes,
     pose_column_pairs,
+    reindex_contiguous,
+    resolve_keypoint_refs,
 )
 
 
@@ -184,3 +189,194 @@ def test_a_configured_set_does_not_widen_to_what_the_table_carries() -> None:
     assert configured_pose_pairs(
         columns, x_prefix="poseX", y_prefix="poseY", count=2
     ) == [("poseX0", "poseY0"), ("poseX1", "poseY1")]
+
+
+# --- keypoint references -----------------------------------------------------
+
+
+def test_references_resolve_by_name_and_by_index_in_the_order_given() -> None:
+    names = ["nose", "left_wrist", "right_wrist"]
+    assert resolve_keypoint_refs(["right_wrist", 0], names, 3, who="t") == [2, 0]
+
+
+def test_an_unknown_name_names_the_known_ones() -> None:
+    with pytest.raises(ValueError, match="left_wrist"):
+        _ = resolve_keypoint_refs(["elbow"], ["nose", "left_wrist"], 2, who="t")
+
+
+def test_a_name_without_a_name_list_is_refused() -> None:
+    with pytest.raises(ValueError, match="no keypoint names"):
+        _ = resolve_keypoint_refs(["nose"], None, 3, who="t")
+
+
+@pytest.mark.parametrize("index", [-1, 3])
+def test_an_index_outside_the_table_is_refused(index: int) -> None:
+    with pytest.raises(ValueError, match="outside"):
+        _ = resolve_keypoint_refs([index], None, 3, who="t")
+
+
+# --- keypoint arrays ---------------------------------------------------------
+
+
+def test_suffixes_follow_keypoint_order_under_any_prefix() -> None:
+    columns = ["kx10", "ky10", "kx2", "ky2", "kxnose", "kx0", "frame"]
+
+    assert keypoint_suffixes(columns, "kx") == ["0", "2", "10", "nose"]
+
+
+def test_suffixes_need_only_the_x_column() -> None:
+    """The caller names every axis it reads, and a missing one raises there."""
+    assert keypoint_suffixes(["poseX0", "poseX1", "poseY0"], "poseX") == ["0", "1"]
+
+
+def test_a_table_without_the_prefix_has_no_suffixes() -> None:
+    assert keypoint_suffixes(["frame", "X", "Y"], "poseX") == []
+
+
+def _pose_rows(**columns: list[float]) -> pd.DataFrame:
+    """Three frames, 7 to 9, with the given pose columns."""
+    return pd.DataFrame({"frame": [7, 8, 9], **columns})
+
+
+def _arrays(rows: pd.DataFrame, suffixes: list[str]) -> KeypointArrays:
+    return keypoint_arrays(
+        rows,
+        x_prefix="poseX",
+        y_prefix="poseY",
+        confidence_prefix="poseP",
+        suffixes=suffixes,
+    )
+
+
+def test_arrays_stack_the_requested_keypoints_in_the_order_given() -> None:
+    rows = _pose_rows(
+        poseX0=[0.0, 1.0, 2.0],
+        poseY0=[10.0, 11.0, 12.0],
+        poseX2=[20.0, 21.0, 22.0],
+        poseY2=[30.0, 31.0, 32.0],
+    )
+
+    arrays = _arrays(rows, ["2", "0"])
+
+    assert arrays.frames.dtype == np.int64
+    assert arrays.frames.tolist() == [7, 8, 9]
+    assert arrays.position.dtype == np.float32
+    assert arrays.position.shape == (3, 2, 2)
+    assert arrays.position[:, 0, :].tolist() == [[20, 30], [21, 31], [22, 32]]
+    assert arrays.position[:, 1, :].tolist() == [[0, 10], [1, 11], [2, 12]]
+
+
+def test_confidence_is_read_when_every_keypoint_has_its_column() -> None:
+    rows = _pose_rows(
+        poseX0=[0.0, 1.0, 2.0],
+        poseY0=[0.0, 1.0, 2.0],
+        poseP0=[0.5, 0.25, 0.125],
+        poseX1=[0.0, 1.0, 2.0],
+        poseY1=[0.0, 1.0, 2.0],
+        poseP1=[1.0, 0.75, 0.0],
+    )
+
+    confidence = _arrays(rows, ["0", "1"]).confidence
+
+    assert confidence.dtype == np.float32
+    assert confidence.tolist() == [[0.5, 1.0], [0.25, 0.75], [0.125, 0.0]]
+
+
+def test_confidence_is_one_when_a_keypoint_lacks_its_column() -> None:
+    """Half the scores would leave the other half at an invented value."""
+    rows = _pose_rows(
+        poseX0=[0.0, 1.0, 2.0],
+        poseY0=[0.0, 1.0, 2.0],
+        poseP0=[0.5, 0.25, 0.125],
+        poseX1=[0.0, 1.0, 2.0],
+        poseY1=[0.0, 1.0, 2.0],
+    )
+
+    assert _arrays(rows, ["0", "1"]).confidence.tolist() == [[1.0, 1.0]] * 3
+
+
+def test_a_non_finite_position_is_nan_with_confidence_zero() -> None:
+    """One infinite coordinate makes the whole point missing, scored or not."""
+    rows = _pose_rows(
+        poseX0=[np.inf, np.nan, 2.0],
+        poseY0=[5.0, 6.0, -np.inf],
+        poseP0=[0.9, 0.9, 0.9],
+        poseX1=[1.0, 1.0, 1.0],
+        poseY1=[1.0, 1.0, 1.0],
+        poseP1=[0.9, 0.9, 0.9],
+    )
+
+    arrays = _arrays(rows, ["0", "1"])
+
+    assert np.isnan(arrays.position[:, 0, :]).all()
+    assert arrays.confidence[:, 0].tolist() == [0.0, 0.0, 0.0]
+    assert arrays.position[:, 1, :].tolist() == [[1.0, 1.0]] * 3
+    assert np.allclose(arrays.confidence[:, 1], 0.9)
+
+
+def test_a_nan_score_at_a_finite_position_is_kept() -> None:
+    """A missing score is the producer's statement, and the caller decides on it."""
+    rows = _pose_rows(
+        poseX0=[0.0, 1.0, 2.0],
+        poseY0=[0.0, 1.0, 2.0],
+        poseP0=[0.5, np.nan, 0.5],
+    )
+
+    confidence = _arrays(rows, ["0"]).confidence
+
+    assert np.isnan(confidence[1, 0])
+    assert confidence[[0, 2], 0].tolist() == [0.5, 0.5]
+
+
+def test_a_requested_keypoint_without_its_y_column_is_refused() -> None:
+    rows = _pose_rows(poseX0=[0.0, 1.0, 2.0], poseY0=[0.0, 1.0, 2.0], poseX1=[0.0] * 3)
+
+    with pytest.raises(KeyError, match="poseY1"):
+        _ = _arrays(rows, ["0", "1"])
+
+
+def test_reading_scores_leaves_the_table_unchanged() -> None:
+    rows = _pose_rows(poseX0=[np.inf, 1.0, 2.0], poseY0=[0.0, 1.0, 2.0])
+    rows["poseP0"] = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+    before = rows.copy()
+
+    _ = _arrays(rows, ["0"])
+
+    pd.testing.assert_frame_equal(rows, before)
+
+
+def test_reindexing_fills_missing_frames_as_unseen() -> None:
+    rows = pd.DataFrame(
+        {"frame": [4, 2, 5], "poseX0": [4.0, 2.0, 5.0], "poseY0": [-4.0, -2.0, -5.0]}
+    )
+
+    arrays = reindex_contiguous(_arrays(rows, ["0"]))
+
+    assert arrays.frames.tolist() == [2, 3, 4, 5]
+    assert arrays.position[[0, 2, 3], 0, 0].tolist() == [2.0, 4.0, 5.0]
+    assert np.isnan(arrays.position[1]).all()
+    assert arrays.confidence[:, 0].tolist() == [1.0, 0.0, 1.0, 1.0]
+
+
+def test_reindexing_refuses_a_repeated_frame() -> None:
+    """A contiguous frame axis has one row per frame."""
+    rows = pd.DataFrame({"frame": [3, 3], "poseX0": [0.0, 1.0], "poseY0": [0.0, 1.0]})
+
+    with pytest.raises(ValueError, match="frame 3"):
+        _ = reindex_contiguous(_arrays(rows, ["0"]))
+
+
+def test_reindexing_no_rows_returns_no_rows() -> None:
+    rows = pd.DataFrame(
+        {
+            "frame": np.array([], dtype=np.int64),
+            "poseX0": np.array([], dtype=float),
+            "poseY0": np.array([], dtype=float),
+        }
+    )
+
+    arrays = reindex_contiguous(_arrays(rows, ["0"]))
+
+    assert arrays.frames.shape == (0,)
+    assert arrays.position.shape == (0, 1, 2)
+    assert arrays.confidence.shape == (0, 1)

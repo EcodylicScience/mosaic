@@ -1,16 +1,18 @@
-"""Persistent subprocess server for keypoint-moseq operations.
+"""The keypoint-MoSeq runner, which fits and applies models in the tool's environment.
 
-Runs in the external .venv (keypoint-moseq environment). Imports JAX and
-keypoint-moseq once at startup, then serves commands over a Unix domain socket.
+mosaic's ``kpms`` feature starts this program in the environment built under this
+directory. The program serves the commands that ``kpms_protocol`` declares through
+``runner_wire``, reading requests on standard input and writing replies on
+standard output. Arrays cross as ``.npz`` files that a payload names by path.
 
-Commands: add_track, fit, load_model, apply, save_model, shutdown.
-
-Wire protocol: newline-delimited JSON. Arrays are base64-encoded in the JSON
-with dtype and shape metadata.
+The module scope imports the standard library, pydantic and the two siblings
+only. JAX, keypoint-moseq and joblib are imported by :func:`load_libraries` at the
+first command, which then patches ``np.bincount`` and enables 64-bit JAX. The
+program therefore imports, and answers ``Ready``, in an environment without them.
 
 Usage::
 
-    .venv/bin/python kpms_server.py /tmp/kpms.sock
+    .venv/bin/python kpms_server.py
 
 This is the only file in mosaic that imports keypoint-moseq, and it runs in the
 external environment rather than mosaic's own. keypoint-MoSeq is licensed by the
@@ -24,72 +26,57 @@ server until ``MOSAIC_KPMS_LICENSE_ACCEPTED=1`` says the terms are met; running
 the script directly, as above, bypasses nothing but that reminder.
 """
 
-# pyright: reportAny=false
-# pyright: reportMissingTypeStubs=false
+# JAX, jax_moseq and keypoint-moseq are installed in the keypoint-MoSeq
+# environment only. In mosaic's environment their imports resolve to nothing, and
+# every value read from them has an unknown type, which the last three rules
+# report.
+# pyright: reportMissingImports=false
 # pyright: reportUnknownMemberType=false
 # pyright: reportUnknownVariableType=false
 # pyright: reportUnknownArgumentType=false
 
 from __future__ import annotations
 
-import ctypes
+import functools
+import importlib.metadata
 import logging
 import os
-import signal
-import socket
-import sys
 import tempfile
-from typing import SupportsIndex, TypedDict
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Final, SupportsIndex, TypedDict, TypeVar
 
-import jax
-import jax.numpy as jnp
-import joblib
-import keypoint_moseq as kpms
-import numpy as np
-from jax_moseq.utils import set_mixed_map_iters
-from numpy.typing import ArrayLike
-from pydantic import BaseModel
+from pydantic import JsonValue
 
 from kpms_protocol import (
-    AddTrackRequest,
-    ApplyRequest,
-    ApplyResponse,
-    ErrorResponse,
-    FitRequest,
-    LoadModelRequest,
-    OkResponse,
-    ReadyResponse,
-    Request,
-    RequestAdapter,
-    SaveModelRequest,
-    ShutdownRequest,
-    decode_array,
-    encode_array,
-    receive_message,
-    send_message,
+    AddTrack,
+    Apply,
+    Fit,
+    FitConfig,
+    LoadModel,
+    Payload,
+    SaveModel,
 )
+from runner_wire import Dispatch, Emit, Handler, claim_stdout, serve
 
-# Monkeypatch np.bincount for numpy >= 2.4 compatibility.
-# numpy 2.4 no longer accepts minlength=None (must be int).
-_original_bincount = np.bincount
+if TYPE_CHECKING:
+    import numpy as np
 
-
-def _patched_bincount(
-    x: ArrayLike,
-    weights: ArrayLike | None = None,
-    minlength: SupportsIndex | None = None,
-):
-    if minlength is None:
-        minlength = 0
-    return _original_bincount(x, weights=weights, minlength=minlength)
-
-
-np.bincount = _patched_bincount
-
-
-jax.config.update("jax_enable_x64", True)
+TOOL: Final = "keypoint-moseq"
+"""The tool name that ``Ready`` reports. It is also the tool's distribution name."""
 
 log = logging.getLogger("kpms_server")
+
+_LIBRARIES: Final = (
+    "jax",
+    "jax.numpy",
+    "joblib",
+    "keypoint_moseq",
+    "numpy",
+    "jax_moseq.utils",
+)
+"""The modules that :func:`load_libraries` imports, in order."""
+
+_P = TypeVar("_P", bound=Payload)
 
 
 class KpmsConfig(TypedDict):
@@ -108,24 +95,48 @@ class KpmsConfig(TypedDict):
     error_estimator: dict[str, float]
 
 
-# --- Orphan protection ---
+# --- Libraries ---
 
 
-def prctl_set_pdeathsig() -> None:
-    """Ask the kernel to send SIGTERM when the parent process dies."""
-    PR_SET_PDEATHSIG = 1
+@functools.cache
+def load_libraries() -> None:
+    """Import JAX, keypoint-moseq and joblib, and configure them, once.
+
+    numpy 2.4 refuses ``minlength=None`` in ``np.bincount``, which keypoint-moseq
+    passes. The patch below reads it as 0. JAX then computes in 64 bits.
+    """
+    for name in _LIBRARIES:
+        _ = importlib.import_module(name)
+    import jax
+    import numpy as np
+    import numpy.typing as npt
+
+    original_bincount = np.bincount
+
+    def bincount(
+        x: npt.NDArray[np.integer],
+        weights: npt.NDArray[np.floating] | None = None,
+        minlength: SupportsIndex | None = None,
+    ) -> npt.NDArray[np.intp] | npt.NDArray[np.float64]:
+        length = 0 if minlength is None else minlength
+        if weights is None:
+            return original_bincount(x, minlength=length)
+        return original_bincount(x, weights=weights, minlength=length)
+
+    np.bincount = bincount
+    jax.config.update("jax_enable_x64", True)
+
+
+def installed_version() -> str:
+    """keypoint-moseq's installed version, read without importing it.
+
+    An environment without keypoint-moseq reports ``not installed``. Its first
+    command then fails at the import.
+    """
     try:
-        libc = ctypes.CDLL("libc.so.6", use_errno=True)
-        result = libc.prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
-        if result != 0:
-            log.warning("prctl failed")
-    except OSError:
-        log.warning("prctl not available")
-
-
-def recv_request(conn: socket.socket) -> Request:
-    """Read a newline-terminated JSON request."""
-    return RequestAdapter.validate_json(receive_message(conn))
+        return importlib.metadata.version(TOOL)
+    except importlib.metadata.PackageNotFoundError:
+        return "not installed"
 
 
 # --- Server state ---
@@ -144,13 +155,27 @@ class KpmsServer:
         # (memory-heavy) parallel scan can't reappear on the apply pass.
         self.parallel_mp: bool | None = None
 
-    def handle_add_track(self, request: AddTrackRequest) -> None:
-        self.coordinates[request.key] = decode_array(request.coords)
-        self.confidences[request.key] = decode_array(request.conf)
+    def handle_add_track(self, request: AddTrack) -> None:
+        import numpy as np
 
-    def handle_fit(self, request: FitRequest) -> None:
+        with np.load(request.track) as track:
+            self.coordinates[request.key] = track["coords"]
+            self.confidences[request.key] = track["conf"]
 
+    def handle_fit(self, request: Fit) -> None:
         config = request.config
+        if config.checkpoint_dir is not None:
+            self._fit(config, config.checkpoint_dir)
+            return
+        with tempfile.TemporaryDirectory(prefix="kpms_") as checkpoint_dir:
+            self._fit(config, checkpoint_dir)
+
+    def _fit(self, config: FitConfig, checkpoint_dir: str) -> None:
+        import jax.numpy as jnp
+        import keypoint_moseq as kpms
+        import numpy as np
+        from jax_moseq.utils import set_mixed_map_iters
+
         bodyparts = config.bodyparts
         use_bodyparts = config.use_bodyparts or bodyparts
         anterior = list(config.anterior_bodyparts)
@@ -213,7 +238,6 @@ class KpmsServer:
         log.info("fit: %d recordings, %d bodyparts", len(coordinates), len(bodyparts))
 
         # Outlier removal
-        checkpoint_dir = config.checkpoint_dir or tempfile.mkdtemp(prefix="kpms_")
         if config.remove_outliers:
             log.info("Removing outliers...")
             coordinates, confidences = kpms.outlier_removal(
@@ -229,15 +253,7 @@ class KpmsServer:
         # Format data
         log.info("Formatting data...")
         data, metadata = kpms.format_data(coordinates, confidences, **kpms_config)
-
-        # Convert to float64
-        for k in list(data.keys()):
-            if hasattr(data[k], "dtype") and data[k].dtype != jnp.float64:
-                data[k] = (
-                    jnp.array(data[k], dtype=jnp.float64)
-                    if "mask" not in k
-                    else jnp.array(data[k])
-                )
+        _as_float64(data)
 
         # NaN fixup in Y
         Y_np = np.array(data["Y"])
@@ -344,7 +360,9 @@ class KpmsServer:
         self.coordinates = {}
         self.confidences = {}
 
-    def handle_load_model(self, request: LoadModelRequest) -> None:
+    def handle_load_model(self, request: LoadModel) -> None:
+        import joblib
+
         log.info("Loading model from %s...", request.path)
         bundle = joblib.load(request.path)
         self.model = bundle["model"]
@@ -354,52 +372,47 @@ class KpmsServer:
         self.bodyparts = bundle["bodyparts"]
         self.parallel_mp = bundle.get("parallel_mp")
 
-    def handle_apply(self, request: ApplyRequest) -> ApplyResponse:
+    def handle_apply(self, request: Apply) -> None:
+        import keypoint_moseq as kpms
+        import numpy as np
+
         assert self.kpms_config is not None, (
             "no model loaded (call fit or load_model first)"
         )
         kpms_config = self.kpms_config
 
-        coords = decode_array(request.coords)
-        conf = decode_array(request.conf)
-
-        coords_dict = {request.key: coords}
-        conf_dict = {request.key: conf}
+        with np.load(request.track) as track:
+            coords_dict = {request.key: track["coords"]}
+            conf_dict = {request.key: track["conf"]}
 
         data, metadata = kpms.format_data(coords_dict, conf_dict, **kpms_config)
+        _as_float64(data)
 
-        # Convert to float64
-        for k in list(data.keys()):
-            if hasattr(data[k], "dtype") and data[k].dtype != jnp.float64:
-                data[k] = (
-                    jnp.array(data[k], dtype=jnp.float64)
-                    if "mask" not in k
-                    else jnp.array(data[k])
-                )
-
-        apply_dir = tempfile.mkdtemp(prefix="kpms_apply_")
         model_name = "applied"
-        os.makedirs(os.path.join(apply_dir, model_name), exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="kpms_apply_") as apply_dir:
+            os.makedirs(os.path.join(apply_dir, model_name), exist_ok=True)
 
-        results, _ = kpms.apply_model(
-            self.model,
-            data,
-            metadata,
-            project_dir=apply_dir,
-            model_name=model_name,
-            num_iters=request.num_iters,
-            return_model=True,
-            parallel_message_passing=self.parallel_mp,
-            **kpms_config,
-        )
+            results, _ = kpms.apply_model(
+                self.model,
+                data,
+                metadata,
+                project_dir=apply_dir,
+                model_name=model_name,
+                num_iters=request.num_iters,
+                return_model=True,
+                parallel_message_passing=self.parallel_mp,
+                **kpms_config,
+            )
 
         rec_data = results[request.key]
         syllables = rec_data.get("syllable", rec_data.get("syllables"))
         syllables = np.asarray(syllables, dtype=np.int32).ravel()
 
-        return ApplyResponse(syllables=encode_array(syllables))
+        np.savez(request.syllables, syllables=syllables)
 
-    def handle_save_model(self, request: SaveModelRequest) -> None:
+    def handle_save_model(self, request: SaveModel) -> None:
+        import joblib
+
         log.info("Saving model to %s...", request.path)
         _ = joblib.dump(
             {
@@ -414,6 +427,21 @@ class KpmsServer:
         )
 
 
+def _as_float64(data: dict[str, object]) -> None:
+    """Convert each array of *data* to float64 in place, except a mask's dtype."""
+    import jax.numpy as jnp
+
+    for k in list(data.keys()):
+        value = data[k]
+        dtype = getattr(value, "dtype", None)
+        if dtype is not None and dtype != jnp.float64:
+            data[k] = (
+                jnp.array(value, dtype=jnp.float64)
+                if "mask" not in k
+                else jnp.array(value)
+            )
+
+
 # --- Checkpoint helper ---
 
 
@@ -421,6 +449,8 @@ def _try_load_checkpoint(
     project_dir: str, model_name: str
 ) -> tuple[object, int] | None:
     """Load a kpms checkpoint if it exists. Returns (model, iteration) or None."""
+    import keypoint_moseq as kpms
+
     checkpoint_path = os.path.join(project_dir, model_name, "checkpoint.h5")
     if not os.path.exists(checkpoint_path):
         return None
@@ -431,79 +461,40 @@ def _try_load_checkpoint(
     return model, iteration
 
 
-# --- Dispatch loop ---
+# --- Dispatch ---
 
 
-def serve(server: KpmsServer, conn: socket.socket) -> None:
-    """Read commands from conn and dispatch to server handlers."""
-    while True:
-        try:
-            request = recv_request(conn)
-        except ConnectionError:
-            log.info("Client disconnected.")
-            break
+def _serving(model: type[_P], handle: Callable[[_P], None]) -> Handler:
+    """The handler that loads the libraries and runs *handle* on a *model* payload."""
 
-        log.info("command: %s", request.command)
+    def handler(payload: Mapping[str, JsonValue], emit: Emit) -> None:
+        log.info("command: %s", model.command)
+        load_libraries()
+        handle(model.model_validate(payload))
 
-        if isinstance(request, ShutdownRequest):
-            send_message(conn, OkResponse())
-            break
+    return handler
 
-        try:
-            response: BaseModel | None = None
-            if isinstance(request, AddTrackRequest):
-                server.handle_add_track(request)
-            elif isinstance(request, FitRequest):
-                server.handle_fit(request)
-            elif isinstance(request, LoadModelRequest):
-                server.handle_load_model(request)
-            elif isinstance(request, ApplyRequest):
-                response = server.handle_apply(request)
-            else:
-                server.handle_save_model(request)
-            send_message(conn, response or OkResponse())
-        except Exception as exc:
-            import traceback
 
-            tb = traceback.format_exc()
-            log.error("ERROR in %s: %s\n%s", request.command, exc, tb)
-            try:
-                send_message(conn, ErrorResponse(message=str(exc), traceback=tb))
-            except Exception:
-                log.error("failed to send error response")
-                break
+def dispatch(server: KpmsServer) -> Dispatch:
+    """The handler of each command, run on *server*."""
+    return {
+        AddTrack.command: _serving(AddTrack, server.handle_add_track),
+        Fit.command: _serving(Fit, server.handle_fit),
+        LoadModel.command: _serving(LoadModel, server.handle_load_model),
+        Apply.command: _serving(Apply, server.handle_apply),
+        SaveModel.command: _serving(SaveModel, server.handle_save_model),
+    }
 
 
 # --- Entry point ---
 
 
 def main() -> None:
+    protocol = claim_stdout()
     logging.basicConfig(
         level=logging.INFO, format="[%(name)s] %(levelname)s: %(message)s"
     )
-    prctl_set_pdeathsig()
-
-    if len(sys.argv) != 2:
-        log.error("Usage: %s <socket_path>", sys.argv[0])
-        sys.exit(1)
-
-    socket_path = sys.argv[1]
-
-    server = KpmsServer()
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        sock.bind(socket_path)
-        sock.listen(1)
-        conn, _ = sock.accept()
-        try:
-            send_message(conn, ReadyResponse())
-            serve(server, conn)
-        finally:
-            conn.close()
-    finally:
-        sock.close()
-        if os.path.exists(socket_path):
-            os.unlink(socket_path)
+    serve(dispatch(KpmsServer()), TOOL, installed_version(), protocol=protocol)
 
 
 if __name__ == "__main__":

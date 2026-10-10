@@ -25,6 +25,10 @@ What lives where:
   ``infer-points``.
 - ``decode_probe`` contains a fake ``python`` for a tool environment, which stands
   in for the interpreter that runs the codec check's decode probe.
+- ``runner_programs`` imports a runner program under its bare name for one test,
+  and writes fake runners that serve a test's handlers over the runner wire.
+- ``processes`` contains a child program that appends to a file, and checks
+  of whether a process stopped writing to it or exited.
 - ``media`` -- media files, media-index rows, transcode derivatives.
 - ``variants`` -- media variant files and their index rows, and a count of the
   index reads a variant's consumers make.
@@ -120,11 +124,18 @@ from tests.helpers.media import (
     write_painted_entry,
 )
 from tests.helpers.mock_dataset import MockDataset
+from tests.helpers.processes import (
+    appender_program,
+    assert_process_exited,
+    assert_stopped_writing,
+    wait_for,
+)
 from tests.helpers.recipes import GUPPIES_RECIPE, guppies_recipe
 from tests.helpers.models import register_trained_model
 from tests.helpers.ops import minimal_op_params
 from tests.helpers.paths import GOLDEN_DIR, REPO_ROOT, SOURCE_ROOT, TESTS_ROOT
 from tests.helpers.runlog import entry_error_lines, latest_events, latest_snapshot
+from tests.helpers.runner_programs import import_runner_program, write_fake_runner
 from tests.helpers.scope import resolved_scope, scope_over
 from tests.helpers.source_scan import (
     functions_named,
@@ -138,6 +149,7 @@ from tests.helpers.stand_in_features import CropLike, PlainFeature
 from tests.helpers.training import FakeTrainer, healthy_probe, write_data_yaml
 from tests.helpers.tracks import (
     add_track_sequences,
+    add_tracks_table,
     add_tracks_variant,
     published_table,
     set_tracks_cell,
@@ -211,13 +223,18 @@ __all__ = [
     "add_media_sequence",
     "add_media_variant",
     "add_track_sequences",
+    "add_tracks_table",
     "add_tracks_variant",
     "add_transcode_derivative",
+    "appender_program",
     "assert_no_literal_tilde",
+    "assert_process_exited",
+    "assert_stopped_writing",
     "catalog_without_contract",
     "fake_path_lookup",
     "golden_path",
     "guppies_recipe",
+    "import_runner_program",
     "healthy_probe",
     "clean_facts_cells",
     "clip_facts",
@@ -280,11 +297,13 @@ __all__ = [
     "stub_media_dataset",
     "updating_golden",
     "video_store_maker",
+    "wait_for",
     "track_sequences",
     "track_table",
     "ultralytics_probe_response",
     "write_data_yaml",
     "write_dlc_csv",
+    "write_fake_runner",
     "write_golden",
     "write_h264_mp4",
     "write_litpose_model",

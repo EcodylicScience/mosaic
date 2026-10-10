@@ -46,7 +46,7 @@ from mosaic.core.params import (
 )
 
 from .arhmm_model import ARHMM, fit_numba, predict_numba
-from .helpers import feature_columns
+from .helpers import feature_columns, iter_individuals
 from .registry import register_feature
 
 if TYPE_CHECKING:
@@ -270,15 +270,8 @@ class ArHmmFeature:
                     raise RuntimeError(msg)
 
             cols = self._feature_columns
-            if "id" in df.columns:
-                id_col = df["id"]
-                for ind_id, sub in df.groupby(id_col, sort=False):
-                    sub = sub.sort_values("frame").reset_index(drop=True)
-                    arr = self._df_to_array(sub, cols)
-                    if arr is not None:
-                        sequences.append(arr)
-            else:
-                arr = self._df_to_array(df, cols)
+            for _, rows in iter_individuals(df):
+                arr = self._df_to_array(rows, cols)
                 if arr is not None:
                     sequences.append(arr)
 
@@ -361,21 +354,14 @@ class ArHmmFeature:
         cols = self._feature_columns
         results: list[pd.DataFrame] = []
 
-        if "id" in df.columns:
-            id_col = df["id"]
-            for ind_id, sub in df.groupby(id_col, sort=False):
-                sub = sub.sort_values("frame").reset_index(drop=True)
-                syllables = self._apply_one(sub, cols)
-                result = pd.DataFrame(
-                    {"frame": sub["frame"].values, "syllable": syllables}
-                )
-                result["id"] = ind_id
-                results.append(result)
-        else:
-            syllables = self._apply_one(df, cols)
-            results.append(
-                pd.DataFrame({"frame": df["frame"].values, "syllable": syllables})
+        for individual, rows in iter_individuals(df):
+            syllables = self._apply_one(rows, cols)
+            result = pd.DataFrame(
+                {"frame": rows["frame"].to_numpy(), "syllable": syllables}
             )
+            if individual is not None:
+                result["id"] = individual
+            results.append(result)
 
         return pd.concat(results, ignore_index=True)
 

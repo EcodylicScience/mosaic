@@ -3,8 +3,10 @@
 The `kpms` feature drives [keypoint-MoSeq](https://github.com/dattalab/keypoint-moseq)
 in a separate Python environment. mosaic does not install it, does not import
 it, and never ships it. This directory holds the environment's definition
-(`pyproject.toml`, `uv.lock`) and the server script mosaic talks to over a
-socket (`kpms_server.py`). You build the environment yourself, once.
+(`pyproject.toml`, `uv.lock`) and the program that mosaic starts in it and
+drives over its standard input and output (`kpms_server.py`, with
+`kpms_protocol.py` and `runner_wire.py` beside it). You build the environment
+yourself, once.
 
 ## Before you install: the license
 
@@ -40,18 +42,16 @@ cd src/mosaic/behavior/feature_library/external
 uv sync --python 3.13
 ```
 
-Python 3.13 matches the `basedpyright` execution environment declared for this
-directory in the root `pyproject.toml`. The build works from a source checkout
-only: this directory is excluded from the uv workspace and its non-Python files
-are not part of the installed wheel.
+The build works from a source checkout only. This directory is excluded from
+the uv workspace, and its non-Python files are not part of the installed wheel.
 
 `uv sync` resolves from `uv.lock` and will refresh that file if it has drifted
 from `pyproject.toml`; a diff there after installing is expected.
 
 ## Confirm the license terms are met
 
-`KpmsFeature` will not spawn the server until you say the terms apply to your
-use:
+`KpmsFeature` will not start the program until you say the terms apply to
+your use:
 
 ```bash
 export MOSAIC_KPMS_LICENSE_ACCEPTED=1

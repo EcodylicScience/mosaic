@@ -45,6 +45,7 @@ from mosaic.core.pipeline.subprocess_util import (
     terminate_group,
 )
 from mosaic.core.pipeline.toolenv import subprocess_env
+from tests.helpers import appender_program, assert_stopped_writing, wait_for
 
 # A child that prints one line every 0.1 s -- an order of magnitude below any
 # idle window used here, so it must never trip the watchdog.
@@ -198,20 +199,6 @@ def test_no_watchdog_by_default_lets_a_short_child_finish() -> None:
     assert "done" in stdout
 
 
-# A child that appends to a file forever -- a cancel has to actually stop it, and
-# the file is what proves the process is gone rather than merely disowned.
-def _appender(path: str) -> str:
-    return (
-        "import time\n"
-        f"handle = open({path!r}, 'a')\n"
-        "while True:\n"
-        "    handle.write('x')\n"
-        "    handle.flush()\n"
-        "    print('tick', flush=True)\n"
-        "    time.sleep(0.05)\n"
-    )
-
-
 def _fires_after(calls: int) -> Callable[[], bool]:
     """A cancel predicate that answers True from its *calls*-th question on."""
     asked = [0]
@@ -256,15 +243,14 @@ def test_a_cancelled_child_stops_writing(tmp_path: Path) -> None:
     scratch = tmp_path / "ticks.txt"
     with pytest.raises(ProcessCancelled):
         run_supervised(
-            _argv(_appender(str(scratch))),
+            _argv(appender_program(scratch)),
             cancel_check=_fires_after(2),
             poll_interval=0.05,
         )
 
-    settled = scratch.stat().st_size
-    time.sleep(0.6)  # a dozen writes' worth, at the child's 0.05 s cadence
-    assert scratch.stat().st_size == settled, (
-        "the child went on writing after the cancel, so the group was not killed"
+    assert_stopped_writing(
+        scratch,
+        "the child went on writing after the cancel: the group survived it",
     )
 
 
@@ -662,23 +648,16 @@ def test_a_tools_child_inherits_no_python_search_path(
 # --- the process group --------------------------------------------------------
 
 
-def _with_grandchild(path: str) -> str:
-    """A child that starts an appender to *path* and waits.
+def _with_grandchild(path: str, then: str = "time.sleep(60)\n") -> str:
+    """A child that starts an appender to *path*, and then runs the code *then*.
 
     The appender inherits the child's process group.
     """
     return (
         "import subprocess, sys, time\n"
-        f"subprocess.Popen([sys.executable, '-c', {_appender(path)!r}])\n"
-        "time.sleep(60)\n"
+        f"subprocess.Popen([sys.executable, '-c', {appender_program(path)!r}])\n"
+        f"{then}"
     )
-
-
-def _wait_for(condition: Callable[[], bool], seconds: float) -> None:
-    deadline = time.monotonic() + seconds
-    while not condition():
-        assert time.monotonic() < deadline, "the condition stayed false"
-        time.sleep(0.05)
 
 
 def test_terminate_group_reaps_a_grandchild(tmp_path: Path) -> None:
@@ -695,16 +674,27 @@ def test_terminate_group_reaps_a_grandchild(tmp_path: Path) -> None:
     )
     try:
         assert os.getpgid(process.pid) == process.pid, "the child leads a group"
-        _wait_for(lambda: ticks.exists() and ticks.stat().st_size > 0, 30)
+        wait_for(lambda: ticks.exists() and ticks.stat().st_size > 0, 30)
 
         terminate_group(process)
 
-        time.sleep(0.3)
-        settled = ticks.stat().st_size
-        time.sleep(0.6)
-        assert ticks.stat().st_size == settled, "the grandchild went on writing"
+        assert_stopped_writing(ticks, "the grandchild went on writing")
     finally:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+def test_close_kills_what_an_exited_child_left_in_its_group(
+    children: _Children, tmp_path: Path
+) -> None:
+    """A grandchild that outlives a child exiting at the end of its input is killed."""
+    ticks = tmp_path / "ticks.txt"
+    child = children.spawn(_with_grandchild(str(ticks), then="sys.stdin.read()\n"))
+    wait_for(lambda: ticks.exists() and ticks.stat().st_size > 0, 30)
+
+    child.close(grace=5.0)
+
+    assert child.exit_code == 0, "the child exited at the end of its input"
+    assert_stopped_writing(ticks, "the grandchild went on writing after close()")

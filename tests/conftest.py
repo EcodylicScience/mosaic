@@ -28,12 +28,10 @@ import os as _os
 _os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import csv
-import importlib
 import importlib.metadata
 import importlib.util
 import os
 import shutil
-import sys
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from types import ModuleType
@@ -56,6 +54,7 @@ from tests.helpers import (
     MediaClip,
     add_media_sequence,
     add_track_sequences,
+    import_runner_program,
     make_dataset,
     missing_ffmpeg_tools,
     require_ffmpeg as _require_ffmpeg,
@@ -499,32 +498,14 @@ def runner_module() -> Iterator[ModuleType]:
     """The Ultralytics runner program, imported into this process, and then unimported.
 
     Every Ultralytics import in it is deferred into a function body, so the module
-    imports in an environment that has none -- which is what lets a test run it in
-    mosaic's own environment against the real code rather than a copy of it.
-
-    Its directory goes on ``sys.path`` because the program resolves
-    ``ultralytics_protocol`` as a bare top-level module -- what a script gets for
-    free from its own directory, and what it will get when it is spawned. The
-    insertion is safe: the directory holds those two modules and nothing that
-    could shadow a mosaic import.
-
-    Both are undone afterwards. Left in place they outlive the module: the search
-    path keeps answering ``ultralytics_protocol`` for the rest of the session,
-    and ``sys.modules`` holds a *second* copy of that module beside
-    ``mosaic.tracking.external.runner.ultralytics_protocol`` -- same file, two
-    classes. Nothing today compares a :class:`TrackRequest` by identity, so the
-    leak is currently harmless and would stop being so quietly.
+    imports in an environment that has none. A test then runs the program's code
+    in mosaic's environment.
     """
     from mosaic.tracking.external import runner as runner_package
 
-    directory = str(Path(runner_package.__file__).parent)
-    inserted = directory not in sys.path
-    if inserted:
-        sys.path.insert(0, directory)
-    try:
-        yield importlib.import_module("ultralytics_runner")
-    finally:
-        if inserted:
-            sys.path.remove(directory)
-        for name in ("ultralytics_runner", "ultralytics_protocol"):
-            _ = sys.modules.pop(name, None)
+    with import_runner_program(
+        Path(runner_package.__file__).parent,
+        "ultralytics_runner",
+        ("ultralytics_protocol",),
+    ) as program:
+        yield program

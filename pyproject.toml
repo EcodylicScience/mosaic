@@ -186,7 +186,12 @@ venvPath = "."
 venv = ".venv"
 reportMissingTypeStubs = false
 executionEnvironments = [
-    { root = "src/mosaic/behavior/feature_library/external", extraPaths = ["src/mosaic/behavior/feature_library/external/.venv/lib/python3.13/site-packages"] },
+    # The runner directory, for the reason given for the Ultralytics runner below:
+    # it resolves the bare sibling imports (`runner_wire`, `kpms_protocol`) that a
+    # program launched from there gets. Every other import resolves from `.venv`,
+    # so numpy has one module identity on both sides of the wire. The runner
+    # declares the rules that its unresolved keypoint-moseq imports fire.
+    { root = "src/mosaic/behavior/feature_library/external", extraPaths = ["src/mosaic/behavior/feature_library/external"] },
     # The runner directory, because that is what resolves the bare
     # `ultralytics_protocol` import a script run from there gets for free. That
     # is the whole entry, and deliberately: the Ultralytics environment's

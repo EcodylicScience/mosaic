@@ -331,10 +331,6 @@ def add_tracks_variant(
     produces is the index production produces -- including the dedup that decides
     whether a second call adds a row or replaces one.
     """
-    from mosaic.core.pipeline.tracks_identity import tracks_variant_root
-
-    root = tracks_variant_root(dataset.get_root("tracks"), run_id)
-    root.mkdir(parents=True, exist_ok=True)
     for sequence in sequences:
         # Two individuals and seven keypoints by default, beyond what
         # ``add_track_sequences`` writes. That is what lets a *registered*
@@ -352,20 +348,64 @@ def add_tracks_variant(
         for keypoint in range(keypoints):
             table[f"{x_prefix}{keypoint}"] = table["X"] + keypoint
             table[f"{y_prefix}{keypoint}"] = table["Y"] + keypoint
-        out_path = root / f"{make_entry_key('', sequence)}.parquet"
-        table.to_parquet(out_path)
-        write_tracks_row(
+        add_tracks_table(
             dataset,
-            run_id=run_id,
-            group="",
-            sequence=sequence,
-            out_path=out_path,
-            producer=run_id.split(".")[0],
-            producer_run_id=producer_run_id,
-            std_format=std_format,
+            run_id,
+            table,
             n_rows=n_rows,
             consumed_source_roots=consumed_source_roots,
+            std_format=std_format,
+            producer_run_id=producer_run_id,
         )
+
+
+def add_tracks_table(
+    dataset: Dataset,
+    run_id: str,
+    table: pd.DataFrame,
+    *,
+    n_rows: int | None = None,
+    consumed_source_roots: tuple[str, ...] = ("tracks_raw",),
+    std_format: str = "trex_v1",
+    producer_run_id: str = "",
+) -> None:
+    """Write *table*, one entry's rows, into the tracks variant *run_id*.
+
+    The entry is the ``group`` and ``sequence`` of the table's first row, and an
+    absent ``group`` column means an empty group. The row is written through
+    ``write_tracks_row``, as in :func:`add_tracks_variant`, whose other arguments
+    this takes.
+
+    Args:
+        dataset: The dataset to write into.
+        run_id: The tracks variant.
+        table: The entry's track table.
+        n_rows: The row count that the index records, or ``None`` for the
+            table's length.
+        consumed_source_roots: As in :func:`add_tracks_variant`.
+        std_format: As in :func:`add_tracks_variant`.
+        producer_run_id: As in :func:`add_tracks_variant`.
+    """
+    from mosaic.core.pipeline.tracks_identity import tracks_variant_root
+
+    group = str(table["group"].iloc[0]) if "group" in table.columns else ""
+    sequence = str(table["sequence"].iloc[0])
+    root = tracks_variant_root(dataset.get_root("tracks"), run_id)
+    root.mkdir(parents=True, exist_ok=True)
+    out_path = root / f"{make_entry_key(group, sequence)}.parquet"
+    table.to_parquet(out_path)
+    write_tracks_row(
+        dataset,
+        run_id=run_id,
+        group=group,
+        sequence=sequence,
+        out_path=out_path,
+        producer=run_id.split(".")[0],
+        producer_run_id=producer_run_id,
+        std_format=std_format,
+        n_rows=len(table) if n_rows is None else n_rows,
+        consumed_source_roots=consumed_source_roots,
+    )
 
 
 def track_sequences(dataset: Dataset) -> list[str]:

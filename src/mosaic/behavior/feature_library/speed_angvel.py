@@ -28,6 +28,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
+from .helpers import iter_individuals
 from .registry import register_feature
 
 _STEP_SIZE_DESCRIPTION = (
@@ -228,11 +229,13 @@ class SpeedAngvel:
             return pd.DataFrame()
 
         order_col = resolve_order_col(df)
-        df = df.sort_values([C.id_col, order_col]).reset_index(drop=True)
-
-        out_parts: list[pd.DataFrame] = []
-        for _, sub in df.groupby(C.id_col, sort=False):
-            out_parts.append(self._compute_one_id(sub, order_col))
+        # Sorting by id first yields the individuals in id order.
+        out_parts = [
+            self._compute_one_id(rows, order_col)
+            for _, rows in iter_individuals(
+                df.sort_values(C.id_col, kind="stable"), order_col
+            )
+        ]
 
         if not out_parts:
             return pd.DataFrame()
@@ -249,7 +252,7 @@ class SpeedAngvel:
         return smoothed
 
     def _compute_one_id(self, sub: pd.DataFrame, order_col: str) -> pd.DataFrame:
-        # Already sorted by (id, order_col) in apply()
+        """Measure one individual's rows, sorted by *order_col*."""
         x = sub[C.x_col].to_numpy(dtype=float)
         y = sub[C.y_col].to_numpy(dtype=float)
         angle = (

@@ -570,7 +570,9 @@ class LineChild:
 
         A child still running *grace* seconds later has its process group sent
         SIGTERM, and SIGKILL if it still runs *grace* seconds after that
-        (:func:`terminate_group`). A second call does nothing.
+        (:func:`terminate_group`). Once the child has exited, any process left
+        in its group, such as one that the child started and did not wait for,
+        is sent SIGKILL. A second call does nothing.
         """
         if self._closed:
             return
@@ -583,4 +585,20 @@ class LineChild:
             _ = self._process.wait(timeout=grace)
         except subprocess.TimeoutExpired:
             terminate_group(self._process, grace=grace)
+        # The child leads a process group, whose id is the child's pid.
+        _kill_group_members(self._process.pid)
         self._pump.join(timeout=grace)
+
+
+def _kill_group_members(group: int) -> None:
+    """Send SIGKILL to the processes of the process group *group*, if any remain.
+
+    A process group's id is not reused while the group has a member. The group of
+    a child that has been reaped can therefore be signaled.
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except OSError:
+        pass

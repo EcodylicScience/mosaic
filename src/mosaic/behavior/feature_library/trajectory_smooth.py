@@ -24,6 +24,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 from mosaic.core.pose_columns import pose_column_pairs
 
+from .helpers import iter_individuals
 from .registry import register_feature
 
 
@@ -167,14 +168,14 @@ class TrajectorySmooth:
 
         p = self.params
         order_col = resolve_order_col(df)
-        df = df.copy()
+        # Sorting first orders the individuals by their first row in time.
         df = df.sort_values(order_col).reset_index(drop=True)
-        id_col = COLUMNS.id_col
         pose_pairs = pose_column_pairs(df.columns)
 
-        out_parts = []
-        for _, sub in df.groupby(id_col, sort=False):
-            out_parts.append(self._process_one_id(sub.copy(), p, order_col, pose_pairs))
+        out_parts = [
+            self._process_one_id(rows, p, order_col, pose_pairs)
+            for _, rows in iter_individuals(df, order_col)
+        ]
 
         if not out_parts:
             return pd.DataFrame()
@@ -189,7 +190,7 @@ class TrajectorySmooth:
         order_col: str,
         pose_pairs: list[tuple[str, str]],
     ) -> pd.DataFrame:
-        sub = sub.sort_values(order_col).reset_index(drop=True)
+        """Clean and smooth one individual's rows, sorted by *order_col* and indexed from 0."""
         x_col, y_col = COLUMNS.x_col, COLUMNS.y_col
         n = len(sub)
 

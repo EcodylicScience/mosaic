@@ -1171,7 +1171,7 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
 
 Version `0.1` &middot; `mosaic.behavior.feature_library.kpms.KpmsFeature`
 
-Unified keypoint-MoSeq feature: fit + apply via persistent subprocess.
+Unified keypoint-MoSeq feature: fit + apply in a runner process.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |

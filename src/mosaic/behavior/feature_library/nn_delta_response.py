@@ -30,7 +30,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 
 from ._sampling_descriptions import SAMPLING_FPS_ONLY_DESCRIPTION
-from .helpers import ego_rotate, wrap_angle
+from .helpers import ego_rotate, iter_individuals, wrap_angle
 from .registry import register_feature
 from .types import SamplingConfig
 
@@ -329,8 +329,7 @@ class NearestNeighborDelta:
         i_x, i_y, i_ang, i_spd, i_frm = range(5)
 
         outputs: list[pd.DataFrame] = []
-        for focal_id, g in df.groupby(C.id_col, sort=False):
-            g = g.sort_values(order_col)
+        for focal_id, g in iter_individuals(df, order_col):
             vals = g[delta_cols].to_numpy(dtype=float)
             lags = _row_lags(g, lag_col, diff_n)
 

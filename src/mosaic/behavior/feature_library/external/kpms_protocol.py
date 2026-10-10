@@ -1,50 +1,36 @@
-"""Shared protocol models and wire helpers for the kpms server/client.
+"""The payloads of the keypoint-MoSeq runner's commands.
 
-Defines the request/response Pydantic models and the newline-delimited JSON
-framing used over Unix domain sockets. Importable from both the main mosaic
-environment (client) and the external .venv (server).
+mosaic's ``kpms`` feature sends each payload in a request of ``runner_wire``, and
+``kpms_server.py`` validates it with the same model. Arrays cross as ``.npz``
+files that a payload names by path, and each payload names the arrays of its
+files.
 
-Dependencies: pydantic, numpy (available in both environments).
+This module imports only the standard library and pydantic, which both
+environments install, and keeps the syntax of Python 3.11, the oldest that the
+keypoint-MoSeq environment allows. The runner imports it by its bare name, and
+mosaic as ``mosaic.behavior.feature_library.external.kpms_protocol``.
 """
 
 from __future__ import annotations
 
-import base64
-import socket
-import sys
-from typing import Annotated, Literal, TypeAlias
+from typing import ClassVar, Literal, Self, TypeAlias
 
-if sys.version_info >= (3, 11):
-    from typing import Self
-else:  # Self landed in typing in 3.11; fall back for 3.10 kpms envs
-    from typing_extensions import Self
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-import numpy as np
-from pydantic import BaseModel, Field, TypeAdapter, model_validator
+__all__ = [
+    "AddTrack",
+    "Apply",
+    "Command",
+    "Fit",
+    "FitConfig",
+    "LoadModel",
+    "Payload",
+    "SaveModel",
+    "check_latent_dim",
+]
 
-# --- Array encoding ---
-
-
-class ArraySpec(BaseModel):
-    dtype: str
-    shape: tuple[int, ...]
-    data: str
-
-
-def decode_array(spec: ArraySpec) -> np.ndarray:
-    raw = base64.b64decode(spec.data)
-    return np.frombuffer(raw, dtype=np.dtype(spec.dtype)).reshape(spec.shape)
-
-
-def encode_array(arr: np.ndarray) -> ArraySpec:
-    return ArraySpec(
-        dtype=str(arr.dtype),
-        shape=tuple(arr.shape),
-        data=base64.b64encode(arr.tobytes()).decode(),
-    )
-
-
-# --- Validation helpers ---
+Command: TypeAlias = Literal["add_track", "fit", "load_model", "apply", "save_model"]
+"""The commands that the runner serves, besides ``shutdown``."""
 
 
 def check_latent_dim(latent_dim: int, num_keypoints: int) -> None:
@@ -59,14 +45,27 @@ def check_latent_dim(latent_dim: int, num_keypoints: int) -> None:
         raise ValueError(msg)
 
 
-# --- Requests ---
+class Payload(BaseModel):
+    """The payload of one command. Its ``command`` names the command."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    command: ClassVar[Command]
 
 
-class AddTrackRequest(BaseModel):
-    command: Literal["add_track"]
+class AddTrack(Payload):
+    """Add one recording to the tracks that the next fit reads.
+
+    Attributes:
+        key: The recording's name.
+        track: An ``.npz`` file containing ``coords``, the keypoints as float
+            ``(frames, keypoints, 2)``, and ``conf``, their confidences as float
+            ``(frames, keypoints)``.
+    """
+
+    command: ClassVar[Command] = "add_track"
     key: str
-    coords: ArraySpec
-    conf: ArraySpec
+    track: str
 
 
 class FitConfig(BaseModel):
@@ -98,82 +97,49 @@ class FitConfig(BaseModel):
         return self
 
 
-class FitRequest(BaseModel):
-    command: Literal["fit"]
+class Fit(Payload):
+    """Fit a model to the tracks added since the last fit, and then drop them."""
+
+    command: ClassVar[Command] = "fit"
     config: FitConfig
 
 
-class LoadModelRequest(BaseModel):
-    command: Literal["load_model"]
+class LoadModel(Payload):
+    """Load a model that a ``save_model`` wrote.
+
+    Attributes:
+        path: The model file.
+    """
+
+    command: ClassVar[Command] = "load_model"
     path: str
 
 
-class ApplyRequest(BaseModel):
-    command: Literal["apply"]
+class Apply(Payload):
+    """Label each frame of one recording with the loaded or fitted model.
+
+    Attributes:
+        key: The recording's name.
+        num_iters: How many iterations the resampling runs.
+        track: An ``.npz`` file containing ``coords`` and ``conf``, as in
+            :class:`AddTrack`.
+        syllables: The ``.npz`` file that the runner writes. It contains
+            ``syllables``, one int32 label per frame of *track*.
+    """
+
+    command: ClassVar[Command] = "apply"
     key: str
     num_iters: int = 500
-    coords: ArraySpec
-    conf: ArraySpec
+    track: str
+    syllables: str
 
 
-class SaveModelRequest(BaseModel):
-    command: Literal["save_model"]
+class SaveModel(Payload):
+    """Write the fitted or loaded model.
+
+    Attributes:
+        path: The model file.
+    """
+
+    command: ClassVar[Command] = "save_model"
     path: str
-
-
-class ShutdownRequest(BaseModel):
-    command: Literal["shutdown"]
-
-
-Request: TypeAlias = Annotated[
-    AddTrackRequest
-    | FitRequest
-    | LoadModelRequest
-    | ApplyRequest
-    | SaveModelRequest
-    | ShutdownRequest,
-    Field(discriminator="command"),
-]
-
-RequestAdapter: TypeAdapter[Request] = TypeAdapter(Request)
-
-
-# --- Responses ---
-
-
-class OkResponse(BaseModel):
-    status: Literal["ok"] = "ok"
-
-
-class ReadyResponse(BaseModel):
-    status: Literal["ready"] = "ready"
-
-
-class ErrorResponse(BaseModel):
-    status: Literal["error"] = "error"
-    message: str
-    traceback: str | None = None
-
-
-class ApplyResponse(BaseModel):
-    status: Literal["ok"] = "ok"
-    syllables: ArraySpec
-
-
-# --- Wire helpers ---
-
-
-def send_message(conn: socket.socket, message: BaseModel) -> None:
-    """Send a newline-terminated JSON message."""
-    conn.sendall(message.model_dump_json().encode() + b"\n")
-
-
-def receive_message(conn: socket.socket) -> bytes:
-    """Read a single newline-terminated line from conn."""
-    buf = b""
-    while b"\n" not in buf:
-        chunk = conn.recv(65536)
-        if not chunk:
-            raise ConnectionError("connection closed while reading")
-        buf += chunk
-    return buf.split(b"\n", 1)[0]

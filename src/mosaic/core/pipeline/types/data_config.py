@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from pydantic import model_validator
 
 from mosaic.core.params import Declared, DeclaredModel
+from mosaic.core.pose_columns import resolve_keypoint_refs
 from mosaic.core.strict_model import StrictModel
 
 if TYPE_CHECKING:
@@ -154,6 +156,68 @@ class PoseConfig(DeclaredModel):
             [f"{self.x_prefix}{index}" for index in indices],
             [f"{self.y_prefix}{index}" for index in indices],
         )
+
+    def names(self, n: int) -> list[str]:
+        """Name the keypoints: ``keypoint_names`` when set, else ``kp0`` to ``kp{n-1}``.
+
+        Args:
+            n: How many keypoints to name when ``keypoint_names`` is unset.
+        """
+        if self.keypoint_names is not None:
+            return list(self.keypoint_names)
+        return [f"kp{index}" for index in range(n)]
+
+    def resolve_keypoints(self, refs: Sequence[int | str], *, who: str) -> list[int]:
+        """Resolve keypoint references to positions among the selected keypoints.
+
+        An integer is a keypoint index, as ``pose_indices`` lists them, and a
+        string is one of ``keypoint_names``. An index is checked against the
+        selection alone, because ``pose_indices`` may select keypoints at or past
+        ``pose_n``.
+
+        Args:
+            refs: The keypoint references, in the order wanted.
+            who: The caller and its parameter, for the message.
+
+        Returns:
+            The position of each reference in :meth:`selected_indices`, in the
+            order of *refs*.
+
+        Raises:
+            ValueError: On a name that
+                :func:`~mosaic.core.pose_columns.resolve_keypoint_refs` refuses
+                against ``keypoint_names``, on a negative index, and on a
+                reference outside the selected keypoints.
+        """
+        names = [ref for ref in refs if isinstance(ref, str)]
+        by_name = dict(
+            zip(
+                names,
+                resolve_keypoint_refs(names, self.keypoint_names, self.pose_n, who=who),
+            )
+        )
+        indices = [by_name[ref] if isinstance(ref, str) else ref for ref in refs]
+        negative = [index for index in indices if index < 0]
+        if negative:
+            msg = f"{who}: {negative} are not keypoint indices, which start at 0"
+            raise ValueError(msg)
+        selected = self.selected_indices()
+        positions: dict[int, int] = {}
+        for position, index in enumerate(selected):
+            _ = positions.setdefault(index, position)
+        outside = [ref for ref, index in zip(refs, indices) if index not in positions]
+        if outside:
+            remedy = (
+                "pose.pose_indices must include them"
+                if self.pose_indices is not None
+                else "raise pose.pose_n past them or list them in pose.pose_indices"
+            )
+            msg = (
+                f"{who}: keypoints {outside} are not among the selected keypoints "
+                f"{selected}; {remedy}"
+            )
+            raise ValueError(msg)
+        return [positions[index] for index in indices]
 
     @model_validator(mode="after")
     def _check_keypoint_names_length(self) -> Self:
