@@ -1,9 +1,9 @@
-"""Where an external tracking tool lives, and how it is launched.
+"""Where an external tool lives, and how it is launched.
 
-Every integrated tracker runs a tool that is too heavy to share the mosaic
-environment -- TRex pins ``python=3.11``, SLEAP brings PyTorch and Qt, Lightning
-Pose brings PyTorch and DALI -- so each is reached through its own environment
-and located the same five ways, in the same order:
+Mosaic drives several tools too heavy to share its own environment -- TRex
+pins ``python=3.11``, SLEAP brings PyTorch and Qt, Lightning Pose brings
+PyTorch and DALI -- so each is reached through its own environment and
+located the same five ways, in the same order:
 
 1. ``ToolEnv.conda_env``,
 2. ``ToolEnv.bin_path``,
@@ -17,6 +17,13 @@ written three times, along with ``conda run`` construction, the two exception
 shapes, and the ``MPLBACKEND`` fix below. What differs between the tools is the
 values :class:`ToolEnv` holds.
 
+**A tool that is only an interpreter, with no console script of its own,**
+declares :attr:`ToolEnv.repo_venv` and takes the fifth rung from it instead of
+``$PATH``: keypoint-MoSeq and VAME name no executable a ``$PATH`` lookup could
+single out, so that lookup would otherwise find mosaic's own ``python``. For
+such a tool, a path resolved from any of rungs 2, 4 or 5 must be a file, or
+the tool's own :class:`ToolNotFoundError` names it.
+
 **The ladder resolves placement, never identity.** Which environment a tool ran
 in is a property of the machine, so none of these values reaches a ``run_id``:
 two machines with the tool installed differently must agree on what a run is
@@ -27,6 +34,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -40,6 +48,7 @@ __all__ = [
     "ToolEnv",
     "ToolExitError",
     "ToolNotFoundError",
+    "captured_output",
     "conda_invocation",
     "display_overlay",
     "PROBE_DEADLINE_FLOOR_SECONDS",
@@ -128,21 +137,21 @@ console verb, so the ``litpose`` script names where that ``python`` is.
 
 
 class ToolNotFoundError(FileNotFoundError):
-    """An external tracking tool, or ``conda``, could not be located.
+    """An external tool, or ``conda``, could not be located.
 
     Subclassed per tool so a caller can still catch one tool specifically, with
     the install hint as a class attribute rather than a re-implemented
     ``__init__``.
     """
 
-    default_message: ClassVar[str] = "The tracking tool was not found on $PATH."
+    default_message: ClassVar[str] = "The external tool was not found on $PATH."
 
     def __init__(self, message: str | None = None) -> None:
         super().__init__(message or type(self).default_message)
 
 
 class ToolExitError(RuntimeError):
-    """An external tracking tool exited with a non-zero return code.
+    """An external tool exited with a non-zero return code.
 
     ``head`` is how many argv tokens the message echoes before eliding. It is a
     readability knob, not a limit: six covers a console script and its first
@@ -150,7 +159,7 @@ class ToolExitError(RuntimeError):
     (:func:`~mosaic.core.pipeline.subprocess_util.command_summary`).
     """
 
-    tool_name: ClassVar[str] = "The tracking tool"
+    tool_name: ClassVar[str] = "The external tool"
     head: ClassVar[int] = 6
 
     def __init__(
@@ -175,8 +184,8 @@ class ToolExitError(RuntimeError):
 class ToolEnv:
     """One tool's placement: the names it answers to, and how to reach it.
 
-    The first five fields describe the tool and are declared once beside it. The
-    last four are what one caller chooses for one run, and
+    The first eight fields describe the tool and are declared once beside it.
+    The last three are what one caller chooses for one run, and
     :meth:`placed` is how they are set -- so a caller states where a tool lives
     as one value instead of an argument per aspect beside every call. All of it
     is placement, so none of it reaches a ``run_id``.
@@ -199,6 +208,11 @@ class ToolEnv:
         display_var: The variable naming this tool's ``DISPLAY``, for a tool
             that needs one. Empty means the tool runs without a display, which
             is every tool but TRex.
+        repo_venv: The directory holding this tool's own ``.venv``, for a tool
+            that is only an interpreter and so has no console script a
+            ``$PATH`` lookup could single out. ``None`` (the default) leaves
+            step 5 of the ladder as ``$PATH``, as every tool with a console
+            script of its own uses it.
         conda_env: Step 1 of the ladder. Empty defers to ``conda_env_var``.
         bin_path: Step 2 of the ladder. Empty defers to ``bin_var``.
         display: ``DISPLAY`` for the tool's subprocess. Empty defers to
@@ -212,6 +226,7 @@ class ToolEnv:
     not_found: type[ToolNotFoundError]
     locator: str = ""
     display_var: str = ""
+    repo_venv: Path | None = None
     conda_env: str = ""
     bin_path: str = ""
     display: str = ""
@@ -309,13 +324,15 @@ def tool_invocation(env: ToolEnv, *, executable: str) -> list[str]:
     """Resolve how to launch *executable*, as an argv prefix.
 
     Precedence, first match wins: ``env.conda_env``, ``env.bin_path``,
-    ``env.conda_env_var``, ``env.bin_var``, then ``$PATH``. What a caller chose
-    beats what the machine says, so one run can be placed elsewhere without
-    disturbing the others; :meth:`ToolEnv.placed` is how a caller chooses.
+    ``env.conda_env_var``, ``env.bin_var``, then ``env.repo_venv`` if *env*
+    declares one, else ``$PATH``. What a caller chose beats what the machine
+    says, so one run can be placed elsewhere without disturbing the others;
+    :meth:`ToolEnv.placed` is how a caller chooses.
 
     Raises:
-        ToolNotFoundError: The subclass named by ``env.not_found``, when neither
-            the tool nor ``conda`` can be located.
+        ToolNotFoundError: The subclass named by ``env.not_found``, when
+            neither the tool nor ``conda`` can be located, or when a path
+            resolved for a tool declaring ``repo_venv`` is not a file.
     """
     if env.conda_env:
         return conda_invocation(env, env.conda_env, executable)
@@ -338,6 +355,10 @@ def tool_invocation(env: ToolEnv, *, executable: str) -> list[str]:
             _from_bin(env, env_bin, executable, source=f"the value of {env.bin_var}")
         ]
 
+    root = _repo_venv_root(env)
+    if root is not None:
+        return [_repo_interpreter(env, root)]
+
     # A locator is looked up in order to find something beside it; without one
     # the executable is what is looked up, and what is found is what runs.
     found = shutil.which(env.locator or executable)
@@ -348,6 +369,55 @@ def tool_invocation(env: ToolEnv, *, executable: str) -> list[str]:
     # Resolved, because a uv or pipx tool install links its scripts into
     # ~/.local/bin, and what sits beside the link is not the environment.
     return [str(Path(found).resolve().parent / executable)]
+
+
+def _repo_venv_root(env: ToolEnv) -> Path | None:
+    """The directory :func:`tool_invocation` reads *env*'s in-repository venv from.
+
+    A seam over :attr:`ToolEnv.repo_venv` rather than a direct read: rung 5
+    reads its directory only here, so a test can substitute the location for
+    a venv not built on the machine the suite runs on.
+    """
+    return env.repo_venv
+
+
+def _repo_interpreter(env: ToolEnv, root: Path) -> str:
+    """The interpreter under *root*'s own ``.venv``, read in place of ``$PATH``.
+
+    Raises:
+        ToolNotFoundError: The subclass named by ``env.not_found``, when the
+            venv under *root* has not been built.
+    """
+    venv = root / ".venv"
+    resolved = (
+        venv / "Scripts" / "python.exe"
+        if sys.platform == "win32"
+        else venv / "bin" / "python"
+    )
+    _require_interpreter(env, resolved, f"the in-repository environment under {root}")
+    return str(resolved)
+
+
+def _require_interpreter(env: ToolEnv, resolved: Path, source: str) -> None:
+    """For a tool declaring :attr:`ToolEnv.repo_venv`, refuse a *resolved* that
+    is not a file.
+
+    A tool with no console script of its own has no locator to confirm an
+    install against, so a wrong *resolved* would otherwise flow straight into
+    the subprocess call and surface there as a bare, unhelpful
+    ``FileNotFoundError`` instead of the tool's own typed refusal. A tool with
+    a console script gets no such check.
+
+    The refusal names *resolved* and *source*, then appends the tool's own
+    ``not_found.default_message``: a path alone is not install help, and
+    each tool's install help belongs with the tool rather than with the three
+    rungs that call this.
+    """
+    if env.repo_venv is not None and not resolved.is_file():
+        raise env.not_found(
+            f"The {env.tool} interpreter '{resolved}', {source}, is not a "
+            f"file. {env.not_found.default_message}"
+        )
 
 
 def _from_bin(
@@ -376,26 +446,33 @@ def _from_bin(
 
     Raises:
         ToolNotFoundError: The subclass named by ``env.not_found``, for a bare
-            sibling name that is not on ``$PATH``.
+            sibling name that is not on ``$PATH``, or, when *env* declares
+            ``repo_venv``, for a resolved path that is not a file.
     """
     if env.bin_mode == "direct":
-        return str(user_path(bin_path))
+        resolved = user_path(bin_path)
+        _require_interpreter(env, resolved, source)
+        return str(resolved)
     given = str(bin_path).strip()
     if os.path.dirname(given):
-        return str(user_path(given).parent / executable)
+        resolved = user_path(given).parent / executable
+        _require_interpreter(env, resolved, source)
+        return str(resolved)
     found = shutil.which(given)
     if found is None:
         raise env.not_found(
             f"'{given}', {source}, is not on $PATH, so the {env.tool} environment "
             f"it names cannot be located. Name the file by its path."
         )
-    return str(Path(found).resolve().parent / executable)
+    resolved = Path(found).resolve().parent / executable
+    _require_interpreter(env, resolved, source)
+    return str(resolved)
 
 
 # Jupyter exports ``MPLBACKEND=module://matplotlib_inline.backend_inline`` into
 # the kernel environment. Inherited by a tool subprocess it makes matplotlib fail
 # at import -- and TRex's pybind11 glue turns that into terminate() and a SIGABRT,
-# so the failure does not even name matplotlib. No tracking tool needs an
+# so the failure does not even name matplotlib. No external tool needs an
 # interactive backend, so an inherited IPython ``module://`` backend is replaced
 # with a headless-safe one. An explicitly chosen backend is left alone.
 _INLINE_BACKEND_PREFIX: Final = "module://"
@@ -415,11 +492,12 @@ def display_overlay(env: ToolEnv) -> dict[str, str] | None:
 
 
 def subprocess_env(overlay: Mapping[str, str] | None = None) -> dict[str, str]:
-    """The environment an external tracking tool runs in.
+    """Return the environment that an external tool runs in.
 
-    The caller's environment as :func:`foreign_environment` returns it, without
-    this environment's library directories, with any *overlay* applied and an
-    inherited notebook matplotlib backend neutralized.
+    It starts from :func:`foreign_environment`, this process's environment
+    without this interpreter's Python search path and library directories. Any
+    *overlay* is applied to it, and an inherited notebook matplotlib backend is
+    replaced with ``Agg``.
     """
     run_env = {**foreign_environment(), **(overlay or {})}
     if run_env.get("MPLBACKEND", "").startswith(_INLINE_BACKEND_PREFIX):

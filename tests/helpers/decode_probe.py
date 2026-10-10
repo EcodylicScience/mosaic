@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.tracking.common.toolenv import ToolEnv
+from mosaic.core.pipeline.toolenv import ToolEnv
 
 
 @dataclass(frozen=True, slots=True)

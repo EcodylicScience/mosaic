@@ -77,6 +77,7 @@ from .tracks_index import tracks_compositions
 from .types.data_config import META_COLS
 from .types import (
     ArtifactSpec,
+    ClosesResources,
     DependencyLookup,
     Feature,
     InputStream,
@@ -281,10 +282,28 @@ def _build_nn_filter(
     return _filter
 
 
+# --- Resource release ---
+
+
+def _close_feature(feature: Feature) -> None:
+    """Release *feature*'s held resource, once, if it declares one.
+
+    Shared by ``run_feature`` and ``process_apply_worker``: both close from a
+    ``finally`` around the work they each did on their own instance. See
+    :class:`ClosesResources`. A raising ``close()`` is logged and never
+    replaces whatever exception is already propagating.
+    """
+    if isinstance(feature, ClosesResources):
+        try:
+            feature.close()
+        except Exception as exc:
+            print(f"[feature:{feature.name}] close() raised: {exc}", file=sys.stderr)
+
+
 # --- Process worker ---
 
 
-def _process_apply_worker(
+def process_apply_worker(
     module_name: str,
     class_name: str,
     inputs_dump: dict[str, object],
@@ -295,7 +314,7 @@ def _process_apply_worker(
     df: pd.DataFrame,
     ds_manifest_path: str | None = None,
 ) -> pd.DataFrame:
-    """Reconstruct a feature in a worker process and run apply.
+    """Reconstruct a feature in a worker process, run apply, then close it.
 
     If the feature declares ``bind_dataset`` (e.g. InteractionCropPipeline,
     EgocentricCropPipeline, FeralFeature), reconstruct the Dataset from its
@@ -304,22 +323,32 @@ def _process_apply_worker(
     ``'NoneType' object has no attribute 'resolve_media'`` because the
     main-process bind at ``run_feature`` doesn't propagate across process
     workers. Features without ``bind_dataset`` are unaffected.
+
+    This worker's instance is built fresh for this one call and reached by
+    nothing else, so it is the one place that can release a resource it opened
+    -- ``run_feature``'s own close of the main-process instance (``apply``
+    never runs there under this mode) does not reach it. ``bind_dataset``,
+    ``load_state`` and ``apply`` all run inside the guarded region, since any
+    of the three may acquire the resource that ``close()`` must then release.
     """
     mod = importlib.import_module(module_name)
     cls = getattr(mod, class_name)
     inputs_obj = Inputs.model_validate(inputs_dump)
     feature = cls(inputs_obj, params_dump)
-    if ds_manifest_path is not None and hasattr(feature, "bind_dataset"):
-        from mosaic.core.dataset import Dataset
+    try:
+        if ds_manifest_path is not None and hasattr(feature, "bind_dataset"):
+            from mosaic.core.dataset import Dataset
 
-        ds_local = Dataset(manifest_path=Path(ds_manifest_path)).load()
-        feature.bind_dataset(ds_local)
-    feature.load_state(
-        Path(run_root_str),
-        {k: Path(v) for k, v in artifact_paths_str.items()},
-        dependency_lookups,
-    )
-    return feature.apply(df)
+            ds_local = Dataset(manifest_path=Path(ds_manifest_path)).load()
+            feature.bind_dataset(ds_local)
+        feature.load_state(
+            Path(run_root_str),
+            {k: Path(v) for k, v in artifact_paths_str.items()},
+            dependency_lookups,
+        )
+        return feature.apply(df)
+    finally:
+        _close_feature(feature)
 
 
 # --- Filter factory ---
@@ -1094,24 +1123,27 @@ def run_feature(
         progress_callback=progress_callback,
         cancel_token=cancel_token,
     ) as ctx:
-        return _run_feature_impl(
-            ds,
-            feature,
-            ctx,
-            storage_feature_name,
-            scope=scope,
-            tracks_run_id=tracks_run_id,
-            labels_run_id=labels_run_id,
-            overwrite=overwrite,
-            parallel_workers=parallel_workers,
-            parallel_mode=parallel_mode,
-            overlap_frames=overlap_frames,
-            filter_start_frame=filter_start_frame,
-            filter_end_frame=filter_end_frame,
-            filter_start_time=filter_start_time,
-            filter_end_time=filter_end_time,
-            check_output=check_output,
-        )
+        try:
+            return _run_feature_impl(
+                ds,
+                feature,
+                ctx,
+                storage_feature_name,
+                scope=scope,
+                tracks_run_id=tracks_run_id,
+                labels_run_id=labels_run_id,
+                overwrite=overwrite,
+                parallel_workers=parallel_workers,
+                parallel_mode=parallel_mode,
+                overlap_frames=overlap_frames,
+                filter_start_frame=filter_start_frame,
+                filter_end_frame=filter_end_frame,
+                filter_start_time=filter_start_time,
+                filter_end_time=filter_end_time,
+                check_output=check_output,
+            )
+        finally:
+            _close_feature(feature)
 
 
 def _run_feature_impl(
@@ -1553,22 +1585,28 @@ def _run_feature_impl(
     pending: dict[Future[pd.DataFrame], tuple[FeatureMeta, CoreSelector | None]] = {}
 
     def _entry_failed(group: str, sequence: str, exc: Exception) -> None:
-        """One entity's ``apply`` raised: report it and carry on.
+        """One entity's ``apply`` raised: report it and carry on, unless cancelled.
 
         Shared by the inline and parallel-drain paths deliberately. They used to
         hold two copies of a bare ``print``, which is how one of them could be
         repaired and the other left reporting success.
 
-        The stderr line stays -- it is what a human running the CLI directly
-        reads. The record that survives the queue is ``ctx.entry_failed``: the
-        child's stderr goes to DEVNULL there, so the print alone was destroyed
-        before anything could read it.
+        ``ctx.entry_failed_unless_cancelled`` decides whether this is a lost
+        entity or a cancel: a tool an entry's ``apply`` drives can be killed by
+        a cancel and raise its own exception for it, and while the attempt's
+        cancel token is set that call raises
+        :class:`~mosaic.core.pipeline.job.Cancelled` instead of recording a
+        failure. The stderr line below runs only once that call has decided the
+        entity is really lost, so a cancelled entry is never printed as a
+        failure -- it is what a human running the CLI directly reads, and the
+        record that survives the queue either way, since the child's stderr
+        goes to DEVNULL there.
         """
+        ctx.entry_failed_unless_cancelled(make_entry_key(group, sequence), exc)
         print(
             f"[feature:{feature.name}] apply failed for ({group},{sequence}): {exc}",
             file=sys.stderr,
         )
-        ctx.entry_failed(make_entry_key(group, sequence), exc)
 
     def _drain_completed() -> None:
         done, _ = wait(pending, return_when=FIRST_COMPLETED)
@@ -1638,7 +1676,7 @@ def _run_feature_impl(
                 artifact_paths_str = {k: str(v) for k, v in artifact_paths.items()}
                 pending[
                     executor.submit(
-                        _process_apply_worker,
+                        process_apply_worker,
                         feature.__module__,
                         type(feature).__name__,
                         feature.inputs.model_dump(),

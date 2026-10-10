@@ -3,7 +3,7 @@
 Fits an AR-HMM model and applies it to extract per-frame syllable labels,
 using a persistent subprocess server to avoid repeated JAX startup costs.
 The kpms package does NOT need to be installed in the mosaic environment -- only
-in a separate one, located by :func:`resolve_kpms_python`.
+in a separate one, located through :data:`KPMS_ENV`.
 
 keypoint-MoSeq is licensed for non-commercial research and academic use only
 and is never bundled with mosaic; see :data:`LICENSE_NOTICE` and
@@ -22,7 +22,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Annotated, ClassVar, Self, TypedDict, final
+from typing import IO, TYPE_CHECKING, Annotated, ClassVar, Final, Self, TypedDict, final
 
 import numpy as np
 from pydantic import Field, model_validator
@@ -37,7 +37,7 @@ from mosaic.core.pipeline.column_contract import (
 )
 from mosaic.core.pipeline.subprocess_util import foreign_environment
 from mosaic.optional_dependency import Prerequisite
-from mosaic.user_paths import user_path
+from mosaic.core.pipeline.toolenv import ToolEnv, ToolNotFoundError, tool_invocation
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -79,11 +79,8 @@ from .external.kpms_protocol import (
 log = logging.getLogger(__name__)
 
 _KPMS_SERVER_SCRIPT = Path(__file__).parent / "external" / "kpms_server.py"
-_EXTERNAL_VENV_PYTHON = Path(__file__).parent / "external" / ".venv" / "bin" / "python"
 
-# Read at point of use with a bare ``os.environ.get`` and expanded through
-# ``user_path``, the convention every externally-installed tool follows
-# (MOSAIC_TREX_BIN, MOSAIC_SLEAP_BIN, MOSAIC_LITPOSE_BIN).
+KPMS_CONDA_ENV_VAR = "MOSAIC_KPMS_CONDA_ENV"
 KPMS_PYTHON_ENV = "MOSAIC_KPMS_PYTHON"
 KPMS_LICENSE_ENV = "MOSAIC_KPMS_LICENSE_ACCEPTED"
 
@@ -111,16 +108,28 @@ _LICENSE_UNACCEPTED = (
 _NOT_FOUND_HELP = (
     "keypoint-moseq is not installed with mosaic and is never bundled in a "
     "mosaic distribution. It runs in a separate environment. Build it with "
-    "the command in mosaic/behavior/feature_library/external/README.md, or "
-    f"point {KPMS_PYTHON_ENV} at an interpreter that already has it."
+    "the command in mosaic/behavior/feature_library/external/README.md, "
+    f"point {KPMS_PYTHON_ENV} at an interpreter that already has it, or name a "
+    f"conda environment with {KPMS_CONDA_ENV_VAR}."
 )
 
 
-class KpmsNotFoundError(FileNotFoundError):
+class KpmsNotFoundError(ToolNotFoundError):
     """Raised when no Python interpreter with keypoint-moseq can be located."""
 
-    def __init__(self, message: str | None = None) -> None:
-        super().__init__(message or _NOT_FOUND_HELP)
+    default_message = _NOT_FOUND_HELP
+
+
+# keypoint-moseq has no console script, so rung 5 reads the interpreter under
+# external/.venv.
+KPMS_ENV: Final = ToolEnv(
+    tool="keypoint-moseq",
+    conda_env_var=KPMS_CONDA_ENV_VAR,
+    bin_var=KPMS_PYTHON_ENV,
+    bin_mode="direct",
+    not_found=KpmsNotFoundError,
+    repo_venv=Path(__file__).parent / "external",
+)
 
 
 def check_license_accepted() -> None:
@@ -155,32 +164,6 @@ def license_accepted() -> bool:
     return os.environ.get(KPMS_LICENSE_ENV, "").strip() == "1"
 
 
-def resolve_kpms_python(kpms_python: str | None = None) -> Path:
-    """Resolve the interpreter that runs the keypoint-moseq server.
-
-    Precedence (first match wins):
-
-    1. *kpms_python* -- the feature's ``kpms_python`` param
-    2. ``MOSAIC_KPMS_PYTHON`` env var
-    3. the environment under ``feature_library/external/.venv``
-
-    Args:
-        kpms_python: Explicit interpreter path, or None to fall through.
-
-    Returns:
-        The resolved interpreter path, which exists.
-
-    Raises:
-        KpmsNotFoundError: if the resolved path does not exist.
-    """
-    candidate = kpms_python or os.environ.get(KPMS_PYTHON_ENV)
-    resolved = user_path(candidate) if candidate else _EXTERNAL_VENV_PYTHON
-    if not resolved.exists():
-        msg = f"[kpms] Python interpreter not found: {resolved}.  {_NOT_FOUND_HELP}"
-        raise KpmsNotFoundError(msg)
-    return resolved
-
-
 @final
 @dataclass(frozen=True, slots=True)
 class KpmsLicense:
@@ -199,16 +182,17 @@ class KpmsLicense:
 class KpmsEnvironment:
     """A prerequisite of :class:`KpmsFeature`: an interpreter to run the server.
 
-    Checked for on the file system, without starting it. The catalog does not
-    read a step's ``kpms_python``. The interpreter is resolved from
-    ``MOSAIC_KPMS_PYTHON`` and the environment under ``external/.venv`` alone.
+    Resolved through :data:`KPMS_ENV`, the ladder the spawn walks, without
+    starting it. The catalog does not read a step's ``kpms_python``, so only
+    the machine's rungs answer: ``MOSAIC_KPMS_CONDA_ENV``, ``MOSAIC_KPMS_PYTHON``
+    and the environment under ``external/.venv``.
     """
 
     def missing(self) -> str | None:
         """How to provide the environment, or ``None`` when one is found."""
         try:
-            _ = resolve_kpms_python()
-        except KpmsNotFoundError:
+            _ = tool_invocation(KPMS_ENV, executable="python")
+        except ToolNotFoundError:
             return _NOT_FOUND_HELP
         return None
 
@@ -286,8 +270,8 @@ _MODEL_DESCRIPTION = "A pre-fitted model to load. Unset, the feature fits a new 
 
 _KPMS_PYTHON_DESCRIPTION = (
     "Path to a Python interpreter with keypoint-moseq installed. Unset, "
-    "resolution falls through to MOSAIC_KPMS_PYTHON, then to the "
-    "environment under feature_library/external/.venv."
+    "resolution reads MOSAIC_KPMS_CONDA_ENV, then MOSAIC_KPMS_PYTHON, then "
+    "the in-repository environment under feature_library/external/.venv."
 )
 
 _ANTERIOR_BODYPARTS_DESCRIPTION = (
@@ -535,7 +519,9 @@ class KpmsFeature:
         # Before resolving the interpreter, so the answer does not depend on
         # whether an environment happens to be present.
         check_license_accepted()
-        resolved = resolve_kpms_python(self.params.kpms_python)
+        invocation = tool_invocation(
+            KPMS_ENV.placed(bin_path=self.params.kpms_python), executable="python"
+        )
 
         self._tmpdir = tempfile.mkdtemp(prefix="kpms_")
         socket_path = str(Path(self._tmpdir) / "kpms.sock")
@@ -545,7 +531,7 @@ class KpmsFeature:
             mode="w", prefix="kpms_log_", suffix=".log", delete=False
         )
         self._proc = subprocess.Popen(
-            [str(resolved), str(_KPMS_SERVER_SCRIPT), socket_path],
+            [*invocation, str(_KPMS_SERVER_SCRIPT), socket_path],
             stderr=self._stderr_file,
             env=foreign_environment(),
         )

@@ -40,7 +40,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
-from mosaic.tracking.common.toolenv import (
+from mosaic.core.pipeline.toolenv import (
     PROBE_DEADLINE_FLOOR_SECONDS,
     missing_output_error,
     subprocess_env,
@@ -165,7 +165,7 @@ def probe_sleap(
         labels_path: A ``.slp`` to report on, or ``None`` to ask about the
             environment alone.
         idle_timeout: Kill the subprocess after this long with no output.
-            Floored at :data:`~mosaic.tracking.common.toolenv.PROBE_DEADLINE_FLOOR_SECONDS`,
+            Floored at :data:`~mosaic.core.pipeline.toolenv.PROBE_DEADLINE_FLOOR_SECONDS`,
             because a probe prints nothing between spawn and answer.
         max_runtime: Optional absolute ceiling.
         sleap_conda_env: Run in this conda env, overriding the environment.

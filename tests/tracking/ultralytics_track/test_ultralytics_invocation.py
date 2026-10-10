@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 import mosaic.tracking.common.ultralytics_env as ultralytics_env
-from mosaic.tracking.external.runner.ultralytics_protocol import ProbeResponse
+from mosaic.core.pipeline.toolenv import ToolEnv, ToolNotFoundError
 from mosaic.tracking.common.ultralytics_env import (
     POLO_ENV,
     PROBE_DEADLINE_FLOOR_SECONDS,
@@ -30,7 +30,7 @@ from mosaic.tracking.common.ultralytics_env import (
     run_runner,
     runner_invocation,
 )
-from mosaic.tracking.common.toolenv import ToolEnv, ToolNotFoundError
+from mosaic.tracking.external.runner.ultralytics_protocol import ProbeResponse
 from mosaic.tracking.ultralytics_track.run import probe_ultralytics
 from tests.helpers import FAKE_CONDA, fake_path_lookup, isolate_tool_location
 

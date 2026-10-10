@@ -4,7 +4,7 @@ Covers :func:`mosaic.tracking.trex.run._trex_invocation` (how ``trex`` is
 launched: in a conda env, via an explicit binary, or from ``$PATH``) and the
 ``DISPLAY`` overlay, without invoking the real ``trex`` binary.
 
-Placement is one :class:`~mosaic.tracking.common.toolenv.ToolEnv`, so a test
+Placement is one :class:`~mosaic.core.pipeline.toolenv.ToolEnv`, so a test
 that reaches a differently placed install states it as
 ``TREX_ENV.placed(...)``.
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.json_value import JsonValue
-from mosaic.tracking.common.toolenv import ToolEnv, display_overlay
+from mosaic.core.pipeline.toolenv import ToolEnv, display_overlay
 
 from mosaic.tracking.trex import run as trex_run
 from mosaic.tracking.trex.params import TrexParams

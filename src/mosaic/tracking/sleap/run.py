@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Final, Literal
 
 from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
-from mosaic.tracking.common.toolenv import (
+from mosaic.core.pipeline.toolenv import (
     ToolEnv,
     ToolExitError,
     ToolNotFoundError,

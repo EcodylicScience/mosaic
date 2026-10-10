@@ -1,11 +1,12 @@
 """Machinery every integrated tracker shares.
 
 TREx, SLEAP and Lightning Pose differ in what they run and what they emit. They
-do not differ in how a run is *driven*: locate the tool in its own environment,
-resolve the model to a content digest, mint a run identifier, claim each entry's
-working directory, decide per phase whether the recorded marker still proves the
-work, run what is stale, record what completed, bridge the output into
-``tracks/``, and write a row. That algorithm lives here once.
+do not differ in how a run is *driven*: resolve the model to a content digest,
+mint a run identifier, claim each entry's working directory, decide per phase
+whether the recorded marker still proves the work, run what is stale, record
+what completed, bridge the output into ``tracks/``, and write a row. That
+algorithm lives here once, calling into :mod:`mosaic.core.pipeline.toolenv` to
+locate the tool in its own environment.
 
 This package imports ``core`` and nothing from ``behavior``; ``core`` imports
 nothing from here. A tracker's own module keeps what is genuinely its own -- the
@@ -44,24 +45,11 @@ from mosaic.tracking.common.scope import (
     WorkItems,
     build_work_items,
 )
-from mosaic.tracking.common.toolenv import (
-    BinMode,
-    ToolEnv,
-    ToolExitError,
-    ToolNotFoundError,
-    conda_invocation,
-    subprocess_env,
-    tool_invocation,
-)
 
 __all__ = [
     "AdoptEvidence",
-    "BinMode",
     "BridgeCounts",
     "MintedRun",
-    "ToolEnv",
-    "ToolExitError",
-    "ToolNotFoundError",
     "TrackerRunRowBase",
     "JoinedSourceMismatchError",
     "TrackerWorkItem",
@@ -70,7 +58,6 @@ __all__ = [
     "adopt_completed_directory",
     "build_work_items",
     "clear_outputs",
-    "conda_invocation",
     "readable_tracks_table",
     "frame_counts",
     "list_tracker_runs",
@@ -79,8 +66,6 @@ __all__ = [
     "record_phase",
     "reusable_marker",
     "reusable_output",
-    "subprocess_env",
-    "tool_invocation",
     "tracker_index",
     "tracker_index_path",
     "tracker_run_root",

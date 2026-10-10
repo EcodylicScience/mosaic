@@ -34,7 +34,7 @@ import yaml
 from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.core.pipeline.types import JsonValue
-from mosaic.tracking.common.toolenv import subprocess_env, tool_invocation
+from mosaic.core.pipeline.toolenv import subprocess_env, tool_invocation
 from mosaic.tracking.sleap.run import SLEAP_ENV, SleapError
 
 logger = logging.getLogger(__name__)

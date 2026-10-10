@@ -8,7 +8,7 @@ Requires:
     The ``trex`` binary. Because the TRex conda package pins ``python=3.11`` and
     ``numpy=1.26``, it usually lives in its **own** conda env (e.g. ``track``)
     rather than the mosaic env. Every wrapper takes a
-    :class:`~mosaic.tracking.common.toolenv.ToolEnv` naming where it is, and
+    :class:`~mosaic.core.pipeline.toolenv.ToolEnv` naming where it is, and
     :data:`TREX_ENV` reads that from the machine. In precedence order:
 
     * ``ToolEnv.conda_env`` / ``MOSAIC_TREX_CONDA_ENV`` -- run via
@@ -36,8 +36,7 @@ from typing import Callable, Final, Sequence
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
-from mosaic.tracking.trex.params import TrexParams
-from mosaic.tracking.common.toolenv import (
+from mosaic.core.pipeline.toolenv import (
     ToolEnv,
     ToolExitError,
     ToolNotFoundError,
@@ -46,6 +45,7 @@ from mosaic.tracking.common.toolenv import (
     subprocess_env,
     tool_invocation,
 )
+from mosaic.tracking.trex.params import TrexParams
 
 logger = logging.getLogger(__name__)
 

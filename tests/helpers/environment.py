@@ -21,8 +21,9 @@ was written wrong in three of them before it was written right in one.
 
 :func:`isolate_tool_location` and :func:`fake_path_lookup` stand in for the
 machine an external tool is located on: the variables its location ladder reads,
-and ``$PATH``. They patch the one seam the ladder looks through, so a test names
-what is installed rather than how the lookup is reached.
+and ``$PATH``. They patch the two seams the ladder looks through -- ``shutil.which``
+and the in-repository-venv root -- so a test names what is installed rather than
+how the lookup is reached.
 
 ``require_ffmpeg`` is a plain function rather than a fixture because the helpers
 that need it are plain functions too -- ``add_media_sequence`` writes videos and
@@ -39,8 +40,8 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.tracking.common import toolenv
-from mosaic.tracking.common.toolenv import ToolEnv
+from mosaic.core.pipeline import toolenv
+from mosaic.core.pipeline.toolenv import ToolEnv
 
 # Both binaries. Probing shells out to ``ffprobe``; the transcode op and the
 # raw-H.264 packet scan shell out to ``ffmpeg``, and it is the one that goes
@@ -240,8 +241,21 @@ def fake_path_lookup(monkeypatch: pytest.MonkeyPatch, found: Mapping[str, str]) 
     monkeypatch.setattr(toolenv.shutil, "which", which)
 
 
+_NO_REPO_VENV = Path("/p/no-venv")
+"""A root for the in-repository-interpreter rung that is never built.
+
+Exists nowhere, like :data:`FAKE_CONDA`, so a test isolating a tool that
+declares :attr:`~mosaic.core.pipeline.toolenv.ToolEnv.repo_venv` gets a
+deterministic refusal from that rung by default, regardless of whether a real
+venv happens to be built on the machine the suite runs on.
+"""
+
+
 def isolate_tool_location(
-    monkeypatch: pytest.MonkeyPatch, *envs: ToolEnv, found: Mapping[str, str]
+    monkeypatch: pytest.MonkeyPatch,
+    *envs: ToolEnv,
+    found: Mapping[str, str],
+    repo_venv: Path = _NO_REPO_VENV,
 ) -> None:
     """Unset what the location ladder reads for *envs*, and fake ``$PATH``.
 
@@ -250,6 +264,14 @@ def isolate_tool_location(
     any of them, and a test of which rung wins would then report the machine
     rather than the code. ``$PATH`` lookups answer from *found*, as
     :func:`fake_path_lookup` does.
+
+    The redirect is keyed on the declared directory, not on tool identity: every
+    ``ToolEnv`` whose ``repo_venv`` equals one declared by *envs* -- a ``.placed``
+    variant sharing the same directory included -- reads *repo_venv* instead of
+    its own declared directory, even when that ``ToolEnv`` itself is not among
+    *envs*. Every other ``ToolEnv`` reads its own ``repo_venv``, or ``$PATH`` when
+    it declares none. A test that wants to simulate a present venv passes a
+    directory holding one; the default simulates none built at all.
     """
     for env in envs:
         for variable in (env.conda_env_var, env.bin_var, env.display_var):
@@ -258,6 +280,13 @@ def isolate_tool_location(
     for variable in ("CONDA_EXE", "CONDA_ENVS_DIRS"):
         monkeypatch.delenv(variable, raising=False)
     fake_path_lookup(monkeypatch, found)
+    declared = {env.repo_venv for env in envs if env.repo_venv is not None}
+    if declared:
+
+        def resolve_repo_venv(env: ToolEnv) -> Path | None:
+            return repo_venv if env.repo_venv in declared else env.repo_venv
+
+        monkeypatch.setattr(toolenv, "_repo_venv_root", resolve_repo_venv)
 
 
 def assert_no_literal_tilde(root: Path) -> None:

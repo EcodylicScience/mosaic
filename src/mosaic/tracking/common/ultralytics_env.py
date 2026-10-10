@@ -17,7 +17,7 @@ and cannot know which fork it found. A caller that needs the fork specifically
 must check what the environment reported rather than trust the ladder.
 
 This module is the part both the tracker and the inference ops need: the two
-:class:`~mosaic.tracking.common.toolenv.ToolEnv` values, the failure classes, the
+:class:`~mosaic.core.pipeline.toolenv.ToolEnv` values, the failure classes, the
 launcher, and the reader for the progress lines the runner writes. What is
 specific to one caller -- the tracker configuration, the preflight refusals, the
 request each op builds -- stays with that caller.
@@ -37,7 +37,7 @@ from pydantic import ValidationError
 
 from mosaic.core.pipeline.entry_claim import INFLIGHT_REFRESH_SECONDS
 from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
-from mosaic.tracking.common.toolenv import (
+from mosaic.core.pipeline.toolenv import (
     PROBE_DEADLINE_FLOOR_SECONDS,
     ToolEnv,
     ToolExitError,
@@ -252,7 +252,7 @@ def runner_invocation(
 ) -> list[str]:
     """Resolve how to launch *env*'s ``python``, as an argv prefix.
 
-    The shared five-step ladder (:func:`~mosaic.tracking.common.toolenv.tool_invocation`)
+    The shared five-step ladder (:func:`~mosaic.core.pipeline.toolenv.tool_invocation`)
     applied to one of the two environments above. *conda_env* and *bin_path*
     are what one caller chooses for one run, so they are stated on the placement
     the ladder reads rather than passed beside it.
@@ -346,7 +346,7 @@ def probe_environment(
     A probe writes no progress lines -- it loads the weights and answers -- so an
     inactivity bound on it is a deadline on the whole operation. *idle_timeout*
     is therefore raised to
-    :data:`~mosaic.tracking.common.toolenv.PROBE_DEADLINE_FLOOR_SECONDS`
+    :data:`~mosaic.core.pipeline.toolenv.PROBE_DEADLINE_FLOOR_SECONDS`
     when the caller's value is shorter.
 
     Raises:

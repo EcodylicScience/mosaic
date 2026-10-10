@@ -1,23 +1,28 @@
 """The shared tool-placement primitives, on their own terms.
 
-``tests/test_{trex,sleap,litpose}_invocation.py`` cover the five-step ladder once
-per tool, which is what proves each tool still resolves the way it did. This
-covers what those three cannot: the parts of the shared machinery that no single
-tool exercises fully -- the environment overlay, an explicitly chosen matplotlib
-backend, and the two exception shapes.
+``tests/tracking/trex/test_trex_invocation.py``,
+``tests/tracking/sleap/test_sleap_invocation.py`` and
+``tests/tracking/litpose/test_litpose_invocation.py`` cover the five-step ladder
+once per tool, which is what proves each tool still resolves the way it did.
+This covers what those three cannot: the parts of the shared machinery that no
+single tool exercises fully -- the environment overlay, an explicitly chosen
+matplotlib backend, the in-repository interpreter rung, and the two exception
+shapes.
+
+The argv-summary test needs a real tracker to log through, so it lives in
+``tests/tracking/common/test_running_argv_summary.py``.
 """
 
 from __future__ import annotations
 
+import sys
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from mosaic.tracking.sleap import run as sleap_run
-from mosaic.tracking.sleap import training as sleap_training
-from mosaic.tracking.trex import run as trex_run
-from mosaic.tracking.trex.params import TrexParams
-from mosaic.tracking.common.toolenv import (
+from mosaic.core.pipeline.toolenv import (
     ToolEnv,
     ToolExitError,
     ToolNotFoundError,
@@ -189,6 +194,196 @@ def test_a_linked_locator_is_resolved_to_the_environment_it_belongs_to(
     fake_path_lookup(monkeypatch, {"finder": str(linked)})
 
     assert tool_invocation(_LOCATED, executable="python") == [str(env_bin / "python")]
+
+
+# --- the in-repository interpreter rung ------------------------------------
+
+
+def _with_repo_venv(root: Path) -> ToolEnv:
+    """``_DIRECT``, but declaring an in-repository venv under *root*.
+
+    Shares ``_DIRECT``'s variable names, so ``clean_env`` already unsets them
+    for every test below.
+    """
+    return replace(_DIRECT, repo_venv=root)
+
+
+def _build_in_repo_python(root: Path, *, win32: bool = False) -> Path:
+    """Create the file the in-repository rung resolves to under *root*."""
+    venv = root / ".venv"
+    interpreter = venv / "Scripts" / "python.exe" if win32 else venv / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.touch()
+    return interpreter
+
+
+def test_a_tool_without_the_in_repo_field_still_reaches_path() -> None:
+    """``_DIRECT`` declares no in-repository venv, so nothing about it changes."""
+    assert tool_invocation(_DIRECT, executable="runme") == ["/p/bin/runme"]
+
+
+def test_the_in_repo_rung_is_reached_once_every_other_rung_is_unset(
+    tmp_path: Path,
+) -> None:
+    env = _with_repo_venv(tmp_path)
+    interpreter = _build_in_repo_python(tmp_path)
+
+    assert tool_invocation(env, executable="python") == [str(interpreter)]
+
+
+def _conda_argv(env_name: str) -> list[str]:
+    return [FAKE_CONDA, "run", "--no-capture-output", "-n", env_name, "python"]
+
+
+def _via_placed_conda_env(
+    env: ToolEnv, explicit: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[ToolEnv, list[str]]:
+    return env.placed(conda_env="toolenv"), _conda_argv("toolenv")
+
+
+def _via_placed_bin_path(
+    env: ToolEnv, explicit: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[ToolEnv, list[str]]:
+    return env.placed(bin_path=explicit), [str(explicit)]
+
+
+def _via_conda_env_var(
+    env: ToolEnv, explicit: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[ToolEnv, list[str]]:
+    monkeypatch.setenv("MOSAIC_FAKE_CONDA_ENV", "toolenv")
+    return env, _conda_argv("toolenv")
+
+
+def _via_bin_var(
+    env: ToolEnv, explicit: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[ToolEnv, list[str]]:
+    monkeypatch.setenv("MOSAIC_FAKE_BIN", str(explicit))
+    return env, [str(explicit)]
+
+
+@pytest.mark.parametrize(
+    "place",
+    [_via_placed_conda_env, _via_placed_bin_path, _via_conda_env_var, _via_bin_var],
+    ids=["placed-conda-env", "placed-bin-path", "conda-env-var", "bin-var"],
+)
+def test_every_earlier_rung_wins_over_a_built_in_repo_venv(
+    place: Callable[[ToolEnv, Path, pytest.MonkeyPatch], tuple[ToolEnv, list[str]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rungs 1 to 4 all take precedence over a venv that the in-repo rung would find."""
+    _build_in_repo_python(tmp_path)
+    env = _with_repo_venv(tmp_path)
+    explicit = tmp_path / "explicit-python"
+    explicit.touch()
+    fake_path_lookup(monkeypatch, {"conda": FAKE_CONDA})
+
+    placed, expected = place(env, explicit, monkeypatch)
+
+    assert tool_invocation(placed, executable="python") == expected
+
+
+def test_the_in_repo_rung_resolves_the_windows_layout_on_win32(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    env = _with_repo_venv(tmp_path)
+    interpreter = _build_in_repo_python(tmp_path, win32=True)
+
+    assert tool_invocation(env, executable="python") == [str(interpreter)]
+
+
+def test_a_missing_placed_bin_path_is_refused_naming_the_placement(
+    tmp_path: Path,
+) -> None:
+    env = _with_repo_venv(tmp_path)
+    missing = tmp_path / "missing-python"
+
+    with pytest.raises(_FakeNotFound) as refused:
+        tool_invocation(env.placed(bin_path=missing), executable="python")
+
+    message = str(refused.value)
+    assert str(missing) in message
+    assert "the binary this run was placed with" in message
+
+
+def test_a_missing_bin_var_is_refused_naming_the_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = _with_repo_venv(tmp_path)
+    missing = tmp_path / "missing-python"
+    monkeypatch.setenv("MOSAIC_FAKE_BIN", str(missing))
+
+    with pytest.raises(_FakeNotFound) as refused:
+        tool_invocation(env, executable="python")
+
+    message = str(refused.value)
+    assert str(missing) in message
+    assert "MOSAIC_FAKE_BIN" in message
+
+
+def test_a_missing_sibling_executable_is_refused_in_a_repo_venv_tool(
+    tmp_path: Path,
+) -> None:
+    """``_from_bin``'s sibling-mode branches carry the same file check.
+
+    No tool combines sibling mode with ``repo_venv`` today -- every tool
+    declaring one has a single interpreter and so is placed in direct mode --
+    but the check sits in shared code and must hold for sibling mode too.
+    """
+    env = replace(_SIBLING, repo_venv=tmp_path)
+    placed_bin = tmp_path / "placed-bin" / "other"
+    placed_bin.parent.mkdir()
+    placed_bin.touch()
+
+    with pytest.raises(_FakeNotFound) as refused:
+        tool_invocation(env.placed(bin_path=str(placed_bin)), executable="python")
+
+    message = str(refused.value)
+    assert str(placed_bin.parent / "python") in message
+    assert "the binary this run was placed with" in message
+
+
+def test_a_missing_in_repo_venv_is_refused_naming_the_resolved_path(
+    tmp_path: Path,
+) -> None:
+    env = _with_repo_venv(tmp_path)
+    expected = tmp_path / ".venv" / "bin" / "python"
+
+    with pytest.raises(_FakeNotFound) as refused:
+        tool_invocation(env, executable="python")
+
+    message = str(refused.value)
+    assert str(expected) in message
+    assert f"the in-repository environment under {tmp_path}" in message
+
+
+def test_a_missing_in_repo_venv_also_carries_the_tools_own_install_help(
+    tmp_path: Path,
+) -> None:
+    """The path alone is not install help: the tool's own hint must appear too."""
+    env = _with_repo_venv(tmp_path)
+
+    with pytest.raises(_FakeNotFound) as refused:
+        tool_invocation(env, executable="python")
+
+    assert _FakeNotFound.default_message in str(refused.value)
+
+
+def test_isolating_an_in_repo_venv_tool_does_not_redirect_one_with_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Isolating a repo_venv tool leaves one that declares none on ``$PATH``.
+
+    It must not catch a tool isolated beside it that declares no
+    ``repo_venv`` -- that one still resolves its fifth rung from ``$PATH``.
+    """
+    with_venv = _with_repo_venv(tmp_path)
+    isolate_tool_location(
+        monkeypatch, with_venv, _DIRECT, found={"runme": "/p/bin/runme"}
+    )
+
+    assert tool_invocation(_DIRECT, executable="runme") == ["/p/bin/runme"]
 
 
 # --- the environment ------------------------------------------------------
@@ -379,62 +574,6 @@ def test_a_python_program_is_named_and_never_quoted(
     assert echoed in str(error)
     assert "import sys" not in str(error)
     assert error.cmd == argv
-
-
-class _Launched(Exception):
-    """Raised by a stand-in for ``run_supervised`` once it has the argv."""
-
-
-@pytest.mark.parametrize("site", ["trex", "sleap", "sleap-train"])
-def test_every_running_line_is_the_summary_of_the_argv_run(
-    site: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """One function prints an argv, so a program after ``-c`` is never quoted."""
-    module = {"trex": trex_run, "sleap": sleap_run, "sleap-train": sleap_training}[site]
-    launched: list[list[str]] = []
-    summarized: list[list[str]] = []
-
-    def run(argv: list[str], **_kwargs: object) -> tuple[str, str, int]:
-        launched.append(list(argv))
-        raise _Launched
-
-    def summary(cmd: list[str], head: int | None = None) -> str:
-        summarized.append(list(cmd))
-        return "<summary>"
-
-    monkeypatch.setattr(module, "run_supervised", run)
-    monkeypatch.setattr(module, "command_summary", summary)
-    caplog.set_level("INFO")
-
-    with pytest.raises(_Launched):
-        if site == "trex":
-            _ = trex_run.run_trex_convert(
-                tmp_path / "clip.mp4",
-                tmp_path / "out",
-                params=TrexParams(),
-                env=trex_run.TREX_ENV.placed(bin_path=tmp_path / "trex"),
-            )
-        elif site == "sleap":
-            _ = sleap_run.run_sleap_convert(
-                tmp_path / "in.slp",
-                tmp_path / "out.h5",
-                sleap_bin=tmp_path / "sleap-convert",
-            )
-        else:
-            labels = tmp_path / "in.slp"
-            _ = labels.write_bytes(b"slp")
-            _ = sleap_training.train_sleap(
-                labels,
-                tmp_path / "run",
-                sleap_bin=tmp_path / "sleap-nn-train",
-            )
-
-    running = [r.getMessage() for r in caplog.records if "Running:" in r.getMessage()]
-    assert running == ["Running: <summary>"]
-    assert summarized == launched
 
 
 # --- what the tool said, when the tool said it went fine ---------------------

@@ -1,4 +1,4 @@
-"""The inactivity watchdog in :func:`run_supervised`.
+"""Supervision of external tools: :func:`run_supervised` and :class:`LineChild`.
 
 A fixed total-wall-clock limit cannot fit a tool whose healthy runtime spans
 seconds to hours (TREx). The watchdog kills only after a window of *no* output,
@@ -11,28 +11,40 @@ out of the poll loop, it is what every external tool passes, and its answer is a
 kill. Anything that wants a tool to stop *cooperatively* has to be built beside
 it rather than on top of it, so what it does is written down.
 
+A :class:`LineChild` keeps a child running, sends it lines on its standard input
+and reads its answers on its standard output. Its cancel and group-kill rules
+are those of :func:`run_supervised`. Its idle window counts the lines on
+standard output and the lines sent. Standard error is appended to a log file and
+does not count.
+
 Every child prints faster than, or sleeps longer than, the idle window with a
 wide margin, so a loaded machine's scheduling jitter does not flip the outcome.
 """
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 
 import pytest
 
 from mosaic.core.pipeline.subprocess_util import (
     IdleTimeoutExpired,
+    LineChild,
     ProcessCancelled,
+    WallClockTimeoutExpired,
     command_summary,
     foreign_environment,
     run_supervised,
+    supervised_popen_kwargs,
+    terminate_group,
 )
-from mosaic.tracking.common.toolenv import subprocess_env
+from mosaic.core.pipeline.toolenv import subprocess_env
 
 # A child that prints one line every 0.1 s -- an order of magnitude below any
 # idle window used here, so it must never trip the watchdog.
@@ -398,3 +410,301 @@ def test_a_tracking_tool_is_spawned_without_this_environments_libraries(
     assert subprocess_env()["LD_LIBRARY_PATH"] == "/usr/local/lib"
     overlaid = subprocess_env({"LD_LIBRARY_PATH": _own_library_directory()})
     assert overlaid["LD_LIBRARY_PATH"] == _own_library_directory()
+
+
+# --- a long-lived child that exchanges lines ------------------------------------
+
+# Answers each line of its standard input on its standard output, and exits when
+# its input ends.
+ECHO = (
+    "import sys\n"
+    "sys.stdin.reconfigure(encoding='utf-8')\n"
+    "sys.stdout.reconfigure(encoding='utf-8')\n"
+    "for line in sys.stdin:\n"
+    "    print('echo:' + line.rstrip('\\n'), flush=True)\n"
+)
+# Greets once, then answers each line of its input 0.3 s after it arrives.
+GREETS_THEN_ANSWERS_SLOWLY = (
+    "import sys, time\n"
+    "print('hello', flush=True)\n"
+    "for line in sys.stdin:\n"
+    "    time.sleep(0.3)\n"
+    "    print('echo:' + line.rstrip('\\n'), flush=True)\n"
+)
+# One line, then an exit with a status a kill cannot produce.
+EXITS_AFTER_ONE_LINE = "import sys\nprint('last words', flush=True)\nsys.exit(3)\n"
+# Ignores SIGTERM and the end of its input. Only SIGKILL ends it.
+IGNORES_SIGTERM = (
+    "import signal, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "print('ready', flush=True)\n"
+    "time.sleep(60)\n"
+)
+REPORTS_SEARCH_VARIABLES = (
+    "import os\n"
+    "for name in ('PYTHONPATH', 'PYTHONHOME'):\n"
+    "    print(name + '=' + os.environ.get(name, '<unset>'), flush=True)\n"
+)
+
+
+class _Children:
+    """Spawns the line children of one test, each logging into *directory*."""
+
+    def __init__(self, directory: Path) -> None:
+        self._directory = directory
+        self._spawned: list[LineChild] = []
+
+    def spawn(self, program: str, env: Mapping[str, str] | None = None) -> LineChild:
+        log_path = self._directory / f"child-{len(self._spawned)}.log"
+        child = LineChild(_argv(program), log_path=log_path, env=env)
+        self._spawned.append(child)
+        return child
+
+    def close_all(self) -> None:
+        for child in self._spawned:
+            child.close(grace=1.0)
+
+
+@pytest.fixture
+def children(tmp_path: Path) -> Iterator[_Children]:
+    """Line children that are closed when the test ends, whatever its outcome."""
+    spawned = _Children(tmp_path)
+    yield spawned
+    spawned.close_all()
+
+
+def test_lines_round_trip_through_a_line_child(children: _Children) -> None:
+    child = children.spawn(ECHO)
+
+    for text in ("first", "a line with spaces", "caf\u00e9"):
+        child.send(text)
+        assert child.next_line(timeout=10) == f"echo:{text}"
+
+    child.close()
+    assert child.exit_code == 0, "the child exits at the end of its input"
+
+
+@pytest.mark.parametrize("line", ["two\nlines", "two\rlines"])
+def test_a_line_that_holds_a_line_break_is_refused(
+    children: _Children, line: str
+) -> None:
+    """A Python child reads either break as the end of a line."""
+    child = children.spawn(ECHO)
+
+    with pytest.raises(ValueError, match="line break"):
+        child.send(line)
+
+
+def test_the_end_of_the_childs_output_is_none(children: _Children) -> None:
+    child = children.spawn(EXITS_AFTER_ONE_LINE)
+
+    assert child.next_line(timeout=10) == "last words"
+    assert child.next_line(timeout=10) is None
+    assert child.next_line(timeout=10) is None, "the end is reported again"
+
+
+def test_a_send_to_an_exited_child_does_not_raise(children: _Children) -> None:
+    """The exit is reported once, by the end of the child's output."""
+    child = children.spawn(EXITS_AFTER_ONE_LINE)
+    assert child.next_line(timeout=10) == "last words"
+    assert child.next_line(timeout=10) is None
+
+    child.send("anyone there")
+
+    assert child.next_line(timeout=10) is None
+
+
+def test_close_after_the_child_exited(children: _Children) -> None:
+    """Closing keeps the child's exit status, and a second close does nothing."""
+    child = children.spawn(EXITS_AFTER_ONE_LINE)
+    assert child.next_line(timeout=10) == "last words"
+    assert child.next_line(timeout=10) is None
+
+    child.close(grace=5.0)
+
+    assert not child.alive
+    assert child.exit_code == 3, "close waits for an exited child"
+    child.close(grace=5.0)
+    assert child.exit_code == 3
+
+
+def test_close_waits_grace_between_sigterm_and_sigkill(children: _Children) -> None:
+    """A child that ignores SIGTERM is killed *grace* seconds after it.
+
+    ``terminate_group`` waits 5 s by default. A close passes its *grace* on and
+    returns long before that.
+    """
+    child = children.spawn(IGNORES_SIGTERM)
+    assert child.next_line(timeout=10) == "ready"
+    started = time.monotonic()
+
+    child.close(grace=0.5)
+
+    assert time.monotonic() - started < 4.0, "close waited the default grace"
+    assert child.exit_code == -signal.SIGKILL
+
+
+def test_a_send_after_close_is_refused(children: _Children) -> None:
+    child = children.spawn(ECHO)
+    child.close()
+
+    with pytest.raises(ValueError, match=r"after close\(\)"):
+        child.send("late")
+
+
+def test_a_call_after_the_end_of_output_asks_no_cancel(children: _Children) -> None:
+    """The end of output is reported whatever the cancel predicate answers."""
+    child = children.spawn(EXITS_AFTER_ONE_LINE)
+    assert child.next_line(timeout=10) == "last words"
+    assert child.next_line(timeout=10) is None
+
+    assert child.next_line(cancel_check=lambda: True) is None
+
+
+def test_a_cancel_is_polled_while_no_line_arrives(children: _Children) -> None:
+    """A silent child is killed within a poll or two of the cancel."""
+    child = children.spawn(GOES_SILENT)
+    assert child.next_line(timeout=10) == "start"
+    started = time.monotonic()
+
+    with pytest.raises(ProcessCancelled) as excinfo:
+        _ = child.next_line(cancel_check=_fires_after(3))
+
+    assert time.monotonic() - started < 10, "the cancel waited for a line"
+    assert not child.alive, "the cancel killed the child"
+    assert excinfo.value.argv[0] == sys.executable
+
+
+def test_a_cancel_is_polled_while_lines_keep_arriving(children: _Children) -> None:
+    """A child that prints every 0.1 s does not delay the cancel."""
+    child = children.spawn(NEVER_STOPS)
+    fires_at = time.monotonic() + 0.5
+
+    def after_half_a_second() -> bool:
+        return time.monotonic() > fires_at
+
+    with pytest.raises(ProcessCancelled):
+        for _ in range(3000):
+            _ = child.next_line(timeout=10, cancel_check=after_half_a_second)
+
+    assert time.monotonic() - fires_at < 10
+    assert not child.alive
+
+
+def test_a_line_child_silent_past_the_idle_window_is_killed(
+    children: _Children,
+) -> None:
+    child = children.spawn(GOES_SILENT)
+    assert child.next_line(timeout=10) == "start"
+
+    with pytest.raises(IdleTimeoutExpired) as excinfo:
+        _ = child.next_line(idle_timeout=0.4)
+
+    assert excinfo.value.timeout == 0.4
+    assert not child.alive
+
+
+def test_a_send_restarts_the_idle_window(children: _Children) -> None:
+    """A child waiting for its next line is not idle, however long it waits.
+
+    The greeting is read after the send and arrived before it, and the window
+    still starts at the send.
+    """
+    child = children.spawn(GREETS_THEN_ANSWERS_SLOWLY)
+    time.sleep(1.5)
+
+    child.send("two")
+
+    assert child.next_line(idle_timeout=1.0) == "hello"
+    assert child.next_line(idle_timeout=1.0) == "echo:two"
+
+
+def test_a_line_child_with_no_line_within_the_timeout_is_killed(
+    children: _Children,
+) -> None:
+    child = children.spawn(GOES_SILENT)
+    assert child.next_line(timeout=10) == "start"
+
+    with pytest.raises(WallClockTimeoutExpired) as excinfo:
+        _ = child.next_line(timeout=0.4)
+
+    assert excinfo.value.timeout == 0.4
+    assert not child.alive
+
+
+def test_a_line_childs_standard_error_is_written_to_its_log(
+    children: _Children,
+) -> None:
+    child = children.spawn("import sys\nsys.stderr.write('to the log\\n')\n")
+    assert child.next_line(timeout=10) is None
+    child.close()
+
+    assert child.log_path.read_text() == "to the log\n"
+
+
+def test_a_tools_child_inherits_no_python_search_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, children: _Children
+) -> None:
+    """``PYTHONPATH`` and ``PYTHONHOME`` name this interpreter's sources.
+
+    A tool's interpreter that inherits them imports this environment's packages,
+    ``mosaic`` included, ahead of the packages of the tool's environment.
+    """
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "parent-sources"))
+    monkeypatch.setenv("PYTHONHOME", sys.prefix)
+
+    child = children.spawn(REPORTS_SEARCH_VARIABLES, env=subprocess_env())
+
+    assert child.next_line(timeout=30) == "PYTHONPATH=<unset>"
+    assert child.next_line(timeout=30) == "PYTHONHOME=<unset>"
+
+
+# --- the process group --------------------------------------------------------
+
+
+def _with_grandchild(path: str) -> str:
+    """A child that starts an appender to *path* and waits.
+
+    The appender inherits the child's process group.
+    """
+    return (
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, '-c', {_appender(path)!r}])\n"
+        "time.sleep(60)\n"
+    )
+
+
+def _wait_for(condition: Callable[[], bool], seconds: float) -> None:
+    deadline = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < deadline, "the condition stayed false"
+        time.sleep(0.05)
+
+
+def test_terminate_group_reaps_a_grandchild(tmp_path: Path) -> None:
+    """The child leads a new process group, and the whole group dies with it.
+
+    Asserted against the file the grandchild appends to: a grandchild that
+    outlived its parent would go on writing.
+    """
+    ticks = tmp_path / "ticks.txt"
+    process = subprocess.Popen(
+        _argv(_with_grandchild(str(ticks))),
+        stdout=subprocess.DEVNULL,
+        **supervised_popen_kwargs(),
+    )
+    try:
+        assert os.getpgid(process.pid) == process.pid, "the child leads a group"
+        _wait_for(lambda: ticks.exists() and ticks.stat().st_size > 0, 30)
+
+        terminate_group(process)
+
+        time.sleep(0.3)
+        settled = ticks.stat().st_size
+        time.sleep(0.6)
+        assert ticks.stat().st_size == settled, "the grandchild went on writing"
+    finally:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass

@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Final
 
 from mosaic.core.pipeline._utils import atomic_write
-from mosaic.tracking.common.toolenv import (
+from mosaic.core.pipeline.toolenv import (
     PROBE_DEADLINE_FLOOR_SECONDS,
     missing_output_error,
 )

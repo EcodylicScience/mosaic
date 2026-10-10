@@ -97,7 +97,7 @@ def _refuse_an_unresolvable_external_environment() -> None:
     Imported inside the call: only the tracking job asks, and the import reaches
     the whole pipeline package.
     """
-    from mosaic.tracking.common.toolenv import ToolNotFoundError, tool_invocation
+    from mosaic.core.pipeline.toolenv import ToolNotFoundError, tool_invocation
     from mosaic.tracking.common.ultralytics_env import POLO_ENV, ULTRALYTICS_ENV
 
     for env in (ULTRALYTICS_ENV, POLO_ENV):

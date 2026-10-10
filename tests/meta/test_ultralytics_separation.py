@@ -41,7 +41,7 @@ from typing import Final
 import pytest
 from pydantic import TypeAdapter
 
-from mosaic.tracking.common.toolenv import (
+from mosaic.core.pipeline.toolenv import (
     ToolEnv,
     ToolNotFoundError,
     tool_invocation,

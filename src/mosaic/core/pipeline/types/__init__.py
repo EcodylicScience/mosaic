@@ -29,6 +29,7 @@ from mosaic.core.pipeline.types.data_config import (
     resolve_order_col,
 )
 from mosaic.core.pipeline.types.feature import (
+    ClosesResources,
     DependencyLookup,
     EmitsLevel,
     Feature,
@@ -62,6 +63,7 @@ __all__ = [
     "BOOKKEEPING_COLS",
     "BodyScaleResult",
     "COLUMNS",
+    "ClosesResources",
     "Columns",
     "DependencyLookup",
     "EmitsLevel",

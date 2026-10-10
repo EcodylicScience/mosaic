@@ -63,16 +63,22 @@ your use of keypoint-MoSeq is permitted under Harvard's terms.
 ## Use an environment you already have
 
 If keypoint-moseq is installed somewhere else, point mosaic at that
-interpreter instead of building this one:
+interpreter instead of building this one, either as a conda environment:
+
+```bash
+export MOSAIC_KPMS_CONDA_ENV=kpms
+```
+
+or as a direct path:
 
 ```bash
 export MOSAIC_KPMS_PYTHON=/path/to/env/bin/python
 ```
 
-Resolution order, first match wins: the feature's `kpms_python` parameter, then
-`MOSAIC_KPMS_PYTHON`, then `.venv/bin/python` here. The path is deliberately
-excluded from the run identity hash, so moving between machines does not
-recompute a fitted model.
+Resolution order, first match wins: the feature's `kpms_python` parameter,
+`MOSAIC_KPMS_CONDA_ENV`, `MOSAIC_KPMS_PYTHON`, then `.venv/bin/python` here.
+Wherever it resolves is deliberately excluded from the run identity hash, so
+moving between machines does not recompute a fitted model.
 
 ## Check it works
 

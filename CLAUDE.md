@@ -886,6 +886,7 @@ src/mosaic/
 │   ├── manifest.py             # dataset.yaml models (NOT pipeline/manifest.py)
 │   ├── pipeline/               # feature execution engine, typed protocol
 │   │   ├── types/              # Inputs, Result, ArtifactSpec, ...
+│   │   ├── toolenv.py          # the MOSAIC_<TOOL>_CONDA_ENV / _BIN location ladder
 │   │   ├── run.py              # run_feature() orchestration
 │   │   ├── manifest.py         # unified manifest + per-sequence iterator
 │   │   ├── loading.py          # sequence identity / NN-lookup construction
@@ -932,7 +933,6 @@ src/mosaic/
     │   ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
     │   └── augmentation.py     # YOLO + localizer augmentation presets
     ├── common/                 # everything a tracker run does around the tool
-    │   ├── toolenv.py          # the MOSAIC_<TOOL>_CONDA_ENV / _BIN location ladder
     │   ├── mint.py             # root, run_id, tracks variant, run_params.json
     │   ├── scope.py            # media scope -> work items (video/camera collapse)
     │   ├── entry.py            # marker reuse, cascade clearing, adoption

@@ -1176,7 +1176,7 @@ Unified keypoint-MoSeq feature: fit + apply via persistent subprocess.
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `model` | `KpmsModelArtifact` \| `None` | `null` |  | A pre-fitted model to load. Unset, the feature fits a new model. |
-| `kpms_python` | `string` \| `None` | `null` |  | Path to a Python interpreter with keypoint-moseq installed. Unset, resolution falls through to MOSAIC_KPMS_PYTHON, then to the environment under feature_library/external/.venv. |
+| `kpms_python` | `string` \| `None` | `null` |  | Path to a Python interpreter with keypoint-moseq installed. Unset, resolution reads MOSAIC_KPMS_CONDA_ENV, then MOSAIC_KPMS_PYTHON, then the in-repository environment under feature_library/external/.venv. |
 | `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
 | `anterior_bodyparts` | list of `string` | _required_ | min items `1` | Bodypart names marking the front of the body, used to initialize heading for egocentric alignment. |
 | `posterior_bodyparts` | list of `string` | _required_ | min items `1` | Bodypart names marking the back of the body, used to initialize heading for egocentric alignment. |

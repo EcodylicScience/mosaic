@@ -31,7 +31,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from mosaic.tracking.common.toolenv import ToolEnv, ToolExitError, missing_output_error
+from mosaic.core.pipeline.toolenv import ToolEnv, ToolExitError, missing_output_error
 from mosaic.tracking.common.ultralytics_env import (
     POLO_BOOTSTRAP,
     POLO_ENV,

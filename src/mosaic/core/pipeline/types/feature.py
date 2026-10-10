@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Literal, Protocol, final
+from typing import Literal, Protocol, final, runtime_checkable
 
 import pandas as pd
 
@@ -43,7 +43,26 @@ class InputStream:
 
 
 class Feature(Protocol):
-    """Feature protocol -- 7 attributes, 4 methods."""
+    """Feature protocol -- 7 attributes, 4 methods.
+
+    Optional hooks. ``run_feature`` finds each of these with ``hasattr`` (or
+    ``isinstance`` for ``close``) before using it, so a feature that implements
+    only the four required methods never triggers one:
+
+    - ``bind_dataset(ds)`` -- for a feature that reopens a dataset's media
+      itself (crops, overlay) rather than reading only the table it is handed.
+    - ``set_scope(resolved)`` -- for a feature that re-resolves tracks of its
+      own, so the run's chosen variant reaches it too.
+    - ``progress_callback`` / ``cancel_token`` -- attributes a trainer sets on
+      itself at construction; ``run_feature`` overwrites each with the
+      attempt's own progress sink and cancel token, so a fit's epoch-level
+      progress and a cooperative mid-fit cancel reach the same run-log as
+      everything else in the attempt.
+    - ``close()`` -- see :class:`ClosesResources`.
+    - ``check_output(self, meta, run_root) -> bool`` -- a cache hit's own output
+      validator, used only when ``run_feature``'s ``check_output`` parameter is
+      set.
+    """
 
     name: str
     version: str
@@ -173,3 +192,29 @@ class Feature(Protocol):
     def save_state(self, run_root: Path) -> None: ...
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame: ...
+
+
+@runtime_checkable
+class ClosesResources(Protocol):
+    """A feature that holds a resource across its lifetime and must release it.
+
+    A long-lived subprocess or connection does not fit the four required
+    methods: it outlives ``save_state`` and must still go down after a raising
+    ``fit``, a cancel, or a run that found every entry cached. ``run_feature``
+    calls ``close()`` exactly once per attempt, in a ``finally`` around its
+    work, regardless of how that work ended.
+
+    ``close()`` must be idempotent: a second call does nothing. The instance
+    stays usable afterwards, reacquiring its resource lazily if
+    ``run_feature`` is called with it again -- a notebook running one
+    instance twice, for example.
+
+    A cancel in thread-parallel mode shuts the executor down without waiting
+    for threads already running ``apply``, so ``close()`` can run while one of
+    those is still in flight on the same instance. A parallelizable closer
+    must tolerate that ordering: an ``apply`` reacquiring the resource after
+    ``close()`` returns is the lazy-reacquire case above, not a leak the
+    cancel introduced.
+    """
+
+    def close(self) -> None: ...

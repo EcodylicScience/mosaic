@@ -18,18 +18,19 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.kpms import (
+    KPMS_ENV,
     KPMS_LICENSE_ENV,
     KPMS_PYTHON_ENV,
     KpmsFeature,
     KpmsNotFoundError,
-    resolve_kpms_python,
 )
+from mosaic.core.pipeline.toolenv import tool_invocation
 
 
 def _kpms_python_found() -> bool:
-    """Whether an interpreter resolves, by the same precedence the feature uses."""
+    """Whether an interpreter resolves, by the same ladder the feature uses."""
     try:
-        _ = resolve_kpms_python()
+        tool_invocation(KPMS_ENV, executable="python")
     except KpmsNotFoundError:
         return False
     return True
