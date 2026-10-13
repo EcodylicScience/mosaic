@@ -263,9 +263,9 @@ def test_train_sleap_reports_the_epochs_its_trainer_prints(
     register_ops()
     ds = make_dataset(tmp_path, save=False)
     (tmp_path / "bin").mkdir(exist_ok=True)
-    for name in ("sleap-nn-train", "python"):
+    for name in ("sleap-nn", "python"):
         _ = (tmp_path / "bin" / name).write_text("")
-    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-nn-train"))
+    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-nn"))
 
     def probe(argv: Sequence[str], **kw: object) -> tuple[str, str, int]:
         answer: dict[str, object] = {"has_sleap_nn": True, "n_tracks": 2}

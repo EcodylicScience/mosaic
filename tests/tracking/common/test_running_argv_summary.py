@@ -68,7 +68,7 @@ def test_every_running_line_is_the_summary_of_the_argv_run(
             _ = sleap_training.train_sleap(
                 labels,
                 tmp_path / "run",
-                sleap_bin=tmp_path / "sleap-nn-train",
+                sleap_bin=tmp_path / "sleap-nn",
             )
 
     running = [r.getMessage() for r in caplog.records if "Running:" in r.getMessage()]

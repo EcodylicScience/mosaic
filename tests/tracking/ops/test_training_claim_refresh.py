@@ -185,8 +185,8 @@ def _run_sleap(
     """
     from mosaic.tracking.sleap import training as training_module
 
-    _point_at(tmp_path, monkeypatch, "sleap-nn-train")
-    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-nn-train"))
+    _point_at(tmp_path, monkeypatch, "sleap-nn")
+    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-nn"))
     _fake_sleap_probe(monkeypatch)
 
     def run(

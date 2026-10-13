@@ -46,7 +46,7 @@ def _fake_trainer(
     head: str = "centered_instance",
     writes_training_log: bool = False,
 ):
-    """Stand in for sleap-nn-train, writing the directory it would have.
+    """Stand in for ``sleap-nn train``, writing the directory it would have.
 
     *writes_training_log* says whether the run got far enough to log an epoch.
     A real run that did not leaves no ``training_log.csv``, which is the state
@@ -70,9 +70,9 @@ def _fake_trainer(
 
 def _point_at_sleap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "bin").mkdir(exist_ok=True)
-    for name in ("sleap-nn-train", "sleap-convert", "python"):
+    for name in ("sleap-nn", "sleap-convert", "python"):
         _ = (tmp_path / "bin" / name).write_text("")
-    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-nn-train"))
+    monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-convert"))
 
 
 def _fake_probe(
@@ -352,6 +352,20 @@ def test_a_killed_trainer_is_recorded_as_cancelled(
 # --- overrides and the device ----------------------------------------------
 
 
+def test_it_runs_the_train_subcommand_of_sleap_nn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """sleap-nn 0.3.3 removed ``sleap-nn-train``; ``sleap-nn train`` takes its flags.
+
+    The subcommand is present in 0.3.1 as well, so running it does not drop the
+    older environments.
+    """
+    argv = _run_and_capture(tmp_path, monkeypatch, {"head": "centroid"})
+    assert Path(argv[0]).name == "sleap-nn"
+    assert argv[1:3] == ["train", "--config-dir"]
+    assert argv[argv.index("--config-name") + 1] == "config"
+
+
 def _assignments(argv: Sequence[str]) -> list[str]:
     """The Hydra assignments in *argv*, after ``--config-dir`` and its name."""
     return list(argv[list(argv).index("--config-name") + 2 :])
@@ -566,8 +580,8 @@ def test_an_override_beats_the_device(
 def test_an_environment_without_the_nn_extra_is_refused() -> None:
     """A ``sleap`` install and a ``sleap[nn]`` one look identical on $PATH.
 
-    ``sleap-nn-train`` is a console script of the ``sleap`` distribution
-    itself, so the location ladder finds it either way and the run dies inside
+    SLEAP's console scripts belong to the ``sleap`` distribution itself, so
+    the location ladder finds them either way and the run dies inside
     the subprocess. Decided from what the probe reported, so this needs no
     SLEAP at all.
     """

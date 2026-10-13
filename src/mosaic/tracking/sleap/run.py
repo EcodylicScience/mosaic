@@ -102,8 +102,8 @@ class SleapError(ToolExitError):
 # SLEAP's console scripts are always installed together, so MOSAIC_SLEAP_BIN
 # pointing at any one of them names the directory the others live in. Plainly
 # named because the training, probe and label-export modules resolve through it
-# too: one environment serves sleap-nn, sleap-convert, sleap-nn-train and its
-# own python alike, and declaring it twice is how they drift apart.
+# too: one environment serves sleap-nn (tracking and training), sleap-convert
+# and its own python alike, and declaring it twice is how they drift apart.
 #
 # On $PATH the environment is found through sleap-convert rather than through
 # each executable, because a `uv tool install "sleap[nn]"` links only the sleap

@@ -131,9 +131,9 @@ class _Sleap:
 
         self.argv: list[list[str]] = []
         (tmp_path / "bin").mkdir(exist_ok=True)
-        for name in ("sleap-nn-train", "python"):
+        for name in ("sleap-nn", "python"):
             _ = (tmp_path / "bin" / name).write_text("")
-        monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-nn-train"))
+        monkeypatch.setenv("MOSAIC_SLEAP_BIN", str(tmp_path / "bin" / "sleap-nn"))
         monkeypatch.setattr(probe_module, "run_supervised", self._probe)
         monkeypatch.setattr(training_module, "run_supervised", self._train)
         self.labels = tmp_path / "session.slp"

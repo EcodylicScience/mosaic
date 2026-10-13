@@ -45,6 +45,11 @@ environment found in none of these directories. Add its directory to
 them, a tool's interpreter imported the packages of mosaic's environment,
 `mosaic` included.
 
+**`train-sleap` runs `sleap-nn train`.** sleap-nn 0.3.3 no longer installs the
+`sleap-nn-train` script, so every `train-sleap` run against it exited at once
+with code 127. The op now runs `sleap-nn train` with the same `--config-dir`
+and `--config-name` flags, which sleap-nn 0.3.1 accepts as well.
+
 **Three corrections to the features that read keypoints.**
 
 - `pair-egocentric` used to read a negative `neck_idx` or `tail_base_idx` from

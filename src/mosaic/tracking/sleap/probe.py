@@ -4,8 +4,8 @@ Two questions a training run cannot answer for itself, and both of them look
 like success until hours later.
 
 **Is the trainer actually installed?** ``pip install sleap`` without the ``nn``
-extra puts ``sleap-nn-train`` on ``$PATH`` anyway: the console script belongs to
-the ``sleap`` distribution itself, while ``sleap_nn`` arrives only through
+extra puts SLEAP's console scripts on ``$PATH`` anyway: they belong to the
+``sleap`` distribution itself, while ``sleap_nn`` arrives only through
 ``sleap[nn]`` and its CUDA variants. So mosaic's location ladder finds the tool,
 launches it, and the subprocess dies with ``ModuleNotFoundError: No module named
 'sleap_nn'``. A script-presence test cannot tell the two installs apart, which
@@ -223,7 +223,7 @@ def require_sleap_nn(probe: SleapProbeResponse) -> None:
     reason = probe.sleap_nn_import_error or "it is not installed"
     raise SleapNotFoundError(
         "the SLEAP environment resolved, and sleap_nn does not import there "
-        f"({reason}), so sleap-nn-train cannot train anything. "
+        f"({reason}), so sleap-nn train cannot train anything. "
         f"{SLEAP_NN_BOOTSTRAP}"
     )
 

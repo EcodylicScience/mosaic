@@ -1,6 +1,6 @@
 """Training a SLEAP model from a mosaic-owned labels file.
 
-``sleap-nn-train`` is configuration-driven, not flag-driven: it takes a directory
+``sleap-nn train`` is configuration-driven, not flag-driven: it takes a directory
 and the name of a YAML inside it, plus Hydra-style ``key=value`` overrides. So
 training from mosaic means *writing* that YAML, which is what this module does --
 mosaic owns the config, and the config is what makes a run reproducible.
@@ -17,9 +17,12 @@ identity, because a run trained with a different learning rate is a different
 model whether or not mosaic has a field for it.
 
 Requires:
-    ``sleap-nn-train``, from a SLEAP install. It is a sibling of ``sleap-nn``,
-    so the environment variables that already point mosaic at SLEAP for tracking
-    serve training too -- see :data:`mosaic.tracking.sleap.run.SLEAP_ENV`.
+    ``sleap-nn``, from a SLEAP install, run as ``sleap-nn train`` with the
+    ``--config-dir`` / ``--config-name`` flags. sleap-nn 0.3.3 removed the
+    separate ``sleap-nn-train`` script that mosaic used to run; the subcommand
+    takes the same flags and is present in 0.3.1 as well. Tracking runs the same
+    ``sleap-nn``, so the environment variables that point mosaic at SLEAP serve
+    training too -- see :data:`mosaic.tracking.sleap.run.SLEAP_ENV`.
 """
 
 from __future__ import annotations
@@ -51,7 +54,8 @@ __all__ = [
     "train_sleap",
 ]
 
-_SLEAP_NN_TRAIN: str = "sleap-nn-train"
+_SLEAP_NN: Final = "sleap-nn"
+_TRAIN_SUBCOMMAND: Final = "train"
 
 _ACCELERATOR_FAMILIES: Final = frozenset({"cpu", "gpu", "mps"})
 """The accelerator families sleap-nn's ``trainer_accelerator`` names.
@@ -402,6 +406,7 @@ def train_sleap(
     declared = _declared_keys(config)
 
     args = [
+        _TRAIN_SUBCOMMAND,
         "--config-dir",
         str(run_root),
         "--config-name",
@@ -413,7 +418,7 @@ def train_sleap(
     ]
     invocation = tool_invocation(
         SLEAP_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),
-        executable=_SLEAP_NN_TRAIN,
+        executable=_SLEAP_NN,
     )
     cmd = [*invocation, *args]
     logger.info("Running: %s", command_summary(cmd))
@@ -433,6 +438,6 @@ def train_sleap(
     produced = run_root / run_name
     if not produced.is_dir():
         raise FileNotFoundError(
-            f"sleap-nn-train exited cleanly but wrote no model directory at {produced}"
+            f"sleap-nn train exited cleanly but wrote no model directory at {produced}"
         )
     return produced
