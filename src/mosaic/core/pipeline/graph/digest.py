@@ -25,7 +25,14 @@ from mosaic.core.json_value import JsonValue
 
 from .model import Recipe
 
-__all__ = ["DIGEST_LENGTH", "canonical_json", "canonical_recipe", "recipe_digest"]
+__all__ = [
+    "DIGEST_LENGTH",
+    "canonical_json",
+    "canonical_recipe",
+    "canonical_text",
+    "document_digest",
+    "recipe_digest",
+]
 
 DIGEST_LENGTH: int = 16
 """How many hex characters of the digest name a recipe.
@@ -48,15 +55,29 @@ def canonical_recipe(recipe: Recipe) -> dict[str, JsonValue]:
     return recipe.model_dump(mode="json")
 
 
-def canonical_json(recipe: Recipe) -> str:
-    """The canonical document as text: sorted keys, pinned separators, no spaces.
+def canonical_text(document: JsonValue) -> str:
+    """*document* as text with sorted keys and pinned separators, without spaces.
 
     Both arguments are load-bearing rather than tidy. ``sort_keys`` removes the
     authoring order of a mapping, which carries no meaning; the pinned separators
     remove the encoder's default spaces, which would otherwise make the digest
     depend on the standard library's formatting choices.
     """
-    return json.dumps(canonical_recipe(recipe), sort_keys=True, separators=(",", ":"))
+    return json.dumps(document, sort_keys=True, separators=(",", ":"))
+
+
+def canonical_json(recipe: Recipe) -> str:
+    """The canonical document of *recipe* as text."""
+    return canonical_text(canonical_recipe(recipe))
+
+
+def document_digest(document: JsonValue) -> str:
+    """Name *document* by the SHA-256 of its canonical text.
+
+    The name is the first :data:`DIGEST_LENGTH` hex characters.
+    """
+    text = canonical_text(document).encode("utf-8")
+    return hashlib.sha256(text).hexdigest()[:DIGEST_LENGTH]
 
 
 def recipe_digest(recipe: Recipe) -> str:
@@ -68,5 +89,4 @@ def recipe_digest(recipe: Recipe) -> str:
     rather than borrowing a function whose contract is about something else, and
     the two cannot be changed by accident together.
     """
-    text = canonical_json(recipe).encode("utf-8")
-    return hashlib.sha256(text).hexdigest()[:DIGEST_LENGTH]
+    return document_digest(canonical_recipe(recipe))

@@ -1,12 +1,13 @@
-"""A plan as the bounded JSON an editor previews.
+"""A plan as the bounded JSON an editor previews, and the fingerprint naming it.
 
-A module of its own because it reads both :mod:`.plan` and :mod:`.step`, and
-:mod:`.step` already imports :mod:`.plan`. The models it fills live in
-:mod:`.wire`, which imports neither.
+The models it fills are defined in :mod:`.wire`, apart from the planning modules.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from .digest import document_digest
 from .plan import (
     CoverageShort,
     DepsIncomplete,
@@ -17,8 +18,8 @@ from .plan import (
     Reason,
     Stalled,
     WaitingOnResource,
+    asked_of,
 )
-from .step import asked_of
 from ..inventory.wire import coverage_wire
 from .wire import (
     CoverageShortWire,
@@ -32,7 +33,10 @@ from .wire import (
     WaitingOnResourceWire,
 )
 
-__all__ = ["plan_wire"]
+if TYPE_CHECKING:
+    from mosaic.core.json_value import JsonValue
+
+__all__ = ["plan_fingerprint", "plan_wire"]
 
 
 def plan_wire(plan: Plan) -> PlanWire:
@@ -44,11 +48,52 @@ def plan_wire(plan: Plan) -> PlanWire:
     """
     return PlanWire(
         recipe_digest=plan.recipe_digest,
+        fingerprint=plan_fingerprint(plan),
         scope_size=len(plan.scope),
         complete=plan.is_complete,
         steps=tuple(_step_wire(planned, plan) for planned in plan.steps),
         problems=plan.problems,
     )
+
+
+def plan_fingerprint(plan: Plan) -> str:
+    """Name what *plan* found on its dataset, for a submission to compare against.
+
+    The digest covers the dataset's manifest ``uuid``, the recipe digest, and per
+    step its id, ``run_id``, status, finished flag, coverage counts, drift count
+    and the entries it would be asked for. A new feature run or a new tracks
+    entry therefore changes it. A step's ``reason`` is left out, because a
+    resource's occupancy changes from one second to the next. The plan's
+    problems are left out too. A plan with problems is refused at submit
+    whatever its fingerprint.
+
+    The document is canonical JSON, with steps sorted by id and entries sorted,
+    so one plan has one fingerprint in every process.
+    """
+    document: dict[str, JsonValue] = {
+        "dataset": plan.dataset_uuid,
+        "recipe": plan.recipe_digest,
+        "steps": [
+            _step_fingerprint(planned, plan)
+            for planned in sorted(plan.steps, key=lambda planned: planned.step_id)
+        ],
+    }
+    return document_digest(document)
+
+
+def _step_fingerprint(planned: PlannedStep, plan: Plan) -> dict[str, JsonValue]:
+    coverage = planned.coverage
+    return {
+        "step": planned.step_id,
+        "run_id": planned.run_id,
+        "status": planned.status,
+        "finished": planned.finished,
+        "covers_all": coverage.covers_all,
+        "covered": len(coverage.covered),
+        "target": len(coverage.target),
+        "drift": len(planned.drift),
+        "asked": [[group, sequence] for group, sequence in asked_of(planned, plan)],
+    }
 
 
 def _step_wire(planned: PlannedStep, plan: Plan) -> PlannedStepWire:

@@ -23,14 +23,16 @@ rather than an architecture.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from mosaic.runlog import new_execution_id, now_iso
 from mosaic.core.scope import Scope
 
+from ..error_kind import ClassifiedError, ErrorKind
 from .digest import recipe_digest
 from .model import BoundRef, FeatureStepSpec, Recipe, Request
 from .plan import Plan, plan_pipeline
+from .serialize import plan_fingerprint
 from .step_preflight import StepRefused, refuse_mixed_schemas
 from .resolve import declared_version
 from .store import load_recipe, recipe_path, save_recipe, save_request
@@ -41,11 +43,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from mosaic.core.dataset import Dataset
+    from mosaic.core.json_value import JsonValue
 
     from ..inventory.cache import InventoryCache
     from .compatibility import DeclarationCatalog
 
 __all__ = [
+    "PlanChanged",
     "SubmittedRequest",
     "load_recipe_for_request",
     "step_argv",
@@ -72,6 +76,32 @@ class SubmittedRequest:
     request_path: Path
 
 
+class PlanChanged(ClassifiedError):
+    """Refuse a submission whose plan has changed since its caller reviewed it.
+
+    Attributes:
+        expected: The fingerprint that the submission was given.
+        found: The fingerprint of the plan resolved at submit.
+    """
+
+    error_kind: ClassVar[ErrorKind] = "conflict"
+
+    def __init__(self, *, expected: str, found: str) -> None:
+        message = (
+            f"the plan of this recipe has fingerprint {found!r}, and the "
+            f"submission expected {expected!r}. The dataset changed after it was "
+            f"planned. Plan the recipe again, review it, and submit with the new "
+            f"fingerprint."
+        )
+        super().__init__(message)
+        self.expected: str = expected
+        self.found: str = found
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the expected and the found fingerprints."""
+        return {"expected": self.expected, "found": self.found}
+
+
 def submit_request(
     ds: Dataset,
     recipe: Recipe,
@@ -84,6 +114,7 @@ def submit_request(
     request_id: str = "",
     inventory: InventoryCache | None = None,
     catalog: DeclarationCatalog | None = None,
+    expect_plan: str | None = None,
 ) -> SubmittedRequest:
     """Record one submission of *recipe* against *ds*, and resolve its plan.
 
@@ -104,12 +135,16 @@ def submit_request(
         request_id: Reuse an externally minted id. Empty mints one.
         inventory: A held inventory to plan against.
         catalog: The declarations to resolve against.
+        expect_plan: The :func:`~.serialize.plan_fingerprint` of the plan that
+            the caller reviewed, or ``None`` to submit whatever the plan is now.
 
     Returns:
         The request, the plan, and where both documents landed.
 
     Raises:
         RecipeInvalid: The recipe is malformed.
+        PlanChanged: *expect_plan* differs from the fingerprint of the plan
+            resolved here. The dataset is left unwritten.
         StepRefused: The dataset's tracks tables are of incompatible schemas, so
             no feature identity resolves against it at all.
     """
@@ -126,6 +161,10 @@ def submit_request(
         inventory=inventory,
         catalog=catalog,
     )
+    if expect_plan is not None:
+        found = plan_fingerprint(plan)
+        if found != expect_plan:
+            raise PlanChanged(expected=expect_plan, found=found)
     ordered = topological_order(recipe)
     request = Request(
         request_id=request_id or new_execution_id(),

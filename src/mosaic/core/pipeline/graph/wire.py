@@ -568,6 +568,9 @@ class PlanWire(GraphModel):
 
     Attributes:
         recipe_digest: What names the recipe.
+        fingerprint: The digest of this plan's resolution against the
+            dataset (``plan_fingerprint``). A submission given it as ``expect_plan``
+            raises ``PlanChanged`` when the dataset has changed since.
         scope_size: How many entries the graph is planned over.
         complete: Whether every step is already computed over its scope.
         steps: Every step, in topological order.
@@ -579,6 +582,7 @@ class PlanWire(GraphModel):
     """
 
     recipe_digest: str
+    fingerprint: str
     scope_size: int
     complete: bool
     steps: tuple[PlannedStepWire, ...]

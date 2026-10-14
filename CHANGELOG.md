@@ -323,6 +323,19 @@ any public name of `mosaic.core.media.preprocess` registers every built-in step 
 `MEDIA_STEPS`. Importing `mosaic.core.media.preprocess.registry` alone no longer
 does. An inventory read still loads pandas.
 
+**A plan has a fingerprint, and a submission can require it.**
+`plan_fingerprint(plan)` in `mosaic.core.pipeline.graph` digests the dataset's
+manifest `uuid`, the recipe digest and, per step, its `run_id`, status, coverage
+counts, drift count and asked entries. A new feature run or tracks entry
+changes it. `PlanWire` gains `fingerprint`, which `mosaic pipeline plan --json`
+prints, and the plain listing prints it on a first line, `plan <fingerprint>`.
+`submit_request(..., expect_plan=)` and `mosaic pipeline submit --expect-plan`
+raise `PlanChanged`, of kind `conflict`, before writing the recipe or the
+request, when the plan resolved at submit has another fingerprint. `mosaic pipeline submit --json` gains
+`plan_fingerprint`. `Plan` gains `dataset_uuid`. `asked_of` moved from
+`mosaic.core.pipeline.graph.step` to `mosaic.core.pipeline.graph.plan`, and
+`from mosaic.core.pipeline.graph import asked_of` keeps working.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

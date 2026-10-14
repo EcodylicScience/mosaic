@@ -363,6 +363,16 @@ def submit_command(
     owner: Annotated[
         str, typer.Option("--owner", help="Recorded on the request and its attempts.")
     ] = "",
+    expect_plan: Annotated[
+        str | None,
+        typer.Option(
+            "--expect-plan",
+            help=(
+                "The fingerprint that 'mosaic pipeline plan' printed. Refuses the "
+                "submission, writing nothing, when the plan has changed since."
+            ),
+        ),
+    ] = None,
     as_json: JsonOption = False,
 ) -> None:
     """Record a submission of a recipe, and print the command for every step.
@@ -372,7 +382,7 @@ def submit_command(
     Nothing is executed: the printed commands are, and any driver that can run
     them in dependency order will run the graph correctly.
     """
-    from mosaic.core.pipeline.graph import step_argv, submit_request
+    from mosaic.core.pipeline.graph import plan_fingerprint, step_argv, submit_request
 
     ds = load_dataset(manifest)
     parsed = _recipe(recipe, as_json=as_json)
@@ -385,6 +395,7 @@ def submit_command(
                 allow_partial=allow_partial,
                 max_concurrent_steps=max_concurrent_steps,
                 owner=owner,
+                expect_plan=expect_plan,
             )
     except ClassifiedError as error:
         _fail_unrunnable(error, as_json=as_json)
@@ -409,6 +420,7 @@ def submit_command(
             {
                 "request_id": request.request_id,
                 "recipe_digest": request.recipe_digest,
+                "plan_fingerprint": plan_fingerprint(submitted.plan),
                 "recipe_path": str(submitted.recipe_path),
                 "request_path": str(submitted.request_path),
                 "allow_partial": request.allow_partial,
@@ -534,12 +546,13 @@ def _runs(step: object) -> str:
 
 
 def _emit_plan(plan: "Plan", *, as_json: bool) -> None:
-    """Render a plan as a table, or as the JSON an API serves."""
-    from mosaic.core.pipeline.graph import plan_wire
+    """Render a plan as its fingerprint and a table, or as the JSON an API serves."""
+    from mosaic.core.pipeline.graph import plan_fingerprint, plan_wire
 
     if as_json:
         emit_json(plan_wire(plan).model_dump(mode="json"))
         return
+    typer.echo(f"plan {plan_fingerprint(plan)}")
     rows = [
         {
             "step": planned.step_id,

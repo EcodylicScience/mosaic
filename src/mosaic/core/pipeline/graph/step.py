@@ -51,6 +51,7 @@ from .plan import (
     MISSING_SAMPLE,
     Plan,
     PlannedStep,
+    asked_of,
     coverage_against,
     is_stalled,
     plan_pipeline,
@@ -67,7 +68,6 @@ from .resolve import (
     build_step_feature,
     build_step_op_params,
     declared_version,
-    op_class_for_kind,
 )
 from .topo import ancestors_of
 
@@ -450,49 +450,6 @@ def _pinned_parents(
             {"parent": ancestor, "parent_execution_id": attempt},
         )
     return pinned
-
-
-def asked_of(planned: PlannedStep, plan: Plan) -> tuple[Entry, ...]:
-    """What this step should be asked to compute.
-
-    The narrowed list where the plan produced one, and the whole scope otherwise
-    -- which is what a cold step and an all-or-nothing op step both get.
-
-    :attr:`Scope.is_unset` decides between the two. Every selector instance is
-    truthy, and testing the selector itself keeps the whole-scope answer from
-    ever being given.
-
-    An op declaring ``scope_takes = "none"`` is the one step that computes no
-    entry, and it returns ``()``. Its unset selector means it covers none of
-    them, inverting the rule above. The callers of this function query the
-    failure store by entry, and reading the whole plan scope here would
-    quarantine a training step over entries it never touched.
-
-    A selector naming groups or sequences is refused. ``plan_pipeline``
-    enumerates one against the tracks universe before any step is planned, and
-    neither answer below fits it. The unset answer covers every entry in the
-    plan and the named one covers none.
-
-    Raises:
-        ValueError: ``planned.spec.entries`` names groups or sequences instead
-            of entries.
-    """
-    if planned.kind == "op":
-        op_cls = op_class_for_kind(planned.spec.op_kind)
-        if op_cls is not None and op_cls.scope_takes == "none":
-            return ()
-    entries = planned.spec.entries
-    if entries.groups is not None or entries.sequences is not None:
-        raise ValueError(
-            f"asked_of returns the entries a step will compute and does not "
-            f"read an index to enumerate them. Step {planned.step_id!r} was "
-            f"given {entries!r}, which names groups or sequences. Plan the "
-            f"recipe first and pass each step the Scope(entries=[...]) that "
-            f"plan_pipeline enumerates."
-        )
-    if entries.is_unset:
-        return tuple(sorted(plan.scope))
-    return tuple(sorted(entries.entry_pairs or ()))
 
 
 def _run(

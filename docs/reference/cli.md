@@ -1061,6 +1061,7 @@ $ mosaic pipeline submit [OPTIONS]
 * `--allow-partial`: Let a step proceed when it would run over less than planned.
 * `--max-concurrent-steps <int>`: How many of this request's steps may run at once. Advisory here.
 * `--owner <str>`: Recorded on the request and its attempts.
+* `--expect-plan <str>`: The fingerprint that 'mosaic pipeline plan' printed. Refuses the submission, writing nothing, when the plan has changed since.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 

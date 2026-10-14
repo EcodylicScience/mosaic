@@ -16,6 +16,11 @@ instead of derived from artifacts.
 - A recipe names neither a resolved `run_id` nor an entry list. A submission's choices go
   in `Request` (`model.py`), and `submit_request` assigns every step its execution id and
   pins `step_versions` before anything runs (`test_pipeline_submit.py`).
+- `plan_fingerprint` (`serialize.py`) digests the dataset uuid and each step's
+  `run_id`, status, coverage counts and asked entries, and leaves out `reason`. Given
+  `expect_plan`, `submit_request` compares it before writing either file and raises
+  `PlanChanged`, a `conflict` and not a `RefusalReason`
+  (`test_pipeline_plan_fingerprint.py`).
 - A cross-step reference is written at the site it substitutes. Do not add a stored
   `edges` array. `edges()` in `topo.py` derives one, and `after` is the one explicit list,
   for ordering only (`test_edges_are_derived_from_the_bodies_with_their_sites`).

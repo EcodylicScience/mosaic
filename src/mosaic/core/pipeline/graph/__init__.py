@@ -112,6 +112,7 @@ if TYPE_CHECKING:
         RecipeRefused as RecipeRefused,
         Stalled as Stalled,
         WaitingOnResource as WaitingOnResource,
+        asked_of as asked_of,
         coverage_against as coverage_against,
         is_stalled as is_stalled,
         plan_pipeline as plan_pipeline,
@@ -124,6 +125,7 @@ if TYPE_CHECKING:
         refuse_mixed_schemas as refuse_mixed_schemas,
     )
     from .request import (
+        PlanChanged as PlanChanged,
         SubmittedRequest as SubmittedRequest,
         load_recipe_for_request as load_recipe_for_request,
         step_argv as step_argv,
@@ -166,7 +168,10 @@ if TYPE_CHECKING:
         intended_scope as intended_scope,
         media_universe as media_universe,
     )
-    from .serialize import plan_wire as plan_wire
+    from .serialize import (
+        plan_fingerprint as plan_fingerprint,
+        plan_wire as plan_wire,
+    )
     from .status import (
         FAILED_ENTRY_SAMPLE as FAILED_ENTRY_SAMPLE,
         FailedEntryWire as FailedEntryWire,
@@ -186,7 +191,6 @@ if TYPE_CHECKING:
     from .step import (
         STEP_RUN_KIND as STEP_RUN_KIND,
         StepOutcome as StepOutcome,
-        asked_of as asked_of,
         execute_step as execute_step,
     )
     from .storage import storage_name_of as storage_name_of
@@ -320,6 +324,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "RecipeRefused": ".plan",
     "Stalled": ".plan",
     "WaitingOnResource": ".plan",
+    "asked_of": ".plan",
     "coverage_against": ".plan",
     "is_stalled": ".plan",
     "plan_pipeline": ".plan",
@@ -328,6 +333,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "StepRefused": ".step_preflight",
     "preflight": ".step_preflight",
     "refuse_mixed_schemas": ".step_preflight",
+    "PlanChanged": ".request",
     "SubmittedRequest": ".request",
     "load_recipe_for_request": ".request",
     "step_argv": ".request",
@@ -361,6 +367,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "graph_writes_tracks": ".scope",
     "intended_scope": ".scope",
     "media_universe": ".scope",
+    "plan_fingerprint": ".serialize",
     "plan_wire": ".serialize",
     "FAILED_ENTRY_SAMPLE": ".status",
     "FailedEntryWire": ".status",
@@ -378,7 +385,6 @@ _MODULE_OF: Final[dict[str, str]] = {
     "run_status_wire": ".status",
     "STEP_RUN_KIND": ".step",
     "StepOutcome": ".step",
-    "asked_of": ".step",
     "execute_step": ".step",
     "storage_name_of": ".storage",
     "list_requests": ".store",
@@ -499,6 +505,7 @@ __all__ = [
     "OpStepSpec",
     "PipelineRun",
     "Plan",
+    "PlanChanged",
     "PlanWire",
     "PlannedStep",
     "PlannedStepWire",
@@ -597,6 +604,7 @@ __all__ = [
     "params_step_refs",
     "parents_of",
     "pipelines_root",
+    "plan_fingerprint",
     "plan_pipeline",
     "plan_wire",
     "possible_connections",
