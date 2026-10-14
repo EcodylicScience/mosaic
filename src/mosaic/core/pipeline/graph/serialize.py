@@ -19,10 +19,9 @@ from .plan import (
     WaitingOnResource,
 )
 from .step import asked_of
+from ..inventory.wire import coverage_wire
 from .wire import (
-    MISSING_SAMPLE_WIRE,
     CoverageShortWire,
-    CoverageWire,
     DepsIncompleteWire,
     HeldOnParentsWire,
     IdentityUnresolvedWire,
@@ -60,7 +59,7 @@ def _step_wire(planned: PlannedStep, plan: Plan) -> PlannedStepWire:
         run_id=planned.run_id,
         status=planned.status,
         finished=planned.finished,
-        coverage=_coverage_wire(planned),
+        coverage=coverage_wire(planned.coverage),
         asked=len(asked_of(planned, plan)),
         drift=len(planned.drift),
         lane=planned.lane,
@@ -69,32 +68,6 @@ def _step_wire(planned: PlannedStep, plan: Plan) -> PlannedStepWire:
         tracks_variant=planned.tracks_variant,
         model_run_id=planned.model_run_id,
         reason=_reason_wire(planned.reason),
-    )
-
-
-def _coverage_wire(planned: PlannedStep) -> CoverageWire:
-    """The step's coverage as counts and a sorted sample of what is missing.
-
-    A single artifact answering for every entry covers its whole target and
-    reports nothing missing.
-    """
-    coverage = planned.coverage
-    target = len(coverage.target)
-    if coverage.covers_all:
-        return CoverageWire(
-            covers_all=True,
-            covered=target,
-            target=target,
-            missing_sample=(),
-            has_more=False,
-        )
-    missing = sorted(coverage.missing)
-    return CoverageWire(
-        covers_all=False,
-        covered=len(coverage.covered),
-        target=target,
-        missing_sample=tuple(missing[:MISSING_SAMPLE_WIRE]),
-        has_more=len(missing) > MISSING_SAMPLE_WIRE,
     )
 
 

@@ -33,6 +33,7 @@ drifts from the fields silently.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
@@ -47,14 +48,18 @@ from pydantic import (
 )
 
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.index import DatasetRoots, feature_run_root
 
 __all__ = [
     "ParamsState",
     "ResolvedRef",
+    "RunKey",
     "RunParams",
     "RunParamsRead",
     "ScopeBlock",
+    "TracksVariantWalk",
     "read_run_params",
+    "run_tracks_variants",
 ]
 
 ParamsState = Literal["present", "absent", "unreadable"]
@@ -345,3 +350,78 @@ def read_run_params(run_root: Path) -> RunParamsRead:
             document, dropped = _without_unreadable(document, exc)
             if not dropped:
                 return RunParamsRead("unreadable", None, str(exc))
+
+
+type RunKey = tuple[str, str]
+"""A feature run: its storage directory and its run id."""
+
+
+class TracksVariantWalk:
+    """The tracks variants that feature runs read, reading each ``params.json`` once.
+
+    A run that reads ``tracks`` records the variants on its tracks edge
+    (:data:`TRACKS_EDGE`). A run that reads another feature's output records no
+    tracks edge, because its upstream hashed the variant it read. The walk
+    follows every other ``_resolved`` entry to that upstream's ``params.json``.
+    A run over the unlabeled tables records no tracks edge, because
+    ``run_feature`` records only labeled variants, and its walk returns an empty
+    set.
+
+    Args:
+        ds: The dataset whose ``features`` root contains the runs.
+        known: Params already read, keyed by run. A run listed here is not read
+            from disk, so a held inventory's records answer for the runs that
+            it holds.
+    """
+
+    def __init__(
+        self, ds: DatasetRoots, known: Mapping[RunKey, RunParams | None] | None = None
+    ) -> None:
+        self._ds: DatasetRoots = ds
+        self._params: dict[RunKey, RunParams | None] = dict(known or {})
+
+    def __call__(self, storage_name: str, run_id: str) -> frozenset[str] | None:
+        """Return the tracks variants that one run read, directly or through its upstreams.
+
+        Args:
+            storage_name: The run's feature storage directory.
+            run_id: The run.
+
+        Returns:
+            The variants, or ``None`` when the answer is unknown: a
+            ``params.json`` on the walk is absent or unreadable, or predates the
+            ``_resolved`` block (:attr:`RunParams.records_resolutions`).
+        """
+        variants: set[str] = set()
+        seen: set[RunKey] = set()
+        pending = [(storage_name, run_id)]
+        while pending:
+            node = pending.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            params = self._params_of(node)
+            if params is None or not params.records_resolutions:
+                return None
+            for ref in params.resolved:
+                if ref.run_id is None or ref.where == LABELS_EDGE:
+                    continue
+                if ref.where == TRACKS_EDGE:
+                    variants.add(ref.run_id)
+                elif ref.feature and ref.run_id:
+                    pending.append((ref.feature, ref.run_id))
+        return frozenset(variants)
+
+    def _params_of(self, node: RunKey) -> RunParams | None:
+        """Return the params of *node*, reading its ``params.json`` on first use."""
+        if node not in self._params:
+            root = feature_run_root(self._ds, *node)
+            self._params[node] = read_run_params(root).params
+        return self._params[node]
+
+
+def run_tracks_variants(
+    ds: DatasetRoots, storage_name: str, run_id: str
+) -> frozenset[str] | None:
+    """Return the tracks variants that one feature run read, as :class:`TracksVariantWalk` walks them."""
+    return TracksVariantWalk(ds)(storage_name, run_id)

@@ -12,7 +12,7 @@ import contextlib
 import json
 import sys
 from collections.abc import Generator
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, Annotated, NoReturn
 
 import typer
 
@@ -22,6 +22,15 @@ from mosaic.user_paths import user_path
 if TYPE_CHECKING:
     from mosaic.core.pipeline.error_kind import ClassifiedError
     from mosaic.core.pipeline.refusal import Refusal
+    from mosaic.core.scope import Scope
+
+EntriesOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--entry",
+        help="Narrow to a group:sequence entry (repeatable). Default: the whole dataset.",
+    ),
+]
 
 
 @contextlib.contextmanager
@@ -187,3 +196,11 @@ def parse_entries(entries: list[str] | None) -> list[tuple[str, str]]:
     ways of naming one entry on one command line disagreed.
     """
     return parse_entry_tokens(entries)
+
+
+def entries_scope(entries: list[str] | None) -> Scope | None:
+    """Return repeated ``--entry`` tokens as a selector, or ``None`` for none."""
+    from mosaic.core.scope import Scope
+
+    pairs = parse_entries(entries)
+    return Scope(entries=pairs) if pairs else None

@@ -43,6 +43,7 @@ from .params import ParamsState, RunParams
 
 __all__ = [
     "ARTIFACT_KINDS",
+    "ARTIFACT_STATUSES",
     "AnyRecord",
     "ArtifactKind",
     "ArtifactRecord",
@@ -66,6 +67,8 @@ __all__ = [
     "UnitRecord",
     "classify",
     "is_artifact_kind",
+    "is_artifact_status",
+    "reclassify",
 ]
 
 ArtifactKind = Literal[
@@ -119,6 +122,21 @@ ArtifactStatus = Literal[
     "inconsistent",
 ]
 """What an artifact's coverage and consistency add up to. See :func:`classify`."""
+
+ARTIFACT_STATUSES: Final[tuple[ArtifactStatus, ...]] = (
+    "absent",
+    "partial",
+    "complete",
+    "complete-but-drifted",
+    "inconsistent",
+)
+"""The statuses as a value, spelled twice for the reason :data:`ARTIFACT_KINDS` is."""
+
+
+def is_artifact_status(name: str) -> TypeGuard[ArtifactStatus]:
+    """Narrow a user-supplied string to a declared status."""
+    return name in ARTIFACT_STATUSES
+
 
 Target = Literal["analysis", "playback"]
 """Which transcode a media derivative serves."""
@@ -399,6 +417,34 @@ def classify(
     if any_covered:
         return "partial"
     return "absent"
+
+
+def reclassify(
+    record: ArtifactRecord[object], coverage: Coverage[object]
+) -> ArtifactStatus:
+    """Return *record*'s status measured over *coverage*, another target's coverage.
+
+    A record's status is measured against the target its scan was given. A plan
+    measuring a step against the entries it asked for, or a narrowed read of an
+    unscoped inventory, measures the same artifact against another target. The
+    orphans, the drift and the finish come from the record, and only the
+    coverage changes.
+
+    Args:
+        record: The artifact as the inventory read it.
+        coverage: The artifact's coverage of the other target.
+
+    Returns:
+        The status, through :func:`classify`.
+    """
+    return classify(
+        satisfied=coverage.is_satisfied,
+        any_covered=bool(coverage.covered) or coverage.covers_all,
+        orphan_rows=bool(record.orphan_rows),
+        orphan_files=bool(record.orphan_files),
+        drifted=bool(record.drift),
+        finished=bool(record.finished_at),
+    )
 
 
 # --- the inventory ------------------------------------------------------------

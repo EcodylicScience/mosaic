@@ -27,7 +27,9 @@ import typer
 
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import (
+    EntriesOption,
     emit_json,
+    entries_scope,
     exit_refused,
     fail,
     fail_classified,
@@ -40,7 +42,6 @@ from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.ops import ScopeRefused
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.cli._render import render_table
-from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.graph import Plan, PlannedStep, Recipe, Request
@@ -64,13 +65,6 @@ ManifestOption = Annotated[
     Path,
     typer.Option(
         "--manifest", "-m", help="Path to the dataset manifest (dataset.yaml)."
-    ),
-]
-EntriesOption = Annotated[
-    list[str] | None,
-    typer.Option(
-        "--entry",
-        help="Narrow to a group:sequence entry (repeatable). Default: the whole dataset.",
     ),
 ]
 JsonOption = Annotated[bool, typer.Option("--json", help="Emit as a JSON object.")]
@@ -113,14 +107,6 @@ def _fail_unrunnable(
         else None
     )
     fail_classified(error, as_json=as_json, message=message, step=step)
-
-
-def _scope(entries: list[str] | None) -> Scope | None:
-    """The narrowing as a selector, or ``None`` for the dataset's own scope."""
-    from mosaic.cli._io import parse_entries
-
-    pairs = parse_entries(entries)
-    return Scope(entries=pairs) if pairs else None
 
 
 def validate_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
@@ -186,7 +172,7 @@ def plan_command(
     parsed = _recipe(recipe, as_json=as_json)
     try:
         with stdout_to_stderr():
-            plan = plan_pipeline(ds, parsed, scope=_scope(entry))
+            plan = plan_pipeline(ds, parsed, scope=entries_scope(entry))
     except RecipeRefused as refusal:
         if as_json:
             emit_json(plan_wire(refusal.plan).model_dump(mode="json"))
@@ -301,7 +287,7 @@ def run_command(
             submitted = submit_request(
                 ds,
                 parsed,
-                scope=_scope(entry),
+                scope=entries_scope(entry),
                 allow_partial=allow_partial,
                 owner=owner,
             ).request
@@ -394,7 +380,7 @@ def submit_command(
             submitted = submit_request(
                 ds,
                 parsed,
-                scope=_scope(entry),
+                scope=entries_scope(entry),
                 allow_partial=allow_partial,
                 max_concurrent_steps=max_concurrent_steps,
                 owner=owner,

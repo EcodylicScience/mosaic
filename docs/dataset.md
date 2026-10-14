@@ -312,17 +312,22 @@ datasets](guides/tracking/train-a-pose-model.md#5-train-one-model-from-several-d
 ## Dataset inventory
 
 ```python
-from mosaic.core.pipeline.inventory import inventory
+from mosaic.core.pipeline.inventory import inventory_wire
+from mosaic.tracking import dataset_inventory
 
-inventory(ds)
+found = dataset_inventory(ds)
+inventory_wire(ds, found)  # the JSON that `mosaic inventory --json` prints
 ```
 
 ```bash
 mosaic inventory -m ~/dataset/dataset.yaml
 ```
 
-`inventory` reports every computed artifact, its identity, and its **coverage** —
-which entries exist, not merely whether something does.
+`dataset_inventory` reports every computed artifact, its identity, and its
+**coverage** — which entries exist, not merely whether something does.
+`inventory` from `mosaic.core.pipeline.inventory` reads the same way but reports
+tracker runs, frame runs, trained models and prepared datasets only once
+`mosaic.tracking` is imported, and lists them as unavailable otherwise.
 
 [Keep a dataset organized](guides/pipelines/keep-organized.md) covers the statuses it
 reports and the commands that repair what it finds.

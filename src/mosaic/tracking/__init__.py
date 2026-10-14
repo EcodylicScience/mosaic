@@ -35,6 +35,10 @@ from mosaic.tracking.ultralytics_track import (
 # this line is reached.
 from mosaic.tracking import ops as ops
 from mosaic.tracking.ops.delete_model import delete_trained_model
+from mosaic.tracking.inventory import (
+    dataset_inventory,
+    register_inventory_contributors,
+)
 
 
 def register_ops() -> None:
@@ -57,7 +61,9 @@ __all__ = [
     "register_track_schema",
     "ensure_track_schema",
     "register_ops",
+    "dataset_inventory",
     "delete_trained_model",
+    "register_inventory_contributors",
     "resolve_model",
     "resolve_model_set",
     "extract_frames",

@@ -14,7 +14,12 @@ import ast
 import json
 from pathlib import Path
 
-from mosaic.core.pipeline.inventory.params import RunParams, read_run_params
+from mosaic.core.pipeline.inventory.params import (
+    RunParams,
+    TracksVariantWalk,
+    read_run_params,
+    run_tracks_variants,
+)
 
 from tests.helpers import inside_a_virtualenv, runs_in_an_external_environment
 
@@ -174,6 +179,104 @@ def test_an_absent_resolved_block_is_not_an_empty_one(tmp_path: Path) -> None:
     assert with_empty.params is not None
     assert without.params.records_resolutions is False
     assert with_empty.params.records_resolutions is True
+
+
+# --- the tracks a run read, walked upstream ----------------------------------
+
+
+class _FeatureRoots:
+    """A dataset's roots under one directory, the only part the walk reads."""
+
+    def __init__(self, base: Path) -> None:
+        self.base: Path = base
+
+    def get_root(self, key: str, /) -> Path:
+        return self.base / key
+
+
+def _feature_run(
+    roots: _FeatureRoots, storage: str, run_id: str, *edges: object
+) -> None:
+    _ = _write(
+        roots.get_root("features") / storage / run_id, {"_resolved": list(edges)}
+    )
+
+
+def _edge(where: str, feature: str, run_id: str | None) -> dict[str, str | None]:
+    return {"where": where, "feature": feature, "run_id": run_id}
+
+
+def test_a_run_reading_a_feature_reads_that_features_tracks(tmp_path: Path) -> None:
+    """A feature that reads another feature's output omits the tracks edge."""
+    roots = _FeatureRoots(tmp_path)
+    _feature_run(roots, "up", "r1", _edge("inputs[tracks]", "tracks", "v1"))
+    _feature_run(
+        roots,
+        "down",
+        "r2",
+        _edge("inputs[0]", "up", "r1"),
+        _edge("inputs[labels]", "labels", "l1"),
+    )
+
+    assert run_tracks_variants(roots, "down", "r2") == frozenset({"v1"})
+
+
+def test_a_run_over_the_unlabeled_tables_read_no_variant(tmp_path: Path) -> None:
+    """``run_feature`` records only labeled variants on the tracks edge, so a
+    run over the unlabeled tables records ``_resolved`` without one."""
+    roots = _FeatureRoots(tmp_path)
+    _feature_run(roots, "f", "r")
+
+    assert run_tracks_variants(roots, "f", "r") == frozenset()
+
+
+def test_a_run_older_than_its_resolved_block_leaves_the_answer_unknown(
+    tmp_path: Path,
+) -> None:
+    """An absent ``_resolved`` dates the file and does not say the run read no
+    tracks."""
+    roots = _FeatureRoots(tmp_path)
+    _ = _write(roots.get_root("features") / "f" / "r", {"_params": {}})
+
+    assert run_tracks_variants(roots, "f", "r") is None
+
+
+def test_an_upstream_older_than_its_resolved_block_leaves_the_answer_unknown(
+    tmp_path: Path,
+) -> None:
+    roots = _FeatureRoots(tmp_path)
+    _ = _write(roots.get_root("features") / "up" / "r1", {"_params": {}})
+    _feature_run(roots, "down", "r2", _edge("inputs[0]", "up", "r1"))
+
+    assert run_tracks_variants(roots, "down", "r2") is None
+
+
+def test_an_absent_params_on_the_walk_leaves_the_answer_unknown(
+    tmp_path: Path,
+) -> None:
+    roots = _FeatureRoots(tmp_path)
+    _feature_run(
+        roots,
+        "down",
+        "r2",
+        _edge("inputs[tracks]", "tracks", "v1"),
+        _edge("inputs[1]", "up", "missing"),
+    )
+
+    assert run_tracks_variants(roots, "down", "r2") is None
+
+
+def test_a_walk_reads_a_known_run_from_its_known_params(tmp_path: Path) -> None:
+    """A held inventory's params answer for its runs, and only an upstream it
+    does not hold is read from disk."""
+    roots = _FeatureRoots(tmp_path)
+    _feature_run(roots, "up", "r1", _edge("inputs[tracks]", "tracks", "on-disk"))
+    known = RunParams.model_validate({"_resolved": [_edge("inputs[0]", "up", "r1")]})
+
+    walk = TracksVariantWalk(roots, {("down", "r2"): known})
+
+    assert walk("down", "r2") == frozenset({"on-disk"})
+    assert TracksVariantWalk(roots, {("down", "r2"): None})("down", "r2") is None
 
 
 # --- and it is the only reader -----------------------------------------------

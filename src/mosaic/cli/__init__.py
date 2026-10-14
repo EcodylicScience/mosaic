@@ -19,7 +19,7 @@ from mosaic.cli.convert_labels import convert_labels_command
 from mosaic.cli.convert_tracks import convert_tracks_command
 from mosaic.cli.features import features_app
 from mosaic.cli.init import init_command
-from mosaic.cli.inventory import inventory_command
+from mosaic.cli.inventory import inventory_app
 from mosaic.cli.libraries import libraries_app
 from mosaic.cli.models import models_app
 from mosaic.cli.scan import scan_command
@@ -62,7 +62,7 @@ app.add_typer(features_app, name="features")
 app.add_typer(tracking_app, name="tracking")
 app.add_typer(media_app, name="media")
 _ = app.command(name="sequences")(sequences_command)
-_ = app.command(name="inventory")(inventory_command)
+app.add_typer(inventory_app, name="inventory")
 app.add_typer(models_app, name="models")
 app.add_typer(pipeline_app, name="pipeline")
 app.add_typer(agent_app, name="agent")

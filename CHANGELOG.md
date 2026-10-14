@@ -133,6 +133,41 @@ still prints the plan. New in the library: `ErrorKind` and `ClassifiedError` in
 `ModelNotFoundError` subclass `ClassifiedError` and keep their other bases.
 `Problem.as_json` returns a recipe problem as JSON.
 
+**`mosaic inventory --json` prints the inventory wire.** It is
+`InventoryWire`: `artifacts`, `unavailable_kinds`, `errors`, `total` and
+`next_cursor`. Each artifact reports `kind`, `name`, `run_id`, `status`, a
+`coverage` object (`covers_all`, `covered`, `target`, `missing_sample`,
+`has_more`), `drift` as a count, `params_state`, the recorded `params`,
+`tracks_variants`, `upstreams`, `execution_id`, `started_at`, `finished_at`,
+`notes` and `ref`. The `dataset` key is removed. An artifact's `params` key used
+to contain the params state and now contains the recorded params. `covered`,
+`target`, `missing_sample` and `has_more_missing` moved into `coverage`, where
+`has_more_missing` is `has_more` and each missing key is a list of its parts
+instead of Python tuple text. `frame_axis_mismatch`, `frame_tail_short` and the
+other per-kind sets are counted in `notes`, and their keys moved to `mosaic
+inventory show`. The verb gains `--entry`, `--tracks-run-id`, `--status-not`,
+`--limit` and `--cursor`, and `mosaic inventory show <ref>` reports one
+artifact with its recorded params, orphaned rows and files, and drifted
+entries. The plain listing prints the `ref` that `show` takes, in place of the
+`kind`, `name` and `run_id` columns. A plan's JSON is unchanged.
+
+The record of a feature run, a tracks variant or a labels variant lists its
+index rows as orphaned only when at least one of its outputs matches an entry,
+the rule that its status already followed. A plan measures such a run as the
+inventory does, and reports a run whose outputs are all unmatched as `partial`
+or `absent` instead of `inconsistent`. A variant whose tables are all gone
+therefore lists no orphaned rows in `mosaic inventory show`.
+
+New in the library: `InventoryWire`, `ArtifactWire`, `ArtifactDetailWire`,
+`KeySampleWire`, `ResolvedWire`, `inventory_wire`, `coverage_wire`,
+`key_sample`, `ref_address`, `InventoryQueryInvalid`, `ArtifactNotFound`,
+`run_tracks_variants`, `reclassify`, `ARTIFACT_STATUSES` and
+`is_artifact_status` in `mosaic.core.pipeline.inventory`, and
+`dataset_inventory` and `register_inventory_contributors` in `mosaic.tracking`.
+`CoverageWire` and `MISSING_SAMPLE_WIRE` moved from
+`mosaic.core.pipeline.graph` to `mosaic.core.pipeline.inventory`, and
+`CoverageWire.missing_sample` is typed as keys of any length.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

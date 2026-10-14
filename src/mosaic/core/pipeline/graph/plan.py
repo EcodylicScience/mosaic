@@ -64,7 +64,7 @@ from ..inventory.model import (
     MediaVariantRef,
     TracksVariantRef,
     TrainedModelRef,
-    classify,
+    reclassify,
 )
 from ..ops import IdentityDeferred, OpIdentity, check_scope_takes
 from ..preprocess_layout import PREPROCESS_KIND
@@ -1006,17 +1006,9 @@ def coverage_against(
     # every entry the dataset can process reads complete to an inventory and is
     # genuinely short of a scope naming one more -- and taking the record's word
     # for it would report a step as done while its coverage said two of three.
-    status = classify(
-        satisfied=coverage.is_satisfied,
-        any_covered=bool(coverage.covered) or coverage.covers_all,
-        orphan_rows=bool(record.orphan_rows),
-        orphan_files=bool(record.orphan_files),
-        drifted=bool(record.drift),
-        finished=bool(record.finished_at),
-    )
     return ArtifactView(
         coverage=coverage,
-        status=status,
+        status=reclassify(record, coverage),
         drift=record.drift,
         finished=bool(record.finished_at),
     )

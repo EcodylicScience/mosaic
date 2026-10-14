@@ -171,7 +171,6 @@ from .validate import (
     validation_report,
 )
 from .wire import (
-    MISSING_SAMPLE_WIRE,
     AttachReport,
     Attachment,
     CatalogEntry,
@@ -179,7 +178,6 @@ from .wire import (
     ColumnProvider,
     ConditionalColumns,
     CoverageShortWire,
-    CoverageWire,
     DepsIncompleteWire,
     EditorCatalog,
     HeldOnParentsWire,
@@ -327,7 +325,6 @@ __all__ = [
     "storage_name_of",
     "submit_request",
     "topological_order",
-    "MISSING_SAMPLE_WIRE",
     "AttachReport",
     "Attachment",
     "CatalogEntry",
@@ -335,7 +332,6 @@ __all__ = [
     "ColumnProvider",
     "ConditionalColumns",
     "CoverageShortWire",
-    "CoverageWire",
     "DepsIncompleteWire",
     "EditorCatalog",
     "HeldOnParentsWire",

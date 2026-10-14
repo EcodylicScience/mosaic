@@ -254,6 +254,31 @@ def _rows_of(frame: pd.DataFrame, run_id: str) -> frozenset[Entry]:
     )
 
 
+def _orphan_rows(
+    coverage: Coverage[Entry], rows: frozenset[Entry], files: frozenset[Entry]
+) -> frozenset[Entry]:
+    """Return the rows that name an entry with no output, given contradicting files.
+
+    Damage needs contradictory evidence. A run whose outputs are all unmatched
+    leaves its rows unconfirmed and uncontradicted. A feature that stores its
+    results as ``.npz`` beside a ``seq=<name>`` filename is such a run. A row is
+    orphaned only when some file matched an entry and the index names more
+    entries than the files cover. When every file is unmatched, the status
+    reports the coverage shortfall alone.
+
+    Tracks and labels variants follow the same rule, although each of their
+    rows names its file. A variant whose tables are all gone therefore reads
+    ``absent`` with no orphaned rows, and one that lost some of its tables reads
+    ``inconsistent``.
+
+    The record keeps these rows. A status re-derived from the record over
+    another target (:func:`~.model.reclassify`) then agrees with this one.
+    """
+    if not files and not coverage.covers_all:
+        return frozenset()
+    return rows - files
+
+
 def _status_for(
     coverage: Coverage[Entry],
     rows: frozenset[Entry],
@@ -266,22 +291,12 @@ def _status_for(
     Both halves are required, the idiom ``training_is_complete`` already uses:
     the index proves the producer got far enough to record the entry, the file
     proves the output survived. Either alone reads complete over a run the other
-    knows is not.
-
-    **Damage needs contradictory evidence, not missing evidence.** A run whose
-    outputs this could attribute to no entry at all says nothing about whether
-    its rows are honoured -- a feature storing its results as ``.npz`` beside a
-    ``seq=<name>`` filename is doing so legitimately, and calling that a row with
-    no output would report damage on a perfectly good run. So a row counts as
-    orphaned only when *some* file was attributed and the index names more: the
-    two then genuinely disagree. Attributing nothing reports the coverage
-    shortfall and stops there.
+    knows is not. Orphaned rows follow :func:`_orphan_rows`.
     """
-    attributed_something = bool(files) or coverage.covers_all
     return classify(
         satisfied=coverage.is_satisfied,
         any_covered=bool(coverage.covered) or coverage.covers_all,
-        orphan_rows=attributed_something and bool(rows - files),
+        orphan_rows=bool(_orphan_rows(coverage, rows, files)),
         orphan_files=bool(files - rows),
         drifted=bool(drift),
         finished=finished,
@@ -351,7 +366,7 @@ def _feature_records(
                     params=read.params,
                     params_state=read.state,
                     rows=rows,
-                    orphan_rows=rows - files,
+                    orphan_rows=_orphan_rows(coverage, rows, files),
                     orphan_files=files - rows,
                     drift=drift,
                     identity_scheme=read_identity_scheme(run_root),
@@ -427,7 +442,7 @@ def _variant_records(
                 status=_status_for(coverage, rows, files, drift, finished),
                 index_path=index_path,
                 rows=rows,
-                orphan_rows=rows - files,
+                orphan_rows=_orphan_rows(coverage, rows, files),
                 orphan_files=frozenset(),
                 drift=drift,
                 started_at=started,
@@ -485,7 +500,7 @@ def _labels_records(
                     status=_status_for(coverage, rows, files, (), finished),
                     index_path=index_path,
                     rows=rows,
-                    orphan_rows=rows - files,
+                    orphan_rows=_orphan_rows(coverage, rows, files),
                     orphan_files=frozenset(),
                     started_at=started,
                     finished_at=finished_at,

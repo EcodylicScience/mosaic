@@ -24,7 +24,6 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `release`: Release the run roots claimed by an...
 * `track`: Run an integrated tracker over scoped...
 * `sequences`: List sequences (optionally filtered by...
-* `inventory`: Report every computed artifact, its...
 * `init`: Create a dataset: write dataset.yaml and...
 * `scan`: Rescan every declared source and rewrite...
 * `reindex`: Drop index rows whose files no longer...
@@ -40,6 +39,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `features`: Discover features and their parameter...
 * `tracking`: Discover tracking ops and their parameter...
 * `media`: Probe a video, compare two videos for...
+* `inventory`: Report every computed artifact, its...
 * `models`: Ask about trained models: this dataset's,...
 * `pipeline`: Validate, plan and run a pipeline recipe.
 * `agent`: Print or install the guide for an AI...
@@ -197,23 +197,6 @@ $ mosaic sequences [OPTIONS]
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--group <str>`: Restrict to one group namespace.
-* `--json`: Emit as a JSON object.
-* `--help`: Show this message and exit.
-
-## `mosaic inventory`
-
-Report every computed artifact, its identity and its coverage.
-
-**Usage**:
-
-```console
-$ mosaic inventory [OPTIONS]
-```
-
-**Options**:
-
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Restrict to an artifact kind (repeatable): feature, tracks-variant, labels-variant, label-series, tracker-run, frame-run, trained-model, prepared-dataset, media-derivative, media-variant.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -790,6 +773,54 @@ $ mosaic media transcode [OPTIONS] {file}
 * `--output <path>`: Output file path, or an existing directory the derivative is written into under the source stem. Required: the CLI knows no dataset layout.  [required]
 * `--profile <chrome-149>`: Playback policy profile.  [default: chrome-149]
 * `--allow-hardware / --no-hardware`: Permit av1_nvenc hardware encoding. Taken only when this machine can actually open that encoder: a build listing it on a device that cannot run it encodes on the CPU instead. Off by default.  [default: no-hardware]
+* `--help`: Show this message and exit.
+
+## `mosaic inventory`
+
+Report every computed artifact, its identity and its coverage.
+
+**Usage**:
+
+```console
+$ mosaic inventory [OPTIONS] COMMAND [ARGS]...
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).
+* `--kind <str>`: Restrict to an artifact kind (repeatable): feature, tracks-variant, labels-variant, label-series, tracker-run, frame-run, trained-model, prepared-dataset, media-derivative, media-variant.
+* `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
+* `--tracks-run-id <str>`: Keep the feature runs that read this tracks variant, measured over its entries. '' keeps the runs over the unlabeled tables alone.
+* `--status-not <str>`: Leave out a status (repeatable): absent, partial, complete, complete-but-drifted, inconsistent.
+* `--limit <int range>`: List at most this many artifacts.  [x>=1]
+* `--cursor <str>`: Start after the page that printed this cursor.
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
+**Commands**:
+
+* `show`: Report one artifact in depth: its recorded...
+
+### `mosaic inventory show`
+
+Report one artifact in depth: its recorded params, orphans and drift.
+
+**Usage**:
+
+```console
+$ mosaic inventory show [OPTIONS] {ref}
+```
+
+**Arguments**:
+
+* `ref`: The artifact's ref, as a listing prints it: its kind and the parts of its key joined by '/', e.g. feature/<storage>/<run_id>.  [required]
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml). Defaults to the one given before 'show'.
+* `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
+* `--tracks-run-id <str>`: Keep the feature runs that read this tracks variant, measured over its entries. '' keeps the runs over the unlabeled tables alone.
+* `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
 ## `mosaic models`

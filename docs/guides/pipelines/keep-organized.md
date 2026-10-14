@@ -30,13 +30,26 @@ Truth is on disk, so a stale view is impossible rather than merely unlikely.
 `inconsistent` is judged only on a *finished* run: outputs are written before their
 index rows, so files ahead of rows is what a run in progress looks like, not damage.
 
+`--entry`, `--status-not` and `--tracks-run-id` narrow the listing, and `--limit`
+pages it: the last line names the `--cursor` that lists the next page. Each artifact
+has a `ref`, such as `feature/speed-angvel__from__tracks/0.2-6ce34fc21e`, and
+`mosaic inventory show <ref>` reports that artifact with its recorded params and the
+entries behind its counts:
+
+```bash
+mosaic inventory -m dataset.yaml --status-not complete --limit 20
+mosaic inventory show feature/speed-angvel__from__tracks/0.2-6ce34fc21e -m dataset.yaml
+```
+
 Two narrower listings: `mosaic sequences` lists what has been converted, and
 `mosaic features list` / `mosaic tracking list` enumerate the registries.
 
 ```python
-from mosaic.core.pipeline.inventory import inventory
+from mosaic.core.pipeline.inventory import inventory_wire
+from mosaic.tracking import dataset_inventory
 
-inventory(ds)
+found = dataset_inventory(ds)
+inventory_wire(ds, found, status_not=["complete"], limit=20)
 ```
 
 ## Reclaiming and repairing

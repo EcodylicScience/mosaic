@@ -22,6 +22,8 @@ from mosaic.core.pipeline.inventory import (
     FeatureRunRef,
     TracksVariantRef,
     inventory,
+    inventory_wire,
+    reclassify,
 )
 from mosaic.core.pipeline.inventory.scan import (
     entry_universe,
@@ -344,6 +346,13 @@ def test_a_run_whose_outputs_are_not_parquet_is_not_called_damaged(
     assert record.status != "inconsistent", (
         "attributing no files is missing evidence, not evidence of damage"
     )
+    assert record.orphan_rows == frozenset()
+    assert reclassify(record, record.coverage) == record.status
+    held = inventory(scenario_dataset)
+    every = Scope(entries=[("", "seq_a"), ("", "seq_b")])
+    ref = f"feature/{STORAGE}/{run_id}"
+    [narrowed] = inventory_wire(scenario_dataset, held, scope=every, ref=ref).artifacts
+    assert narrowed.status == record.status
 
 
 # --- a tool that read another number of frames than its media holds -----------

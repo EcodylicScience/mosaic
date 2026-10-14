@@ -30,6 +30,7 @@ from mosaic.core.pipeline.graph import (
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.scope import Scope
 from tests.helpers import (
     add_media_sequence,
     add_tracks_variant,
@@ -43,6 +44,7 @@ from tests.helpers import (
 VARIANT = "convert-trex.0.2-1111111111"
 MODEL_KIND = "train-pose"
 MODEL_RUN_ID = "train-pose.0.1-0123456789"
+MODEL_REF = f"trained-model/{MODEL_KIND}/{MODEL_RUN_ID}"
 
 RECIPE: dict[str, object] = {
     "schema_version": 1,
@@ -132,6 +134,8 @@ type CliArguments = Callable[[ReadDataset], list[str]]
 
 CLI_READS: dict[str, CliArguments] = {
     "inventory": lambda _: ["inventory"],
+    "inventory --limit": lambda _: ["inventory", "--limit", "1", "--entry", ":seq_a"],
+    "inventory show": lambda _: ["inventory", "show", MODEL_REF],
     "libraries list": lambda _: ["libraries", "list"],
     "measure-tracks --dry-run": lambda _: ["measure-tracks"],
     "models provenance": lambda _: ["models", "provenance", MODEL_RUN_ID],
@@ -154,6 +158,7 @@ CLI_READS: dict[str, CliArguments] = {
 
 CLI_READS_OF_NOTHING = (
     "inventory",
+    "inventory --limit",
     "libraries list",
     "measure-tracks --dry-run",
     "notes show",
@@ -214,6 +219,32 @@ def _inventory(fixture: ReadDataset) -> object:
     return inventory(fixture.reopened())
 
 
+def _dataset_inventory(fixture: ReadDataset) -> object:
+    from mosaic.tracking import dataset_inventory
+
+    return dataset_inventory(fixture.reopened())
+
+
+def _inventory_wire(fixture: ReadDataset) -> object:
+    """A narrowed, paged listing, and one artifact in depth when the dataset has it."""
+    from mosaic.core.pipeline.inventory import inventory_wire
+    from mosaic.tracking import dataset_inventory
+
+    dataset = fixture.reopened()
+    found = dataset_inventory(dataset)
+    listed = inventory_wire(
+        dataset,
+        found,
+        scope=Scope(entries=[("", "seq_a")]),
+        tracks_run_id=VARIANT,
+        status_not=["absent"],
+        limit=1,
+    )
+    if any(record.run_id == MODEL_RUN_ID for record in found.records):
+        _ = inventory_wire(dataset, found, ref=MODEL_REF)
+    return listed
+
+
 def _rollup(fixture: ReadDataset) -> object:
     request = load_request(fixture.root, fixture.request_id)
     return request_rollup(fixture.root, request)
@@ -222,7 +253,9 @@ def _rollup(fixture: ReadDataset) -> object:
 type LibraryRead = Callable[[ReadDataset], object]
 
 LIBRARY_READS: dict[str, LibraryRead] = {
+    "dataset_inventory": _dataset_inventory,
     "inventory": _inventory,
+    "inventory_wire": _inventory_wire,
     "load_tracks": lambda f: f.reopened().load_tracks("", "seq_a", auto_convert=False),
     "open_dataset": ReadDataset.reopened,
     "plan_pipeline": lambda f: plan_pipeline(
@@ -244,7 +277,15 @@ def test_a_library_read_writes_nothing(populated: ReadDataset, read: str) -> Non
 
 
 @pytest.mark.parametrize(
-    "read", ["inventory", "open_dataset", "read_runs", "read_tracks_index"]
+    "read",
+    [
+        "dataset_inventory",
+        "inventory",
+        "inventory_wire",
+        "open_dataset",
+        "read_runs",
+        "read_tracks_index",
+    ],
 )
 def test_a_library_read_of_an_absent_index_creates_nothing(
     unpopulated: ReadDataset, read: str

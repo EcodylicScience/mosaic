@@ -23,19 +23,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Annotated, Final, Literal
+from typing import Annotated, Literal
 
 from pydantic import Field
 
 from mosaic.core.json_value import JsonValue
 
 from ..inventory.model import ArtifactStatus
+from ..inventory.wire import CoverageWire
 from ..ops import ScopeTakes
 from .compatibility import Declaration
 from .model import GraphModel
 
 __all__ = [
-    "MISSING_SAMPLE_WIRE",
     "AttachReport",
     "Attachment",
     "CatalogEntry",
@@ -43,7 +43,6 @@ __all__ = [
     "ColumnProvider",
     "ConditionalColumns",
     "CoverageShortWire",
-    "CoverageWire",
     "DepsIncompleteWire",
     "EditorCatalog",
     "HeldOnParentsWire",
@@ -65,14 +64,6 @@ __all__ = [
     "WaitingOnResourceWire",
     "render_location",
 ]
-
-MISSING_SAMPLE_WIRE: Final = 20
-"""How many missing entries a plan sends per step.
-
-A full entry list for a 2,000-sequence dataset under a ten-step graph is
-megabytes on every preview. The sample names enough entries to act on, and
-``has_more`` says whether it is the whole list.
-"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,25 +391,6 @@ class InputCandidates(GraphModel):
     step: str
     still_needs: tuple[StillNeeded, ...]
     candidates: dict[str, InputCandidate]
-
-
-class CoverageWire(GraphModel):
-    """Which of its planned entries a step already holds, summarized.
-
-    Attributes:
-        covers_all: A single artifact answers for every entry, as a global fit or
-            a trained model does.
-        covered: How many planned entries it holds.
-        target: How many it was planned over.
-        missing_sample: Up to :data:`MISSING_SAMPLE_WIRE` missing entries, sorted.
-        has_more: Whether more are missing than the sample lists.
-    """
-
-    covers_all: bool
-    covered: int
-    target: int
-    missing_sample: tuple[tuple[str, str], ...]
-    has_more: bool
 
 
 class DepsIncompleteWire(GraphModel):
