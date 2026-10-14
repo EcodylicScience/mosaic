@@ -20,6 +20,7 @@ from mosaic.core.entry import parse_entry_tokens
 from mosaic.user_paths import user_path
 
 if TYPE_CHECKING:
+    from mosaic.core.pipeline.error_kind import ClassifiedError
     from mosaic.core.pipeline.refusal import Refusal
 
 
@@ -51,14 +52,52 @@ def emit_json(payload: object) -> None:
     typer.echo(json.dumps(payload, indent=2, default=str))
 
 
+def fail_classified(
+    error: ClassifiedError,
+    *,
+    as_json: bool,
+    message: str | None = None,
+    step: str = "",
+) -> NoReturn:
+    """Report a classified error, and exit 1.
+
+    The message goes to stderr. Under ``--json`` the error is also the one JSON
+    value on stdout, as its :class:`~mosaic.core.pipeline.error_envelope.ErrorEnvelope`.
+
+    Args:
+        error: The error.
+        as_json: Whether ``--json`` was given.
+        message: The sentence to report in place of ``str(error)``, such as one
+            naming this command's flags.
+        step: The step to name when *error* names none, or ``""`` when the
+            step is unknown.
+
+    Raises:
+        typer.Exit: Always, with code 1.
+    """
+    from mosaic.core.pipeline.error_envelope import error_envelope
+
+    envelope = error_envelope(error)
+    if message is not None:
+        envelope = envelope.model_copy(update={"message": message})
+    if envelope.step is None and step:
+        envelope = envelope.model_copy(update={"step": step})
+    log(envelope.message)
+    if as_json:
+        emit_json(envelope.model_dump(mode="json"))
+    raise typer.Exit(code=1) from None
+
+
 def exit_refused(
     execution_id: str, refusal: Refusal, *, step_id: str = "", as_json: bool
 ) -> NoReturn:
     """Report a refusal, and exit with the code reserved for one.
 
     The message goes to stderr. Under ``--json`` the refusal is also the one JSON
-    value on stdout: the execution, ``"status": "refused"``, the reason, the step
-    and the ``error_json`` blob that a ledger row records.
+    value on stdout: the refusal's
+    :class:`~mosaic.core.pipeline.error_envelope.ErrorEnvelope`, with the
+    execution, ``"status": "refused"``, the step and the ``error_json`` blob that
+    a ledger row records beside it. ``step`` is ``""`` when the step is unknown.
 
     Args:
         execution_id: The attempt that refused.
@@ -70,15 +109,16 @@ def exit_refused(
     Raises:
         typer.Exit: Always, with ``REFUSED_EXIT_CODE``.
     """
+    from mosaic.core.pipeline.error_envelope import error_envelope
     from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 
     log(f"[mosaic] refused ({refusal.reason}): {refusal}")
     if as_json:
         emit_json(
             {
+                **error_envelope(refusal).model_dump(mode="json"),
                 "execution_id": execution_id,
                 "status": "refused",
-                "reason": refusal.reason,
                 "step": refusal.step_id or step_id,
                 "error_json": refusal.error_json(step_id),
             }

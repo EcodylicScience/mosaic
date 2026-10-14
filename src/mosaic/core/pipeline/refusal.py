@@ -12,6 +12,9 @@ module. :func:`~mosaic.core.pipeline.job.job_context` then records the refusal's
 ``error_json`` for its attempt instead of a traceback, and ``mosaic run``,
 ``mosaic track`` and ``mosaic pipeline run`` exit with :data:`REFUSED_EXIT_CODE`.
 
+A refusal is the ``refused`` kind of
+:class:`~mosaic.core.pipeline.error_kind.ClassifiedError`, and the only one.
+
 The module is a leaf. The run-log recorder and the pipeline graph both read it,
 and it imports neither.
 """
@@ -20,7 +23,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, ClassVar, Final, Literal
+
+from .error_kind import ClassifiedError, ErrorKind
 
 if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
@@ -78,7 +83,7 @@ reference that does not resolve (``ModelReferenceRefusedError``).
 """
 
 
-class Refusal(Exception):
+class Refusal(ClassifiedError):
     """An error that is a refusal, and names which one.
 
     Subclassed by every error a caller should read as a refusal rather than a
@@ -92,6 +97,8 @@ class Refusal(Exception):
             the run-log records it unchanged.
     """
 
+    error_kind: ClassVar[ErrorKind] = "refused"
+
     def __init__(
         self,
         message: str,
@@ -104,6 +111,18 @@ class Refusal(Exception):
         self.reason: RefusalReason = reason
         self.step_id: str = step_id
         self.detail: dict[str, JsonValue] = dict(detail or {})
+
+    def error_reason(self) -> str:
+        """Return :attr:`reason`."""
+        return self.reason
+
+    def error_step(self) -> str | None:
+        """Return :attr:`step_id`, or ``None`` when the refusal does not know it."""
+        return self.step_id or None
+
+    def error_detail(self) -> dict[str, JsonValue] | None:
+        """Return a copy of :attr:`detail`, or ``None`` when it is empty."""
+        return dict(self.detail) or None
 
     def error_json(self, step_id: str = "") -> str:
         """Return the refusal as the ``error_json`` blob that a ledger row records.

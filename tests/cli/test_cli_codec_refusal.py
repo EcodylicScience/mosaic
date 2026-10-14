@@ -120,8 +120,19 @@ def test_a_codec_refusal_is_a_json_refusal_under_json(
     assert result.exit_code == REFUSED_EXIT_CODE
     assert "(, s) resolves to clip0.mp4, which is av1" in result.stderr
     payload = json.loads(result.stdout)
-    assert set(payload) == {"execution_id", "status", "reason", "step", "error_json"}
+    assert set(payload) == {
+        "execution_id",
+        "status",
+        "kind",
+        "reason",
+        "step",
+        "message",
+        "detail",
+        "error_json",
+    }
     assert payload["status"] == "refused"
+    assert payload["kind"] == "refused"
+    assert _REASON in payload["message"]
     assert payload["reason"] == "undecodable_codec"
     assert payload["step"] == _STEP[verb]
     assert payload["execution_id"]

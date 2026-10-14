@@ -563,3 +563,60 @@ def test_a_pipeline_refusal_names_the_flag_that_command_offers(
     )
     assert "covers one entry and this scope resolves 3" in result.output
     assert "--entry group:sequence" in result.output
+
+
+def test_a_refused_scope_under_json_is_an_invalid_envelope(scoped: Dataset) -> None:
+    """The one JSON value on stdout names the kind and the flags that answer it."""
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(scoped.manifest_path),
+            "--kind",
+            "transcode",
+            "--params",
+            json.dumps({"target": "analysis"}),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "invalid"
+    assert "re-encode every video in the dataset" in payload["message"]
+    assert "--entries group:sequence" in payload["message"]
+
+
+def test_a_pipeline_refusal_under_json_is_an_invalid_envelope(
+    scoped: Dataset, tmp_path: Path
+) -> None:
+    recipe = tmp_path / "recipe.json"
+    _ = recipe.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "steps": [
+                    {"id": "export", "type": "op", "kind": "export-store", "params": {}}
+                ],
+            }
+        )
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--manifest",
+            str(scoped.manifest_path),
+            "--recipe",
+            f"@{recipe}",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "invalid"
+    assert "--entry group:sequence" in payload["message"]

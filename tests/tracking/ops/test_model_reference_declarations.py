@@ -12,8 +12,9 @@ from pathlib import Path
 
 import pytest
 
+from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
 from mosaic.core.pipeline.ops import OPS, ModelReference
-from mosaic.tracking.model_refs import ModelReferenceRefusedError
+from mosaic.tracking.model_refs import ModelNotFoundError, ModelReferenceRefusedError
 
 from tests.helpers import make_dataset, minimal_op_params
 
@@ -123,3 +124,44 @@ def test_a_consumer_can_own_a_trackers_model_and_execution_knobs(kind: str) -> N
     _ = exposed.model_rebuild(force=True)
 
     assert not owned & set(exposed.model_validate({}).model_dump())
+
+
+def test_a_refused_model_reference_is_an_invalid_request() -> None:
+    error = ModelReferenceRefusedError(
+        "infer-pose runs train-pose models",
+        reason="kind_not_accepted",
+        op_kind="infer-pose",
+        reference="train-points.0.1-abcdef0123",
+        accepted_kinds=("train-pose",),
+    )
+
+    envelope = error_envelope(error)
+
+    assert envelope == ErrorEnvelope(
+        kind="invalid",
+        reason="kind_not_accepted",
+        message="infer-pose runs train-pose models",
+        detail={
+            "op_kind": "infer-pose",
+            "reference": "train-points.0.1-abcdef0123",
+            "accepted_kinds": ["train-pose"],
+        },
+    )
+    assert isinstance(error, ValueError)
+
+
+def test_a_run_id_that_names_no_model_is_not_found() -> None:
+    error = ModelNotFoundError(
+        "no index registers train-pose.0.1-abcdef0123",
+        reference="train-pose.0.1-abcdef0123",
+        model_kind="train-pose",
+    )
+
+    envelope = error_envelope(error)
+
+    assert envelope == ErrorEnvelope(
+        kind="not_found",
+        message="no index registers train-pose.0.1-abcdef0123",
+        detail={"reference": "train-pose.0.1-abcdef0123", "model_kind": "train-pose"},
+    )
+    assert isinstance(error, LookupError)

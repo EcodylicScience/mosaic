@@ -118,6 +118,21 @@ index's modification time. Taking the lock no longer changes an existing index's
 modification time. New in the library: `index_lock_unless_dry_run` in
 `mosaic.core.pipeline.index_lock`.
 
+**A failure under `--json` is one typed object.** It reports `kind` (`refused`,
+`invalid`, `unavailable`, `not_found` or `conflict`), `reason`, `step`,
+`message` and `detail`. `mosaic pipeline plan|run|submit|show`, `mosaic run` and
+`mosaic track` used to write nothing to stdout on an invalid recipe, a refused
+scope or model reference, an unbuildable step or a missing optional dependency.
+They now write this object and still exit 1. A refused attempt's object, exit
+65, keeps its keys and gains `kind`, `message` and `detail`. A refused plan
+still prints the plan. New in the library: `ErrorKind` and `ClassifiedError` in
+`mosaic.core.pipeline.error_kind`, and `ErrorEnvelope` and `error_envelope` in
+`mosaic.core.pipeline.error_envelope`. `Refusal`, `RecipeInvalid`,
+`StepBuildError`, `ScopeRefused`, `ManifestVersionError`,
+`MissingOptionalDependency`, `ModelReferenceRefusedError` and
+`ModelNotFoundError` subclass `ClassifiedError` and keep their other bases.
+`Problem.as_json` returns a recipe problem as JSON.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from mosaic.cli._io import fail
+from mosaic.cli._io import fail, fail_classified
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.types import Feature
@@ -59,6 +59,8 @@ def build_feature(
     slug: str,
     inputs_json: object | None,
     params_dict: object | None,
+    *,
+    as_json: bool = False,
 ) -> "Feature":
     """Construct a runnable feature instance from a slug + JSON inputs/params.
 
@@ -76,12 +78,16 @@ def build_feature(
         return construct(slug, inputs_json, params_dict)
     except StepBuildError as exc:
         if exc.stage == "slug":
-            fail(f"Unknown feature '{slug}'. Available: {', '.join(available_slugs())}")
-        if exc.stage == "params":
-            fail(f"Invalid --params for '{slug}': {exc.detail}")
-        if inputs_json is None:
-            fail(
+            message = (
+                f"Unknown feature '{slug}'. Available: {', '.join(available_slugs())}"
+            )
+        elif exc.stage == "params":
+            message = f"Invalid --params for '{slug}': {exc.detail}"
+        elif inputs_json is None:
+            message = (
                 f"Feature '{slug}' does not read from tracks by default; pass "
                 f'--inputs (e.g. --inputs \'[{{"feature":"<upstream-slug>"}}]\').'
             )
-        fail(f"Invalid --inputs for '{slug}': {exc.detail}")
+        else:
+            message = f"Invalid --inputs for '{slug}': {exc.detail}"
+        fail_classified(exc, as_json=as_json, message=message)

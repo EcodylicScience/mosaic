@@ -94,6 +94,10 @@ class Problem:
         at = f"step {self.step!r} " if self.step else ""
         return f"{at}{self.where}: {self.message}"
 
+    def as_json(self) -> dict[str, JsonValue]:
+        """Return the problem as a JSON object of its three fields."""
+        return {"step": self.step, "where": self.where, "message": self.message}
+
 
 def render_location(location: Sequence[int | str]) -> str:
     """Render a pydantic error location as a path an editor can point at.

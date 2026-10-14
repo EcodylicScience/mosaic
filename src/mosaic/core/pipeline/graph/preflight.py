@@ -103,10 +103,7 @@ class RecipeRefusedAtStep(StepRefused):
 
     def __init__(self, step_id: str, plan: Plan) -> None:
         self.plan: Plan = plan
-        problems: list[JsonValue] = [
-            {"step": problem.step, "where": problem.where, "message": problem.message}
-            for problem in plan.problems
-        ]
+        problems: list[JsonValue] = [problem.as_json() for problem in plan.problems]
         message = str(RecipeRefused(plan))
         super().__init__("recipe_refused", step_id, message, {"problems": problems})
 

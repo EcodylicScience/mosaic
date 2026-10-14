@@ -39,6 +39,7 @@ from typing import (
     get_args,
 )
 
+from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
 from mosaic.core.params import Params
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
@@ -154,7 +155,7 @@ class ModelReference:
     many: bool = False
 
 
-class ScopeRefused(ValueError):
+class ScopeRefused(ClassifiedError, ValueError):
     """A scope an op's declaration does not accept.
 
     A ``ValueError`` because that is what the command line already renders as a
@@ -171,6 +172,8 @@ class ScopeRefused(ValueError):
     The subclass exists so a caller that wants to tell a scope refusal apart
     from an invalid parameter can.
     """
+
+    error_kind: ClassVar[ErrorKind] = "invalid"
 
 
 class RepublishUnsupported(ValueError):

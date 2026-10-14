@@ -506,6 +506,64 @@ def test_unknown_feature_lists_available(dataset: tuple[Path, Dataset]) -> None:
     assert "speed-angvel" in result.stderr
 
 
+def test_an_unknown_feature_under_json_is_an_invalid_envelope(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, _ = dataset
+    result = runner.invoke(
+        app, ["run", "-m", str(manifest), "--feature", "no-such-feature", "--json"]
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "invalid"
+    assert payload["reason"] == "slug"
+    assert "speed-angvel" in payload["message"]
+
+
+def test_a_missing_optional_dependency_under_json_names_its_extra(
+    dataset: tuple[Path, Dataset], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The error's install hint replaces the generic one, and the detail names the extra."""
+    import mosaic.core.pipeline.run as run_module
+    from mosaic.optional_dependency import MissingOptionalDependency
+
+    missing = MissingOptionalDependency("torch", "deep-learning", "the identity model")
+
+    def run_feature_without_torch(*_args: object, **_kwargs: object) -> object:
+        raise missing
+
+    monkeypatch.setattr(run_module, "run_feature", run_feature_without_torch)
+    manifest, _ = dataset
+    result = runner.invoke(
+        app, ["run", "-m", str(manifest), "--feature", "speed-angvel", "--json"]
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "unavailable"
+    assert payload["message"] == str(missing)
+    assert payload["detail"] == {"module": "torch", "extra": "deep-learning"}
+
+
+def test_a_classified_failure_names_the_step_the_command_knows(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import typer
+
+    from mosaic.cli._io import fail_classified
+    from mosaic.optional_dependency import MissingOptionalDependency
+
+    with pytest.raises(typer.Exit):
+        fail_classified(
+            MissingOptionalDependency("torch", "deep-learning", "a test"),
+            as_json=True,
+            step="fit",
+        )
+
+    assert json.loads(capsys.readouterr().out)["step"] == "fit"
+
+
 def test_feature_and_kind_are_mutually_exclusive(dataset: tuple[Path, Dataset]) -> None:
     manifest, _ = dataset
     result = runner.invoke(

@@ -32,6 +32,7 @@ from mosaic.cli._io import (
     emit_json,
     exit_refused,
     fail,
+    fail_classified,
     load_json_arg,
     log,
     parse_entries,
@@ -231,6 +232,7 @@ def run_command(
         )
 
     from mosaic.core.pipeline._utils import new_execution_id
+    from mosaic.core.pipeline.error_kind import ClassifiedError
     from mosaic.core.pipeline.ops import ScopeRefused
     from mosaic.core.pipeline.job import CancelToken, Cancelled, install_signal_handler
     from mosaic.core.pipeline.refusal import Refusal
@@ -319,7 +321,9 @@ def run_command(
                 "failed_entries": list(outcome.failed_entries),
             }
         elif feature is not None:
-            feat = build_feature(feature, load_json_arg(inputs), params_dict)
+            feat = build_feature(
+                feature, load_json_arg(inputs), params_dict, as_json=as_json
+            )
             from mosaic.core.pipeline.run import run_feature
 
             log(f"[mosaic] execution_id={exec_id} running {feature}")
@@ -399,6 +403,14 @@ def run_command(
         # row stays ``failed`` and the reason is recorded in ``error_json``, which
         # this attempt's run-log already contains.
         exit_refused(exec_id, refusal, step_id=step or "", as_json=as_json)
+    except ScopeRefused as refusal:
+        # The checker owns the sentence; this command owns the flags that answer it.
+        message = with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY)
+        fail_classified(refusal, as_json=as_json, message=message, step=step or "")
+    except ClassifiedError as error:
+        # Before the arms below, whose bases a classified error may also have,
+        # so that --json reports its kind.
+        fail_classified(error, as_json=as_json, step=step or "")
     except KeyError as exc:
         fail(str(exc))
     except ImportError as exc:
@@ -411,10 +423,6 @@ def run_command(
         fail(str(exc))
     except ValidationError as exc:
         fail(f"Invalid params: {terse(exc)}")
-    except ScopeRefused as refusal:
-        # Before the ValueError arm below, which ScopeRefused subclasses. The
-        # checker owns the sentence; this command owns the flags that answer it.
-        fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
     except ValueError as exc:
         # An invalid input chain (a Result that is not track-shaped), and
         # anything else raised as a plain ValueError. The two ValueError

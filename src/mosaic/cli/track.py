@@ -32,6 +32,7 @@ from mosaic.cli._io import (
     emit_json,
     exit_refused,
     fail,
+    fail_classified,
     log,
     parse_entries,
     stdout_to_stderr,
@@ -152,6 +153,7 @@ def track_command(
     from mosaic.core.pipeline._utils import new_execution_id
     from mosaic.core.pipeline.ops import OPS, run_op
     from mosaic.core.pipeline.job import CancelToken, Cancelled, install_signal_handler
+    from mosaic.core.pipeline.error_kind import ClassifiedError
     from mosaic.core.pipeline.refusal import Refusal
 
     known = tracker_kinds()
@@ -216,6 +218,8 @@ def track_command(
         raise typer.Exit(code=130) from None
     except Refusal as refusal:
         exit_refused(exec_id, refusal, as_json=as_json)
+    except ClassifiedError as error:
+        fail_classified(error, as_json=as_json, message=f"{kind} run failed: {error}")
     except (ImportError, FileNotFoundError) as exc:
         fail(f"{kind} run failed: {exc}")
     except ValueError as exc:

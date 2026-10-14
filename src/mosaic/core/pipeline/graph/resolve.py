@@ -32,7 +32,7 @@ import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
 
 from pydantic import BaseModel
 
@@ -56,6 +56,7 @@ from ..column_contract import (
     declared_provides,
     declared_requires,
 )
+from ..error_kind import ClassifiedError, ErrorKind
 from ..types.data_config import COLUMNS
 from ..types.feature import EmitsLevel
 from .columns import provided_wire, requires_wire, tracks_provides
@@ -168,7 +169,7 @@ def declared_version(kind: Literal["feature", "op"], name: str) -> str:
     return version if isinstance(version, str) else ""
 
 
-class StepBuildError(ValueError):
+class StepBuildError(ClassifiedError, ValueError):
     """A step cannot be constructed from what the recipe declares.
 
     Carries *stage* so a caller can phrase its own refusal without parsing the
@@ -180,6 +181,8 @@ class StepBuildError(ValueError):
     and is empty when no validator refused. Recipe validation reports one
     problem per pair, which lets an editor mark the field at fault.
     """
+
+    error_kind: ClassVar[ErrorKind] = "invalid"
 
     def __init__(
         self,
@@ -193,6 +196,18 @@ class StepBuildError(ValueError):
         self.detail: str = detail
         self.errors: tuple[FieldError, ...] = errors
         super().__init__(f"{name}: {detail}")
+
+    def error_reason(self) -> str:
+        """Return :attr:`stage`, the half of the declaration that was rejected."""
+        return self.stage
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the step type's name and the validator's findings."""
+        errors: list[JsonValue] = [
+            {"location": location, "message": message}
+            for location, message in self.errors
+        ]
+        return {"name": self.name, "errors": errors}
 
 
 type BuildStage = Literal["slug", "inputs", "params"]

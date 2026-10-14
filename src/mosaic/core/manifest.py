@@ -50,6 +50,7 @@ from pydantic import (
 from mosaic.core.json_value import JsonValue
 from mosaic.core.strict_model import StrictModel
 from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.user_paths import user_path
 from mosaic.core.pipeline.label_series import series_spec
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOT, TRACKING_ROOTS
@@ -165,13 +166,15 @@ folder's contents needs -- no glob expresses an arbitrary subset.
 """
 
 
-class ManifestVersionError(RuntimeError):
+class ManifestVersionError(ClassifiedError, RuntimeError):
     """A manifest declares a format version this code does not know.
 
     Raised on read rather than guessing. A newer manifest may hold fields whose
     absence changes meaning, so reading it under this version's rules and then
     saving would drop them silently.
     """
+
+    error_kind: ClassVar[ErrorKind] = "unavailable"
 
 
 # ---------------------------------------------------------------- roots

@@ -97,6 +97,28 @@ def test_a_model_the_tracker_does_not_run_is_refused_as_a_message(
     assert "trex runs models trained by" in result.stderr
 
 
+def test_a_refused_model_reference_under_json_is_an_invalid_envelope(
+    manifest: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "track",
+            "trex",
+            "-m",
+            str(manifest),
+            "--set",
+            "detect_model=train-sleap.0.1-abcdef0123",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "invalid"
+    assert "trex runs models trained by" in payload["message"]
+
+
 def test_a_tracker_specific_parameter_reaches_the_op(manifest: Path) -> None:
     """An empty scope short-circuits before any binary, so this exercises the wiring.
 

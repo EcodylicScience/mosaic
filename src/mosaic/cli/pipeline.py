@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, NoReturn
 
 import typer
 
@@ -30,11 +30,13 @@ from mosaic.cli._io import (
     emit_json,
     exit_refused,
     fail,
+    fail_classified,
     load_json_arg,
     log,
     stdout_to_stderr,
     with_command_line_scope,
 )
+from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.ops import ScopeRefused
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.cli._render import render_table
@@ -83,14 +85,34 @@ and for mosaic-api. This command offers one flag and it is spelled ``--entry``.
 """
 
 
-def _recipe(argument: str) -> "Recipe":
+def _recipe(argument: str, *, as_json: bool) -> "Recipe":
     """Parse the ``--recipe`` argument, failing cleanly on a bad document."""
     from mosaic.core.pipeline.graph import RecipeInvalid, read_recipe
 
     try:
         return read_recipe(load_json_arg(argument))
     except RecipeInvalid as exc:
-        fail(str(exc))
+        fail_classified(exc, as_json=as_json)
+
+
+def _fail_unrunnable(
+    error: ClassifiedError, *, as_json: bool, step: str = ""
+) -> NoReturn:
+    """Report a classified error that stopped a recipe, and exit 1.
+
+    A scope refusal is reported with the flag that answers it.
+
+    Args:
+        error: The error, raised while planning, submitting or running a step.
+        as_json: Whether ``--json`` was given.
+        step: The step that failed, or ``""`` before any step started.
+    """
+    message = (
+        with_command_line_scope(str(error), SCOPE_FLAGS_REMEDY)
+        if isinstance(error, ScopeRefused)
+        else None
+    )
+    fail_classified(error, as_json=as_json, message=message, step=step)
 
 
 def _scope(entries: list[str] | None) -> Scope | None:
@@ -158,29 +180,20 @@ def plan_command(
     Exits 1 when the dataset refuses the recipe. Under ``--json`` the plan is
     printed with its problems.
     """
-    from mosaic.core.pipeline.graph import (
-        RecipeInvalid,
-        RecipeRefused,
-        plan_pipeline,
-        plan_wire,
-    )
-    from mosaic.tracking.model_refs import ModelReferenceRefusedError
+    from mosaic.core.pipeline.graph import RecipeRefused, plan_pipeline, plan_wire
 
     ds = load_dataset(manifest, read_only=True)
+    parsed = _recipe(recipe, as_json=as_json)
     try:
         with stdout_to_stderr():
-            plan = plan_pipeline(ds, _recipe(recipe), scope=_scope(entry))
-    except ScopeRefused as refusal:
-        fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
-    except ModelReferenceRefusedError as refusal:
-        fail(str(refusal))
+            plan = plan_pipeline(ds, parsed, scope=_scope(entry))
     except RecipeRefused as refusal:
         if as_json:
             emit_json(plan_wire(refusal.plan).model_dump(mode="json"))
             raise typer.Exit(code=1) from refusal
         fail(str(refusal))
-    except RecipeInvalid as invalid:
-        fail(str(invalid))
+    except ClassifiedError as error:
+        _fail_unrunnable(error, as_json=as_json)
     _emit_plan(plan, as_json=as_json)
 
 
@@ -188,7 +201,7 @@ def show_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
     """Print a recipe's steps and the references between them. No dataset."""
     from mosaic.core.pipeline.graph import edges, recipe_digest, topological_order
 
-    parsed = _recipe(recipe)
+    parsed = _recipe(recipe, as_json=as_json)
     ordered = topological_order(parsed)
     wires = edges(parsed)
     if as_json:
@@ -229,25 +242,27 @@ def show_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
     )
 
 
-def _refused_attempt(
-    base_dir: Path, request: Request | None, refusal: Refusal
+def _failed_attempt(
+    base_dir: Path, request: Request | None, error: ClassifiedError
 ) -> tuple[str, str]:
-    """Return the step of *request* that *refusal* ended the run at, and its attempt.
+    """Return the step of *request* that *error* ended the run at, and its attempt.
 
-    A refusal that names its step names the attempt too, because the request
-    assigned every step one. Such a step can be refused after its attempt
-    finished, when the run finds coverage did not move. A refusal raised inside an
-    attempt, such as a tracker's refusal of a codec, names no step. A step that
-    raises ends the run, so its attempt is the one that the run-logs record as
-    failed: every step before it finished, and none after it started. Both are
-    empty when neither answers.
+    An error that names its step names the attempt too, because the request
+    assigned every step one. A refused step can be refused after its attempt
+    finished, when the run finds coverage did not move. An error raised inside an
+    attempt, such as a tracker's refusal of a codec or a missing optional
+    dependency, does not name its step. A step that raises ends the run. Its
+    attempt is therefore the one that the run-logs record as failed: every step
+    before it finished, and none after it started. Both are empty when neither answers, as for an
+    error raised before any step started.
     """
     from mosaic.core.pipeline.graph import request_rollup
 
+    named = error.error_step() or ""
     if request is None:
-        return refusal.step_id, ""
-    if refusal.step_id:
-        return refusal.step_id, request.step_executions.get(refusal.step_id, "")
+        return named, ""
+    if named:
+        return named, request.step_executions.get(named, "")
     for attempt in request_rollup(base_dir, request).steps:
         if attempt.status == "failed":
             return attempt.step_id, attempt.execution_id
@@ -274,11 +289,10 @@ def run_command(
     as_json: JsonOption = False,
 ) -> None:
     """Run every step of a recipe here, in order, skipping what is already done."""
-    from mosaic.core.pipeline.graph import RecipeInvalid, run_pipeline, submit_request
-    from mosaic.tracking.model_refs import ModelReferenceRefusedError
+    from mosaic.core.pipeline.graph import run_pipeline, submit_request
 
     ds = load_dataset(manifest)
-    parsed = _recipe(recipe)
+    parsed = _recipe(recipe, as_json=as_json)
     submitted: Request | None = None
     try:
         with stdout_to_stderr():
@@ -292,17 +306,14 @@ def run_command(
                 owner=owner,
             ).request
             done = run_pipeline(ds, parsed, request=submitted, owner=owner)
-    except ScopeRefused as refusal:
-        fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
-    except ModelReferenceRefusedError as refusal:
-        fail(str(refusal))
-    except RecipeInvalid as invalid:
-        fail(str(invalid))
     except Refusal as refusal:
         # A step's own refusal, or one raised inside a step's attempt, such as a
         # tracker's refusal of a codec. Either ends the run at that step.
-        step_id, execution_id = _refused_attempt(ds.base_dir, submitted, refusal)
+        step_id, execution_id = _failed_attempt(ds.base_dir, submitted, refusal)
         exit_refused(execution_id, refusal, step_id=step_id, as_json=as_json)
+    except ClassifiedError as error:
+        step_id, _ = _failed_attempt(ds.base_dir, submitted, error)
+        _fail_unrunnable(error, as_json=as_json, step=step_id)
 
     rows = [
         {
@@ -374,11 +385,10 @@ def submit_command(
     Nothing is executed: the printed commands are, and any driver that can run
     them in dependency order will run the graph correctly.
     """
-    from mosaic.core.pipeline.graph import RecipeInvalid, step_argv, submit_request
-    from mosaic.tracking.model_refs import ModelReferenceRefusedError
+    from mosaic.core.pipeline.graph import step_argv, submit_request
 
     ds = load_dataset(manifest)
-    parsed = _recipe(recipe)
+    parsed = _recipe(recipe, as_json=as_json)
     try:
         with stdout_to_stderr():
             submitted = submit_request(
@@ -389,12 +399,8 @@ def submit_command(
                 max_concurrent_steps=max_concurrent_steps,
                 owner=owner,
             )
-    except ScopeRefused as refusal:
-        fail(with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY))
-    except ModelReferenceRefusedError as refusal:
-        fail(str(refusal))
-    except RecipeInvalid as invalid:
-        fail(str(invalid))
+    except ClassifiedError as error:
+        _fail_unrunnable(error, as_json=as_json)
     request = submitted.request
     steps = [
         {

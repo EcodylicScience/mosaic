@@ -62,6 +62,7 @@ from ..column_contract import (
     needs_of,
     param_values,
 )
+from ..error_kind import ClassifiedError, ErrorKind
 from ..run import (
     MissingConsumedRootsDeclaration,
     MissingScopeDeclaration,
@@ -238,8 +239,10 @@ would these params be valid once a plan says what to run them over.
 """
 
 
-class RecipeInvalid(ValueError):
+class RecipeInvalid(ClassifiedError, ValueError):
     """A recipe cannot be run as written, carrying every fault found."""
+
+    error_kind: ClassVar[ErrorKind] = "invalid"
 
     lead: ClassVar[str] = "this recipe cannot be run"
     """How the message opens, before the count of problems."""
@@ -249,6 +252,10 @@ class RecipeInvalid(ValueError):
         listed = "\n".join(f"  - {problem}" for problem in problems)
         plural = "" if len(problems) == 1 else "s"
         super().__init__(f"{self.lead}: {len(problems)} problem{plural}\n{listed}")
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the problems, each as its step, its place and its message."""
+        return {"problems": [problem.as_json() for problem in self.problems]}
 
 
 def _runs(step: Step) -> tuple[str, str]:

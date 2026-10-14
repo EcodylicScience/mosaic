@@ -1,8 +1,9 @@
 """One message for "this needs something the install did not bring".
 
-A deliberate leaf, like :mod:`mosaic.runlog` and :mod:`mosaic.media_probe_config`:
-it imports nothing from mosaic, so any layer may reach it without creating a
-cycle.
+A leaf, like :mod:`mosaic.runlog` and :mod:`mosaic.media_probe_config`. It
+imports nothing from mosaic but the standard-library leaf
+:mod:`mosaic.core.pipeline.error_kind`. Any layer may import it without creating
+a cycle.
 
 Every optional dependency used to raise its own hand-written ``ImportError``, in
 four different shapes across ten modules. They disagreed about what to tell the
@@ -33,7 +34,12 @@ import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, ClassVar, Protocol, runtime_checkable
+
+from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
+
+if TYPE_CHECKING:
+    from mosaic.core.json_value import JsonValue
 
 __all__ = [
     "MissingOptionalDependency",
@@ -52,7 +58,7 @@ def _install_hint(module: str, extra: str, purpose: str) -> str:
     )
 
 
-class MissingOptionalDependency(ImportError):
+class MissingOptionalDependency(ClassifiedError, ImportError):
     """An optional dependency is not importable.
 
     An ``ImportError`` subclass so that the call sites which already catch
@@ -61,11 +67,17 @@ class MissingOptionalDependency(ImportError):
     import can.
     """
 
+    error_kind: ClassVar[ErrorKind] = "unavailable"
+
     def __init__(self, module: str, extra: str, purpose: str) -> None:
         self.module = module
         self.extra = extra
         self.purpose = purpose
         super().__init__(_install_hint(module, extra, purpose))
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the missing module and the extra that installs it."""
+        return {"module": self.module, "extra": self.extra}
 
 
 def require(module: str, extra: str, purpose: str) -> ModuleType:

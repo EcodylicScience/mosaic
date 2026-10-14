@@ -415,6 +415,46 @@ def test_show_reads_the_graph_without_a_dataset(tmp_path: Path) -> None:
     }
 
 
+def test_show_reports_a_malformed_recipe_as_an_invalid_envelope() -> None:
+    recipe = {"schema_version": 1, "steps": [{"id": "a", "type": "bogus"}]}
+
+    result = runner.invoke(
+        app, ["pipeline", "show", "--recipe", json.dumps(recipe), "--json"]
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "invalid"
+    assert payload["message"] in result.stderr
+    assert [(p["step"], p["where"]) for p in payload["detail"]["problems"]] == [
+        ("a", "type")
+    ]
+
+
+def test_plan_reports_a_malformed_recipe_as_an_invalid_envelope_on_stdout(
+    tracked: Dataset,
+) -> None:
+    recipe = {"schema_version": 1, "steps": [{"id": "a", "type": "bogus"}]}
+
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--manifest",
+            str(tracked.manifest_path),
+            "--recipe",
+            json.dumps(recipe),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "invalid"
+    assert payload["message"] in result.stderr
+
+
 def test_plan_reports_identities_and_what_is_left(
     tracked: Dataset, tmp_path: Path
 ) -> None:

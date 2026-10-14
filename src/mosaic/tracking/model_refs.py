@@ -26,12 +26,14 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, ClassVar, Final, Literal
 
 import pandas as pd
 import yaml
 
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline._utils import hash_params
+from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.user_paths import user_path
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.models import model_index_path
@@ -937,7 +939,7 @@ ModelRefusalReason = Literal["runs_no_model", "not_a_run_id", "kind_not_accepted
 """
 
 
-class ModelReferenceRefusedError(ValueError):
+class ModelReferenceRefusedError(ClassifiedError, ValueError):
     """A model reference an op's declaration does not accept.
 
     Raised before any weights are read or any identifier is minted.
@@ -952,6 +954,8 @@ class ModelReferenceRefusedError(ValueError):
         accepted_kinds: The training op kinds whose run identifiers the op
             accepts. Empty for an op that runs no trained model.
     """
+
+    error_kind: ClassVar[ErrorKind] = "invalid"
 
     def __init__(
         self,
@@ -968,8 +972,21 @@ class ModelReferenceRefusedError(ValueError):
         self.reference: str = reference
         self.accepted_kinds: tuple[str, ...] = accepted_kinds
 
+    def error_reason(self) -> str:
+        """Return :attr:`reason`."""
+        return self.reason
 
-class ModelNotFoundError(LookupError):
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the op, the reference and the kinds that the op accepts."""
+        accepted: list[JsonValue] = list(self.accepted_kinds)
+        return {
+            "op_kind": self.op_kind,
+            "reference": self.reference,
+            "accepted_kinds": accepted,
+        }
+
+
+class ModelNotFoundError(ClassifiedError, LookupError):
     """A run identifier of an accepted kind that names no model.
 
     Raised by :func:`resolve_op_model` in place of the ``FileNotFoundError``,
@@ -985,10 +1002,16 @@ class ModelNotFoundError(LookupError):
         model_kind: The training op kind whose indexes were searched.
     """
 
+    error_kind: ClassVar[ErrorKind] = "not_found"
+
     def __init__(self, message: str, *, reference: str, model_kind: str) -> None:
         super().__init__(message)
         self.reference: str = reference
         self.model_kind: str = model_kind
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the reference and the training op kind that was searched."""
+        return {"reference": self.reference, "model_kind": self.model_kind}
 
 
 def model_kind_for(
