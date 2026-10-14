@@ -3,7 +3,7 @@
 Networks for visual individual identification, each reached by importing its own
 module rather than from here. That is deliberate: ``mosaic.behavior`` imports
 this package eagerly, and every network needs PyTorch, so exporting them would
-make the optional ``identity`` extra a hard requirement for importing mosaic at
+make the optional ``deep-learning`` extra a hard requirement for importing mosaic at
 all. Each module imports torch lazily inside its methods, and
 ``tests/meta/test_behavior_import_is_torch_free.py`` holds that line.
 

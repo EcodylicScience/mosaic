@@ -509,14 +509,10 @@ class FeralFeature:
     :class:`~mosaic.behavior.feature_library.feral_feature.FeralFeature.Params`.
     """
 
-    # Global, like `xgboost` and `lightning-action`: it fits a classifier over a
-    # collection of labeled sequences and then applies it per sequence. It was
-    # declared per-frame, which put it in the wrong group everywhere the category
-    # is read -- the pipeline diagram's colors and `mosaic features list` -- and
-    # disagreed with both the README and CLAUDE.md, which have always called it
-    # a global fit-then-apply feature. Beside the display, the category now
-    # places the run: a GPU feature that fits a model is offered to the queue's
-    # gpu-train lane.
+    # Global, like `xgboost` and `lightning-action`, because it fits a classifier
+    # over a collection of labeled sequences and then applies it per sequence. The
+    # category groups it in the pipeline diagram and `mosaic features list`. A GPU
+    # feature of category global is also offered to the queue's gpu-train lane.
     category = "global"
     # V-JEPA on CUDA by default (`device="cuda"`), so a run holds a GPU.
     resource_class = "gpu"

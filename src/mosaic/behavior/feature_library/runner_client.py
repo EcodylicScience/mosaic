@@ -214,7 +214,8 @@ class RunnerProcess:
             on_event: Called with each event of the command, in order.
             cancel: Asked when each line arrives, and every 0.5 s while none
                 does, including while a runner starts. *on_start* receives it.
-                When it returns True, the runner's process group is killed.
+                When it returns True, the runner's process group is sent
+                SIGTERM, then SIGKILL if it runs 5 s later.
 
         Returns:
             The result of the runner's ``Done``, as JSON.

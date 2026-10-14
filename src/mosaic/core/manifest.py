@@ -15,13 +15,8 @@ and never walked at load time.
 
 **This module holds the format, and nothing else.** It takes no import from
 :class:`~mosaic.core.dataset.Dataset`, so the format can be read, written, tested
-and reviewed without the 5000-line orchestrator that uses it; which manifest a
-dataset has, and what its roots resolve to, belongs there rather than here.
-
-The dependency direction is the point, not the process footprint: importing
-anything under ``mosaic.core`` still pulls pandas, because ``mosaic.core``'s own
-``__init__`` eagerly imports ``Dataset`` and the track-converter registry. This
-module adds nothing to that, and would be cheap on its own if that ever changed.
+and reviewed without the orchestrator. ``Dataset`` chooses the manifest a dataset
+has and resolves its roots.
 
 Not to be confused with :mod:`mosaic.core.pipeline.manifest`, which builds the
 in-memory table of per-sequence work a feature run will do. The two share a word

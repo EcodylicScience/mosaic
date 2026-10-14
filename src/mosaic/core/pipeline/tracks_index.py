@@ -154,6 +154,13 @@ class TracksIndexRow(RunIndexRowBase):
     and ``Path("")`` renders as ``"."``. It holds a path, so it is registered in
     :data:`TRACKS_INDEX_PATH_COLUMNS` for the portability rewrites.
 
+    ``std_format`` is the track schema the table was validated under, the
+    producer's declared ``output_schema``.
+
+    ``source_md5`` is the MD5 of the uploaded file a conversion read, copied from
+    its ``tracks_raw`` row. It is blank for a table that no uploaded file
+    produced.
+
     ``consumed_source_roots`` names the dataset *roots* this table was derived
     from, not paths -- comma-joined and sorted by :func:`encode_source_roots`.
     Roots rather than files because the question it answers is "did a change
@@ -175,6 +182,13 @@ class TracksIndexRow(RunIndexRowBase):
     value into the name would rename one recipe's whole directory because one
     other sequence's source moved -- the same reason a per-frame feature records
     its composition here rather than in its identifier (rule P2d).
+
+    ``consumed_media_composition`` is what the entry's media was when a producer
+    that read video wrote the table (:func:`media_composition_for`). It is
+    compared through
+    :func:`~mosaic.core.pipeline.composition.compositions_disagree`, so a
+    re-transcode reads as drift. It is blank for a conversion, which read no
+    media, and where the composition cannot be established.
 
     ``n_keypoints`` is how many ``(poseX<k>, poseY<k>)`` pairs the table carries,
     measured from the frame as it is written. Keypoints are optional -- a

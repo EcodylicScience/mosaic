@@ -116,6 +116,12 @@ class RunLogSnapshot(TypedDict):
     Zero, ``False`` and ``""`` are indistinguishable from "not reported", the same
     convention as the tracks index's blank ``n_keypoints`` cell meaning *unknown*
     rather than zero.
+
+    The run-log is the only report a queued attempt makes, because a queue starts
+    ``mosaic run`` with its standard output and standard error discarded. A writer
+    emits these events before the terminal event. mosaic-api's sweeper stops
+    reading a log once its status is terminal, and :class:`JsonlRunLog` drops a
+    write made after it is closed.
     """
 
     execution_id: str

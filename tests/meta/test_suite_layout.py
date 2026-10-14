@@ -2,8 +2,9 @@
 
 A test module is placed in the directory that mirrors the ``src/mosaic``
 package it exercises. The tests of one package are then adjacent, and a new
-module has one correct directory. "Where a test goes" in ``CLAUDE.md`` states
-the rule, and the tests below fail on a module or a directory outside it.
+module has one correct directory. "Where a test goes" in ``CONTRIBUTING.md``
+states the rule, and the tests below check the parts of it a scan of the tree
+can read.
 
 A test module that imports another test module, or that finds a file by counting
 directories up from its own ``__file__``, depends on where both files sit. Moved,
@@ -31,7 +32,7 @@ the suite itself."""
 
 _TOP_LEVEL_MODULES: Final = frozenset({"__init__.py", "conftest.py"})
 
-_PLACEMENT_RULE: Final = 'See "Where a test goes" in CLAUDE.md.'
+_PLACEMENT_RULE: Final = 'See "Where a test goes" in CONTRIBUTING.md.'
 
 
 def _suite_modules() -> list[Path]:

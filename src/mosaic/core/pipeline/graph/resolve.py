@@ -8,8 +8,15 @@ it, listing a step's parents, deciding a lane, rendering a status view,
 evaluating a release gate and cancelling must all work without paying it, and the
 gate runs far more often than a submit does.
 
-So the registry imports live **inside the functions**, not at module scope, and
-``tests/meta/test_graph_imports.py`` holds both halves of that line.
+So the registry imports live **inside the functions**, not at module scope.
+:func:`feature_class_for_slug` and :func:`declaration_catalog` import ``FEATURES``
+from ``mosaic.behavior.feature_library``, and :func:`op_class_for_kind` and
+:func:`declaration_catalog` import ``register_ops`` from ``mosaic.tracking``. Both
+are imports from ``core`` upward, made only to fill a registry, and kept inside a
+call so that importing this package stays cheap and ``core`` imports neither
+``behavior`` nor ``tracking`` at module scope.
+``tests/meta/test_graph_imports.py`` checks the feature-library imports. No test
+checks the ``mosaic.tracking`` ones.
 
 **Declarations are read off what a class already declares**, never off its name.
 Whether a feature accepts tracks is answered by validating a probe payload

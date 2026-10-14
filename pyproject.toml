@@ -234,7 +234,7 @@ testpaths = ["tests"]
 # A list rather than one string: the string form nests quotes around `not slow`
 # and reads as a single argument that happens to contain a space.
 #
-# `-m "not slow"` stays here so a bare `pytest` is the fast run CLAUDE.md
+# `-m "not slow"` stays here so a bare `pytest` is the fast run CONTRIBUTING.md
 # documents. Note that a caller passing its own `-m` *replaces* this one rather
 # than intersecting with it -- which is what makes `pytest -m slow` work, and
 # also means `pytest -m "not media"` silently re-enables the slow tests.

@@ -68,13 +68,79 @@ python scripts/gen_docs_reference.py --write
 Regenerating under any other Typer rewrites the page's metavars and CI rejects
 it.
 
+## Running the tests
+
+A bare `pytest` runs every test not marked `slow`, in parallel over one worker per
+core. Pytest is configured in `pyproject.toml`.
+
+```bash
+pytest                          # everything except the slow tests
+pytest -m slow                  # the slow tests only
+pytest -m "slow or not slow"    # everything
+pytest tests/core/media         # one area
+pytest -n0                      # one process, for a debugger or -s
+```
+
+Five markers are declared. `slow` takes seconds to minutes. `media` needs both
+`ffmpeg` and `ffprobe` on `PATH`. `tracker`, `identity` and `feral` are job markers.
+Each selects the CI job whose environment its tests need, and `pytest -m identity`
+runs what the `identity` job runs. A test in one of those areas is marked with it.
+
+`-m` on the command line replaces the `-m "not slow"` in `addopts` instead of
+combining with it. `pytest -m "not media"` therefore runs the slow tests too.
+
+CI's `test` job skips the slow tests, and a weekly workflow runs them. Run
+`pytest -m "slow or not slow"` before a change that touches slow code paths.
+
+## Where a test goes
+
+A test module belongs in the directory that mirrors the `src/mosaic` package of the
+concept it exercises: `tests/core/pipeline/graph/` for the pipeline graph,
+`tests/tracking/trex/` for TREx.
+
+- **The concept decides, ahead of the implementing module.** The preprocess op is
+  implemented in `core/pipeline/preprocess.py`, and its tests are in
+  `tests/core/media/preprocess/` beside the media steps. A tracker op's tests are in
+  `tests/tracking/<tool>/`.
+- **A subpackage gets a directory once it has several test modules.** Until then
+  its tests belong in the nearest enclosing one, as `test_inputs_subclass.py` for
+  `core/pipeline/types/` is in `tests/core/pipeline/`.
+- **Tests of a top-level module (`src/mosaic/*.py`) go to `tests/core/`,** as those
+  of `user_paths` do, or to the `core` package of their concept, as those of
+  `media_probe_config` go to `tests/core/media/`.
+- **`tests/meta/` contains the tests of the repository, its configuration and the
+  suite itself.** It is the one directory without a `src/mosaic` counterpart.
+- **Every test directory contains an `__init__.py`, and test module basenames are
+  unique across the suite.**
+- **Only the root `conftest.py` implements hooks.** A nested conftest declares
+  fixtures. A nested `pytest_collection_modifyitems` receives every item of the
+  session, and a nested `pytest_configure` runs only once pytest collects its
+  directory.
+- **Shared test code is imported only as `from tests.helpers import X`.** A test
+  does not import another test module or a helper submodule. It takes repository
+  paths from `REPO_ROOT`, `TESTS_ROOT`, `SOURCE_ROOT` and `GOLDEN_DIR` in
+  `tests.helpers` and derives none from its `__file__`.
+
+`tests/meta/test_suite_layout.py` fails on a test directory without a `src/mosaic`
+counterpart or an `__init__.py`, a module at the top of `tests/` other than
+`conftest.py` and `__init__.py`, a duplicate basename, a nested hook, and an import or
+`__file__` path outside these rules. The hook, import and `__file__` failures name the
+file and line.
+`tests/meta/test_repository_references.py` fails on a reference to a test module,
+or a link into the repository on GitHub, whose target does not exist. A move or a
+rename therefore rewrites its references in the same change.
+
 ## Code and Review Expectations
 
 - Keep changes minimal and scoped to one concern per PR.
 - Preserve backward compatibility unless a breaking change is explicitly discussed.
 - Add or update tests for behavior changes, in the directory that mirrors the
-  package they exercise (see "Where a test goes" in [CLAUDE.md](CLAUDE.md)).
-- Update docs/notebooks if user-facing behavior changes.
+  package they exercise (see [Where a test goes](#where-a-test-goes)).
+- Update docs/notebooks if user-facing behavior changes, and update
+  `src/mosaic/agent/SKILL.md` when the change alters what a user does.
+- Guidance for coding agents is the root [CLAUDE.md](CLAUDE.md) plus the
+  `CLAUDE.md` files in subdirectories, each loaded when an agent works in that
+  directory.
 
 ## Contributor License Agreement
 

@@ -1,17 +1,20 @@
 """Machinery every integrated tracker shares.
 
-TREx, SLEAP and Lightning Pose differ in what they run and what they emit. They
-do not differ in how a run is *driven*: resolve the model to a content digest,
-mint a run identifier, claim each entry's working directory, decide per phase
-whether the recorded marker still proves the work, run what is stale, record
-what completed, bridge the output into ``tracks/``, and write a row. That
-algorithm lives here once, calling into :mod:`mosaic.core.pipeline.toolenv` to
-locate the tool's environment.
+TREx, SLEAP, Lightning Pose and Ultralytics differ in what they run and what
+they emit. They do not differ in how a run is *driven*: resolve the model to a
+content digest, mint a run identifier, claim each entry's working directory,
+decide per phase whether the recorded marker still proves the work, run what is
+stale, record what completed, bridge the output into ``tracks/``, and write a
+row. That algorithm lives here once, calling into
+:mod:`mosaic.core.pipeline.toolenv` to locate the tool's environment.
 
 This package imports ``core`` and nothing from ``behavior``; ``core`` imports
 nothing from here. A tracker's own module keeps what is genuinely its own -- the
 argv it builds, the settings that define its identity, the phases it runs, and
 the converter it bridges through -- and reaches this package for everything else.
+
+A tracker also declares one
+:class:`~mosaic.core.pipeline.tracking_roots.TrackingRoot` row.
 """
 
 from __future__ import annotations

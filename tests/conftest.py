@@ -147,7 +147,7 @@ def _refuse_two_opencv_builds() -> None:
     ffmpeg, so two of those wheels collide the same way even when only one provides
     ``cv2``. That is the environment CI installs and has never crashed on, so it is a
     documented hazard rather than a refusal here -- see the conda-forge recipe in
-    CLAUDE.md, which is what removes it.
+    docs/installation.md, which is what removes it.
     """
     conda: list[str] = []
     wheels: list[str] = []

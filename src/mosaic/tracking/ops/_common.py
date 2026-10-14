@@ -202,6 +202,11 @@ def fingerprint_yolo_dataset(data_yaml: Path) -> str:
     writes ``os.path.abspath(dataset_root)``, so digesting the raw text made the
     same annotations at two locations two different models.
 
+    The listing records each file's relative path and size, not its bytes, and
+    covers only the declared split roots (``train/images`` and its siblings). The
+    label files beside them are in neither, so a label corrected in place leaves
+    the digest where it was.
+
     A YAML that declares no splits, names roots that do not exist yet, or does
     not parse still yields a digest: identity computation is not the place to
     refuse a dataset.

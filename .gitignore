@@ -1,6 +1,7 @@
 # OS / editor
 .DS_Store
 .claude/
+CLAUDE.local.md
 .worktrees/
 
 # MkDocs build output

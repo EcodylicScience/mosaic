@@ -150,9 +150,11 @@ class TrackConverter(Generic[P]):
             variant. Declaring a *different* schema is a change of output
             semantics and takes a ``version`` bump like any other.
 
-            The default names ``trex_v1`` because that is what a converter
-            written before this existed emits -- describing it, rather than
-            asking every out-of-tree converter to restate it.
+            The default is ``trex_v1``, the legacy schema whose spatial columns
+            are centimeters and whose ``X`` is a head position, and
+            :func:`register_track_converter` does not check it. A converter that
+            omits the declaration is validated and recorded under that schema.
+            Every new converter declares one, ``mosaic_v1`` for a pixel table.
         Params: The parameter model. Everything in it determines the output
             except fields marked ``HASH_EXCLUDE``.
     """
@@ -236,7 +238,7 @@ def get_track_converter(src_format: str) -> TrackConverter[TrackConvertParams]:
 
 
 def ensure_track_converters_registered() -> None:
-    """Fill :data:`TRACK_CONVERTERS` from the in-tree library when nothing has.
+    """Import the in-tree library, which registers every built-in converter.
 
     A converter registers only as a side effect of importing the module that
     defines it. ``mosaic.core`` used to perform that import on every import of
@@ -269,6 +271,10 @@ def merge_on_column_union(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
     its ``output_fields`` asked for, per individual -- so a column present for
     one and absent for another survives as NaN rather than dropping for the
     whole sequence.
+
+    It does not read ``frame`` or ``id``. Files that are clips of one sequence,
+    each numbered from frame 0, merge into a table in which one frame number
+    names a moment in each clip. No check refuses that table.
 
     Two callers reach it: ``convert_all_tracks``, for files a user uploaded, and
     the TRex bridge, for files the tracker has just written. They had a copy

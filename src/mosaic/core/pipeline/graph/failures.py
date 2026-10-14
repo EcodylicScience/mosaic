@@ -24,7 +24,7 @@ request's answer must not silently bind another's. The exclusions therefore live
 under the request that made them.
 
 **Waiting and quarantined are kept apart, and which one a step meets matters.** An
-entry inside its backoff has failed recently and is not due yet; an entry past the
+entry inside its backoff has failed recently and is not due yet; an entry at the
 attempt bound will not succeed. Only the second is something to decide about.
 Treating a wait as a verdict would let one explicit gesture *permanently* drop an
 entry that needed nothing but a few more seconds -- and an exclusion changes what

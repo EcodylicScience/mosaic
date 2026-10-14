@@ -1,4 +1,18 @@
-"""Video I/O helpers for media extraction."""
+"""The media read facade: one entry point per kind of read, dispatching on the path.
+
+:func:`open_frame_reader` (sequential, batched) and :data:`MultiVideoReader`
+(seek and read across an entry's files) open an imgstore directory through
+:mod:`mosaic.core.media.imgstore_io` and any other file through ``mosaic_media``.
+Every read names a :data:`~mosaic.core.media.read_target.ReadTarget`, and the
+facts it injects are gated against that target first.
+
+A raw ``.h264`` elementary stream (Raspberry Pi) lacks a container. Its header
+metadata is unreliable, and a seek corrupts the decoder. ``probe_media`` measures
+its frame count and rate by scanning packets, and ``VideoReader`` decodes it
+sequentially with those facts injected. Its verdict requires an analysis
+transcode. An ``"analysis"`` read of one raises, and a ``"raw"`` read warns and
+proceeds. Open one through this module.
+"""
 
 from __future__ import annotations
 

@@ -1,35 +1,30 @@
 """Converting a pixel table into physical units, as a recorded step.
 
-Tracks are pixels, everywhere and by construction. That is not because pixels are
-the useful unit -- for most questions they are not -- but because a pixel is what
-the camera actually measured, and a centimetre is a pixel plus a claim about the
-world. Keeping the claim out of the table means a table cannot be silently wrong
-about it, which is what happened when one tracker wrote centimetres into the same
-columns every other tracker filled with pixels.
+Tracks are pixels everywhere, because a pixel is what the camera measured and a
+centimetre is a pixel plus a claim about the world. A table that holds only
+pixels cannot be wrong about that claim.
 
-So the conversion lives here. The scale comes from the media index, where it sits
-beside the video it describes: it is a property of the camera and the rig, so a
-dataset that mixes rigs carries a different value per row and nothing has to be
-told twice. Running this feature records which scale was used in a run
-identifier, so two calibrations are two addressable results rather than one
-column that quietly changed meaning.
+The scale comes from one of two places. An explicit ``cm_per_pixel`` is hashed,
+so two scales passed that way are two addressable results. Without it, the scale
+is read from the media row of the video it describes. It is a property of the
+camera and the rig. A dataset that mixes rigs records a different value per row.
+That scale enters neither the run identifier nor the composition that the cache
+compares. After :meth:`~mosaic.core.dataset.Dataset.set_media_calibration`
+changes it, a finished run keeps serving its earlier output until the run is
+overwritten or the scale is passed as ``cm_per_pixel``.
 
 **Uncalibrated refuses.** A dataset that has not been told its scale cannot be
-given one by default: ``1.0`` is a scale, not an absence, and assuming it would
-reproduce exactly the failure this whole arrangement exists to remove.
+given one by default. ``1.0`` is a scale, and assuming it would reproduce the
+failure this arrangement exists to remove.
 
 **Converting in place is a mode, and it does not move the invariant.** The claim
-is about *tracks*: the tables under ``tracks/``, which this feature never writes
-and which stay in pixels whatever mode it runs in. Its own output is a derived
-table like any other, and a derived table has always carried whatever unit its
-feature computed -- ``speed-angvel`` over a centimetre input reports cm/s and
-always did. What ``mode="convert"`` adds is that the derived table is also
-*track-shaped*, so a track feature can consume it and a whole pipeline can run
-downstream of the conversion rather than around it. That is the case where
-"which unit is this?" gets thin, and the answer is the same one this module is
-built on: the scale is in the run identifier, so the table is addressable rather
-than conventional, and the pixel original is still on disk, unmodified, one
-input away.
+is about *tracks*, the tables under ``tracks/``, which this feature does not
+write and which stay in pixels in either mode. This feature's output is a derived
+table, in the unit it computed. Over a centimetre input, ``speed-angvel``
+reports cm/s. ``mode="convert"`` makes the derived table *track-shaped* as well.
+A track feature can then consume it, and a pipeline can run downstream of the
+conversion. The table is addressed by its run identifier like any other output,
+and the pixel original stays on disk, unmodified, one input away.
 """
 
 from __future__ import annotations

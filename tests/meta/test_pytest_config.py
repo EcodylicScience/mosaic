@@ -138,7 +138,7 @@ def test_the_default_invocation_deselects_slow() -> None:
     )
     assert ["-m", "not slow"] == addopts[:2], (
         f"addopts no longer begins with the slow deselection: {addopts}. "
-        "A bare `pytest` is documented in CLAUDE.md as running everything except "
+        "A bare `pytest` is documented in CONTRIBUTING.md as running everything except "
         "the slow tests."
     )
 

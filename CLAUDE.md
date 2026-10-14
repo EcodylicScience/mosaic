@@ -1,1793 +1,241 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) and other AI coding
-agents when working with code in this repository.
+This file guides coding agents that change mosaic's source. If the user is *using*
+mosaic (building a dataset, running the CLI, writing notebooks or analysis code) rather
+than changing it, read [src/mosaic/agent/SKILL.md](src/mosaic/agent/SKILL.md) and follow
+it instead of the rules below, and suggest running that work in a project directory
+outside this checkout.
 
-## Project Overview
+## Project overview
 
-`mosaic-behavior` (imported as `mosaic`) is a Python toolkit for animal
-behavior analysis. Given pose tracks (per-frame keypoints with identities), it
-produces standardized parquet track tables, behavioral features (kinematic,
-social, spectral, reduction), unsupervised embeddings and clusters
-(t-SNE / k-means / Ward / ARHMM / keypoint-MoSeq / VAME), supervised
-classifiers (XGBoost, Lightning-Action, FERAL), visual identification models
-from egocentric crops, and annotated overlay videos / timelines.
+`mosaic-behavior` (imported as `mosaic`) turns per-frame pose tracks into standardized
+parquet track tables, behavioral features, embeddings and clusters, classifiers,
+identity models and annotated videos. It also samples frames for annotation and trains
+pose models. See [README.md](README.md) and [docs/index.md](docs/index.md).
 
-If pose tracks are not yet available, mosaic also covers the upstream pipeline:
-frame sampling for annotation, and pose-model training from CVAT / COCO /
-Lightning Pose annotations using YOLO pose, POLO point detection, or a PyTorch
-heatmap localizer.
-
-Public docs: <https://ecodylicscience.github.io/mosaic/>.
-
-## Development Commands
-
-### Environment setup
+## Development environment
 
 ```bash
-conda create -n mosaic python=3.12 -y
-conda activate mosaic
+conda create -p ./.venv python=3.12 -y      # the path [tool.basedpyright] expects
+conda activate ./.venv
 conda install -c conda-forge ffmpeg av py-opencv -y
 pip install -e ".[all]"
 ```
 
-`ffmpeg` (with `ffprobe`) must be on `PATH` — it is used by media indexing and
-raw H.264 frame counting.
+Install from conda before pip. Conda-forge's `av` and `py-opencv` then satisfy pip's
+requirements, and pip installs neither wheel. A `uv venv` cannot take conda packages.
+`ffmpeg` and `ffprobe` must be on `PATH`. Every CI job runs Python 3.12.
 
-**`av` and `py-opencv` come from conda so that the environment holds one ffmpeg.**
-The PyPI wheels for both vendor a complete ffmpeg build of their own, and two of
-them in one process crash it nondeterministically — see pitfall 8. The conda-forge
-builds link the `ffmpeg` installed on the line above instead, so there is one
-`libavdevice` and one `libSvtAv1Enc`. Nothing here is pinned: `av` satisfies
-`av>=18,<19` and `py-opencv` registers both `opencv-python` and
-`opencv-python-headless`, so the `pip install` that follows finds every requirement
-already met and installs neither wheel. Order matters — conda first, pip second.
+**One ffmpeg build per environment.** Two ffmpeg builds in one process crash it at a
+different point on every run. Two `cv2` wheels (`opencv-python` beside
+`opencv-python-headless`) collide on every platform, and `tests/conftest.py` refuses to
+start with them. The `av` wheel beside a `cv2` wheel collides on macOS whichever `cv2`
+flavor is installed, and a dependency edit cannot fix it. Use conda on macOS. On Linux,
+CI's wheels against an apt `ffmpeg` work. The Ultralytics environments declare headless
+OpenCV and override the GUI wheel away, and
+`tests/tracking/ultralytics_track/test_ultralytics_preflight.py` checks their locks.
 
-A `uv venv` cannot take conda packages, so a checkout that wants this needs a conda
-environment. `conda create -p ./.venv python=3.12` puts one at the path
-`[tool.basedpyright]` and the editor integration already expect.
+To work against an unreleased `mosaic-media`, install it editable over the released
+wheel ([CONTRIBUTING.md](CONTRIBUTING.md#environment-notes)). A `[tool.uv.sources]`
+path breaks `pip install -e .`, because pip does not read that table.
 
-Python `>=3.12` is required (`pyproject.toml`).
+## Dependency invariants
 
-`mosaic-media` is a sibling package by the same authors, and it resolves from
-PyPI like any other dependency — no second clone is needed. To work against its
-unreleased `main`, install it editable *over* the released wheel:
-`pip install -e "../mosaic-media[io,cli]"`. Do not reintroduce it as a
-`[tool.uv.sources]` path: that table is a uv extension pip does not read, so a
-path source there makes `pip install -e .` fail outright on a machine without
-the sibling. See [CONTRIBUTING.md](CONTRIBUTING.md).
+- A bare `pip install -e .` is a complete analysis install.
+- `deep-learning` (`torch`, `timm`) serves mosaic's PyTorch code, the heatmap localizer
+  and the identity models. The `feral` and `lightning-action` packages also require
+  PyTorch.
+- `all` is `mosaic-behavior[deep-learning,faiss]` and resolves only non-AGPL
+  distributions. It leaves out `lightning-action` (its DALI requirement installs only
+  with CUDA), `movement` (heavy and single-purpose) and `feral` (its exact pins
+  downgrade mosaic's floors).
+- `lightning-action` stays uncapped. Every release requires the DALI sdist that builds
+  only with CUDA. A version cap leaves the extra on an older release with the same
+  requirement.
+- Retired extras stay retired, without aliases
+  (`tests/meta/test_optional_dependency_messages.py`).
+- `feral>=1.0,<2`: mosaic imports FERAL symbols outside its `__all__`, and the `feral`
+  CI job fails on a release that moves one.
+- `imgstore` is in the `test` dependency group, because only the suite writes stores.
+- Ultralytics, POLO, keypoint-MoSeq and VAME run only as separate programs in
+  environments the user builds. No extra or dependency group declares them. The
+  [behavior](src/mosaic/behavior/CLAUDE.md) and [tracking](src/mosaic/tracking/CLAUDE.md)
+  guides give the runners and the separation test. keypoint-MoSeq's non-commercial
+  license cannot combine with the AGPL. Do not bundle it into a packaged installer.
+- Model weights come from their hubs or from the user. [NOTICE](NOTICE) states their
+  terms.
 
-### Optional extras
-
-**A bare `pip install -e .` is a complete analysis install.** Converters,
-features, wavelets, clustering, classifiers, overlays and crops all work with no
-extra at all, because PyWavelets, h5py and PyTables are base dependencies -- each
-gates reading a file the user already has, and the three are ~30 MB together.
-`[all]` adds the deep-learning surface. For the full table, see
-[docs/installation.md](docs/installation.md). Notable points:
-
-- **`deep-learning` (`torch` + `timm`) is the one gate on PyTorch.** It powers
-  the heatmap localizer and all three identity models, and replaced the separate
-  `localizer` and `identity` extras, which installed near-identical environments
-  once h5py moved to the base. On Linux torch pulls the whole `nvidia-cu12`
-  stack -- about 4 GB of wheels -- which is the entire reason the default install
-  does not carry it.
-- **No extra installs Ultralytics.** Nothing under `src/mosaic/` imports
-  Ultralytics outside the runner. Every path that reaches it — `mosaic track
-  ultralytics` and `mosaic run --kind infer-pose|infer-points|train-pose|train-points`
-  — runs in `src/mosaic/tracking/external/ultralytics-env/` or `.../polo-env/`,
-  whose own `pyproject.toml` files are the only place `lap` (the tracker's
-  linear-assignment solver, in no ultralytics extra, so undeclared it gets
-  pip-installed mid-run), `opencv-python-headless` and, upstream only, the
-  `ultralytics>=8.4.63` floor the four newer tracker backends arrived in are
-  declared — the POLO pin is a bare git reference, which cannot carry a version
-  specifier.
-- **`all` is self-referential** (`["mosaic-behavior[deep-learning,faiss]"]`), so
-  a bundle cannot drift from its parts. It excludes `lightning-action` and
-  `movement` (heavy, single-purpose) and `feral` (wants its own environment), and
-  it reaches no AGPL-licensed distribution at all.
-- **`yolo-augment` is gone, not aliased.** `albumentations` now belongs to
-  whichever environment runs the trainer, opted into with `uv sync --extra
-  augment` there. It is still opt-in because it changes what a run does — it makes
-  Ultralytics add Blur / MedianBlur / ToGray / CLAHE at p=0.01 — and nothing
-  records which way a run went. No alias in mosaic's own pyproject could install
-  it where it is now read, so pip's unknown-extra warning is the signal that the
-  opt-in moved. Both environments declare `opencv-python-headless` outright and
-  override away the GUI wheel Ultralytics asks for; see pitfall 8.
-- **`lightning-action` is deliberately uncapped**, because a cap does not help.
-  It requires `nvidia-dali-cuda110` with no environment marker, and PyPI serves
-  that as an sdist for every current version, so the extra fails to install
-  anywhere without CUDA. Every release does it -- 1.0.2 declares the requirement
-  exactly as 1.1.0 does -- so the `<1.1` bound this carried, on the reasoning
-  that 1.1.0 introduced it, only held the extra on an older release. It also
-  used to stop `uv lock` resolving outright; a `[[tool.uv.dependency-metadata]]`
-  entry for `nvidia-dali-cuda110` is what unblocks that, and the lock is current
-  again -- see [CONTRIBUTING.md](CONTRIBUTING.md).
-- `movement` declares the movement-library integration behind
-  `movement-smooth` and `movement-filter-interpolate`. Before it existed those
-  were two registered features with no declared dependency at all.
-- `faiss` (formerly `gpu`, which promised a GPU and installed `faiss-cpu`) adds
-  the `"faiss"` kNN backend for `global-tsne`; the default backend is `"annoy"`
-  and needs nothing. On Linux + CUDA, install `faiss-gpu` manually.
-- **`imgstore` is not an extra.** Reading a store is native — the package is
-  needed only to *write* the fixture stores the suite builds — so it lives in
-  the `test` dependency group, which every CI job installs.
-- **The retired extras are gone, not aliased.** `recommended`, `identity`,
-  `localizer`, `gpu`, `pose` and `polo` were removed in 0.14.0, after a release or
-  two as aliases. pip *warns* about an unknown extra and carries on, so a saved
-  `.[recommended]` now installs the base with no torch in it. The CHANGELOG names
-  what replaces each. `tests/meta/test_optional_dependency_messages.py` fails if
-  one is declared again.
-- `feral` installs the FERAL V-JEPA behavior classifier (`FeralFeature`, train +
-  infer) from PyPI, as `feral>=1.0,<2`. It runs in-process (not sandboxed like
-  keypoint-MoSeq) and **wants an environment of its own, for a different reason
-  from everything above**: FERAL pins its dependencies exactly while every
-  mosaic requirement is a floor, so pip resolves the pair happily and downgrades
-  each one. No install layout fixes that. The upper bound is load-bearing:
-  mosaic imports thirteen symbols from FERAL's submodules, ten of them outside
-  that package's `__all__`, and the `feral` CI job exists to make a release that
-  moves one fail here.
-- Mosaic ships no weights — see [NOTICE](NOTICE).
-
-### Smoke import
+## Commands and definition of done
 
 ```bash
-python -c "from mosaic.core.dataset import Dataset; print('OK')"
+ruff check --fix && ruff format            # configured in pyproject.toml
+basedpyright                               # strict; whole project or one file
+pytest                                     # everything not marked slow, in parallel
+pytest -m "slow or not slow"               # everything
+mkdocs serve                               # or: mkdocs build --strict
+python scripts/gen_docs_reference.py --write
 ```
 
-(Same check as [CONTRIBUTING.md](CONTRIBUTING.md).)
-
-### Testing
-
-Pytest is configured in `pyproject.toml`. Slow tests are deselected by default,
-and every run is parallel: `addopts` ends in `-n auto --dist worksteal`, so
-pytest-xdist spreads the suite over one worker per core.
-
-```bash
-pytest                                      # all tests except those marked slow
-pytest -m slow                              # slow tests only
-pytest -m "slow or not slow"                # everything
-pytest -m identity                          # what CI's identity job runs
-pytest -m tracker                           # what CI's tracking job runs
-pytest -m feral                             # what CI's feral job runs
-pytest tests/core/media                     # one area
-pytest tests/cli/test_cli.py                # one file
-pytest tests/cli/test_cli.py::test_x        # one test
-pytest -k "feature_params"                  # name pattern
-pytest -n0                                  # one process, for a debugger or -s
-pytest -v                                   # verbose
-```
-
-`-n0` is the opt-out, and it is the spelling that matters when a run needs one
-process: a `pdb` breakpoint, `-s` output, or a test being bisected for
-cross-test interference. `worksteal` rather than the default `load` because a
-case here costs anywhere from microseconds to a video encode, and a static split
-leaves workers idle at the end of a run. `pytest-xdist` lives in the `test`
-dependency group beside `imgstore`, so every CI job already installs it.
-
-Five markers are declared, all in `[tool.pytest.ini_options]`: `slow`, `media`
-(needs `ffmpeg` **and** `ffprobe` on PATH), `tracker`, `identity` and `feral`. The
-last three are **job markers**: each selects the CI job whose environment its tests
-need, so a new test file in any of those areas is covered the day it lands rather
-than when someone remembers to edit the workflow. The `test` job deselects all
-three, so every test runs in exactly one job.
-
-`-m` on the command line **replaces** the `-m "not slow"` in `addopts` rather than
-intersecting with it. That is what makes `pytest -m slow` work, and it also means
-`pytest -m "not media"` quietly re-enables the slow tests.
-`tests/meta/test_pytest_config.py` pins the default so that stays deliberate.
-
-Three tests keep the suite honest about its own environment.
-`tests/meta/test_optional_dependency_coverage.py` reads the suite's guards out of
-its AST — both `importorskip` calls and the literal `find_spec` probes that back
-a two-directional `skipif`, as `feral`'s do — and fails when one names a module
-no CI job installs, **or when one guards a module that is a base dependency**,
-since a guard that can never fire masks a broken install.
-`tests/meta/test_optional_dependency_messages.py` checks the other direction:
-every extra named in a `pip install "mosaic-behavior[...]"` hint or passed to
-`optional_dependency.require` must be declared, and every self-referential extra
-must resolve — a dangling one would make pip warn and install the base, which is
-a silently torch-less environment. And `tests/meta/test_pytest_config.py` asserts
-the configuration above.
-
-**Shared test code is imported only as `from tests.helpers import X`**, never from
-another test module or a helper submodule, and a test finds the repository through
-`REPO_ROOT`, `TESTS_ROOT` and `GOLDEN_DIR` from there, never from its own
-`__file__`. Both habits tie a test to where its file sits, and
-`tests/meta/test_suite_layout.py` fails on either, naming the file and line. A
-golden file is read and rewritten through the `golden` helpers, whose
-`regenerate_command(__name__)` names the command a failure message should give.
-
-#### Where a test goes
-
-A test module belongs in the directory that mirrors the `src/mosaic` package of
-the concept it exercises: `tests/core/pipeline/graph/` for the pipeline graph,
-`tests/tracking/trex/` for TREx.
-
-- **The concept decides, ahead of the implementing module.** The preprocess op is
-  implemented in `core/pipeline/preprocess.py`, and its tests are in
-  `tests/core/media/preprocess/` beside the media steps. A tracker op's tests are
-  in `tests/tracking/<tool>/`.
-- **A subpackage gets a directory once it has several test modules.** Until then
-  its tests belong in the nearest enclosing one, as `test_inputs_subclass.py` for
-  `core/pipeline/types/` is in `tests/core/pipeline/`.
-- **Tests of a top-level module (`src/mosaic/*.py`) go to `tests/core/`,** as
-  those of `user_paths` do, or to the `core` package of their concept, as those
-  of `media_probe_config` go to `tests/core/media/`.
-- **`tests/meta/` contains the tests of the repository, its configuration and
-  the suite itself.** It is the one directory without a `src/mosaic` counterpart.
-- **Every test directory contains an `__init__.py`. Test module basenames are
-  unique across the suite.**
-- **Only the root `conftest.py` implements hooks.** A nested conftest declares
-  fixtures. A nested `pytest_collection_modifyitems` receives every item of the
-  session, and a nested `pytest_configure` runs only once pytest collects its
-  directory.
-
-`tests/meta/test_suite_layout.py` fails on a module or a directory outside these
-rules. `tests/meta/test_repository_references.py` fails on a reference to a test
-module, or a link into the repository on GitHub, whose target does not exist. A move
-or a rename therefore rewrites its references in the same change. The reference scan
-leaves out `CHANGELOG.md` and the plans, specs, issues and drafts under `docs/`,
-because they describe the tree at the time they were written.
-
-### Linting and formatting
-
-```bash
-ruff check --fix     # lint + autofix
-ruff format          # format
-```
-
-Ruff is configured in `pyproject.toml`. There is no separate `ruff.toml`.
-
-### Type checking
-
-mosaic uses **basedpyright** in strict mode (target Python 3.12, the oldest
-interpreter `requires-python` allows and the one every CI job runs):
-
-```bash
-basedpyright            # full project
-basedpyright src/mosaic/core/dataset.py    # one file
-```
-
-`src/mosaic/behavior/feature_library/external/` has its own execution
-environment (it runs keypoint-MoSeq and VAME in isolated venvs) and is
-excluded from the uv workspace. See `[tool.basedpyright]` and
-`[tool.uv.workspace]` in `pyproject.toml`.
-
-### Documentation
-
-Built with MkDocs Material + mkdocstrings (Google-style docstrings):
-
-```bash
-mkdocs serve     # live-reload at http://127.0.0.1:8000/
-mkdocs build     # static site into ./site/
-```
-
-**`docs/reference/` is generated wholesale** by `scripts/gen_docs_reference.py`
-from the live registries and the Typer app: features, ops, media steps, the CLI,
-and the track formats. Never edit those files. Run the script with `--write` after
-changing a registry, and commit the result; the docs workflow runs it with
-`--check` and fails when a committed page no longer matches the code.
-
-Every other page under `docs/` is hand-written prose, and there is no rendered
-Python API reference. `docs/api/` held one: fourteen mkdocstrings stubs reaching 87
-of 303 public modules, with no gate to keep them honest and nothing that swept them.
-A public object is documented by its docstring, read in the source or in an editor.
-
-The site deploys from `.github/workflows/docs.yml` on every push to `main`, and
-builds with `--strict` on every pull request. Do not run `mkdocs gh-deploy`: Pages is
-fed from Actions, and a local deploy would publish whatever untracked internal docs
-happen to be in the working tree.
-
-### CI
-
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs five jobs on push
-and pull request. There is no `.pre-commit-config.yaml`. **Every job installs
-the `test` dependency group**, because `tests/conftest.py` demands `imgstore` of
-any run with `CI` set and a job without it fails at collection.
-
-**Each test runs in exactly one place.** The `test` job takes what no job marker
-claims and is not slow; each marked job takes all of its marker, slow tests
-included; and [`.github/workflows/slow.yml`](.github/workflows/slow.yml) takes the
-remaining slow tests, weekly and on manual dispatch, as its own workflow so a push
-cannot cancel it. `tests/meta/test_pytest_config.py` reads both workflows and
-fails when a marker is selected twice or not at all.
-
-- **`test`** — `-m "not slow and not tracker and not identity and not feral"`.
-  **A change that only breaks a slow test goes green on push** and red at the
-  next weekly run; run them locally.
-- **`identity`** — the identity-marked suites under a `deep-learning`
-  environment, so `pytest.importorskip("torch")` cannot silently skip them. Its
-  slow tests download pretrained timm weights, which the job caches.
-- **`tracking`** — the `tracker`-marked suites, against real Ultralytics and POLO
-  environments built the way a user builds them: `uv sync --python 3.12` in
-  `src/mosaic/tracking/external/ultralytics-env/` and `.../polo-env/`, located by
-  `MOSAIC_ULTRALYTICS_BIN` and `MOSAIC_POLO_BIN`. No extra installs Ultralytics
-  any more, so there is nothing to leave out; the point of building the real
-  environments is that the preflight comparison has something to compare against. Without the built environment the preflight comparison against the
-  shipped tracker tables would skip green and prove nothing, so
-  `MOSAIC_CI_TRACKING=1` promotes an environment that does not resolve from
-  "skip" to "broken environment".
-- **`feral`** — the FERAL-marked suites under a `feral` environment. Mosaic
-  imports ten symbols FERAL's `__all__` does not carry, so this is what notices a
-  release that moves one. Its own runner because FERAL's exact dependency pins
-  would otherwise re-resolve the environment the other jobs share.
-- **`lint`** — `uvx ruff check` **and** `uvx ruff format --check` over `src` and
-  `tests`, on push as well as on pull request. Formatting is a merge gate, not a
-  suggestion. It was once scoped to the files a pull request touched, which meant
-  it never ran at all on a repository that pushes to `main`.
-
-**`slow.yml` also builds the VAME environment**, from the committed lock under
-`src/mosaic/behavior/feature_library/external/vame-env/`. The vame integration
-tests run against it there instead of skipping. The build downloads
-about 3.4 GB of CUDA wheels, too much for a job on every push. `MOSAIC_CI_VAME=1`
-promotes an unresolved environment from "skip" to "broken environment", the
-same role `MOSAIC_CI_TRACKING=1` plays for the `tracking` job above.
-
-Not gated: `basedpyright`, which carries a pre-existing backlog of ~11k
-strict-mode errors. So before reporting work done, run what CI will not:
-
-```bash
-basedpyright                        # not gated at all
-pytest -m "slow or not slow"        # a push skips the slow ones
-```
-
-## High-Level Architecture
-
-### `Dataset` orchestrator
-
-[`src/mosaic/core/dataset.py`](src/mosaic/core/dataset.py) defines `Dataset`,
-the central object users interact with. A `Dataset` manages a fixed set of
-named roots:
-
-- `media_raw/`    — the originals index (`index.csv`, ffprobe metadata). The one
-                  source root `backfill_roots` cannot fill, so it may legitimately
-                  be absent; accessors resolve through `resolve_media_root()`
-- `media/`        — transcode derivatives + their own `index.csv`, one row per
-                  derivative, reached through `media_routing_context`
-- `media/frames/` — extracted PNGs for annotation (root key `frames`)
-- `media/preprocess/<run_id>/`: media variants written by the `preprocess` op.
-                  Each variant has one re-encoded file per entry (and camera)
-                  and the recipe that made it, `recipe.json`, which
-                  `mosaic run --params @<path>` reads back. One typed
-                  `index.csv` beside the run directories records every variant.
-                  Media scans skip this directory by resolved path, and
-                  `_tracking` by path component
-- `tracks_raw/`   — user-uploaded raw tracks + `index.csv`
-- `labels_raw/`   — user-uploaded raw labels + `index.csv`, and beside them the
-                  **versioned label series** (`keypoints/`, with `behavior/`
-                  reserved): an editor's saved revisions, under a different
-                  change rule. See "Versioned label series" below
-- `_tracking/<tool>/` — run-addressed *raw* output of integrated trackers
-                  (`trex` / `sleap` / `litpose` / `ultralytics`) and of model inference
-                  (`infer-pose` / `infer-points` / `infer-localizer`), before
-                  conversion. Kept out of `tracks_raw/` so that root holds only
-                  user-uploaded content, and **excluded by name from every scan
-                  that walks the dataset for user content** — the exclusion is a
-                  path-component check — `is_under_tracking_root` in
-                  `core/pipeline/tracking_roots.py`, called from `iter_track_files`
-                  and from `_probe_dir_rows` (the prober behind both `scan_media`
-                  and `index_media`) — because `exclude_patterns` matches
-                  basenames and cannot express a directory. Locations come from
-                  the registry in
-                  [`core/pipeline/tracking_roots.py`](src/mosaic/core/pipeline/tracking_roots.py),
-                  never spelled inline; `mosaic sweep-tracking` reclaims what is
-                  finished and past its retention window
-- `tracks/<variant>/` — standardized `<group>__<seq>.parquet`, one directory
-                  per tracks recipe, + a single typed `index.csv`
-- `labels/<kind>/` — converted manual labels (`.npz`)
-- `features/<name>/<run_id>/` — per-feature outputs
-- `models/<name>/<run_id>/`   — trained model artifacts
-
-### The dataset manifest
-
-`dataset.yaml` is what makes a directory a mosaic dataset. Its format lives in
-[`core/manifest.py`](src/mosaic/core/manifest.py) as pydantic models that take no
-import from `Dataset`; `Dataset` holds one and exposes its fields as properties.
-
-- `manifest_version: 3` is current (3 added `series` to a labels source, which
-  an older reader would have met as a schema error rather than as the version
-  error it is). An older manifest is migrated **in memory**
-  on read and stays as it is on disk until something saves, so a read-only mount
-  works. A *newer* one raises rather than being read under the wrong rules.
-- **Unknown top-level keys are preserved**, which is what made retiring
-  `format`, `index_format`, `dataset_type`, `segment_duration` and `time_column`
-  cost nothing: they are no longer modeled, and a file that holds them keeps
-  them through a load-and-save round trip.
-- `save()` is atomic. `Dataset.mutate_manifest()` is the read-modify-write seam
-  for a writer that may be racing another one.
-- **Roots live inside the dataset; sources deliberately do not.** See below.
-- **`libraries:` links the datasets a trained model may be resolved from.** A
-  top-level key, so it needed no version bump: an older reader preserves it.
-  See "Library datasets" below.
-
-### Scan sources: where a dataset draws its raw files from
-
-`sources:` declares, per raw root, the directories and files a scan reads. A
-source may point anywhere -- that is the mechanism that replaced an external
-`media_raw`, with the files recorded by absolute `abs_path` into an index that
-stays inside. A source directory is never created and never walked at load time.
-
-Two modes. A **directory** source globs (`extensions` / `patterns`,
-`recursive`); a **files** source claims exactly the paths it lists and nothing
-beside them, which is what an import selecting some of a folder's contents
-needs -- no glob expresses an arbitrary subset. Each source carries its whole
-recipe, so one dataset can hold TREx output beside CalMS21 arrays.
-
-**A scan replaces what it claims and preserves everything else**
-([`core/pipeline/scan_claim.py`](src/mosaic/core/pipeline/scan_claim.py)). A row
-under no scanned source survives: one written by an assignment scope, or one
-pointing at a file outside the dataset. A file removed from a claimed directory
-does leave. Two sources of one kind may not claim the same file, so the claimed
-sets partition; two file sources sharing a directory with disjoint lists are
-legal and expected. `--prune-unsourced` opts into dropping unclaimed rows.
-
-A scan never overwrites an identity a caller **assigned** through a
-`MediaIndexScope`; it refreshes the measured cells and keeps the identity ones.
-Without that, declaring `media_raw` as a source would silently repartition every
-project the control plane manages.
-
-**Kinds are bare; roots carry `_raw`.** A source *kind* is `media` / `tracks` /
-`labels` (`SourceKind`), the root it feeds is `media_raw` / `tracks_raw` /
-`labels_raw`, and `_RAW_ROOT_FOR_KIND` joins them. So the scan verbs are
-`scan_media` / `scan_tracks` / `scan_labels` — named for the kind, matching
-`mosaic scan --kind`.
-
-`_raw` is a **disambiguator, not a decoration**: it marks a name only where two
-indexes would otherwise answer to one, because "picking the wrong one is a silent
-wrong answer rather than an import error"
-([`tracks_raw_index.py`](src/mosaic/core/pipeline/tracks_raw_index.py)). Hence
-`read_tracks_raw_index` beside a real `read_tracks_index`, but no
-`labels_raw_index` module at all — nothing collides with it. Nothing scans the
-converted `tracks/`, so no scan verb needs the suffix either.
-
-The media accessors (`index_media`, `write_media_index`, `read_media_index`)
-carry no `_raw` for a different reason: `media_raw` is the one source root
-`backfill_roots` cannot fill — an empty `media_raw/` on a dataset whose videos
-sit in `media/` would make its media vanish — so it may legitimately be absent,
-and those methods resolve through `resolve_media_root()` rather than pinning a
-root a `_raw` name would promise. They read and write the **originals** index;
-the derivative index (`media/index.csv`, one row per transcode) is reached
-through `media_routing_context`.
-
-### Versioned label series
-
-`labels_raw` holds two things under two rules, and **the rule is declared per
-series in a registry, never inferred from a path**
-([`core/pipeline/label_series.py`](src/mosaic/core/pipeline/label_series.py)).
-
-| | Uploaded label files | A series (`labels_raw/<series>/<key>/rev<N>/`) |
-| --- | --- | --- |
-| Rule | Truth: one current state per sequence | Versioned: revisions coexist |
-| A change | Moves the composition, blocks while derivatives exist | Is a new `rev<N>`; nothing blocks |
-| Consumer | Reads the current state | Names the revision it read |
-| Index | `labels_raw/index.csv`, per sequence | `labels_raw/<series>/index.csv`, per revision |
-| Composition | Enters `sequences.csv` | **Never** enters it |
-
-A series is an editor's committed state projected to disk when a consumer needs a
-fixed copy or a person saves a version. An editor save, close or completion flag
-does not write a revision. The keypoint annotator's series exists now (`keypoints`,
-unit `set`, saved at train submit), and the scoring tool's comes later (`behavior`,
-reserved and unspecified). Hashing rule P1 already said an editor's
-state is projected into `labels_raw` and that a new kind is a subdirectory, never
-a root. The promoted-correction series in `tracks_raw` is the older cousin and
-follows the *other* rule: there the newest revision supersedes the rest.
-
-- **mosaic owns the layout; a caller hands it content.**
-  `write_series_revision` (generic) and `write_keypoint_set_revision`
-  ([`core/annotations/projection.py`](src/mosaic/core/annotations/projection.py))
-  choose every filename and revision number. mosaic-api supplies bytes and an
-  `origin` mapping, which is where a Dolt commit belongs.
-- **A revision is immutable; a save that changed nothing writes nothing.** The
-  digest of the new payload is compared with the latest revision's. The payload
-  must therefore be deterministic: frames sorted, keys sorted, compact, and no
-  timestamp (timestamps go in `manifest.json`). A revision whose bytes changed
-  afterwards raises `LabelSeriesTamperedError` at scan rather than being
-  re-indexed under its new digest, which would rewrite what a model saw.
-- **The payload is mosaic's own format; a standard one is an export beside it.** A
-  keypoints revision holds `annotations.mosaic.json`
-  ([`core/annotations/pose_annotations.py`](src/mosaic/core/annotations/pose_annotations.py)):
-  every frame with its `usable` sign-off, every pose with its aliases and mirror
-  pairs, every object with its drawn box, and the set's box padding. Beside it,
-  `annotations.coco.json` is generated from it for CVAT and other COCO tools:
-  finished frames only, one category per pose, mosaic's extras under the
-  `attributes` convention CVAT reads. A `SeriesSpec` declares both; only the
-  payload is digested and compared, so an export can change without an unchanged
-  state becoming a new revision. An export's digest is checked where it is read
-  (`revision_export`), not at scan.
-- **Training chooses; the saved state never does.** `prepare-training-data`
-  narrows revisions through `narrow_pose_sets`
-  ([`core/annotations/narrow.py`](src/mosaic/core/annotations/narrow.py)): one
-  pose, finished frames only (always, never a flag), classes from aliases
-  (`class_by`). It never drops some of a pose's objects from a kept frame, because
-  an unlabelled animal trains as background.
-- **Numbering happens inside `index_lock` on the series index**, and consults the
-  directory as well as the index, so two saves landing together never share a
-  number and a revision whose row was lost still occupies its own.
-- **A series is recognized by its `.mosaic-series` marker, never by its name.**
-  `is_under_label_series` is the path-component exclusion in `iter_track_files`,
-  the sibling of `is_under_tracking_root` and needed for the same reason:
-  `exclude_patterns` matches basenames. Without it a recursive labels source
-  rooted at `labels_raw/` would index a projected file as an uploaded one. The
-  marker also makes creation race-safe: mosaic's own bookkeeping files in a
-  half-made series directory are not a squatter.
-- **A series source is `LabelsScanSource(series=...)`**, usually in file mode,
-  naming exactly the revisions wanted. `SourceKind` stays at three, and
-  `_scan_raw_sources` routes it to `Dataset.index_label_series`, never to
-  `_index_raw`, which is per-sequence and ends in a mandatory composition write.
-  Series rows are never pruned as unsourced: the rows a dataset wrote for its
-  own saves sit under no source at all.
-- **A consumed revision is never pruned.** No prune verb exists yet; the rule is
-  stated so the verb is built to it.
-
-### Library datasets
-
-A model trained from several datasets' annotations lives in a **library**, an
-ordinary dataset other datasets link through `libraries:` in the manifest. mosaic
-knows nothing of mosaic-api's groups; the API keys one library per group.
-
-- **A model is referenced by run id, across datasets.** `_registered_artifact`
-  ([`tracking/model_refs.py`](src/mosaic/tracking/model_refs.py)) asks this
-  dataset's own index, then each linked library in order, and resolves the cell
-  against the dataset that *wrote* it. Own-first, so a model copied in beside a
-  library keeps resolving locally under the same id. Every tracker, `infer-*` and
-  `base_model` call site funnels through `resolve_model` / `resolve_model_set`.
-- **The reference string is hashed** (it is in `params.identity_dump()`), which is
-  why it must be a run id and not a path: a path is a location, and the same
-  model at two paths would mint two inference identities.
-- **The link carries the library's manifest `uuid`.** Unreachable is skipped with
-  a warning, like an unmounted source; a reachable dataset with a different uuid
-  raises `LibraryMismatchError`. One level deep, never transitive.
-- **`prepare-training-data` copies its images** and gives each a collision-free
-  name. mosaic-extracted frames are all `frame_NNNNNN.png` under their sequence
-  directory, and `write_split_tree` keyed on basename, so a union across
-  sequences silently overwrote image and label both; it now takes `name_of`.
-  The op's identity is over the resolved revisions' **content digests, sorted**,
-  measured off disk at plan time. A revision *number* is a selector and is never
-  hashed, so naming revision 12 and leaving it to resolve to 12 are one run.
-- **A training op's data argument may be a preparation run id**
-  (`resolve_training_data`), which is what makes a training identity
-  location-free. `data.yaml` is written with **no `path` key**: Ultralytics then
-  roots the tree at the YAML's own directory. A relative `path` does *not* mean
-  that; it resolves against the working directory or the Ultralytics datasets
-  folder.
-- **The provenance chain is walked, never stored**
-  ([`tracking/training_provenance.py`](src/mosaic/tracking/training_provenance.py)):
-  model row (`data_path`, `data_fingerprint`) -> prepared-data row (`consumed_sets`,
-  and the pose it narrowed to, `pose_id` and `pose_name`) -> series index row -> the
-  revision's `manifest.json`. A training run root also holds `training.json`. That
-  name is deliberate: `params.json` belongs to one schema with one reader, and
-  `tests/core/pipeline/inventory/test_run_params_reader.py` holds the line.
-- `models/` also holds prepared training **data**
-  (`PREPARED_DATA_KINDS` in `core/pipeline/models.py`), which has no weights. The
-  trained-model inventory skips those kinds and a `prepared-dataset` kind reports
-  them; judged as models they all read as damaged.
-
-### Dataset notes and tags
-
-`notes:` is free text. `tags:` are typed attributes carrying the same
-`type` / `type_constraints` / `value` shape as mosaic-api's sequence and
-individual tags, validated by the shared grammar in
-[`core/typed_attribute.py`](src/mosaic/core/typed_attribute.py) (`label`, `text`,
-`int`, `float`, `bool`, `categorical`). Definition and value collapse into one
-entry because a dataset-level tag has exactly one holder, so there is nothing
-for a constraint change to narrow against. A `None` value means declared but not
-yet set.
-
-These describe the **dataset**. The per-sequence tags that categorize sequences
-for analysis are a different thing, owned by mosaic-api.
-
-### Continuous groups
-
-`continuous_groups:` names the groups whose sequences are **time divisions of one
-recording** rather than independent trials. A 6-hour session is either one discrete
-sequence covering all 6 hours, or a continuous group whose sequences are its
-half-hour divisions -- never a group of independent half-hours.
-
-The declaration asserts two things nothing else records, and mosaic acts on both:
-
-- Its sequences are adjacent in time, so a feature may read across their boundary
-  (`overlap_frames`), with neighbours ordered by their recorded frame extent rather
-  than by name.
-- Its `frame` column is one axis spanning the group, so its media resolves as **one
-  shared timeline** -- every sequence resolves the group's whole ordered clip set,
-  ordered by `(where the sequence starts, video_order)`. `video_order`'s counter
-  restarts per `(group, sequence, camera)`, so it cannot order a group by itself.
-
-**Declaration and measurement are both required.** No measurement can establish that
-two sequences divide one recording rather than being two recordings numbered
-consecutively; no declaration can be trusted about an axis that is there to be read.
-So `overlap_frames > 0` checks the declaration *and* verifies the recorded extents
-are disjoint and increasing, naming both sequences and both ranges when they are
-not. A continuous group's `group` may not be empty -- the one place "group is an
-optional namespace" does not hold.
-
-Nothing in mosaic produces a continuous dataset yet: every mechanism that meets a
-split recording collapses it into one sequence. Making one means converting with
-frames numbered across the whole recording (sum the frame counts of the earlier
-files as an offset), then declaring the group with
-`ds.set_continuous_groups([...])`. A dataset converted before the extent was
-recorded reads blank and is refused; `ds.measure_frame_extents()` fills it in.
-
-### Plugin registries (everything is a plugin)
-
-mosaic uses decorator-based registries; new functionality almost always means
-"register a new plugin," not "edit a hot path."
-
-| Registrar                  | Registry            | Lives in                          |
-| -------------------------- | ------------------- | --------------------------------- |
-| `@register_feature`        | `FEATURES`          | `behavior/feature_library/`       |
-| `register_track_converter` | `TRACK_CONVERTERS`  | `core/track_converter.py` (impls in `core/track_library/`) |
-| `register_label_converter` | `LABEL_CONVERTERS`  | `core/label_converter.py` (impls in `behavior/label_library/`) |
-| `@register_op`             | `OPS`               | `core/pipeline/ops.py`            |
-| `@register_media_step`     | `MEDIA_STEPS`       | `core/media/preprocess/`          |
-
-The media-step set is closed. `MediaStepSpec` (`core/media/preprocess/specs.py`)
-is a static discriminated union of the built-in steps, which publishes each
-step's full schema in any parameter model with a list of steps. A new step is
-added to the union as well as registered, and
-`test_the_union_and_the_registry_name_the_same_steps` fails when the two disagree.
-
-**`register_label_converter` is called, never decorated.**
-`behavior/label_library/__init__.py` imports each converter module and then calls it
-on the class, rebinding the result — so importing a converter module does not
-register it, and the registry holds exactly what that file names. A label converter
-class carrying a decorator instead will not appear.
-
-`register_track_converter` accepts both spellings and is mostly used as a decorator
-(`track_library/deeplabcut.py:213`); `track_library/calms21.py` uses both, calling it
-for one class and decorating the other.
-
-### Feature protocol
-
-Every feature implements four methods — `load_state`, `fit`, `apply`,
-`save_state` — and declares a `name`, `version`, and parallelizability flags.
-Two flavors:
-
-- **per-frame / per-sequence** — stateless transforms (e.g. `speed-angvel`,
-  `pair-egocentric`, `nearest-neighbor`, `pair-wavelet`, `temporal-stack`,
-  `body-scale`, `heading`, `scale-to-cm`). The last two hold what converters
-  used to do inline: `heading` derives `ANGLE` from keypoints under a *chosen*
-  method, and `scale-to-cm` converts pixels to centimetres using the per-video
-  `cm_per_pixel` on the media index. Both put the choice in a run identifier,
-  which is the whole reason they are features rather than columns.
-- **global** (fit-then-apply) — trained on a collection of sequences, then
-  applied (e.g. `global-scaler`, `global-tsne`, `global-kmeans`,
-  `global-ward`, `xgboost`, `arhmm`, `kpms`, `vame`, `lightning-action`,
-  `feral`, `global-identity-model`). `kpms` is license-restricted. See
-  "`feature_library/external/` is sandboxed" below.
-
-The `media` features (`overlay`, `egocentric-crop`, `interaction-crop-pipeline`)
-use the same protocol and caching machinery. They live under
-`visualization_library/` but are categorized `media`, not visualization: they
-write image and video artifacts something else reads. Egocentric crops are the
-input all three identity models take, and `overlay` renders the annotated video a
-biologist looks at — a feature so that a graph can end on the deliverable rather
-than one step short of it, and so that the video is addressed by `run_id` like
-everything else.
-
-`feral` (the FERAL V-JEPA behavior classifier) is a global fit-then-apply
-feature but runs **in-process** — it imports the installed `feral` package
-directly, unlike the sandboxed keypoint-MoSeq and VAME runners in
-`feature_library/external/`. Each feature also declares a `category` used for
-grouping/display; beyond per-frame and global, the taxonomy includes `summary`
-(per-sequence aggregations, e.g. `frame-aggregate`), `tag` (e.g.
-`id-tag-columns`) and `media` (writes an image or video artifact something else
-reads, e.g. `egocentric-crop`, `overlay`). There is deliberately no visualization
-category: a rendered artifact is `media` like any other, and a second,
-non-artifact status mechanism beside the first is what that avoids.
-
-### Pipeline package
-
-[`src/mosaic/core/pipeline/`](src/mosaic/core/pipeline/) owns data loading,
-output writing, dependency resolution, and indexing. **Features own
-computation only.** The public typed surface lives in `pipeline/types/`:
-`Inputs`, `Result`, `ArtifactSpec`, `InputStream`, `DependencyLookup`,
-`FeatureLabelsSource`, `GroundTruthLabelsSource`.
-
-### The inventory: what a dataset holds
-
-[`core/pipeline/inventory/`](src/mosaic/core/pipeline/inventory/) answers "what
-has been computed here, with what params, over which entries" -- the question
-`mosaic sequences` (a tracks listing), `mosaic runs`/`status` (job-log surfaces
-reporting *attempts*) and `mosaic features list` (the registry) each do not.
-`inventory(ds)` in the library, `mosaic inventory --json` at the CLI.
-
-- **Coverage is which keys exist, never a flag**, and the key type differs by
-  kind: `(group, sequence)` for a feature run or tracks variant,
-  `(group, sequence, camera)` for a frame run or a media variant (the cameras of
-  one recording share an entry), the run id for a trained model or a prepared
-  dataset, the revision for a label series, and a media row's `video_uuid` for a
-  transcode. **Transcode has no run-addressed directory at
-  all**, so a single `coverage(storage, run_id)` signature makes an
-  already-clean corpus read as permanently incomplete forever.
-- **Status is derived, never stored**: `absent` / `partial` / `complete` /
-  `complete-but-drifted` / `inconsistent`, decided in one function. Files ahead
-  of index rows is damage only on a *finished* run -- outputs are written before
-  their rows.
-- **Truth is on disk.** Every view is a cache, thrown away rather than
-  reconciled; there is deliberately no `.mosaic/inventory.json` and no
-  filesystem watcher. Stale is safe, so `InventoryCache.revalidate()` stats the
-  index files rather than subscribing to anything.
-- **`core` does not import `tracking`**, so tracker runs, frame runs and trained
-  models arrive through `register_inventory_contributor`, the same import-side-
-  effect seam `register_reconcilable_index` uses. A kind nobody registered is
-  reported in `unavailable_kinds`, never as zero artifacts.
-- **`read_run_params` is the only reader of a feature run's `params.json`**, and
-  distinguishes *absent* from *unreadable* -- the sidecar write is best-effort,
-  so a run root with none is a real state. It is tolerant by design: a block it
-  cannot read is dropped and the rest is returned.
-
-### The graph: a pipeline as a file
-
-[`core/pipeline/graph/`](src/mosaic/core/pipeline/graph/) is the pipeline as a
-**document**: a JSON recipe of steps and the references between them, validated
-against the real registries, resolved against a dataset into a plan, and run.
-Deliberately separate from the live-object `Pipeline`, which holds feature
-*classes* and a `CallbackStep` wrapping a live callable and so has no wire form.
-`mosaic pipeline validate|plan|show|run --recipe @file.json` at the CLI.
-
-- **The recipe is portable; the request beside it holds a submission's choices.**
-  A recipe never carries a resolved `run_id` (those are dataset state) and never
-  carries an entry list (those are about one dataset), so the same file runs over
-  several. `Request` holds the narrowing, `bind` (an out-of-graph artifact pinned
-  by the submission), `allow_partial`, `max_concurrent_steps`, the `step_id →
-  execution_id` map and the resolved `step_versions`. `submit_request` writes
-  both files — a `<digest>.json` copy under `<dataset>/.mosaic/pipelines/` and
-  the request under `.../requests/<rid>.json` — and assigns every step its
-  attempt id **before anything runs**, which is what makes the document complete
-  at submit rather than filled in as work lands.
-- **A step is addressed by name, not spelled out.**
-  `mosaic run --manifest <path> --graph-request <rid> --step <id> --execution-id
-  <eid>` is strictly more expressive than the spelled-out form, because several
-  arguments that reach a feature's identity have no flag at all — the entry
-  narrowing, the frame filters, the overlap width — and a step re-planning itself
-  reads all of them out of the recipe. **The request path is derived from
-  `--manifest`'s parent and there is deliberately no second path flag**: a path
-  mosaic-queue does not know about is one `translate_manifest_path` cannot
-  rewrite for a substrate that mounts the dataset elsewhere. `--overwrite` stays
-  an argv flag, being a property of an attempt rather than of the recipe. Every
-  op reads it from the argument `Op.run` receives, and `--kind` and a graph op
-  step both accept it. Two attempts differing only in whether they redo the
-  work are one recipe and one identifier.
-- **One step body, two drivers.** `execute_step` is what a queued job runs and
-  what `run_pipeline` loops over, so the preflight, the parent pinning and the
-  failure record cannot drift by being edited on one path only.
-- **A step pins its parents from their run-logs, and only the feature ones.**
-  Resolving an input by feature *name* falls through to
-  `track_universe.current_run_id`, whose sibling rule is wall clock — so two
-  requests running one feature with different params on one dataset would
-  cross-bind. **Every ancestor is pinned, not only the immediate parents**,
-  because identity chains. An op parent is not pinned (its identity is a function
-  of the params the plan handed it, so the two cannot differ); what it *is*
-  checked for is the tracks variant it produced, via `variant_for_producer_run`.
-  An ancestor with no run-log is a cache hit from an earlier request, not a
-  fault.
-- **A refusal is a reserved exit code, never a new terminal status.**
-  `REFUSED_EXIT_CODE = 65`, the run-log status stays `failed`, and the reason
-  travels in `error_json` as one of a closed `RefusalReason` set. Do **not** add
-  a member to `runlog.TERMINAL_STATUSES` — three repositories read it and
-  mosaic-api's sweeper reaps it, the reason `partial` was kept out too. An error
-  in any module declares itself a refusal by subclassing `Refusal`
-  ([`core/pipeline/refusal.py`](src/mosaic/core/pipeline/refusal.py)), as a
-  tracker's `ToolCodecError` does, and `job_context` records its reason in
-  `error_json`.
-- **`allow_partial` answers exactly one refusal.** A shortfall is a question
-  about *how much*; a digest mismatch, a moved version, a disagreeing variant and
-  an upstream that finished having written nothing are not, and no flag unlocks
-  them.
-- **Waiting and quarantined are different, and collapsing them is expensive.** An
-  entry inside its backoff needs a few more seconds and simply narrows this
-  attempt; an entry past `QUARANTINE_AFTER` will not succeed and is what
-  `allow_partial` decides about. Treating a wait as a verdict would let one
-  gesture permanently drop an entry from a fit.
-- **The failure record is the one durable non-derived state**, under
-  `<dataset>/.mosaic/claims/`: attempts keyed `(storage_name, run_id, group,
-  sequence)` **accumulate across resubmits** (a counter reset by the cheap
-  recovery would bound nothing), while the *exclusion decision* is request-scoped
-  desired state, so one request's scientific call cannot bind another's. The
-  lease is the existing `try_create_inflight` over the run root, reused rather
-  than reinvented — which is what already makes two concurrent training
-  dispatches safe. G4 forbids stored *status*, not this.
-- **A request is one-shot.** `request_rollup` reads the steps' run-logs only —
-  no registry, no planning — and closes on `finished` / `failed` / `cancelled`. A
-  branch that failed while a sibling is still running is **not** terminal yet.
-- **One place per fact.** Cross-step references sit at the exact site they
-  substitute, so there is no `edges` array to drift from the bodies; `edges()` is
-  a derived read-only view. The one explicit list is `after`, which is
-  ordering-only and corresponds to nothing in any payload.
-- **`plan_pipeline(ds, recipe)` resolves every step in one topological walk and
-  submits nothing.** Step A's identity is a function of its params, B's of its
-  params plus A's identity, C's of B's. It closes because every term is in the
-  recipe or on disk beforehand: a feature-to-feature edge reads nothing, a tracks
-  variant is *minted* from the recipe's settings rather than read back from
-  tables an op has not written, and a `scope_dependent` step's entry set comes
-  from `intended_scope`.
-- **A resolved `run_id` is never load-bearing at execution.** It drives the
-  preview, the estimate, validation and the decision to enqueue; it never skips a
-  step and never enters a downstream job's payload. Every step resolves its own
-  identity at its own start. Do not "optimize" this away by trusting a submitted
-  identifier.
-- **One answer to what a step will be called.** `resolve_feature_identity`
-  ([run.py](src/mosaic/core/pipeline/run.py)) is that answer, and both the graph
-  planner and the live `Pipeline` call it.
-- **Only `resolve.py` may import `FEATURES`,** and only inside its functions.
-  Parsing a recipe, ordering it, listing parents, deciding a lane and rendering a
-  status view must not pay the multi-second feature-library import, because the
-  gate runs far more often than a submit does.
-  `tests/meta/test_graph_imports.py` holds the line.
-- **`can_connect` / `can_join` answer with no dataset at all**, from declarations
-  (`declaration_catalog()`), so a canvas refuses a wire as it is drawn. The
-  sharpest refusal is `can_join`'s: a multi-input join of mismatched entity
-  granularity is a silent per-frame cartesian product.
-- **A feature declares the columns that it reads and writes, and one declaration
-  is checked at validation, at plan and before the feature runs.** `requires`
-  names the columns that `fit` and `apply` read from the merged input, and
-  `provides` the output's columns. Both are class attributes beside `emits`,
-  written with the references of
-  [`core/pipeline/column_contract.py`](src/mosaic/core/pipeline/column_contract.py):
-  a column by name, by a params field or by a template over the params, a prefix
-  family, `AnyOf`, `Keypoints`, `Payload` (any numeric payload column),
-  `Derived`, and `When` for a requirement under conditions on the params.
-  Validation propagates each step's guaranteed and possible columns through
-  `merge_naming`, with no dataset (`graph/columns.py`). A required column absent
-  from every input is a problem naming the providers readable by the step. A
-  column that an input may contain is a caution, and a caution does not refuse a
-  run. A step whose feature declares no `requires` is listed in
-  `ValidationReport.unchecked`. `plan_pipeline` checks again with the column
-  names in the parquet footers of the tracks tables that each step reads. A
-  column that the schemas only allow, such as `ANGLE` on `mosaic_v1`, then
-  resolves to met or to a problem in `Plan.problems`, and `RecipeRefused` is
-  raised. `run_feature` checks each entry's merged frame before `fit` and
-  `apply`, and an entry lacking a column fails with `MissingInputColumns`
-  through the per-entry error path. `input_candidates` and `insert_candidates`
-  answer from the same propagation. Every feature that mosaic registers declares
-  both, and
-  `tests/behavior/feature_library/test_column_contract_conformance.py` runs each
-  through a chain built from the declarations and compares its output with the
-  columns that validation predicts.
-- **A feature declares the packages and setups beyond the base install that
-  it needs** in a `prerequisites` tuple: an `OptionalModule` for a package an
-  extra installs (`src/mosaic/optional_dependency.py`), `KpmsLicense` for
-  kpms, and a `RunnerInterpreter` over its tool's ladder for kpms and vame.
-  `declaration_catalog()` evaluates them into `Declaration.unavailable`, once
-  per process and without importing the packages. The editor catalog lists that
-  sentence as `unavailable`, validation reports it at the step's `feature`, and
-  `attach_candidates` refuses the feature with it. A feature imports the
-  package through the same declaration (`OptionalModule.load()`), and the
-  catalog and the run name one extra.
-- **`reject_unless_valid` runs before the dataset is touched** and reports every
-  problem rather than the first. `overwrite` is refused in `params` on presence,
-  and `extract-frames` is excluded by *ownership* -- mosaic-api embeds its frozen
-  identifier in annotation image paths.
-- **An op step's scope comes from the plan, not the recipe**, through
-  `_op_scope`, which every site that builds a step spec asks. An op declaring
-  `scope_takes = "none"` is given none whatever the graph is narrowed to. A
-  training step reads a prepared directory, and the plan's entries name a
-  coverage it cannot act on. `check_scope_takes` refuses the rest at plan time
-  in the words the runner uses. A plan that cannot run says so before anything
-  is enqueued.
-- **A `scope_dependent` step is asked for all of its scope, never the
-  remainder** -- its identity *is* its scope, so a fit over what is left under
-  the name of a fit over everything is exactly what the scheme prevents. A
-  scope-free step gets the remainder, as it should.
-
-### `run_id` reproducibility
-
-Each feature run is tagged with `run_id = "<version>-<hash>"`, where `<hash>`
-is a 10-char SHA1 over the feature's params, inputs, and frame range (computed
-from `Params.identity_dump()`, so `HASH_EXCLUDE`-tagged throughput knobs are
-omitted — see "Params are Pydantic"). Identical inputs + params → identical
-`run_id` → no recompute. Parameter sweeps stay organized under
-`features/<name>/<run_id>/`. Never bypass `run_feature()` to write feature
-outputs directly — it would desync indexes and break reproducibility.
-
-## Module Organization
+- basedpyright has a large existing backlog. New code type-checks cleanly.
+- Test selection and placement: [CONTRIBUTING.md](CONTRIBUTING.md#running-the-tests) and
+  [tests/CLAUDE.md](tests/CLAUDE.md).
+- `docs/reference/` is generated from the registries and the Typer app. Do not edit it.
+  After changing a registry or a CLI command, run the script with `--write`
+  ([CONTRIBUTING.md](CONTRIBUTING.md#environment-notes) gives its install) and commit
+  the result. The docs workflow runs it with `--check`.
+- Do not run `mkdocs gh-deploy`. Pages deploys from `.github/workflows/docs.yml`.
+- Before reporting work done, run `basedpyright` and `pytest -m "slow or not slow"`. CI
+  skips the type check and runs the unmarked slow tests only weekly.
+
+## CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs five jobs on a push to
+`main` and on pull requests. The four test jobs install the `test` dependency group.
+
+- `test`: `-m "not slow and not tracker and not identity and not feral"`.
+- `identity`, `feral`: every test of that marker, in a `deep-learning` or `feral`
+  environment.
+- `tracking`: every `tracker` test against built Ultralytics and POLO environments.
+- `lint`: `ruff check` and `ruff format --check` over `src`, `tests` and `tools`.
+
+[`.github/workflows/slow.yml`](.github/workflows/slow.yml) runs the other slow tests
+weekly and on dispatch, against a built VAME environment. Each test runs in exactly one
+job (`tests/meta/test_pytest_config.py` reads both workflows). A change that breaks only
+an unmarked slow test goes green on push.
+
+## Layering
+
+`core` is the foundation: the data model, schemas, the pipeline engine and media I/O.
+`behavior` and `tracking` import `core` and do not import each other. They exchange data
+only through files on disk. The deprecated `behavior.tracking` alias in
+`behavior/__init__.py` is the one exception. No test checks this rule.
+
+`core` imports upward only inside functions, at the sites below. Any other upward
+import is a layering break.
+
+- `core/__init__.py` `__getattr__` re-exports `register_feature` on first access, which
+  keeps `core` and `behavior` out of an import cycle.
+- `label_converter.ensure_label_converters_registered()` imports
+  `behavior.label_library` to fill `LABEL_CONVERTERS`.
+- `core/pipeline/graph/resolve.py` reads `FEATURES` (`tests/meta/test_graph_imports.py`)
+  and calls `mosaic.tracking.register_ops` to fill `OPS`.
+- `core/pipeline/reconcile_features.py` `_feature_class` looks a feature class up by
+  name in `FEATURES`.
+- `core/pipeline/run.py` imports a feature's module by its `__module__` to rebuild the
+  feature in a worker process.
+
+`tracking` adds its runs to `core`'s views through `register_inventory_contributor`
+(`tests/core/pipeline/inventory/test_inventory_contributors.py`) and
+`register_reconcilable_index`, called at import.
+
+## Package map
 
 ```
 src/mosaic/
-├── cli/                        # every `mosaic` verb
-├── runlog.py                   # append-only JSONL run-log (a deliberate leaf)
-├── media_probe_config.py       # verdict thresholds, read by core/media
-├── core/
-│   ├── dataset.py              # Dataset orchestrator
-│   ├── manifest.py             # dataset.yaml models (NOT pipeline/manifest.py)
-│   ├── pipeline/               # feature execution engine, typed protocol
-│   │   ├── types/              # Inputs, Result, ArtifactSpec, ...
-│   │   ├── toolenv.py          # the MOSAIC_<TOOL>_CONDA_ENV / _BIN location ladder
-│   │   ├── subprocess_util.py  # supervised_popen_kwargs(), LineChild: a child's lines on a queue
-│   │   ├── run.py              # run_feature() orchestration
-│   │   ├── manifest.py         # unified manifest + per-sequence iterator
-│   │   ├── loading.py          # sequence identity / NN-lookup construction
-│   │   ├── index_csv.py        # generic typed IndexCSV + index_records
-│   │   ├── label_series.py     # the versioned-series registry, layout and marker (no pandas)
-│   │   ├── label_series_index.py  # series index row, revision writer, revision reader
-│   │   ├── entry_claim.py      # per-entry claim: take, keep alive, release
-│   │   ├── consumed_camera.py  # the camera of an entry that a tracker reads
-│   │   ├── preprocess.py       # the preprocess op: media steps -> one variant file per entry
-│   │   ├── preprocess_layout.py  # the media/preprocess/ layout and the media-scan exclusion
-│   │   ├── preprocess_index.py # MediaVariantRow, its one writer and reader, missing/drifted errors
-│   │   ├── variant_source.py   # a variant's rows read once per scope, each entry resolved, drift refused
-│   │   ├── media_input.py      # MediaInputParams: the `media` parameter, frame windows refused
-│   │   ├── placement.py        # EntryAxis: a tool's table placed on its entry's axes (variant, join)
-│   │   ├── tracks_axis.py      # what a tracks row's run read, rebuilt for measure-tracks
-│   │   ├── inventory/          # what a dataset holds: coverage, status, params.json
-│   │   ├── graph/              # a pipeline as a file: recipe, plan, submit, run a step
-│   │   ├── writers.py          # parquet output writing, overlap trimming
-│   │   └── _loaders.py         # NPZ / Parquet / Joblib dispatcher
-│   ├── media/                  # foundational media I/O (read/decode/encode frames)
-│   │   ├── video_io.py         # media I/O facade: libav reader/writer + dispatchers (mosaic-media)
-│   │   ├── imgstore_io.py      # imgstore (Motif / Loopbio) dispatch + capture adapter
-│   │   ├── imgstore_native.py  # native imgstore decode: mp4 via reader, raw via numpy
-│   │   ├── facts_columns.py    # MediaFacts / verdict <-> media-index row mapping
-│   │   └── preprocess/         # MEDIA_STEPS: the built-in steps, Placement, shared CLAHE / gray
-│   ├── schema.py               # track-schema validation (e.g. trex_v1)
-│   ├── pose_columns.py         # keypoint column names, arrays and reference resolution
-│   ├── individuals.py          # a tracks table split by individual; the repeated-row refusal
-│   ├── params.py               # Params + the declaration vocabulary every parameter model shares
-│   ├── entry.py                # Entry / CameraEntry: the (group, sequence) aliases
-│   ├── strict_model.py         # StrictModel: the pydantic base, extra="forbid"
-│   ├── analysis.py             # clustering metrics
-│   ├── helpers.py              # label loading, safe-name encoding, time/frame filtering
-│   └── track_library/          # track converters (CalMS21, TREx, SLEAP, DeepLabCut, Ultralytics)
-├── behavior/
-│   ├── feature_library/        # ~35+ per-frame + global features (plugin)
-│   │   ├── runner_client.py    # RunnerProcess: the client side of the runner wire
-│   │   ├── vame_sessions.py    # vame's session building and latent placement (pure)
-│   │   ├── vame_feature.py     # the vame feature
-│   │   ├── movement/           # optional movement-library integration
-│   │   └── external/           # keypoint-MoSeq and VAME runners (own venvs)
-│   ├── label_library/          # label converters (BORIS, CalMS21)
-│   ├── model_library/          # identity networks (timm classifier / embedding, DINOv2 temporal)
-│   └── visualization_library/  # overlay renderer + the media features (overlay, crops)
-└── tracking/
-    ├── ops/                    # @register_op layer behind `mosaic run --kind`
-    ├── frame_extraction/       # uniform / k-means sampling or listed frames → PNGs for annotation
-    ├── pose_training/          # annotation prep, localizer training, and mosaic's side of the YOLO/POLO exchange
-    │   ├── converters/         # CVAT XML, Lightning Pose, COCO, ...
-    │   └── augmentation.py     # YOLO + localizer augmentation presets
-    ├── common/                 # everything a tracker run does around the tool
-    │   ├── mint.py             # root, run_id, tracks variant, run_params.json
-    │   ├── scope.py            # media scope -> work items (video/camera collapse)
-    │   ├── entry.py            # marker reuse, cascade clearing, adoption
-    │   ├── bridge.py           # converted frame -> tracks/<variant>/*.parquet
-    │   ├── index.py            # TrackerRunRowBase + the typed run index
-    │   ├── params.py           # TrackerOpParams (HASH_EXCLUDE execution knobs; no scope)
-    │   └── driver.py           # run_tracker(): the per-entry loop
-    ├── trex/                   # TREx: two gated phases (convert -> track), own conda env
-    ├── sleap/                  # SLEAP: one gated phase + an ungated atomic analysis export
-    ├── litpose/                # Lightning Pose: one gated phase, reuses the deeplabcut converter
-    ├── ultralytics_track/      # Ultralytics MOT: one gated phase, own env, reached as a subprocess
-    └── external/               # the Ultralytics environment definition + the programs that run in it
+  cli/                          every `mosaic` verb (Typer)
+  runlog.py                     append-only JSONL run-log; stdlib-only leaf
+  core/                         Dataset, manifest, schema, Params, Scope, converters
+  core/pipeline/                run_feature, indexes, locks, inventory, ops, placement
+  core/pipeline/graph/          a pipeline as a JSON recipe: validate, plan, run a step
+  core/media/                   frame read/decode/encode; preprocess media steps
+  behavior/feature_library/     registered features; sandboxed kpms and VAME runners
+  behavior/label_library/       label converters (BORIS, CalMS21)
+  behavior/model_library/       identity networks
+  behavior/visualization_library/  overlay renderer and the media features
+  tracking/ops/                 the @register_op layer behind `mosaic run --kind`
+  tracking/common/              the run loop shared by every tracker
+  tracking/{trex,sleap,litpose,ultralytics_track}/  one package per tracker
+  tracking/external/            the Ultralytics and POLO environments and runner
+  tracking/pose_training/       annotation prep and pose-model training
+  tracking/frame_extraction/    frame sampling for annotation (`extract_frames`)
 ```
 
-**Layering.** `core` is the foundation: data model, schema, the pipeline engine,
-and low-level **media I/O** (`core/media/` — read/decode/encode frames). `behavior`
-and `tracking` are domain packages: they import `core` (including `core.media`)
-but **never each other**, and they exchange data only through on-disk artifacts
-(parquet tracks, feature/model files, index CSVs).
-
-`core` reaches *upward* into `behavior` in exactly two places, both **deferred
-into a call** so the two packages are not a cycle, and both for the same reason:
-a registry fills only as a side effect of importing the modules that populate
-it, and `core` is where the lookup happens. `core/__init__.py`'s module
-`__getattr__` re-exports `register_feature`, and
-`label_converter.ensure_label_converters_registered()` imports
-`behavior.label_library` when `LABEL_CONVERTERS` is still empty (guarded on
-emptiness, so a caller with its own converters pays nothing). Anything else
-pointing from `core` at `behavior` or `tracking` is a layering break.
-
-`track_converter.ensure_track_converters_registered()` is the same call one
-layer down, and needs no deferral for layering — `track_library` lives in
-`core`. It exists because `core/__init__.py` imports nothing at module scope:
-a package `__init__` runs before any submodule of it, so importing that library
-for its registration side effect charged every consumer of every leaf under
-`core` for pandas, and for h5py through the SLEAP converter. Unlike the label
-one it is **not** guarded on the registry being empty — the built-ins were
-guaranteed present before, and a contents guard drops all of them for a caller
-who registers one of their own first.
-
-`core.media` takes no import
-from `behavior` or `tracking`. It is not a dependency-free leaf: it reads verdict
-thresholds from the root-level `media_probe_config`, `reprobe.py`
-additionally reaches `core.helpers`, `core.stored_paths` and
-`core.pipeline.media_index`, and the media steps under `preprocess/` import
-`core.params` and `core.json_value`. Frame *sampling/extraction*
-(`tracking/frame_extraction/`, exposed as `mosaic.tracking.extract_frames(ds, …)`)
-is a tracking-domain concern — it reads `media/frames` via `ds.get_root("frames")`
-(downward) and is **not** a `Dataset` method; `core` has no frame-extraction code.
-
-## Data Flow Pipeline
-
-```
-dataset.yaml  (mosaic init)
-   └─ sources:                         → what every scan below reads
-
-video files
-   ├─ scan_media()  / index_media()    → media_raw/index.csv  (ffprobe metadata)
-   ├─ preprocess (ordered media steps) → media/preprocess/<run_id>/<group>__<seq>.mp4
-   │                                     + media/preprocess/index.csv   (one media variant)
-   └─ tracking.extract_frames(ds, …)   → media/frames/     (uniform, k-means or listed PNGs)
-
-raw tracks/labels
-   ├─ scan_tracks() / scan_labels()   → <root>_raw/index.csv
-   ├─ convert_all_tracks()   → tracks/<variant>/<group>__<seq>.parquet
-   └─ convert_all_labels()   → labels/<kind>/<group>__<seq>.npz
-
-an editor's committed state (mosaic-api at train submit, or a notebook)
-   └─ write_keypoint_set_revision()  → labels_raw/keypoints/<set>/rev<N>/   (immutable)
-                                        annotations.mosaic.json + annotations.coco.json
-
-in a library dataset, linked from each project by `libraries:`
-   ├─ scan_labels() over a series source → labels_raw/keypoints/index.csv (claimed revisions)
-   ├─ prepare-training-data   → models/prepare-training-data/<run_id>/  (images copied)
-   └─ train-*  (data = that run id)     → models/<kind>/<run_id>/ + training.json
-
-run_trex / run_sleap / run_litpose / run_ultralytics / infer-*
-                             (media= a media variant's run_id, or empty)
-   ├─ (working)              → _tracking/<tool>/<run_id>/<group>__<seq>/
-   └─ (bridged)              → tracks/<variant>/<group>__<seq>.parquet
-                                 (a media variant's table mapped back to source space)
-        ↑ reclaimed by `mosaic sweep-tracking`; a correction is promoted back
-          out with `promote_correction` → tracks_raw/<entry>/corrected.rev<N>
-
-run_feature(...)             → features/<name>/<run_id>/*.parquet
-                                                 └── run_id = <version>-<SHA1 of params+inputs+frame range>
-```
-
-Models follow the same shape: `models/<name>/<run_id>/`.
-
-`inventory(ds)` reads across all of the above and reports what is there; it
-writes nothing. `mosaic inventory --json` is the same answer at the CLI.
-
-A recipe drives any run of the above as one graph. `plan_pipeline(ds, recipe)`
-says what each step would be called and what is already done, `run_pipeline`
-executes it here, and `mosaic pipeline validate|plan|show|submit|run|status` is
-the same at the CLI. The recipe is copied to
-`<dataset>/.mosaic/pipelines/<digest>.json` on first use, so the dataset records
-which pipelines were applied to it, and each submission lands beside it:
-
-```
-mosaic pipeline submit           → .mosaic/pipelines/<digest>.json      (the recipe)
-                                 → .mosaic/pipelines/requests/<rid>.json (the submission)
-mosaic run --graph-request <rid> --step <id>
-                                 → .mosaic/runs/<execution_id>.jsonl    (the attempt)
-                                 → features/<name>/<run_id>/            (the work)
-   ↑ failures counted under .mosaic/claims/, which is the only durable state
-     that cannot be re-derived from the artifacts
-```
-
-Every `index.csv` has a zero-byte `index.csv.lock` beside it — `index_lock`'s
-sidecar, created on the first locked write and **never removed**. A tracks
-variant's `params.json` has a `params.json.lock` beside it too, which
-`write_tracks_variant` takes through the same `index_lock` to merge the record.
-Neither is data, nothing reads them, and deleting one while a writer holds it
-reintroduces the lost update the lock prevents. Anything that enumerates a root
-should expect them. The lock also creates the file it guards when that file is
-absent. A variant's `params.json` is therefore empty from the moment its first
-writer takes the lock until that writer replaces it, and reads as absent
-meanwhile.
-
-## Important Conventions
-
-### The tracks index
-
-`tracks/index.csv` is a typed [`IndexCSV`](src/mosaic/core/pipeline/tracks_index.py)
-(`TracksIndexRow`), written atomically under a per-file lock. Do not write it by
-hand — `write_tracks_row()` is the only *row-append* writer, and
-`read_tracks_index()` the only reader. Two other modules rewrite the same file
-through sibling `IndexCSV` methods: `delete_set` (deletion) and
-`reconcile_variants` (re-addressing).
-
-Beyond `abs_path`/`group`/`sequence` each row carries `run_id` (the *tracks
-variant* — which recipe produced the table, from
-[`tracks_identity.py`](src/mosaic/core/pipeline/tracks_identity.py)), `producer`
-(`convert-<fmt>` | `trex` | `infer-<kind>`, exactly `parse_op_run_id(run_id).kind`),
-`producer_run_id` (the op run behind it, empty for a conversion, which has none),
-`consumed_source_roots` (dataset root *keys*, comma-joined and sorted), and
-`n_keypoints` (how many `poseX*`/`poseY*` pairs the table holds, **measured from
-the parquet** at write time rather than passed in, so no call site can record a
-false zero). Since keypoints are optional, "does this entry have any" would
-otherwise need a parquet open per entry; a blank cell means *unknown*, not zero,
-exactly as it does for `n_rows`. `frame_min`/`frame_max`, `media_frames` and
-`frames_read` follow the same rule. The first pair is the table's own frame axis,
-measured from the parquet. `media_frames` is how many frames the producer's tool
-should have read, and `frames_read` how many it did, both *passed* by the producer
-because only it knows what it resolved and what its tool reported. Blank means
-unknown on all four, and `frame_axis_mismatches()` compares `frames_read` with
-`media_frames` only when both are filled. The table's extent is not compared,
-because a table with rows only at detections ends at its last detection, however
-many frames the tool read. A shortfall within what the tool is known to lose at
-the end of the file it read is not a mismatch. `frame_tail_shortfalls()` reports
-it, and `frame_axis_verdict()` is the one rule deciding between the two. The
-`known_tail_loss` cell records that loss, as the producer's rule
-(`TrackingRoot.tail_loss`, which only TREx declares) gives it for the header of
-the file that its run recorded reading, and 0 for several files. A blank cell,
-where the header was not read, allows the most the producer loses on any file.
-Every tracker and inference op publishes through `publish_tracks_table`, which
-takes the entry's `EntryAxis`
-([`core/pipeline/placement.py`](src/mosaic/core/pipeline/placement.py)) and
-records its `media_frames`: the summed clips of an entry that the run read whole,
-one clip included, the source's length for a media variant that keeps every source
-frame, and blank for a frame window or a trimmed or decimated variant.
-`frames_read` is the `.pv` count for TREx, the runner's count for Ultralytics,
-`infer-pose` and `infer-points`, the count `infer-localizer` keeps as it reads
-in process, and the frames predicted for Lightning Pose. SLEAP records none,
-because its analysis export does not say whether it spans the video.
-`backfill_media_frames`, `backfill_frames_read` and `backfill_known_tail_loss`
-(`mosaic measure-tracks`, after `backfill_frame_extents`) rewrite past rows to
-what the same rules give. The first rebuilds the run's `EntryAxis` from its
-variant's record ([`tracks_axis.py`](src/mosaic/core/pipeline/tracks_axis.py)).
-The second reads what the run left on disk, through a reader each producer
-registers. The third reads the header of the file that the run's TREx `.pv`
-records, or, for a `trex.0.1` run whose `.pv` is swept, the clips its TREx run
-index row lists. The first and third read the media records that their rules
-share once for all rows (`BackfillReads`). All three ask their rule outside the
-index lock and take the lock only to write, and a row published meanwhile keeps
-its value. `backfill_frame_extents` holds the lock for its whole pass. A cell the
-rule leaves blank is cleared. A row whose run cannot be established (a lost
-record, an unmounted or moved media root, media changed since the run, a missing
-file) keeps its value and is reported as not established. A tracker row in a
-process that has not imported `mosaic.tracking` keeps its value too, and is
-reported apart as unregistered.
-
-Three invariants worth knowing:
-
-- **One row per `(run_id, group, sequence)`** — the triple its sibling indexes
-  use. An entry may carry several variants, because each writes into its own
-  `tracks/<variant>/` directory.
-- **Absent is empty.** A missing index reads as an empty frame carrying the full
-  schema; nothing raises. Code that must tell a human to convert first checks for
-  zero rows (see `mosaic sequences`).
-- **Adopt on write, tolerate on read.** An older on-disk schema is widened in
-  memory inside the write lock; readers project without touching disk, so a
-  read-only mount works and looking at a legacy dataset does not rewrite it.
-
-Writing a second row and *resolving* one are different questions.
-`select_variant_rows()` answers the second, and is the only place that does: an
-unlabelled row (`run_id` empty — every row written before variants existed) loses
-to a labelled one for the same entry, and two genuinely different recipes for one
-entry **raise** rather than guess. Different entries carrying different
-variants — some converted, some tracked — stays legal, which is why `None` never
-meant "the latest run".
-
-Pass `tracks_run_id=` to answer a refusal: on `run_feature`,
-`Dataset.run_feature`, `build_manifest`, `load_values`, and `--tracks-run-id` on
-`mosaic run`; `run_id=` on `load_tracks` and `drop_entries`. `""` names the
-unlabelled tables explicitly.
-
-The resolved variants enter the feature `run_id` (the `_tracks` term) and
-**never** the storage directory name, so `features/<name>__from__tracks/` stays
-one directory and one index however many tracks recipes a dataset holds. The term
-is omitted when the index names none, which is why a dataset converted before
-this scheme keeps the identifiers it already has.
-
-### Entry names are one path component
-
-A `group` or `sequence` may not contain `/`, `\\` or NUL. mosaic itself survives a
-slash — `to_safe_name` percent-encodes it — but an entry name doubles as a
-directory name in mosaic-api, where it does not. Validated at the seven write
-boundaries (`EntryHints`, `Dataset.set_display_name`, `build_tracks_raw_row`,
-`promote_correction`, `write_tracks_row`, `write_labels_row`,
-`write_media_variant_row`) and at no read path, so an index that already holds
-one keeps resolving. Join levels with
-`__`, which `parse_hierarchy` reads by default.
-
-### Op and variant run identifiers
-
-Tracking ops and tracks variants are named `<kind>.<version>-<10-hex-digest>`
-(e.g. `convert-calms21_npy.0.3-6bb5efbf05`). The version is a *visible segment*,
-not a hash term, so bumping it does not re-derive anything.
-`extract-frames` is carved out and frozen — mosaic-api embeds its identifier in
-annotation paths.
-
-### Track schema
-
-Standardized tracks are validated by `core/schema.py`. Four schemas are
-registered, and a converter declares which it emits through
-`TrackConverter.output_schema` — a tracker through `TrackingRoot.output_schema`.
-**That declaration is the only place the name is written.** It used to be spelled
-in five (each converter, `Dataset` via a manifest setting, the tracker bridge,
-the inference path), so one table was validated twice under two independently
-chosen names and the index row recorded only the second.
-
-- **`mosaic_v1`** — the tracker-neutral standard. Requires
-  `frame, time, id, group, sequence, X, Y`. Every spatial column is **video
-  pixels**, and `X`/`Y` are the individual's **body centre**. **Keypoints are
-  optional**: a centroid-only tracker (TREx without posture, a box model, an
-  export that carries a centroid and nothing else) emits no `poseX*`/`poseY*` at
-  all. Requiring a pair made those trackers fabricate one — a verbatim copy of
-  `X`/`Y` under a name promising a detected landmark, which is the same
-  plausible-but-not-measured column the forbidden set exists to refuse. The
-  features that are *defined* on keypoints (`heading`, `body-scale`,
-  `orientation-rel`, `kpms`, `vame`, the `pair-*` family) refuse a table
-  without them, naming themselves; the ones that only prefer them
-  (`egocentric-crop`, `interaction-crop-pipeline`, the overlay) fall back to the
-  body centre.
-- **`trex_v2`** — `mosaic_v1` plus what TREx genuinely measures (`SPEED`,
-  `ANGLE`, `X#wcentroid`, the midline family), also in pixels. TREx's own bare
-  `X`/`Y` are the *head* and are preserved as `X#head`/`Y#head`.
-- **`mosaic_cm_v1`** — the same contract as `trex_v2`, in **centimetres**, with
-  `X`/`Y` still the body centre. It exists because the unit is sometimes not
-  recoverable: TREx scaled its output long before it recorded `cm_per_pixel`
-  (2025-02-18, TREx 2.0.0), and nothing can divide back out a factor nobody
-  wrote down. Deliberately **its own schema family**, extending nothing — the
-  columns mean the same things as `mosaic_v1`'s and not the same numbers, so a
-  scope resolving both is refused. `STANDARD_COLUMNS` is shared between the two
-  families precisely because the second cannot inherit it.
-- **`trex_v1`** — the legacy schema, kept registered permanently because a real
-  archived dataset is in it. Its spatial columns are **centimetres** and its `X`
-  is a head position. Not the schema for new centimetre data — it also requires
-  keypoints and does not require `X`/`Y`; `mosaic_cm_v1` is.
-
-Two rules the validator enforces beyond presence:
-
-- **A named, closed `forbidden` set.** `mosaic_v1` forbids `VX, VY, AX, AY,
-  SPEED*, ANGLE, ANGULAR_*, X#wcentroid, Y#wcentroid` — quantities a *feature*
-  derives, not ones a tracker measures. Violating it raises **regardless of
-  `strict`**, because every tracker write path validates with `strict=False` and
-  a wrong table must not reach disk. A tracker that genuinely measures one
-  declares a schema that `allows` it, as `trex_v2` does.
-- **An unregistered schema name raises.** It used to return an empty report,
-  validating nothing *and* silently disarming `strict=True`.
-
-The validator still **never rejects a column merely for being unknown**, so
-additive columns (e.g. an optional `camera` axis for multi-camera recordings)
-remain back-compatible — only the named set is refused. New track converters
-must emit schema-valid parquet.
-
-### Tracks are pixels; a physical unit is a feature
-
-Every spatial column in `tracks/` is in video pixels, and `X`/`Y` mean the body
-centre on every tracker. Neither was true before: TREx reports centimetres scaled
-by `cm_per_pixel` and puts the *head* in `X`, while every other converter wrote
-pixels and a keypoint mean. A feature reading `X` across trackers was comparing
-a head to a centroid in two unit systems, and nothing on disk recorded either
-fact.
-
-- The TREx converter divides the centimetre columns back out, reading the factor
-  **from the file** (TREx writes `cm_per_pixel` into every export) rather than
-  from mosaic's own parameter — the parameter records what mosaic *passed*, and
-  TREx substitutes `meta_real_width / video_width` when it is unset.
-- Centimetres are obtained downstream by the `scale-to-cm` feature, from a
-  per-video `cm_per_pixel` on the media index. That column is **text**, so empty
-  can mean *uncalibrated* rather than `0.0`, and a rescan never clears it.
-- `mosaic upgrade-tracks` rescales centimetre-era tables whose raw export has
-  been swept, and **refuses** a table that does not record its factor.
-
-### `group` is an optional namespace, not the grouping
-
-`group` is a required column but may be empty (`""`). Together with `sequence` it
-forms the composite identity / filename key (`<group>__<seq>`, or just `<seq>`
-when empty) — kept for back-compat and to disambiguate non-unique sequence names.
-It is **not** the canonical way to categorize sequences for analysis. Flexible,
-redefinable grouping lives in **tags** (owned by mosaic-api). To run a feature
-over an arbitrary, tag-resolved subset, pass explicit pairs:
-`run_feature(ds, feature, scope=Scope(entries=[(group, sequence), ...]))` —
-unambiguous even when sequence names repeat across groups (`Scope`'s `groups`
-and `sequences` combine as a cross-product and can't express an arbitrary set).
-`group` retains a *structural* role only as a temporal-contiguity key for the
-(future) `continuous` dataset type: overlap/windowed features pull prev/next
-neighbors only within the same group (`core/pipeline/manifest.py`,
-`core/pipeline/iteration.py`) — preserve that when softening `group` elsewhere.
-
-### imgstore support
-
-imgstore (Motif / Loopbio) recordings are *directories* (a `metadata.yaml` plus
-chunk files), not single video files. mosaic treats a store as a normal media
-entry — `scan_media()` (and the one-off `index_media()`) discovers stores
-natively (one entry per store, `media_type="imgstore"`, internal chunks
-excluded), and reading dispatches transparently:
-
-- All frame-consuming features route through `MultiVideoReader`, which opens a
-  store via `ImgStoreCapture` (a seek/read capture adapter) — so `egocentric-crop`,
-  `interaction-crop-pipeline`, playback, and tracking's `extract_frames` work
-  unchanged.
-- Tracking inference uses `open_frame_reader()`: `ImgStoreFrameReader` for stores,
-  else the in-process libav `VideoReader` for plain files — both in
-  [`core/media/imgstore_io.py`](src/mosaic/core/media/imgstore_io.py) /
-  [`core/media/video_io.py`](src/mosaic/core/media/video_io.py).
-- Native decode: video-codec chunks (`.mp4` / h264) decode through the same
-  `VideoReader`, raw-pixel chunks (`npy` / `npz`) load via numpy, and Bayer/YUV
-  chunks convert through a local color map
-  ([`core/media/imgstore_native.py`](src/mosaic/core/media/imgstore_native.py)),
-  so the `imgstore` package leaves the read path.
-- Frame addressing: the track-table `frame` column is the 0-based contiguous
-  video frame index, which maps to imgstore's `frame_index` (**not** the
-  camera-provided `frame_number`). Detection (`is_imgstore`) is import-free;
-  reading a store no longer needs the `imgstore` package (native decode). The
-  package is needed only to *write* stores, as the test fixtures do, so it sits
-  in the `test` dependency group rather than in an extra.
-
-### Params are Pydantic
-
-Per-feature `Params` are Pydantic models — never pass raw `dict[str, Any]`
-across feature boundaries. The `run_id` hash covers the serialized params (plus
-inputs and frame range), so every params field affects reproducibility
-**except** those tagged `Annotated[T, HASH_EXCLUDE]` — throughput-only knobs
-(e.g. `FeralFeature.infer_batch_size`) that `Params.identity_dump()` strips from
-the hash so retuning them never busts the cache, even though they still appear
-in `params.json` and propagate to parallel workers. Add new params as typed
-fields with defaults; don't reuse one field for two meanings across versions —
-bump `version` instead.
-
-### Determinism
-
-Identical params + inputs must always produce the same `run_id` and outputs.
-Don't introduce nondeterministic iteration order, unseeded random state, or
-filesystem-order-dependent behavior in feature code.
-
-### Type checking
-
-basedpyright is in strict mode. Prefer dataclasses / Pydantic models over
-`dict[str, Any]`. New code is expected to type-check cleanly.
-
-### Docstrings
-
-Google-style. A public object's docstring is the only place it is documented —
-there is no rendered API reference to carry the explanation instead.
-
-### `feature_library/external/` is sandboxed
-
-keypoint-MoSeq and VAME each live in a separate venv and are invoked via
-subprocess. One basedpyright execution environment covers both runners, and
-both environments are excluded from the uv workspace (`[tool.uv.workspace]` in
-`pyproject.toml`). Don't import either library directly from the main mosaic
-package.
-
-**For keypoint-MoSeq the subprocess boundary is a licensing requirement.**
-keypoint-MoSeq is licensed by Harvard OTD for non-commercial research and
-academic use only; mosaic is AGPL-3.0-or-later, and AGPL section 7 forbids
-adding a "non-commercial only" restriction to a covered work. Importing it
-would make a combined work that could not be distributed at all. Do not fold
-keypoint-moseq into mosaic's dependencies or bundle it into a packaged
-installer.
-
-VAME is GPL-3.0, which does not restrict use, and section 13 of the AGPL and
-of the GPL each permit combining a work under the other. Mosaic's runner
-imports VAME in a process of VAME's environment, and mosaic's distribution
-does not convey VAME. The GPL source obligation falls on whoever conveys a
-built environment.
-
-**Both runners speak one wire.** `runner_wire.py` imports only the standard
-library and pydantic, and serves a runner: requests arrive as JSON lines on
-its standard input, and replies (`Ready`, `Done`, `Failed`, `Event`) leave as
-JSON lines on its standard output, with an array crossing as a file in a
-per-attempt exchange directory. `kpms_protocol.py` and `vame_protocol.py`
-declare each tool's payloads. `kpms_server.py` and `vame_runner.py` are the two
-programs. Each imports its library only inside a request handler, after
-`claim_stdout()` has pointed `sys.stdout` at standard error. Mosaic's side,
-`RunnerProcess` in `behavior/feature_library/runner_client.py`, starts one
-child lazily at the first request, keeps it running across `save_state` and
-later requests, and starts a fresh one after it exits for any reason.
-
-**A cancel is a hard cancel.** A fired `cancel_token` kills the runner's whole
-process group and the request raises `Cancelled`, with no sentinel and no
-grace period, unlike the cooperative cancel that Ultralytics training uses
-below. Both tools discard a fit's state on any exit. Stopping at once costs
-nothing that a grace period would save.
-
-Installing mosaic builds neither environment. The user builds it, and
-[`external/README.md`](src/mosaic/behavior/feature_library/external/README.md)
-(for VAME, [`external/vame-env/README.md`](src/mosaic/behavior/feature_library/external/vame-env/README.md))
-is the documented bootstrap, with the license terms attached to that step.
-Every request `KpmsFeature` makes checks `MOSAIC_KPMS_LICENSE_ACCEPTED=1`
-before it can start a runner. The refusal therefore covers every caller and
-does not depend on `__init__`, because constructing a feature (as `mosaic
-reconcile` does for every run it re-addresses) is not use of keypoint-MoSeq.
-`MOSAIC_KPMS_PYTHON` and `MOSAIC_VAME_PYTHON` locate an interpreter, and
-`MOSAIC_KPMS_CONDA_ENV` and `MOSAIC_VAME_CONDA_ENV` a conda environment,
-matching the `MOSAIC_TREX_BIN` / `MOSAIC_TREX_CONDA_ENV` convention.
-[NOTICE](NOTICE) records this arrangement and the other third-party terms,
-notably TRex, which requires a paid license for company use. A reader-facing
-licensing page is being written and is not yet published. Until then,
-[`docs/installation.md`](docs/installation.md) states the keypoint-MoSeq and
-VAME terms and links NOTICE for the rest.
-
-### `tracking/external/` is where Ultralytics runs
-
-Same shape, different license. Ultralytics is AGPL-3.0, and a program that
-imports it is one work with it, so `mosaic track ultralytics` drives it as a
-separate program: `tracking/external/ultralytics-env/` declares an environment
-the user builds with `uv sync --python 3.12`, `tracking/external/runner/` holds
-the two files that run inside it, and what crosses between them is a JSON request
-file, a JSON response file and progress lines on stdout.
-[`ultralytics_track/run.py`](src/mosaic/tracking/ultralytics_track/run.py) is
-mosaic's side: `ULTRALYTICS_ENV` on the same five-step location ladder every other
-external tool uses, plus `probe_ultralytics`, `ultralytics_tracker_defaults` and
-`run_ultralytics_tool`. One subprocess per entry.
-
-`tests/meta/test_external_tool_separation.py` checks both directions for each of
-Ultralytics, keypoint-MoSeq and VAME. A mosaic module outside a tool's runner may
-not import the tool. Mosaic's base dependencies, extras, dependency groups and
-`uv.lock` may not declare it. The programs that run in its environment may not
-import mosaic. `SEPARATED_TOOLS` in `tests/helpers/environment.py` lists each
-tool's libraries, environments and programs. **For Ultralytics the separation is
-complete.** Tracking, single-model inference and model training all run out of
-process, and `pip install -e ".[all]"` does not resolve an AGPL-licensed
-dependency.
-
-**Two environments, because POLO cannot share one with upstream.**
-`ultralytics-env/` runs the tracker and `infer-pose`; `polo-env/` runs
-`infer-points`. They ship the same `yolo` console script, so the `$PATH` rung of
-the location ladder cannot tell them apart — the probe reports whether a build
-defines the `locate` task, and `infer-points` refuses an upstream one by name.
-
-**The runner reads files, and reads an entry's files in order.** Ultralytics never
-opens a path: the runner decodes frames itself, with mosaic-media's `VideoReader`,
-and hands them to `model.track(..., persist=True)` or `model.predict`. So it is
-handed the entry's files rather than one (`entry_runner_sources` in
-`common/tool_input.py`, `EntryReader` in the runner) and reads them on one frame
-axis: an entry's clips, or the chunk files of a store whose chunks hold the frames
-mosaic reads (`readable_chunks`). Nothing is joined or exported for Ultralytics
-tracking, `infer-pose` or `infer-points`, and the tracker's state carries across a
-file boundary as it carries across a batch. The frames, their numbers and the
-batches are those of the join, which
-`tests/tracking/ultralytics_track/test_runner_entry_files.py` compares pixel for
-pixel. A store whose chunks are images, raw arrays or Bayer/YUV data is still read
-through its `export-store` video, and a chunk whose measured count differs from the
-store's index sends the store there too. Each file's facts are gated in mosaic
-before they cross, because the runner cannot call the gate. `TrackingRoot.reads`
-declares how each tool reads (`one-file`, `entry-files`, `in-process`).
-`required_media_ops` puts each entry through the checks a kind's run makes, without
-a probe, and returns a `MediaRequirement` for each entry that would be refused: its
-cause, the op that meets it, the `reencode` choice and the run's own refusal text.
-`infer-localizer` is mosaic's own PyTorch and reads a store natively.
-
-**Training cancels cooperatively, and that is the one place `run_supervised`'s
-kill is wrong.** Ultralytics honours `trainer.stop` between epochs and nowhere
-else, so a killed process loses the epoch in flight where a flag it reads leaves
-`last.pt` and `results.csv` complete. `stop_then_kill`
-(`tracking/common/cooperative_cancel.py`) is the predicate that writes the
-sentinel the runner stats and only escalates to the existing kill after
-`_TRAIN_CANCEL_GRACE_SECONDS`. That grace must exceed one epoch and stay **under**
-the substrate's own — a queue pod SIGKILLs the tree on its own timer — so the
-ordering is epoch, then mosaic's grace, then the runtime's. The exchange lives in
-`models/<kind>/<run_id>/.mosaic-train/<execution_id>/` because a run root is
-reused across attempts and a stale sentinel would cancel the next one instantly.
-And the environment is excluded from the uv workspace and has its own basedpyright
-execution environment pinned at `python3.12`. Built with any other interpreter,
-its packages land where nothing looks and the runner type-checks against no
-Ultralytics at all.
-
-## Working with Notebooks
-
-Reference end-to-end examples (not test fixtures):
-
-- [`notebooks/calms21-template.ipynb`](notebooks/calms21-template.ipynb) —
-  canonical end-to-end (manifest → features → wavelet/scaler/t-SNE →
-  clustering → XGBoost classifier → visualization).
-- [`notebooks/collective-motion-shiners.ipynb`](notebooks/collective-motion-shiners.ipynb) —
-  a track converter written inside the notebook, then the collective-motion
-  features across four group sizes.
-- [`notebooks/collective-motion-zebrafish.ipynb`](notebooks/collective-motion-zebrafish.ipynb) —
-  a converter for a tracker with **no pose keypoints** (Ctrax/JAABA `trx`), then
-  collective motion and the `nearest-neighbor` → `nn-delta-response` →
-  `nn-delta-bins` social-force chain.
-
-Notebooks may use sample data not present in the repo; check the first cell
-for path expectations before running.
-
-### Invariants a change must not quietly undo
-
-Each of these replaced a silent wrong answer, and each has a test named for it.
-
-- **One parquet writer.** `write_parquet_atomic` (and `atomic_savez`) are the only
-  sanctioned ways to write an output. A direct `df.to_parquet(final_path)` leaves a
-  torn file where a whole one belongs, and every reuse gate in the tracking layer
-  tests for presence. A test fails if a new call site addresses a final path.
-- **One tracks file per sequence, and the frame axis is global over the enclosing
-  unit.** The first half is structural: `tracks_table_path` addresses one parquet per
-  `(variant, group, sequence)` and the index holds one row per
-  `(run_id, group, sequence)`. The second says what `frame` counts *from*, and it
-  applies at two levels. In a **discrete** dataset the enclosing unit is the
-  sequence: a multi-clip sequence numbers frames across its ordered clips, which is
-  what `ConcatenatedTimeline` and `MultiVideoReader` already build and what a
-  tracker delivers by reading the entry's join or its clips in order. In a
-  **continuous** group, one declared in `continuous_groups` because its sequences
-  are time divisions of one recording, the enclosing unit is the group: frames are
-  numbered across the whole recording, and its media resolves as one shared
-  timeline for the same reason.
-  Never a group of independent divisions each restarting at zero; that makes one
-  frame number name a different moment in each, which is exactly what
-  `overlap_frames` refuses. Note the invariant is *not* enforced on the write paths.
-  `merges_per_sequence` is the individual axis, not the time axis, and of the
-  producers of tracks tables only the trackers and inference ops read an entry's
-  clips on one axis, so a converter fed per-clip files can still produce colliding
-  frames inside one sequence.
-
-  **No tool joins an entry's clips any more; mosaic does, and hands over one
-  file.** Both ways of leaving it to the tool were wrong. SLEAP, Lightning Pose
-  and Ultralytics were truncated to clip 0 and tracked none of the rest of a
-  recording. TREx took the whole clip list and its `FFmpegVideoCapture`
-  under-counts every file it opens, so each clip lost its tail -- a staircase,
-  +2 frames per boundary on a six-clip fixture (1,800 media frames converting to
-  1,788), 70 lost over the real 17-clip session -- leaving a table on the
-  tracker's axis while every pixel-reading consumer was on the media's.
-  `export-joined` ([`core/pipeline/joined_export.py`](src/mosaic/core/pipeline/joined_export.py))
-  writes one stream-copied video per multi-clip entry, **verified frame-exact
-  against the sum of the clips' own counts and refused rather than published when
-  it comes up short**, and `resolve_tool_inputs` is the seam that hands it over.
-  Frame extraction reads a join too, through `join_to_read`, for a recording whose
-  clips differ in frame rate: `MultiVideoReader` refuses such clips and stays strict,
-  and both consumers find the join through `current_join`.
-  Measured through the pipeline: the `.pv` index then equals the media index at
-  every former boundary. So every tracker and inference op covers the whole
-  entry, and clips that cannot be one video (`refuse_unjoinable`) are refused
-  before any tool runs. Mosaic's own Ultralytics runner needs no join: it reads the
-  clips one after another on the same axis, so Ultralytics tracking, `infer-pose`
-  and `infer-points` are handed the clips (see "`tracking/external/` is where
-  Ultralytics runs"). `infer-localizer` reads in process. It reads the clips on the
-  entry's axis (`read_entry_frames`), and their join only when `join_to_read` says
-  so.
-
-  **A tracker reads a join only under a current recipe.** A join is named
-  `<clip-set digest>.<recipe>.joined.mp4`, and the recipe folds the op version.
-  `joins_of` accepts every recipe `CURRENT_JOINED_PARAMS` produces, so a
-  `reencode` join is found, and never a superseded one: the 0.1 join held the
-  right frames on a timeline TREx could not seek. Two current joins of one clip
-  set are refused, and the op refuses to write the second. After a version bump,
-  re-join and then run `mosaic prune-joined` to reclaim the old files.
-
-  **That count is frames, never timestamps.** `probe_media(...).frame_count` is
-  `len({packet.time for packet in packets})` -- *distinct presentation
-  timestamps* -- which answers "does frame `i` sit at `i / fps`" and not "did
-  every frame survive". The two part company precisely here: joining clips
-  recorded at different rates makes ffmpeg re-time each segment by the previous
-  one's duration, and the rounding puts one frame of the new clip on the last
-  timestamp of the old. Nothing is lost and the count drops anyway. It refused a
-  real 17-clip session (30 / 29.948 / 31 fps) that held all 390,986 frames,
-  reporting 390,984. `_coded_frame_count` counts packets instead.
-
-  **But the timeline is imposed, not inherited, and it is refused when it is
-  wrong.** The concat demuxer offsets each segment by the previous one's
-  duration in the *first* clip's ticks and never rescales, so any clip counting
-  time differently -- a 31 fps sibling, or a re-encode carrying its encoder's
-  own tick rate -- lands at a wrong timestamp and drags every later frame with
-  it. This was once filed as a note on the reasoning that nothing reads this
-  file's timing. **That was false: TREx seeks by timestamp**, mapping each
-  packet's PTS back to a frame index and seeking backwards when they disagree.
-  On a real 17-clip session it read frame 108,324 for every frame between 1,745
-  and 216,760 -- 2 fps instead of 45, about thirty hours, and the wrong pixels
-  throughout. So `_normalise_clip` writes in its neighbours' ticks
-  (`-video_track_timescale`), the copy restamps every packet by index
-  (`-bsf:v setts`), and a join whose `max_timestamp_gap_frame_periods` exceeds
-  1.5 is refused before publishing, keeping the partial. 1.5 is where mosaic's
-  own reader stops checking for missing frames. The grid is not a clock: a
-  mixed-rate session is labelled at its first clip's rate, and real time per
-  frame still comes from the clips' own facts (`retime_joined_frame`, which the
-  shared bridge applies to every producer's table from several clips).
-
-  The axis is also **measured against the media and reported** rather than merely
-  asserted: `frames_read` beside `media_frames` on the tracks row, a
-  `frame_axis_mismatch` run-log event, an `extra` key on the inventory record, and
-  `mosaic measure-tracks` for tables published before the cells existed. The
-  comparison counts the frames the tool read. It does not use the table's last
-  frame, the last frame an animal was seen in. A shortfall is not always a
-  misregistration. TREx never reads the frames its decoder holds back to reorder
-  at the end of a file. The loss is 2 frames of an H.264 file with B-frames and
-  none of an AV1 file, plus one when the container omits a frame count. It
-  leaves every frame of the table in place, while frames lost earlier move every
-  frame after them. The `trex` root declares the loss as a rule of the file
-  (`tail_loss`). Each row records what the rule gives the file TREx read
-  (`known_tail_loss`, from the source its `.pv` records), and a shortfall within
-  it is recorded apart as a known tail loss: a `frame_tail_short` event, a
-  separate snapshot counter and inventory key, and `frame_tail_shortfalls()`.
-  Anything larger stays a mismatch, as does any shortfall of a `.pv` made from
-  several files, which loses frames at every boundary. A row whose file's header
-  was not read is allowed the most TREx loses on any file, 3, and its report says
-  so. A count cannot show that the missing frames are at the end, and every
-  report of a tail loss says that too. Recorded, never refused: the condition is
-  deterministic and a table cannot be re-bridged without re-tracking, so raising
-  would fail the same entry forever and cost the analyses that never depended on
-  registration.
-- **Tracks are pixels, and `X` is the body centre.** Both hold on every tracker,
-  and neither did before: TREx reports centimetres and puts the *head* in `X`. A
-  physical unit is obtained by the `scale-to-cm` feature, never stored in the
-  table. A converter that writes a scaled column, or puts a landmark other than
-  the body centre in `X`, reintroduces a difference that reads as a plausible
-  number and is recorded nowhere.
-- **A media variant is consumed by name, and its tracks are published in source
-  space.** A tracker or inference op reads a media variant only when its `media`
-  parameter names the variant's run id, and that run id enters the consumer's
-  identity. `publish_tracks_table` maps the table back through the variant's recorded
-  placement (`to_source_space` in
-  [`core/pipeline/placement.py`](src/mosaic/core/pipeline/placement.py)) before
-  the table is validated and written. Every reader of `tracks/` reads source
-  pixels and source frames, whatever crop or trim the tracker saw. Consumers do
-  not shift crop coordinates themselves. A consumer therefore cannot omit the
-  offset and publish plausible positions on the variant's pixel grid that read
-  like any other output. A frame window on the consumer is refused beside `media`
-  (`MediaInputParams`), because the tool counts it in variant frames.
-- **A tool is handed only a file that it decodes.** A tool without a decoder for a
-  file reads zero frames and exits 0, and without the refusal its run would record
-  an empty result as a success. `refuse_undecodable_codec`
-  ([`tracking/common/tool_input.py`](src/mosaic/tracking/common/tool_input.py))
-  allows a codec in the baseline, in the tool's `ToolDecoder.also_reads`
-  (`core/pipeline/tracking_roots.py`) or in `MOSAIC_ALLOW_TOOL_CODECS`. A codec in
-  the tool's `never_reads` is refused at once, without a probe. Any other codec is
-  refused, unless the tool declares a `probe` and the probe decodes a frame of the
-  file in the tool's environment. SLEAP (`sleap_io.load_video`) and Lightning Pose
-  (DALI's `fn.readers.video` on the GPU) declare one. Lightning Pose also declares
-  AV1 in `never_reads`: DALI's reader omits AV1 from its list of codecs, and fails
-  with "Unhandled codec 225" on every GPU, measured with DALI 1.50 and 2.3 on a GTX
-  1080 Ti and an RTX 4000 Ada. So a variant for Lightning Pose is made with
-  `codec: "h264"`. AV1 stays the default codec for SLEAP, which decodes it with
-  conda-forge's headless OpenCV. The default build loads conda's Qt and breaks
-  SLEAP's PySide6.
-  [`docs/installation.md`](docs/installation.md#video-codecs-each-tool-reads)
-  records the codecs that each tool reads.
-  Each run creates one `DecodeProbe` from the placement that it
-  resolved. A codec that decodes is tested once per interpreter and run. A refusal
-  is not kept, because the SLEAP probe reads the file and one unreadable file says
-  nothing about the next. A result is not kept between runs, and a rebuilt
-  environment is tested again.
-  `tests/tracking/common/test_decoder_probe.py` tests both outcomes.
-- **A tracker reports; a feature derives.** `mosaic_v1` *forbids* `VX`, `VY`,
-  `SPEED`, `ANGLE` and the rest, so a converter cannot compute one and present it
-  as a measurement. Heading is the sharpest case: the principal-component fit the
-  converters used has an arbitrary sign, and its flips read downstream as real
-  turns. Anything wanting one runs `heading` and chooses the method, which then
-  enters the run identifier.
-- **Unreadable is not empty.** `readable_tracks_table` returns `None` for a table
-  that cannot be read and `BridgeCounts(0, 0)` for one that reads and holds no rows.
-  The second is a legitimate result -- a video with no detected individuals -- and
-  must stay reusable.
-- **A run reports what it lost.** A per-entity failure is recorded as an
-  `entry_error` run-log event and surfaced as `Result.failed_entries` plus
-  `"status": "partial"`; losing every entity raises. Do not add `partial` to
-  `runlog.TERMINAL_STATUSES` -- mosaic-api's sweeper reaps that set.
-- **A run also reports what it holds, and the run-log is the only place it can.**
-  `entries_written`, `cache_hit` and `tracks_variant` fold onto `RunLogSnapshot`
-  beside `entries_failed`, because a queue spawns `mosaic run` with stdout *and*
-  stderr on `DEVNULL` and so can never see a stdout payload or a returned
-  `Result`. Three points a change must not undo:
-  - **`entries_written` counts what the scope holds, cache hits included** -- so a
-    resumed run and a fresh one report the same number, which is what lets one
-    value be read as coverage without knowing which kind of run wrote it. It is
-    last-write-wins, where `entries_failed` accumulates. For a *tracker* it is
-    attempted-minus-lost, **not** the index-row count: a failed bridge still
-    writes a row, because the tool output is durable and a re-run adopts it and
-    redoes only the conversion.
-  - **`tracks_variant` is what a run read**, never what an op produced. Those are
-    different relations and one key cannot hold both.
-  - **Zero / `False` / `""` mean *not reported*.** A job that never asked the
-    question writes nothing, the same convention as the tracks index's blank
-    `n_keypoints` cell meaning *unknown* rather than zero.
-  Adding an event kind is safe for an older reader by construction --
-  `reduce_run_log` is an if/elif fold, so an unrecognised `ev` advances liveness
-  and changes nothing else. Emit **before** the terminal event and before the
-  context closes: `JsonlRunLog._emit` returns silently on a closed file, so a late
-  write is dropped without an error, and anything after `finished` never reaches
-  the ledger.
-- **Inputs align at one entity level.** `alignment_verdict` decides; the merge
-  raises from it. Joining individual-level to pair-level output is a cartesian
-  product, not an alignment. `loading.CROSS_JOIN_FEATURES` is the closed escape.
-- **An entry is claimed before it is touched.** `open_entry` takes the claim with an
-  exclusive create; release and refresh are ownership-checked. One-shot ops claim
-  their run root and raise on contention, because two nondeterministic trainers in
-  one run root interleave artifacts.
-- **One rule resolves an unpinned `Result`.** `track_universe.current_run_id`:
-  leaf-of-chain when the runs have edges among themselves, recorded time when they
-  are siblings. Do not reintroduce a second rule.
-- **`consumed_tracks_composition` is compared, not just recorded.** It is what
-  notices a re-conversion from changed sources; the tracks variant identity is
-  params-only and does not move. `consumed_media_composition` on
-  `TrackerRunRowBase` is the same rule one level up: a tracker's identity is its
-  settings with no term for the media it read, so without it a re-transcode
-  leaves every tracker run reading as current over different pixels.
-- **An index lock that cannot be taken is not the same as one that is held.**
-  `index_lock` classifies the errno: a filesystem that refuses locking raises
-  `IndexLockUnsupported` immediately rather than spinning the full timeout and
-  then blaming a writer that does not exist. It never degrades to an unlocked
-  write, and an unfamiliar errno keeps polling rather than guessing.
-- **A label series revision is immutable, and a series never enters a
-  composition.** A revision is what a trained model names as what it saw. One
-  that could be rewritten, or whose save moved a sequence's composition and so
-  blocked every derivative on each save, defeats the reason the series exists. A changed state is a new `rev<N>`; nothing is replaced.
-- **A model is named by run id, never by where it is.** Across datasets that
-  means a `libraries:` link, not a path into another dataset's `models/`. The
-  reference string is hashed, so a path would make one model mint a different
-  inference identity from every place it was read.
-- **Only a revision's content is hashed, never its number.** Two spellings that
-  select the same bytes are one run, and annotations restored to an earlier state
-  reuse what was computed for it.
-
-## Common Pitfalls
-
-1. **Two Ultralytics environments, never one.** POLO ships under the
-   distribution name `ultralytics` (the
-   [mooch443/POLO](https://github.com/mooch443/POLO) git pin against the upstream
-   release), so one environment holds upstream or the fork and never both. That
-   is why `ultralytics-env/` and `polo-env/` are separate directories rather than
-   one with an extra. POLO is a *full fork* — it retains all upstream tasks
-   (detect/segment/classify/pose/track) and *adds* `locate` (point detection) —
-   so a POLO environment can serve every op, at the cost of tracking a fork that
-   updates less often. The two ship the same `yolo` console script, so the
-   `$PATH` rung of the location ladder cannot tell them apart: set
-   `MOSAIC_POLO_BIN` explicitly, and note that the point ops refuse an upstream
-   build by name.
-2. **Raw `.h264` files (Raspberry Pi)** have no container, so header metadata is
-   unreliable and seeking the bare stream corrupts the decoder. Read them through
-   [`core/media/video_io.py`](src/mosaic/core/media/video_io.py): the packet-scan
-   probe (`probe_media`) measures the true frame count and fps, and the in-process
-   `VideoReader` decodes sequentially with those facts injected. Don't open a raw
-   stream directly.
-3. **`ffmpeg` / `ffprobe` must be on `PATH`** — install via
-   `conda install -c conda-forge ffmpeg`. Many failures in `scan_media()` /
-   `index_media()` trace back to a missing `ffprobe`.
-4. **Don't bypass `run_feature()`** to write feature outputs directly. The
-   pipeline owns indexing, `run_id` registration, and output layout. Side-loaded
-   files break reproducibility and downstream features.
-5. **Schema-valid tracks only.** Track converters that emit non-schema columns
-   will fail validation downstream. Test new converters against
-   `core/schema.py` before relying on them.
-6. **`all` is what belongs in one environment, not everything.** It resolves to
-   `deep-learning` + `faiss`. `movement` and `lightning-action` are excluded
-   because they are heavy and single-purpose, and `feral` because it re-resolves
-   the environment. Each exclusion has its own reason; don't quietly fold any of
-   them in, and don't restate the reasons as one. Nothing YOLO-shaped is in it or
-   can be: that work runs in an environment mosaic does not install.
-7. **0.x APIs may move.** Per [CONTRIBUTING.md](CONTRIBUTING.md), breaking
-   changes still warrant explicit discussion in an issue first.
-
-8. **One ffmpeg build per environment.** Two independent copies of ffmpeg in one
-   process crash it: the suite dies with `Trace/BPT trap: 5` at a different point
-   every run, and on macOS the Objective-C runtime warns on every import that
-   `AVFFrameReceiver` is implemented twice. **These are two different hazards
-   with different blast radii, and running them together is what once put
-   `albumentations` in quarantine for a reason that does not apply:**
-
-   - **Two wheels providing `cv2` — plain pip only.** `lightning-action` and
-     `movement` (via `pyvideoreader`) require `opencv-python-headless` while
-     mosaic requires `opencv-python`. pip installs both without complaint -- they
-     are different distributions -- and they then overwrite each other's files and
-     merge two ffmpeg builds into one `cv2/.dylibs`. **The documented conda
-     environment is immune**: one conda-forge `py-opencv` registers *both* pip
-     distribution names for its single build, so those extras resolve with no
-     wheel installed at all. `tests/conftest.py` refuses to start when it finds
-     two *builds*, and tells conda's one-build-two-names case apart by
-     `INSTALLER`. The same collision would arise inside the two Ultralytics
-     environments -- `ultralytics` wants the GUI wheel, `albumentations` the
-     headless one -- and is settled there by declaring headless outright and
-     overriding the GUI wheel away with a never-true marker. `conftest`'s guard
-     reads the *running* interpreter's distributions and cannot see those, which
-     is why each environment's lock is checked by its own test.
-   - **`av` and any `cv2` wheel each vendoring their own ffmpeg.** Both bundle a
-     complete build, so two collide even when only one provides `cv2`
-     (`av/.dylibs/libSvtAv1Enc.4.1.0` against `cv2/.dylibs/libSvtAv1Enc.3.0.2`).
-     **Unaffected by which `cv2` flavor you pick** -- the wheels carry the same
-     payload -- so no dependency edit fixes it. It does not arise on Windows,
-     where OpenCV's ffmpeg is a separate lazily-loaded DLL.
-
-   **Conda is one route to one ffmpeg, not the only one.** conda-forge's `av` and
-   `py-opencv` link the `ffmpeg` installed beside them rather than vendoring
-   their own, which is why "Environment setup" installs them before pip runs. But
-   `apt install python3-av python3-opencv` and `pip install av --no-binary av`
-   reach the same invariant, and mosaic's **Linux CI installs `av` and
-   `opencv-python` as plain wheels against an apt `ffmpeg`, on every job, and has
-   never crashed**. Treat conda as required on a macOS workstation and as one
-   option elsewhere.
-
-## Pointers to Deeper Docs
-
-- [`docs/installation.md`](docs/installation.md) — the environment, the extras, and
-  the four tools mosaic drives but does not install.
-- [`docs/dataset.md`](docs/dataset.md) — what a dataset is: the manifest, the named
-  roots, the indexes, and how a derived directory gets its name.
-- [`docs/guides/`](docs/guides/) — tracking, analysis and pipelines, one page per
-  thing a reader is trying to do. `guides/pipelines/chain-steps.md` replaced the
-  old `guide-pipeline.md`.
-- [`docs/guides/tracking/write-a-converter.md`](docs/guides/tracking/write-a-converter.md)
-  — writing a track converter for files you already have: the file-to-sequence
-  declarations, params versus hints, `output_schema`, and where a converter or a
-  custom schema has to be registered to reach the CLI.
-- [`docs/concepts/`](docs/concepts/) — why the structure is the way it is: tracks
-  and units, feature composition, reproducibility, pipelines as documents.
-- Wiring a **new external tracker** in is not a published page. `tracking/common/`
-  owns the run loop; a tracker supplies its argv, its settings, its phases and its
-  converter, plus one `TrackingRoot` row.
-  `tests/tracking/common/test_tracker_conformance.py` is parametrized over every
-  tracker root, so a half-implemented one fails by name, and it reads
-  `docs/drafts/adding-a-tracker.md` when that draft is present.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — PR workflow and CLA.
+## Registries
+
+New functionality is almost always a new plugin.
+
+| Registrar | Registry | Lives in |
+| --- | --- | --- |
+| `@register_feature` | `FEATURES` | `behavior/feature_library/registry.py` |
+| `register_track_converter` | `TRACK_CONVERTERS` | `core/track_converter.py` |
+| `register_label_converter` | `LABEL_CONVERTERS` | `core/label_converter.py` |
+| `@register_op` | `OPS` | `core/pipeline/ops.py` |
+| `@register_media_step` | `MEDIA_STEPS` | `core/media/preprocess/registry.py` |
+
+Label converters register by an explicit call to `register_label_converter` (see the
+behavior guide). The `MediaStepSpec` union (`core/media/preprocess/specs.py`) lists
+every registered step (`tests/core/media/preprocess/test_media_steps.py`).
+
+## Cross-cutting invariants
+
+- **One parquet writer.** Outputs go through `write_parquet_atomic`
+  (`core/pipeline/writers.py`) or `atomic_savez`. A `to_parquet` call on a final path
+  fails `tests/core/pipeline/test_tracks_table_atomicity.py`.
+- **Feature output goes through `run_feature()`** (`core/pipeline/run.py`), which owns
+  the index, the `run_id` and the layout.
+- **Params are Pydantic** (`core/params.py`). Add a param as a typed field with a
+  default. `HASH_EXCLUDE` marks throughput knobs only. A field that changes meaning
+  bumps the feature's `version` (`tests/core/test_params.py`). Do not pass a raw
+  `dict[str, Any]` across a feature boundary. Use a Pydantic model or a dataclass.
+- **Determinism.** The same params and inputs give the same `run_id` and outputs. Seed
+  every random state and keep results independent of filesystem order.
+- **An entry name is one path component.** `validate_entry_name` (`core/helpers.py`)
+  refuses `/`, `\` and NUL at write boundaries and on no read path
+  (`tests/core/pipeline/test_tracks_index.py`).
+- **A media variant is consumed by name and published in source space.**
+  `publish_tracks_table` (`tracking/common/bridge.py`) maps a table through
+  `to_source_space` (`core/pipeline/placement.py`,
+  `tests/core/media/preprocess/test_placement_map_back.py`).
+- **A tool is handed only a file it decodes.** `refuse_undecodable_codec`
+  (`tracking/common/tool_input.py`) applies the tool's `ToolDecoder`
+  (`core/pipeline/tracking_roots.py`, `tests/tracking/common/test_decoder_probe.py`).
+- **A run reports its losses.** A failed entry emits an `entry_error` run-log event and
+  is listed in `Result.failed_entries`, and the CLI then reports `"status": "partial"`.
+  Losing every entry raises `AllEntriesFailed` (`core/pipeline/run.py`,
+  `tests/core/pipeline/test_partial_entry_failure.py`).
+- **A run reports its coverage in its run-log.** `RunLogSnapshot` (`runlog.py`) folds
+  `entries_written`, `cache_hit` and `tracks_variant`. Emit them before the terminal
+  event (`tests/core/pipeline/test_job_contract.py`).
+- **`runlog.TERMINAL_STATUSES` is `finished`, `failed`, `cancelled`.** Do not add
+  `partial` or a refusal. Three repositories read the set, and mosaic-api's sweeper
+  reaps it (`tests/core/pipeline/graph/test_pipeline_partial_failure.py`).
+- **`track_universe.current_run_id` is the one rule for an unpinned `Result`**
+  (`tests/core/pipeline/test_unpinned_result_rule.py`).
+- **A lock the filesystem refuses raises `IndexLockUnsupported`**
+  (`core/pipeline/index_lock.py`) and is not degraded to an unlocked write. The lock
+  serializes writers on one mount only
+  (`tests/core/pipeline/test_index_lock_capability.py`).
+- **Name a model by its run id.** Across datasets, link the library with `libraries:`
+  instead of a path into another dataset's `models/`. The reference string enters the
+  inference identity (`resolve_model` in `tracking/model_refs.py`,
+  `tests/core/test_library_links.py`).
+- **A revision's content is hashed, and its number is not**
+  (`tests/tracking/ops/test_prepare_training_data.py`).
+
+## Docstrings
+
+Google style. A public object is documented only by its docstring, because the site has
+no rendered API reference.
+
+## Area guides
+
+Each loads when an agent works in its directory.
+
+- [src/mosaic/core/CLAUDE.md](src/mosaic/core/CLAUDE.md): dataset, manifest, scan
+  sources, track schemas, entry names, imgstore, media I/O.
+- [src/mosaic/core/pipeline/CLAUDE.md](src/mosaic/core/pipeline/CLAUDE.md): inventory,
+  tracks index, label series, locks, run ids, alignment, claims, compositions.
+- [src/mosaic/core/pipeline/graph/CLAUDE.md](src/mosaic/core/pipeline/graph/CLAUDE.md):
+  the recipe graph.
+- [src/mosaic/behavior/CLAUDE.md](src/mosaic/behavior/CLAUDE.md): feature protocol,
+  label converters, the sandboxed kpms and VAME runners.
+- [src/mosaic/tracking/CLAUDE.md](src/mosaic/tracking/CLAUDE.md): trackers, Ultralytics
+  environments, frame axis and joins, model references, training provenance.
+- [tests/CLAUDE.md](tests/CLAUDE.md): agent detail for the suite.
+
+User documentation: [docs/installation.md](docs/installation.md),
+[docs/dataset.md](docs/dataset.md), [docs/guides/](docs/guides/),
+[docs/concepts/](docs/concepts/). Contributor workflow:
+[CONTRIBUTING.md](CONTRIBUTING.md).
+[src/mosaic/agent/SKILL.md](src/mosaic/agent/SKILL.md) guides the agents of mosaic's
+users. Update it when a change alters what a user does.
