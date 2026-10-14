@@ -82,3 +82,58 @@ def test_register_ops_populates_registry_in_a_fresh_interpreter():
         [sys.executable, "-c", script], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
+
+
+CORE_MEDIA_OPS = ("export-joined", "export-store", "preprocess", "transcode")
+"""The ops that register from modules under ``mosaic.core.pipeline``."""
+
+
+def test_registered_op_registers_the_core_ops_in_a_fresh_interpreter():
+    """A lookup succeeds without importing the media op modules first."""
+    import subprocess
+    import sys
+
+    script = (
+        "from mosaic.core.pipeline.ops import registered_op\n"
+        f"for kind in {CORE_MEDIA_OPS!r}:\n"
+        "    assert registered_op(kind).kind == kind, kind\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_register_ops_registers_the_core_ops_in_a_fresh_interpreter():
+    import subprocess
+    import sys
+
+    script = (
+        "from mosaic.core.pipeline.ops import OPS\n"
+        "from mosaic.tracking import register_ops\n"
+        "register_ops()\n"
+        f"missing = [k for k in {CORE_MEDIA_OPS!r} if k not in OPS]\n"
+        "assert not missing, missing\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_list_ops_and_op_resource_class_register_the_core_ops_in_a_fresh_interpreter():
+    """``preprocess`` is placed on the heavy lane before any media module loads."""
+    import subprocess
+    import sys
+
+    script = (
+        "from mosaic.core.pipeline.ops import list_ops, op_resource_class\n"
+        "assert op_resource_class('preprocess') == 'heavy'\n"
+        "kinds = {e['kind'] for e in list_ops()}\n"
+        f"missing = [k for k in {CORE_MEDIA_OPS!r} if k not in kinds]\n"
+        "assert not missing, missing\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr

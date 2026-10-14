@@ -8,6 +8,8 @@ are in it.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -220,6 +222,21 @@ def test_every_tracker_root_registers_a_reconcilable_index() -> None:
     )
 
     assert unregistered == []
+
+
+def test_the_core_indexes_are_reconcilable_in_a_fresh_interpreter() -> None:
+    """The lookup registers the core indexes, with nothing else imported first."""
+    probe = (
+        "from mosaic.core.pipeline.dataset_indexes import reconcilable_index\n"
+        "keys = ('features', 'labels', 'preprocess', 'tracks')\n"
+        "print([k for k in keys if reconcilable_index(k) is None] or 'all')"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+
+    assert completed.stdout.strip() == "all", completed.stderr
 
 
 # --- One answer to "what does this root hold" --------------------------------

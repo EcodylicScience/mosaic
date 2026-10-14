@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 
@@ -278,6 +279,21 @@ def register_reconcilable_index(
     _FACTORIES[root_key] = factory
 
 
+CORE_INDEX_MODULES: Final[tuple[str, ...]] = (
+    "mosaic.core.pipeline.index",
+    "mosaic.core.pipeline.labels_index",
+    "mosaic.core.pipeline.preprocess_index",
+    "mosaic.core.pipeline.tracks_index",
+)
+"""The modules under ``core`` that register a reconcilable index when imported."""
+
+
 def reconcilable_index(root_key: str) -> Callable[[Path], ReconcilableIndex] | None:
-    """The registered opener for *root_key*, or ``None`` if it has none."""
+    """The registered opener for *root_key*, or ``None`` if it has none.
+
+    Imports :data:`CORE_INDEX_MODULES` first. Those modules import this one, so
+    the imports are deferred to the call.
+    """
+    for module in CORE_INDEX_MODULES:
+        import_module(module)
     return _FACTORIES.get(root_key)

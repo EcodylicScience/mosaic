@@ -42,6 +42,8 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
 - `test_behavior_import_is_torch_free.py`: `import mosaic.behavior` importing torch.
 - `test_core_lazy_exports.py`: `mosaic.core` binding a name at import, or a leaf
   import loading pandas or h5py.
+- `test_pipeline_lazy_exports.py`: `mosaic.core.pipeline` importing a submodule at
+  import, or importing it loading cv2, av or pandas.
 - `test_core_params_is_a_leaf.py`: `core.entry`, `core.individuals` or
   `core.strict_model` importing mosaic, or `core.params` beyond `strict_model`.
 - `test_params_declaration.py`: a parameter field without a description

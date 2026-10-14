@@ -27,6 +27,7 @@ when an optional extra is absent.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib import import_module
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -484,15 +485,46 @@ def register_op(cls: type[Op[Any]]) -> type[Op[Any]]:
     return cls
 
 
+CORE_OP_MODULES: Final[tuple[str, ...]] = (
+    "mosaic.core.pipeline.joined_export",
+    "mosaic.core.pipeline.preprocess",
+    "mosaic.core.pipeline.store_export",
+    "mosaic.core.pipeline.transcode",
+)
+"""The modules under ``core`` that register an op when imported."""
+
+
+def ensure_core_ops_registered() -> None:
+    """Import every module of :data:`CORE_OP_MODULES`, registering its op.
+
+    The imports are deferred to the call because those modules import this one
+    and load cv2 and av. ``mosaic.tracking.register_ops`` calls this too, and one
+    call there registers every built-in op.
+    """
+    for module in CORE_OP_MODULES:
+        import_module(module)
+
+
+def _registered_ops() -> dict[str, type[Op[Any]]]:
+    """Return :data:`OPS` after registering the core ops.
+
+    Every reader of the registry in this module calls it, so a lookup returns
+    the core ops whether or not their modules were imported first.
+    """
+    ensure_core_ops_registered()
+    return OPS
+
+
 def registered_op(kind: str) -> type[Op[Params]]:
-    """The op class registered under *kind*.
+    """The op class registered under *kind*, after registering the core ops.
 
     Raises:
         KeyError: *kind* names no registered op.
     """
-    op_cls = OPS.get(kind)
+    ops = _registered_ops()
+    op_cls = ops.get(kind)
     if op_cls is None:
-        raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(OPS)}")
+        raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(ops)}")
     return op_cls
 
 
@@ -638,9 +670,11 @@ def list_ops(
     Each row contains ``kind``, ``domain``, ``category``, ``version``, the two
     scope declarations and ``model_reference``. A client reads how much scope
     an op takes, and which trained model it runs, without running it and
-    without reading either out of the params model.
+    without reading either out of the params model. The core ops are
+    registered first, and the tracking ops are listed once
+    ``mosaic.tracking`` is imported.
     """
-    ops = sorted(OPS.values(), key=lambda c: c.kind)
+    ops = sorted(_registered_ops().values(), key=lambda c: c.kind)
     return [
         {
             "kind": c.kind,
@@ -670,9 +704,9 @@ def op_resource_class(kind: str) -> str:
     Prefers the op's explicit ``resource_class`` classvar; otherwise derives it from
     ``category`` (train/infer -> gpu, else cpu). Unknown kinds fall back to ``"cpu"``. Used by
     the execution router to send GPU work (training, inference, TREx) to a GPU lane / k8s
-    without any per-op routing edits.
+    without any per-op routing edits. The core ops are registered first.
     """
-    op_cls = OPS.get(kind)
+    op_cls = _registered_ops().get(kind)
     if op_cls is None:
         return "cpu"
     declared = getattr(op_cls, "resource_class", "")

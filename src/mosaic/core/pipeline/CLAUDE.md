@@ -12,6 +12,11 @@ pipeline graph are in `graph/CLAUDE.md`.
 
 - The public typed API is in `types/` (`Inputs`, `Result`, `ArtifactSpec`,
   `InputStream`, `DependencyLookup`, the labels sources).
+- `__init__.py` binds every public name on access, and its module-scope imports are
+  standard library only (`tests/meta/test_pipeline_lazy_exports.py`). The media ops
+  register through `ensure_core_ops_registered` (`ops.py`), which every reader of
+  `OPS` in `ops.py` and `mosaic.tracking.register_ops` call. `reconcilable_index` imports the modules that
+  register the core indexes.
 - `inventory/` imports nothing from `tracking` or `behavior`
   (`tests/core/pipeline/inventory/test_inventory_contributors.py`). Tracking facts
   arrive through the seams the root guide lists, plus the reader registries in

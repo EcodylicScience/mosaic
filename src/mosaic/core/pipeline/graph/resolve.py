@@ -723,9 +723,7 @@ def _params_field_types(kind: str, name: str) -> dict[str, object]:
         cls = feature_class_for_slug(name)
         params_cls = getattr(cls, "Params", None) if cls is not None else None
     else:
-        from mosaic.core.pipeline.ops import OPS
-
-        op_cls = OPS.get(name)
+        op_cls = op_class_for_kind(name)
         params_cls = getattr(op_cls, "Params", None) if op_cls is not None else None
     declared: object = getattr(params_cls, "model_fields", None)
     if not isinstance(declared, dict):

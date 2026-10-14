@@ -2,9 +2,12 @@
 
 All long-running tracking operations are registered ``Op``\\s discoverable and
 runnable through the shared registry in :mod:`mosaic.core.pipeline.ops`.
-Importing this package registers the built-in ops (extract / train / infer).
+Importing this package registers the tracking ops (extract / train / infer), and
+:func:`register_ops` registers every built-in op, the media ops under ``core``
+included.
 """
 
+from mosaic.core.pipeline.ops import ensure_core_ops_registered
 from mosaic.core.schema import (
     TrackSchema,
     TRACK_SCHEMAS,
@@ -35,14 +38,17 @@ from mosaic.tracking.ops.delete_model import delete_trained_model
 
 
 def register_ops() -> None:
-    """Ensure the built-in tracking ops are registered in the shared registry.
+    """Ensure every built-in op is registered in the shared registry.
 
-    Registration is a side effect of importing ``mosaic.tracking``: this package
-    imports its op subpackages, whose ``@register_op`` decorators run on import.
-    A caller that otherwise holds only the generic registry from
-    ``mosaic.core.pipeline.ops`` -- the CLI -- imports and calls this so the
-    tracking kinds are present before it enumerates or runs them.
+    Registration of the tracking ops is a side effect of importing
+    ``mosaic.tracking``: this package imports its op subpackages, whose
+    ``@register_op`` decorators run on import. The ops under ``core`` register
+    through :func:`~mosaic.core.pipeline.ops.ensure_core_ops_registered`. A
+    caller that imports only the generic registry from
+    ``mosaic.core.pipeline.ops``, such as the CLI, calls this before it
+    enumerates or runs an op.
     """
+    ensure_core_ops_registered()
 
 
 __all__ = [
