@@ -1,8 +1,9 @@
 """How one attempt and one request stand, as the JSON a poller reads.
 
-:class:`RunStatusWire` reports one attempt and :class:`RequestStatusWire` one pipeline
-request. ``mosaic status --json`` and ``mosaic pipeline status --json`` print these
-models dumped, and other programmatic callers return the same models.
+:class:`RunStatusWire` reports one attempt, :class:`RequestStatusWire` one pipeline
+request and :class:`RequestPageWire` a page of a dataset's requests. ``mosaic status
+--json``, ``mosaic pipeline status --json`` and ``mosaic pipeline list --json`` print
+these models dumped, and other programmatic callers return the same models.
 
 Each report reads run-logs alone, through the readers of :mod:`mosaic.runlog`. A
 poll costs a few small files. The module and its imports leave the feature library,
@@ -36,18 +37,22 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from .model import Request
-    from .rollup import StepAttempt
+    from .rollup import RequestRollup, StepAttempt
 
 __all__ = [
     "FAILED_ENTRY_SAMPLE",
     "FailedEntryWire",
     "RecordedErrorWire",
+    "RequestPageWire",
     "RequestStatusWire",
+    "RequestSummaryWire",
     "RequestVerdict",
     "RunStatusWire",
     "StepStatusWire",
     "recorded_error",
     "request_status_wire",
+    "request_summary",
+    "rollup_verdict",
     "run_status_wire",
 ]
 
@@ -216,6 +221,43 @@ class RequestStatusWire(GraphModel):
     steps: tuple[StepStatusWire, ...]
 
 
+class RequestSummaryWire(GraphModel):
+    """One pipeline request in a listing, without its per-step reports.
+
+    Attributes:
+        request_id: Which request this is.
+        recipe_digest: The recipe it submitted.
+        owner: Who submitted it, ``""`` when unrecorded.
+        created_at: When it was submitted, ``""`` when unrecorded.
+        step_count: How many steps it assigned an attempt.
+        status: The rollup's one-shot status (``request_rollup``).
+        terminal: Whether that status is final.
+        verdict: ``status`` with the derived words of :data:`RequestVerdict`.
+    """
+
+    request_id: str
+    recipe_digest: str
+    owner: str
+    created_at: str
+    step_count: int
+    status: RequestStatus
+    terminal: bool
+    verdict: RequestVerdict
+
+
+class RequestPageWire(GraphModel):
+    """One page of a dataset's pipeline requests, newest first.
+
+    Attributes:
+        items: The requests on this page.
+        next_after: The ``after`` that reads the next page, ``None`` on the last
+            page. It is the request id of the last request on this page.
+    """
+
+    items: tuple[RequestSummaryWire, ...]
+    next_after: str | None
+
+
 def recorded_error(error_json: str) -> RecordedErrorWire | None:
     """Parse an ``error_json`` blob that an attempt or an entry recorded.
 
@@ -308,28 +350,57 @@ def request_status_wire(
     """
     logs = run_log_dir(base_dir)
     rollup = request_rollup(base_dir, request)
-    steps = tuple(_step_status(logs, attempt) for attempt in rollup.steps)
     return RequestStatusWire(
         request_id=rollup.request_id,
         status=rollup.status,
         terminal=rollup.is_terminal,
-        verdict=_verdict(rollup.status, steps, driver_alive=driver_alive),
-        steps=steps,
+        verdict=rollup_verdict(rollup, driver_alive=driver_alive),
+        steps=tuple(_step_status(logs, attempt) for attempt in rollup.steps),
     )
 
 
-def _verdict(
-    status: RequestStatus,
-    steps: tuple[StepStatusWire, ...],
-    *,
-    driver_alive: bool | None,
+def request_summary(
+    base_dir: Path | str, request: Request, *, driver_alive: bool | None = None
+) -> RequestSummaryWire:
+    """Summarize one request for a listing, reading one run-log per step.
+
+    Args:
+        base_dir: The dataset root containing ``.mosaic/runs``.
+        request: The submission to summarize.
+        driver_alive: As for :func:`request_status_wire`.
+
+    Returns:
+        The request's identity, its status and its verdict.
+    """
+    rollup = request_rollup(base_dir, request)
+    return RequestSummaryWire(
+        request_id=request.request_id,
+        recipe_digest=request.recipe_digest,
+        owner=request.owner,
+        created_at=request.created_at,
+        step_count=len(request.step_executions),
+        status=rollup.status,
+        terminal=rollup.is_terminal,
+        verdict=rollup_verdict(rollup, driver_alive=driver_alive),
+    )
+
+
+def rollup_verdict(
+    rollup: RequestRollup, *, driver_alive: bool | None = None
 ) -> RequestVerdict:
-    """The rollup *status*, with ``orphaned`` and ``partial`` derived."""
-    if status == "running" and driver_alive is False:
+    """Return the verdict of *rollup*: its status, with ``orphaned`` and ``partial``.
+
+    Args:
+        rollup: The request's rollup.
+        driver_alive: As for :func:`request_status_wire`.
+    """
+    if rollup.status == "running" and driver_alive is False:
         return "orphaned"
-    if status == "finished" and any(step.entries_failed for step in steps):
+    if rollup.status == "finished" and any(
+        attempt.entries_failed for attempt in rollup.steps
+    ):
         return "partial"
-    return status
+    return rollup.status
 
 
 def _step_status(logs: Path, attempt: StepAttempt) -> StepStatusWire:

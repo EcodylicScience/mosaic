@@ -22,6 +22,7 @@ import pytest
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.pipeline.graph import (
     Recipe,
+    list_requests,
     load_request,
     plan_pipeline,
     request_rollup,
@@ -31,6 +32,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
+from mosaic.runlog import list_runs
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
 from tests.helpers import (
@@ -142,6 +144,7 @@ CLI_READS: dict[str, CliArguments] = {
     "measure-tracks --dry-run": lambda _: ["measure-tracks"],
     "models provenance": lambda _: ["models", "provenance", MODEL_RUN_ID],
     "notes show": lambda _: ["notes", "show"],
+    "pipeline list": lambda _: ["pipeline", "list", "--limit", "1"],
     "pipeline plan": lambda f: ["pipeline", "plan", "--recipe", f"@{f.recipe_path}"],
     "pipeline status": lambda f: ["pipeline", "status", "--request", f.request_id],
     "prune-joined --dry-run": lambda _: ["prune-joined"],
@@ -149,6 +152,7 @@ CLI_READS: dict[str, CliArguments] = {
     "reconcile --dry-run": lambda _: ["reconcile"],
     "reindex --dry-run": lambda _: ["reindex"],
     "runs": lambda _: ["runs"],
+    "runs --limit": lambda _: ["runs", "--limit", "1"],
     "sequences": lambda _: ["sequences"],
     "sources list": lambda _: ["sources", "list"],
     "status": lambda f: ["status", "--execution-id", f.execution_id, "--progress"],
@@ -164,11 +168,13 @@ CLI_READS_OF_NOTHING = (
     "libraries list",
     "measure-tracks --dry-run",
     "notes show",
+    "pipeline list",
     "prune-joined --dry-run",
     "prune-media --dry-run",
     "reconcile --dry-run",
     "reindex --dry-run",
     "runs",
+    "runs --limit",
     "sources list",
     "sweep-tracking --dry-run",
     "tags list",
@@ -263,6 +269,8 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "dataset_inventory": _dataset_inventory,
     "inventory": _inventory,
     "inventory_wire": _inventory_wire,
+    "list_requests": lambda f: list_requests(f.root, limit=1),
+    "list_runs": lambda f: list_runs(run_log_dir(f.root), limit=1),
     "load_tracks": lambda f: f.reopened().load_tracks("", "seq_a", auto_convert=False),
     "open_dataset": ReadDataset.reopened,
     "plan_pipeline": lambda f: plan_pipeline(
@@ -291,6 +299,8 @@ def test_a_library_read_writes_nothing(populated: ReadDataset, read: str) -> Non
         "dataset_inventory",
         "inventory",
         "inventory_wire",
+        "list_requests",
+        "list_runs",
         "open_dataset",
         "read_runs",
         "read_tracks_index",

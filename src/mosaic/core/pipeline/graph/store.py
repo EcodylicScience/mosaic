@@ -12,7 +12,9 @@ name are two.
 
 ``base_dir`` rather than a ``Dataset`` throughout, matching ``runlog``'s own
 path helpers. Reading a request must stay cheap enough for a release gate, and
-constructing a dataset to learn a path is the opposite of that.
+constructing a dataset to learn a path is the opposite of that. For the same
+reason, importing this module leaves pandas, cv2, av and the feature library
+unloaded (``tests/meta/test_status_imports.py``).
 """
 
 from __future__ import annotations
@@ -20,11 +22,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .._utils import atomic_write
 from .digest import recipe_digest
 from .model import Recipe, Request
+from .status import RequestPageWire, request_summary
 
 __all__ = [
+    "list_requests",
     "load_recipe",
     "load_request",
     "pipelines_root",
@@ -96,14 +99,61 @@ def load_request(base_dir: Path | str, request_id: str) -> Request:
     return Request.model_validate(_read_json(path, "request"))
 
 
+def list_requests(
+    base_dir: Path | str, *, limit: int | None = None, after: str | None = None
+) -> RequestPageWire:
+    """List one page of a dataset's pipeline requests, newest first.
+
+    The request file names are listed and sorted, and only the requests on the page
+    are read and summarized, one run-log per step. A request id minted by
+    ``submit_request`` is a ULID, and a descending sort of the names is creation-time
+    descending. A request submitted after a page was read sorts before that page and
+    leaves the next page unchanged.
+
+    Args:
+        base_dir: The dataset root.
+        limit: The most requests to return, at least 1. ``None`` returns all.
+        after: The ``next_after`` of the previous page. The page starts at the first
+            request id that sorts before it.
+
+    Returns:
+        The page, and the ``after`` of the next page while unread requests remain.
+
+    Raises:
+        ValueError: *limit* is below 1, or a request file on the page is not valid
+            JSON or not a valid request.
+    """
+    if limit is not None and limit < 1:
+        raise ValueError(f"limit must be at least 1, got {limit}")
+    root = requests_root(base_dir)
+    names = (
+        sorted((path.stem for path in root.glob("*.json")), reverse=True)
+        if root.is_dir()
+        else []
+    )
+    if after is not None:
+        names = [name for name in names if name < after]
+    page = names if limit is None else names[:limit]
+    return RequestPageWire(
+        items=tuple(
+            request_summary(base_dir, load_request(base_dir, name)) for name in page
+        ),
+        next_after=page[-1] if len(page) < len(names) else None,
+    )
+
+
 def _write_json(path: Path, payload: object) -> None:
     """Write *payload* as indented JSON, atomically.
 
     Indented rather than compact: these are files a human reads and diffs in a
     review, and the canonical compact form exists for the digest rather than for
     the copy. Through ``atomic_write`` so a reader never sees a partial document
-    and an interrupted write never clobbers a whole one.
+    and an interrupted write leaves a whole one in place. ``atomic_write`` is
+    imported in the call because its module loads pandas, which a reader of this
+    module leaves unloaded.
     """
+    from .._utils import atomic_write
+
     atomic_write(path, lambda temp: temp.write_text(json.dumps(payload, indent=2)))
 
 

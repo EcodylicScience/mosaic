@@ -1,7 +1,7 @@
-"""Reading a run's or a request's status stays cheap enough to poll.
+"""Reading a status report or a listing of requests stays cheap enough to poll.
 
-A status report reads a few small run-log files. Importing the modules that build
-it leaves the feature library, pandas, cv2 and av unloaded. ``mosaic.runlog``,
+Each reads a few small run-log and request files. Importing the modules that build
+them leaves the feature library, pandas, cv2 and av unloaded. ``mosaic.runlog``,
 which mosaic-api and mosaic-queue read on every sweep, leaves pydantic unloaded too.
 
 Each check runs in a fresh interpreter. An in-process probe answers about whatever
@@ -24,6 +24,8 @@ STATUS_IMPORTS = (
     "import mosaic.core.pipeline.graph.status",
     "from mosaic.core.pipeline.graph import request_status_wire, run_status_wire",
     "from mosaic.core.pipeline.graph import RequestStatusWire, RunStatusWire",
+    "import mosaic.core.pipeline.graph.store",
+    "from mosaic.core.pipeline.graph import list_requests, RequestPageWire",
 )
 """Each spelling that a status reader is imported by."""
 

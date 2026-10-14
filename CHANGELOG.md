@@ -216,6 +216,21 @@ New in the library: `RunStatusWire`, `RequestStatusWire`, `StepStatusWire`,
 `read_entry_errors` in `mosaic.runlog`; and `progress_done` and `progress_total`
 on `StepAttempt`.
 
+**`mosaic pipeline list` lists a dataset's pipeline requests, and `mosaic runs`
+reads a page at a time.** `pipeline list` prints the requests newest first, each
+with its recipe digest, owner, submission time, step count, status and verdict.
+`--json` prints `RequestPageWire` (`items` and `next_after`). `mosaic runs
+--limit N --after ID` reduces only the run-logs that one page reads. Under
+`--json` a paged `runs` prints an object, `items` and `next_after`. Without
+`--limit` and `--after`, `runs` prints the same array as before. In both verbs,
+`--after` takes the previous page's `next_after`, and a request or attempt
+created after that page was read leaves the next page unchanged. New in the
+library: `list_requests`, `request_summary`, `rollup_verdict`,
+`RequestSummaryWire` and `RequestPageWire` in `mosaic.core.pipeline.graph`, and
+`list_runs` and `RunLogPage` in `mosaic.runlog`. `read_runs` keeps its signature
+and its result. Importing `mosaic.core.pipeline.graph.store` leaves pandas, cv2
+and av unloaded.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

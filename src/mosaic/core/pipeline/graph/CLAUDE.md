@@ -66,9 +66,13 @@ instead of derived from artifacts.
   `partial`, `pending` and `orphaned` are derived words, and none joins
   `runlog.TERMINAL_STATUSES`. `orphaned` comes from the `driver_alive` argument of
   `request_status_wire` (`test_pipeline_status_wire.py`).
-- `__init__.py` binds every public name on access, and `status.py` imports nothing that
-  loads pandas, cv2, av or the feature library (`tests/meta/test_status_imports.py`).
-  The editor wires in `wire.py` import the op registry and the inventory, which do.
+- `list_requests` (`store.py`) and `list_runs` (`mosaic.runlog`) sort file names, which
+  are ULIDs, newest first, and read only the page that they return
+  (`test_pipeline_request_listing.py`, `tests/core/test_runlog_readers.py`).
+- `__init__.py` binds every public name on access, and `status.py` and `store.py`
+  import nothing that loads pandas, cv2, av or the feature library
+  (`tests/meta/test_status_imports.py`). The editor wires in `wire.py` import the op
+  registry and the inventory, which do.
 
 ## Declarations and the registries
 

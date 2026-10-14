@@ -52,9 +52,11 @@ __all__ = [
     "EntryErrorRecord",
     "JsonlRunLog",
     "ProgressEventRecord",
+    "RunLogPage",
     "RunLogSnapshot",
     "TERMINAL_STATUSES",
     "attempt_outcome",
+    "list_runs",
     "new_execution_id",
     "now_iso",
     "read_entry_errors",
@@ -187,6 +189,19 @@ class ProgressEventRecord(TypedDict):
     metrics: dict[str, float]
     message: str
     timestamp: str
+
+
+class RunLogPage(TypedDict):
+    """One page of attempt snapshots, read by ``list_runs``.
+
+    Attributes:
+        items: The snapshots, newest first.
+        next_after: The ``after`` that reads the next page, ``None`` on the last
+            page. It is the execution id of the last run-log that the page read.
+    """
+
+    items: list[RunLogSnapshot]
+    next_after: str | None
 
 
 type AttemptOutcome = Literal[
@@ -660,26 +675,70 @@ def read_runs(
     kind: str | None = None,
     status: str | None = None,
 ) -> list[RunLogSnapshot]:
-    """Read attempt snapshots (newest first), optionally filtered by kind/status.
+    """Read every attempt snapshot (newest first), optionally filtered by kind/status."""
+    return list_runs(run_dir, kind=kind, status=status)["items"]
 
-    ``execution_id`` is a ULID, so a plain lexicographic descending sort is
-    creation-time descending.
+
+def list_runs(
+    run_dir: Path | str,
+    *,
+    limit: int | None = None,
+    after: str | None = None,
+    kind: str | None = None,
+    status: str | None = None,
+    target: str | None = None,
+) -> RunLogPage:
+    """Read one page of attempt snapshots, newest first.
+
+    The run-log file names are listed and sorted, and logs are reduced in that order
+    until the page is full. Without a filter, a page reduces *limit* logs whatever
+    the number of attempts. A filter also reduces the logs it passes over. An empty
+    or unreadable log is skipped. ``execution_id`` is a ULID, and a descending sort
+    of the names is creation-time descending. An attempt created after a page was
+    read sorts before that page and leaves the next page unchanged.
+
+    Args:
+        run_dir: The run-log directory.
+        limit: The most snapshots to return, at least 1. ``None`` returns all.
+        after: The ``next_after`` of the previous page. The page starts at the
+            first execution id that sorts before it.
+        kind: Keep only attempts of this ``kind``.
+        status: Keep only attempts with this ``status``.
+        target: Keep only attempts with this ``target``.
+
+    Returns:
+        The page, and the ``after`` of the next page while unread logs remain.
+
+    Raises:
+        ValueError: *limit* is below 1.
     """
-    run_dir = Path(run_dir)
-    if not run_dir.exists():
-        return []
-    out: list[RunLogSnapshot] = []
-    for p in run_dir.glob("*.jsonl"):
-        snap = reduce_run_log(p)
+    if limit is not None and limit < 1:
+        raise ValueError(f"limit must be at least 1, got {limit}")
+    names = _run_log_names(Path(run_dir))
+    if after is not None:
+        names = [name for name in names if name < after]
+    items: list[RunLogSnapshot] = []
+    for position, name in enumerate(names):
+        if limit is not None and len(items) >= limit:
+            return {"items": items, "next_after": names[position - 1]}
+        snap = reduce_run_log(Path(run_dir) / f"{name}.jsonl")
         if snap is None:
             continue
         if kind is not None and snap["kind"] != kind:
             continue
         if status is not None and snap["status"] != status:
             continue
-        out.append(snap)
-    out.sort(key=lambda r: r["execution_id"], reverse=True)
-    return out
+        if target is not None and snap["target"] != target:
+            continue
+        items.append(snap)
+    return {"items": items, "next_after": None}
+
+
+def _run_log_names(run_dir: Path) -> list[str]:
+    """The execution ids of the run-logs in *run_dir*, newest first."""
+    if not run_dir.is_dir():
+        return []
+    return sorted((path.stem for path in run_dir.glob("*.jsonl")), reverse=True)
 
 
 def read_runs_by_run_id(run_dir: Path | str, run_id: str) -> list[RunLogSnapshot]:

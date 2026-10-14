@@ -19,7 +19,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 
 * `run`: Run a feature (--feature), an op (--kind),...
 * `status`: Show the status of one run attempt by...
-* `runs`: List run attempts, optionally filtered by...
+* `runs`: List run attempts newest first, optionally...
 * `cancel`: Request cancellation of a running attempt...
 * `release`: Release the run roots claimed by an...
 * `track`: Run an integrated tracker over scoped...
@@ -104,7 +104,7 @@ $ mosaic status [OPTIONS]
 
 ## `mosaic runs`
 
-List run attempts, optionally filtered by kind / status / target.
+List run attempts newest first, optionally filtered by kind / status / target.
 
 **Usage**:
 
@@ -118,7 +118,9 @@ $ mosaic runs [OPTIONS]
 * `--kind <str>`: Filter by runs.kind ('feature', 'trex', or an op kind).
 * `--status <str>`: Filter by status (running|finished|failed|cancelled).
 * `--target <str>`: Filter by exact runs.target (feature-slug filter).
-* `--json`: Emit the rows as a JSON array.
+* `--limit <int range>`: List at most this many attempts.  [x>=1]
+* `--after <str>`: Start after the page that printed this next_after.
+* `--json`: Emit the rows as a JSON array, or a page object with --limit/--after.
 * `--help`: Show this message and exit.
 
 ## `mosaic cancel`
@@ -889,6 +891,7 @@ $ mosaic pipeline [OPTIONS] COMMAND [ARGS]...
 * `submit`: Record a submission of a recipe, and print...
 * `run`: Run every step of a recipe here, in order,...
 * `status`: Say how far one submission got, from its...
+* `list`: List the dataset's pipeline requests...
 
 ### `mosaic pipeline catalog`
 
@@ -1024,6 +1027,26 @@ $ mosaic pipeline status [OPTIONS]
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--request <str>`: Which submission to report on.  [required]
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
+### `mosaic pipeline list`
+
+List the dataset's pipeline requests newest first, each with its verdict.
+
+Only the requests on the page are read, each from its steps' attempt logs.
+
+**Usage**:
+
+```console
+$ mosaic pipeline list [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--limit <int range>`: List at most this many requests.  [x>=1]
+* `--after <str>`: Start after the page that printed this next_after.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 

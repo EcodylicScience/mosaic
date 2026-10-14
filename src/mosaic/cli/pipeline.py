@@ -1,6 +1,6 @@
 """``mosaic pipeline``: read a graph, say what it would do, and do it.
 
-Seven verbs, and the split between them is the split the library makes.
+Eight verbs, and the split between them is the split the library makes.
 ``catalog`` lists the step types a recipe may run. ``validate`` asks only about
 the document and opens no dataset.
 ``plan`` and ``show`` resolve it against a dataset and write nothing. ``run``
@@ -12,6 +12,7 @@ records the pipeline against the dataset, assigns every step an attempt id, and
 prints the command each step is run by, so a graph can be driven by anything that
 starts processes in order -- a shell loop, a job array, a scheduler. ``status``
 then says how far that submission got, reading only the attempts' own logs.
+``list`` reports a page of the dataset's submissions the same way.
 
 ``--recipe`` takes the same ``@file.json`` / inline-JSON argument every other
 JSON option on this CLI takes, so a recipe can be piped in with ``@-``.
@@ -479,6 +480,54 @@ def status_command(
     )
 
 
+def list_command(
+    manifest: ManifestOption,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="List at most this many requests.", min=1),
+    ] = None,
+    after: Annotated[
+        str | None,
+        typer.Option(
+            "--after", help="Start after the page that printed this next_after."
+        ),
+    ] = None,
+    as_json: JsonOption = False,
+) -> None:
+    """List the dataset's pipeline requests newest first, each with its verdict.
+
+    Only the requests on the page are read, each from its steps' attempt logs.
+    """
+    from mosaic.core.pipeline.graph import list_requests
+
+    ds = load_dataset(manifest, read_only=True)
+    try:
+        page = list_requests(ds.base_dir, limit=limit, after=after)
+    except ValueError as exc:
+        fail(str(exc))
+    if as_json:
+        emit_json(page.model_dump(mode="json"))
+        return
+    if not page.items:
+        typer.echo("No pipeline requests recorded in this dataset.")
+    else:
+        render_table(
+            [
+                {
+                    "request_id": item.request_id,
+                    "created_at": item.created_at or "-",
+                    "recipe": item.recipe_digest,
+                    "steps": item.step_count,
+                    "verdict": item.verdict,
+                }
+                for item in page.items
+            ],
+            ["request_id", "created_at", "recipe", "steps", "verdict"],
+        )
+    if page.next_after is not None:
+        log(f"note: --after {page.next_after} lists the next page")
+
+
 def _runs(step: object) -> str:
     """What a step runs: its feature slug or its op kind."""
     return str(getattr(step, "feature", "") or getattr(step, "kind", ""))
@@ -552,3 +601,4 @@ _ = pipeline_app.command(name="show")(show_command)
 _ = pipeline_app.command(name="submit")(submit_command)
 _ = pipeline_app.command(name="run")(run_command)
 _ = pipeline_app.command(name="status")(status_command)
+_ = pipeline_app.command(name="list")(list_command)

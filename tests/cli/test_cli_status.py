@@ -1,4 +1,4 @@
-"""``mosaic status`` and ``mosaic pipeline status`` print the status wire models."""
+"""``mosaic status``, ``mosaic pipeline status|list`` and ``mosaic runs`` print the status wires."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
     Recipe,
+    RequestPageWire,
     RequestStatusWire,
     RunStatusWire,
     submit_request,
@@ -121,3 +122,93 @@ def test_plain_status_prints_the_error_and_each_failed_entry_as_text(
     assert "error: refused (coverage_shortfall): short by 2" in lines
     assert "failed entry g__s1: ValueError: no frames" in lines
     assert not any(line.startswith(("progress:", "failed_entries:")) for line in lines)
+
+
+def test_pipeline_list_prints_a_page_of_requests_newest_first(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, ds = dataset
+    newer, older = sorted(
+        (submit_request(ds, Recipe.model_validate(RECIPE)).request for _ in range(2)),
+        key=lambda request: request.request_id,
+        reverse=True,
+    )
+    command = ["pipeline", "list", "-m", str(manifest), "--json"]
+
+    first = RequestPageWire.model_validate(invoke_json([*command, "--limit", "1"]))
+    assert first.next_after is not None
+    second = RequestPageWire.model_validate(
+        invoke_json([*command, "--limit", "1", "--after", first.next_after])
+    )
+
+    assert [item.request_id for item in first.items] == [newer.request_id]
+    assert [item.request_id for item in second.items] == [older.request_id]
+    assert second.next_after is None
+    (item,) = second.items
+    assert (item.step_count, item.verdict) == (1, "running")
+    assert item.recipe_digest == older.recipe_digest
+
+
+def test_plain_pipeline_list_prints_a_row_per_request_and_the_next_page(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, ds = dataset
+    for _ in range(2):
+        _ = submit_request(ds, Recipe.model_validate(RECIPE))
+
+    result = invoke_ok(["pipeline", "list", "-m", str(manifest), "--limit", "1"])
+
+    header, row = result.stdout.splitlines()
+    assert header.split("\t") == [
+        "request_id",
+        "created_at",
+        "recipe",
+        "steps",
+        "verdict",
+    ]
+    assert row.endswith("\t1\trunning")
+    assert "--after" in result.stderr
+
+
+def _two_runs(manifest: Path) -> list[str]:
+    """Two attempts' execution ids, the older first by id."""
+    return sorted(
+        str(
+            invoke_json(
+                ["run", "-m", str(manifest), "--feature", "speed-angvel", "--json"]
+            )["execution_id"]
+        )
+        for _ in range(2)
+    )
+
+
+def test_runs_with_a_limit_prints_a_page_object(dataset: tuple[Path, Dataset]) -> None:
+    manifest, _ = dataset
+    older, newer = _two_runs(manifest)
+    command = ["runs", "-m", str(manifest), "--json", "--limit", "1"]
+
+    first = invoke_json(command)
+    second = invoke_json([*command, "--after", str(first["next_after"])])
+
+    assert set(first) == {"items", "next_after"}
+    assert [run["execution_id"] for run in _rows(first)] == [newer]
+    assert first["next_after"] == newer
+    assert [run["execution_id"] for run in _rows(second)] == [older]
+    assert second["next_after"] is None
+
+
+def test_runs_without_paging_flags_prints_the_array_of_every_run(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, _ = dataset
+    older, newer = _two_runs(manifest)
+
+    rows = json.loads(invoke_ok(["runs", "-m", str(manifest), "--json"]).stdout)
+
+    assert [run["execution_id"] for run in rows] == [newer, older]
+
+
+def _rows(page: dict[str, object]) -> list[dict[str, object]]:
+    items = page["items"]
+    assert isinstance(items, list)
+    return [row for row in items if isinstance(row, dict)]
