@@ -99,3 +99,34 @@ def test_the_registry_is_reached_from_exactly_one_module() -> None:
         f"{', '.join(sorted(mention - {'resolve.py'}))} reach the feature "
         f"registry. Only resolve.py may; everything else takes declarations."
     )
+
+
+def _run(code: str) -> str:
+    """Run *code* in a fresh interpreter, returning its stdout."""
+    completed = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout.strip()
+
+
+def test_every_exported_name_of_the_graph_package_resolves() -> None:
+    names = sorted(graph_pkg.__all__)
+    code = (
+        f"from mosaic.core.pipeline.graph import {', '.join(names)}\n"
+        "import mosaic.core.pipeline.graph as package\n"
+        f"missing = [n for n in {names!r} if not hasattr(package, n)]\n"
+        "print(missing or 'ok')"
+    )
+    assert _run(code) == "ok"
+
+
+def test_the_graph_package_body_imports_no_submodule() -> None:
+    """``graph/__init__.py`` binds its names on access, as ``core.pipeline`` does."""
+    code = (
+        "import sys\n"
+        "import mosaic.core.pipeline.graph\n"
+        "prefix = 'mosaic.core.pipeline.graph.'\n"
+        "print(sorted(m for m in sys.modules if m.startswith(prefix)) or 'none')"
+    )
+    assert _run(code) == "none"

@@ -1,0 +1,393 @@
+"""How one attempt and one request stand, as the JSON a poller reads.
+
+:class:`RunStatusWire` reports one attempt and :class:`RequestStatusWire` one pipeline
+request. ``mosaic status --json`` and ``mosaic pipeline status --json`` print these
+models dumped, and other programmatic callers return the same models.
+
+Each report reads run-logs alone, through the readers of :mod:`mosaic.runlog`. A
+poll costs a few small files. The module and its imports leave the feature library,
+pandas, cv2 and av unloaded (``tests/meta/test_status_imports.py``).
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Final, Literal, TypeGuard, get_args
+
+from pydantic import TypeAdapter, ValidationError
+
+from mosaic.core.json_value import JsonValue
+from mosaic.runlog import (
+    TERMINAL_STATUSES,
+    AttemptOutcome,
+    ProgressEventRecord,
+    attempt_outcome,
+    read_entry_errors,
+    read_run,
+    read_run_progress,
+    run_log_dir,
+)
+
+from ..error_envelope import ErrorEnvelope, error_envelope
+from ..refusal import Refusal, RefusalReason
+from .model import GraphModel
+from .rollup import RequestStatus, request_rollup
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from .model import Request
+    from .rollup import StepAttempt
+
+__all__ = [
+    "FAILED_ENTRY_SAMPLE",
+    "FailedEntryWire",
+    "RecordedErrorWire",
+    "RequestStatusWire",
+    "RequestVerdict",
+    "RunStatusWire",
+    "StepStatusWire",
+    "recorded_error",
+    "request_status_wire",
+    "run_status_wire",
+]
+
+FAILED_ENTRY_SAMPLE: Final = 20
+"""The most failed entries that one attempt's report lists."""
+
+type RequestVerdict = Literal[
+    "running", "finished", "partial", "failed", "cancelled", "orphaned"
+]
+"""How a request stands, as a report names it.
+
+The rollup's status, with two derived words. ``partial`` is a finished request
+with lost entries. ``orphaned`` is a running request whose driving process let its
+lease lapse. Neither is a run-log status.
+"""
+
+_REFUSAL_REASONS: Final[frozenset[str]] = frozenset(get_args(RefusalReason.__value__))
+_ENVELOPE_KEYS: Final = frozenset({"reason", "step", "message"})
+_JSON_OBJECT: Final[TypeAdapter[dict[str, JsonValue]]] = TypeAdapter(
+    dict[str, JsonValue]
+)
+_MESSAGE_LIMIT: Final = 2000
+
+
+class RecordedErrorWire(GraphModel):
+    """A failure that an attempt or one of its entries recorded, parsed.
+
+    Attributes:
+        type: The exception class name, ``""`` for a refusal or a blob that names
+            none.
+        message: The sentence a person reads.
+        refusal: The refusal as an :class:`ErrorEnvelope` of kind ``refused``, when
+            the blob names a ``RefusalReason``. Its detail contains every key of
+            the blob beside ``reason``, ``step`` and ``message``.
+    """
+
+    type: str
+    message: str
+    refusal: ErrorEnvelope | None
+
+
+class FailedEntryWire(GraphModel):
+    """One entity that an attempt lost while it continued.
+
+    Attributes:
+        key: The entity, as the attempt named it.
+        recorded_at: When the attempt recorded the failure.
+        error: The failure it recorded.
+    """
+
+    key: str
+    recorded_at: str
+    error: RecordedErrorWire | None
+
+
+class RunStatusWire(GraphModel):
+    """One attempt, as its run-log reports it.
+
+    The fields from ``execution_id`` to ``tracks_variant`` are those of
+    :class:`~mosaic.runlog.RunLogSnapshot`, which documents them. The rest are
+    derived from the same run-log.
+
+    Attributes:
+        outcome: ``status`` with ``partial`` for a finished attempt that lost
+            entries.
+        terminal: Whether the attempt is over.
+        progress_fraction: ``progress_done`` over ``progress_total``, ``None``
+            until a total is declared.
+        error: The attempt's ``error_json`` parsed, ``None`` when it recorded none.
+        failed_entries: The first of the entities it lost, at most
+            :data:`FAILED_ENTRY_SAMPLE`, in the order it recorded them.
+        failed_entries_has_more: Whether it lost more than ``failed_entries``
+            lists. ``entries_failed`` counts them all.
+        progress: Its progress events (:class:`~mosaic.runlog.ProgressEventRecord`),
+            ``None`` unless asked for.
+    """
+
+    execution_id: str
+    kind: str
+    target: str
+    run_id: str
+    status: str
+    owner: str
+    host: str
+    pid: int
+    created_at: str
+    started_at: str
+    heartbeat_at: str
+    finished_at: str
+    error_json: str
+    progress_done: int
+    progress_total: int
+    entries_failed: int
+    entries_written: int
+    entries_frame_axis_mismatch: int
+    entries_frame_tail_short: int
+    entries_columns_dropped: int
+    cache_hit: bool
+    tracks_variant: str
+    outcome: AttemptOutcome
+    terminal: bool
+    progress_fraction: float | None
+    error: RecordedErrorWire | None
+    failed_entries: tuple[FailedEntryWire, ...]
+    failed_entries_has_more: bool
+    progress: tuple[ProgressEventRecord, ...] | None = None
+
+
+class StepStatusWire(GraphModel):
+    """One step of a request, as its attempt's run-log reports it.
+
+    Attributes:
+        step: The step in the recipe.
+        execution_id: The attempt the request assigned it.
+        status: Its run-log status, ``""`` before it writes a run-log.
+        run_id: The run it recorded producing, or ``""``.
+        entries_failed: How many entities it lost while it continued.
+        error_json: The failure it recorded, or ``""``.
+        entries_written: How many entries it left with an output row.
+        cache_hit: Whether it found the whole of its work already done.
+        outcome: ``status`` with ``pending`` before a run-log and ``partial`` for
+            a finished attempt that lost entries.
+        progress_done: How many entries or epochs it has completed.
+        progress_total: How many it declared it would run, 0 until declared.
+        progress_fraction: ``progress_done`` over ``progress_total``, ``None``
+            until a total is declared.
+        error: ``error_json`` parsed, ``None`` when it recorded none.
+        failed_entries: The first of the entities it lost, at most
+            :data:`FAILED_ENTRY_SAMPLE`.
+        failed_entries_has_more: Whether it lost more than ``failed_entries``
+            lists.
+    """
+
+    step: str
+    execution_id: str
+    status: str
+    run_id: str
+    entries_failed: int
+    error_json: str
+    entries_written: int
+    cache_hit: bool
+    outcome: AttemptOutcome
+    progress_done: int
+    progress_total: int
+    progress_fraction: float | None
+    error: RecordedErrorWire | None
+    failed_entries: tuple[FailedEntryWire, ...]
+    failed_entries_has_more: bool
+
+
+class RequestStatusWire(GraphModel):
+    """One pipeline request, as its steps' run-logs report it.
+
+    Attributes:
+        request_id: Which request this is.
+        status: The rollup's one-shot status (``request_rollup``).
+        terminal: Whether that status is final.
+        verdict: ``status`` with the derived words of :data:`RequestVerdict`.
+        steps: One report per step, in the request's order.
+    """
+
+    request_id: str
+    status: RequestStatus
+    terminal: bool
+    verdict: RequestVerdict
+    steps: tuple[StepStatusWire, ...]
+
+
+def recorded_error(error_json: str) -> RecordedErrorWire | None:
+    """Parse an ``error_json`` blob that an attempt or an entry recorded.
+
+    A blob naming a ``RefusalReason`` is a refusal, and :func:`error_envelope`
+    renders it as an :class:`ErrorEnvelope`. A blob that is not a JSON object is reported as its
+    text. A traceback is left out, and the raw blob still contains it.
+
+    Args:
+        error_json: The blob, ``""`` for an attempt or entry that recorded none.
+
+    Returns:
+        The parsed failure, or ``None`` for an empty blob.
+    """
+    if not error_json.strip():
+        return None
+    try:
+        blob = _JSON_OBJECT.validate_json(error_json)
+    except ValidationError:
+        return RecordedErrorWire(
+            type="", message=error_json[:_MESSAGE_LIMIT], refusal=None
+        )
+    message = _text(blob.get("message"))
+    reason = blob.get("reason")
+    if _is_refusal_reason(reason):
+        refusal = Refusal(
+            message,
+            reason=reason,
+            step_id=_text(blob.get("step")),
+            detail={
+                key: value for key, value in blob.items() if key not in _ENVELOPE_KEYS
+            },
+        )
+        return RecordedErrorWire(
+            type="", message=message, refusal=error_envelope(refusal)
+        )
+    return RecordedErrorWire(
+        type=_text(blob.get("type")), message=message, refusal=None
+    )
+
+
+def run_status_wire(
+    base_dir: Path | str, execution_id: str, *, progress: bool = False
+) -> RunStatusWire | None:
+    """Report one attempt from its run-log.
+
+    Args:
+        base_dir: The dataset root containing ``.mosaic/runs``.
+        execution_id: The attempt.
+        progress: Whether to list its progress events.
+
+    Returns:
+        The report, or ``None`` when the attempt's run-log is absent or
+        unreadable.
+    """
+    logs = run_log_dir(base_dir)
+    snapshot = read_run(logs, execution_id)
+    if snapshot is None:
+        return None
+    failed, has_more = _failed_entries(logs, execution_id, snapshot["entries_failed"])
+    events = tuple(read_run_progress(logs, execution_id)) if progress else None
+    return RunStatusWire(
+        **snapshot,
+        outcome=attempt_outcome(snapshot["status"], snapshot["entries_failed"]),
+        terminal=snapshot["status"] in TERMINAL_STATUSES,
+        progress_fraction=_fraction(
+            snapshot["progress_done"], snapshot["progress_total"]
+        ),
+        error=recorded_error(snapshot["error_json"]),
+        failed_entries=failed,
+        failed_entries_has_more=has_more,
+        progress=events,
+    )
+
+
+def request_status_wire(
+    base_dir: Path | str, request: Request, *, driver_alive: bool | None = None
+) -> RequestStatusWire:
+    """Report one request from the run-logs of the attempts it assigned.
+
+    Args:
+        base_dir: The dataset root containing ``.mosaic/runs``.
+        request: The submission to report on.
+        driver_alive: Whether the process driving the request keeps its lease
+            current. ``None`` when a driver lease is absent for the request, and the
+            verdict then follows the run-logs alone. ``False`` turns a running
+            request into ``orphaned``.
+
+    Returns:
+        The request's status, its verdict and one report per step.
+    """
+    logs = run_log_dir(base_dir)
+    rollup = request_rollup(base_dir, request)
+    steps = tuple(_step_status(logs, attempt) for attempt in rollup.steps)
+    return RequestStatusWire(
+        request_id=rollup.request_id,
+        status=rollup.status,
+        terminal=rollup.is_terminal,
+        verdict=_verdict(rollup.status, steps, driver_alive=driver_alive),
+        steps=steps,
+    )
+
+
+def _verdict(
+    status: RequestStatus,
+    steps: tuple[StepStatusWire, ...],
+    *,
+    driver_alive: bool | None,
+) -> RequestVerdict:
+    """The rollup *status*, with ``orphaned`` and ``partial`` derived."""
+    if status == "running" and driver_alive is False:
+        return "orphaned"
+    if status == "finished" and any(step.entries_failed for step in steps):
+        return "partial"
+    return status
+
+
+def _step_status(logs: Path, attempt: StepAttempt) -> StepStatusWire:
+    """One step's report, from its attempt's rollup record."""
+    failed, has_more = _failed_entries(
+        logs, attempt.execution_id, attempt.entries_failed
+    )
+    return StepStatusWire(
+        step=attempt.step_id,
+        execution_id=attempt.execution_id,
+        status=attempt.status,
+        run_id=attempt.run_id,
+        entries_failed=attempt.entries_failed,
+        error_json=attempt.error_json,
+        entries_written=attempt.entries_written,
+        cache_hit=attempt.cache_hit,
+        outcome=attempt_outcome(attempt.status, attempt.entries_failed),
+        progress_done=attempt.progress_done,
+        progress_total=attempt.progress_total,
+        progress_fraction=_fraction(attempt.progress_done, attempt.progress_total),
+        error=recorded_error(attempt.error_json),
+        failed_entries=failed,
+        failed_entries_has_more=has_more,
+    )
+
+
+def _failed_entries(
+    logs: Path, execution_id: str, entries_failed: int
+) -> tuple[tuple[FailedEntryWire, ...], bool]:
+    """The first failed entries of one attempt, and whether it lost more.
+
+    The run-log is read again only when the attempt counts a failed entry.
+    """
+    if entries_failed <= 0:
+        return (), False
+    sample = tuple(
+        FailedEntryWire(
+            key=record["key"],
+            recorded_at=record["recorded_at"],
+            error=recorded_error(record["error_json"]),
+        )
+        for record in read_entry_errors(logs, execution_id, limit=FAILED_ENTRY_SAMPLE)
+    )
+    return sample, entries_failed > len(sample)
+
+
+def _fraction(done: int, total: int) -> float | None:
+    """*done* over *total*, at most 1, or ``None`` before a total is declared."""
+    if total <= 0:
+        return None
+    return min(done / total, 1.0)
+
+
+def _is_refusal_reason(value: JsonValue | None) -> TypeGuard[RefusalReason]:
+    """Whether a recorded ``reason`` names a ``RefusalReason``."""
+    return isinstance(value, str) and value in _REFUSAL_REASONS
+
+
+def _text(value: JsonValue | None) -> str:
+    """A string field of a recorded blob, ``""`` when absent or not a string."""
+    return value[:_MESSAGE_LIMIT] if isinstance(value, str) else ""

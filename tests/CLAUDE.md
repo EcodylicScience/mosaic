@@ -35,8 +35,11 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
 - `test_optional_dependency_messages.py`: an install hint or `require` call naming
   an undeclared extra, or a self-referential extra that does not resolve.
 - `test_helpers_imports.py`: `import tests.helpers` importing the feature library.
-- `test_graph_imports.py`: `core.pipeline.graph` importing the feature library, or
-  a module other than `resolve` importing `FEATURES`.
+- `test_graph_imports.py`: `core.pipeline.graph` importing the feature library or a
+  submodule at import, an exported name that does not resolve, or a module other
+  than `resolve` importing `FEATURES`.
+- `test_status_imports.py`: a status reader's import loading pandas, cv2, av or the
+  feature library, or `import mosaic.runlog` loading pydantic.
 - `test_external_tool_separation.py`: an import across a separated tool's
   boundary, or a declaration of the tool in mosaic's dependencies.
 - `test_behavior_import_is_torch_free.py`: `import mosaic.behavior` importing torch.
@@ -48,6 +51,9 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   `tracking.frame_extraction` or `tracking.ops` importing a submodule at import, an
   exported name that does not resolve, or the tracking inventory contributors
   loading a tracker subpackage, a trainer or frame extraction.
+- `test_lazy_export_identity.py`: a public name of a package that binds names
+  through `lazy_export` that equals a submodule basename, or that resolves to an
+  object other than the one its table names.
 - `test_core_params_is_a_leaf.py`: `core.entry`, `core.individuals` or
   `core.strict_model` importing mosaic, or `core.params` beyond `strict_model`.
 - `test_params_declaration.py`: a parameter field without a description

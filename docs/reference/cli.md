@@ -84,6 +84,10 @@ $ mosaic run [OPTIONS]
 
 Show the status of one run attempt by execution_id.
 
+Besides the run-log snapshot, the report gives the outcome, which is
+``partial`` for a finished attempt that lost entries, the recorded error
+parsed, and the first 20 failed entries.
+
 **Usage**:
 
 ```console
@@ -1006,7 +1010,9 @@ Say how far one submission got, from its steps' own attempt logs.
 
 Deliberately not a coverage report: whether every step's *work* is done is a
 question about artifacts, which ``plan`` answers. This one is about attempts,
-so it stays cheap enough to poll.
+so it stays cheap enough to poll. Each step reports its outcome, progress,
+recorded error and first 20 failed entries, and the request a ``verdict``
+that names a finished request with lost entries ``partial``.
 
 **Usage**:
 

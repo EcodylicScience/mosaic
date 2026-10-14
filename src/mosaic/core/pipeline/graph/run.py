@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 from mosaic.core.scope import Scope
 
 from .plan import plan_pipeline
-from .preflight import CoverageShortfall
+from .step_preflight import CoverageShortfall
 from .request import submit_request
 from .step import StepOutcome, execute_step
 from .topo import topological_order

@@ -16,7 +16,7 @@ from mosaic.core.manifest import ManifestVersionError
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
 from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.graph import RecipeInvalid, RecipeRefused, StepBuildError
-from mosaic.core.pipeline.graph.preflight import CoverageShortfall
+from mosaic.core.pipeline.graph.step_preflight import CoverageShortfall
 from mosaic.core.pipeline.graph.wire import Problem
 from mosaic.core.pipeline.ops import ScopeRefused
 from mosaic.core.pipeline.refusal import Refusal

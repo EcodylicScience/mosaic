@@ -191,6 +191,31 @@ and `INVENTORY_CONTRIBUTOR_MODULES`. A submodule of `tracking.ops`, and
 (`from mosaic.tracking.ops import train`). An unknown op's `KeyError` names
 `register_ops`.
 
+**`mosaic status --json` and `mosaic pipeline status --json` print the status
+wires.** Both keep their keys. `status` prints `RunStatusWire` and adds
+`outcome` (`partial` for a finished attempt that lost entries), `terminal`,
+`progress_fraction`, `error` (the recorded `error_json` parsed, with a refusal as
+an `ErrorEnvelope`), `failed_entries` (the first 20) and
+`failed_entries_has_more`. `progress` is `null` without `--progress`. `pipeline
+status` prints `RequestStatusWire` and adds `verdict` (`partial` for a finished
+request with lost entries, and `orphaned` once a driver lease is recorded and
+lapses), and per step `outcome`, `progress_done`, `progress_total`,
+`progress_fraction`, `error`, `failed_entries` and `failed_entries_has_more`.
+**One value changes:** a step with no run-log reported `status` and `run_id` as
+`-`, and now reports both as `""`, with `outcome` `pending`. A reader that
+matched `-` matches `""` or `outcome == "pending"` instead. The plain table
+prints each step's outcome and the request's verdict, and plain `mosaic status`
+prints the error's message and one line per failed entry. A progress event field
+of the wrong type reads as 0, `""` or `{}`. Importing `mosaic.core.pipeline.graph` binds
+its public names on access. A status read leaves pandas, cv2 and av unloaded.
+New in the library: `RunStatusWire`, `RequestStatusWire`, `StepStatusWire`,
+`FailedEntryWire`, `RecordedErrorWire`, `RequestVerdict`,
+`FAILED_ENTRY_SAMPLE`, `run_status_wire`, `request_status_wire` and
+`recorded_error` in `mosaic.core.pipeline.graph`; `AttemptOutcome`,
+`attempt_outcome`, `EntryErrorRecord`, `ProgressEventRecord` and
+`read_entry_errors` in `mosaic.runlog`; and `progress_done` and `progress_total`
+on `StepAttempt`.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

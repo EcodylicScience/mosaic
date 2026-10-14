@@ -42,6 +42,7 @@ from mosaic.cli._io import (
 from mosaic.cli._render import render_kv
 from mosaic.core.scope import Scope, camera_grain_refusal, scope_in_params_refusal
 from mosaic.core.strict_model import terse
+from mosaic.runlog import attempt_outcome
 
 
 SCOPE_FLAGS_REMEDY = (
@@ -313,7 +314,7 @@ def run_command(
                 "request_id": request.request_id,
                 "step": outcome.step_id,
                 "run_id": outcome.run_id,
-                "status": "partial" if outcome.failed_entries else "finished",
+                "status": attempt_outcome("finished", len(outcome.failed_entries)),
                 "state": outcome.state,
                 "cache_hit": outcome.state == "cached",
                 "covered": outcome.covered,
@@ -351,7 +352,7 @@ def run_command(
                 "execution_id": result.execution_id,
                 "feature": result.feature,
                 "run_id": result.run_id,
-                "status": "partial" if result.failed_entries else "finished",
+                "status": attempt_outcome("finished", len(result.failed_entries)),
                 "cache_hit": result.cache_hit,
                 "failed_entries": list(result.failed_entries),
                 "entries_written": result.entries_written,

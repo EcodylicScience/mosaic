@@ -25,7 +25,9 @@ from mosaic.core.pipeline.graph import (
     load_request,
     plan_pipeline,
     request_rollup,
+    request_status_wire,
     run_pipeline,
+    run_status_wire,
 )
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
@@ -250,6 +252,11 @@ def _rollup(fixture: ReadDataset) -> object:
     return request_rollup(fixture.root, request)
 
 
+def _request_status(fixture: ReadDataset) -> object:
+    request = load_request(fixture.root, fixture.request_id)
+    return request_status_wire(fixture.root, request)
+
+
 type LibraryRead = Callable[[ReadDataset], object]
 
 LIBRARY_READS: dict[str, LibraryRead] = {
@@ -264,6 +271,8 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "read_runs": lambda f: read_runs(run_log_dir(f.root)),
     "read_tracks_index": lambda f: read_tracks_index(f.reopened()),
     "request_rollup": _rollup,
+    "request_status_wire": _request_status,
+    "run_status_wire": lambda f: run_status_wire(f.root, f.execution_id, progress=True),
 }
 
 

@@ -17,6 +17,10 @@ Models only. The functions that fill them live beside what they read:
 :func:`~mosaic.core.pipeline.graph.serialize.plan_wire`. Each of those modules
 imports this one, and this module imports none of them, which keeps the import
 graph acyclic.
+
+The status reports that a poller reads are in
+:mod:`~mosaic.core.pipeline.graph.status`. This module imports the op registry and
+the inventory, which load pandas, cv2 and av, and a status read loads none of them.
 """
 
 from __future__ import annotations

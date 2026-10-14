@@ -86,12 +86,12 @@ def attempt_facts(ds: "Dataset", execution_id: str) -> dict[str, object]:
     difference, and a tri-state in a machine payload is a shape every reader would
     have to special-case.
     """
-    from mosaic.core.pipeline.run_log import read_run
+    from mosaic.runlog import attempt_outcome, read_run
 
     snapshot = read_run(run_log_dir_for(ds), execution_id)
     failed = int(snapshot["entries_failed"]) if snapshot else 0
     return {
-        "status": "partial" if failed else "finished",
+        "status": attempt_outcome("finished", failed),
         "entries_failed": failed,
         "cache_hit": bool(snapshot["cache_hit"]) if snapshot else False,
         "entries_written": int(snapshot["entries_written"]) if snapshot else 0,

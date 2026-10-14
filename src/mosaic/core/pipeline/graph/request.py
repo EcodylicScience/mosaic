@@ -31,7 +31,7 @@ from mosaic.core.scope import Scope
 from .digest import recipe_digest
 from .model import BoundRef, FeatureStepSpec, Recipe, Request
 from .plan import Plan, plan_pipeline
-from .preflight import StepRefused, refuse_mixed_schemas
+from .step_preflight import StepRefused, refuse_mixed_schemas
 from .resolve import declared_version
 from .store import load_recipe, recipe_path, save_recipe, save_request
 from .topo import topological_order

@@ -48,7 +48,7 @@ instead of derived from artifacts.
   (`test_two_requests_on_one_dataset_each_bind_to_their_own_upstream`).
 - `mosaic run` finds the request from `--manifest`'s parent (`cli/run.py`). A second path
   flag would name a path that a queue cannot rewrite for another mount.
-- A step declines by raising `StepRefused` (`preflight.py`), a `Refusal` naming a
+- A step declines by raising `StepRefused` (`step_preflight.py`), a `Refusal` naming a
   `RefusalReason` from `core/pipeline/refusal.py`. A new reason is a wire addition. The
   attempt exits `REFUSED_EXIT_CODE` (65) with status `failed`
   (`test_the_cli_exits_with_the_reserved_code_on_a_refusal`).
@@ -62,6 +62,13 @@ instead of derived from artifacts.
   resubmits, and exclusions belong to one request (`test_pipeline_failure_record.py`).
 - A request is one-shot. `request_rollup` (`rollup.py`) reads run-logs alone, and a failed
   branch is not terminal while a sibling runs (`test_pipeline_step.py`).
+- `status.py` builds `RunStatusWire` and `RequestStatusWire` from run-logs alone. Their
+  `partial`, `pending` and `orphaned` are derived words, and none joins
+  `runlog.TERMINAL_STATUSES`. `orphaned` comes from the `driver_alive` argument of
+  `request_status_wire` (`test_pipeline_status_wire.py`).
+- `__init__.py` binds every public name on access, and `status.py` imports nothing that
+  loads pandas, cv2, av or the feature library (`tests/meta/test_status_imports.py`).
+  The editor wires in `wire.py` import the op registry and the inventory, which do.
 
 ## Declarations and the registries
 

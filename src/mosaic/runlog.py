@@ -45,14 +45,19 @@ import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Final, TypedDict, cast
+from typing import Any, Final, Literal, TypedDict, cast
 
 __all__ = [
+    "AttemptOutcome",
+    "EntryErrorRecord",
     "JsonlRunLog",
+    "ProgressEventRecord",
     "RunLogSnapshot",
     "TERMINAL_STATUSES",
+    "attempt_outcome",
     "new_execution_id",
     "now_iso",
+    "read_entry_errors",
     "read_run",
     "read_run_progress",
     "read_runs",
@@ -146,6 +151,72 @@ class RunLogSnapshot(TypedDict):
     entries_columns_dropped: int
     cache_hit: bool
     tracks_variant: str
+
+
+class EntryErrorRecord(TypedDict):
+    """One entity that failed while its attempt continued, read by ``read_entry_errors``.
+
+    Attributes:
+        key: The entity, as the attempt named it.
+        error_json: The blob the attempt recorded, shaped as an attempt-level
+            ``error_json``: a refusal's reason, step and message, or an exception's
+            type, message and traceback.
+        recorded_at: When the attempt recorded the failure.
+    """
+
+    key: str
+    error_json: str
+    recorded_at: str
+
+
+class ProgressEventRecord(TypedDict):
+    """One progress event of an attempt, read by ``read_run_progress``.
+
+    Attributes:
+        step_type: ``entry``, ``entry_start``, ``epoch``, ``class`` or ``phase``.
+        step_index: The entry index, epoch or class index, 0 for a phase.
+        step_total: The count that *step_index* runs to, 0 for a phase.
+        metrics: An epoch's metrics, empty for every other event.
+        message: The entry key, class name, or ``<phase>: <message>``.
+        timestamp: When the attempt recorded the event.
+    """
+
+    step_type: str
+    step_index: int
+    step_total: int
+    metrics: dict[str, float]
+    message: str
+    timestamp: str
+
+
+type AttemptOutcome = Literal[
+    "pending", "running", "finished", "partial", "failed", "cancelled"
+]
+"""How an attempt stands, as a report names it.
+
+``pending`` is an attempt with no run-log yet. ``partial`` is a ``finished``
+attempt that lost entries. Both are reporting words and neither is a run-log status,
+so neither joins :data:`TERMINAL_STATUSES`, which mosaic-api's sweeper reaps.
+"""
+
+
+def attempt_outcome(status: str, entries_failed: int) -> AttemptOutcome:
+    """Return the outcome that a run-log *status* and its failed-entry count report.
+
+    Args:
+        status: The run-log status, or ``""`` for an attempt that has written none.
+        entries_failed: How many entries the attempt lost while it continued.
+
+    Returns:
+        ``partial`` for a finished attempt that lost entries, ``pending`` for one
+        with no status, and the status otherwise. A status outside the run-log's
+        vocabulary reads ``running``, as ``reduce_run_log`` folds one.
+    """
+    if status == "finished":
+        return "partial" if entries_failed else "finished"
+    if status == "failed" or status == "cancelled" or status == "running":
+        return status
+    return "pending" if not status else "running"
 
 
 # ---------------------------------------------------------------------------
@@ -616,38 +687,61 @@ def read_runs_by_run_id(run_dir: Path | str, run_id: str) -> list[RunLogSnapshot
     return [r for r in read_runs(run_dir) if r["run_id"] == run_id]
 
 
-def read_run_progress(run_dir: Path | str, execution_id: str) -> list[dict[str, Any]]:
+def read_entry_errors(
+    run_dir: Path | str, execution_id: str, *, limit: int | None = None
+) -> list[EntryErrorRecord]:
+    """Return the entities that one attempt lost while it continued, in file order.
+
+    Args:
+        run_dir: The run-log directory.
+        execution_id: The attempt.
+        limit: The most records to return, ``None`` for every one. The attempt's
+            ``entries_failed`` counts them all.
+
+    Returns:
+        One record per ``entry_error`` event, empty for an absent run-log.
+    """
+    out: list[EntryErrorRecord] = []
+    if limit is not None and limit <= 0:
+        return out
+    for rec in _iter_records(Path(run_dir) / f"{execution_id}.jsonl"):
+        if rec.get("ev") != "entry_error":
+            continue
+        out.append(
+            {
+                "key": str(rec.get("key", "")),
+                "error_json": str(rec.get("error", "")),
+                "recorded_at": str(rec.get("t", "")),
+            }
+        )
+        if limit is not None and len(out) >= limit:
+            break
+    return out
+
+
+def read_run_progress(
+    run_dir: Path | str, execution_id: str
+) -> list[ProgressEventRecord]:
     """Return one attempt's progress events in the legacy ``read_progress`` shape.
 
-    Each row has ``step_type`` / ``step_index`` / ``step_total`` / ``metrics`` /
-    ``message`` / ``timestamp`` -- matching what the old SQLite ``training_progress``
-    reader returned, so ``mosaic status --progress`` is unchanged.
+    Each row matches what the old SQLite ``training_progress`` reader returned, so
+    ``mosaic status --progress`` is unchanged. A field of the wrong type in an
+    event reads as 0, ``""`` or ``{}``.
     """
-    out: list[dict[str, Any]] = []
+    out: list[ProgressEventRecord] = []
     for rec in _iter_records(Path(run_dir) / f"{execution_id}.jsonl"):
         ev = rec.get("ev", "")
         if ev not in _PROGRESS_EVENTS:
             continue
-        ts = rec.get("t", "")
-        if ev == "entry_end":
+        ts = _record_text(rec, "t")
+        if ev in ("entry_end", "entry_start"):
             out.append(
                 {
-                    "step_type": "entry",
-                    "step_index": rec.get("index", 0),
-                    "step_total": rec.get("total", 0),
+                    "step_type": "entry" if ev == "entry_end" else "entry_start",
+                    "step_index": _record_count(rec, "index"),
+                    "step_total": _record_count(rec, "total"),
                     "metrics": {},
-                    "message": rec.get("key", ""),
-                    "timestamp": ts,
-                }
-            )
-        elif ev == "entry_start":
-            out.append(
-                {
-                    "step_type": "entry_start",
-                    "step_index": rec.get("index", 0),
-                    "step_total": rec.get("total", 0),
-                    "metrics": {},
-                    "message": rec.get("key", ""),
+                    "message": _record_text(rec, "key"),
                     "timestamp": ts,
                 }
             )
@@ -655,9 +749,9 @@ def read_run_progress(run_dir: Path | str, execution_id: str) -> list[dict[str, 
             out.append(
                 {
                     "step_type": "epoch",
-                    "step_index": rec.get("epoch", 0),
-                    "step_total": rec.get("total_epochs", 0),
-                    "metrics": rec.get("metrics", {}),
+                    "step_index": _record_count(rec, "epoch"),
+                    "step_total": _record_count(rec, "total_epochs"),
+                    "metrics": _record_metrics(rec),
                     "message": "",
                     "timestamp": ts,
                 }
@@ -666,22 +760,48 @@ def read_run_progress(run_dir: Path | str, execution_id: str) -> list[dict[str, 
             out.append(
                 {
                     "step_type": "class",
-                    "step_index": rec.get("class_idx", 0),
-                    "step_total": rec.get("total_classes", 0),
+                    "step_index": _record_count(rec, "class_idx"),
+                    "step_total": _record_count(rec, "total_classes"),
                     "metrics": {},
-                    "message": rec.get("class_name", ""),
+                    "message": _record_text(rec, "class_name"),
                     "timestamp": ts,
                 }
             )
         elif ev == "phase":
+            phase = _record_text(rec, "phase")
+            message = _record_text(rec, "message")
             out.append(
                 {
                     "step_type": "phase",
                     "step_index": 0,
                     "step_total": 0,
                     "metrics": {},
-                    "message": f"{rec.get('phase', '')}: {rec.get('message', '')}",
+                    "message": f"{phase}: {message}",
                     "timestamp": ts,
                 }
             )
     return out
+
+
+def _record_count(rec: dict[str, Any], key: str) -> int:
+    """An integer field of a run-log record, 0 when absent or not an integer."""
+    value = rec.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _record_text(rec: dict[str, Any], key: str) -> str:
+    """A string field of a run-log record, ``""`` when absent or not a string."""
+    value = rec.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _record_metrics(rec: dict[str, Any]) -> dict[str, float]:
+    """An epoch's numeric metrics, leaving out every entry that is not a number."""
+    metrics = rec.get("metrics")
+    if not isinstance(metrics, dict):
+        return {}
+    return {
+        str(name): float(value)
+        for name, value in cast("dict[object, object]", metrics).items()
+        if isinstance(value, int | float) and not isinstance(value, bool)
+    }

@@ -448,46 +448,35 @@ def status_command(
 
     Deliberately not a coverage report: whether every step's *work* is done is a
     question about artifacts, which ``plan`` answers. This one is about attempts,
-    so it stays cheap enough to poll.
+    so it stays cheap enough to poll. Each step reports its outcome, progress,
+    recorded error and first 20 failed entries, and the request a ``verdict``
+    that names a finished request with lost entries ``partial``.
     """
-    from mosaic.core.pipeline.graph import load_request, request_rollup
+    from mosaic.core.pipeline.graph import load_request, request_status_wire
 
     ds = load_dataset(manifest, read_only=True)
     try:
         request = load_request(ds.base_dir, request_id)
     except FileNotFoundError as exc:
         fail(str(exc))
-    rollup = request_rollup(ds.base_dir, request)
-    rows = [
-        {
-            "step": attempt.step_id,
-            "execution_id": attempt.execution_id,
-            "status": attempt.status or "-",
-            "run_id": attempt.run_id or "-",
-            "entries_failed": attempt.entries_failed,
-        }
-        for attempt in rollup.steps
-    ]
+    report = request_status_wire(ds.base_dir, request)
     if as_json:
-        emit_json(
-            {
-                "request_id": rollup.request_id,
-                "status": rollup.status,
-                "terminal": rollup.is_terminal,
-                "steps": [
-                    {
-                        **row,
-                        "error_json": attempt.error_json,
-                        "entries_written": attempt.entries_written,
-                        "cache_hit": attempt.cache_hit,
-                    }
-                    for row, attempt in zip(rows, rollup.steps, strict=True)
-                ],
-            }
-        )
+        emit_json(report.model_dump(mode="json"))
         return
-    typer.echo(f"request {rollup.request_id}: {rollup.status}")
-    render_table(rows, ["step", "execution_id", "status", "run_id", "entries_failed"])
+    typer.echo(f"request {report.request_id}: {report.verdict}")
+    render_table(
+        [
+            {
+                "step": step.step,
+                "execution_id": step.execution_id,
+                "status": step.outcome,
+                "run_id": step.run_id or "-",
+                "entries_failed": step.entries_failed,
+            }
+            for step in report.steps
+        ],
+        ["step", "execution_id", "status", "run_id", "entries_failed"],
+    )
 
 
 def _runs(step: object) -> str:

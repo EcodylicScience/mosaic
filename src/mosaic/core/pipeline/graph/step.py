@@ -55,7 +55,7 @@ from .plan import (
     is_stalled,
     plan_pipeline,
 )
-from .preflight import (
+from .step_preflight import (
     CoverageShortfall,
     RecipeRefusedAtStep,
     StepRefused,
@@ -168,7 +168,7 @@ def execute_step(
     Raises:
         StepRefused: The step declined to run, naming why. Its ``error_json`` has
             already been written to this attempt's run-log. A
-            :class:`~.preflight.RecipeRefusedAtStep` is this dataset refusing the
+            :class:`~.step_preflight.RecipeRefusedAtStep` is this dataset refusing the
             step as a plan of the recipe reports it; a problem at another step
             does not refuse this one.
         RecipeInvalid: The recipe this request names is malformed.
