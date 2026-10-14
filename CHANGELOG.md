@@ -391,6 +391,26 @@ that the dead process lost are not counted twice. `--recipe` is optional now, an
 never finds an in-flight marker or a lease created and still empty. `step_argv`
 takes a command of several words as `program`.
 
+**`mosaic cancel --request <id>` cancels a pipeline request.** A request whose
+driver runs on this host receives SIGTERM through its lease, and the driver
+stops its running step and records the others `cancelled`. Without a running
+driver, each running step receives SIGTERM, a step whose process has exited is
+recorded `cancelled`, and so is each unstarted step. A pid that names a process
+begun after its attempt started, as after a reboot, is not signalled, and the
+attempt is recorded `cancelled`. A request whose steps a queue dispatches is not
+one this cancels: a step that the queue starts afterwards records its own ending
+after the recorded `cancelled`. A request whose driver or a running step is on
+another host is left as it is, and the command exits 1. Exactly one of
+`--execution-id` and `--request` is given. Under `--json`, `mosaic cancel
+--execution-id` adds `outcome` (`signalled`, `recorded`, `ended` or
+`other_host`), `host` and `message` to its keys, and `pid` to an attempt that
+had already ended. A failure to signal and an unknown attempt print the error
+envelope. The refusal of a process on another host now reads "a cancel signals
+processes on this host only". New in the library: `cancel_attempt`,
+`cancel_request`, `AttemptCancel`, `RequestCancel`, `CancelOutcome`,
+`AttemptNotFound`, `RequestNotFound` and `CannotSignal` in
+`mosaic.core.pipeline.cancel`.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

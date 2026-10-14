@@ -18,20 +18,22 @@ def write_driver_lease(
     pid: int = 0,
     step_id: str = "",
     step_pid: int = 0,
+    host: str = "",
 ) -> DriverLease:
     """Write a lease for *request_id*, and return it.
 
     A stale lease was last refreshed an hour ago, and any other now. The lease
     names *pid*, or this process for 0. A lease refreshed now and naming an
     exited process is stale too, as a killed driver leaves it. *step_id* and
-    *step_pid* name the step process that the lease's driver left running.
+    *step_pid* name the step process that the lease's driver left running. The
+    lease names *host*, or this host for ``""``.
     """
     refreshed = datetime.datetime.now(datetime.UTC)
     if stale:
         refreshed -= datetime.timedelta(hours=1)
     lease = DriverLease(
         request_id=request_id,
-        host=socket.gethostname(),
+        host=host or socket.gethostname(),
         pid=pid or os.getpid(),
         started_at=refreshed.isoformat(),
         refreshed_at=refreshed.isoformat(),

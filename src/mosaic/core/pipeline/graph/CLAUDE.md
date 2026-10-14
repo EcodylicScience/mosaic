@@ -96,6 +96,15 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   written a run-log. A lease refresh that raises is reported and retried, and the
   driver stops with `LeaseNotRefreshed` before a step once its lease has gone
   unrefreshed for half the grace.
+- `cancel_attempt` and `cancel_request` (`core/pipeline/cancel.py`) send SIGTERM to
+  the pid that a run-log or a driver lease records. They record an attempt
+  `cancelled` only when its process has exited, or when its step has not started
+  and the request's driver has exited. A request with a live driver is
+  cancelled through the driver alone. A process on another host is not signalled,
+  and its request is left as it is (`tests/core/pipeline/test_cancel.py`). A pid
+  held by a process that began after the attempt's `started` record is reused and
+  is not signalled. A queue that dispatches a request's steps holds no lease, so
+  a step it starts after the cancel records its own ending after `cancelled`.
 - `entry_errors_wire` (`entry_errors.py`) joins an attempt's `entry_error` events with
   the failure records keyed by its `target` and `run_id`. `held_back_by_quarantine`
   is true when any entity that the attempt lost is quarantined, listed or not. Every

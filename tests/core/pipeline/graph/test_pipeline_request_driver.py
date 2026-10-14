@@ -14,7 +14,6 @@ import os
 import signal
 import socket
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -28,7 +27,6 @@ from mosaic.core.pipeline.graph import (
     MOSAIC_COMMAND,
     STEP_CANCEL_GRACE_SECONDS,
     DriverRunning,
-    Recipe,
     Request,
     StepStillRunning,
     driver_lease_path,
@@ -46,8 +44,11 @@ from mosaic.core.pipeline.job import CancelToken
 from mosaic.core.pipeline.markers import process_running
 from mosaic.runlog import JsonlRunLog, read_run, run_log_dir, run_log_path
 from tests.helpers import (
+    CHAIN_RECIPE,
+    SLEEPER_COMMAND,
     add_tracks_variant,
     cancel_when,
+    chain_recipe,
     exited_pid,
     make_dataset,
     wait_for,
@@ -56,36 +57,8 @@ from tests.helpers import (
 
 VARIANT = "convert-trex.0.2-1111111111"
 
-SLEEPER: tuple[str, ...] = (
-    sys.executable,
-    "-c",
-    "import sys, time; time.sleep(float(sys.argv[1]))",
-)
-"""A process that sleeps for the seconds its argument names."""
-
 STEP_SECONDS = 180.0
 """The longest a test waits for a step process, which imports mosaic, to end."""
-
-CHAIN: dict[str, object] = {
-    "schema_version": 1,
-    "name": "speed then templates",
-    "steps": [
-        {
-            "id": "speed",
-            "type": "feature",
-            "feature": "speed-angvel",
-            "inputs": ["tracks"],
-        },
-        {
-            "id": "templates",
-            "type": "feature",
-            "feature": "extract-templates",
-            "inputs": [{"step": "speed"}],
-            "params": {"n_templates": 4},
-        },
-    ],
-}
-"""Two steps, for a driver to stop between."""
 
 
 @pytest.fixture
@@ -99,7 +72,7 @@ def tracked(tmp_path: Path) -> Dataset:
 @pytest.fixture
 def submitted(tracked: Dataset) -> Request:
     """The chain, submitted and not run."""
-    return submit_request(tracked, Recipe.model_validate(CHAIN)).request
+    return submit_request(tracked, chain_recipe()).request
 
 
 def _driver_argv(ds: Dataset, request: Request, *flags: str) -> list[str]:
@@ -177,7 +150,7 @@ def test_a_cancel_during_a_step_terminates_its_process(
     tracked: Dataset, submitted: Request, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Each step is a sleeper that only a forwarded SIGTERM ends early."""
-    monkeypatch.setattr(graph_run, "MOSAIC_COMMAND", (*SLEEPER, "600"))
+    monkeypatch.setattr(graph_run, "MOSAIC_COMMAND", (*SLEEPER_COMMAND, "600"))
     step_pids: list[int] = []
 
     def step_started() -> bool:
@@ -245,7 +218,7 @@ def test_a_step_process_named_by_a_stale_lease_refuses_a_resume_until_it_ends(
     tracked: Dataset, submitted: Request
 ) -> None:
     """A killed driver's step may not have written its run-log yet."""
-    step = subprocess.Popen([*SLEEPER, "60"], stdin=subprocess.DEVNULL)
+    step = subprocess.Popen([*SLEEPER_COMMAND, "60"], stdin=subprocess.DEVNULL)
     try:
         _ = write_driver_lease(
             tracked.base_dir,
@@ -392,7 +365,7 @@ def test_the_detach_flag_needs_a_request(tracked: Dataset) -> None:
             "--manifest",
             str(tracked.manifest_path),
             "--recipe",
-            json.dumps(CHAIN),
+            json.dumps(CHAIN_RECIPE),
             "--detach",
         ],
     )

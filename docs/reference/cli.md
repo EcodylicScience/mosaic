@@ -108,6 +108,9 @@ $ mosaic status [OPTIONS]
 
 Request cancellation of a running attempt (SIGTERM to its recorded pid).
 
+With `--request`, cancel a pipeline request instead. A process on another
+host is not signalled, and the command exits 1.
+
 **Usage**:
 
 ```console
@@ -117,7 +120,8 @@ $ mosaic cancel [OPTIONS]
 **Options**:
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--execution-id <str>`: Attempt ULID to cancel.  [required]
+* `--execution-id <str>`: Attempt ULID to cancel.
+* `--request <str>`: Pipeline request to cancel: SIGTERM to its driver, or to its running steps without one, and its unstarted steps recorded cancelled. Not for a request whose steps a queue dispatches.
 * `--json`: Emit the result as JSON on stdout.
 * `--help`: Show this message and exit.
 

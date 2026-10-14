@@ -39,8 +39,9 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   submodule at import, an exported name that does not resolve, or a module other
   than `resolve` importing `FEATURES`.
 - `test_status_imports.py`: the import or a call of a status reader, a request
-  lister or the entry-error report loading pandas, cv2, av or the feature library,
-  or `import mosaic.runlog` loading pydantic.
+  lister or the entry-error report, or the import of the cancel module, loading
+  pandas, cv2, av or the feature library, or `import mosaic.runlog` loading
+  pydantic.
 - `test_external_tool_separation.py`: an import across a separated tool's
   boundary, or a declaration of the tool in mosaic's dependencies.
 - `test_behavior_import_is_torch_free.py`: `import mosaic.behavior` importing torch.

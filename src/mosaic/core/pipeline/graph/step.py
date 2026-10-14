@@ -729,9 +729,11 @@ def record_step_ended(
     """Record the terminal event of a step attempt whose process wrote none.
 
     A driver calls it for a step that it cancels before the step starts, and for
-    a step whose process exited without a terminal event. An attempt without a
-    run-log is recorded whole, under :data:`STEP_RUN_KIND`. An attempt with one
-    has its terminal event appended (:func:`~mosaic.runlog.record_exited_attempt`).
+    a step whose process exited without a terminal event. A cancel of a request
+    without a running driver calls it for each step that has not started. An
+    attempt without a run-log is recorded whole, under :data:`STEP_RUN_KIND`. An
+    attempt with one has its terminal event appended
+    (:func:`~mosaic.runlog.record_exited_attempt`).
 
     Args:
         ds: The dataset holding the run-logs.

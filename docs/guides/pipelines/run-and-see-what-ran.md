@@ -63,10 +63,14 @@ ds.run_feature(
 mosaic runs   -m dataset.yaml --kind feature --json
 mosaic status -m dataset.yaml --execution-id <ULID> --progress --json
 mosaic cancel -m dataset.yaml --execution-id <ULID>
+mosaic cancel -m dataset.yaml --request <request id>
 ```
 
 `mosaic runs` lists attempts, `mosaic status` reports one, and `mosaic cancel` sends a
-signal to a running attempt's recorded process.
+signal to a running attempt's recorded process. With `--request` it signals the
+request's driver, which stops the running step and records the others `cancelled`.
+A request without a running driver has its running steps signalled and its other
+steps recorded `cancelled`. A process on another machine is not signalled.
 
 **A run reports what it lost.** A failure on one entry is recorded and surfaced as a
 `partial` status with the failed entries named. It is not silently dropped, and it is

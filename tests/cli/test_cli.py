@@ -18,7 +18,7 @@ from typer.testing import CliRunner
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
-from tests.helpers import invoke_json
+from tests.helpers import SLEEPER_COMMAND, invoke_json, speed_recipe
 
 runner = CliRunner()
 
@@ -241,35 +241,88 @@ def test_a_reaped_attempt_no_longer_holds_its_run_root(
 
 
 def test_cancel_on_a_live_process_leaves_the_run_log_alone(
-    dataset: tuple[Path, Dataset], monkeypatch: pytest.MonkeyPatch
+    dataset: tuple[Path, Dataset],
 ) -> None:
     """One file, one writer. The signalled process writes its own ending.
 
     Recording one here would put a second writer on a file whose first writer
     is still running, which is the thing the run-log format rules out.
     """
-    import os
+    import signal
+    import subprocess
 
     from mosaic.runlog import read_run, run_log_dir
 
     manifest, ds = dataset
-    execution_id = _running_attempt(ds, pid=424242)
-    signalled: list[tuple[int, int]] = []
-
-    def record(pid: int, sig: int) -> None:
-        signalled.append((pid, sig))
-
-    monkeypatch.setattr(os, "kill", record)
-
-    res = invoke_json(
-        ["cancel", "-m", str(manifest), "--execution-id", execution_id, "--json"]
-    )
-    assert res["signalled"] is True
-    assert signalled == [(424242, 15)]
+    sleeper = subprocess.Popen([*SLEEPER_COMMAND, "600"], stdin=subprocess.DEVNULL)
+    execution_id = _running_attempt(ds, pid=sleeper.pid)
+    try:
+        res = invoke_json(
+            ["cancel", "-m", str(manifest), "--execution-id", execution_id, "--json"]
+        )
+        assert res["signalled"] is True
+        assert sleeper.wait(timeout=10) == -signal.SIGTERM
+    finally:
+        sleeper.kill()
+        _ = sleeper.wait()
 
     snapshot = read_run(run_log_dir(ds.base_dir), execution_id)
     assert snapshot is not None
     assert snapshot["status"] == "running"
+
+
+def test_cancel_refuses_an_attempt_on_another_host(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    from mosaic.runlog import JsonlRunLog, new_execution_id, run_log_path
+
+    manifest, ds = dataset
+    execution_id = new_execution_id()
+    with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as log:
+        log.started(kind="op", target="train-sleap", host="elsewhere", pid=424242)
+
+    result = runner.invoke(
+        app, ["cancel", "-m", str(manifest), "--execution-id", execution_id]
+    )
+
+    assert result.exit_code == 1
+    assert "host 'elsewhere'" in result.stderr
+
+
+def test_cancel_records_an_unstarted_request_cancelled(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    from mosaic.core.pipeline.graph import request_rollup, submit_request
+
+    manifest, ds = dataset
+    request = submit_request(ds, speed_recipe()).request
+
+    res = invoke_json(
+        ["cancel", "-m", str(manifest), "--request", request.request_id, "--json"]
+    )
+
+    assert (res["outcome"], res["status"], res["driver_pid"]) == (
+        "recorded",
+        "cancelled",
+        0,
+    )
+    assert request_rollup(ds.base_dir, request).status == "cancelled"
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [[], ["--execution-id", "a", "--request", "b"]],
+    ids=["neither", "both"],
+)
+def test_cancel_takes_exactly_one_of_an_attempt_and_a_request(
+    dataset: tuple[Path, Dataset], flags: list[str]
+) -> None:
+    manifest, _ = dataset
+
+    result = runner.invoke(app, ["cancel", "-m", str(manifest), *flags])
+
+    assert result.exit_code == 1
+    assert "exactly one of --execution-id or --request" in result.stderr
 
 
 # --- release ---------------------------------------------------------------

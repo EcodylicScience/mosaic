@@ -7,7 +7,8 @@ test process is checked by its process id instead.
 
 :class:`LineChildren` spawns the line children of one test, which the fixture
 ``line_children`` closes when the test ends. :func:`cancel_when` fires a cancel
-token from another thread once a condition is true.
+token from another thread once a condition is true. :data:`SLEEPER_COMMAND` stands
+in for a long step.
 """
 
 from __future__ import annotations
@@ -24,6 +25,18 @@ import pytest
 
 from mosaic.core.pipeline.job import CancelToken
 from mosaic.core.pipeline.subprocess_util import LineChild
+
+
+SLEEPER_COMMAND: tuple[str, ...] = (
+    sys.executable,
+    "-c",
+    "import sys, time; time.sleep(float(sys.argv[1]))",
+)
+"""A command that sleeps for the seconds its first argument names.
+
+A command built on it ignores every argument after the first, and SIGTERM ends it
+with the signal's default action.
+"""
 
 
 def appender_program(path: Path | str) -> str:

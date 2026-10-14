@@ -35,9 +35,9 @@ What lives where:
 - ``runner_programs`` imports a runner program under its bare name for one test,
   writes fake runners that serve a test's handlers over the runner wire, and
   checks that a runner program answers ``Ready`` and ``shutdown``.
-- ``processes`` contains a child program that appends to a file, checks of
-  whether a process stopped writing to it or exited, the line children of a
-  test, and a cancel fired once a condition is true.
+- ``processes`` contains a child program that appends to a file, a sleeper
+  command, checks of whether a process stopped writing to it or exited, the line
+  children of a test, and a cancel fired once a condition is true.
 - ``media`` -- media files, media-index rows, transcode derivatives.
 - ``variants`` -- media variant files and their index rows, and a count of the
   index reads a variant's consumers make.
@@ -157,6 +157,7 @@ from tests.helpers.media import (
 from tests.helpers.driver_leases import write_driver_lease
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.processes import (
+    SLEEPER_COMMAND,
     LineChildren,
     appender_program,
     assert_process_exited,
@@ -166,8 +167,10 @@ from tests.helpers.processes import (
     wait_for,
 )
 from tests.helpers.recipes import (
+    CHAIN_RECIPE,
     GUPPIES_RECIPE,
     SPEED_RECIPE,
+    chain_recipe,
     guppies_recipe,
     speed_recipe,
 )
@@ -261,6 +264,7 @@ from tests.helpers.variants import (
 )
 
 __all__ = [
+    "CHAIN_RECIPE",
     "CI_FERAL_MODULES",
     "CI_IDENTITY_MODULES",
     "CI_REQUIRED_MODULES",
@@ -271,6 +275,7 @@ __all__ = [
     "FAKE_HANDLERS",
     "FFMPEG_TOOLCHAIN",
     "GUPPIES_RECIPE",
+    "SLEEPER_COMMAND",
     "SPEED_RECIPE",
     "FakeDetections",
     "FakeResult",
@@ -319,6 +324,7 @@ __all__ = [
     "add_tracks_variant",
     "add_transcode_derivative",
     "appender_program",
+    "chain_recipe",
     "assert_latents_at_centers",
     "assert_no_literal_tilde",
     "assert_process_exited",

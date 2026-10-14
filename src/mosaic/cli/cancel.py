@@ -1,24 +1,24 @@
-"""``mosaic cancel``: best-effort, single-box cooperative cancel of a running attempt.
+"""``mosaic cancel``: send SIGTERM to a running attempt, or to a request's driver.
 
-The library cannot cooperatively signal *another* process, so this sends
-SIGTERM to the pid recorded in the attempt's run-log (which ``install_signal_handler``
-in the target process converts to a cooperative cancel). It lands at the op's
-next checkpoint; real process-group hard-kill is the Layer-2 executor's job.
-Cross-host cancel is refused.
+The process that receives SIGTERM cancels at its next checkpoint and records its
+own ending. :mod:`mosaic.core.pipeline.cancel` decides what to signal and what to
+record, and refuses a process on another host.
 """
 
 from __future__ import annotations
 
-import os
-import signal
-import socket
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
 from mosaic.cli._context import load_dataset, run_log_dir_for
-from mosaic.cli._io import emit_json, fail, log
+from mosaic.cli._io import emit_json, fail, fail_classified, log
+from mosaic.core.pipeline.error_kind import ClassifiedError
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.cancel import AttemptCancel, RequestCancel
 
 
 def cancel_command(
@@ -29,74 +29,75 @@ def cancel_command(
         ),
     ],
     execution_id: Annotated[
-        str, typer.Option("--execution-id", help="Attempt ULID to cancel.")
-    ],
+        str | None, typer.Option("--execution-id", help="Attempt ULID to cancel.")
+    ] = None,
+    request_id: Annotated[
+        str | None,
+        typer.Option(
+            "--request",
+            help=(
+                "Pipeline request to cancel: SIGTERM to its driver, or to its "
+                "running steps without one, and its unstarted steps recorded "
+                "cancelled. Not for a request whose steps a queue dispatches."
+            ),
+        ),
+    ] = None,
     as_json: Annotated[
         bool, typer.Option("--json", help="Emit the result as JSON on stdout.")
     ] = False,
 ) -> None:
-    """Request cancellation of a running attempt (SIGTERM to its recorded pid)."""
-    from mosaic.core.pipeline.run_log import read_run
-    from mosaic.runlog import record_exited_attempt
+    """Request cancellation of a running attempt (SIGTERM to its recorded pid).
 
-    ds = load_dataset(manifest)
-    run_dir = run_log_dir_for(ds)
+    With `--request`, cancel a pipeline request instead. A process on another
+    host is not signalled, and the command exits 1.
+    """
+    if request_id is not None:
+        if execution_id is not None:
+            fail("Provide exactly one of --execution-id or --request.")
+        _cancel_request(load_dataset(manifest), request_id, as_json=as_json)
+        return
+    if execution_id is None:
+        fail("Provide exactly one of --execution-id or --request.")
+    from mosaic.core.pipeline.cancel import cancel_attempt
+
+    run_dir = run_log_dir_for(load_dataset(manifest))
     if not run_dir.exists():
         fail("No run-logs found (nothing has run yet).")
-    row = read_run(run_dir, execution_id)
-    if row is None:
-        fail(f"No run found with execution_id={execution_id}.")
+    try:
+        result = cancel_attempt(run_dir, execution_id)
+    except ClassifiedError as error:
+        fail_classified(error, as_json=as_json)
+    _report_attempt(result, as_json=as_json)
 
-    status = row["status"]
-    if status not in ("running", "queued"):
-        _emit(
-            {"execution_id": execution_id, "status": status, "signalled": False},
-            as_json,
-            f"[mosaic] run {execution_id} already {status}; nothing to cancel.",
-        )
-        return
 
-    host = row["host"]
-    if host and host != socket.gethostname():
-        fail(f"Run is on host {host!r}; cross-host cancel is a Layer-2 concern.")
-
-    pid = row["pid"]
-    if pid <= 0:
-        fail("No pid recorded for this run; cannot signal it.")
+def _cancel_request(ds: Dataset, request_id: str, *, as_json: bool) -> None:
+    """Cancel one pipeline request, and report what was done."""
+    from mosaic.core.pipeline.cancel import cancel_request
 
     try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        record_exited_attempt(run_dir, execution_id, "cancelled")
-        _emit(
-            {
-                "execution_id": execution_id,
-                "pid": pid,
-                "status": "cancelled",
-                "signalled": False,
-            },
-            as_json,
-            f"[mosaic] pid {pid} for run {execution_id} had already exited; "
-            f"recorded the run as cancelled.",
-        )
-        return
-    except PermissionError:
-        fail(f"Not permitted to signal process {pid}.")
-
-    _emit(
-        {
-            "execution_id": execution_id,
-            "pid": pid,
-            "status": "cancelling",
-            "signalled": True,
-        },
-        as_json,
-        f"[mosaic] sent SIGTERM to pid {pid} for run {execution_id}.",
-    )
+        result = cancel_request(ds, request_id)
+    except ClassifiedError as error:
+        fail_classified(error, as_json=as_json)
+    _report_request(result, as_json=as_json)
 
 
-def _emit(payload: dict[str, object], as_json: bool, human: str) -> None:
+def _report_attempt(result: AttemptCancel, *, as_json: bool) -> None:
+    """Print *result*, and exit 1 when its process is on another host."""
+    if result.outcome == "other_host":
+        fail(result.message)
     if as_json:
-        emit_json(payload)
+        emit_json(result.model_dump(mode="json"))
     else:
-        log(human)
+        log(f"[mosaic] {result.message}")
+
+
+def _report_request(result: RequestCancel, *, as_json: bool) -> None:
+    """Print *result*, and exit 1 when one of its processes is on another host."""
+    if result.outcome == "other_host":
+        fail(result.message)
+    if as_json:
+        emit_json(result.model_dump(mode="json"))
+        return
+    log(f"[mosaic] {result.message}")
+    for step in result.steps:
+        log(f"[mosaic] {step.message}")

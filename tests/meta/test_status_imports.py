@@ -35,8 +35,9 @@ STATUS_IMPORTS = (
     "from mosaic.core.pipeline.graph import entry_errors_wire, EntryErrorsWire",
     "import mosaic.core.pipeline.graph.driver_lease",
     "from mosaic.core.pipeline.graph import driver_alive, read_driver_lease",
+    "from mosaic.core.pipeline.cancel import cancel_attempt, cancel_request",
 )
-"""Each spelling that a status reader is imported by."""
+"""Each spelling that a status reader, or a cancel, is imported by."""
 
 
 @pytest.mark.parametrize("statement", STATUS_IMPORTS)
