@@ -33,6 +33,8 @@ STATUS_IMPORTS = (
     "from mosaic.core.pipeline.graph import list_requests, RequestPageWire",
     "import mosaic.core.pipeline.graph.entry_errors",
     "from mosaic.core.pipeline.graph import entry_errors_wire, EntryErrorsWire",
+    "import mosaic.core.pipeline.graph.driver_lease",
+    "from mosaic.core.pipeline.graph import driver_alive, read_driver_lease",
 )
 """Each spelling that a status reader is imported by."""
 

@@ -37,7 +37,13 @@ from typing import TYPE_CHECKING, Final, Literal
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.scope import Scope
-from mosaic.runlog import JsonlRunLog, read_run, run_log_dir, run_log_path
+from mosaic.runlog import (
+    JsonlRunLog,
+    read_run,
+    record_exited_attempt,
+    run_log_dir,
+    run_log_path,
+)
 
 from ..inventory.cache import InventoryCache
 from ..inventory.model import ArtifactRef, FeatureRunRef
@@ -82,7 +88,7 @@ if TYPE_CHECKING:
     from .failures import FailureStore
     from .model import Recipe, Request
 
-__all__ = ["STEP_RUN_KIND", "StepOutcome", "execute_step"]
+__all__ = ["STEP_RUN_KIND", "StepOutcome", "execute_step", "record_step_ended"]
 
 STEP_RUN_KIND: Final = "pipeline-step"
 """What a refusal records as its ``kind`` in the run-log.
@@ -678,10 +684,12 @@ def _record_terminal(
     error_json: str = "",
     cache_hit: bool = False,
     entries_written: int = 0,
+    cancelled: bool = False,
 ) -> None:
     """Write a whole attempt record for a step that runs nothing itself.
 
-    The three cases are a refusal, a cache hit and a stall, and each needs a
+    The cases are a refusal, a cache hit, a stall and a step cancelled before it
+    started (:func:`record_step_ended`). Each needs a
     run-log for the same reason: it is the release signal and the identity a child
     pins. Written directly rather than through ``job_context`` because that context
     brackets an attempt that *does* work, and a second writer on one file is what
@@ -699,9 +707,55 @@ def _record_terminal(
         if cache_hit:
             log.cache_hit()
         log.entries_written(entries_written)
-        if error_json:
+        if cancelled:
+            log.cancelled()
+        elif error_json:
             log.failed(error_json)
         else:
             log.finished()
     finally:
         log.close()
+
+
+def record_step_ended(
+    ds: Dataset,
+    execution_id: str,
+    *,
+    step_id: str,
+    owner: str,
+    status: Literal["failed", "cancelled"],
+    error_json: str = "",
+) -> None:
+    """Record the terminal event of a step attempt whose process wrote none.
+
+    A driver calls it for a step that it cancels before the step starts, and for
+    a step whose process exited without a terminal event. An attempt without a
+    run-log is recorded whole, under :data:`STEP_RUN_KIND`. An attempt with one
+    has its terminal event appended (:func:`~mosaic.runlog.record_exited_attempt`).
+
+    Args:
+        ds: The dataset holding the run-logs.
+        execution_id: The attempt.
+        step_id: Its step, recorded as the target of a whole record.
+        owner: Recorded on a whole record.
+        status: The terminal status to record.
+        error_json: The failure to record with ``failed``, which requires one.
+
+    Raises:
+        ValueError: *status* is ``failed`` and *error_json* is empty.
+    """
+    if status == "failed" and not error_json:
+        raise ValueError("a failed step is recorded with the error that ended it")
+    logs = run_log_dir(ds.base_dir)
+    if read_run(logs, execution_id) is not None:
+        record_exited_attempt(logs, execution_id, status, error_json)
+        return
+    _record_terminal(
+        ds,
+        execution_id,
+        kind=STEP_RUN_KIND,
+        target=step_id,
+        owner=owner,
+        error_json=error_json,
+        cancelled=status == "cancelled",
+    )

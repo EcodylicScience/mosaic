@@ -34,6 +34,7 @@ from mosaic.runlog import (
 
 from ..error_envelope import ErrorEnvelope, error_envelope
 from ..refusal import Refusal, RefusalReason
+from .driver_lease import lease_is_live, live_step_process, read_driver_lease
 from .model import GraphModel
 from .rollup import RequestStatus, request_rollup
 
@@ -57,6 +58,7 @@ __all__ = [
     "recorded_error",
     "request_status_wire",
     "request_summary",
+    "request_verdict_of",
     "rollup_verdict",
     "run_status_wire",
 ]
@@ -71,7 +73,8 @@ type RequestVerdict = Literal[
 
 The rollup's status, with two derived words. ``partial`` is a finished request
 with lost entries. ``orphaned`` is a running request whose driving process let its
-lease lapse. Neither is a run-log status.
+lease go stale (:mod:`~.driver_lease`) and none of whose step processes may still
+run. Neither is a run-log status.
 """
 
 _REFUSAL_REASONS: Final[frozenset[str]] = frozenset(get_args(RefusalReason.__value__))
@@ -314,18 +317,14 @@ def run_status_wire(
     )
 
 
-def request_status_wire(
-    base_dir: Path | str, request: Request, *, driver_alive: bool | None = None
-) -> RequestStatusWire:
+def request_status_wire(base_dir: Path | str, request: Request) -> RequestStatusWire:
     """Report one request from the run-logs of the attempts it assigned.
+
+    The verdict also reads the request's driver lease (:func:`request_verdict_of`).
 
     Args:
         base_dir: The dataset root containing ``.mosaic/runs``.
         request: The submission to report on.
-        driver_alive: Whether the process driving the request keeps its lease
-            current. ``None`` when a driver lease is absent for the request, and the
-            verdict then follows the run-logs alone. ``False`` turns a running
-            request into ``orphaned``.
 
     Returns:
         The request's status, its verdict and one report per step.
@@ -336,23 +335,21 @@ def request_status_wire(
         request_id=rollup.request_id,
         status=rollup.status,
         terminal=rollup.is_terminal,
-        verdict=rollup_verdict(rollup, driver_alive=driver_alive),
+        verdict=request_verdict_of(base_dir, rollup),
         steps=tuple(_step_status(logs, attempt) for attempt in rollup.steps),
     )
 
 
-def request_summary(
-    base_dir: Path | str, request: Request, *, driver_alive: bool | None = None
-) -> RequestSummaryWire:
+def request_summary(base_dir: Path | str, request: Request) -> RequestSummaryWire:
     """Summarize one request for a listing, reading one run-log per step.
 
     Args:
         base_dir: The dataset root containing ``.mosaic/runs``.
         request: The submission to summarize.
-        driver_alive: As for :func:`request_status_wire`.
 
     Returns:
-        The request's identity, its status and its verdict.
+        The request's identity, its status and its verdict, as for
+        :func:`request_status_wire`.
     """
     rollup = request_rollup(base_dir, request)
     return RequestSummaryWire(
@@ -363,8 +360,29 @@ def request_summary(
         step_count=len(request.step_executions),
         status=rollup.status,
         terminal=rollup.is_terminal,
-        verdict=rollup_verdict(rollup, driver_alive=driver_alive),
+        verdict=request_verdict_of(base_dir, rollup),
     )
+
+
+def request_verdict_of(base_dir: Path | str, rollup: RequestRollup) -> RequestVerdict:
+    """Return the verdict of *rollup*, with the request's driver lease read from disk.
+
+    A running request with a stale lease reads ``orphaned`` only when none of its
+    step processes may still run (:func:`~.driver_lease.live_step_process`). A
+    killed driver leaves its step running in a session of its own, and that step
+    still computes the request's work.
+
+    Args:
+        base_dir: The dataset root containing ``.mosaic/drivers``.
+        rollup: The request's rollup.
+    """
+    if rollup.is_terminal:
+        return rollup_verdict(rollup)
+    lease = read_driver_lease(base_dir, rollup.request_id)
+    if lease is None:
+        return rollup_verdict(rollup)
+    alive = lease_is_live(lease) or live_step_process(rollup, lease) is not None
+    return rollup_verdict(rollup, driver_alive=alive)
 
 
 def rollup_verdict(
@@ -374,7 +392,10 @@ def rollup_verdict(
 
     Args:
         rollup: The request's rollup.
-        driver_alive: As for :func:`request_status_wire`.
+        driver_alive: Whether the request's driver, or a process of one of its
+            steps, may still be running (:func:`request_verdict_of`). ``None``
+            when the request has no lease, and the verdict then follows the
+            run-logs alone. ``False`` turns a running request into ``orphaned``.
     """
     if rollup.status == "running" and driver_alive is False:
         return "orphaned"

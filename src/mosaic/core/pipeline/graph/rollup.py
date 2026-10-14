@@ -63,6 +63,10 @@ class StepAttempt:
         cache_hit: Whether it found the whole of its work already done.
         progress_done: How many entries or epochs it has completed.
         progress_total: How many it declared it would run, 0 until declared.
+        host: The host its process recorded starting on, ``""`` before.
+        pid: That process, 0 before it started or for an attempt recorded by
+            another process.
+        started_at: When that process started, ISO-8601 UTC.
     """
 
     step_id: str
@@ -75,6 +79,9 @@ class StepAttempt:
     cache_hit: bool = False
     progress_done: int = 0
     progress_total: int = 0
+    host: str = ""
+    pid: int = 0
+    started_at: str = ""
 
     @property
     def started(self) -> bool:
@@ -143,6 +150,9 @@ def _attempt(logs: Path, step_id: str, execution_id: str) -> StepAttempt:
         cache_hit=snapshot["cache_hit"],
         progress_done=snapshot["progress_done"],
         progress_total=snapshot["progress_total"],
+        host=snapshot["host"],
+        pid=snapshot["pid"],
+        started_at=snapshot["started_at"],
     )
 
 

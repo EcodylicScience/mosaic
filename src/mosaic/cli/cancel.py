@@ -37,6 +37,7 @@ def cancel_command(
 ) -> None:
     """Request cancellation of a running attempt (SIGTERM to its recorded pid)."""
     from mosaic.core.pipeline.run_log import read_run
+    from mosaic.runlog import record_exited_attempt
 
     ds = load_dataset(manifest)
     run_dir = run_log_dir_for(ds)
@@ -66,7 +67,7 @@ def cancel_command(
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
-        _reap(run_dir, execution_id)
+        record_exited_attempt(run_dir, execution_id, "cancelled")
         _emit(
             {
                 "execution_id": execution_id,
@@ -92,28 +93,6 @@ def cancel_command(
         as_json,
         f"[mosaic] sent SIGTERM to pid {pid} for run {execution_id}.",
     )
-
-
-def _reap(run_dir: Path, execution_id: str) -> None:
-    """Record the terminal event for an attempt whose process is already gone.
-
-    Reported as success, not failure: what the user asked for has happened,
-    just by something other than the signal. Leaving the run-log alone is what
-    made this the one state that is neither live nor reclaimable -- the attempt
-    stays ``running`` forever, and ``inflight_state`` reads a holder as
-    reclaimable only once its run-log has gone terminal, so the run root stays
-    claimed until the marker expires.
-
-    **Scoped to the branch where the process is gone, and safe only there.**
-    ``JsonlRunLog`` is one file, one writer; writing another process's log is
-    safe here because there is no other process. In the branch where SIGTERM
-    was delivered the writer is alive and still holds the file, and the cancel
-    it received is what makes it write its own terminal event.
-    """
-    from mosaic.runlog import JsonlRunLog
-
-    with JsonlRunLog(run_dir / f"{execution_id}.jsonl", execution_id) as run_log:
-        run_log.cancelled()
 
 
 def _emit(payload: dict[str, object], as_json: bool, human: str) -> None:

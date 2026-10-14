@@ -67,6 +67,7 @@ __all__ = [
     "read_entry_errors",
     "read_run",
     "read_run_progress",
+    "record_exited_attempt",
     "read_runs",
     "read_runs_by_run_id",
     "reduce_run_log",
@@ -128,6 +129,11 @@ class RunLogSnapshot(TypedDict):
     Zero, ``False`` and ``""`` are indistinguishable from "not reported", the same
     convention as the tracks index's blank ``n_keypoints`` cell meaning *unknown*
     rather than zero.
+
+    A process that resumes an attempt whose process died appends a second
+    ``started`` event to its run-log. The counters, the progress, ``cache_hit``
+    and ``tracks_variant`` then report the events after the last ``started``, and
+    the entries that the dead process lost are not counted twice.
 
     The run-log is the only report a queued attempt makes, because a queue starts
     ``mosaic run`` with its standard output and standard error discarded. A writer
@@ -588,6 +594,30 @@ class JsonlRunLog:
         self.close()
 
 
+def record_exited_attempt(
+    run_dir: Path | str,
+    execution_id: str,
+    status: Literal["failed", "cancelled"],
+    error_json: str = "",
+) -> None:
+    """Append the terminal event of an attempt whose process exited without one.
+
+    Call it only after that process has exited. A run-log has one writer, and an
+    exited writer leaves the caller as the only one.
+
+    Args:
+        run_dir: The ``.mosaic/runs`` directory.
+        execution_id: The attempt.
+        status: The terminal status to record.
+        error_json: The failure to record with ``failed``.
+    """
+    with JsonlRunLog(Path(run_dir) / f"{execution_id}.jsonl", execution_id) as log:
+        if status == "failed":
+            log.failed(error_json)
+        else:
+            log.cancelled()
+
+
 # ---------------------------------------------------------------------------
 # Readers (stdlib-only; reduce a log back to the old ``runs`` row shape)
 # ---------------------------------------------------------------------------
@@ -662,6 +692,7 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         if ts:
             snap["heartbeat_at"] = ts  # last-seen event time == liveness
         if ev == "started":
+            _reset_for_start(snap)
             snap["kind"] = rec.get("kind", "")
             snap["target"] = rec.get("target", "")
             snap["owner"] = rec.get("owner", "")
@@ -704,6 +735,19 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
             if ev == "failed":
                 snap["error_json"] = rec.get("error", "")
     return snap
+
+
+def _reset_for_start(snap: RunLogSnapshot) -> None:
+    """Reset the fields of *snap* that report one process of a resumed attempt."""
+    snap["progress_done"] = 0
+    snap["progress_total"] = 0
+    snap["entries_failed"] = 0
+    snap["entries_written"] = 0
+    snap["entries_frame_axis_mismatch"] = 0
+    snap["entries_frame_tail_short"] = 0
+    snap["entries_columns_dropped"] = 0
+    snap["cache_hit"] = False
+    snap["tracks_variant"] = ""
 
 
 def read_run(run_dir: Path | str, execution_id: str) -> RunLogSnapshot | None:
@@ -848,12 +892,18 @@ def read_entry_error_keys(run_dir: Path | str, execution_id: str) -> list[str]:
 
 
 def _entry_error_events(run_dir: Path | str, execution_id: str) -> list[dict[str, Any]]:
-    """The ``entry_error`` records of one attempt's run-log, in file order."""
-    return [
-        rec
-        for rec in _iter_records(Path(run_dir) / f"{execution_id}.jsonl")
-        if rec.get("ev") == "entry_error"
-    ]
+    """The ``entry_error`` records after the last ``started`` event, in file order.
+
+    A resumed attempt lists the entities that its latest process lost, as
+    :func:`reduce_run_log` counts them.
+    """
+    events: list[dict[str, Any]] = []
+    for rec in _iter_records(Path(run_dir) / f"{execution_id}.jsonl"):
+        if rec.get("ev") == "started":
+            events.clear()
+        elif rec.get("ev") == "entry_error":
+            events.append(rec)
+    return events
 
 
 def error_summary(error_json: str) -> ErrorSummary:

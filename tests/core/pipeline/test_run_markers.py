@@ -12,7 +12,9 @@ liveness rule depends on how ``reduce_run_log`` folds events into a status.
 from __future__ import annotations
 
 import datetime
+import errno
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -32,6 +34,7 @@ from mosaic.core.pipeline.markers import (
     inflight_state,
     new_inflight,
     phase_marker_path,
+    process_running_since,
     read_inflight,
     read_phase_marker,
     refresh_inflight,
@@ -338,6 +341,48 @@ def test_a_claim_leaves_no_temp_sibling(tmp_path: Path) -> None:
     assert [p.name for p in tmp_path.iterdir()] == [inflight_marker_path(tmp_path).name]
 
 
+def test_a_losing_claim_leaves_no_temp_sibling(tmp_path: Path) -> None:
+    assert try_create_inflight(tmp_path, _marker(_MINE)) is True
+    assert try_create_inflight(tmp_path, _marker(_THEIRS)) is False
+
+    assert [p.name for p in tmp_path.iterdir()] == [inflight_marker_path(tmp_path).name]
+
+
+def test_a_claim_without_hard_links_is_still_exclusive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A filesystem that refuses ``link`` falls back to an exclusive create."""
+
+    def refuse_link(source: object, target: object) -> None:
+        raise OSError(errno.ENOTSUP, "hard links are not supported", str(target))
+
+    monkeypatch.setattr(os, "link", refuse_link)
+
+    assert try_create_inflight(tmp_path, _marker(_MINE)) is True
+    assert try_create_inflight(tmp_path, _marker(_THEIRS)) is False
+    held = read_inflight(tmp_path)
+    assert held is not None and held.execution_id == _MINE
+    assert [p.name for p in tmp_path.iterdir()] == [inflight_marker_path(tmp_path).name]
+
+
+def test_a_link_reported_failing_on_a_retransmit_is_a_held_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NFS reports EEXIST for a retransmitted link whose first reply was lost."""
+    link = os.link
+
+    def link_then_report_existing(source: str, target: str) -> None:
+        link(source, target)
+        raise FileExistsError(errno.EEXIST, "file exists", target)
+
+    monkeypatch.setattr(os, "link", link_then_report_existing)
+
+    assert try_create_inflight(tmp_path, _marker(_MINE)) is True
+    held = read_inflight(tmp_path)
+    assert held is not None and held.execution_id == _MINE
+    assert [p.name for p in tmp_path.iterdir()] == [inflight_marker_path(tmp_path).name]
+
+
 # --- Liveness -------------------------------------------------------------
 
 
@@ -418,3 +463,13 @@ def test_unparseable_expiry_is_expired(tmp_path: Path) -> None:
         )
         == "expired"
     )
+
+
+def test_a_process_counts_as_running_only_when_it_began_by_the_stamp() -> None:
+    """A pid reused after a reboot names a process that began after the stamp."""
+    now = datetime.datetime.now(UTC).isoformat()
+
+    assert process_running_since(os.getpid(), now)
+    assert not process_running_since(os.getpid(), "2000-01-01T00:00:00+00:00")
+    assert process_running_since(os.getpid(), "not-a-timestamp")
+    assert not process_running_since(0, now)

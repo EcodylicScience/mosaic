@@ -63,12 +63,12 @@ from __future__ import annotations
 
 import datetime
 import os
+import secrets
 from pathlib import Path
 from typing import Final, Literal, TypeVar, final
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from mosaic.core.pipeline._utils import atomic_write
 from mosaic.runlog import TERMINAL_STATUSES, now_iso, read_run, run_log_dir
 
 __all__ = [
@@ -76,6 +76,7 @@ __all__ = [
     "INFLIGHT_MARKER_NAME",
     "INFLIGHT_MIN_TTL_SECONDS",
     "MARKER_SCHEMA_VERSION",
+    "PROCESS_START_SLACK_SECONDS",
     "InflightMarker",
     "InflightState",
     "Phase",
@@ -84,12 +85,16 @@ __all__ = [
     "clear_inflight",
     "clear_phase_marker",
     "clear_phase_markers",
+    "create_exclusive",
     "inflight_expiry",
     "inflight_marker_path",
     "inflight_state",
     "new_inflight",
+    "parse_instant",
     "phase_fields",
     "phase_marker_path",
+    "process_running",
+    "process_running_since",
     "read_inflight",
     "read_phase_marker",
     "refresh_inflight",
@@ -195,6 +200,13 @@ INFLIGHT_GRACE_SECONDS: Final = 900
 # first output line refreshes it.
 INFLIGHT_MIN_TTL_SECONDS: Final = 1800
 
+PROCESS_START_SLACK_SECONDS: Final = 2.0
+"""How far a process's start time may lie after a stamp recorded once it began.
+
+A process's start time is read from the kernel's clock, which on Linux is the
+boot time plus clock ticks and drifts from the wall clock by up to a second.
+"""
+
 
 class PhaseMarker(BaseModel):
     """Proof that one phase of one entry completed, and on what.
@@ -282,6 +294,10 @@ def _load(path: Path, model_cls: type[MarkerT]) -> MarkerT | None:
 
 
 def _store(path: Path, marker: BaseModel) -> None:
+    # Imported in the call because its module loads pandas, and reading a marker
+    # or a driver lease leaves pandas unloaded.
+    from mosaic.core.pipeline._utils import atomic_write
+
     atomic_write(path, lambda tmp: tmp.write_text(marker.model_dump_json(indent=2)))
 
 
@@ -353,20 +369,60 @@ def write_inflight(work_dir: Path, marker: InflightMarker) -> None:
 def try_create_inflight(work_dir: Path, marker: InflightMarker) -> bool:
     """Take the claim on *work_dir*, or ``False`` because someone else holds it.
 
-    ``O_EXCL`` rather than :func:`write_inflight`, whose ``os.replace`` cannot fail
-    on an existing target: two executions reading a directory as free would both
-    "claim" it, last writer winning. Single-mount only, the bound
-    :mod:`index_lock` documents -- across a synced folder the marker's expiry and
-    the run-log check in :func:`inflight_state` remain the cross-machine guard.
+    An exclusive create (:func:`create_exclusive`) rather than
+    :func:`write_inflight`, whose ``os.replace`` cannot fail on an existing
+    target: two executions reading a directory as free would both "claim" it,
+    last writer winning. Single-mount only, the bound :mod:`index_lock`
+    documents -- across a synced folder the marker's expiry and the run-log
+    check in :func:`inflight_state` remain the cross-machine guard.
     """
-    path = inflight_marker_path(work_dir)
+    return create_exclusive(
+        inflight_marker_path(work_dir), marker.model_dump_json(indent=2)
+    )
+
+
+def create_exclusive(path: Path, text: str) -> bool:
+    """Create *path* holding *text*, or return ``False`` because it exists.
+
+    *text* is written to a temporary file beside *path*, which is then
+    hard-linked to *path*. A reader therefore finds *path* absent or whole, never
+    created and still empty. Of two processes creating one path, exactly one
+    succeeds. It is exclusive on one mount, the bound that
+    :mod:`~mosaic.core.pipeline.index_lock` documents. The parent directories
+    are created first.
+
+    When the link fails because of anything but *path* existing, as on a
+    filesystem without hard links, *path* is created with ``O_CREAT | O_EXCL``
+    and filled after, and a reader may find it empty in between.
+
+    A link reported as failing on an existing *path* succeeded when the
+    temporary file has two links. NFS reports that for a retransmitted link
+    whose first reply was lost.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}-{os.getpid()}-{secrets.token_hex(4)}.tmp")
+    fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        _ = handle.write(text)
+    try:
+        os.link(temp, path)
+    except FileExistsError:
+        return os.stat(temp).st_nlink == 2
+    except OSError:
+        return _create_then_fill(path, text)
+    finally:
+        temp.unlink(missing_ok=True)
+    return True
+
+
+def _create_then_fill(path: Path, text: str) -> bool:
+    """Create *path* with ``O_CREAT | O_EXCL``, then write *text* to it."""
     try:
         fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
     except FileExistsError:
         return False
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        _ = handle.write(marker.model_dump_json(indent=2))
+        _ = handle.write(text)
     return True
 
 
@@ -445,7 +501,11 @@ def refresh_inflight(
     return refreshed
 
 
-def _parse_instant(stamp: str) -> datetime.datetime | None:
+def parse_instant(stamp: str) -> datetime.datetime | None:
+    """Return the ISO-8601 instant *stamp*, read as UTC when it names no zone.
+
+    A stamp that does not parse returns ``None``.
+    """
     try:
         moment = datetime.datetime.fromisoformat(stamp)
     except ValueError:
@@ -503,10 +563,57 @@ def inflight_state(
         if snapshot is not None and snapshot["status"] in TERMINAL_STATUSES:
             return "orphaned"
 
-    deadline = _parse_instant(marker.expires_at)
+    deadline = parse_instant(marker.expires_at)
     if deadline is None:
         return "expired"
     moment = now or datetime.datetime.now(datetime.timezone.utc)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=datetime.timezone.utc)
     return "expired" if moment >= deadline else "live"
+
+
+def process_running(pid: int) -> bool:
+    """Return whether *pid* is a live process on this host.
+
+    ``signal 0`` performs the existence and permission checks and delivers no
+    signal. A process owned by another user raises ``PermissionError`` and is
+    live. A pid of 0 or below names no process.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def process_running_since(pid: int, started_by: str) -> bool:
+    """Return whether *pid* is a live process on this host that began by *started_by*.
+
+    A process that began later reuses the pid of one that ended, as after a
+    reboot. :data:`PROCESS_START_SLACK_SECONDS` is allowed between the process
+    clock and the wall clock.
+
+    Args:
+        pid: The process.
+        started_by: An ISO-8601 instant recorded after the process began. A
+            stamp that does not parse leaves :func:`process_running` alone to
+            decide.
+    """
+    if not process_running(pid):
+        return False
+    deadline = parse_instant(started_by)
+    if deadline is None:
+        return True
+    import psutil
+
+    try:
+        began = psutil.Process(pid).create_time()
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.Error:
+        return True
+    return began <= deadline.timestamp() + PROCESS_START_SLACK_SECONDS

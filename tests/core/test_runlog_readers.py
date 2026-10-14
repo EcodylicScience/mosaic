@@ -84,6 +84,31 @@ def test_entry_error_keys_are_read_in_order_with_their_blobs_unparsed(
     assert read_entry_error_keys(run_log_dir(tmp_path), "MISSING") == []
 
 
+def test_a_resumed_attempt_reports_what_its_latest_process_lost(
+    tmp_path: Path,
+) -> None:
+    """A second ``started`` resumes an attempt whose process died."""
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="speed")
+        log.entry_failed("g__s0", '{"type": "ValueError", "message": "dead"}')
+        log.entry_failed("g__s1", '{"type": "ValueError", "message": "dead"}')
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="speed")
+        log.entry_failed("g__s1", '{"type": "ValueError", "message": "again"}')
+        log.finished()
+
+    snapshot = runlog.read_run(run_log_dir(tmp_path), "E1")
+    errors = read_entry_errors(run_log_dir(tmp_path), "E1")
+
+    assert snapshot is not None
+    assert (snapshot["status"], snapshot["entries_failed"]) == ("finished", 1)
+    assert (errors["total"], [item["message"] for item in errors["items"]]) == (
+        1,
+        ["again"],
+    )
+    assert read_entry_error_keys(run_log_dir(tmp_path), "E1") == ["g__s1"]
+
+
 def test_entry_errors_of_an_absent_run_log_are_empty(tmp_path: Path) -> None:
     assert read_entry_errors(run_log_dir(tmp_path), "MISSING") == {
         "items": [],

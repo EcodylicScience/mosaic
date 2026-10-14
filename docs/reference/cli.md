@@ -1075,7 +1075,8 @@ $ mosaic pipeline submit [OPTIONS]
 Run every step of a recipe here, in order, skipping what is already done.
 
 An open request of the same recipe over an overlapping scope is reported on
-stderr.
+stderr. With ``--request`` the steps of a submitted request run instead, and
+the command exits 1 when the request failed and 130 when it was cancelled.
 
 **Usage**:
 
@@ -1085,8 +1086,10 @@ $ mosaic pipeline run [OPTIONS]
 
 **Options**:
 
-* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-r, --recipe <str>`: Recipe to submit and run, as @file.json, @- for stdin, or an inline JSON object.
+* `--request <str>`: Run the unfinished steps of this submitted request, each as its own process, instead of submitting --recipe. Running it again resumes it.
+* `--detach`: With --request, start the driver in a new session, print its pid and return. The driver and its steps append their output to the request's log under .mosaic/drivers/.
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--allow-partial`: Proceed when a step would run over less than it was planned for, or when it produces nothing new.
 * `--owner <str>`: Recorded on each attempt.
@@ -1101,7 +1104,9 @@ Deliberately not a coverage report: whether every step's *work* is done is a
 question about artifacts, which ``plan`` answers. This one is about attempts,
 so it stays cheap enough to poll. Each step reports its outcome, progress,
 recorded error and first 20 failed entries, and the request a ``verdict``
-that names a finished request with lost entries ``partial``.
+that names a finished request with lost entries ``partial``. A running
+request whose driver lease is stale and none of whose step processes runs
+reads ``orphaned``, and ``pipeline run --request`` resumes it.
 
 **Usage**:
 

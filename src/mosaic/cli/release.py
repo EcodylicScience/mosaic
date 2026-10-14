@@ -20,7 +20,6 @@ caller says otherwise.
 
 from __future__ import annotations
 
-import os
 import socket
 from collections.abc import Callable
 from pathlib import Path
@@ -65,7 +64,11 @@ def release_command(
     ] = False,
 ) -> None:
     """Release the run roots claimed by an attempt that is no longer running."""
-    from mosaic.core.pipeline.markers import clear_inflight, read_inflight
+    from mosaic.core.pipeline.markers import (
+        clear_inflight,
+        process_running,
+        read_inflight,
+    )
 
     ds = load_dataset(manifest)
     held = [
@@ -89,7 +92,7 @@ def release_command(
                 "from here would take a directory a run on that machine may "
                 "still be writing."
             )
-        if not force and _is_running(marker.pid):
+        if not force and process_running(marker.pid):
             fail(
                 f"{root.name} is claimed by pid {marker.pid}, which is still "
                 "running here. Cancel it first with 'mosaic cancel "
@@ -122,24 +125,6 @@ def _claims(
             if marker is not None:
                 found.append((path.parent, marker))
     return found
-
-
-def _is_running(pid: int) -> bool:
-    """Is *pid* a live process on this host?
-
-    ``signal 0`` performs the permission and existence checks and delivers
-    nothing, which is exactly the question. A process owned by someone else
-    answers ``PermissionError``, and that is still a live process.
-    """
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 def _emit(payload: dict[str, object], as_json: bool, human: str) -> None:

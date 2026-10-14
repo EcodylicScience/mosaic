@@ -6,6 +6,8 @@ the document and opens no dataset.
 ``plan`` and ``show`` resolve it against a dataset and write nothing. ``run``
 executes it here, in this process, one step after another -- which is what a
 notebook or a bare compute node has, and is not a lesser path than a queue.
+``run --request`` runs the unfinished steps of a submitted request, one process
+per step, and ``--detach`` starts that driver in a new session and returns.
 
 ``submit`` and ``status`` are the other half of that last point: ``submit``
 records the pipeline against the dataset, assigns every step an attempt id, and
@@ -45,7 +47,13 @@ from mosaic.core.pipeline.refusal import Refusal
 from mosaic.cli._render import render_table
 
 if TYPE_CHECKING:
-    from mosaic.core.pipeline.graph import Plan, PlannedStep, Recipe, Request
+    from mosaic.core.pipeline.graph import (
+        Plan,
+        PlannedStep,
+        Recipe,
+        Request,
+        RequestStatusWire,
+    )
 
 pipeline_app = typer.Typer(
     name="pipeline",
@@ -269,8 +277,40 @@ def _warn_duplicates(duplicates: tuple[str, ...]) -> None:
 
 
 def run_command(
-    recipe: RecipeOption,
     manifest: ManifestOption,
+    recipe: Annotated[
+        str | None,
+        typer.Option(
+            "--recipe",
+            "-r",
+            help=(
+                "Recipe to submit and run, as @file.json, @- for stdin, or an "
+                "inline JSON object."
+            ),
+        ),
+    ] = None,
+    request_id: Annotated[
+        str | None,
+        typer.Option(
+            "--request",
+            help=(
+                "Run the unfinished steps of this submitted request, each as its "
+                "own process, instead of submitting --recipe. Running it again "
+                "resumes it."
+            ),
+        ),
+    ] = None,
+    detach: Annotated[
+        bool,
+        typer.Option(
+            "--detach",
+            help=(
+                "With --request, start the driver in a new session, print its pid "
+                "and return. The driver and its steps append their output to the "
+                "request's log under .mosaic/drivers/."
+            ),
+        ),
+    ] = False,
     entry: EntriesOption = None,
     allow_partial: Annotated[
         bool,
@@ -290,10 +330,25 @@ def run_command(
     """Run every step of a recipe here, in order, skipping what is already done.
 
     An open request of the same recipe over an overlapping scope is reported on
-    stderr.
+    stderr. With ``--request`` the steps of a submitted request run instead, and
+    the command exits 1 when the request failed and 130 when it was cancelled.
     """
     from mosaic.core.pipeline.graph import run_pipeline, submit_request
 
+    if request_id is not None:
+        if recipe is not None:
+            fail("Provide exactly one of --recipe or --request.")
+        if entry or allow_partial or owner:
+            fail(
+                "--entry, --allow-partial and --owner are recorded on a request at "
+                "submit, and are not used with --request."
+            )
+        _run_request(manifest, request_id, detach=detach, as_json=as_json)
+        return
+    if recipe is None:
+        fail("Provide exactly one of --recipe or --request.")
+    if detach:
+        fail("--detach is used with --request. Submit the recipe first.")
     ds = load_dataset(manifest)
     parsed = _recipe(recipe, as_json=as_json)
     submitted: Request | None = None
@@ -358,6 +413,75 @@ def run_command(
                 f"note: step {outcome.step_id!r} recorded {outcome.run_id}, "
                 f"where the plan resolved {outcome.planned_run_id}"
             )
+
+
+def _run_request(
+    manifest: Path, request_id: str, *, detach: bool, as_json: bool
+) -> None:
+    """Drive one submitted request here, or start its driver in a new session."""
+    from mosaic.core.pipeline.graph import (
+        load_request,
+        request_status_wire,
+        run_request,
+        start_detached_driver,
+    )
+    from mosaic.core.pipeline.job import CancelToken, install_signal_handler
+
+    ds = load_dataset(manifest)
+    try:
+        request = load_request(ds.base_dir, request_id)
+    except FileNotFoundError as exc:
+        fail(str(exc))
+    if detach:
+        try:
+            driver = start_detached_driver(ds, request)
+        except Refusal as refusal:
+            exit_refused("", refusal, as_json=as_json)
+        except ClassifiedError as error:
+            _fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
+        if as_json:
+            emit_json(
+                {
+                    "request_id": driver.request_id,
+                    "driver_pid": driver.pid,
+                    "log_path": str(driver.log_path),
+                }
+            )
+        else:
+            log(
+                f"[mosaic] request {driver.request_id} is driven by pid "
+                f"{driver.pid}; its output is appended to {driver.log_path}"
+            )
+        return
+    token = CancelToken()
+    install_signal_handler(token)
+    try:
+        with stdout_to_stderr():
+            done = run_request(ds, request, cancel_token=token)
+    except Refusal as refusal:
+        exit_refused("", refusal, as_json=as_json)
+    except ClassifiedError as error:
+        _fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
+    report = request_status_wire(ds.base_dir, request)
+    if as_json:
+        emit_json(
+            {
+                "request_id": done.request_id,
+                "status": report.status,
+                "verdict": report.verdict,
+                "ran": list(done.ran),
+                "skipped": list(done.skipped),
+                "cancelled": list(done.cancelled),
+                "log_path": str(done.log_path),
+            }
+        )
+    else:
+        _render_request_status(report)
+        log(f"note: the steps' output is in {done.log_path}")
+    if done.status == "failed":
+        raise typer.Exit(code=1)
+    if done.status == "cancelled":
+        raise typer.Exit(code=130)
 
 
 def submit_command(
@@ -499,7 +623,9 @@ def status_command(
     question about artifacts, which ``plan`` answers. This one is about attempts,
     so it stays cheap enough to poll. Each step reports its outcome, progress,
     recorded error and first 20 failed entries, and the request a ``verdict``
-    that names a finished request with lost entries ``partial``.
+    that names a finished request with lost entries ``partial``. A running
+    request whose driver lease is stale and none of whose step processes runs
+    reads ``orphaned``, and ``pipeline run --request`` resumes it.
     """
     from mosaic.core.pipeline.graph import load_request, request_status_wire
 
@@ -512,6 +638,11 @@ def status_command(
     if as_json:
         emit_json(report.model_dump(mode="json"))
         return
+    _render_request_status(report)
+
+
+def _render_request_status(report: RequestStatusWire) -> None:
+    """Print a request's verdict and a table of its steps."""
     typer.echo(f"request {report.request_id}: {report.verdict}")
     render_table(
         [

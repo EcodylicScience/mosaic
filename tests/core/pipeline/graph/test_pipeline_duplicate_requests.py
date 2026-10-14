@@ -8,6 +8,8 @@ conflict when asked to.
 from __future__ import annotations
 
 import json
+import os
+import socket
 from pathlib import Path
 
 import pytest
@@ -31,12 +33,14 @@ from mosaic.core.pipeline.graph import (
 from mosaic.core.pipeline.graph import request as request_module
 from mosaic.core.pipeline.inventory.cache import InventoryCache
 from mosaic.core.scope import Scope
+from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
     SPEED_RECIPE,
     add_tracks_variant,
     invoke_json,
     make_dataset,
     speed_recipe,
+    write_driver_lease,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -111,17 +115,46 @@ def test_a_request_of_another_recipe_is_not_reported(tracked: Dataset) -> None:
     assert found == ()
 
 
-def test_a_request_whose_driver_lapsed_is_not_open(tracked: Dataset) -> None:
-    _ = submit_request(tracked, speed_recipe())
+def test_a_request_whose_driver_lease_is_stale_is_not_open(tracked: Dataset) -> None:
+    orphaned = submit_request(tracked, speed_recipe()).request
+    _ = write_driver_lease(tracked.base_dir, orphaned.request_id, stale=True)
 
     found = open_requests_matching(
-        tracked.base_dir,
-        recipe_digest(speed_recipe()),
-        Scope(),
-        driver_alive=lambda _request: False,
+        tracked.base_dir, recipe_digest(speed_recipe()), Scope()
     )
 
     assert found == ()
+
+
+def test_a_request_with_a_stale_lease_and_a_running_step_is_open(
+    tracked: Dataset,
+) -> None:
+    """The step that a killed driver left running still computes the work."""
+    driven = submit_request(tracked, speed_recipe()).request
+    execution_id = next(iter(driven.step_executions.values()))
+    path = run_log_path(tracked.base_dir, execution_id)
+    with JsonlRunLog(path, execution_id) as log:
+        log.started(
+            kind="feature", target="speed", host=socket.gethostname(), pid=os.getpid()
+        )
+    _ = write_driver_lease(tracked.base_dir, driven.request_id, stale=True)
+
+    found = open_requests_matching(
+        tracked.base_dir, recipe_digest(speed_recipe()), Scope()
+    )
+
+    assert found == (driven.request_id,)
+
+
+def test_a_request_with_a_live_driver_lease_is_open(tracked: Dataset) -> None:
+    driven = submit_request(tracked, speed_recipe()).request
+    _ = write_driver_lease(tracked.base_dir, driven.request_id, stale=False)
+
+    found = open_requests_matching(
+        tracked.base_dir, recipe_digest(speed_recipe()), Scope()
+    )
+
+    assert found == (driven.request_id,)
 
 
 def test_a_dataset_without_requests_has_none_open(tracked: Dataset) -> None:

@@ -46,7 +46,7 @@ from .store import (
 from .topo import topological_order
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
     from mosaic.core.dataset import Dataset
@@ -129,9 +129,9 @@ class DuplicateRequest(ClassifiedError):
         message = (
             f"request(s) {listed} of recipe {recipe_digest!r} cover entries of "
             f"this scope and have not ended. Both requests would compute the same "
-            f"runs at once. Run the steps of the open request, or delete its file "
-            f"under .mosaic/pipelines/requests/ if it will not run, then submit "
-            f"again."
+            f"runs at once. Run the open request with 'mosaic pipeline run "
+            f"--request <id>', or delete its file under .mosaic/pipelines/requests/ "
+            f"if it will not run, then submit again."
         )
         super().__init__(message)
         self.recipe_digest: str = recipe_digest
@@ -313,7 +313,7 @@ def step_argv(
     step_id: str,
     *,
     overwrite: bool = False,
-    program: str = "mosaic",
+    program: str | Sequence[str] = "mosaic",
 ) -> list[str]:
     """The command that runs one step of one request.
 
@@ -333,13 +333,15 @@ def step_argv(
         step_id: Which step to run.
         overwrite: Recompute even where a cached run exists. An argv flag rather
             than a recipe field, because overwriting is a property of an attempt.
-        program: argv[0]. A driver that knows where mosaic lives substitutes it.
+        program: The command that runs mosaic: argv[0], or the words that the
+            argv starts with, as ``[sys.executable, "-m", "mosaic"]``. A driver
+            that knows where mosaic lives substitutes it.
 
     Returns:
         The argv, ready to run.
     """
     argv = [
-        program,
+        *([program] if isinstance(program, str) else program),
         "run",
         "--json",
         "--manifest",

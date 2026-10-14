@@ -11,6 +11,7 @@ What lives where:
 - ``annotations`` -- keypoint annotation sets in their saved shape, and the file
   a revision of one is claimed by.
 - ``datasets`` -- the `Dataset` a test runs against.
+- ``driver_leases``: the lease of a request's driver, live or stale.
 - ``catalogs``: the declaration catalogs a graph test validates or plans against.
 - ``cli`` -- a ``mosaic`` command run for its exit status or its ``--json``
   output.
@@ -153,6 +154,7 @@ from tests.helpers.media import (
     write_mpeg4_mp4,
     write_painted_entry,
 )
+from tests.helpers.driver_leases import write_driver_lease
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.processes import (
     LineChildren,
@@ -160,6 +162,7 @@ from tests.helpers.processes import (
     assert_process_exited,
     assert_stopped_writing,
     cancel_when,
+    exited_pid,
     wait_for,
 )
 from tests.helpers.recipes import (
@@ -339,6 +342,7 @@ __all__ = [
     "dot_image",
     "dotted_values",
     "entry_error_lines",
+    "exited_pid",
     "finish_media_variant",
     "functions_named",
     "index_media_sequence",
@@ -415,6 +419,7 @@ __all__ = [
     "ultralytics_probe_response",
     "write_data_yaml",
     "write_dlc_csv",
+    "write_driver_lease",
     "write_fake_runner",
     "write_golden",
     "write_h264_mp4",

@@ -9,7 +9,9 @@ named without a path is in `tests/core/pipeline/graph/`.
 `pipelines/<digest>.json` is a recipe and `pipelines/requests/<rid>.json` one submission
 of it (`store.py`). `runs/<execution_id>.jsonl` is a step attempt's run-log. `claims/`
 keeps the failure records (`claims.py`), the one part of a step's status that is stored
-instead of derived from artifacts.
+instead of derived from artifacts. `drivers/<rid>.lease.json` is the lease of the process
+driving a request, and `drivers/<rid>.log` the output of that driver and its steps
+(`driver_lease.py`).
 
 ## Recipe and request
 
@@ -23,8 +25,8 @@ instead of derived from artifacts.
   (`test_pipeline_plan_fingerprint.py`).
 - `open_requests_matching` (`store.py`) returns the requests of one recipe digest whose
   scope overlaps (`Scope.overlaps`) and whose rollup verdict is `running`. A verdict
-  of `orphaned` is not open, through the same `driver_alive` argument as the status
-  wires. `submit_request` reports them in `duplicates` and, given `refuse_duplicates`,
+  of `orphaned` is not open, read from the driver lease as the status wires read it.
+  `submit_request` reports them in `duplicates` and, given `refuse_duplicates`,
   raises `DuplicateRequest`, a `conflict`, before writing either file
   (`test_pipeline_duplicate_requests.py`). The check runs again with the write under
   `submission_lock`. A request file that cannot be read is skipped with a warning, so
@@ -77,8 +79,23 @@ instead of derived from artifacts.
   branch is not terminal while a sibling runs (`test_pipeline_step.py`).
 - `status.py` builds `RunStatusWire` and `RequestStatusWire` from run-logs alone. Their
   `partial`, `pending` and `orphaned` are derived words, and none joins
-  `runlog.TERMINAL_STATUSES`. `orphaned` comes from the `driver_alive` argument of
-  `request_status_wire` (`test_pipeline_status_wire.py`).
+  `runlog.TERMINAL_STATUSES`. `orphaned` is a running request whose driver lease is
+  stale and none of whose step processes may still run (`request_verdict_of`,
+  `live_step_process`, `test_pipeline_status_wire.py`). A same-host pid counts only
+  when its process began by the attempt's recorded start, which rules out a pid
+  reused after a reboot.
+- `run_request` (`run.py`) runs each unfinished step's `step_argv` as a process of its
+  own session, with output to the driver log and never to inherited streams, and
+  submits nothing. It skips a finished step, which makes running a request again a
+  resume. A cancel forwards SIGTERM to the running step's group and records every step
+  without a terminal record `cancelled` (`record_step_ended`). The rollup then closes.
+  The driver deletes its lease when the request ends and keeps it when it raises
+  (`test_pipeline_request_driver.py`, `test_pipeline_driver_lease.py`). The lease
+  names the running step's process, which a killed driver leaves running in its own
+  session, and a resume is refused while that process runs, even before it has
+  written a run-log. A lease refresh that raises is reported and retried, and the
+  driver stops with `LeaseNotRefreshed` before a step once its lease has gone
+  unrefreshed for half the grace.
 - `entry_errors_wire` (`entry_errors.py`) joins an attempt's `entry_error` events with
   the failure records keyed by its `target` and `run_id`. `held_back_by_quarantine`
   is true when any entity that the attempt lost is quarantined, listed or not. Every
@@ -88,9 +105,9 @@ instead of derived from artifacts.
   are ULIDs, newest first, and read only the page that they return
   (`test_pipeline_request_listing.py`, `tests/core/test_runlog_readers.py`).
 - `__init__.py` binds every public name on access, and `status.py`, `store.py`,
-  `claims.py` and `entry_errors.py` import nothing that loads pandas, cv2, av or the
-  feature library (`tests/meta/test_status_imports.py`). The editor wires in `wire.py`
-  import the op registry and the inventory, which do.
+  `claims.py`, `entry_errors.py` and `driver_lease.py` import nothing that loads
+  pandas, cv2, av or the feature library (`tests/meta/test_status_imports.py`). The
+  editor wires in `wire.py` import the op registry and the inventory, which do.
 
 ## Declarations and the registries
 

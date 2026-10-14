@@ -29,10 +29,10 @@ from ..index_lock import index_lock
 from .digest import recipe_digest
 from .model import Recipe, Request
 from .rollup import request_rollup
-from .status import JSON_OBJECT, RequestPageWire, request_summary, rollup_verdict
+from .status import JSON_OBJECT, RequestPageWire, request_summary, request_verdict_of
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Generator
 
     from mosaic.core.scope import Scope
 
@@ -153,8 +153,6 @@ def open_requests_matching(
     base_dir: Path | str,
     recipe_digest: str,
     scope: Scope,
-    *,
-    driver_alive: Callable[[Request], bool | None] | None = None,
 ) -> tuple[str, ...]:
     """Return the ids of the open requests of one recipe over an overlapping scope.
 
@@ -163,7 +161,8 @@ def open_requests_matching(
     entry. ``run_feature`` runs a feature without claiming it. Two such requests
     that run at once both compute it. A request is open while its rollup is
     ``running``, including before its first step starts. A request whose
-    driver has let its lease lapse is ``orphaned`` and is not open.
+    driver lease is stale and none of whose step processes may still run is
+    ``orphaned`` (:func:`~.status.request_verdict_of`) and is not open.
 
     Every request file is read, and the run-logs of each request of the recipe.
     A request file that cannot be read, or is not a valid request of the recipe,
@@ -174,9 +173,6 @@ def open_requests_matching(
         base_dir: The dataset root.
         recipe_digest: The digest of the recipe to be submitted.
         scope: The scope to be submitted.
-        driver_alive: Whether the process driving a request keeps its lease
-            current, as for :func:`~.status.request_status_wire`. ``None`` reads
-            every request as one without a driver lease.
 
     Returns:
         The ids of the open requests, in descending id order. That order is
@@ -187,9 +183,7 @@ def open_requests_matching(
         request = _request_of_recipe(request_path(base_dir, name), recipe_digest)
         if request is None or not request.scope.overlaps(scope):
             continue
-        alive = driver_alive(request) if driver_alive is not None else None
-        verdict = rollup_verdict(request_rollup(base_dir, request), driver_alive=alive)
-        if verdict == "running":
+        if request_verdict_of(base_dir, request_rollup(base_dir, request)) == "running":
             open_ids.append(request.request_id)
     return tuple(open_ids)
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
 from pathlib import Path
 
 from mosaic.core.pipeline.graph import (
@@ -11,10 +13,12 @@ from mosaic.core.pipeline.graph import (
     RunStatusWire,
     recorded_error,
     request_status_wire,
+    request_summary,
     run_status_wire,
 )
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.runlog import JsonlRunLog, RunLogSnapshot, run_log_path
+from tests.helpers import write_driver_lease
 
 
 def _log(base: Path, execution_id: str) -> JsonlRunLog:
@@ -161,7 +165,7 @@ def test_a_finished_request_with_lost_entries_is_partial(tmp_path: Path) -> None
     )
 
 
-def test_a_running_request_whose_driver_lost_its_lease_is_orphaned(
+def test_a_running_request_whose_driver_lease_is_stale_is_orphaned(
     tmp_path: Path,
 ) -> None:
     with _log(tmp_path, "E1") as log:
@@ -170,18 +174,54 @@ def test_a_running_request_whose_driver_lost_its_lease_is_orphaned(
     request = _request(speed="E1")
 
     assert request_status_wire(tmp_path, request).verdict == "running"
-    assert request_status_wire(tmp_path, request, driver_alive=True).verdict == (
-        "running"
-    )
-    orphaned = request_status_wire(tmp_path, request, driver_alive=False)
+    _ = write_driver_lease(tmp_path, "R1", stale=False)
+    assert request_status_wire(tmp_path, request).verdict == "running"
+    _ = write_driver_lease(tmp_path, "R1", stale=True)
+    orphaned = request_status_wire(tmp_path, request)
     assert (orphaned.status, orphaned.verdict) == ("running", "orphaned")
+    assert request_summary(tmp_path, request).verdict == "orphaned"
+
+
+def test_a_stale_lease_is_not_orphaned_while_a_step_process_runs(
+    tmp_path: Path,
+) -> None:
+    """A killed driver leaves its step running in a session of its own."""
+    with _log(tmp_path, "E1") as log:
+        log.started(
+            kind="feature", target="speed", host=socket.gethostname(), pid=os.getpid()
+        )
+    _ = write_driver_lease(tmp_path, "R1", stale=True)
+
+    report = request_status_wire(tmp_path, _request(speed="E1", templates="E2"))
+
+    assert (report.status, report.verdict) == ("running", "running")
+
+
+def test_a_pid_reused_after_the_step_started_does_not_keep_a_request_running(
+    tmp_path: Path,
+) -> None:
+    """This process began after the recorded start, as one reusing a pid would."""
+    with _log(tmp_path, "E1") as log:
+        log.started(
+            kind="feature",
+            target="speed",
+            host=socket.gethostname(),
+            pid=os.getpid(),
+            created_at="2000-01-01T00:00:00+00:00",
+        )
+    _ = write_driver_lease(tmp_path, "R1", stale=True)
+
+    report = request_status_wire(tmp_path, _request(speed="E1"))
+
+    assert report.verdict == "orphaned"
 
 
 def test_a_terminal_request_is_not_orphaned(tmp_path: Path) -> None:
     with _log(tmp_path, "E1") as log:
         log.started(kind="feature", target="speed")
         log.cancelled()
+    _ = write_driver_lease(tmp_path, "R1", stale=True)
 
-    report = request_status_wire(tmp_path, _request(speed="E1"), driver_alive=False)
+    report = request_status_wire(tmp_path, _request(speed="E1"))
 
     assert report.verdict == "cancelled"

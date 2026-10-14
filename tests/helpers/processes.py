@@ -13,6 +13,8 @@ token from another thread once a condition is true.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -38,6 +40,13 @@ def appender_program(path: Path | str) -> str:
         "    print('tick', flush=True)\n"
         "    time.sleep(0.05)\n"
     )
+
+
+def exited_pid() -> int:
+    """Return the pid of a child process that has exited and been reaped."""
+    finished = subprocess.Popen([sys.executable, "-c", "pass"])
+    _ = finished.wait()
+    return finished.pid
 
 
 def wait_for(

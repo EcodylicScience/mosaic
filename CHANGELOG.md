@@ -352,6 +352,45 @@ the recipe or the request. The check and the write of the request run under one
 lock, `.mosaic/pipelines/requests/.submit.lock`, so two submissions on one mount
 cannot both pass it.
 
+**`mosaic pipeline run --request <id>` drives a submitted request, and
+`--detach` runs the driver in the background.** The driver runs each unfinished
+step as `mosaic run --graph-request` in a process of its own, in dependency
+order, and submits nothing. Its steps write their output to
+`.mosaic/drivers/<id>.log`, never to the command's own streams. A finished step
+is skipped, and running the request again resumes it. A failed or refused step
+ends the run, and the command exits 1. SIGTERM or SIGINT forwards SIGTERM to the
+running step, records every step without a terminal record as `cancelled`, and
+exits 130. `--detach` starts the driver in a new session, which outlives the
+command, and `--json` prints `request_id`, `driver_pid` and `log_path`. The
+driver holds a lease, `.mosaic/drivers/<id>.lease.json`, which it refreshes
+every 10 s, which names the step whose process runs, and which it deletes when
+the request ends. A running request whose lease names a process gone from this
+host, or was not refreshed for 60 s, and none of whose step processes may still
+run, reads `orphaned` in `mosaic pipeline status` and `pipeline list`, and is
+not open to `--refuse-duplicates`. A step process counts on this host only when
+it began by the start that its run-log records, so a pid reused after a reboot
+does not. A second driver of a request with a live lease, or of a request with a
+step process still running, is refused as a `conflict`, and so is a driver whose
+lease another took over while it ran. A lease refresh that fails is reported on
+standard error and retried, and a driver whose lease has gone unrefreshed for
+30 s stops before its next step with `LeaseNotRefreshed`, a `conflict`. A run-log
+that a resumed attempt appended a second `started` event to reports the
+counters, the progress and the entry errors after that event, so the entities
+that the dead process lost are not counted twice. `--recipe` is optional now, and exactly one of `--recipe` and
+`--request` is given. New in the library: `run_request`,
+`start_detached_driver`, `RequestRun`, `DetachedDriver`, `StepStillRunning`,
+`record_step_ended`, `request_verdict_of`, `DriverLease`, `DriverRunning`,
+`LeaseKeeper`, `LeaseLost`, `driver_alive`, `read_driver_lease`,
+`refuse_live_driver`, `take_driver_lease`, `release_driver_lease`,
+`LeaseNotRefreshed`, `live_step_process`, `StepProcess` and their paths in
+`mosaic.core.pipeline.graph`, and `host`, `pid` and `started_at` on
+`StepAttempt`; `record_exited_attempt` in `mosaic.runlog`; and
+`create_exclusive`, `parse_instant`, `process_running` and
+`process_running_since` in `mosaic.core.pipeline.markers`. `create_exclusive`, and so
+`try_create_inflight`, publishes the file whole through a hard link, so a reader
+never finds an in-flight marker or a lease created and still empty. `step_argv`
+takes a command of several words as `program`.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows
