@@ -326,8 +326,9 @@ mosaic inventory -m ~/dataset/dataset.yaml
 `dataset_inventory` reports every computed artifact, its identity, and its
 **coverage** — which entries exist, not merely whether something does.
 `inventory` from `mosaic.core.pipeline.inventory` reads the same way but reports
-tracker runs, frame runs, trained models and prepared datasets only once
-`mosaic.tracking` is imported, and lists them as unavailable otherwise.
+tracker runs, frame runs, trained models and prepared datasets only after
+`register_inventory_contributors` or `register_ops` from `mosaic.tracking` has
+run, and lists them as unavailable otherwise.
 
 [Keep a dataset organized](guides/pipelines/keep-organized.md) covers the statuses it
 reports and the commands that repair what it finds.

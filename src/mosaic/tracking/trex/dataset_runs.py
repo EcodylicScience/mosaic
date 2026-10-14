@@ -85,7 +85,6 @@ from mosaic.tracking.common.entry import (
     reusable_output,
 )
 from mosaic.tracking.common.index import (
-    register_tracker_row_class,
     TrackerRunRowBase,
     list_tracker_runs,
     tracker_index,
@@ -1327,8 +1326,3 @@ def _several_clips(row: Mapping[str, str]) -> list[str]:
 register_reconcilable_index(TREX_KIND, trex_index)
 register_frames_read_reader(TREX_KIND, _frames_read_of_table)
 register_tail_loss_reader(TREX_KIND, _tail_loss_of_table)
-
-# The row class this root's index holds, so an inventory can ask about every
-# tracker generically. Registered rather than tabled in ``common``, which is
-# imported by this module and cannot import it back.
-register_tracker_row_class(TREX_KIND, TRexIndexRow)

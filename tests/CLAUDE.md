@@ -44,6 +44,10 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   import loading pandas or h5py.
 - `test_pipeline_lazy_exports.py`: `mosaic.core.pipeline` importing a submodule at
   import, or importing it loading cv2, av or pandas.
+- `test_tracking_lazy_exports.py`: `mosaic.tracking`, `tracking.common`,
+  `tracking.frame_extraction` or `tracking.ops` importing a submodule at import, an
+  exported name that does not resolve, or the tracking inventory contributors
+  loading a tracker subpackage, a trainer or frame extraction.
 - `test_core_params_is_a_leaf.py`: `core.entry`, `core.individuals` or
   `core.strict_model` importing mosaic, or `core.params` beyond `strict_model`.
 - `test_params_declaration.py`: a parameter field without a description

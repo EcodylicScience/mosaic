@@ -27,8 +27,8 @@ from mosaic.tracking.ops.train import (
     TRAINING_PROVENANCE_FILENAME,
     LocalizerTrainParams,
     finalize_training,
-    trained_model_index,
 )
+from mosaic.tracking.ops.trained_models import trained_model_index
 from tests.helpers import make_dataset
 
 KIND = "train-localizer"

@@ -48,7 +48,7 @@ from mosaic.tracking.ops._common import (
     claim_run_root,
     empty_claimed_run_root,
 )
-from mosaic.tracking.ops.train import trained_model_index
+from mosaic.tracking.ops.trained_models import trained_model_index
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -6,6 +6,22 @@ extraction, and mosaic's side of the external Ultralytics and POLO environments.
 The cross-cutting rules (a model is named by run id, only a revision's content is
 hashed, codec refusal, source-space publication) are in the root `CLAUDE.md`.
 
+## Imports and registration
+
+- `__init__.py` of `tracking`, `common`, `frame_extraction` and `ops` imports no
+  submodule (`tests/meta/test_tracking_lazy_exports.py`). Importing a tracking module
+  registers only what that module registers.
+- `register_ops` (`registration.py`) imports every module of `REGISTERING_MODULES` and
+  registers the inventory contributors. A module that registers something at module
+  scope is listed there (`tests/tracking/test_registration.py`). Call `register_ops`
+  before a lookup in `OPS`, the reconcilable indexes or the tracks-axis readers.
+- `register_inventory_contributors` (`inventory.py`) is the one place a tracking
+  inventory kind is registered. Each record builder lives beside the index that it
+  reads, in `common/index.py`, `frame_extraction/frame_runs.py`,
+  `ops/prepared_datasets.py` and `ops/trained_models.py`. These modules leave the
+  tracker subpackages, the trainers and frame extraction unimported. The tracker kinds
+  are the `tracker` roots of `TRACKING_ROOTS`, read through `TrackerRunRowBase`.
+
 ## Wiring a tracker
 
 - `tracking/common/` owns the run loop: `run_tracker` in `common/driver.py`, with scope,

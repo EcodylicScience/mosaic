@@ -32,7 +32,7 @@ from mosaic.tracking.ops.delete_model import (
 )
 from mosaic.tracking.ops._common import RunRootHeld, claim_run_root
 from mosaic.tracking.ops.prepare import PreparedDatasetIndexRow, prepared_dataset_index
-from mosaic.tracking.ops.train import TrainedModelIndexRow, trained_model_index
+from mosaic.tracking.ops.trained_models import TrainedModelIndexRow, trained_model_index
 from tests.helpers import make_dataset, register_trained_model
 
 KIND = "train-pose"

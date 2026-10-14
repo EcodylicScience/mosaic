@@ -23,7 +23,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.dataset_indexes import iter_dataset_indexes
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.tracking.model_refs import resolve_model
-from mosaic.tracking.ops.train import TrainedModelIndexRow, trained_model_index
+from mosaic.tracking.ops.trained_models import TrainedModelIndexRow, trained_model_index
 from tests.helpers import make_dataset, write_litpose_model
 
 RUN_ID = "train-litpose.0.1-abcdef0123"

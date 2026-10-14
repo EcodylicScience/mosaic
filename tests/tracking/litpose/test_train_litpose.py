@@ -26,7 +26,7 @@ from mosaic.tracking.litpose.training import (
     epoch_coupled_assignments,
     litpose_device_placement,
 )
-from mosaic.tracking.ops.train import trained_model_index
+from mosaic.tracking.ops.trained_models import trained_model_index
 from mosaic.tracking.ops.train_litpose import TrainLitposeParams
 
 from tests.helpers import dotted_values, make_dataset, write_litpose_model

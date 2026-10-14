@@ -83,7 +83,7 @@ def test_extract_frames_lifecycle(tmp_path, monkeypatch):
     assert int(runs[0]["progress_total"]) == 2
 
     # FramesIndexRow per sequence
-    from mosaic.tracking.frame_extraction.dataset_runs import (
+    from mosaic.tracking.frame_extraction.frame_runs import (
         frames_index,
         frames_index_path,
     )
@@ -108,7 +108,7 @@ def test_extract_frames_list_lifecycle(tmp_path, monkeypatch):
     _install_fake_extract(monkeypatch)
 
     from mosaic.tracking import extract_frames
-    from mosaic.tracking.frame_extraction.dataset_runs import (
+    from mosaic.tracking.frame_extraction.frame_runs import (
         frames_index,
         frames_index_path,
     )

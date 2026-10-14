@@ -112,9 +112,9 @@ type Unanswered = Literal["not-established", "unregistered"]
 
 ``"not-established"``: what the row's run read cannot be established from what
 is on disk now. ``"unregistered"``: the row's producer is a tracking op that this
-process has not registered. Importing ``mosaic.tracking`` registers every
+process has not registered. ``mosaic.tracking.register_ops`` registers every
 tracking op, and with it every reader that a producer registers, so a process
-that imported only ``mosaic.core`` answers this for every tracker row.
+that has not called it answers this for every tracker row.
 """
 
 

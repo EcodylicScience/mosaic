@@ -13,7 +13,7 @@ empty -- and both consumers fail *quietly* rather than loudly:
 
 **Driven through a subprocess, and that is the point.** The defect is a question
 about what a fresh interpreter has imported, and by the time a ``CliRunner``
-test runs, the session has already imported ``mosaic.tracking`` for other
+test runs, the session has already imported the tracker modules for other
 reasons -- so an in-process run passes against the broken code. Only a new
 interpreter can observe it.
 """

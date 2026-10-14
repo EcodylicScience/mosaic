@@ -39,6 +39,7 @@ from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.models import model_index_path
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.ops import registered_op
+from mosaic.tracking.registration import register_ops
 from mosaic.core.pipeline.tracks_identity import observed_models
 
 if TYPE_CHECKING:
@@ -1100,9 +1101,6 @@ def resolve_op_model(ds: Dataset, kind: str, ref: str) -> ResolvedModel:
         ModelNotFoundError: No index registers *ref*, or the artifact its row
             names is gone or is not the shape its kind declares.
     """
-    # Deferred, because importing the package imports this module.
-    from mosaic.tracking import register_ops
-
     register_ops()
     declared = registered_op(kind).model_reference
     if declared is None:

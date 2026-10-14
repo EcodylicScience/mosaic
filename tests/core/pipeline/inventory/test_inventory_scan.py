@@ -197,10 +197,10 @@ def test_a_kind_with_no_contributor_is_reported_not_silently_empty(
     """Answering "no tracker runs" to a process that never imported the producers
     would be a wrong answer where "nobody can tell you" is a true one.
 
-    Run in a subprocess, because registration is a process-global import side
-    effect: any other test that imports ``mosaic.tracking`` fills the registry
-    for the whole session, and in-process this would pass or fail on collection
-    order rather than on the behaviour.
+    Run in a subprocess, because registration is process-global: any other test
+    that calls ``register_ops`` fills the registry for the whole session, and
+    in-process this would pass or fail on collection order instead of on the
+    behaviour.
     """
     probe = f"""
 import json

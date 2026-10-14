@@ -77,7 +77,10 @@ def test_run_trex_resolves_detect_model_run_id_to_weights(tmp_path, monkeypatch)
 
     from mosaic.core.pipeline.models import model_index_path, model_run_root
     from mosaic.tracking import run_trex
-    from mosaic.tracking.ops.train import TrainedModelIndexRow, trained_model_index
+    from mosaic.tracking.ops.trained_models import (
+        TrainedModelIndexRow,
+        trained_model_index,
+    )
     from mosaic.tracking.trex.params import TrexParams
 
     ds = stub_media_dataset(tmp_path, ["vid1", "vid2"])

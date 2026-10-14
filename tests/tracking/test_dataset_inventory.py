@@ -8,7 +8,6 @@ from pathlib import Path
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.inventory import TrainedModelRef
 from mosaic.tracking import dataset_inventory
-from mosaic.tracking.inventory import INVENTORY_CONTRIBUTOR_MODULES
 from tests.helpers import REPO_ROOT, make_dataset, register_trained_model
 
 TRACKING_KINDS = ("frame-run", "prepared-dataset", "trained-model", "tracker-run")
@@ -43,9 +42,9 @@ def _registered_kinds(source: Path) -> set[str]:
     }
 
 
-def test_the_listed_modules_are_the_ones_that_register_the_tracking_kinds() -> None:
-    """Read from the source, because importing any one ``mosaic.tracking`` module
-    imports the package and with it every contributor."""
+def test_one_function_registers_every_tracking_kind() -> None:
+    """Read from the source: a registration at module scope elsewhere would make
+    a kind depend on which tracking modules a process had imported."""
     package = REPO_ROOT / "src" / "mosaic" / "tracking"
     registering = {
         ".".join(source.relative_to(package.parent.parent).with_suffix("").parts): kinds
@@ -53,7 +52,5 @@ def test_the_listed_modules_are_the_ones_that_register_the_tracking_kinds() -> N
         if (kinds := _registered_kinds(source))
     }
 
-    assert set(registering) == set(INVENTORY_CONTRIBUTOR_MODULES)
-    assert sorted(kind for kinds in registering.values() for kind in kinds) == sorted(
-        TRACKING_KINDS
-    )
+    assert set(registering) == {"mosaic.tracking.inventory"}
+    assert sorted(registering["mosaic.tracking.inventory"]) == sorted(TRACKING_KINDS)

@@ -980,7 +980,7 @@ class Dataset:
         a blank where it read less on purpose or no media at all. A row whose run
         cannot be established keeps its value, which the result reports in
         ``not_established``. So does a tracker row in a process that has not
-        imported ``mosaic.tracking``, which the result reports in
+        called ``mosaic.tracking.register_ops``, which the result reports in
         ``unregistered``. See :func:`backfill_media_frames`.
         """
         return backfill_media_frames(self, dry_run=dry_run)
@@ -991,8 +991,9 @@ class Dataset:
         The tool's side of the comparison that :meth:`frame_axis_mismatches`
         makes, from what each run left on disk (:func:`backfill_frames_read`). A
         row whose run left nothing that tells keeps its value, and so does a
-        tracker row in a process that has not imported ``mosaic.tracking``,
-        which the result reports in ``unregistered``.
+        tracker row in a process that has not called
+        ``mosaic.tracking.register_ops``, which the result reports in
+        ``unregistered``.
         """
         return backfill_frames_read(self, dry_run=dry_run)
 
@@ -1002,8 +1003,9 @@ class Dataset:
         A shortfall within it counts as a known tail loss rather than a mismatch
         (:func:`backfill_known_tail_loss`). A row keeps its value when its file
         cannot be found or its header read, or its media has changed since the
-        run. So does a tracker row in a process that has not imported
-        ``mosaic.tracking``, which the result reports in ``unregistered``.
+        run. So does a tracker row in a process that has not called
+        ``mosaic.tracking.register_ops``, which the result reports in
+        ``unregistered``.
         """
         return backfill_known_tail_loss(self, dry_run=dry_run)
 

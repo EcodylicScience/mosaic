@@ -17,8 +17,9 @@ of those modules. :func:`~mosaic.core.pipeline.ops.registered_op` and
 modules that register the core indexes.
 """
 
-from importlib import import_module
 from typing import TYPE_CHECKING, Final
+
+from mosaic.lazy_exports import lazy_export
 
 if TYPE_CHECKING:
     from .index import (
@@ -63,48 +64,39 @@ if TYPE_CHECKING:
     )
 
 _MODULE_OF: Final[dict[str, str]] = {
-    "FeatureIndexRow": "index",
-    "feature_index_path": "index",
-    "feature_run_root": "index",
-    "latest_feature_run_root": "index",
-    "list_feature_runs": "index",
-    "IndexCSV": "index_csv",
-    "alignment_verdict": "loading",
-    "entity_level_of": "loading",
-    "FileSpecs": "manifest",
-    "FilterFactory": "manifest",
-    "Manifest": "manifest",
-    "ManifestEntry": "manifest",
-    "build_manifest": "manifest",
-    "iter_manifest": "manifest",
-    "CallbackStep": "pipeline",
-    "FeatureStep": "pipeline",
-    "Pipeline": "pipeline",
-    "load_values": "run",
-    "Feature": "types",
-    "Inputs": "types",
-    "InputsLike": "types",
-    "Result": "types",
-    "show_pipeline_diagram": "viz",
-    "show_pipeline_tree": "viz",
-    "trim_feature_output": "writers",
-    "write_output": "writers",
+    "FeatureIndexRow": ".index",
+    "feature_index_path": ".index",
+    "feature_run_root": ".index",
+    "latest_feature_run_root": ".index",
+    "list_feature_runs": ".index",
+    "IndexCSV": ".index_csv",
+    "alignment_verdict": ".loading",
+    "entity_level_of": ".loading",
+    "FileSpecs": ".manifest",
+    "FilterFactory": ".manifest",
+    "Manifest": ".manifest",
+    "ManifestEntry": ".manifest",
+    "build_manifest": ".manifest",
+    "iter_manifest": ".manifest",
+    "CallbackStep": ".pipeline",
+    "FeatureStep": ".pipeline",
+    "Pipeline": ".pipeline",
+    "load_values": ".run",
+    "Feature": ".types",
+    "Inputs": ".types",
+    "InputsLike": ".types",
+    "Result": ".types",
+    "show_pipeline_diagram": ".viz",
+    "show_pipeline_tree": ".viz",
+    "trim_feature_output": ".writers",
+    "write_output": ".writers",
 }
 """The submodule that defines each public name."""
 
 
 def __getattr__(name: str) -> object:
-    """Import the submodule that defines *name* on first access.
-
-    ``import_module`` imports the submodule. A ``from . import`` would probe the
-    package with ``hasattr`` and re-enter this function. A name absent from the
-    table raises ``AttributeError``, and ``from mosaic.core.pipeline import
-    <submodule>`` then falls through to the submodule import.
-    """
-    module = _MODULE_OF.get(name)
-    if module is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    return getattr(import_module(f".{module}", __name__), name)
+    """Import the submodule that defines *name* on first access."""
+    return lazy_export(__name__, _MODULE_OF, name)
 
 
 __all__ = [

@@ -22,15 +22,26 @@ import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import pandas as pd
 
 from mosaic.core.entry import Entry
 from mosaic.core.pipeline.composition import composition_drift
-from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, project_to_schema
-from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
-from mosaic.core.pipeline.inventory.model import ArtifactRecord, InventoryScope
+from mosaic.core.pipeline.index_csv import (
+    IndexCSV,
+    RunIndexRowBase,
+    index_records,
+    project_to_schema,
+)
+from mosaic.core.pipeline.inventory.model import (
+    ArtifactRecord,
+    Coverage,
+    InventoryScope,
+    TrackerRunRef,
+    classify,
+)
+from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.inventory._read import IndexReader
@@ -38,9 +49,12 @@ if TYPE_CHECKING:
 
 __all__ = [
     "TrackerRunRowBase",
+    "drifted_media_entries",
     "list_tracker_runs",
     "tracker_index",
     "tracker_index_path",
+    "tracker_kinds",
+    "tracker_run_records",
 ]
 
 RowT = TypeVar("RowT", bound="TrackerRunRowBase")
@@ -158,32 +172,23 @@ def list_tracker_runs(ds: Dataset, kind: str, row_cls: type[RowT]) -> pd.DataFra
     return _adopt_for(row_cls)(pd.read_csv(path))
 
 
-# --- The inventory contributor for every tracker root ------------------------
-
-_ROW_CLASSES: Final[dict[str, type[TrackerRunRowBase]]] = {}
+# --- What the inventory says about tracker runs -----------------------------
 
 
-def register_tracker_row_class(kind: str, row_cls: type[TrackerRunRowBase]) -> None:
-    """Declare which row class *kind*'s index holds.
+def tracker_kinds() -> tuple[str, ...]:
+    """Every tracker root, sorted: the roots whose retention class is ``tracker``.
 
-    ``list_tracker_runs`` has always taken the row class from its caller, so
-    every consumer had to name a specific tracker and no caller could ask about
-    them generically -- which is what an inventory over "every tracker run in
-    this dataset" needs. Registration rather than a table here, for the reason
-    the rest of this package registers: ``common`` is imported *by* each tracker,
-    so a table naming them would be a cycle.
+    Read from :data:`~mosaic.core.pipeline.tracking_roots.TRACKING_ROOTS`, which
+    declares a row for every tracker. A reader of every tracker's index therefore
+    imports none of the trackers. Each index contains rows of a
+    :class:`TrackerRunRowBase` subclass, and these readers project the rows onto
+    the shared columns.
     """
-    _ROW_CLASSES[kind] = row_cls
-
-
-def tracker_row_class(kind: str) -> type[TrackerRunRowBase] | None:
-    """The registered row class for *kind*, or ``None`` if nothing registered one."""
-    return _ROW_CLASSES.get(kind)
-
-
-def registered_tracker_kinds() -> frozenset[str]:
-    """Every tracker kind some imported module can describe."""
-    return frozenset(_ROW_CLASSES)
+    return tuple(
+        sorted(
+            key for key, root in TRACKING_ROOTS.items() if root.retention == "tracker"
+        )
+    )
 
 
 def drifted_media_entries(
@@ -200,13 +205,11 @@ def drifted_media_entries(
     The comparison uses :func:`~mosaic.core.pipeline.composition.composition_drift`,
     under which a blank cell on either side is not drift.
     """
-    from mosaic.core.pipeline.index_csv import index_records
     from mosaic.core.pipeline.sequence_index import media_compositions_for
 
-    row_cls = _ROW_CLASSES.get(kind)
-    if row_cls is None or not ds.has_root(kind):
+    if kind not in tracker_kinds() or not ds.has_root(kind):
         return ()
-    frame = list_tracker_runs(ds, kind, row_cls)
+    frame = list_tracker_runs(ds, kind, TrackerRunRowBase)
     if frame.empty or "consumed_media_composition" not in frame.columns:
         return ()
     recorded = {
@@ -221,7 +224,7 @@ def drifted_media_entries(
     return composition_drift(recorded, media_compositions_for(ds, recorded))
 
 
-def _tracker_run_records(
+def tracker_run_records(
     ds: Dataset, scope: InventoryScope, reader: IndexReader
 ) -> list[ArtifactRecord[Entry]]:
     """Every recorded tracker and inference run, as inventory records.
@@ -232,19 +235,14 @@ def _tracker_run_records(
     *covered* is that its recorded working directory is still there: the sweeper
     reclaims those, so a swept run is honestly no longer holding its outputs.
     """
-    from mosaic.core.pipeline.inventory.model import ArtifactRecord, Coverage
-    from mosaic.core.pipeline.inventory.model import TrackerRunRef, classify
-    from mosaic.core.pipeline.index_csv import index_records
-
     records: list[ArtifactRecord[Entry]] = []
-    for kind in sorted(_ROW_CLASSES):
-        row_cls = _ROW_CLASSES[kind]
+    for kind in tracker_kinds():
         if not ds.has_root(kind):
             continue
         index_path = tracker_index_path(ds, kind)
         reader.note(index_path)
         frame = reader.frame(
-            index_path, lambda k=kind, r=row_cls: list_tracker_runs(ds, k, r)
+            index_path, lambda k=kind: list_tracker_runs(ds, k, TrackerRunRowBase)
         )
         if frame.empty or "run_id" not in frame.columns:
             continue
@@ -293,6 +291,3 @@ def _tracker_run_records(
                 )
             )
     return records
-
-
-register_inventory_contributor("tracker-run", _tracker_run_records)

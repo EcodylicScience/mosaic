@@ -44,11 +44,8 @@ from mosaic.tracking.ops.prepare import (
     check_preparation,
     prepared_dataset_index,
 )
-from mosaic.tracking.ops.train import (
-    PoseTrainParams,
-    finalize_training,
-    trained_model_index,
-)
+from mosaic.tracking.ops.train import PoseTrainParams, finalize_training
+from mosaic.tracking.ops.trained_models import trained_model_index
 from mosaic.tracking.training_provenance import training_provenance
 from tests.helpers import (
     MOUSE,

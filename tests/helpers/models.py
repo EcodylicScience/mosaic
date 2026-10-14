@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mosaic.core.pipeline.models import model_index_path, model_run_root
-from mosaic.tracking.ops.train import TrainedModelIndexRow, trained_model_index
+from mosaic.tracking.ops.trained_models import TrainedModelIndexRow, trained_model_index
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset

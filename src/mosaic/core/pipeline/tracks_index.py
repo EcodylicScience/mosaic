@@ -1355,9 +1355,9 @@ class CellBackfill:
             they keep.
         unregistered: The rows the pass could not judge, whatever they hold,
             because their producer's op is not registered in this process.
-            Importing ``mosaic.tracking`` registers every tracking op. Reported
-            apart from ``not_established`` because the same pass, run after that
-            import, answers for them.
+            ``mosaic.tracking.register_ops`` registers every tracking op and its
+            readers. Reported apart from ``not_established`` because the same
+            pass, run after that call, answers for them.
     """
 
     written: pd.DataFrame
@@ -1488,8 +1488,8 @@ def backfill_media_frames(ds: Dataset, *, dry_run: bool = False) -> CellBackfill
     in ``not_established``: an unmounted or moved media root, a lost variant
     record, or media changed since the run, none of which shows the cell to be
     wrong. A tracker row whose op this process has not registered keeps its
-    value too, and is reported in ``unregistered``: importing
-    ``mosaic.tracking`` registers every tracking op.
+    value too, and is reported in ``unregistered``:
+    ``mosaic.tracking.register_ops`` registers every tracking op.
 
     Returns:
         The rows written, cleared and left unchecked, or that would be.
@@ -1527,8 +1527,8 @@ def backfill_frames_read(ds: Dataset, *, dry_run: bool = False) -> CellBackfill:
     producer leaves nothing that tells, as SLEAP and the localizer do, and when
     what it left is gone. A missing file never clears a cell. A tracker row
     whose op this process has not registered keeps its value, and is reported
-    in ``unregistered``: importing ``mosaic.tracking`` registers every tracking
-    op and its reader.
+    in ``unregistered``. ``mosaic.tracking.register_ops`` registers every
+    tracking op and its reader.
 
     A separate pass, as :func:`backfill_media_frames` is, because it reads
     another source of truth.

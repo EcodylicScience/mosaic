@@ -34,7 +34,7 @@ from mosaic.tracking.ops._common import (
     fingerprint_dataset,
     fingerprint_yolo_dataset,
 )
-from mosaic.tracking.ops.train import trained_model_index
+from mosaic.tracking.ops.trained_models import trained_model_index
 from tests.helpers import FakeTrainer, make_dataset, write_data_yaml
 
 

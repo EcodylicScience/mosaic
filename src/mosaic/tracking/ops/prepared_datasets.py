@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from mosaic.core.pipeline.inventory._read import IndexReader
-from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
 from mosaic.core.pipeline.inventory.model import ArtifactRecord, InventoryScope
 from mosaic.core.pipeline.models import (
     PREPARED_DATA_KINDS,
@@ -31,7 +30,7 @@ if TYPE_CHECKING:
 
     from mosaic.core.dataset import Dataset
 
-__all__ = ["prepared_dataset_is_complete"]
+__all__ = ["prepared_dataset_is_complete", "prepared_dataset_records"]
 
 
 def _read(path: Path) -> pd.DataFrame:
@@ -54,7 +53,7 @@ def prepared_dataset_is_complete(ds: Dataset, row: dict[str, str]) -> bool:
     return bool(stored) and ds.resolve_path(stored).exists()
 
 
-def _prepared_dataset_records(
+def prepared_dataset_records(
     ds: Dataset, scope: InventoryScope, reader: IndexReader
 ) -> list[ArtifactRecord[str]]:
     """Every prepared training dataset under ``models/<kind>/<run_id>/``.
@@ -116,6 +115,3 @@ def _prepared_dataset_records(
                 )
             )
     return records
-
-
-register_inventory_contributor("prepared-dataset", _prepared_dataset_records)

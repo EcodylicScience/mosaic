@@ -48,7 +48,7 @@ def test_train_pose_lifecycle_and_lineage(tmp_path, monkeypatch):
     assert row["progress_done"] == 2 and row["progress_total"] == 2
 
     # model index row written with the best.pt path
-    from mosaic.tracking.ops.train import trained_model_index
+    from mosaic.tracking.ops.trained_models import trained_model_index
     from mosaic.core.pipeline.models import model_index_path
 
     midx = trained_model_index(model_index_path(ds, "train-pose"))
@@ -147,7 +147,7 @@ def test_a_tool_that_reports_a_cancel_is_never_registered(tmp_path, monkeypatch)
         run_op(ds, "train-pose", {"data": str(data_yaml), "epochs": 8})
 
     from mosaic.core.pipeline.models import model_index_path
-    from mosaic.tracking.ops.train import trained_model_index
+    from mosaic.tracking.ops.trained_models import trained_model_index
 
     index = model_index_path(ds, "train-pose")
     assert not index.exists() or trained_model_index(index).read().empty
@@ -164,7 +164,7 @@ def test_the_index_records_the_epochs_that_actually_ran(tmp_path, monkeypatch):
     run_id = run_op(ds, "train-pose", {"data": str(data_yaml), "epochs": 40})
 
     from mosaic.core.pipeline.models import model_index_path
-    from mosaic.tracking.ops.train import trained_model_index
+    from mosaic.tracking.ops.trained_models import trained_model_index
 
     rows = trained_model_index(model_index_path(ds, "train-pose")).read(run_id=run_id)
     assert int(rows.iloc[0]["n_epochs"]) == 3
@@ -183,7 +183,7 @@ def test_train_localizer_mints_and_registers(
     """
     import mosaic.tracking.pose_training.localizer_train as lt
     from mosaic.core.pipeline.models import model_index_path
-    from mosaic.tracking.ops.train import trained_model_index
+    from mosaic.tracking.ops.trained_models import trained_model_index
 
     ds = stub_media_dataset(tmp_path, ["vid1", "vid2"])
     dataset_dir = tmp_path / "patches"

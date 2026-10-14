@@ -1,17 +1,24 @@
 """A dataset's inventory with the tracking kinds reported.
 
-``core`` reports the kinds it produces itself. Tracker runs, frame runs, trained
-models and prepared datasets register their inventory contributors when their
-modules are imported, and ``core`` imports nothing from ``tracking``. This module
-imports them, then reads.
+``core`` reports the kinds it produces itself, and imports nothing from
+``tracking``. Tracker runs, frame runs, prepared datasets and trained models are
+reported through the contributor registry, and
+:func:`register_inventory_contributors` registers all four. Each record builder
+lives beside the index that it reads. Its module leaves the tracker subpackages
+and the trainers unimported, and loads only the media modules that
+``mosaic.core.pipeline.inventory`` loads itself.
 """
 
 from __future__ import annotations
 
-from importlib import import_module
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from mosaic.core.pipeline.inventory import inventory
+from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
+from mosaic.tracking.common.index import tracker_run_records
+from mosaic.tracking.frame_extraction.frame_runs import frame_run_records
+from mosaic.tracking.ops.prepared_datasets import prepared_dataset_records
+from mosaic.tracking.ops.trained_models import trained_model_records
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -21,30 +28,21 @@ if TYPE_CHECKING:
     from mosaic.core.scope import Scope
 
 __all__ = [
-    "INVENTORY_CONTRIBUTOR_MODULES",
     "dataset_inventory",
     "register_inventory_contributors",
 ]
 
-INVENTORY_CONTRIBUTOR_MODULES: Final = (
-    "mosaic.tracking.common.index",
-    "mosaic.tracking.frame_extraction.dataset_runs",
-    "mosaic.tracking.ops.prepared_datasets",
-    "mosaic.tracking.ops.train",
-)
-"""The modules that register an inventory contributor when imported.
-
-Tracker runs, frame runs, prepared datasets and trained models, in that order.
-"""
-
 
 def register_inventory_contributors() -> None:
-    """Import every module of :data:`INVENTORY_CONTRIBUTOR_MODULES`.
+    """Register the contributor of every tracking kind.
 
     A caller that holds an ``InventoryCache`` calls this before its first read.
+    Registering again replaces each contributor with itself.
     """
-    for module in INVENTORY_CONTRIBUTOR_MODULES:
-        _ = import_module(module)
+    register_inventory_contributor("tracker-run", tracker_run_records)
+    register_inventory_contributor("frame-run", frame_run_records)
+    register_inventory_contributor("prepared-dataset", prepared_dataset_records)
+    register_inventory_contributor("trained-model", trained_model_records)
 
 
 def dataset_inventory(

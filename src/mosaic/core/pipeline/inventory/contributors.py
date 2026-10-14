@@ -5,11 +5,10 @@ the reason its walk leaves extracted frames out -- and tracker runs, frame runs
 and trained models all live behind that line, with their row classes defined
 there. Naming them here would invert the layering for the sake of an import.
 
-So each producer registers a contributor when its module is imported, which is
-the seam ``register_reconcilable_index``, ``FEATURES``, ``TRACK_CONVERTERS`` and
-``OPS`` already use. The registration is a plain call at the bottom of the
-producing module, not a decorator: it returns nothing, and there is nothing to
-decorate.
+So ``tracking`` registers a contributor for each of its kinds, through
+``mosaic.tracking.register_inventory_contributors``, the same registry seam that
+``register_reconcilable_index``, ``FEATURES``, ``TRACK_CONVERTERS`` and ``OPS``
+use. Registration is a plain call that returns nothing.
 
 **A kind with no contributor is reported, never silently empty.** A caller that
 imported only ``mosaic.core`` has not imported the modules that fill this
@@ -60,9 +59,8 @@ def register_inventory_contributor(
 ) -> None:
     """Declare who can report artifacts of *kind*.
 
-    Called at module scope by the producer, so importing the producer is what
-    makes its kind available. Registering twice replaces, which is what a
-    reloaded module during development should do.
+    A kind is available once this is called for it. Registering twice replaces
+    the first contributor, as a module reloaded during development needs.
 
     Args:
         kind: The artifact kind this reports.

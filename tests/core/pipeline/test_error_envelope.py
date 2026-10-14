@@ -167,6 +167,7 @@ def test_the_optional_dependency_leaf_loads_no_pydantic() -> None:
             "mosaic.core",
             "mosaic.core.pipeline",
             "mosaic.core.pipeline.error_kind",
+            "mosaic.lazy_exports",
             "mosaic.optional_dependency",
         ]
     )

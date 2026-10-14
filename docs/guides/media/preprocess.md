@@ -105,8 +105,10 @@ Set `media` to the variant's run id on `trex`, `sleap`, `litpose`, `ultralytics`
 === "Python"
 
     ```python
+    from mosaic.tracking import register_ops
     from mosaic.tracking.sleap import SleapParams
 
+    register_ops()
     run_op(
         ds,
         "sleap",

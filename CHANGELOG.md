@@ -168,6 +168,29 @@ New in the library: `InventoryWire`, `ArtifactWire`, `ArtifactDetailWire`,
 `mosaic.core.pipeline.graph` to `mosaic.core.pipeline.inventory`, and
 `CoverageWire.missing_sample` is typed as keys of any length.
 
+**Importing `mosaic.tracking` leaves the trackers unloaded and the registries empty.** The
+package and `tracking.common`, `tracking.frame_extraction` and `tracking.ops`
+bind their public names on access, and `from mosaic.tracking import run_trex,
+resolve_model, extract_frames` keeps working. Importing any tracking module used
+to import every tracker, op module and frame extraction, and so registered every
+tracking op, tracker index, tracks-axis reader and inventory contributor. Call
+`register_ops` from `mosaic.tracking` before reading `OPS`, the reconcilable
+indexes or those readers, as the CLI and mosaic-api do. `dataset_inventory`
+reads the four tracking kinds without importing a tracker subpackage, a trainer
+or frame extraction, and reads tracker runs from the `tracker` roots of
+`TRACKING_ROOTS`. New in the library: `REGISTERING_MODULES` in
+`mosaic.tracking.registration`; the module `mosaic.tracking.ops.trained_models`,
+which defines `TrainedModelIndexRow`, `trained_model_index` and
+`training_is_complete`, all still importable from `mosaic.tracking.ops.train`;
+the module `mosaic.tracking.frame_extraction.frame_runs`, which defines the
+frames index and `list_frame_runs`; `tracker_kinds` and `tracker_run_records` in
+`mosaic.tracking.common.index`; and `mosaic.lazy_exports`. Removed:
+`register_tracker_row_class`, `tracker_row_class`, `registered_tracker_kinds`
+and `INVENTORY_CONTRIBUTOR_MODULES`. A submodule of `tracking.ops`, and
+`tracking.ops` itself on `mosaic.tracking`, is bound only once it is imported
+(`from mosaic.tracking.ops import train`). An unknown op's `KeyError` names
+`register_ops`.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

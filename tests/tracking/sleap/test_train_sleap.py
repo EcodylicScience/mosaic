@@ -24,7 +24,7 @@ from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.tracking import register_ops
-from mosaic.tracking.ops.train import trained_model_index
+from mosaic.tracking.ops.trained_models import trained_model_index
 from mosaic.tracking.ops.train_sleap import TrainSleapParams
 from mosaic.tracking.sleap import probe as probe_module
 from mosaic.tracking.sleap.probe import (

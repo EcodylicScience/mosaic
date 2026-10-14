@@ -58,16 +58,47 @@ def _trex_run(ds: Dataset, run_id: str, sequence: str, *, present: bool) -> None
         shutil.rmtree(work)
 
 
-def test_every_tracker_root_can_be_described(tmp_path: Path) -> None:
-    """The map is registered per tracker, so a new one that forgets is invisible
-    to an inventory -- the same failure the reconcile registry already guards."""
-    from mosaic.tracking.common.index import registered_tracker_kinds
+TRACKER_ROOTS = sorted(
+    key for key, root in TRACKING_ROOTS.items() if root.retention == "tracker"
+)
 
-    trackers = {
-        key for key, root in TRACKING_ROOTS.items() if root.retention == "tracker"
-    }
 
-    assert trackers <= registered_tracker_kinds()
+@pytest.mark.parametrize("kind", TRACKER_ROOTS)
+def test_every_tracker_root_is_reported(tmp_path: Path, kind: str) -> None:
+    """The kinds come from the roots table. A new tracker root is read through the
+    columns that every tracker index shares, with no registration."""
+    from mosaic.tracking.common.index import (
+        TrackerRunRowBase,
+        tracker_index,
+        tracker_index_path,
+    )
+
+    ds = make_dataset(tmp_path / "ds", name="ops")
+    run_id = f"{kind}.1.0-aaaaaaaaaa"
+    work = ds.get_root(kind) / run_id / "seq_a"
+    work.mkdir(parents=True)
+    index = tracker_index(tracker_index_path(ds, kind), TrackerRunRowBase)
+    index.ensure()
+    index.append(
+        [
+            TrackerRunRowBase(
+                run_id=run_id,
+                group="",
+                sequence="seq_a",
+                abs_path=Path(ds.relative_to_root(work)),
+                video_abs_path="",
+                params_hash="",
+            )
+        ]
+    )
+    index.mark_finished(run_id)
+
+    record = inventory(ds, kinds=["tracker-run"]).record(
+        TrackerRunRef(root_key=kind, run_id=run_id)
+    )
+
+    assert record is not None
+    assert record.status == "complete"
 
 
 def test_a_tracker_run_is_reported(tmp_path: Path) -> None:
@@ -104,7 +135,7 @@ def test_a_swept_run_is_honestly_no_longer_holding_its_outputs(
 def test_a_frame_run_is_keyed_by_camera(tmp_path: Path) -> None:
     """The cameras of one recording share a ``(group, sequence)``; without the
     camera axis a run that extracted one would read as covering the entry."""
-    from mosaic.tracking.frame_extraction.dataset_runs import (
+    from mosaic.tracking.frame_extraction.frame_runs import (
         FramesIndexRow,
         frames_index,
         frames_index_path,
@@ -143,7 +174,7 @@ def test_a_frame_run_is_keyed_by_camera(tmp_path: Path) -> None:
 def test_a_trained_model_is_one_artifact(tmp_path: Path) -> None:
     """Not a per-entry set: covered or not, by the rule training_is_complete
     already applies -- a finished row and an artifact that resolves."""
-    from mosaic.tracking.ops.train import (
+    from mosaic.tracking.ops.trained_models import (
         TrainedModelIndexRow,
         trained_model_index,
     )
@@ -183,7 +214,7 @@ def test_a_trained_model_is_one_artifact(tmp_path: Path) -> None:
 
 def test_a_model_whose_weights_are_gone_is_not_complete(tmp_path: Path) -> None:
     """The file half of the rule: a row can outlive what it points at."""
-    from mosaic.tracking.ops.train import (
+    from mosaic.tracking.ops.trained_models import (
         TrainedModelIndexRow,
         trained_model_index,
     )

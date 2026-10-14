@@ -42,10 +42,8 @@ from mosaic.tracking.ops._common import (
     fingerprint_dataset,
     resolve_training_data,
 )
-from mosaic.tracking.ops.train import (
-    finalize_training,
-    training_is_complete,
-)
+from mosaic.tracking.ops.train import finalize_training
+from mosaic.tracking.ops.trained_models import training_is_complete
 from mosaic.tracking.ops._train_descriptions import (
     BASE_MODEL_DESCRIPTION,
     EPOCHS_DESCRIPTION,

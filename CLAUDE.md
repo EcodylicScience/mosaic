@@ -126,7 +126,8 @@ import is a layering break.
 
 `tracking` adds its runs to `core`'s views through `register_inventory_contributor`
 (`tests/core/pipeline/inventory/test_inventory_contributors.py`) and
-`register_reconcilable_index`, called at import.
+`register_reconcilable_index`. `mosaic.tracking.register_ops` registers both, and
+importing `mosaic.tracking` registers neither.
 
 ## Package map
 
@@ -134,6 +135,7 @@ import is a layering break.
 src/mosaic/
   cli/                          every `mosaic` verb (Typer)
   runlog.py                     append-only JSONL run-log; stdlib-only leaf
+  lazy_exports.py               the body of a package `__getattr__`; stdlib-only leaf
   core/                         Dataset, manifest, schema, Params, Scope, converters
   core/pipeline/                run_feature, indexes, locks, inventory, ops, placement
   core/pipeline/graph/          a pipeline as a JSON recipe: validate, plan, run a step

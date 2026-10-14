@@ -522,12 +522,18 @@ def registered_op(kind: str) -> type[Op[Params]]:
     """The op class registered under *kind*, after registering the core ops.
 
     Raises:
-        KeyError: *kind* names no registered op.
+        KeyError: *kind* names no registered op. The message names
+            ``mosaic.tracking.register_ops()``, which registers the tracking ops.
     """
     ops = _registered_ops()
     op_cls = ops.get(kind)
     if op_cls is None:
-        raise KeyError(f"Unknown op '{kind}'. Registered: {sorted(ops)}")
+        registered = sorted(ops)
+        message = (
+            f"Unknown op '{kind}'. Registered: {registered}. "
+            "The tracking ops register when mosaic.tracking.register_ops() is called."
+        )
+        raise KeyError(message)
     return op_cls
 
 
@@ -675,7 +681,7 @@ def list_ops(
     an op takes, and which trained model it runs, without running it and
     without reading either out of the params model. The core ops are
     registered first, and the tracking ops are listed once
-    ``mosaic.tracking`` is imported.
+    ``mosaic.tracking.register_ops`` has run.
     """
     ops = sorted(_registered_ops().values(), key=lambda c: c.kind)
     return [

@@ -15,39 +15,83 @@ the converter it bridges through -- and reaches this package for everything else
 
 A tracker also declares one
 :class:`~mosaic.core.pipeline.tracking_roots.TrackingRoot` row.
+
+This file binds every public name on access. A submodule such as ``index``
+then imports without the bridge, the scope builder and the media modules that
+they import.
 """
 
-from __future__ import annotations
+from typing import TYPE_CHECKING, Final
 
-from mosaic.tracking.common.bridge import (
-    BridgeCounts,
-    readable_tracks_table,
-    frame_counts,
-    publish_tracks_table,
-    tracks_table_path,
-)
-from mosaic.tracking.common.entry import (
-    AdoptEvidence,
-    adopt_completed_directory,
-    clear_outputs,
-    record_phase,
-    reusable_marker,
-    reusable_output,
-)
-from mosaic.tracking.common.index import (
-    TrackerRunRowBase,
-    list_tracker_runs,
-    tracker_index,
-    tracker_index_path,
-)
-from mosaic.tracking.common.mint import MintedRun, mint_tracker_run, tracker_run_root
-from mosaic.tracking.common.scope import (
-    JoinedSourceMismatchError,
-    TrackerWorkItem,
-    UnresolvedEntry,
-    WorkItems,
-    build_work_items,
-)
+from mosaic.lazy_exports import lazy_export
+
+if TYPE_CHECKING:
+    from .bridge import (
+        BridgeCounts as BridgeCounts,
+        readable_tracks_table as readable_tracks_table,
+        frame_counts as frame_counts,
+        publish_tracks_table as publish_tracks_table,
+        tracks_table_path as tracks_table_path,
+    )
+    from .entry import (
+        AdoptEvidence as AdoptEvidence,
+        adopt_completed_directory as adopt_completed_directory,
+        clear_outputs as clear_outputs,
+        record_phase as record_phase,
+        reusable_marker as reusable_marker,
+        reusable_output as reusable_output,
+    )
+    from .index import (
+        TrackerRunRowBase as TrackerRunRowBase,
+        list_tracker_runs as list_tracker_runs,
+        tracker_index as tracker_index,
+        tracker_index_path as tracker_index_path,
+    )
+    from .mint import (
+        MintedRun as MintedRun,
+        mint_tracker_run as mint_tracker_run,
+        tracker_run_root as tracker_run_root,
+    )
+    from .scope import (
+        JoinedSourceMismatchError as JoinedSourceMismatchError,
+        TrackerWorkItem as TrackerWorkItem,
+        UnresolvedEntry as UnresolvedEntry,
+        WorkItems as WorkItems,
+        build_work_items as build_work_items,
+    )
+
+_MODULE_OF: Final[dict[str, str]] = {
+    "BridgeCounts": ".bridge",
+    "readable_tracks_table": ".bridge",
+    "frame_counts": ".bridge",
+    "publish_tracks_table": ".bridge",
+    "tracks_table_path": ".bridge",
+    "AdoptEvidence": ".entry",
+    "adopt_completed_directory": ".entry",
+    "clear_outputs": ".entry",
+    "record_phase": ".entry",
+    "reusable_marker": ".entry",
+    "reusable_output": ".entry",
+    "TrackerRunRowBase": ".index",
+    "list_tracker_runs": ".index",
+    "tracker_index": ".index",
+    "tracker_index_path": ".index",
+    "MintedRun": ".mint",
+    "mint_tracker_run": ".mint",
+    "tracker_run_root": ".mint",
+    "JoinedSourceMismatchError": ".scope",
+    "TrackerWorkItem": ".scope",
+    "UnresolvedEntry": ".scope",
+    "WorkItems": ".scope",
+    "build_work_items": ".scope",
+}
+"""The submodule that defines each public name."""
+
+
+def __getattr__(name: str) -> object:
+    """Import the submodule that defines *name* on first access."""
+    return lazy_export(__name__, _MODULE_OF, name)
+
 
 __all__ = [
     "AdoptEvidence",
