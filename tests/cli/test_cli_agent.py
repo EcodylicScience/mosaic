@@ -1,0 +1,185 @@
+"""``mosaic agent``: printing the agent guide and pointing a project at it."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+from typer.testing import CliRunner
+
+from mosaic.agent import (
+    BLOCK_BEGIN,
+    BLOCK_END,
+    SKILL_DIRECTORY,
+    Installation,
+    guide_text,
+    skill_stub,
+)
+from mosaic.cli import app
+
+runner = CliRunner()
+
+
+def frontmatter(text: str) -> dict[str, object]:
+    """The YAML mapping between a file's opening ``---`` lines."""
+    assert text.startswith("---\n"), text[:80]
+    header, separator, _body = text[len("---\n") :].partition("\n---\n")
+    assert separator, "the frontmatter is never closed"
+    parsed: dict[str, object] = yaml.safe_load(header)
+    return parsed
+
+
+def test_python_dash_m_mosaic_runs_the_cli() -> None:
+    """The stub and the pointer fall back on this command when no script exists."""
+    completed = subprocess.run(
+        [sys.executable, "-m", "mosaic", "agent", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "install" in completed.stdout
+
+
+def test_the_packaged_guide_is_a_skill() -> None:
+    fields = frontmatter(guide_text())
+    assert fields["name"] == "mosaic"
+    assert isinstance(fields["description"], str) and fields["description"]
+
+
+class TestGuide:
+    def test_it_prints_the_guide_then_this_installation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(app, ["agent", "guide"])
+        assert result.exit_code == 0, result.output
+        assert result.output.startswith(guide_text().rstrip())
+        installation = result.output[len(guide_text().rstrip()) :]
+        assert "## This installation" in installation
+        assert "Python interpreter:" in installation
+        assert "Documentation:" in installation
+        assert "not inside one" in installation
+
+    def test_it_names_the_enclosing_dataset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dataset = tmp_path / "study"
+        assert runner.invoke(app, ["init", str(dataset)]).exit_code == 0
+        inside = dataset / "media"
+        inside.mkdir(exist_ok=True)
+        monkeypatch.chdir(inside)
+        result = runner.invoke(app, ["agent", "guide"])
+        assert result.exit_code == 0, result.output
+        assert f"(manifest {dataset.resolve() / 'dataset.yaml'})" in result.output
+
+
+def blocks_in(path: Path) -> int:
+    return path.read_text(encoding="utf-8").count(BLOCK_BEGIN)
+
+
+class TestInstall:
+    def test_it_writes_a_stub_that_runs_the_guide(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["agent", "install", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        stub = (tmp_path / SKILL_DIRECTORY / "SKILL.md").read_text(encoding="utf-8")
+        fields = frontmatter(stub)
+        assert fields["name"] == "mosaic"
+        assert "imports mosaic" in str(fields["description"])
+        assert "agent guide" in stub
+        assert "-m mosaic agent guide" in stub
+        assert "Never edit the installed mosaic package" in stub
+        assert str(tmp_path / SKILL_DIRECTORY) in result.output
+        assert "To remove" in result.output
+
+    def test_a_stub_without_a_script_names_one_command(self, tmp_path: Path) -> None:
+        installation = Installation(
+            executable=None,
+            interpreter=Path(sys.executable),
+            docs=None,
+            manifest=None,
+        )
+        stub = skill_stub(installation)
+        assert stub.count(installation.fallback_command) == 1
+        assert "not found" not in stub
+
+    def test_it_creates_claude_md_when_no_agent_file_exists(
+        self, tmp_path: Path
+    ) -> None:
+        result = runner.invoke(app, ["agent", "install", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert blocks_in(tmp_path / "CLAUDE.md") == 1
+        assert not (tmp_path / "AGENTS.md").exists()
+
+    def test_a_second_run_replaces_the_block(self, tmp_path: Path) -> None:
+        claude = tmp_path / "CLAUDE.md"
+        _ = claude.write_text("# Project\n\nOur own notes.\n", encoding="utf-8")
+        first = runner.invoke(app, ["agent", "install", str(tmp_path)])
+        assert first.exit_code == 0, first.output
+        result = runner.invoke(app, ["agent", "install", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        text = claude.read_text(encoding="utf-8")
+        assert text.startswith("# Project\n\nOur own notes.\n")
+        assert text.count(BLOCK_BEGIN) == 1
+        assert text.count(BLOCK_END) == 1
+        assert "unchanged:" in result.output
+
+    def test_a_stale_block_is_rewritten_in_place(self, tmp_path: Path) -> None:
+        claude = tmp_path / "CLAUDE.md"
+        stale = f"before\n{BLOCK_BEGIN}\nold pointer\n{BLOCK_END}\nafter\n"
+        _ = claude.write_text(stale, encoding="utf-8")
+        result = runner.invoke(app, ["agent", "install", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        text = claude.read_text(encoding="utf-8")
+        assert "old pointer" not in text
+        assert text.startswith(f"before\n{BLOCK_BEGIN}\n")
+        assert text.endswith(f"{BLOCK_END}\nafter\n")
+
+    def test_both_agent_files_get_the_block(self, tmp_path: Path) -> None:
+        for name in ("CLAUDE.md", "AGENTS.md"):
+            _ = (tmp_path / name).write_text(f"# {name}\n", encoding="utf-8")
+        result = runner.invoke(app, ["agent", "install", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert blocks_in(tmp_path / "CLAUDE.md") == 1
+        assert blocks_in(tmp_path / "AGENTS.md") == 1
+
+    def test_only_agents_md_is_not_joined_by_claude_md(self, tmp_path: Path) -> None:
+        _ = (tmp_path / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+        result = runner.invoke(app, ["agent", "install", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert blocks_in(tmp_path / "AGENTS.md") == 1
+        assert not (tmp_path / "CLAUDE.md").exists()
+
+    def test_no_memory_leaves_the_agent_files_alone(self, tmp_path: Path) -> None:
+        agents = tmp_path / "AGENTS.md"
+        _ = agents.write_text("# Agents\n", encoding="utf-8")
+        result = runner.invoke(app, ["agent", "install", str(tmp_path), "--no-memory"])
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / SKILL_DIRECTORY / "SKILL.md").is_file()
+        assert agents.read_text(encoding="utf-8") == "# Agents\n"
+        assert not (tmp_path / "CLAUDE.md").exists()
+
+    def test_no_memory_names_an_earlier_block_for_removal(self, tmp_path: Path) -> None:
+        assert runner.invoke(app, ["agent", "install", str(tmp_path)]).exit_code == 0
+        result = runner.invoke(app, ["agent", "install", str(tmp_path), "--no-memory"])
+        assert result.exit_code == 0, result.output
+        removal = result.output.split("To remove", 1)[1]
+        assert str(tmp_path.resolve() / "CLAUDE.md") in removal
+
+    def test_an_unclosed_block_is_refused(self, tmp_path: Path) -> None:
+        claude = tmp_path / "CLAUDE.md"
+        _ = claude.write_text(f"{BLOCK_BEGIN}\nno end\n", encoding="utf-8")
+        result = runner.invoke(app, ["agent", "install", str(tmp_path)])
+        assert result.exit_code != 0
+        assert BLOCK_END in result.output
+        assert claude.read_text(encoding="utf-8") == f"{BLOCK_BEGIN}\nno end\n"
+
+    def test_a_missing_directory_is_refused(self, tmp_path: Path) -> None:
+        missing = tmp_path / "absent"
+        result = runner.invoke(app, ["agent", "install", str(missing)])
+        assert result.exit_code != 0
+        assert "Directory not found" in result.output
+        assert not missing.exists()

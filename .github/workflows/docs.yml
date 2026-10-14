@@ -136,4 +136,5 @@ jobs:
           args: >-
             --no-progress --accept 200,206,429 --max-concurrency 4
             './docs/**/*.md' './README.md' './CONTRIBUTING.md'
+            './src/mosaic/agent/SKILL.md'
           fail: true

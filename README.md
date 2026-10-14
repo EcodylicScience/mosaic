@@ -35,7 +35,7 @@ tells you exactly what a dataset already holds.
 | **Model** | t-SNE, k-means, Ward, AR-HMM, keypoint-MoSeq, VAME; XGBoost / Lightning-Action / FERAL classifiers; three visual identity models |
 | **Annotate** | Overlay video with identities, poses and predicted behavior; egocentric crops for identity work |
 | **Train pose** | No tracks yet? Sample frames for annotation and train YOLO pose, POLO point detection, or a heatmap localizer from CVAT / COCO / Lightning Pose |
-| **Operate** | **29 CLI commands** and **20 ops** behind one job contract, with a run log, cancellation, and a dataset inventory |
+| **Operate** | **30 CLI commands** and **20 ops** behind one job contract, with a run log, cancellation, and a dataset inventory |
 
 ## Install
 
@@ -61,6 +61,8 @@ tools mosaic drives but does not install, and Windows/WSL2 support.
 ## In 60 seconds
 
 ```bash
+# Work in a directory of your own, outside the mosaic clone.
+cd ~
 mosaic init study --name "Experiment 1"
 
 # Point the dataset at video that can live anywhere -- a NAS, another volume.
@@ -86,6 +88,7 @@ their `--src-format`, and `mosaic convert-tracks` standardizes them.
 | [**Documentation**](https://ecodylicscience.github.io/mosaic/) | What mosaic is, and where everything lives |
 | [**Install**](https://ecodylicscience.github.io/mosaic/installation/) | The environment, the extras, and the tools that run in their own environment |
 | [**Reference**](https://ecodylicscience.github.io/mosaic/reference/) | Every feature, op, CLI command and track format — generated from the code |
+| [**AI coding agents**](https://ecodylicscience.github.io/mosaic/agents/) | Run `mosaic agent install` to give an agent the mosaic guide |
 
 Five worked examples live in [`notebooks/`](https://github.com/EcodylicScience/mosaic/tree/main/notebooks), and each fetches its own
 data from Hugging Face, so they run as written:
@@ -109,8 +112,9 @@ between releases; [CHANGELOG.md](https://github.com/EcodylicScience/mosaic/blob/
 ## Contributing
 
 See [CONTRIBUTING.md](https://github.com/EcodylicScience/mosaic/blob/main/CONTRIBUTING.md), and please open an issue before making large
-changes. Working with an AI coding agent? [CLAUDE.md](https://github.com/EcodylicScience/mosaic/blob/main/CLAUDE.md) is the repository
-orientation.
+changes. To contribute with an AI coding agent,
+[CLAUDE.md](https://github.com/EcodylicScience/mosaic/blob/main/CLAUDE.md) is the
+developer orientation.
 
 ## License
 

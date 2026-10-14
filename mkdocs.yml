@@ -144,6 +144,7 @@ nav:
   - Home: index.md
   - Getting Started:
       - Install mosaic: installation.md
+      - Work with an AI coding agent: agents.md
       - The mosaic dataset: dataset.md
       - Worked examples: examples.md
   - Guides:

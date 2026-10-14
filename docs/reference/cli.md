@@ -42,6 +42,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `media`: Probe a video, compare two videos for...
 * `models`: Ask about trained models: this dataset's,...
 * `pipeline`: Validate, plan and run a pipeline recipe.
+* `agent`: Print or install the guide for an AI...
 * `sources`: Declare and inspect the directories and...
 * `notes`: Read and write the dataset's free-text notes.
 * `tags`: Declare and set the dataset's typed tags.
@@ -987,6 +988,62 @@ $ mosaic pipeline status [OPTIONS]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--request <str>`: Which submission to report on.  [required]
 * `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
+## `mosaic agent`
+
+Print or install the guide for an AI coding agent that uses mosaic.
+
+**Usage**:
+
+```console
+$ mosaic agent [OPTIONS] COMMAND [ARGS]...
+```
+
+**Options**:
+
+* `--help`: Show this message and exit.
+
+**Commands**:
+
+* `guide`: Print the agent guide for this version,...
+* `install`: Point a project's AI coding agents at...
+
+### `mosaic agent guide`
+
+Print the agent guide for this version, then this installation's paths.
+
+**Usage**:
+
+```console
+$ mosaic agent guide [OPTIONS]
+```
+
+**Options**:
+
+* `--help`: Show this message and exit.
+
+### `mosaic agent install`
+
+Point a project's AI coding agents at `mosaic agent guide`.
+
+Writes .claude/skills/mosaic/SKILL.md, and a marked block in CLAUDE.md and
+AGENTS.md (creating CLAUDE.md when neither exists). Running it again replaces
+both.
+
+**Usage**:
+
+```console
+$ mosaic agent install [OPTIONS] [directory]
+```
+
+**Arguments**:
+
+* `directory`: Project directory. Defaults to the working directory.  [default: .]
+
+**Options**:
+
+* `--no-memory`: Write the skill only, and leave CLAUDE.md and AGENTS.md alone.
 * `--help`: Show this message and exit.
 
 ## `mosaic sources`

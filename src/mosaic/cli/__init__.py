@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import typer
 
+from mosaic.cli.agent import agent_app
 from mosaic.cli.cancel import cancel_command
 from mosaic.cli.release import release_command
 from mosaic.cli.convert_labels import convert_labels_command
@@ -64,6 +65,7 @@ _ = app.command(name="sequences")(sequences_command)
 _ = app.command(name="inventory")(inventory_command)
 app.add_typer(models_app, name="models")
 app.add_typer(pipeline_app, name="pipeline")
+app.add_typer(agent_app, name="agent")
 
 # Dataset prep.
 _ = app.command(name="init")(init_command)
