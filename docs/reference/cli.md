@@ -1047,6 +1047,10 @@ attempt id per step, and pins the version every step's producer declares.
 Nothing is executed: the printed commands are, and any driver that can run
 them in dependency order will run the graph correctly.
 
+An open request of the same recipe over an overlapping scope is reported on
+stderr and under ``duplicates``, or refuses the submission with
+``--refuse-duplicates``.
+
 **Usage**:
 
 ```console
@@ -1062,12 +1066,16 @@ $ mosaic pipeline submit [OPTIONS]
 * `--max-concurrent-steps <int>`: How many of this request's steps may run at once. Advisory here.
 * `--owner <str>`: Recorded on the request and its attempts.
 * `--expect-plan <str>`: The fingerprint that 'mosaic pipeline plan' printed. Refuses the submission, writing nothing, when the plan has changed since.
+* `--refuse-duplicates`: Refuse the submission, writing nothing, while a request of the same recipe over an overlapping scope has not ended. A submitted request whose steps were never run has not ended.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
 ### `mosaic pipeline run`
 
 Run every step of a recipe here, in order, skipping what is already done.
+
+An open request of the same recipe over an overlapping scope is reported on
+stderr.
 
 **Usage**:
 

@@ -35,7 +35,14 @@ from .plan import Plan, plan_pipeline
 from .serialize import plan_fingerprint
 from .step_preflight import StepRefused, refuse_mixed_schemas
 from .resolve import declared_version
-from .store import load_recipe, recipe_path, save_recipe, save_request
+from .store import (
+    load_recipe,
+    open_requests_matching,
+    recipe_path,
+    save_recipe,
+    save_request,
+    submission_lock,
+)
 from .topo import topological_order
 
 if TYPE_CHECKING:
@@ -49,6 +56,7 @@ if TYPE_CHECKING:
     from .compatibility import DeclarationCatalog
 
 __all__ = [
+    "DuplicateRequest",
     "PlanChanged",
     "SubmittedRequest",
     "load_recipe_for_request",
@@ -68,12 +76,16 @@ class SubmittedRequest:
             so nothing downstream may treat these identifiers as authoritative.
         recipe_path: Where the recipe was copied to inside the dataset.
         request_path: Where the request document was written.
+        duplicates: The ids of the requests of the same recipe over an
+            overlapping scope that were open at submit
+            (:func:`~.store.open_requests_matching`), in descending id order.
     """
 
     request: Request
     plan: Plan
     recipe_path: Path
     request_path: Path
+    duplicates: tuple[str, ...] = ()
 
 
 class PlanChanged(ClassifiedError):
@@ -102,6 +114,37 @@ class PlanChanged(ClassifiedError):
         return {"expected": self.expected, "found": self.found}
 
 
+class DuplicateRequest(ClassifiedError):
+    """Refuse a submission while a request of its recipe over its entries is open.
+
+    Attributes:
+        recipe_digest: The recipe of the submission.
+        request_ids: The open requests (:func:`~.store.open_requests_matching`).
+    """
+
+    error_kind: ClassVar[ErrorKind] = "conflict"
+
+    def __init__(self, *, recipe_digest: str, request_ids: tuple[str, ...]) -> None:
+        listed = ", ".join(request_ids)
+        message = (
+            f"request(s) {listed} of recipe {recipe_digest!r} cover entries of "
+            f"this scope and have not ended. Both requests would compute the same "
+            f"runs at once. Run the steps of the open request, or delete its file "
+            f"under .mosaic/pipelines/requests/ if it will not run, then submit "
+            f"again."
+        )
+        super().__init__(message)
+        self.recipe_digest: str = recipe_digest
+        self.request_ids: tuple[str, ...] = request_ids
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the recipe digest and the ids of the open requests."""
+        return {
+            "recipe_digest": self.recipe_digest,
+            "request_ids": list(self.request_ids),
+        }
+
+
 def submit_request(
     ds: Dataset,
     recipe: Recipe,
@@ -115,6 +158,7 @@ def submit_request(
     inventory: InventoryCache | None = None,
     catalog: DeclarationCatalog | None = None,
     expect_plan: str | None = None,
+    refuse_duplicates: bool = False,
 ) -> SubmittedRequest:
     """Record one submission of *recipe* against *ds*, and resolve its plan.
 
@@ -137,14 +181,25 @@ def submit_request(
         catalog: The declarations to resolve against.
         expect_plan: The :func:`~.serialize.plan_fingerprint` of the plan that
             the caller reviewed, or ``None`` to submit whatever the plan is now.
+        refuse_duplicates: Whether an open request of *recipe* over an
+            overlapping scope refuses the submission. Otherwise the submission
+            proceeds and reports the open requests in ``duplicates``. The check
+            runs before planning, and again under
+            :func:`~.store.submission_lock` with the write of the request, so two
+            submissions on one mount cannot both pass it. A submitted request
+            whose steps never run stays open.
 
     Returns:
-        The request, the plan, and where both documents landed.
+        The request, the plan, the paths of both documents, and the open
+        requests of the same recipe over an overlapping scope.
 
     Raises:
         RecipeInvalid: The recipe is malformed.
         PlanChanged: *expect_plan* differs from the fingerprint of the plan
             resolved here. The dataset is left unwritten.
+        DuplicateRequest: *refuse_duplicates* is set and a request of *recipe*
+            over an overlapping scope is open. Neither the recipe nor the
+            request is written.
         StepRefused: The dataset's tracks tables are of incompatible schemas, so
             no feature identity resolves against it at all.
     """
@@ -154,6 +209,10 @@ def submit_request(
     # out of the middle of a hash.
     refuse_mixed_schemas(ds, "")
     narrowing = scope if scope is not None else Scope()
+    digest = recipe_digest(recipe)
+    if refuse_duplicates:
+        # Refuses before planning, which can take seconds.
+        _ = _open_duplicates(ds.base_dir, digest, narrowing, refuse=True)
     plan = plan_pipeline(
         ds,
         recipe,
@@ -168,7 +227,7 @@ def submit_request(
     ordered = topological_order(recipe)
     request = Request(
         request_id=request_id or new_execution_id(),
-        recipe_digest=recipe_digest(recipe),
+        recipe_digest=digest,
         owner=owner,
         created_at=now_iso(),
         scope=narrowing,
@@ -184,12 +243,31 @@ def submit_request(
             for step in ordered
         },
     )
-    return SubmittedRequest(
-        request=request,
-        plan=plan,
-        recipe_path=save_recipe(ds.base_dir, recipe),
-        request_path=save_request(ds.base_dir, request),
-    )
+    with submission_lock(ds.base_dir):
+        duplicates = _open_duplicates(
+            ds.base_dir, digest, narrowing, refuse=refuse_duplicates
+        )
+        return SubmittedRequest(
+            request=request,
+            plan=plan,
+            recipe_path=save_recipe(ds.base_dir, recipe),
+            request_path=save_request(ds.base_dir, request),
+            duplicates=duplicates,
+        )
+
+
+def _open_duplicates(
+    base_dir: Path | str, digest: str, scope: Scope, *, refuse: bool
+) -> tuple[str, ...]:
+    """Return the open requests of *digest* over *scope*, or refuse on any.
+
+    Raises:
+        DuplicateRequest: *refuse* is set and a request is open.
+    """
+    duplicates = open_requests_matching(base_dir, digest, scope)
+    if duplicates and refuse:
+        raise DuplicateRequest(recipe_digest=digest, request_ids=duplicates)
+    return duplicates
 
 
 def load_recipe_for_request(base_dir: Path | str, request: Request) -> Recipe:

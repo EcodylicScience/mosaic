@@ -45,6 +45,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "FAILED_ENTRY_SAMPLE",
+    "JSON_OBJECT",
     "FailedEntryWire",
     "RecordedErrorWire",
     "RequestPageWire",
@@ -75,9 +76,10 @@ lease lapse. Neither is a run-log status.
 
 _REFUSAL_REASONS: Final[frozenset[str]] = frozenset(get_args(RefusalReason.__value__))
 _ENVELOPE_KEYS: Final = frozenset({"reason", "step", "message"})
-_JSON_OBJECT: Final[TypeAdapter[dict[str, JsonValue]]] = TypeAdapter(
+JSON_OBJECT: Final[TypeAdapter[dict[str, JsonValue]]] = TypeAdapter(
     dict[str, JsonValue]
 )
+"""Validates a parsed JSON document as an object."""
 
 
 class RecordedErrorWire(GraphModel):
@@ -447,7 +449,7 @@ def _recorded_error(error_json: str, summary: ErrorSummary) -> RecordedErrorWire
 def _recorded_refusal(error_json: str, message: str) -> Refusal | None:
     """The refusal that *error_json* records, ``None`` for any other blob."""
     try:
-        blob = _JSON_OBJECT.validate_json(error_json)
+        blob = JSON_OBJECT.validate_json(error_json)
     except ValidationError:
         return None
     reason = blob.get("reason")

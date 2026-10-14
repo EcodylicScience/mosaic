@@ -21,6 +21,14 @@ instead of derived from artifacts.
   `expect_plan`, `submit_request` compares it before writing either file and raises
   `PlanChanged`, a `conflict` and not a `RefusalReason`
   (`test_pipeline_plan_fingerprint.py`).
+- `open_requests_matching` (`store.py`) returns the requests of one recipe digest whose
+  scope overlaps (`Scope.overlaps`) and whose rollup verdict is `running`. A verdict
+  of `orphaned` is not open, through the same `driver_alive` argument as the status
+  wires. `submit_request` reports them in `duplicates` and, given `refuse_duplicates`,
+  raises `DuplicateRequest`, a `conflict`, before writing either file
+  (`test_pipeline_duplicate_requests.py`). The check runs again with the write under
+  `submission_lock`. A request file that cannot be read is skipped with a warning, so
+  one damaged file leaves submission available.
 - A cross-step reference is written at the site it substitutes. Do not add a stored
   `edges` array. `edges()` in `topo.py` derives one, and `after` is the one explicit list,
   for ordering only (`test_edges_are_derived_from_the_bodies_with_their_sites`).

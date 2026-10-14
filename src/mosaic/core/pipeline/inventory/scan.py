@@ -171,18 +171,11 @@ def narrow_target(
     here as no restriction at all.
     """
     selector = scope if scope is not None else Scope()
-    wanted_groups = set(selector.groups) if selector.groups is not None else None
-    wanted_sequences = (
-        set(selector.sequences) if selector.sequences is not None else None
-    )
-    wanted_entries = selector.entry_pairs
-    return frozenset(
-        (group, sequence)
-        for group, sequence in universe
-        if (wanted_groups is None or group in wanted_groups)
-        and (wanted_sequences is None or sequence in wanted_sequences)
-        and (wanted_entries is None or (group, sequence) in wanted_entries)
-    )
+    pairs = selector.entry_pairs
+    if pairs is not None:
+        # ``Scope.selects`` would rebuild the pairs for each entry.
+        return universe & pairs
+    return frozenset(entry for entry in universe if selector.selects(entry))
 
 
 def _entries_held(stems: set[str], candidates: frozenset[Entry]) -> set[Entry]:

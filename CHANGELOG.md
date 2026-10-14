@@ -336,6 +336,22 @@ request, when the plan resolved at submit has another fingerprint. `mosaic pipel
 `mosaic.core.pipeline.graph.step` to `mosaic.core.pipeline.graph.plan`, and
 `from mosaic.core.pipeline.graph import asked_of` keeps working.
 
+**A submission reports the open requests of its recipe over its entries.**
+`open_requests_matching(base_dir, recipe_digest, scope)` in
+`mosaic.core.pipeline.graph` returns the ids of the requests of one recipe whose
+scope overlaps *scope* (`Scope.overlaps`) and whose rollup is `running`, in
+descending id order, which is creation order for ids that `submit_request` mints.
+A request whose steps have not started counts as open. A feature runs without a
+claim. Two such requests that run at once both compute it. A request file that
+cannot be read is skipped with a warning. `submit_request` reports them as
+`SubmittedRequest.duplicates`. `mosaic pipeline submit` and `mosaic pipeline run`
+warn on stderr, and `submit` prints them under `duplicates` with `--json`.
+`submit_request(..., refuse_duplicates=True)` and `mosaic pipeline submit
+--refuse-duplicates` raise `DuplicateRequest`, of kind `conflict`, before writing
+the recipe or the request. The check and the write of the request run under one
+lock, `.mosaic/pipelines/requests/.submit.lock`, so two submissions on one mount
+cannot both pass it.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

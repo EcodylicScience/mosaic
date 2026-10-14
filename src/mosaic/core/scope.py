@@ -199,6 +199,65 @@ class Scope(StrictModel):
             return None
         return {(entry[0], entry[1]) for entry in self.entries}
 
+    def selects(self, entry: Entry) -> bool:
+        """Return whether this selector names *entry*, an index aside.
+
+        ``entries`` names its pairs, and a camera-addressed one names the pair of
+        each camera. ``groups`` and ``sequences`` name their cross product, and
+        an unset one names every value.
+
+        Args:
+            entry: The ``(group, sequence)`` pair to test.
+
+        Returns:
+            Whether the selector names *entry*.
+        """
+        pairs = self.entry_pairs
+        if pairs is not None:
+            return entry in pairs
+        group, sequence = entry
+        return (self.groups is None or group in self.groups) and (
+            self.sequences is None or sequence in self.sequences
+        )
+
+    def overlaps(self, other: Scope) -> bool:
+        """Return whether some entry is selected by this selector and by *other*.
+
+        The selectors alone decide it, without an index. An entry that both
+        name counts whether or not an index contains it. A camera-addressed
+        selector counts as its ``(group, sequence)`` pairs. Two selectors
+        naming different cameras of one entry overlap. A selector that names
+        an empty set of entries overlaps none, itself included.
+
+        Args:
+            other: The selector to compare with.
+
+        Returns:
+            Whether an entry exists that both selectors name.
+        """
+        mine, theirs = self.entry_pairs, other.entry_pairs
+        if mine is not None and theirs is not None:
+            return not mine.isdisjoint(theirs)
+        if mine is not None:
+            return any(other.selects(entry) for entry in mine)
+        if theirs is not None:
+            return any(self.selects(entry) for entry in theirs)
+        return _names_meet(self.groups, other.groups) and _names_meet(
+            self.sequences, other.sequences
+        )
+
+
+def _names_meet(first: list[str] | None, second: list[str] | None) -> bool:
+    """Return whether two ``groups`` or two ``sequences`` lists share a name.
+
+    ``None`` names every value, and an empty list names none.
+    """
+    if first is None:
+        return second is None or bool(second)
+    if second is None:
+        return bool(first)
+    return not set(first).isdisjoint(second)
+
 
 SCOPE_PARAM_KEYS = frozenset(Scope.model_fields)
 """The selector field names, refused inside a params mapping.

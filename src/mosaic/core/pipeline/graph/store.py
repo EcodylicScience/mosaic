@@ -20,22 +20,34 @@ unloaded (``tests/meta/test_status_imports.py``).
 from __future__ import annotations
 
 import json
+import warnings
+from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+from ..index_lock import index_lock
 from .digest import recipe_digest
 from .model import Recipe, Request
-from .status import RequestPageWire, request_summary
+from .rollup import request_rollup
+from .status import JSON_OBJECT, RequestPageWire, request_summary, rollup_verdict
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Generator
+
+    from mosaic.core.scope import Scope
 
 __all__ = [
     "list_requests",
     "load_recipe",
     "load_request",
+    "open_requests_matching",
     "pipelines_root",
     "recipe_path",
     "request_path",
     "requests_root",
     "save_recipe",
     "save_request",
+    "submission_lock",
 ]
 
 
@@ -125,12 +137,7 @@ def list_requests(
     """
     if limit is not None and limit < 1:
         raise ValueError(f"limit must be at least 1, got {limit}")
-    root = requests_root(base_dir)
-    names = (
-        sorted((path.stem for path in root.glob("*.json")), reverse=True)
-        if root.is_dir()
-        else []
-    )
+    names = _request_ids(base_dir)
     if after is not None:
         names = [name for name in names if name < after]
     page = names if limit is None else names[:limit]
@@ -140,6 +147,98 @@ def list_requests(
         ),
         next_after=page[-1] if len(page) < len(names) else None,
     )
+
+
+def open_requests_matching(
+    base_dir: Path | str,
+    recipe_digest: str,
+    scope: Scope,
+    *,
+    driver_alive: Callable[[Request], bool | None] | None = None,
+) -> tuple[str, ...]:
+    """Return the ids of the open requests of one recipe over an overlapping scope.
+
+    A request of the same recipe whose scope shares an entry with *scope*
+    (:meth:`~mosaic.core.scope.Scope.overlaps`) runs the same steps over that
+    entry. ``run_feature`` runs a feature without claiming it. Two such requests
+    that run at once both compute it. A request is open while its rollup is
+    ``running``, including before its first step starts. A request whose
+    driver has let its lease lapse is ``orphaned`` and is not open.
+
+    Every request file is read, and the run-logs of each request of the recipe.
+    A request file that cannot be read, or is not a valid request of the recipe,
+    is skipped with a ``UserWarning`` naming it. A damaged request file therefore
+    leaves the dataset open to submissions.
+
+    Args:
+        base_dir: The dataset root.
+        recipe_digest: The digest of the recipe to be submitted.
+        scope: The scope to be submitted.
+        driver_alive: Whether the process driving a request keeps its lease
+            current, as for :func:`~.status.request_status_wire`. ``None`` reads
+            every request as one without a driver lease.
+
+    Returns:
+        The ids of the open requests, in descending id order. That order is
+        creation order for the ids that ``submit_request`` mints.
+    """
+    open_ids: list[str] = []
+    for name in _request_ids(base_dir):
+        request = _request_of_recipe(request_path(base_dir, name), recipe_digest)
+        if request is None or not request.scope.overlaps(scope):
+            continue
+        alive = driver_alive(request) if driver_alive is not None else None
+        verdict = rollup_verdict(request_rollup(base_dir, request), driver_alive=alive)
+        if verdict == "running":
+            open_ids.append(request.request_id)
+    return tuple(open_ids)
+
+
+def _request_of_recipe(path: Path, recipe_digest: str) -> Request | None:
+    """Read the request at *path* when it names *recipe_digest*, else ``None``.
+
+    The digest is compared on the raw document, so a request file of another
+    recipe is not validated. A file that cannot be read or validated is ``None``
+    with a ``UserWarning`` naming it.
+    """
+    try:
+        document = JSON_OBJECT.validate_python(_read_json(path, "request"))
+        if document.get("recipe_digest") != recipe_digest:
+            return None
+        return Request.model_validate(document)
+    except (OSError, ValueError) as error:
+        warnings.warn(
+            f"skipped request file {path}: {error}", UserWarning, stacklevel=3
+        )
+        return None
+
+
+@contextmanager
+def submission_lock(base_dir: Path | str) -> Generator[None]:
+    """Serialize the duplicate check and the request write of one submission.
+
+    Takes :func:`~mosaic.core.pipeline.index_lock.index_lock` on
+    ``requests/.submit``. The lock creates that empty file and its
+    ``.submit.lock`` sidecar, and neither is a request file. Two submissions on
+    one mount check and write one after the other. Submissions from two hosts
+    to one synced folder are not serialized.
+    """
+    root = requests_root(base_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    with index_lock(root / ".submit"):
+        yield
+
+
+def _request_ids(base_dir: Path | str) -> list[str]:
+    """Return the ids of a dataset's request files in descending order.
+
+    A request id minted by ``submit_request`` is a ULID, so that order is creation
+    time descending for those ids. A caller-supplied id sorts by its text.
+    """
+    root = requests_root(base_dir)
+    if not root.is_dir():
+        return []
+    return sorted((path.stem for path in root.glob("*.json")), reverse=True)
 
 
 def _write_json(path: Path, payload: object) -> None:

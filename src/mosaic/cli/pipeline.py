@@ -256,6 +256,18 @@ def _failed_attempt(
     return "", ""
 
 
+def _warn_duplicates(duplicates: tuple[str, ...]) -> None:
+    """Warn on stderr about the open requests of a submitted recipe."""
+    if not duplicates:
+        return
+    listed = ", ".join(duplicates)
+    warning = (
+        f"warning: request(s) {listed} of this recipe over an overlapping scope "
+        f"have not ended. Running both computes the same runs twice at once."
+    )
+    log(warning)
+
+
 def run_command(
     recipe: RecipeOption,
     manifest: ManifestOption,
@@ -275,7 +287,11 @@ def run_command(
     ] = "",
     as_json: JsonOption = False,
 ) -> None:
-    """Run every step of a recipe here, in order, skipping what is already done."""
+    """Run every step of a recipe here, in order, skipping what is already done.
+
+    An open request of the same recipe over an overlapping scope is reported on
+    stderr.
+    """
     from mosaic.core.pipeline.graph import run_pipeline, submit_request
 
     ds = load_dataset(manifest)
@@ -285,13 +301,15 @@ def run_command(
         with stdout_to_stderr():
             # Submitted here rather than inside run_pipeline, so that a refusal
             # raised by one step can be traced to that step's attempt.
-            submitted = submit_request(
+            recorded = submit_request(
                 ds,
                 parsed,
                 scope=entries_scope(entry),
                 allow_partial=allow_partial,
                 owner=owner,
-            ).request
+            )
+            submitted = recorded.request
+            _warn_duplicates(recorded.duplicates)
             done = run_pipeline(ds, parsed, request=submitted, owner=owner)
     except Refusal as refusal:
         # A step's own refusal, or one raised inside a step's attempt, such as a
@@ -373,6 +391,17 @@ def submit_command(
             ),
         ),
     ] = None,
+    refuse_duplicates: Annotated[
+        bool,
+        typer.Option(
+            "--refuse-duplicates",
+            help=(
+                "Refuse the submission, writing nothing, while a request of the "
+                "same recipe over an overlapping scope has not ended. A submitted "
+                "request whose steps were never run has not ended."
+            ),
+        ),
+    ] = False,
     as_json: JsonOption = False,
 ) -> None:
     """Record a submission of a recipe, and print the command for every step.
@@ -381,6 +410,10 @@ def submit_command(
     attempt id per step, and pins the version every step's producer declares.
     Nothing is executed: the printed commands are, and any driver that can run
     them in dependency order will run the graph correctly.
+
+    An open request of the same recipe over an overlapping scope is reported on
+    stderr and under ``duplicates``, or refuses the submission with
+    ``--refuse-duplicates``.
     """
     from mosaic.core.pipeline.graph import plan_fingerprint, step_argv, submit_request
 
@@ -396,10 +429,12 @@ def submit_command(
                 max_concurrent_steps=max_concurrent_steps,
                 owner=owner,
                 expect_plan=expect_plan,
+                refuse_duplicates=refuse_duplicates,
             )
     except ClassifiedError as error:
         _fail_unrunnable(error, as_json=as_json)
     request = submitted.request
+    _warn_duplicates(submitted.duplicates)
     steps = [
         {
             "step": planned.step_id,
@@ -427,6 +462,7 @@ def submit_command(
                 "max_concurrent_steps": request.max_concurrent_steps,
                 "scope": sorted(list(pair) for pair in submitted.plan.scope),
                 "steps": steps,
+                "duplicates": list(submitted.duplicates),
             }
         )
         return

@@ -193,6 +193,89 @@ class TestFrozen:
             scope.sequences = ["two"]
 
 
+class TestSelects:
+    """A selector names an entry by its pairs, or by its groups and sequences."""
+
+    @pytest.mark.parametrize(
+        "scope",
+        [
+            Scope(),
+            Scope(entries=[("A", "one")]),
+            Scope(entries=[("A", "one", "top")]),
+            Scope(groups=["A"]),
+            Scope(sequences=["one"]),
+            Scope(groups=["A"], sequences=["one", "two"]),
+        ],
+    )
+    def test_a_selector_naming_the_entry_selects_it(self, scope: Scope) -> None:
+        assert scope.selects(("A", "one"))
+
+    @pytest.mark.parametrize(
+        "scope",
+        [
+            Scope(entries=[]),
+            Scope(entries=[("A", "two")]),
+            Scope(groups=["B"]),
+            Scope(groups=[]),
+            Scope(groups=["A"], sequences=["two"]),
+        ],
+    )
+    def test_a_selector_not_naming_the_entry_does_not_select_it(
+        self, scope: Scope
+    ) -> None:
+        assert not scope.selects(("A", "one"))
+
+
+class TestOverlaps:
+    """Two selectors overlap when some entry is selected by both."""
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            (Scope(), Scope()),
+            (Scope(), Scope(entries=[("A", "one")])),
+            (Scope(entries=[("A", "one")]), Scope(entries=[("A", "one")])),
+            (
+                Scope(entries=[("A", "one"), ("B", "two")]),
+                Scope(entries=[("B", "two")]),
+            ),
+            (Scope(entries=[("A", "one")]), Scope(groups=["A"])),
+            (Scope(entries=[("A", "one")]), Scope(sequences=["one"])),
+            (Scope(groups=["A"]), Scope(sequences=["one"])),
+            (Scope(groups=["A", "B"]), Scope(groups=["B"], sequences=["two"])),
+            (Scope(entries=[("A", "one", "top")]), Scope(entries=[("A", "one")])),
+            (
+                Scope(entries=[("A", "one", "top")]),
+                Scope(entries=[("A", "one", "side")]),
+            ),
+        ],
+    )
+    def test_selectors_sharing_an_entry_overlap(
+        self, first: Scope, second: Scope
+    ) -> None:
+        assert first.overlaps(second)
+        assert second.overlaps(first)
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            (Scope(entries=[("A", "one")]), Scope(entries=[("A", "two")])),
+            (Scope(entries=[("A", "one")]), Scope(groups=["B"])),
+            (Scope(entries=[("A", "one")]), Scope(groups=["A"], sequences=["two"])),
+            (Scope(groups=["A"]), Scope(groups=["B"])),
+            (Scope(sequences=["one"]), Scope(sequences=["two"])),
+            (Scope(entries=[]), Scope()),
+            (Scope(entries=[]), Scope(entries=[])),
+            (Scope(groups=[]), Scope()),
+        ],
+    )
+    def test_selectors_sharing_no_entry_do_not_overlap(
+        self, first: Scope, second: Scope
+    ) -> None:
+        assert not first.overlaps(second)
+        assert not second.overlaps(first)
+
+
 class TestResolvedScope:
     def test_it_records_the_selector_it_came_from(self) -> None:
         selector = Scope(groups=["A"])
