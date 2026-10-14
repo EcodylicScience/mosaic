@@ -76,9 +76,46 @@ through, and refused only for a scope-dependent step. A scope-free step over 89 
 entries writes 89 correct outputs under the identifier they belong to, and the
 ninetieth arrives later under the same one. A scope-dependent step over 89 writes
 *one* artifact that is not the one anyone asked for, under a name saying it is.
-`allow_partial` is where a decision to proceed regardless is recorded, and it answers
+`allow_partial` (`--allow-partial` at the CLI) is where a decision to proceed
+regardless is recorded, and it answers
 that question alone — a moved version or a disagreeing tracks variant is not a
 question about how much, and no flag unlocks them.
+
+## A refusal names its reason
+
+A refusal is a failure that names its reason, which tells it apart from a crash.
+`mosaic pipeline run`, `mosaic run` and `mosaic track` exit with code 65 and print the
+reason. Under `--json` they print one object with `"status": "refused"` and the
+`reason`. From Python a refusal is raised as a `Refusal`
+(`mosaic.core.pipeline.refusal`), with `reason` and a `detail` with the numbers
+behind it. A pipeline step's refusal is its subclass `StepRefused`. The run log
+records the attempt as `failed`, with the reason beside it.
+
+The reasons form a closed set, such as `coverage_shortfall`, `version_moved`,
+`variant_mismatch` and `undecodable_codec`. Each reason except `coverage_shortfall` is
+fixed at its cause, and the step then runs again.
+
+## Failed entries: waiting and quarantined
+
+A pipeline step that fails on one entry records the failure under
+`<dataset>/.mosaic/claims/`, and the count carries across resubmissions. The count
+decides what happens to that entry next:
+
+- **Waiting.** After a failure the entry is not retried for a minute, and for two
+  minutes after a second failure. A step that meets a waiting entry runs without it
+  this time and records no decision about it.
+- **Quarantined.** After three failures the entry is no longer attempted. A step whose
+  scope holds it is refused with `coverage_shortfall`, naming the entry. With
+  `allow_partial` the step proceeds without it, and that exclusion is recorded for that
+  request only. For a fit this is a fit over fewer entries, named for the entries it
+  covered.
+
+A success clears an entry's record. To retry a quarantined entry once its input is
+fixed, delete its record,
+`.mosaic/claims/entries/<name>/<run_id>/<group>__<sequence>.json` (just
+`<sequence>.json` when the group is empty), which also holds the entry's last error.
+`<name>` is the step's directory under `features/`. Keep the rest of
+`.mosaic/claims/`, since it is the only record of which entries are known to fail.
 
 ---
 

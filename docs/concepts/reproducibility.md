@@ -47,8 +47,15 @@ merely unlikely — and why you can delete a run directory by hand and have the 
 inventory simply tell you the truth.
 
 Coverage is which entries exist, never a boolean. "Complete" means every entry in scope
-has an artifact, and `complete-but-drifted` means they all exist but the code that
-produced them has since moved.
+has an artifact, and `complete-but-drifted` means they all exist but a source they were
+made from has changed since.
+
+That change is detected by comparison, not by the identifier. A `run_id` covers the
+recipe of each input, not its content, so re-converting tracks from changed source files
+or re-transcoding media leaves every downstream identifier as it was. What each run read
+is recorded beside it and compared with the present. The next `run_feature` recomputes
+the entries whose tracks changed, and a tracker run over re-transcoded media reports
+`complete-but-drifted`.
 
 ## A trained model can say what it saw
 

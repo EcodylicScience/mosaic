@@ -13,10 +13,9 @@ pip install -e ".[all]"
 
 `av` and `py-opencv` are installed from conda-forge, before pip runs, so that the
 environment holds a single ffmpeg build. `ffmpeg` and `ffprobe` are used for media
-indexing and for `mosaic media transcode`.
-
-On Linux, apt does the same job: `apt install ffmpeg python3-av python3-opencv` links
-both against the distribution's ffmpeg.
+indexing and for `mosaic media transcode`. On Linux,
+`apt install ffmpeg python3-av python3-opencv` links both against the distribution's
+ffmpeg instead.
 
 Confirm the install:
 
@@ -24,6 +23,34 @@ Confirm the install:
 mosaic --help
 python -c "from mosaic.core.dataset import Dataset; print('OK')"
 ```
+
+## One ffmpeg build per environment
+
+Two ffmpeg builds loaded into one process crash it at a different point on each run,
+often with `Trace/BPT trap: 5`. On macOS every import also warns that
+`AVFFrameReceiver` is implemented twice, with or without a crash. Either symptom means
+the environment contains two builds.
+
+A plain pip install produces two builds in two ways. The PyPI wheels of `av` and of
+OpenCV each bundle a complete ffmpeg, and on macOS the two collide. On Linux mosaic's CI
+runs use both wheels without a crash, and on Windows OpenCV loads its ffmpeg as a
+separate library on demand. Separately, the `lightning-action` and `movement` extras
+require `opencv-python-headless` beside mosaic's `opencv-python`, and pip installs both
+wheels into one `cv2` package on every platform. The conda-forge builds avoid both,
+because they link the environment's ffmpeg and one `py-opencv` registers both OpenCV
+names.
+
+On macOS, install `av` and `py-opencv` from conda-forge, and do not install either one
+with pip afterward. To repair an environment that shows either symptom, remove the
+wheels and reinstall the conda builds:
+
+```bash
+pip uninstall -y av opencv-python opencv-python-headless
+conda install -c conda-forge --force-reinstall ffmpeg av py-opencv -y
+```
+
+`--force-reinstall` restores conda files that a wheel overwrote or the uninstall
+removed. On Linux, reinstalling the apt packages above repairs it too.
 
 ## Optional extras
 
@@ -42,10 +69,13 @@ PyTorch, and on Linux about 4 GB of CUDA wheels.
 | `lightning-action` | Lightning-Action temporal action classifier                     |
 | `feral`            | FERAL V-JEPA behavior classifier, training and inference        |
 
-One thing to know before choosing:
+Two things to know before choosing:
 
 - **`faiss` installs `faiss-cpu`.** On Linux with CUDA, install `faiss-gpu` yourself
   instead.
+- **`lightning-action` installs only on a machine with CUDA.** It requires NVIDIA's
+  `nvidia-dali-cuda110`. PyPI serves that as a source package whose build needs CUDA,
+  and the extra therefore fails to install on macOS and on any machine without CUDA.
 
 Note: for an install without CUDA, take PyTorch from its own index:
 
@@ -56,6 +86,21 @@ pip install -e ".[all]" --extra-index-url https://download.pytorch.org/whl/cpu
 Spectral features, the SLEAP analysis reader and the DeepLabCut HDF5 reader are **not**
 extras: PyWavelets, h5py and PyTables are base dependencies, because each one gates
 reading a file you already have rather than an integration you opted into.
+
+### Extra names that no longer exist
+
+An install command saved from an older mosaic may name an extra that is gone. pip
+warns about an unknown extra and installs the base without it.
+`pip install -e ".[recommended]"` therefore gives an environment with no PyTorch.
+Replace each retired name:
+
+| Retired extra | Install instead |
+| ------------- | --------------- |
+| `recommended` | `all` |
+| `identity`, `localizer` | `deep-learning` |
+| `gpu` | `faiss` |
+| `pose`, `polo` | `deep-learning`, and for YOLO work the [Ultralytics or POLO environment](#ultralytics-and-polo) |
+| `yolo-augment` | `--extra augment` on that environment's `uv sync` |
 
 ## Tools that run in their own environment
 

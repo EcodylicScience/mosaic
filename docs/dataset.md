@@ -75,6 +75,18 @@ caller can point at a dataset that does not exist yet and create it. That makes
 the bare constructor a working expression whose roots are all empty, and every
 accessor on it then fails against a manifest file that is perfectly correct.
 
+### Manifest versions
+
+`dataset.yaml` records the format it was written in as `manifest_version`. A manifest
+in an older format opens in a newer mosaic. It is migrated in memory, and the file on
+disk changes only when something saves the dataset. A dataset on a read-only mount
+therefore opens too. A manifest in a newer format than your mosaic understands raises
+`ManifestVersionError` rather than being read under the wrong rules. Upgrade mosaic
+instead of editing the version.
+
+A top-level key that mosaic does not use survives a load and a save. A key you add to
+`dataset.yaml` by hand is kept.
+
 ## Dataset folder layout
 
 ```
@@ -93,7 +105,11 @@ accessor on it then fails against a manifest file that is perfectly correct.
 │   ├── trex/  trex-convert/  sleap/  litpose/  ultralytics/
 │   └── infer-pose/  infer-points/  infer-localizer/
 ├── features/
-└── models/
+├── models/
+└── .mosaic/
+    ├── runs/               one log per attempt
+    ├── pipelines/          recipes applied here, and requests/ for each submission
+    └── claims/             failures counted per entry, across resubmissions
 ```
 
 Directory assignments:
@@ -106,8 +122,22 @@ Directory assignments:
   `features/`, `models/`.
 - **Temporary files** — `_tracking/` raw tracker output before conversion, reclaimed
   by `mosaic sweep-tracking` once a run is finished.
+- **Run records**, in `.mosaic/`: what was attempted and submitted here, as
+  [Run work and see what ran](guides/pipelines/run-and-see-what-ran.md#where-what-ran-is-recorded)
+  describes.
 
-Deleting a derived or temporary folder costs time, never data.
+Deleting a derived or temporary folder costs time, never data. Keep `.mosaic/claims/`.
+It counts how often each entry has failed in a pipeline, across resubmissions, and
+nothing else records that. Deleting it makes entries known to fail look new, and they
+are retried. [Failed entries](concepts/pipelines.md#failed-entries-waiting-and-quarantined)
+covers how to retry one entry instead.
+
+Each file mosaic writes under a lock keeps a zero-byte `<name>.lock` beside it:
+`index.csv.lock`, a tracks variant's `params.json.lock`, and `dataset.yaml.lock`. They
+are not data, and mosaic never removes them.
+Leave them in place. Deleting one while a process writes the index lets two writers
+erase each other's rows. A script that lists a dataset folder should expect them and
+skip them.
 
 **`labels_raw/keypoints/` is versioned, and the rest of `labels_raw/` is not.** An
 uploaded label file is the current truth about its sequence: change it, and whatever
@@ -120,6 +150,20 @@ which is how it stays tied to exactly those annotations. Treat a revision folder
 read-only: one that was edited afterwards is refused.
 `labels_raw/behavior/` is reserved for saved behavior scorings, which will work the
 same way.
+
+## Where a dataset can live
+
+A dataset needs a filesystem that supports file locks, because every index write takes
+one. A local disk does. Some network mounts do not, such as an NFS export mounted with
+`nolock` or a FUSE mount, and there the first index write raises
+`IndexLockUnsupported`. mosaic does not fall back to writing unlocked. Keep the dataset
+on a disk that locks, and declare the recordings on the share as a
+[source](#add-sources-and-scan).
+
+A lock serializes the processes that see one filesystem. Two machines writing one
+synced folder, such as a Dropbox folder, each lock their own copy, and the sync service
+then makes conflicted copies of the index without an error. Write to such a dataset
+from one machine at a time.
 
 ## Index files placed in the dataset
 
@@ -195,6 +239,56 @@ scan replaces only what its own sources claim.
 
 A source path may also be relative to the dataset, so `--path media_raw` declares the
 files you placed there as a source and brings them under `mosaic scan` too.
+
+## Entry names
+
+Each recording is an **entry**, named by a `group` and a `sequence`, and `group` may be
+empty ([why](concepts/datasets.md#groups-are-an-optional-namespace)). Neither name may
+contain `/`, `\` or a NUL character, because each has to work as a single directory
+name, and mosaic raises `ValueError` rather than write one into an index. Join the
+levels of a hierarchy with `__` instead, which `parse_hierarchy` splits back into
+named levels:
+
+```python
+from mosaic.core.helpers import parse_hierarchy
+
+parse_hierarchy("day1__arena2", "trial07", ["day", "arena", "trial"])
+# {'day': 'day1', 'arena': 'arena2', 'trial': 'trial07'}
+```
+
+## Declare a continuous recording
+
+A recording split into several clips is one entry, whose frames are numbered across
+its clips. Declare a **continuous group** only when you need the parts of one
+recording as separate sequences, such as the half-hour divisions of a 6-hour session,
+and still want windowed features to read across the boundaries between them
+([why both are needed](concepts/features.md#reading-across-a-sequence-boundary)).
+mosaic makes no continuous group by itself. Build one in three steps:
+
+1. **Number frames across the whole recording** when you convert. Each sequence starts
+   at the sum of the frame counts of the files before it. The second half-hour of a
+   30 fps session starts at frame 54000. No built-in converter applies such an offset,
+   and [your own converter](guides/tracking/write-a-converter.md) has to.
+   Sequences that each restart at frame 0 cannot form a continuous group.
+2. **Declare the group**, which must have a non-empty name. The list replaces any
+   earlier one, and is saved as `continuous_groups:` in `dataset.yaml`:
+
+    ```python
+    ds.set_continuous_groups(["session1"])
+    ```
+
+3. **Measure the frame extents** if the tracks were converted before mosaic recorded
+   them. Their extent reads blank, and a blank extent is refused:
+
+    ```python
+    ds.measure_frame_extents()
+    ```
+
+    ```bash
+    mosaic measure-tracks -m dataset.yaml --apply
+    ```
+
+A feature run with `overlap_frames` then reads across the boundaries.
 
 ## Link a model library
 

@@ -1,7 +1,7 @@
 # What a tracker reports, and in what units
 
 Every tracker mosaic drives, and every format it imports, produces the same thing: one
-parquet table per sequence, validated against a registered schema. Four rules govern
+parquet table per sequence, validated against a registered schema. Five rules govern
 what is in it. Knowing them is what keeps you from comparing quantities that are not
 comparable.
 
@@ -50,6 +50,20 @@ and nothing else — emits no `poseX*` / `poseY*` columns at all.
 Features defined on keypoints (`heading`, `body-scale`, `orientation-rel`, the `pair-*`
 family) refuse a table without them and say so by name. Features that merely prefer them
 (`egocentric-crop`, `overlay`) fall back to the body center.
+
+## `frame` counts the media's frames
+
+`frame` is the 0-based position of a frame in the entry's media. For an entry recorded
+as several clips it counts across the clips in order, as every tracker mosaic drives
+reads them. In a [continuous group](../dataset.md#declare-a-continuous-recording) it
+counts across the whole recording. A later sequence starts where the one before it
+ended. A converter takes `frame` from the file it reads. Tracks imported as one
+file per clip therefore have to be numbered across the recording already.
+
+For a Motif or Loopbio imgstore, `frame` is the store's `frame_index`, its contiguous
+running count. It is not the `frame_number` the camera stamped on each frame, which
+skips where the camera dropped frames. A camera log keyed by `frame_number` therefore
+has to be mapped through the store's own index before it is joined on `frame`.
 
 ## The schema families
 
