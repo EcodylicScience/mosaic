@@ -32,7 +32,9 @@ from mosaic.core.pipeline.graph import (
     run_pipeline,
     run_status_wire,
 )
+from mosaic.core.pipeline.inventory import FeatureRunRef
 from mosaic.core.pipeline.models import model_run_root
+from mosaic.core.pipeline.preview import preview_artifact
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 from mosaic.runlog import JsonlRunLog, list_runs, run_log_path
 from mosaic.core.pipeline.tracks_index import read_tracks_index
@@ -52,7 +54,8 @@ MODEL_KIND = "train-pose"
 MODEL_RUN_ID = "train-pose.0.1-0123456789"
 MODEL_REF = f"trained-model/{MODEL_KIND}/{MODEL_RUN_ID}"
 LOSSY_EXECUTION_ID = "01H00000000000000000000000"
-LOSSY_TARGET = "speed-angvel__from__tracks"
+SPEED_STORAGE = "speed-angvel__from__tracks"
+LOSSY_TARGET = SPEED_STORAGE
 LOSSY_RUN_ID = "0.2-abcdef0123"
 
 RECIPE: dict[str, object] = {
@@ -78,6 +81,7 @@ class ReadDataset:
     request_id: str = ""
     execution_id: str = ""
     lossy_execution_id: str = ""
+    feature_run_id: str = ""
 
     @property
     def root(self) -> Path:
@@ -122,6 +126,7 @@ def populated(tmp_path: Path) -> ReadDataset:
         request_id=done.request_id,
         execution_id=done.outcomes[0].execution_id,
         lossy_execution_id=LOSSY_EXECUTION_ID,
+        feature_run_id=done.outcomes[0].run_id or "",
     )
 
 
@@ -170,6 +175,7 @@ CLI_READS: dict[str, CliArguments] = {
     "pipeline list": lambda _: ["pipeline", "list", "--limit", "1"],
     "pipeline plan": lambda f: ["pipeline", "plan", "--recipe", f"@{f.recipe_path}"],
     "pipeline status": lambda f: ["pipeline", "status", "--request", f.request_id],
+    "preview": lambda _: ["preview", f"tracks-variant/{VARIANT}", "--entry", "seq_a"],
     "prune-joined --dry-run": lambda _: ["prune-joined"],
     "prune-media --dry-run": lambda _: ["prune-media"],
     "reconcile --dry-run": lambda _: ["reconcile"],
@@ -307,6 +313,9 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "open_dataset": ReadDataset.reopened,
     "plan_pipeline": lambda f: plan_pipeline(
         f.reopened(), Recipe.model_validate(RECIPE)
+    ),
+    "preview_artifact": lambda f: preview_artifact(
+        f.reopened(), FeatureRunRef(SPEED_STORAGE, f.feature_run_id), ("", "seq_a")
     ),
     "read_runs": lambda f: read_runs(run_log_dir(f.root)),
     "read_tracks_index": lambda f: read_tracks_index(f.reopened()),

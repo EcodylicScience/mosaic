@@ -45,10 +45,8 @@ import pandas as pd
 from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types.data_config import COLUMNS
-from mosaic.core.pipeline.writers import (
-    read_parquet_column_names,
-    read_parquet_table_columns,
-)
+from mosaic.core.pipeline.parquet_reader import read_parquet_column_names
+from mosaic.core.pipeline.writers import read_parquet_table_columns
 from mosaic.core.pipeline.composition import composition_drift
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.file_digest import MODEL_DIGEST_HEX

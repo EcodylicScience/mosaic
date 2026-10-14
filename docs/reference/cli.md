@@ -23,6 +23,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `release`: Release the run roots claimed by an...
 * `track`: Run an integrated tracker over scoped...
 * `sequences`: List sequences (optionally filtered by...
+* `preview`: Preview one entry's table: schema, row...
 * `init`: Create a dataset: write dataset.yaml and...
 * `scan`: Rescan every declared source and rewrite...
 * `reindex`: Drop index rows whose files no longer...
@@ -182,6 +183,29 @@ $ mosaic sequences [OPTIONS]
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--group <str>`: Restrict to one group namespace.
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
+## `mosaic preview`
+
+Preview one entry's table: schema, row count, frame extent, rows and statistics.
+
+**Usage**:
+
+```console
+$ mosaic preview [OPTIONS] {ref}
+```
+
+**Arguments**:
+
+* `ref`: The artifact's ref, as 'mosaic inventory' prints it: feature/<storage>/<run_id> or tracks-variant/<run_id>.  [required]
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--entry <str>`: The group:sequence entry whose table to read. A bare name is a sequence in the empty group.  [required]
+* `--column <str>`: Read this column for the rows and statistics (repeatable). Default: every column.
+* `--limit <int>`: How many rows to print, at most 50 (default 20).
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 

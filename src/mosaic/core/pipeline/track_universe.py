@@ -44,7 +44,7 @@ from mosaic.core.pipeline.dataset_indexes import feature_storages
 from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.types import COLUMNS
-from mosaic.core.pipeline.writers import read_parquet_column_names
+from mosaic.core.pipeline.parquet_reader import read_parquet_column_names
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset

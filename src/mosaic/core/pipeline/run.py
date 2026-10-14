@@ -90,11 +90,11 @@ from .types import (
     TracksColumn,
 )
 from .job import CancelToken, Cancelled, JobContext, job_context
+from .parquet_reader import output_n_rows
 from .progress import ProgressCallback
 from .writers import (
     FeatureOutput,
     default_check_output,
-    output_n_rows,
     trim_feature_output,
     write_output,
 )

@@ -270,6 +270,26 @@ plain table adds `lane`, `available` and `restricted`. `mosaic features describe
 `unavailable`, `license_note` and `lane`. `mosaic pipeline catalog --json` adds
 `license_note` to each entry.
 
+**`mosaic preview` reads one entry's table of a feature run or a tracks
+variant.** `preview_artifact(ds, ref, entry, *, columns, limit)` in
+`mosaic.core.pipeline.preview` returns an `ArtifactPreview`: the parquet
+footer's columns, `n_rows`, `frame_min` and `frame_max`, the first `limit` rows
+(20 by default, at most 50), and the min, max, mean and NaN-or-null fraction of
+each numeric column read. A column is typed `int`, `float`, `text` or `other`,
+rows are positional in the order of `read_columns`, and a non-finite float is
+`null`. `ref` is a `FeatureRunRef` or a `TracksVariantRef`, and `preview_ref`
+reads one from the address that `mosaic inventory` prints. The preview takes no
+lock, converts nothing and writes nothing. An unindexed entry or an absent file
+raises `PreviewNotFound`, a `not_found` error, an indexed file that is not a
+readable parquet raises `PreviewUnreadable`, a `conflict` error, and a malformed
+ref, an unknown column or a limit out of range raises `PreviewInvalid`, an
+`invalid` error. The statistics are read one column and one row group at a time,
+and an integer column's min and max are exact.
+
+**`read_parquet_column_names` and `output_n_rows` moved** from
+`mosaic.core.pipeline.writers` to `mosaic.core.pipeline.parquet_reader`, which
+holds every footer read.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

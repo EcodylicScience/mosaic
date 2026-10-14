@@ -26,6 +26,7 @@ from mosaic.cli.scan import scan_command
 from mosaic.cli.sources import sources_app
 from mosaic.cli.tags import notes_app, tags_app
 from mosaic.cli.pipeline import pipeline_app
+from mosaic.cli.preview import preview_command
 from mosaic.cli.prune_joined import prune_joined_command
 from mosaic.cli.prune_media import prune_media_command
 from mosaic.cli.reconcile import reconcile_command
@@ -62,6 +63,7 @@ app.add_typer(features_app, name="features")
 app.add_typer(tracking_app, name="tracking")
 app.add_typer(media_app, name="media")
 _ = app.command(name="sequences")(sequences_command)
+_ = app.command(name="preview")(preview_command)
 app.add_typer(inventory_app, name="inventory")
 app.add_typer(models_app, name="models")
 app.add_typer(pipeline_app, name="pipeline")

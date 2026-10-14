@@ -40,7 +40,7 @@ from .types import (
     ParquetLoadSpec,
     resolve_order_col,
 )
-from .writers import read_parquet_column_names
+from .parquet_reader import read_parquet_column_names
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
