@@ -16,13 +16,14 @@ from mosaic.core.dataset_summary import (
     dataset_summary,
 )
 from mosaic.core.manifest import MANAGED_BY_KEY, DatasetTag
-from mosaic.core.pipeline.graph import Recipe, run_pipeline
+from mosaic.core.pipeline.graph import run_pipeline
 from mosaic.core.pipeline.inventory import inventory
 from mosaic.core.pipeline.media_index import frame_from_rows, write_media_index_rows
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking import dataset_inventory
 from tests.helpers import (
+    speed_recipe,
     UPDATE_GOLDEN_ENV,
     add_tracks_variant,
     make_dataset,
@@ -44,19 +45,6 @@ LEGACY_VARIANT = "convert-trex.0.1-2222222222"
 MODEL_KIND = "train-pose"
 MODEL_RUN_ID = "train-pose.0.1-0123456789"
 
-SPEED_RECIPE: dict[str, object] = {
-    "schema_version": 1,
-    "name": "speed",
-    "steps": [
-        {
-            "id": "speed",
-            "type": "feature",
-            "feature": "speed-angvel",
-            "inputs": ["tracks"],
-        }
-    ],
-}
-
 
 def _index_media(ds: Dataset, rates: list[object]) -> None:
     """Write an originals media index with one row per frame rate cell."""
@@ -74,7 +62,7 @@ def populated(tmp_path: Path) -> Dataset:
     """Two tracks variants of two schemas, a feature run, a trained model and media."""
     ds = make_dataset(tmp_path / "ds", name="populated")
     add_tracks_variant(ds, PIXEL_VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
-    _ = run_pipeline(ds, Recipe.model_validate(SPEED_RECIPE))
+    _ = run_pipeline(ds, speed_recipe())
     add_tracks_variant(ds, LEGACY_VARIANT, "seq_c")
     run_root = model_run_root(ds, MODEL_KIND, MODEL_RUN_ID)
     run_root.mkdir(parents=True)

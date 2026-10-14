@@ -63,6 +63,8 @@ What lives where:
   the golden-file directory, which a test names from here rather than from its
   own location. It also names the programs of the external tools, relative to
   the package root.
+- ``fresh_interpreter``: a program run in a fresh interpreter, and the modules
+  that a statement loads there.
 - ``golden`` -- reading and rewriting the golden files under ``tests/data/``.
 - ``recipes``: the recipes a graph test validates, plans or runs.
 - ``trees``: snapshots of a directory tree, and the assertion that a call left
@@ -118,6 +120,7 @@ from tests.helpers.features import (
 )
 from tests.helpers.kpms import kpms_params
 from tests.helpers.latents import assert_latents_at_centers, window_centers
+from tests.helpers.fresh_interpreter import modules_loaded_by, run_fresh
 from tests.helpers.golden import (
     UPDATE_GOLDEN_ENV,
     golden_path,
@@ -159,7 +162,12 @@ from tests.helpers.processes import (
     cancel_when,
     wait_for,
 )
-from tests.helpers.recipes import GUPPIES_RECIPE, guppies_recipe
+from tests.helpers.recipes import (
+    GUPPIES_RECIPE,
+    SPEED_RECIPE,
+    guppies_recipe,
+    speed_recipe,
+)
 from tests.helpers.models import register_trained_model
 from tests.helpers.ops import minimal_op_params
 from tests.helpers.paths import (
@@ -260,6 +268,7 @@ __all__ = [
     "FAKE_HANDLERS",
     "FFMPEG_TOOLCHAIN",
     "GUPPIES_RECIPE",
+    "SPEED_RECIPE",
     "FakeDetections",
     "FakeResult",
     "GOLDEN_DIR",
@@ -360,6 +369,7 @@ __all__ = [
     "model_reference",
     "missing_ffmpeg_tools",
     "module_tree",
+    "modules_loaded_by",
     "names_called_by",
     "names_read",
     "paint_frame_code",
@@ -383,6 +393,7 @@ __all__ = [
     "result_outputs",
     "result_run_root",
     "revision_file",
+    "run_fresh",
     "run_id_digest",
     "runs_in_an_external_environment",
     "sandbox_home",
@@ -390,6 +401,7 @@ __all__ = [
     "self_referenced_extras",
     "set_tracks_cell",
     "source_tree",
+    "speed_recipe",
     "store_dataset",
     "stub_join",
     "stub_media_dataset",

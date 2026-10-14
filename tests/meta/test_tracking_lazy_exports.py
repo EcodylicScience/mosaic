@@ -12,8 +12,6 @@ whatever an earlier test already imported.
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -24,7 +22,7 @@ from mosaic.tracking.common.index import (
     tracker_index,
     tracker_index_path,
 )
-from tests.helpers import make_dataset
+from tests.helpers import make_dataset, run_fresh
 
 HEAVY_MODULES = ("cv2", "av", "pandas")
 """The modules that importing the package must not load."""
@@ -58,21 +56,15 @@ PRODUCER_MODULES = (
 )
 """The trackers, trainers and frame extraction, which an inventory read leaves unloaded."""
 
-
-def _run(code: str) -> str:
-    """Run *code* in a fresh interpreter, returning its stdout."""
-    completed = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=False
-    )
-    assert completed.returncode == 0, completed.stderr
-    return completed.stdout.strip()
+INVENTORY_BUDGET = ("cv2", "av", "mosaic.behavior.feature_library")
+"""The media readers and the feature library, which an inventory read leaves unloaded."""
 
 
 @pytest.mark.parametrize("name", sorted(tracking_package.__all__))
 def test_every_exported_name_resolves(name: str) -> None:
     """Both spellings, in a fresh interpreter, for every name ``__all__`` claims."""
     assert (
-        _run(
+        run_fresh(
             f"from mosaic.tracking import {name}\n"
             f"import mosaic.tracking\n"
             f"assert getattr(mosaic.tracking, {name!r}) is not None\n"
@@ -90,12 +82,12 @@ def test_every_name_of_a_lazy_package_resolves(package: str) -> None:
         "missing = [n for n in package.__all__ if getattr(package, n, None) is None]\n"
         "print(missing or 'ok')"
     )
-    assert _run(code) == "ok"
+    assert run_fresh(code) == "ok"
 
 
 def test_a_submodule_still_imports_from_the_package() -> None:
     """A submodule name falls through ``__getattr__`` to the submodule import."""
-    assert _run("from mosaic.tracking import ops, trex\nprint('ok')") == "ok"
+    assert run_fresh("from mosaic.tracking import ops, trex\nprint('ok')") == "ok"
 
 
 def test_an_unknown_name_raises_attribute_error() -> None:
@@ -106,7 +98,7 @@ def test_an_unknown_name_raises_attribute_error() -> None:
         "except AttributeError:\n"
         "    print('raised')\n"
     )
-    assert _run(code) == "raised"
+    assert run_fresh(code) == "raised"
 
 
 def test_importing_the_package_loads_no_heavy_module() -> None:
@@ -116,7 +108,7 @@ def test_importing_the_package_loads_no_heavy_module() -> None:
         "import mosaic.tracking\n"
         f"print(sorted(m for m in {HEAVY_MODULES!r} if m in sys.modules) or 'none')"
     )
-    assert _run(code) == "none"
+    assert run_fresh(code) == "none"
 
 
 @pytest.mark.parametrize("package", LAZY_PACKAGES)
@@ -127,7 +119,7 @@ def test_a_package_body_imports_no_submodule(package: str) -> None:
         f"loaded = [m for m in sys.modules if m.startswith({package + '.'!r})]\n"
         "print(sorted(loaded) or 'none')"
     )
-    assert _run(code) == "none"
+    assert run_fresh(code) == "none"
 
 
 def test_the_inventory_reports_a_tracker_run_without_loading_a_producer(
@@ -135,10 +127,11 @@ def test_the_inventory_reports_a_tracker_run_without_loading_a_producer(
 ) -> None:
     """A fresh process reads a tracker run with no tracker module imported.
 
-    cv2 and av still load, through the tracks index that
-    ``mosaic.core.pipeline.inventory`` imports, so this checks what the tracking
-    side adds: no tracker subpackage, no op module that runs a tool, and no
-    frame extraction, the imports deferred into the record builders included.
+    Opening the dataset, reading its inventory, listing it and summarizing it
+    loads no tracker subpackage, no op module that runs a tool, no frame
+    extraction, the imports deferred into the record builders included, and none
+    of cv2, av and the feature library. pandas loads, because every index is read
+    through it.
     """
     ds = make_dataset(tmp_path / "ds")
     run_id = "trex.1.0-aaaaaaaaaa"
@@ -162,12 +155,17 @@ def test_the_inventory_reports_a_tracker_run_without_loading_a_producer(
     code = (
         "import json, sys\n"
         "from mosaic.core.dataset import open_dataset\n"
-        "from mosaic.core.pipeline.inventory import TrackerRunRef\n"
+        "from mosaic.core.dataset_summary import dataset_summary\n"
+        "from mosaic.core.pipeline.inventory import TrackerRunRef, inventory_wire\n"
         "from mosaic.tracking import dataset_inventory\n"
-        f"found = dataset_inventory(open_dataset({str(ds.manifest_path)!r}))\n"
+        f"ds = open_dataset({str(ds.manifest_path)!r}, ensure_roots=False)\n"
+        "found = dataset_inventory(ds)\n"
+        "_ = inventory_wire(ds, found)\n"
+        "_ = dataset_summary(ds, found=found)\n"
         f"record = found.record(TrackerRunRef(root_key='trex', run_id={run_id!r}))\n"
-        f"loaded = sorted(m for m in {PRODUCER_MODULES!r} if m in sys.modules)\n"
+        f"modules = {(*PRODUCER_MODULES, *INVENTORY_BUDGET)!r}\n"
+        "loaded = sorted(m for m in modules if m in sys.modules)\n"
         "print(json.dumps({'status': record and record.status, 'loaded': loaded}))"
     )
 
-    assert json.loads(_run(code)) == {"status": "complete", "loaded": []}
+    assert json.loads(run_fresh(code)) == {"status": "complete", "loaded": []}

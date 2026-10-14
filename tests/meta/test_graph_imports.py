@@ -23,7 +23,7 @@ from pathlib import Path
 
 import mosaic.core.pipeline.graph as graph_pkg
 
-from tests.helpers import imports_of
+from tests.helpers import imports_of, run_fresh
 
 _REGISTRY_MODULE = "mosaic.behavior.feature_library"
 
@@ -101,15 +101,6 @@ def test_the_registry_is_reached_from_exactly_one_module() -> None:
     )
 
 
-def _run(code: str) -> str:
-    """Run *code* in a fresh interpreter, returning its stdout."""
-    completed = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=False
-    )
-    assert completed.returncode == 0, completed.stderr
-    return completed.stdout.strip()
-
-
 def test_every_exported_name_of_the_graph_package_resolves() -> None:
     names = sorted(graph_pkg.__all__)
     code = (
@@ -118,7 +109,7 @@ def test_every_exported_name_of_the_graph_package_resolves() -> None:
         f"missing = [n for n in {names!r} if not hasattr(package, n)]\n"
         "print(missing or 'ok')"
     )
-    assert _run(code) == "ok"
+    assert run_fresh(code) == "ok"
 
 
 def test_the_graph_package_body_imports_no_submodule() -> None:
@@ -129,4 +120,4 @@ def test_the_graph_package_body_imports_no_submodule() -> None:
         "prefix = 'mosaic.core.pipeline.graph.'\n"
         "print(sorted(m for m in sys.modules if m.startswith(prefix)) or 'none')"
     )
-    assert _run(code) == "none"
+    assert run_fresh(code) == "none"

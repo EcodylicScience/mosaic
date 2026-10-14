@@ -11,10 +11,8 @@ whatever an earlier test already imported.
 
 from __future__ import annotations
 
-import subprocess
-import sys
-
 import mosaic.core.pipeline as pipeline_package
+from tests.helpers import run_fresh
 
 HEAVY_MODULES = ("cv2", "av", "pandas")
 """The modules that importing the package must not load."""
@@ -29,18 +27,9 @@ SUBMODULES_ONCE_BOUND = (
 """Submodules that the package imported for their registration side effect."""
 
 
-def _run(code: str) -> str:
-    """Run *code* in a fresh interpreter, returning its stdout."""
-    completed = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=False
-    )
-    assert completed.returncode == 0, completed.stderr
-    return completed.stdout.strip()
-
-
 def test_every_exported_name_resolves_by_from_import() -> None:
     names = ", ".join(sorted(pipeline_package.__all__))
-    assert _run(f"from mosaic.core.pipeline import {names}\nprint('ok')") == "ok"
+    assert run_fresh(f"from mosaic.core.pipeline import {names}\nprint('ok')") == "ok"
 
 
 def test_every_exported_name_resolves_as_an_attribute() -> None:
@@ -50,13 +39,13 @@ def test_every_exported_name_resolves_as_an_attribute() -> None:
         f"missing = [n for n in {names!r} if getattr(package, n, None) is None]\n"
         "print(missing or 'ok')"
     )
-    assert _run(code) == "ok"
+    assert run_fresh(code) == "ok"
 
 
 def test_a_submodule_still_imports_from_the_package() -> None:
     """A submodule name falls through ``__getattr__`` to the submodule import."""
     names = ", ".join(SUBMODULES_ONCE_BOUND)
-    assert _run(f"from mosaic.core.pipeline import {names}\nprint('ok')") == "ok"
+    assert run_fresh(f"from mosaic.core.pipeline import {names}\nprint('ok')") == "ok"
 
 
 def test_an_unknown_name_raises_attribute_error() -> None:
@@ -67,7 +56,7 @@ def test_an_unknown_name_raises_attribute_error() -> None:
         "except AttributeError:\n"
         "    print('raised')\n"
     )
-    assert _run(code) == "raised"
+    assert run_fresh(code) == "raised"
 
 
 def test_importing_the_package_loads_no_heavy_module() -> None:
@@ -77,7 +66,7 @@ def test_importing_the_package_loads_no_heavy_module() -> None:
         "import mosaic.core.pipeline\n"
         f"print(sorted(m for m in {HEAVY_MODULES!r} if m in sys.modules) or 'none')"
     )
-    assert _run(code) == "none"
+    assert run_fresh(code) == "none"
 
 
 def test_the_package_body_imports_no_submodule() -> None:
@@ -87,4 +76,4 @@ def test_the_package_body_imports_no_submodule() -> None:
         "loaded = [m for m in sys.modules if m.startswith('mosaic.core.pipeline.')]\n"
         "print(sorted(loaded) or 'none')"
     )
-    assert _run(code) == "none"
+    assert run_fresh(code) == "none"

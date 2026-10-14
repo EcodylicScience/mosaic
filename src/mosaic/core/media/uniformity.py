@@ -56,7 +56,6 @@ from mosaic_media import (
 )
 
 from mosaic.core.media.facts_columns import row_facts_or_none
-from mosaic.core.media.video_io import facts_to_video_metadata
 from mosaic.core.pipeline.media_index import VideoOrderKey, assign_video_order
 
 __all__ = [
@@ -186,6 +185,9 @@ def camera_uniformity(
     commit rather than a second implementation of the ranking that could disagree
     with it.
     """
+    # ``video_io`` imports cv2 and av, and ``Dataset`` imports this module.
+    from mosaic.core.media.video_io import facts_to_video_metadata
+
     arranged = _arranged(rows, order_by_name)
     measured: list[MeasuredVideoProperties] = []
     unmeasured: list[str] = []

@@ -38,9 +38,9 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
 - `test_graph_imports.py`: `core.pipeline.graph` importing the feature library or a
   submodule at import, an exported name that does not resolve, or a module other
   than `resolve` importing `FEATURES`.
-- `test_status_imports.py`: the import of a status reader, a request lister or the
-  entry-error report loading pandas, cv2, av or the feature library, or
-  `import mosaic.runlog` loading pydantic.
+- `test_status_imports.py`: the import or a call of a status reader, a request
+  lister or the entry-error report loading pandas, cv2, av or the feature library,
+  or `import mosaic.runlog` loading pydantic.
 - `test_external_tool_separation.py`: an import across a separated tool's
   boundary, or a declaration of the tool in mosaic's dependencies.
 - `test_behavior_import_is_torch_free.py`: `import mosaic.behavior` importing torch.
@@ -50,8 +50,11 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   import, or importing it loading cv2, av or pandas.
 - `test_tracking_lazy_exports.py`: `mosaic.tracking`, `tracking.common`,
   `tracking.frame_extraction` or `tracking.ops` importing a submodule at import, an
-  exported name that does not resolve, or the tracking inventory contributors
-  loading a tracker subpackage, a trainer or frame extraction.
+  exported name that does not resolve, or an inventory read loading a tracker
+  subpackage, a trainer, frame extraction, cv2, av or the feature library.
+- `test_media_lazy_exports.py`: `mosaic.core.media` or `core.media.preprocess`
+  importing a frame reader or a step at import, an exported name that does not
+  resolve, or `import mosaic.core.dataset` loading cv2 or av.
 - `test_lazy_export_identity.py`: a public name of a package that binds names
   through `lazy_export` that equals a submodule basename, or that resolves to an
   object other than the one its table names.

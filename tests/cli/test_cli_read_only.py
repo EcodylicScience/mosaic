@@ -7,7 +7,9 @@ a read that rewrites an index changes one. The assertion names each.
 
 A new read joins ``CLI_READS`` or ``LIBRARY_READS``, and also
 ``CLI_READS_OF_NOTHING`` when it succeeds on a dataset that holds nothing yet.
-``reprobe-media`` needs indexed videos and has a test of its own.
+``reprobe-media`` needs indexed videos and has a test of its own. ``features
+list``, ``features describe``, ``pipeline catalog``, ``catalog_index`` and
+``describe_step_type`` take no dataset and are not listed.
 """
 
 from __future__ import annotations
@@ -24,7 +26,6 @@ from mosaic.core.dataset_discovery import discover_datasets
 from mosaic.core.dataset_summary import dataset_summary
 from mosaic.core.pipeline.graph import (
     FileFailureStore,
-    Recipe,
     entry_errors_wire,
     list_requests,
     load_request,
@@ -42,6 +43,8 @@ from mosaic.runlog import JsonlRunLog, list_runs, run_log_path
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
 from tests.helpers import (
+    SPEED_RECIPE,
+    speed_recipe,
     add_media_sequence,
     add_tracks_variant,
     assert_tree_unchanged,
@@ -59,19 +62,6 @@ LOSSY_EXECUTION_ID = "01H00000000000000000000000"
 SPEED_STORAGE = "speed-angvel__from__tracks"
 LOSSY_TARGET = SPEED_STORAGE
 LOSSY_RUN_ID = "0.2-abcdef0123"
-
-RECIPE: dict[str, object] = {
-    "schema_version": 1,
-    "name": "speed",
-    "steps": [
-        {
-            "id": "speed",
-            "type": "feature",
-            "feature": "speed-angvel",
-            "inputs": ["tracks"],
-        }
-    ],
-}
 
 
 @dataclass(frozen=True)
@@ -105,7 +95,7 @@ def _strip_to_content(root: Path) -> None:
 
 def _recipe_file(tmp_path: Path) -> Path:
     path = tmp_path / "recipe.json"
-    path.write_text(json.dumps(RECIPE), encoding="utf-8")
+    path.write_text(json.dumps(SPEED_RECIPE), encoding="utf-8")
     return path
 
 
@@ -114,7 +104,7 @@ def populated(tmp_path: Path) -> ReadDataset:
     """Tracks, a finished feature run, its pipeline request, and a trained model."""
     dataset = make_dataset(tmp_path / "populated")
     add_tracks_variant(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
-    done = run_pipeline(dataset, Recipe.model_validate(RECIPE))
+    done = run_pipeline(dataset, speed_recipe())
     run_root = model_run_root(dataset, MODEL_KIND, MODEL_RUN_ID)
     run_root.mkdir(parents=True)
     weights = run_root / "best.pt"
@@ -317,9 +307,7 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "list_runs": lambda f: list_runs(run_log_dir(f.root), limit=1),
     "load_tracks": lambda f: f.reopened().load_tracks("", "seq_a", auto_convert=False),
     "open_dataset": ReadDataset.reopened,
-    "plan_pipeline": lambda f: plan_pipeline(
-        f.reopened(), Recipe.model_validate(RECIPE)
-    ),
+    "plan_pipeline": lambda f: plan_pipeline(f.reopened(), speed_recipe()),
     "preview_artifact": lambda f: preview_artifact(
         f.reopened(), FeatureRunRef(SPEED_STORAGE, f.feature_run_id), ("", "seq_a")
     ),

@@ -17,7 +17,7 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import error_envelope
-from mosaic.core.pipeline.graph import Recipe, run_pipeline
+from mosaic.core.pipeline.graph import run_pipeline
 from mosaic.core.pipeline.inventory import FeatureRunRef, TracksVariantRef
 from mosaic.core.pipeline.preview import (
     MAX_PREVIEW_ROWS,
@@ -28,6 +28,7 @@ from mosaic.core.pipeline.preview import (
     preview_ref,
 )
 from tests.helpers import (
+    speed_recipe,
     add_track_sequences,
     add_tracks_table,
     make_dataset,
@@ -37,19 +38,6 @@ from tests.helpers import (
 VARIANT = "convert-trex.0.2-1111111111"
 ENTRY = ("", "seq_a")
 FEATURE_STORAGE = "speed-angvel__from__tracks"
-
-RECIPE: dict[str, object] = {
-    "schema_version": 1,
-    "name": "speed",
-    "steps": [
-        {
-            "id": "speed",
-            "type": "feature",
-            "feature": "speed-angvel",
-            "inputs": ["tracks"],
-        }
-    ],
-}
 
 
 def _table() -> pd.DataFrame:
@@ -225,7 +213,7 @@ def test_a_feature_run_is_previewed(tmp_path: Path) -> None:
     add_tracks_table(
         ds, VARIANT, track_table("", "seq_a", n_ids=2), std_format="mosaic_v1"
     )
-    done = run_pipeline(ds, Recipe.model_validate(RECIPE))
+    done = run_pipeline(ds, speed_recipe())
     run_id = done.outcomes[0].run_id
     assert run_id is not None
 

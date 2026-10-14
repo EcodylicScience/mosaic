@@ -314,6 +314,15 @@ manifest that does not read. The walk follows symbolic links once and passes ove
 a directory it cannot read. It does not enter a hidden directory, or a directory
 of a dataset named as one of its roots, such as `features` or `_tracking`.
 
+**Opening a dataset and reading its inventory leave cv2 and av unloaded.**
+`mosaic.core.media` and `mosaic.core.media.preprocess` bind their public names on
+access, and `from mosaic.core.media import MultiVideoReader` keeps working.
+Importing `mosaic.core.dataset`, `mosaic.core.pipeline.inventory` or a leaf of
+`core.media` used to load both through the two package `__init__` files. Reading
+any public name of `mosaic.core.media.preprocess` registers every built-in step in
+`MEDIA_STEPS`. Importing `mosaic.core.media.preprocess.registry` alone no longer
+does. An inventory read still loads pandas.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

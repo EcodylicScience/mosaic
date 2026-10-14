@@ -13,24 +13,13 @@ whatever an earlier test already imported, which for pandas is always.
 
 from __future__ import annotations
 
-import subprocess
-import sys
-
 import pytest
 
 import mosaic.core as core_package
+from tests.helpers import run_fresh
 
 LEAF_IMPORT = "from mosaic.core.scope import SCOPE_PARAM_KEYS"
 """A leaf under ``core``, imported for a name that needs pydantic and nothing else."""
-
-
-def _run(code: str) -> str:
-    """Run *code* in a fresh interpreter, returning its stdout."""
-    completed = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=False
-    )
-    assert completed.returncode == 0, completed.stderr
-    return completed.stdout.strip()
 
 
 @pytest.mark.parametrize("name", sorted(core_package.__all__))
@@ -44,7 +33,7 @@ def test_every_exported_name_resolves(name: str) -> None:
     a submodule reaches it, so the two spellings are checked separately.
     """
     assert (
-        _run(
+        run_fresh(
             f"from mosaic.core import {name}\n"
             f"import mosaic.core\n"
             f"assert getattr(mosaic.core, {name!r}) is not None\n"
@@ -61,7 +50,7 @@ def test_a_leaf_import_loads_neither_pandas_nor_h5py() -> None:
     reverts it, and nothing else would notice.
     """
     assert (
-        _run(
+        run_fresh(
             f"import sys\n"
             f"{LEAF_IMPORT}\n"
             f"print(sorted(m for m in ('pandas', 'h5py') if m in sys.modules) or 'neither')"
@@ -73,7 +62,7 @@ def test_a_leaf_import_loads_neither_pandas_nor_h5py() -> None:
 def test_the_package_body_binds_no_name_from_mosaic() -> None:
     """The import that would revert it, refused at the source rather than the symptom."""
     assert (
-        _run(
+        run_fresh(
             "import sys\n"
             "import mosaic.core\n"
             "loaded = [m for m in sys.modules if m.startswith('mosaic.core.')]\n"
@@ -100,7 +89,7 @@ those commands make, and :data:`LEAF_IMPORT` already covers it.
 @pytest.mark.parametrize("statement", QUEUE_IMPORTS)
 def test_what_the_queue_imports_loads_neither_pandas_nor_h5py(statement: str) -> None:
     assert (
-        _run(
+        run_fresh(
             f"import sys\n"
             f"{statement}\n"
             f"print(sorted(m for m in ('pandas', 'h5py') if m in sys.modules) or 'neither')"

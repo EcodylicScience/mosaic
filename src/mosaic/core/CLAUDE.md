@@ -20,6 +20,10 @@ in the root guide.
   `tests/core/track_library/test_track_converters.py`).
 - `core/media/` imports nothing from `behavior` or `tracking`. It does import
   `core.pipeline` modules (`media_index`, `joined_export`, `index_lock`, `provenance`).
+- `core/media/__init__.py` and `core/media/preprocess/__init__.py` bind their names
+  on access. A module that `Dataset` or the inventory imports defers its import of
+  `video_io`, `imgstore_io` or a step module into the function that reads frames
+  (`tests/meta/test_media_lazy_exports.py`).
   Frame sampling for annotation is in `tracking/frame_extraction/`.
 
 ## Dataset roots

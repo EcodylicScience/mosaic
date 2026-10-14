@@ -58,7 +58,6 @@ from .facts_columns import (
     read_link_cell,
     row_facts_or_none,
 )
-from .imgstore_io import imgstore_probe, is_imgstore
 from .probe_row import probe_video_metadata
 
 # The six cells a fresh probe always leaves empty because they record a
@@ -427,6 +426,9 @@ def _probe_media_index(
     Never aborts: the caller probes every index first and then decides, so one
     run can name the whole repair across both of them.
     """
+    # ``imgstore_io`` imports cv2 and av, and ``Dataset`` imports this module.
+    from .imgstore_io import imgstore_probe, is_imgstore
+
     probed: list[ProbedRow] = []
     missing: list[str] = []
     unprobeable: list[str] = []
