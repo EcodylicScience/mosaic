@@ -83,7 +83,7 @@ def inventory_command(
         if is_artifact_kind(name):
             wanted.append(name)
 
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=True)
     found = read_inventory(ds, kinds=wanted or None)
 
     ordered = sorted(found.records, key=_sort_key)

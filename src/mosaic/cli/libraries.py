@@ -40,7 +40,7 @@ def list_libraries(
     as_json: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     """Show every linked library, in the order a model lookup tries them."""
-    dataset = load_dataset(manifest)
+    dataset = load_dataset(manifest, read_only=True)
     listed = [
         {
             "id": link.id,

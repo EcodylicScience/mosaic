@@ -6,15 +6,15 @@ from collections.abc import Sequence
 from typing import Final
 
 from pydantic import TypeAdapter
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from mosaic.cli import app
 
 _PAYLOAD: Final = TypeAdapter(dict[str, object])
 
 
-def invoke_json(args: Sequence[str]) -> dict[str, object]:
-    """Run ``mosaic`` with *args*, assert it exited 0, and return its JSON stdout.
+def invoke_ok(args: Sequence[str]) -> Result:
+    """Run ``mosaic`` with *args*, assert it exited 0, and return the result.
 
     A failure names the exit code and both streams, because a command says why it
     failed on stderr.
@@ -23,4 +23,9 @@ def invoke_json(args: Sequence[str]) -> dict[str, object]:
     assert result.exit_code == 0, (
         f"exit={result.exit_code}\nstdout={result.stdout}\nstderr={result.stderr}"
     )
-    return _PAYLOAD.validate_json(result.stdout)
+    return result
+
+
+def invoke_json(args: Sequence[str]) -> dict[str, object]:
+    """Run ``mosaic`` with *args*, assert it exited 0, and return its JSON object."""
+    return _PAYLOAD.validate_json(invoke_ok(args).stdout)

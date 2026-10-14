@@ -66,7 +66,7 @@ def reindex_command(
     from mosaic.tracking import register_ops
 
     register_ops()
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=not apply)
     try:
         with stdout_to_stderr():
             dropped = (

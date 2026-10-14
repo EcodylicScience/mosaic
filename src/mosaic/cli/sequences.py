@@ -26,7 +26,7 @@ def sequences_command(
     ] = False,
 ) -> None:
     """List sequences (optionally filtered by group) from tracks/index.csv."""
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=True)
     # Keyed on the *unfiltered* index having no rows, which treats an absent
     # index and a header-only one alike -- they are one dataset state. A
     # --group that narrows to nothing is a different thing entirely and still

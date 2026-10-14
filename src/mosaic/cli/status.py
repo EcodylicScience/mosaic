@@ -36,7 +36,7 @@ def status_command(
     """Show the status of one run attempt by execution_id."""
     from mosaic.core.pipeline.run_log import read_run
 
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=True)
     run_dir = run_log_dir_for(ds)
     if not run_dir.exists():
         fail("No run-logs found (nothing has run yet).")

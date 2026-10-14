@@ -10,7 +10,7 @@ import pandas as pd
 
 from ..scope import Scope
 from ._utils import atomic_write, now_iso
-from .index_lock import index_lock
+from .index_lock import index_lock, index_lock_unless_dry_run
 
 RowT = TypeVar("RowT", bound="SchemaRowBase")
 
@@ -487,9 +487,8 @@ class IndexCSV(Generic[RowT]):
         # Locked for the whole read-decide-write, not just the write: this is a
         # DELETE racing concurrent appends, so an append landing between the
         # read and the rewrite would be erased by a keep-set computed before it
-        # existed. A dry run holds it too -- it reports what a real run would
-        # drop, and that answer is only meaningful against a stable file.
-        with index_lock(self.path):
+        # existed. A dry run writes nothing and takes no lock.
+        with index_lock_unless_dry_run(self.path, dry_run=dry_run):
             df = self._read_frame()
             if df.empty or "abs_path" not in df.columns:
                 return df.iloc[0:0]
@@ -515,8 +514,7 @@ class IndexCSV(Generic[RowT]):
         Locked for the whole read-decide-write, and for ``prune_missing``'s
         reason: this is a DELETE racing concurrent appends, so a row landing
         between the read and the rewrite would be erased by a keep set computed
-        before it existed. A dry run holds the lock too -- it reports what a real
-        run would drop, and that answer means nothing against a moving file.
+        before it existed. A dry run writes nothing and takes no lock.
 
         Args:
             run_ids: The run identifiers whose rows are to go.
@@ -597,12 +595,11 @@ class IndexCSV(Generic[RowT]):
         lock is why it is shared rather than written twice: both are a DELETE
         racing concurrent appends, so a row landing between the read and the
         rewrite would be erased by a keep set computed before it existed. A dry
-        run holds it too -- it reports what a real run would drop, and that answer
-        means nothing against a moving file.
+        run writes nothing and takes no lock.
         """
         if not self.path.exists():
             return self._empty_frame()
-        with index_lock(self.path):
+        with index_lock_unless_dry_run(self.path, dry_run=dry_run):
             df = self._read_frame()
             if df.empty:
                 return df.iloc[0:0]
@@ -686,7 +683,7 @@ class IndexCSV(Generic[RowT]):
         self._assert_run_index()
         if not self.path.exists():
             return 0
-        with index_lock(self.path):
+        with index_lock_unless_dry_run(self.path, dry_run=dry_run):
             df = self._read_frame()
             if df.empty:
                 return 0

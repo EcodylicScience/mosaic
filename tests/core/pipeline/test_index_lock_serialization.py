@@ -9,6 +9,7 @@ it survives the atomic writes it serializes.
 from __future__ import annotations
 
 import csv
+import os
 import subprocess
 import sys
 import tempfile
@@ -21,7 +22,12 @@ import pytest
 
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.index_csv import IndexCSV, IndexRowBase
-from mosaic.core.pipeline.index_lock import IndexLockTimeout, index_lock, lock_path_for
+from mosaic.core.pipeline.index_lock import (
+    IndexLockTimeout,
+    index_lock,
+    index_lock_unless_dry_run,
+    lock_path_for,
+)
 from tests.helpers import wait_for
 
 
@@ -367,6 +373,37 @@ def test_acquiring_still_creates_the_index_empty(tmp_path: Path) -> None:
         "index.csv",
         "index.csv.lock",
     ]
+
+
+def test_acquiring_leaves_an_existing_index_unchanged(tmp_path: Path) -> None:
+    """A lock taken and released without a write leaves the index's ``stat`` as it was.
+
+    ``InventoryCache.revalidate`` reads an index whose ``stat`` moved as
+    rewritten.
+    """
+    index_path = tmp_path / "index.csv"
+    index_path.write_text("key\nk1\n", encoding="utf-8")
+    old_ns = 1_000_000_000_000_000_000
+    os.utime(index_path, ns=(old_ns, old_ns))
+
+    with index_lock(index_path, timeout=10):
+        pass
+
+    assert index_path.stat().st_mtime_ns == old_ns
+    assert index_path.read_text(encoding="utf-8") == "key\nk1\n"
+
+
+def test_a_dry_run_takes_no_lock(tmp_path: Path) -> None:
+    """A dry run leaves neither the index nor its sidecar behind."""
+    index_path = tmp_path / "nested" / "index.csv"
+
+    with index_lock_unless_dry_run(index_path, dry_run=True):
+        pass
+
+    assert not index_path.parent.exists()
+
+    with index_lock_unless_dry_run(index_path, dry_run=False):
+        assert lock_path_for(index_path.resolve()).exists()
 
 
 def test_two_routes_to_one_index_take_one_lock(tmp_path: Path) -> None:

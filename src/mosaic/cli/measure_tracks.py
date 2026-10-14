@@ -91,7 +91,7 @@ def measure_tracks_command(
     # The passes judge a tracker's row by its op's frame window and by the
     # readers that its module registers, so every tracking op is imported first.
     register_ops()
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=not apply)
     try:
         with stdout_to_stderr():
             extents = ds.measure_frame_extents(dry_run=not apply)

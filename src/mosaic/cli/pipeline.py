@@ -166,7 +166,7 @@ def plan_command(
     )
     from mosaic.tracking.model_refs import ModelReferenceRefusedError
 
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=True)
     try:
         with stdout_to_stderr():
             plan = plan_pipeline(ds, _recipe(recipe), scope=_scope(entry))
@@ -460,7 +460,7 @@ def status_command(
     """
     from mosaic.core.pipeline.graph import load_request, request_rollup
 
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=True)
     try:
         request = load_request(ds.base_dir, request_id)
     except FileNotFoundError as exc:

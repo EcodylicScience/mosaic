@@ -109,6 +109,15 @@ and `--config-name` flags, which sleap-nn 0.3.1 accepts as well.
   `vame_sessions`; and the runner modules `runner_wire`, `vame_protocol` and
   `vame_runner` in `feature_library/external/`.
 
+**Read verbs and dry runs leave the dataset unchanged.** `inventory`, `status`,
+`runs`, `sequences`, `models provenance`, `pipeline plan`, `pipeline status`, the
+`list` and `show` verbs of `sources`, `tags`, `notes` and `libraries`, and every
+`--dry-run` used to create each declared root directory that was absent. A dry
+run also took the index lock, which created a `.lock` sidecar and stamped the
+index's modification time. Taking the lock no longer changes an existing index's
+modification time. New in the library: `index_lock_unless_dry_run` in
+`mosaic.core.pipeline.index_lock`.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

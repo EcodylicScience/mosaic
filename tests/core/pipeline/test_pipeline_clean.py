@@ -8,6 +8,7 @@ delete sibling steps' current directories.
 
 from __future__ import annotations
 
+import importlib
 import shutil
 
 import pandas as pd
@@ -438,7 +439,6 @@ class TestCleanWritesTheIndexThroughIndexCSV:
         rather than by racing processes, which is what ``index_csv`` already does
         for ``prune_missing``.
         """
-        from mosaic.core.pipeline import index_csv as index_csv_mod
         from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
 
         storage = "feat__from__tracks"
@@ -465,13 +465,14 @@ class TestCleanWritesTheIndexThroughIndexCSV:
         )
 
         locked: list[str] = []
-        real_lock = index_csv_mod.index_lock
+        index_lock_module = importlib.import_module("mosaic.core.pipeline.index_lock")
+        real_lock = index_lock_module.index_lock
 
         def recording_lock(path):
             locked.append(str(path))
             return real_lock(path)
 
-        monkeypatch.setattr(index_csv_mod, "index_lock", recording_lock)
+        monkeypatch.setattr(index_lock_module, "index_lock", recording_lock)
 
         pipe = Pipeline()
         monkeypatch.setattr(

@@ -77,7 +77,7 @@ def reconcile_command(
             f"known kinds: {', '.join(sorted(valid))}"
         )
 
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=not apply)
     try:
         with stdout_to_stderr():
             report = ds.reconcile(apply=apply, force=force, only=only_keys)

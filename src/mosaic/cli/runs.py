@@ -50,7 +50,7 @@ def runs_command(
     """List run attempts, optionally filtered by kind / status / target."""
     from mosaic.core.pipeline.run_log import RunLogSnapshot, read_runs
 
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=True)
     run_dir = run_log_dir_for(ds)
     rows: list[RunLogSnapshot] = read_runs(run_dir, kind=kind, status=status)
     if target is not None:

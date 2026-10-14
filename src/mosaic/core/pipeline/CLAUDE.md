@@ -51,6 +51,12 @@ pipeline graph are in `graph/CLAUDE.md`.
   `params.json`, merged under the same lock by `write_tracks_variant`, reads as absent
   while it is empty.
 - An unfamiliar errno keeps polling and ends in `IndexLockTimeout`.
+- A dry run reads without the lock, through `index_lock_unless_dry_run`, and leaves no
+  index or sidecar behind. It still sees one whole version, because every writer
+  replaces the file by rename.
+- Taking `index_lock` leaves an existing index's modification time unchanged, which
+  `InventoryCache.revalidate` relies on
+  (`test_acquiring_leaves_an_existing_index_unchanged`).
 
 ## The tracks index
 

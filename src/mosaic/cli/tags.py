@@ -53,7 +53,7 @@ def show_notes(
     as_json: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     """Print the dataset's notes."""
-    dataset = load_dataset(manifest)
+    dataset = load_dataset(manifest, read_only=True)
     if as_json:
         emit_json({"notes": dataset.notes})
     elif dataset.notes:
@@ -103,7 +103,7 @@ def list_tags(
     as_json: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     """Show every tag with its type, constraints and value."""
-    dataset = load_dataset(manifest)
+    dataset = load_dataset(manifest, read_only=True)
     listed = [
         {
             "name": tag.name,

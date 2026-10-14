@@ -69,7 +69,7 @@ def list_sources(
     as_json: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     """Show every declared source, and whether its files are currently there."""
-    dataset = load_dataset(manifest)
+    dataset = load_dataset(manifest, read_only=True)
     kinds: list[SourceKindArg] = (
         [_check_kind(kind)] if kind else ["media", "tracks", "labels"]
     )

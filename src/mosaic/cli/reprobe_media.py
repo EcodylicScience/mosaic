@@ -86,7 +86,7 @@ def reprobe_media_command(
     """
     from mosaic.core.media.reprobe import ReprobeAbort
 
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=not apply)
     try:
         with stdout_to_stderr():
             report = ds.reprobe_media(apply=apply, skip_unreadable=skip_unreadable)

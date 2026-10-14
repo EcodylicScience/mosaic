@@ -1,0 +1,256 @@
+"""Read paths leave the dataset as they found it.
+
+Each case runs one read and compares a snapshot of the dataset tree taken before
+it with one taken after. The datasets hold no ``.lock`` sidecar and no empty
+directory, so a read that creates a root or takes ``index_lock`` adds a path, and
+a read that rewrites an index changes one. The assertion names each.
+
+A new read joins ``CLI_READS`` or ``LIBRARY_READS``, and also
+``CLI_READS_OF_NOTHING`` when it succeeds on a dataset that holds nothing yet.
+``reprobe-media`` needs indexed videos and has a test of its own.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+import pytest
+
+from mosaic.core.dataset import Dataset, open_dataset
+from mosaic.core.pipeline.graph import (
+    Recipe,
+    load_request,
+    plan_pipeline,
+    request_rollup,
+    run_pipeline,
+)
+from mosaic.core.pipeline.models import model_run_root
+from mosaic.core.pipeline.run_log import read_runs, run_log_dir
+from mosaic.core.pipeline.tracks_index import read_tracks_index
+from tests.helpers import (
+    add_media_sequence,
+    add_tracks_variant,
+    assert_tree_unchanged,
+    invoke_ok,
+    make_dataset,
+    register_trained_model,
+    tree_snapshot,
+)
+
+VARIANT = "convert-trex.0.2-1111111111"
+MODEL_KIND = "train-pose"
+MODEL_RUN_ID = "train-pose.0.1-0123456789"
+
+RECIPE: dict[str, object] = {
+    "schema_version": 1,
+    "name": "speed",
+    "steps": [
+        {
+            "id": "speed",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": ["tracks"],
+        }
+    ],
+}
+
+
+@dataclass(frozen=True)
+class ReadDataset:
+    """A dataset under test, and the identifiers its reads name."""
+
+    dataset: Dataset
+    recipe_path: Path
+    request_id: str = ""
+    execution_id: str = ""
+
+    @property
+    def root(self) -> Path:
+        return self.dataset.base_dir
+
+    def reopened(self) -> Dataset:
+        """The dataset opened the way a reader opens it."""
+        return open_dataset(self.dataset.manifest_path, ensure_roots=False)
+
+
+def _strip_to_content(root: Path) -> None:
+    """Remove the lock sidecars and empty directories that a read could recreate."""
+    for sidecar in root.rglob("*.lock"):
+        sidecar.unlink()
+    for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+
+
+def _recipe_file(tmp_path: Path) -> Path:
+    path = tmp_path / "recipe.json"
+    path.write_text(json.dumps(RECIPE), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def populated(tmp_path: Path) -> ReadDataset:
+    """Tracks, a finished feature run, its pipeline request, and a trained model."""
+    dataset = make_dataset(tmp_path / "populated")
+    add_tracks_variant(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    done = run_pipeline(dataset, Recipe.model_validate(RECIPE))
+    run_root = model_run_root(dataset, MODEL_KIND, MODEL_RUN_ID)
+    run_root.mkdir(parents=True)
+    weights = run_root / "best.pt"
+    weights.write_bytes(b"weights")
+    register_trained_model(dataset, MODEL_KIND, MODEL_RUN_ID, weights)
+    _strip_to_content(dataset.base_dir)
+    return ReadDataset(
+        dataset=dataset,
+        recipe_path=_recipe_file(tmp_path),
+        request_id=done.request_id,
+        execution_id=done.outcomes[0].execution_id,
+    )
+
+
+@pytest.fixture
+def with_media(tmp_path: Path) -> ReadDataset:
+    """One sequence of indexed videos."""
+    dataset = make_dataset(tmp_path / "with_media")
+    add_media_sequence(dataset, "seq_a")
+    _strip_to_content(dataset.base_dir)
+    return ReadDataset(dataset=dataset, recipe_path=_recipe_file(tmp_path))
+
+
+@pytest.fixture
+def unpopulated(tmp_path: Path) -> ReadDataset:
+    """A manifest with no root directory and no index."""
+    dataset = make_dataset(tmp_path / "unpopulated")
+    _strip_to_content(dataset.base_dir)
+    return ReadDataset(dataset=dataset, recipe_path=_recipe_file(tmp_path))
+
+
+type CliArguments = Callable[[ReadDataset], list[str]]
+
+CLI_READS: dict[str, CliArguments] = {
+    "inventory": lambda _: ["inventory"],
+    "libraries list": lambda _: ["libraries", "list"],
+    "measure-tracks --dry-run": lambda _: ["measure-tracks"],
+    "models provenance": lambda _: ["models", "provenance", MODEL_RUN_ID],
+    "notes show": lambda _: ["notes", "show"],
+    "pipeline plan": lambda f: ["pipeline", "plan", "--recipe", f"@{f.recipe_path}"],
+    "pipeline status": lambda f: ["pipeline", "status", "--request", f.request_id],
+    "prune-joined --dry-run": lambda _: ["prune-joined"],
+    "prune-media --dry-run": lambda _: ["prune-media"],
+    "reconcile --dry-run": lambda _: ["reconcile"],
+    "reindex --dry-run": lambda _: ["reindex"],
+    "runs": lambda _: ["runs"],
+    "sequences": lambda _: ["sequences"],
+    "sources list": lambda _: ["sources", "list"],
+    "status": lambda f: ["status", "--execution-id", f.execution_id, "--progress"],
+    "sweep-tracking --dry-run": lambda _: ["sweep-tracking"],
+    "tags list": lambda _: ["tags", "list"],
+    "upgrade-tracks --dry-run": lambda _: ["upgrade-tracks"],
+}
+"""Each read verb's arguments, without ``--manifest`` and ``--json``."""
+
+CLI_READS_OF_NOTHING = (
+    "inventory",
+    "libraries list",
+    "measure-tracks --dry-run",
+    "notes show",
+    "prune-joined --dry-run",
+    "prune-media --dry-run",
+    "reconcile --dry-run",
+    "reindex --dry-run",
+    "runs",
+    "sources list",
+    "sweep-tracking --dry-run",
+    "tags list",
+    "upgrade-tracks --dry-run",
+)
+"""The verbs of ``CLI_READS`` that succeed on a dataset holding nothing."""
+
+
+def _invoke_read(fixture: ReadDataset, verb: str) -> None:
+    arguments = CLI_READS[verb](fixture)
+    manifest = str(fixture.dataset.manifest_path)
+    result = invoke_ok([*arguments, "--manifest", manifest, "--json"])
+    json.loads(result.stdout)
+
+
+@pytest.mark.parametrize("verb", sorted(CLI_READS))
+def test_a_read_verb_writes_nothing(populated: ReadDataset, verb: str) -> None:
+    before = tree_snapshot(populated.root)
+
+    _invoke_read(populated, verb)
+
+    assert_tree_unchanged(populated.root, before)
+
+
+@pytest.mark.media
+def test_a_media_dry_run_writes_nothing(with_media: ReadDataset) -> None:
+    before = tree_snapshot(with_media.root)
+
+    manifest = str(with_media.dataset.manifest_path)
+    result = invoke_ok(["reprobe-media", "--manifest", manifest, "--json"])
+    json.loads(result.stdout)
+
+    assert_tree_unchanged(with_media.root, before)
+
+
+@pytest.mark.parametrize("verb", CLI_READS_OF_NOTHING)
+def test_a_read_verb_creates_no_root_or_index(
+    unpopulated: ReadDataset, verb: str
+) -> None:
+    before = tree_snapshot(unpopulated.root)
+
+    _invoke_read(unpopulated, verb)
+
+    assert_tree_unchanged(unpopulated.root, before)
+
+
+def _inventory(fixture: ReadDataset) -> object:
+    from mosaic.core.pipeline.inventory import inventory
+
+    return inventory(fixture.reopened())
+
+
+def _rollup(fixture: ReadDataset) -> object:
+    request = load_request(fixture.root, fixture.request_id)
+    return request_rollup(fixture.root, request)
+
+
+type LibraryRead = Callable[[ReadDataset], object]
+
+LIBRARY_READS: dict[str, LibraryRead] = {
+    "inventory": _inventory,
+    "load_tracks": lambda f: f.reopened().load_tracks("", "seq_a", auto_convert=False),
+    "open_dataset": ReadDataset.reopened,
+    "plan_pipeline": lambda f: plan_pipeline(
+        f.reopened(), Recipe.model_validate(RECIPE)
+    ),
+    "read_runs": lambda f: read_runs(run_log_dir(f.root)),
+    "read_tracks_index": lambda f: read_tracks_index(f.reopened()),
+    "request_rollup": _rollup,
+}
+
+
+@pytest.mark.parametrize("read", sorted(LIBRARY_READS))
+def test_a_library_read_writes_nothing(populated: ReadDataset, read: str) -> None:
+    before = tree_snapshot(populated.root)
+
+    LIBRARY_READS[read](populated)
+
+    assert_tree_unchanged(populated.root, before)
+
+
+@pytest.mark.parametrize(
+    "read", ["inventory", "open_dataset", "read_runs", "read_tracks_index"]
+)
+def test_a_library_read_of_an_absent_index_creates_nothing(
+    unpopulated: ReadDataset, read: str
+) -> None:
+    before = tree_snapshot(unpopulated.root)
+
+    LIBRARY_READS[read](unpopulated)
+
+    assert_tree_unchanged(unpopulated.root, before)

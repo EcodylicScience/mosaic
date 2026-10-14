@@ -42,7 +42,7 @@ def provenance(
     from mosaic.core.pipeline.op_identity import parse_op_run_id
     from mosaic.tracking.training_provenance import training_provenance
 
-    dataset = load_dataset(manifest)
+    dataset = load_dataset(manifest, read_only=True)
     parsed = parse_op_run_id(run_id)
     resolved_kind = kind or (parsed.kind if parsed is not None else None)
     if resolved_kind is None:

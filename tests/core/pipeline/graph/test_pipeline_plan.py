@@ -54,10 +54,12 @@ from tests.helpers import (
     FakeTrex,
     add_media_variant,
     add_tracks_variant,
+    assert_tree_unchanged,
     finish_media_variant,
     install_fake_trex,
     make_dataset,
     scope_over,
+    tree_snapshot,
     write_media_index,
     write_sleap_model,
 )
@@ -797,17 +799,11 @@ def test_the_live_pipeline_and_the_planner_agree(tracked: Dataset) -> None:
 def test_planning_leaves_the_dataset_untouched(tracked: Dataset) -> None:
     """It is a read, and a caller previewing a graph must be able to trust that."""
 
-    def snapshot() -> dict[str, float]:
-        return {
-            str(path): path.stat().st_mtime
-            for path in sorted(Path(tracked.base_dir).rglob("*"))
-            if path.is_file()
-        }
-
-    before = snapshot()
+    root = Path(tracked.base_dir)
+    before = tree_snapshot(root)
     _ = plan_pipeline(tracked, Recipe.model_validate(FIVE_STEPS))
 
-    assert snapshot() == before
+    assert_tree_unchanged(root, before)
 
 
 def test_an_invalid_recipe_is_refused_before_the_dataset_is_read(

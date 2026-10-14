@@ -60,7 +60,7 @@ from mosaic.core.pipeline.index_csv import (
     index_records,
     project_to_schema,
 )
-from mosaic.core.pipeline.index_lock import index_lock
+from mosaic.core.pipeline.index_lock import index_lock_unless_dry_run
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_axis import (
@@ -1310,15 +1310,14 @@ def backfill_frame_extents(ds: Dataset, *, dry_run: bool = False) -> pd.DataFram
 
     Locked for the whole read-measure-write, and for the reason ``prune_missing``
     is: an append landing between the read and the rewrite would be erased by a
-    frame computed before it existed. A dry run holds the lock too -- it reports
-    what a real run would record, which means nothing against a moving file.
+    frame computed before it existed. A dry run writes nothing and takes no lock.
 
     Returns the rows it filled (or would fill), with the measured values.
     """
     path = tracks_index_path(ds)
     if not path.exists():
         return empty_tracks_frame()
-    with index_lock(path):
+    with index_lock_unless_dry_run(path, dry_run=dry_run):
         df = read_tracks_index(ds)
         if df.empty:
             return df.iloc[0:0]
@@ -1390,7 +1389,7 @@ def _backfill_cell(
     producer publishing meanwhile waits for the lock. The lock is taken to write,
     over the index as it is then, and a row that changed or was added since it
     was judged keeps its cell: its producer wrote it after the rule was asked. A
-    dry run takes the lock too, so it reports what a real pass would write.
+    dry run writes nothing and takes no lock.
     """
     path = tracks_index_path(ds)
     if not path.exists():
@@ -1404,7 +1403,7 @@ def _backfill_cell(
         _row_cells(judged, position): rule(judged.iloc[position])
         for position in range(len(judged))
     }
-    with index_lock(path):
+    with index_lock_unless_dry_run(path, dry_run=dry_run):
         df = read_tracks_index(ds)
         before = df.copy()
         written: list[int] = []

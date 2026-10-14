@@ -147,8 +147,12 @@ def _open_lock_fd(resolved: Path) -> int:
     lost-grip race the sidecar exists to close: the holder's inode goes away
     while it still holds it, the next process creates a fresh one at the same
     name and flocks it uncontended, and two writers proceed at once.
+
+    An index that exists keeps its modification time, so a cache keyed on the
+    index's ``stat`` does not read a lock as a rewrite. ``O_CREAT`` without
+    ``O_TRUNC`` creates an absent file and leaves a present one as it is.
     """
-    resolved.touch(exist_ok=True)
+    os.close(os.open(resolved, os.O_RDONLY | os.O_CREAT, 0o666))
     return os.open(lock_path_for(resolved), os.O_RDWR | os.O_CREAT, 0o666)
 
 
@@ -278,6 +282,21 @@ def index_lock(path: Path, timeout: float = DEFAULT_TIMEOUT_S) -> Generator[None
                 _release(fd)
         finally:
             os.close(fd)
+
+
+@contextmanager
+def index_lock_unless_dry_run(path: Path, *, dry_run: bool) -> Generator[None]:
+    """Take :func:`index_lock` on *path* for a pass that writes, and none for a dry run.
+
+    A dry run writes nothing, so it leaves no index or ``.lock`` sidecar behind.
+    It reads one whole version of the index, because every writer replaces the
+    file by rename, and its report describes that version.
+    """
+    if dry_run:
+        yield
+        return
+    with index_lock(path):
+        yield
 
 
 def _resolved_parent(path: Path) -> Path:

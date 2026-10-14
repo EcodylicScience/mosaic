@@ -16,6 +16,7 @@ from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.inventory import InventoryCache
 from mosaic.core.pipeline.inventory import cache as cache_module
+from tests.helpers import assert_tree_unchanged, tree_snapshot
 
 
 def test_a_held_view_is_reused_rather_than_rebuilt(
@@ -99,14 +100,11 @@ def test_nothing_is_written_to_the_dataset(scenario_dataset: Dataset) -> None:
     """A view is never persisted where it could be mistaken for the record."""
     holder = InventoryCache(scenario_dataset)
     _ = scenario_dataset.run_feature(build_feature("speed-angvel", None, None))
-    before = _tree(Path(scenario_dataset.base_dir))
+    root = Path(scenario_dataset.base_dir)
+    before = tree_snapshot(root)
 
     _ = holder.get()
     _ = holder.revalidate()
 
-    assert _tree(Path(scenario_dataset.base_dir)) == before
-    assert not (Path(scenario_dataset.base_dir) / ".mosaic" / "inventory.json").exists()
-
-
-def _tree(root: Path) -> set[str]:
-    return {str(p.relative_to(root)) for p in root.rglob("*")}
+    assert_tree_unchanged(root, before)
+    assert not (root / ".mosaic" / "inventory.json").exists()

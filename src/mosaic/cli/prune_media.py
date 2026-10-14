@@ -83,7 +83,7 @@ def prune_media_command(
     """
     from mosaic.core.media.prune import PruneClass, decline_text
 
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=not apply)
     try:
         with stdout_to_stderr():
             report = ds.prune_media(

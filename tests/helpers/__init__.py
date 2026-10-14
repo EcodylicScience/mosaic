@@ -12,7 +12,8 @@ What lives where:
   a revision of one is claimed by.
 - ``datasets`` -- the `Dataset` a test runs against.
 - ``catalogs``: the declaration catalogs a graph test validates or plans against.
-- ``cli`` -- a ``mosaic`` command run for its ``--json`` output.
+- ``cli`` -- a ``mosaic`` command run for its exit status or its ``--json``
+  output.
 - ``features`` -- the templates and per-sequence frames the global
   fit-then-apply features are tested on.
 - ``latents`` names the frames at the centers of VAME's windows, and checks that
@@ -64,6 +65,8 @@ What lives where:
   the package root.
 - ``golden`` -- reading and rewriting the golden files under ``tests/data/``.
 - ``recipes``: the recipes a graph test validates, plans or runs.
+- ``trees``: snapshots of a directory tree, and the assertion that a call left
+  one unchanged.
 
 Fixtures stay in ``tests/conftest.py``, because pytest collects them only from
 there. Their bodies delegate here, so the logic has one home either way.
@@ -81,7 +84,7 @@ from tests.helpers.annotations import (
 )
 from tests.helpers.catalogs import catalog_without_contract
 from tests.helpers.column_contract import assert_writes_declared_columns
-from tests.helpers.cli import invoke_json
+from tests.helpers.cli import invoke_json, invoke_ok
 from tests.helpers.datasets import make_dataset
 from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
 from tests.helpers.environment import (
@@ -202,6 +205,7 @@ from tests.helpers.source_scan import (
 from tests.helpers.documents import dotted_values
 from tests.helpers.stand_in_features import CropLike, PlainFeature
 from tests.helpers.training import FakeTrainer, healthy_probe, write_data_yaml
+from tests.helpers.trees import PathState, assert_tree_unchanged, tree_snapshot
 from tests.helpers.tracks import (
     add_track_sequences,
     add_tracks_table,
@@ -294,6 +298,7 @@ __all__ = [
     "MakeStore",
     "MediaClip",
     "MockDataset",
+    "PathState",
     "UPDATE_GOLDEN_ENV",
     "add_media_sequence",
     "add_media_variant",
@@ -307,6 +312,7 @@ __all__ = [
     "assert_process_exited",
     "assert_ready_then_shutdown",
     "assert_stopped_writing",
+    "assert_tree_unchanged",
     "assert_writes_declared_columns",
     "cancel_when",
     "catalog_without_contract",
@@ -338,6 +344,7 @@ __all__ = [
     "install_fake_tool_python",
     "install_fake_trex",
     "invoke_json",
+    "invoke_ok",
     "install_fake_ultralytics",
     "isolate_tool_location",
     "journal_source",
@@ -392,6 +399,7 @@ __all__ = [
     "window_centers",
     "track_sequences",
     "track_table",
+    "tree_snapshot",
     "ultralytics_probe_response",
     "write_data_yaml",
     "write_dlc_csv",

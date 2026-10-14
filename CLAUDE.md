@@ -205,6 +205,10 @@ every registered step (`tests/core/media/preprocess/test_media_steps.py`).
   (`core/pipeline/index_lock.py`) and is not degraded to an unlocked write. The lock
   serializes writers on one mount only
   (`tests/core/pipeline/test_index_lock_capability.py`).
+- **A read writes nothing.** A read-only verb or a dry run opens its dataset with
+  `load_dataset(..., read_only=True)` (`cli/_context.py`), and a dry run takes no
+  lock (`index_lock_unless_dry_run`). A new read joins the cases of
+  `tests/cli/test_cli_read_only.py`.
 - **Name a model by its run id.** Across datasets, link the library with `libraries:`
   instead of a path into another dataset's `models/`. The reference string enters the
   inference identity (`resolve_model` in `tracking/model_refs.py`,

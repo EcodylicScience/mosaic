@@ -7454,7 +7454,7 @@ class Dataset:
         sequence: str,
         prefer: str = "standard",
         auto_convert: bool = True,
-        convert_params: Optional[dict] = None,
+        convert_params: dict[str, object] | None = None,
         run_id: Optional[str] = None,
     ) -> pd.DataFrame:
         """

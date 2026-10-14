@@ -72,7 +72,7 @@ def prune_joined_command(
     """
     from mosaic.core.media.prune_joined import JoinedPruneClass, joined_decline_text
 
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=not apply)
     try:
         with stdout_to_stderr():
             report = ds.prune_joined_exports(

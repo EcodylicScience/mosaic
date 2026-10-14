@@ -50,7 +50,7 @@ def upgrade_tracks_command(
     """
     from mosaic.core.pipeline.upgrade_tracks import upgrade_trex_tables
 
-    ds = load_dataset(manifest)
+    ds = load_dataset(manifest, read_only=not apply)
     try:
         with stdout_to_stderr():
             report = upgrade_trex_tables(ds, apply=apply)
