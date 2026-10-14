@@ -235,9 +235,11 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 
 ## Pitfalls
 
-- **`IndexLockUnsupported`**: the filesystem refuses file locks (an NFS mount with
-  `nolock`, a FUSE mount). Keep the dataset on a disk that locks and declare the share
-  as a source. Write a synced folder from one machine at a time.
+- **`IndexLockUnsupported`**: the filesystem refuses file locks. Keep the dataset on a
+  disk that locks and declare the share as a source.
+- **Several machines on one dataset**: a lock excludes other machines only when the
+  filesystem enforces it across them. A synced folder or an NFS volume mounted with
+  `nolock` does not. Write such a dataset from one machine at a time.
 - **Mosaic is 0.x.** Interfaces, feature names and on-disk layouts may change. Record
   the checkout's commit with every result, read `CHANGELOG.md` after an update, and run
   `mosaic reconcile` if the changelog says an identifier moved.

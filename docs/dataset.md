@@ -154,16 +154,17 @@ same way.
 ## Where a dataset can live
 
 A dataset needs a filesystem that supports file locks, because every index write takes
-one. A local disk does. Some network mounts do not, such as an NFS export mounted with
-`nolock` or a FUSE mount, and there the first index write raises
-`IndexLockUnsupported`. mosaic does not fall back to writing unlocked. Keep the dataset
-on a disk that locks, and declare the recordings on the share as a
+one. A local disk does. On a mount that refuses locks, the first index write raises
+`IndexLockUnsupported`, and mosaic does not fall back to writing unlocked. Keep the
+dataset on a disk that locks, and declare the recordings on the share as a
 [source](#add-sources-and-scan).
 
-A lock serializes the processes that see one filesystem. Two machines writing one
-synced folder, such as a Dropbox folder, each lock their own copy, and the sync service
-then makes conflicted copies of the index without an error. Write to such a dataset
-from one machine at a time.
+A lock excludes the processes of one machine. It excludes other machines only when the
+filesystem enforces locks across them. Two machines writing one synced folder, such as
+a Dropbox folder, each lock their own copy, and the sync service then makes conflicted
+copies of the index without an error. An NFS volume mounted with `nolock` keeps each
+machine's locks local in the same way. Write to such a dataset from one machine at a
+time.
 
 ## Index files placed in the dataset
 
