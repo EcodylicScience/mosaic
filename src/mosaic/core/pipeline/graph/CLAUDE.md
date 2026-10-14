@@ -66,13 +66,18 @@ instead of derived from artifacts.
   `partial`, `pending` and `orphaned` are derived words, and none joins
   `runlog.TERMINAL_STATUSES`. `orphaned` comes from the `driver_alive` argument of
   `request_status_wire` (`test_pipeline_status_wire.py`).
+- `entry_errors_wire` (`entry_errors.py`) joins an attempt's `entry_error` events with
+  the failure records keyed by its `target` and `run_id`. `held_back_by_quarantine`
+  is true when any entity that the attempt lost is quarantined, listed or not. Every
+  lost entity also leaves the run short for a `scope_dependent` consumer
+  (`test_pipeline_entry_errors.py`).
 - `list_requests` (`store.py`) and `list_runs` (`mosaic.runlog`) sort file names, which
   are ULIDs, newest first, and read only the page that they return
   (`test_pipeline_request_listing.py`, `tests/core/test_runlog_readers.py`).
-- `__init__.py` binds every public name on access, and `status.py` and `store.py`
-  import nothing that loads pandas, cv2, av or the feature library
-  (`tests/meta/test_status_imports.py`). The editor wires in `wire.py` import the op
-  registry and the inventory, which do.
+- `__init__.py` binds every public name on access, and `status.py`, `store.py`,
+  `claims.py` and `entry_errors.py` import nothing that loads pandas, cv2, av or the
+  feature library (`tests/meta/test_status_imports.py`). The editor wires in `wire.py`
+  import the op registry and the inventory, which do.
 
 ## Declarations and the registries
 

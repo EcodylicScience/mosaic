@@ -48,17 +48,22 @@ from pathlib import Path
 from typing import Any, Final, Literal, TypedDict, cast
 
 __all__ = [
+    "ERROR_MESSAGE_LIMIT",
     "AttemptOutcome",
+    "EntryErrorPage",
     "EntryErrorRecord",
+    "ErrorSummary",
     "JsonlRunLog",
     "ProgressEventRecord",
     "RunLogPage",
     "RunLogSnapshot",
     "TERMINAL_STATUSES",
     "attempt_outcome",
+    "error_summary",
     "list_runs",
     "new_execution_id",
     "now_iso",
+    "read_entry_error_keys",
     "read_entry_errors",
     "read_run",
     "read_run_progress",
@@ -155,6 +160,24 @@ class RunLogSnapshot(TypedDict):
     tracks_variant: str
 
 
+ERROR_MESSAGE_LIMIT: Final = 2000
+"""The most characters of a recorded message that a report quotes."""
+
+
+class ErrorSummary(TypedDict):
+    """The exception type and message of an ``error_json`` blob, read by ``error_summary``.
+
+    Attributes:
+        type: The exception class name, ``""`` for a refusal or a blob that names
+            none.
+        message: The sentence a person reads, at most
+            :data:`ERROR_MESSAGE_LIMIT` characters.
+    """
+
+    type: str
+    message: str
+
+
 class EntryErrorRecord(TypedDict):
     """One entity that failed while its attempt continued, read by ``read_entry_errors``.
 
@@ -163,12 +186,31 @@ class EntryErrorRecord(TypedDict):
         error_json: The blob the attempt recorded, shaped as an attempt-level
             ``error_json``: a refusal's reason, step and message, or an exception's
             type, message and traceback.
+        error_type: The exception class name in the blob, ``""`` for a refusal.
+        message: The message in the blob (:func:`error_summary`).
         recorded_at: When the attempt recorded the failure.
     """
 
     key: str
     error_json: str
+    error_type: str
+    message: str
     recorded_at: str
+
+
+class EntryErrorPage(TypedDict):
+    """The first entities that one attempt lost, read by ``read_entry_errors``.
+
+    Attributes:
+        items: The records, in the order the attempt wrote them.
+        total: How many entities the attempt lost, ``entries_failed`` of its
+            snapshot.
+        has_more: Whether *total* exceeds the records listed.
+    """
+
+    items: list[EntryErrorRecord]
+    total: int
+    has_more: bool
 
 
 class ProgressEventRecord(TypedDict):
@@ -748,34 +790,95 @@ def read_runs_by_run_id(run_dir: Path | str, run_id: str) -> list[RunLogSnapshot
 
 def read_entry_errors(
     run_dir: Path | str, execution_id: str, *, limit: int | None = None
-) -> list[EntryErrorRecord]:
+) -> EntryErrorPage:
     """Return the entities that one attempt lost while it continued, in file order.
+
+    The whole run-log is read to count the failures. Only the listed records parse
+    their blobs.
 
     Args:
         run_dir: The run-log directory.
         execution_id: The attempt.
-        limit: The most records to return, ``None`` for every one. The attempt's
-            ``entries_failed`` counts them all.
+        limit: The most records to list, at least 1. ``None`` lists every one.
 
     Returns:
-        One record per ``entry_error`` event, empty for an absent run-log.
+        One record per ``entry_error`` event up to *limit*, with the count of all
+        of them. An absent run-log lists none.
+
+    Raises:
+        ValueError: *limit* is below 1.
     """
-    out: list[EntryErrorRecord] = []
-    if limit is not None and limit <= 0:
-        return out
-    for rec in _iter_records(Path(run_dir) / f"{execution_id}.jsonl"):
-        if rec.get("ev") != "entry_error":
+    if limit is not None and limit < 1:
+        raise ValueError(f"limit must be at least 1, got {limit}")
+    items: list[EntryErrorRecord] = []
+    total = 0
+    for rec in _entry_error_events(run_dir, execution_id):
+        total += 1
+        if limit is not None and len(items) >= limit:
             continue
-        out.append(
+        error_json = _record_text(rec, "error")
+        summary = error_summary(error_json)
+        items.append(
             {
-                "key": str(rec.get("key", "")),
-                "error_json": str(rec.get("error", "")),
-                "recorded_at": str(rec.get("t", "")),
+                "key": _record_text(rec, "key"),
+                "error_json": error_json,
+                "error_type": summary["type"],
+                "message": summary["message"],
+                "recorded_at": _record_text(rec, "t"),
             }
         )
-        if limit is not None and len(out) >= limit:
-            break
-    return out
+    return {"items": items, "total": total, "has_more": total > len(items)}
+
+
+def read_entry_error_keys(run_dir: Path | str, execution_id: str) -> list[str]:
+    """Return the entry keys of the entities that one attempt lost, in file order.
+
+    The blobs are left unparsed.
+
+    Args:
+        run_dir: The run-log directory.
+        execution_id: The attempt.
+
+    Returns:
+        One key per ``entry_error`` event, empty for an absent run-log.
+    """
+    return [
+        _record_text(rec, "key") for rec in _entry_error_events(run_dir, execution_id)
+    ]
+
+
+def _entry_error_events(run_dir: Path | str, execution_id: str) -> list[dict[str, Any]]:
+    """The ``entry_error`` records of one attempt's run-log, in file order."""
+    return [
+        rec
+        for rec in _iter_records(Path(run_dir) / f"{execution_id}.jsonl")
+        if rec.get("ev") == "entry_error"
+    ]
+
+
+def error_summary(error_json: str) -> ErrorSummary:
+    """Return the exception type and message that an ``error_json`` blob records.
+
+    The message of a blob that is not a JSON object is the blob itself. An absent
+    field, or one that is not a string, reads as ``""``.
+
+    Args:
+        error_json: The blob that an attempt or one of its entries recorded.
+
+    Returns:
+        The type and the message, each ``""`` for an empty blob.
+    """
+    try:
+        blob: object = json.loads(error_json)
+    except json.JSONDecodeError:
+        return {"type": "", "message": error_json[:ERROR_MESSAGE_LIMIT]}
+    if not isinstance(blob, dict):
+        return {"type": "", "message": error_json[:ERROR_MESSAGE_LIMIT]}
+    fields = cast("dict[str, Any]", blob)
+    return {
+        "type": _record_text(fields, "type")[:ERROR_MESSAGE_LIMIT],
+        "message": _record_text(fields, "message")[:ERROR_MESSAGE_LIMIT],
+    }
 
 
 def read_run_progress(

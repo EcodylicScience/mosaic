@@ -1,10 +1,18 @@
 import math
 from pathlib import Path
 from typing import Optional, Tuple
-from urllib.parse import quote, unquote
 
 import numpy as np
 import pandas as pd
+
+# Defined in the pandas-free leaf and re-exported, because mosaic-api imports
+# them from this module.
+from mosaic.core.entry import (
+    from_safe_name as from_safe_name,
+    make_entry_key as make_entry_key,
+    parse_entry_key as parse_entry_key,
+    to_safe_name as to_safe_name,
+)
 
 
 # The spellings a table cell uses for "nothing here". A blank CSV cell reads
@@ -81,31 +89,6 @@ def validate_entry_name(value: str, field: str) -> str:
     return value
 
 
-def to_safe_name(s: str) -> str:
-    return quote(s.strip(), safe="")
-
-
-def from_safe_name(safe: str) -> str:
-    return unquote(safe)
-
-
-def make_entry_key(group: str, sequence: str) -> str:
-    """Composite key for a (group, sequence) dataset entry.
-
-    Matches the filename stem convention used throughout the pipeline:
-    ``{safe_group}__{safe_seq}`` when group is non-empty, else ``{safe_seq}``.
-
-    ``group`` is an optional coarse namespace; passing an empty string yields a
-    flat ``{safe_seq}`` key. It is part of the on-disk identity (kept for
-    back-compat and to disambiguate non-unique sequence names), not the
-    canonical way to categorize sequences — flexible grouping is via tags
-    (mosaic-api) and ``run_feature(scope=Scope(entries=...))``.
-    """
-    safe_group = to_safe_name(group) if group else ""
-    safe_seq = to_safe_name(sequence)
-    return f"{safe_group + '__' if safe_group else ''}{safe_seq}"
-
-
 def is_nameless_entry(group: str, sequence: str) -> bool:
     """Return whether an entry's key is empty.
 
@@ -125,24 +108,6 @@ def entry_camera_path(root: Path, group: str, sequence: str, camera: str) -> Pat
     """
     entry = root / make_entry_key(group, sequence)
     return entry / camera if camera else entry
-
-
-def parse_entry_key(key: str) -> tuple[str, str]:
-    """``make_entry_key``'s inverse: ``(group, sequence)`` from a composite key.
-
-    A key with no ``__`` is a sequence with no group, which is the common case
-    rather than the edge -- every dataset the control plane creates has
-    ``group=""``.
-
-    Splits on the **first** ``__``, matching how the key was built: the group is
-    one level, and a sequence containing ``__`` (which ``parse_hierarchy`` reads
-    as further levels) keeps it. Percent-decoding both halves undoes
-    ``to_safe_name``, so a name that needed encoding round-trips.
-    """
-    safe_group, separator, safe_sequence = key.partition("__")
-    if not separator:
-        return "", from_safe_name(key)
-    return from_safe_name(safe_group), from_safe_name(safe_sequence)
 
 
 def entry_directory(root: Path, group: str, sequence: str) -> Path:

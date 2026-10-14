@@ -18,10 +18,14 @@ from pydantic import TypeAdapter, ValidationError
 
 from mosaic.core.json_value import JsonValue
 from mosaic.runlog import (
+    ERROR_MESSAGE_LIMIT,
     TERMINAL_STATUSES,
     AttemptOutcome,
+    EntryErrorRecord,
+    ErrorSummary,
     ProgressEventRecord,
     attempt_outcome,
+    error_summary,
     read_entry_errors,
     read_run,
     read_run_progress,
@@ -74,7 +78,6 @@ _ENVELOPE_KEYS: Final = frozenset({"reason", "step", "message"})
 _JSON_OBJECT: Final[TypeAdapter[dict[str, JsonValue]]] = TypeAdapter(
     dict[str, JsonValue]
 )
-_MESSAGE_LIMIT: Final = 2000
 
 
 class RecordedErrorWire(GraphModel):
@@ -261,9 +264,10 @@ class RequestPageWire(GraphModel):
 def recorded_error(error_json: str) -> RecordedErrorWire | None:
     """Parse an ``error_json`` blob that an attempt or an entry recorded.
 
-    A blob naming a ``RefusalReason`` is a refusal, and :func:`error_envelope`
-    renders it as an :class:`ErrorEnvelope`. A blob that is not a JSON object is reported as its
-    text. A traceback is left out, and the raw blob still contains it.
+    :func:`~mosaic.runlog.error_summary` reads the type and the message. A blob
+    naming a ``RefusalReason`` is a refusal, and :func:`error_envelope` renders it
+    as an :class:`ErrorEnvelope`. A traceback is left out, and the raw blob still
+    contains it.
 
     Args:
         error_json: The blob, ``""`` for an attempt or entry that recorded none.
@@ -271,31 +275,7 @@ def recorded_error(error_json: str) -> RecordedErrorWire | None:
     Returns:
         The parsed failure, or ``None`` for an empty blob.
     """
-    if not error_json.strip():
-        return None
-    try:
-        blob = _JSON_OBJECT.validate_json(error_json)
-    except ValidationError:
-        return RecordedErrorWire(
-            type="", message=error_json[:_MESSAGE_LIMIT], refusal=None
-        )
-    message = _text(blob.get("message"))
-    reason = blob.get("reason")
-    if _is_refusal_reason(reason):
-        refusal = Refusal(
-            message,
-            reason=reason,
-            step_id=_text(blob.get("step")),
-            detail={
-                key: value for key, value in blob.items() if key not in _ENVELOPE_KEYS
-            },
-        )
-        return RecordedErrorWire(
-            type="", message=message, refusal=error_envelope(refusal)
-        )
-    return RecordedErrorWire(
-        type=_text(blob.get("type")), message=message, refusal=None
-    )
+    return _recorded_error(error_json, error_summary(error_json))
 
 
 def run_status_wire(
@@ -436,15 +416,49 @@ def _failed_entries(
     """
     if entries_failed <= 0:
         return (), False
-    sample = tuple(
-        FailedEntryWire(
-            key=record["key"],
-            recorded_at=record["recorded_at"],
-            error=recorded_error(record["error_json"]),
-        )
-        for record in read_entry_errors(logs, execution_id, limit=FAILED_ENTRY_SAMPLE)
+    page = read_entry_errors(logs, execution_id, limit=FAILED_ENTRY_SAMPLE)
+    return tuple(failed_entry(record) for record in page["items"]), page["has_more"]
+
+
+def failed_entry(record: EntryErrorRecord) -> FailedEntryWire:
+    """Return one ``entry_error`` record of a run-log as a :class:`FailedEntryWire`."""
+    summary: ErrorSummary = {"type": record["error_type"], "message": record["message"]}
+    return FailedEntryWire(
+        key=record["key"],
+        recorded_at=record["recorded_at"],
+        error=_recorded_error(record["error_json"], summary),
     )
-    return sample, entries_failed > len(sample)
+
+
+def _recorded_error(error_json: str, summary: ErrorSummary) -> RecordedErrorWire | None:
+    """*error_json* as a :class:`RecordedErrorWire`, with *summary* read from it."""
+    if not error_json.strip():
+        return None
+    refusal = _recorded_refusal(error_json, summary["message"])
+    if refusal is None:
+        return RecordedErrorWire(
+            type=summary["type"], message=summary["message"], refusal=None
+        )
+    return RecordedErrorWire(
+        type="", message=summary["message"], refusal=error_envelope(refusal)
+    )
+
+
+def _recorded_refusal(error_json: str, message: str) -> Refusal | None:
+    """The refusal that *error_json* records, ``None`` for any other blob."""
+    try:
+        blob = _JSON_OBJECT.validate_json(error_json)
+    except ValidationError:
+        return None
+    reason = blob.get("reason")
+    if not _is_refusal_reason(reason):
+        return None
+    return Refusal(
+        message,
+        reason=reason,
+        step_id=_text(blob.get("step")),
+        detail={key: value for key, value in blob.items() if key not in _ENVELOPE_KEYS},
+    )
 
 
 def _fraction(done: int, total: int) -> float | None:
@@ -461,4 +475,4 @@ def _is_refusal_reason(value: JsonValue | None) -> TypeGuard[RefusalReason]:
 
 def _text(value: JsonValue | None) -> str:
     """A string field of a recorded blob, ``""`` when absent or not a string."""
-    return value[:_MESSAGE_LIMIT] if isinstance(value, str) else ""
+    return value[:ERROR_MESSAGE_LIMIT] if isinstance(value, str) else ""

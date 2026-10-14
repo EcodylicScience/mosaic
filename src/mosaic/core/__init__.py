@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from . import track_library as track_library
     from .dataset import Dataset as Dataset, open_dataset as open_dataset
-    from .helpers import from_safe_name as from_safe_name, to_safe_name as to_safe_name
+    from .entry import from_safe_name as from_safe_name, to_safe_name as to_safe_name
 
 
 def __getattr__(name: str) -> Any:
@@ -48,14 +48,14 @@ def __getattr__(name: str) -> Any:
 
         return getattr(dataset, name)
     if name in ("to_safe_name", "from_safe_name"):
-        from . import helpers
+        from . import entry
 
-        return getattr(helpers, name)
+        return getattr(entry, name)
     if name == "track_library":
         # ``import_module`` rather than ``from . import track_library``. The
         # latter runs ``_handle_fromlist``, which probes the package with
         # ``hasattr`` -- re-entering this function, which runs the same import
-        # again, until the stack ends. ``dataset`` and ``helpers`` escape it
+        # again, until the stack ends. ``dataset`` and ``entry`` escape it
         # only because no arm here claims their names, so the probe falls
         # through to the AttributeError below.
         return import_module(".track_library", __name__)

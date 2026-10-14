@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING
 
 import typer
+
+if TYPE_CHECKING:
+    from mosaic.core.pipeline.graph import RecordedErrorWire
 
 
 def render_kv(payload: Mapping[str, object]) -> None:
@@ -24,3 +28,10 @@ def render_table(rows: Sequence[Mapping[str, object]], columns: list[str]) -> No
 def render_json_block(payload: object) -> None:
     """Pretty-print a JSON block to stdout (used for schema/describe in human mode)."""
     typer.echo(json.dumps(payload, indent=2, default=str))
+
+
+def recorded_error_text(error: RecordedErrorWire) -> str:
+    """One line for a recorded failure: the refusal's reason, or the exception type."""
+    if error.refusal is not None:
+        return f"refused ({error.refusal.reason}): {error.message}"
+    return f"{error.type}: {error.message}" if error.type else error.message

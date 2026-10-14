@@ -13,10 +13,10 @@ import typer
 
 from mosaic.cli._context import load_dataset, run_log_dir_for
 from mosaic.cli._io import emit_json, fail
-from mosaic.cli._render import render_json_block, render_kv
+from mosaic.cli._render import recorded_error_text, render_json_block, render_kv
 
 if TYPE_CHECKING:
-    from mosaic.core.pipeline.graph import RecordedErrorWire, RunStatusWire
+    from mosaic.core.pipeline.graph import RunStatusWire
 
 _STRUCTURED_FIELDS: Final = frozenset(
     {"error", "failed_entries", "failed_entries_has_more", "progress"}
@@ -66,9 +66,9 @@ def _render_run_status(report: RunStatusWire) -> None:
     payload = report.model_dump(mode="json")
     render_kv({k: v for k, v in payload.items() if k not in _STRUCTURED_FIELDS})
     if report.error is not None:
-        typer.echo(f"error: {_error_text(report.error)}")
+        typer.echo(f"error: {recorded_error_text(report.error)}")
     for entry in report.failed_entries:
-        message = "" if entry.error is None else _error_text(entry.error)
+        message = "" if entry.error is None else recorded_error_text(entry.error)
         typer.echo(f"failed entry {entry.key}: {message}")
     if report.failed_entries_has_more:
         hidden = report.entries_failed - len(report.failed_entries)
@@ -76,10 +76,3 @@ def _render_run_status(report: RunStatusWire) -> None:
     if report.progress is not None:
         typer.echo("progress:")
         render_json_block(payload["progress"])
-
-
-def _error_text(error: RecordedErrorWire) -> str:
-    """One line for a recorded failure: the refusal's reason, or the exception type."""
-    if error.refusal is not None:
-        return f"refused ({error.refusal.reason}): {error.message}"
-    return f"{error.type}: {error.message}" if error.type else error.message

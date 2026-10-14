@@ -575,7 +575,14 @@ def _run(
             f"step {planned.step_id!r} ran but recorded no run_id, so nothing "
             f"below it can name what it produced"
         )
-    _record_entry_outcomes(store, planned, result.run_id, asked, result.failed_entries)
+    _record_entry_outcomes(
+        store,
+        planned,
+        result.run_id,
+        asked,
+        result.failed_entries,
+        execution_id=attempt,
+    )
     store.clear_step((planned.storage_name, result.run_id))
     return StepOutcome(
         step_id=planned.step_id,
@@ -594,8 +601,10 @@ def _record_entry_outcomes(
     run_id: str,
     asked: tuple[Entry, ...],
     failed_keys: tuple[str, ...],
+    *,
+    execution_id: str,
 ) -> None:
-    """Count what this attempt lost, and forget what it recovered.
+    """Count what attempt *execution_id* lost, and forget what it recovered.
 
     Keyed by entry rather than by step, because a deterministically bad sequence
     would otherwise quarantine a whole branch: one corrupt video is a reason to
@@ -613,13 +622,16 @@ def _record_entry_outcomes(
             # the step rather than dropped, since losing the count would be
             # losing the bound on retrying it.
             store.note_step_failure(
-                (planned.storage_name, run_id), error=f"entity {key} failed"
+                (planned.storage_name, run_id),
+                error=f"entity {key} failed",
+                execution_id=execution_id,
             )
             continue
         failed.add(entry)
         store.note_entry_failure(
             (planned.storage_name, run_id, entry[0], entry[1]),
             error=f"entity {key} failed",
+            execution_id=execution_id,
         )
     for entry in asked:
         if entry not in failed:

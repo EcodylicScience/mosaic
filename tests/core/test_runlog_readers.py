@@ -12,7 +12,9 @@ from mosaic.runlog import (
     JsonlRunLog,
     RunLogSnapshot,
     attempt_outcome,
+    error_summary,
     list_runs,
+    read_entry_error_keys,
     read_entry_errors,
     read_run_progress,
     read_runs,
@@ -43,24 +45,79 @@ def test_the_outcome_names_a_finished_attempt_that_lost_entries_partial(
     assert attempt_outcome(status, entries_failed) == outcome
 
 
-def test_entry_errors_are_read_in_order_up_to_the_limit(tmp_path: Path) -> None:
+def test_entry_errors_are_read_in_order_up_to_the_limit_and_counted(
+    tmp_path: Path,
+) -> None:
     with _log(tmp_path, "E1") as log:
         log.started(kind="feature", target="speed")
         for index in range(5):
-            log.entry_failed(f"g__s{index}", f'{{"message": "boom {index}"}}')
+            log.entry_failed(
+                f"g__s{index}", f'{{"type": "ValueError", "message": "boom {index}"}}'
+            )
         log.finished()
 
     every = read_entry_errors(run_log_dir(tmp_path), "E1")
     first = read_entry_errors(run_log_dir(tmp_path), "E1", limit=2)
 
-    assert [record["key"] for record in every] == [f"g__s{i}" for i in range(5)]
-    assert first == every[:2]
-    assert first[0]["error_json"] == '{"message": "boom 0"}'
-    assert first[0]["recorded_at"]
+    assert [record["key"] for record in every["items"]] == [
+        f"g__s{i}" for i in range(5)
+    ]
+    assert (every["total"], every["has_more"]) == (5, False)
+    assert first["items"] == every["items"][:2]
+    assert (first["total"], first["has_more"]) == (5, True)
+    record = first["items"][0]
+    assert record["error_json"] == '{"type": "ValueError", "message": "boom 0"}'
+    assert (record["error_type"], record["message"]) == ("ValueError", "boom 0")
+    assert record["recorded_at"]
+
+
+def test_entry_error_keys_are_read_in_order_with_their_blobs_unparsed(
+    tmp_path: Path,
+) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="speed")
+        log.entry_failed("g__s0", "not json")
+        log.entry_failed("g__s1", '{"type": "ValueError"}')
+        log.finished()
+
+    assert read_entry_error_keys(run_log_dir(tmp_path), "E1") == ["g__s0", "g__s1"]
+    assert read_entry_error_keys(run_log_dir(tmp_path), "MISSING") == []
 
 
 def test_entry_errors_of_an_absent_run_log_are_empty(tmp_path: Path) -> None:
-    assert read_entry_errors(run_log_dir(tmp_path), "MISSING") == []
+    assert read_entry_errors(run_log_dir(tmp_path), "MISSING") == {
+        "items": [],
+        "total": 0,
+        "has_more": False,
+    }
+
+
+def test_an_entry_error_limit_below_one_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="at least 1"):
+        _ = read_entry_errors(run_log_dir(tmp_path), "E1", limit=0)
+
+
+@pytest.mark.parametrize(
+    ("error_json", "error_type", "message"),
+    [
+        ("", "", ""),
+        ('{"type": "OSError", "message": "gone"}', "OSError", "gone"),
+        ('{"reason": "upstream_empty", "message": "nothing"}', "", "nothing"),
+        ('{"type": 3, "message": ["x"]}', "", ""),
+        ("not json", "", "not json"),
+        ('["a list"]', "", '["a list"]'),
+    ],
+)
+def test_an_error_summary_reads_the_type_and_message_of_a_blob(
+    error_json: str, error_type: str, message: str
+) -> None:
+    assert error_summary(error_json) == {"type": error_type, "message": message}
+
+
+def test_an_error_summary_quotes_at_most_the_message_limit() -> None:
+    long = "x" * (runlog.ERROR_MESSAGE_LIMIT + 10)
+
+    assert error_summary(long)["message"] == long[: runlog.ERROR_MESSAGE_LIMIT]
 
 
 def test_progress_events_keep_their_legacy_shape(tmp_path: Path) -> None:

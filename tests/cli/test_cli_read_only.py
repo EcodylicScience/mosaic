@@ -21,7 +21,9 @@ import pytest
 
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.pipeline.graph import (
+    FileFailureStore,
     Recipe,
+    entry_errors_wire,
     list_requests,
     load_request,
     plan_pipeline,
@@ -32,7 +34,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
-from mosaic.runlog import list_runs
+from mosaic.runlog import JsonlRunLog, list_runs, run_log_path
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
 from tests.helpers import (
@@ -49,6 +51,9 @@ VARIANT = "convert-trex.0.2-1111111111"
 MODEL_KIND = "train-pose"
 MODEL_RUN_ID = "train-pose.0.1-0123456789"
 MODEL_REF = f"trained-model/{MODEL_KIND}/{MODEL_RUN_ID}"
+LOSSY_EXECUTION_ID = "01H00000000000000000000000"
+LOSSY_TARGET = "speed-angvel__from__tracks"
+LOSSY_RUN_ID = "0.2-abcdef0123"
 
 RECIPE: dict[str, object] = {
     "schema_version": 1,
@@ -72,6 +77,7 @@ class ReadDataset:
     recipe_path: Path
     request_id: str = ""
     execution_id: str = ""
+    lossy_execution_id: str = ""
 
     @property
     def root(self) -> Path:
@@ -108,12 +114,29 @@ def populated(tmp_path: Path) -> ReadDataset:
     weights = run_root / "best.pt"
     weights.write_bytes(b"weights")
     register_trained_model(dataset, MODEL_KIND, MODEL_RUN_ID, weights)
+    _lose_an_entity(dataset.base_dir)
     _strip_to_content(dataset.base_dir)
     return ReadDataset(
         dataset=dataset,
         recipe_path=_recipe_file(tmp_path),
         request_id=done.request_id,
         execution_id=done.outcomes[0].execution_id,
+        lossy_execution_id=LOSSY_EXECUTION_ID,
+    )
+
+
+def _lose_an_entity(root: Path) -> None:
+    """Write an attempt that lost ``seq_b``, and the failure record that counts it."""
+    path = run_log_path(root, LOSSY_EXECUTION_ID)
+    with JsonlRunLog(path, LOSSY_EXECUTION_ID) as log:
+        log.started(kind="feature", target=LOSSY_TARGET)
+        log.set_run_id(LOSSY_RUN_ID)
+        log.entry_failed("seq_b", '{"type": "ValueError", "message": "bad"}')
+        log.finished()
+    _ = FileFailureStore(root).note_entry_failure(
+        (LOSSY_TARGET, LOSSY_RUN_ID, "", "seq_b"),
+        error="bad",
+        execution_id=LOSSY_EXECUTION_ID,
     )
 
 
@@ -153,6 +176,7 @@ CLI_READS: dict[str, CliArguments] = {
     "reindex --dry-run": lambda _: ["reindex"],
     "runs": lambda _: ["runs"],
     "runs --limit": lambda _: ["runs", "--limit", "1"],
+    "runs errors": lambda f: ["runs", "errors", f.lossy_execution_id],
     "sequences": lambda _: ["sequences"],
     "sources list": lambda _: ["sources", "list"],
     "status": lambda f: ["status", "--execution-id", f.execution_id, "--progress"],
@@ -253,6 +277,13 @@ def _inventory_wire(fixture: ReadDataset) -> object:
     return listed
 
 
+def _lossy_entry_errors(fixture: ReadDataset) -> object:
+    report = entry_errors_wire(fixture.root, fixture.lossy_execution_id)
+    assert report is not None
+    assert [entry.attempts for entry in report.entries] == [1]
+    return report
+
+
 def _rollup(fixture: ReadDataset) -> object:
     request = load_request(fixture.root, fixture.request_id)
     return request_rollup(fixture.root, request)
@@ -267,6 +298,7 @@ type LibraryRead = Callable[[ReadDataset], object]
 
 LIBRARY_READS: dict[str, LibraryRead] = {
     "dataset_inventory": _dataset_inventory,
+    "entry_errors_wire": _lossy_entry_errors,
     "inventory": _inventory,
     "inventory_wire": _inventory_wire,
     "list_requests": lambda f: list_requests(f.root, limit=1),

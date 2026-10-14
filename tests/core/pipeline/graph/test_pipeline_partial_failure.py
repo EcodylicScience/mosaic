@@ -29,6 +29,7 @@ from mosaic.core.pipeline.graph import (
     CoverageShortfall,
     FileFailureStore,
     Recipe,
+    entry_errors_wire,
     execute_step,
     submit_request,
 )
@@ -211,6 +212,36 @@ def test_the_failure_record_counts_the_lost_entity(tracked: Dataset) -> None:
     store = FileFailureStore(tracked.base_dir)
     assert store.entry_record((STORAGE, flaky.run_id, "", DOOMED)).attempts == 1
     assert store.entry_record((STORAGE, flaky.run_id, "", "seq_a")).attempts == 0
+
+
+def test_the_lost_entity_is_reported_with_its_failure_record(
+    tracked: Dataset,
+) -> None:
+    """The run-log's reason and the record's retry state, joined by the run's target."""
+    request, flaky = _run_flaky(tracked, "extract-templates")
+    execution_id = request.execution_of("flaky")
+
+    waiting = entry_errors_wire(tracked.base_dir, execution_id)
+    _quarantine_the_doomed_entity(tracked, flaky.run_id)
+    quarantined = entry_errors_wire(tracked.base_dir, execution_id)
+
+    assert waiting is not None
+    assert quarantined is not None
+    assert (waiting.target, waiting.run_id) == (STORAGE, flaky.run_id)
+    assert (waiting.total, waiting.has_more, waiting.outcome) == (1, False, "partial")
+    (entry,) = waiting.entries
+    assert (entry.key, entry.group, entry.sequence) == (DOOMED, "", DOOMED)
+    assert entry.error is not None
+    assert (entry.error.type, entry.error.message) == (
+        "RuntimeError",
+        "apply failed on purpose",
+    )
+    assert (entry.attempts, entry.retry) == (1, "waiting")
+    assert entry.last_execution_id == execution_id
+    assert entry.not_before
+    assert not waiting.held_back_by_quarantine
+    assert quarantined.entries[0].retry == "quarantined"
+    assert quarantined.held_back_by_quarantine
 
 
 def test_a_rapid_retry_waits_rather_than_attempting_again(

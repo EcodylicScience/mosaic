@@ -33,9 +33,9 @@ from typing import TYPE_CHECKING, Final, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from mosaic.core.helpers import to_safe_name
+from mosaic.core.entry import make_entry_key, to_safe_name
+from mosaic.runlog import ERROR_MESSAGE_LIMIT
 
-from .._utils import atomic_write
 from .failures import (
     QUARANTINE_AFTER,
     EntryFailureKey,
@@ -75,14 +75,17 @@ def claims_root(base_dir: Path | str) -> Path:
 
 
 def entry_record_path(base_dir: Path | str, key: EntryFailureKey) -> Path:
-    """Where one entity's failure record for one run sits."""
+    """The path of one entity's failure record for one run.
+
+    The file is named by the entry key, the stem that the run's output files use.
+    """
     storage_name, run_id, group, sequence = key
     return (
         claims_root(base_dir)
         / _ENTRIES_DIR
         / to_safe_name(storage_name)
         / to_safe_name(run_id)
-        / f"{_entry_stem(group, sequence)}.json"
+        / f"{make_entry_key(group, sequence)}.json"
     )
 
 
@@ -105,16 +108,6 @@ def exclusions_path(base_dir: Path | str, request_id: str) -> Path:
         / to_safe_name(request_id)
         / _EXCLUSIONS_FILE
     )
-
-
-def _entry_stem(group: str, sequence: str) -> str:
-    """``<safe group>__<safe sequence>``, and just the sequence when group is empty.
-
-    The convention the output filenames already use, so a person reading the
-    claims directory beside a run root sees the same names in both.
-    """
-    safe_sequence = to_safe_name(sequence)
-    return f"{to_safe_name(group)}__{safe_sequence}" if group else safe_sequence
 
 
 class FileFailureStore:
@@ -231,7 +224,7 @@ def _advanced(record: FailureRecord, *, error: str, execution_id: str) -> Failur
     attempts = record.attempts + 1
     return FailureRecord(
         attempts=attempts,
-        last_error=error[:2000],
+        last_error=error[:ERROR_MESSAGE_LIMIT],
         not_before=backoff_until(attempts),
         last_execution_id=execution_id,
         quarantined=attempts >= QUARANTINE_AFTER,
@@ -260,5 +253,9 @@ def _load(path: Path, model_cls: type[ModelT]) -> ModelT:
 
 def _store(path: Path, record: BaseModel) -> None:
     """Write one record atomically, as indented JSON a person can read."""
+    # Imported here so that a reader of failure records leaves numpy and pandas
+    # unloaded (``tests/meta/test_status_imports.py``).
+    from .._utils import atomic_write
+
     payload = record.model_dump(mode="json")
     atomic_write(path, lambda temp: temp.write_text(json.dumps(payload, indent=2)))

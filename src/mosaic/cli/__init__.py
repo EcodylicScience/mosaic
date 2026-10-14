@@ -35,7 +35,7 @@ from mosaic.cli.upgrade_tracks import upgrade_tracks_command
 from mosaic.cli.sweep_tracking import sweep_tracking_command
 from mosaic.cli.reprobe_media import reprobe_media_command
 from mosaic.cli.run import run_command
-from mosaic.cli.runs import runs_command
+from mosaic.cli.runs import runs_app
 from mosaic.cli.sequences import sequences_command
 from mosaic.cli.status import status_command
 from mosaic.cli.tracking import tracking_app
@@ -52,7 +52,7 @@ app = typer.Typer(
 # Compute + observe (the critical path that unblocks the Layer-2 executor).
 _ = app.command(name="run")(run_command)
 _ = app.command(name="status")(status_command)
-_ = app.command(name="runs")(runs_command)
+app.add_typer(runs_app, name="runs")
 _ = app.command(name="cancel")(cancel_command)
 _ = app.command(name="release")(release_command)
 _ = app.command(name="track")(track_command)

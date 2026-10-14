@@ -214,7 +214,9 @@ New in the library: `RunStatusWire`, `RequestStatusWire`, `StepStatusWire`,
 `recorded_error` in `mosaic.core.pipeline.graph`; `AttemptOutcome`,
 `attempt_outcome`, `EntryErrorRecord`, `ProgressEventRecord` and
 `read_entry_errors` in `mosaic.runlog`; and `progress_done` and `progress_total`
-on `StepAttempt`.
+on `StepAttempt`. `read_entry_errors` returns an `EntryErrorPage` (`items`,
+`total`, `has_more`), each record gives the blob's `error_type` and `message`,
+and a `limit` below 1 raises `ValueError`.
 
 **`mosaic pipeline list` lists a dataset's pipeline requests, and `mosaic runs`
 reads a page at a time.** `pipeline list` prints the requests newest first, each
@@ -230,6 +232,25 @@ library: `list_requests`, `request_summary`, `rollup_verdict`,
 `list_runs` and `RunLogPage` in `mosaic.runlog`. `read_runs` keeps its signature
 and its result. Importing `mosaic.core.pipeline.graph.store` leaves pandas, cv2
 and av unloaded.
+
+**`mosaic runs errors <execution_id>` lists the entities that one attempt
+lost.** The report joins each entity with its failure record. It gives the
+failures counted across requests, `not_before`, and a retry state of `ready`,
+`waiting`, `quarantined` or `unrecorded`. `held_back_by_quarantine` is true when
+any entity that the attempt lost is quarantined, listed or not, which keeps its
+step back until a request with `allow_partial` proceeds without it. Every lost
+entity also leaves the run short, and `allow_partial` answers that shortfall for
+a `scope_dependent` step that reads the run. `--json` prints `EntryErrorsWire`,
+and `--limit` lists more than the first 20. `mosaic runs` becomes a command
+group, listed after the commands in `mosaic --help`. Its listing keeps its
+options and its output. New in the library: `entry_errors_wire`,
+`EntryErrorsWire`, `EntryErrorWire` and `RetryState` in
+`mosaic.core.pipeline.graph`, and `error_summary`, `ErrorSummary`,
+`EntryErrorPage`, `read_entry_error_keys` and `ERROR_MESSAGE_LIMIT` in
+`mosaic.runlog`. A pipeline step records its attempt on each failure record, as
+`last_execution_id`. `to_safe_name`, `from_safe_name`, `make_entry_key` and
+`parse_entry_key` are defined in `mosaic.core.entry`, whose import leaves pandas
+unloaded, and `mosaic.core.helpers` still exports all four.
 
 No run identifier moves.
 

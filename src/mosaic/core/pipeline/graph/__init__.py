@@ -62,6 +62,12 @@ if TYPE_CHECKING:
         canonical_recipe as canonical_recipe,
         recipe_digest as recipe_digest,
     )
+    from .entry_errors import (
+        EntryErrorsWire as EntryErrorsWire,
+        EntryErrorWire as EntryErrorWire,
+        RetryState as RetryState,
+        entry_errors_wire as entry_errors_wire,
+    )
     from .failures import (
         QUARANTINE_AFTER as QUARANTINE_AFTER,
         EntryFailureKey as EntryFailureKey,
@@ -267,6 +273,10 @@ _MODULE_OF: Final[dict[str, str]] = {
     "canonical_json": ".digest",
     "canonical_recipe": ".digest",
     "recipe_digest": ".digest",
+    "EntryErrorWire": ".entry_errors",
+    "EntryErrorsWire": ".entry_errors",
+    "RetryState": ".entry_errors",
+    "entry_errors_wire": ".entry_errors",
     "QUARANTINE_AFTER": ".failures",
     "EntryFailureKey": ".failures",
     "Exclusions": ".failures",
@@ -450,6 +460,8 @@ __all__ = [
     "Edge",
     "EditorCatalog",
     "EntityLevel",
+    "EntryErrorWire",
+    "EntryErrorsWire",
     "EntryFailureKey",
     "Exclusions",
     "FAILED_ENTRY_SAMPLE",
@@ -498,6 +510,7 @@ __all__ = [
     "RequestSummaryWire",
     "RequestVerdict",
     "ResolvedStep",
+    "RetryState",
     "RunStatusWire",
     "SCHEMA_VERSION",
     "STEP_RUN_KIND",
@@ -545,6 +558,7 @@ __all__ = [
     "declared_version",
     "descendants_of",
     "edges",
+    "entry_errors_wire",
     "editor_catalog",
     "execute_step",
     "feature_class_for_slug",

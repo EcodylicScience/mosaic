@@ -19,7 +19,6 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 
 * `run`: Run a feature (--feature), an op (--kind),...
 * `status`: Show the status of one run attempt by...
-* `runs`: List run attempts newest first, optionally...
 * `cancel`: Request cancellation of a running attempt...
 * `release`: Release the run roots claimed by an...
 * `track`: Run an integrated tracker over scoped...
@@ -36,6 +35,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `upgrade-tracks`: Convert this dataset's TRex tables from...
 * `convert-tracks`: Convert all raw tracks into schema-valid...
 * `convert-labels`: Convert all raw labels for a kind into...
+* `runs`: List run attempts newest first, or the...
 * `features`: Discover features and their parameter...
 * `tracking`: Discover tracking ops and their parameter...
 * `media`: Probe a video, compare two videos for...
@@ -100,27 +100,6 @@ $ mosaic status [OPTIONS]
 * `--execution-id <str>`: Attempt ULID to look up.  [required]
 * `--progress`: Attach the per-step progress stream.
 * `--json`: Emit the row as JSON on stdout.
-* `--help`: Show this message and exit.
-
-## `mosaic runs`
-
-List run attempts newest first, optionally filtered by kind / status / target.
-
-**Usage**:
-
-```console
-$ mosaic runs [OPTIONS]
-```
-
-**Options**:
-
-* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `--kind <str>`: Filter by runs.kind ('feature', 'trex', or an op kind).
-* `--status <str>`: Filter by status (running|finished|failed|cancelled).
-* `--target <str>`: Filter by exact runs.target (feature-slug filter).
-* `--limit <int range>`: List at most this many attempts.  [x>=1]
-* `--after <str>`: Start after the page that printed this next_after.
-* `--json`: Emit the rows as a JSON array, or a page object with --limit/--after.
 * `--help`: Show this message and exit.
 
 ## `mosaic cancel`
@@ -581,6 +560,57 @@ $ mosaic convert-labels [OPTIONS]
 * `--params <str>`: Converter params as JSON, @file.json, or @-.
 * `--overwrite`: Overwrite existing label files.
 * `--json`: Emit the result as JSON.
+* `--help`: Show this message and exit.
+
+## `mosaic runs`
+
+List run attempts newest first, or the entities that one attempt lost.
+
+**Usage**:
+
+```console
+$ mosaic runs [OPTIONS] COMMAND [ARGS]...
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).
+* `--kind <str>`: Filter by runs.kind ('feature', 'trex', or an op kind).
+* `--status <str>`: Filter by status (running|finished|failed|cancelled).
+* `--target <str>`: Filter by exact runs.target (feature-slug filter).
+* `--limit <int range>`: List at most this many attempts.  [x>=1]
+* `--after <str>`: Start after the page that printed this next_after.
+* `--json`: Emit the rows as a JSON array, or a page object with --limit/--after.
+* `--help`: Show this message and exit.
+
+**Commands**:
+
+* `errors`: List the entities that one attempt lost,...
+
+### `mosaic runs errors`
+
+List the entities that one attempt lost, each with its failure record.
+
+Each entity's retry state says whether a pipeline request attempts it again:
+``ready``, ``waiting`` until ``not_before``, ``quarantined`` until a request
+with ``allow_partial`` proceeds without it, or ``unrecorded`` when its record
+counts zero failures.
+
+**Usage**:
+
+```console
+$ mosaic runs errors [OPTIONS] {execution_id}
+```
+
+**Arguments**:
+
+* `execution_id`: The attempt ULID whose lost entities to list.  [required]
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml). Defaults to the one given before 'errors'.
+* `--limit <int range>`: List at most this many entities (default 20).  [x>=1]
+* `--json`: Emit as JSON on stdout.
 * `--help`: Show this message and exit.
 
 ## `mosaic features`

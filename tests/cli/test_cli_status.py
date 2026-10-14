@@ -5,8 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from typer.testing import CliRunner
+
+from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
+    EntryErrorsWire,
+    FileFailureStore,
     Recipe,
     RequestPageWire,
     RequestStatusWire,
@@ -212,3 +217,83 @@ def _rows(page: dict[str, object]) -> list[dict[str, object]]:
     items = page["items"]
     assert isinstance(items, list)
     return [row for row in items if isinstance(row, dict)]
+
+
+def _lost_two(ds: Dataset) -> None:
+    """Attempt E1 of a run that lost two entities, the first failed once since."""
+    crash = json.dumps({"type": "ValueError", "message": "no frames"})
+    with JsonlRunLog(run_log_path(ds.base_dir, "E1"), "E1") as log:
+        log.started(kind="feature", target="speed")
+        log.set_run_id("0.1-abc")
+        log.entry_failed("g__s1", crash)
+        log.entry_failed("g__s2", crash)
+        log.finished()
+    _ = FileFailureStore(ds.base_dir).note_entry_failure(
+        ("speed", "0.1-abc", "g", "s1"), error="no frames"
+    )
+
+
+def test_runs_errors_prints_the_entry_errors_wire(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, ds = dataset
+    _lost_two(ds)
+
+    report = EntryErrorsWire.model_validate(
+        invoke_json(["runs", "errors", "E1", "-m", str(manifest), "--json"])
+    )
+
+    assert (report.total, report.has_more, report.outcome) == (2, False, "partial")
+    assert [(e.sequence, e.retry) for e in report.entries] == [
+        ("s1", "waiting"),
+        ("s2", "unrecorded"),
+    ]
+
+
+def test_runs_errors_takes_the_manifest_given_before_it_and_a_limit(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, ds = dataset
+    _lost_two(ds)
+
+    result = invoke_ok(["runs", "-m", str(manifest), "errors", "E1", "--limit", "1"])
+
+    lines = result.stdout.splitlines()
+    assert "total: 2" in lines
+    assert lines[-2].split("\t") == [
+        "key",
+        "retry",
+        "attempts",
+        "not_before",
+        "error",
+    ]
+    key, retry, attempts, _, error = lines[-1].split("\t")
+    assert (key, retry, attempts, error) == (
+        "g__s1",
+        "waiting",
+        "1",
+        "ValueError: no frames",
+    )
+    assert "1 of 2 listed" in result.stderr
+
+
+def test_runs_errors_of_an_unknown_attempt_fails(dataset: tuple[Path, Dataset]) -> None:
+    manifest, _ = dataset
+
+    result = CliRunner().invoke(app, ["runs", "errors", "MISSING", "-m", str(manifest)])
+
+    assert result.exit_code == 1
+    assert "No run found with execution_id=MISSING" in result.stderr
+
+
+def test_a_listing_option_before_runs_errors_is_refused(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, _ = dataset
+
+    result = CliRunner().invoke(
+        app, ["runs", "-m", str(manifest), "--limit", "1", "errors", "E1"]
+    )
+
+    assert result.exit_code == 2
+    assert "--limit given before 'errors'" in result.stderr
