@@ -428,14 +428,27 @@ def test_sequences_narrowed_to_an_empty_group_still_succeeds(
 
 def test_features_list_and_describe() -> None:
     rows = json.loads(runner.invoke(app, ["features", "list", "--json"]).stdout)
-    names = {r["name"] for r in rows}
-    assert "speed-angvel" in names
+    by_name = {r["name"]: r for r in rows}
+    assert "speed-angvel" in by_name
+    assert {r["type"] for r in rows} == {"feature"}
+    assert by_name["speed-angvel"]["lane"] == "feature-compute"
+    assert "params_schema" not in by_name["speed-angvel"]
+    assert by_name["speed-angvel"]["license_note"] is None
+    assert "non-commercial" in by_name["kpms"]["license_note"]
 
     desc = json.loads(
         runner.invoke(app, ["features", "describe", "speed-angvel", "--json"]).stdout
     )
     assert desc["name"] == "speed-angvel"
     assert "step_size" in desc["params_schema"]["properties"]
+    assert {"version", "category", "requires", "provides", "unavailable"} <= set(desc)
+    assert desc["unavailable"] is None
+    assert desc["provides"]["adds"]
+
+    kpms = json.loads(
+        runner.invoke(app, ["features", "describe", "kpms", "--json"]).stdout
+    )
+    assert kpms["license_note"] == by_name["kpms"]["license_note"]
 
 
 # Every registered op kind, as one literal. Separated from the discovery test

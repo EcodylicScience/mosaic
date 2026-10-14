@@ -18,6 +18,8 @@ import pytest
 from mosaic.optional_dependency import (
     MissingOptionalDependency,
     OptionalModule,
+    RestrictedUse,
+    license_notes,
     unmet,
 )
 
@@ -71,3 +73,25 @@ def test_unmet_joins_what_is_missing_in_declaration_order() -> None:
     assert unmet(()) is None
     assert unmet((_Says(None), _Says(None))) is None
     assert unmet((_Says("First."), _Says(None), _Says("Second."))) == "First. Second."
+
+
+@dataclass(frozen=True, slots=True)
+class _Restricted:
+    note: str
+
+    def missing(self) -> str | None:
+        return None
+
+    def license_note(self) -> str:
+        return self.note
+
+
+def test_license_notes_join_the_restricted_prerequisites_in_declaration_order() -> None:
+    """A met prerequisite still lists its note, and an unrestricted one lists none."""
+    first, second = _Restricted("First."), _Restricted("Second.")
+
+    assert isinstance(first, RestrictedUse)
+    assert not isinstance(_Says(None), RestrictedUse)
+    assert license_notes(()) is None
+    assert license_notes((_Says(None), _ABSENT)) is None
+    assert license_notes((first, _Says("Missing."), second)) == "First. Second."

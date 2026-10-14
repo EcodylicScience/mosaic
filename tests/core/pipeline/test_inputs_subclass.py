@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from mosaic.behavior.feature_library.registry import register_feature
+from mosaic.behavior.feature_library.registry import FEATURES, register_feature
 from mosaic.core.pipeline.types import (
     Feature,
     InputRequire,
@@ -103,12 +105,23 @@ def test_mixed_input() -> None:
     assert f.inputs.is_multi
 
 
-def test_register_feature_accepts_track_only() -> None:
+@pytest.fixture
+def restored_features() -> Iterator[None]:
+    """``FEATURES`` holds after the test exactly what it held before it."""
+    saved = dict(FEATURES)
+    try:
+        yield
+    finally:
+        FEATURES.clear()
+        FEATURES.update(saved)
+
+
+def test_register_feature_accepts_track_only(restored_features: None) -> None:
     cls = register_feature(_TrackOnlyFeature)
     assert cls is _TrackOnlyFeature
 
 
-def test_register_feature_accepts_mixed() -> None:
+def test_register_feature_accepts_mixed(restored_features: None) -> None:
     cls = register_feature(_MixedInputFeature)
     assert cls is _MixedInputFeature
 

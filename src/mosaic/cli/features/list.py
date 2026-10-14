@@ -1,4 +1,4 @@
-"""``mosaic features list``: enumerate registered features (name/version/category)."""
+"""``mosaic features list``: every registered feature, as its catalog index row."""
 
 from __future__ import annotations
 
@@ -15,23 +15,29 @@ def list_command(
         bool, typer.Option("--json", help="Emit the list as a JSON array.")
     ] = False,
 ) -> None:
-    """List every registered feature, sorted by slug."""
-    from mosaic.behavior.feature_library import FEATURES
+    """List every registered feature, sorted by slug, with its lane and columns.
 
-    rows: list[dict[str, object]] = []
-    for cls in FEATURES.values():
-        name_raw = getattr(cls, "name", None)
-        version_raw = getattr(cls, "version", None)
-        category_raw = getattr(cls, "category", None)
-        rows.append(
-            {
-                "name": name_raw if isinstance(name_raw, str) else cls.__name__,
-                "version": version_raw if isinstance(version_raw, str) else "0.0",
-                "category": category_raw if isinstance(category_raw, str) else None,
-            }
-        )
-    rows.sort(key=lambda r: str(r["name"]))
+    Under --json each row also names what the installation lacks to run the
+    feature and any use its license forbids.
+    """
+    from mosaic.core.pipeline.graph import catalog_index
+
+    rows = [
+        entry.model_dump(mode="json")
+        for entry in catalog_index().entries
+        if entry.type == "feature"
+    ]
     if as_json:
         emit_json(rows)
-    else:
-        render_table(rows, ["name", "version", "category"])
+        return
+    render_table(
+        [
+            {
+                **row,
+                "available": "no" if row["unavailable"] else "yes",
+                "restricted": "yes" if row["license_note"] else "no",
+            }
+            for row in rows
+        ],
+        ["name", "version", "category", "lane", "available", "restricted"],
+    )

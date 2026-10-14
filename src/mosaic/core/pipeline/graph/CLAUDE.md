@@ -96,3 +96,7 @@ instead of derived from artifacts.
 - A feature's `prerequisites` (`mosaic/optional_dependency.py`) are evaluated once per
   process, without importing, into `Declaration.unavailable`. Validation, the plan and
   `attach_candidates` refuse with that sentence (`test_pipeline_availability.py`).
+- A prerequisite that implements `RestrictedUse` supplies `CatalogEntry.license_note`,
+  which the catalog lists whether the prerequisite is met or not. `kpms` declares one.
+  `catalog_index` summarizes the editor catalog without params schemas, and
+  `describe_step_type` returns one entry whole (`test_pipeline_catalog_index.py`).

@@ -1,7 +1,8 @@
 """The JSON a pipeline editor reads, as pydantic models.
 
 One model per answer an editor asks for: the step types on offer
-(:class:`EditorCatalog`), what is wrong with a recipe (:class:`ValidationReport`),
+(:class:`EditorCatalog`, and :class:`CatalogIndex` without the params schemas),
+what is wrong with a recipe (:class:`ValidationReport`),
 what may follow a step (:class:`AttachReport`), what may be inserted below a step
 that has children (:class:`InsertReport`), what may be added as an input of a step
 (:class:`InputCandidates`) and what a recipe would do to one dataset
@@ -10,6 +11,7 @@ these models dumped, and the two agree on every shape.
 
 Models only. The functions that fill them live beside what they read:
 :func:`~mosaic.core.pipeline.graph.resolve.editor_catalog`,
+:func:`~mosaic.core.pipeline.graph.resolve.catalog_index`,
 :func:`~mosaic.core.pipeline.graph.validate.validation_report`,
 :func:`~mosaic.core.pipeline.graph.validate.attach_candidates`,
 :func:`~mosaic.core.pipeline.graph.validate.insert_candidates`,
@@ -36,6 +38,7 @@ from mosaic.core.json_value import JsonValue
 from ..inventory.model import ArtifactStatus
 from ..inventory.wire import CoverageWire
 from ..ops import ScopeTakes
+from ..types.feature import EmitsLevel
 from .compatibility import Declaration
 from .model import GraphModel
 
@@ -43,6 +46,8 @@ __all__ = [
     "AttachReport",
     "Attachment",
     "CatalogEntry",
+    "CatalogIndex",
+    "CatalogIndexEntry",
     "ColumnNames",
     "ColumnProvider",
     "ConditionalColumns",
@@ -199,6 +204,9 @@ class CatalogEntry(GraphModel):
             install or set. ``None`` when it runs here. Validation reports the
             same sentence for a step that runs it, and an attach candidate is
             refused with it.
+        license_note: The uses that a license of something it needs forbids,
+            such as commercial or fee-for-service use. ``None`` when no
+            prerequisite limits its use. Listed whether or not it runs here.
     """
 
     name: str
@@ -212,6 +220,7 @@ class CatalogEntry(GraphModel):
     requires: tuple[ColumnNames, ...] | None
     provides: ProvidedColumns | None
     unavailable: str | None
+    license_note: str | None = None
 
 
 class EditorCatalog(GraphModel):
@@ -227,6 +236,63 @@ class EditorCatalog(GraphModel):
     schema_version: int
     mosaic_version: str
     entries: tuple[CatalogEntry, ...]
+
+
+class CatalogIndexEntry(GraphModel):
+    """One step type of the catalog, summarized without its params schema.
+
+    Attributes:
+        name: What a recipe writes to run it.
+        type: A feature, an op, or ``tracks``.
+        version: The version its producer declares, ``""`` for ``tracks``.
+        category: Its feature or op category.
+        summary: The first line of its class docstring.
+        lane: The queue its work is offered to, ``None`` for ``tracks``, which
+            no job runs.
+        emits: The entity level of its rows as declared, ``as-input`` for one
+            that keeps its input's level.
+        requires: The label of each column requirement under its default
+            params, ``None`` when undeclared.
+        provides: The label of each column that its output always contains,
+            ``None`` when undeclared.
+        passthrough: Whether its output also contains every column of its
+            merged input.
+        payload_families: Whether its output contains a family of columns per
+            payload column of its merged input.
+        unavailable: What this installation lacks to run it, ``None`` when it
+            runs here.
+        license_note: The uses that a license of something it needs forbids,
+            ``None`` when unrestricted.
+    """
+
+    name: str
+    type: Literal["feature", "op", "tracks"]
+    version: str
+    category: str
+    summary: str
+    lane: str | None
+    emits: EmitsLevel
+    requires: tuple[str, ...] | None
+    provides: tuple[str, ...] | None
+    passthrough: bool
+    payload_families: bool
+    unavailable: str | None
+    license_note: str | None
+
+
+class CatalogIndex(GraphModel):
+    """Every step type of :class:`EditorCatalog`, one row each.
+
+    Attributes:
+        schema_version: The recipe format this build reads.
+        mosaic_version: The installed ``mosaic-behavior`` version, ``""`` when
+            unknown.
+        entries: One per step type, sorted by name.
+    """
+
+    schema_version: int
+    mosaic_version: str
+    entries: tuple[CatalogIndexEntry, ...]
 
 
 # ``Declaration.scope_takes`` is annotated with ``ScopeTakes``, which

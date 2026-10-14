@@ -39,7 +39,7 @@ from pydantic import BaseModel
 from mosaic.core.json_value import JsonValue
 from mosaic.core.narrowing import is_object_tuple
 from mosaic.core.scope import Scope
-from mosaic.optional_dependency import Prerequisite, unmet
+from mosaic.optional_dependency import Prerequisite, license_notes, unmet
 
 if TYPE_CHECKING:
     from pydantic import ValidationError
@@ -68,6 +68,7 @@ from .compatibility import (
     ProducerDecl,
     resolve_emits,
 )
+from .lanes import lane_for
 from .model import (
     TRACKS_INPUT,
     BoundRef,
@@ -76,24 +77,35 @@ from .model import (
     params_step_refs,
 )
 from .storage import storage_name_of
-from .wire import CatalogEntry, EditorCatalog, ReferenceKind, render_location
+from .wire import (
+    CatalogEntry,
+    CatalogIndex,
+    CatalogIndexEntry,
+    EditorCatalog,
+    ReferenceKind,
+    render_location,
+)
 
 __all__ = [
     "ReferenceSite",
     "ResolvedStep",
     "StepBuildError",
     "StepSpec",
+    "StepTypeNotFound",
     "build_feature",
     "build_op_params",
     "build_step_feature",
     "build_step_op_params",
+    "catalog_index",
     "declaration_catalog",
     "declared_version",
+    "describe_step_type",
     "editor_catalog",
     "feature_class_for_slug",
     "op_class_for_kind",
     "params_reference_site",
     "resolve_step_spec",
+    "step_type_lane",
 ]
 
 _EMITS_LEVELS: frozenset[str] = frozenset(
@@ -619,6 +631,7 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
             unavailable=declared.unavailable,
         )
     cls = feature_class_for_slug(name) if kind == "feature" else op_class_for_kind(name)
+    prerequisites = () if cls is None else _prerequisites_of(cls)
     params_cls: object = getattr(cls, "Params", None)
     schema: dict[str, JsonValue] | None = None
     if isinstance(params_cls, type) and issubclass(params_cls, BaseModel):
@@ -640,7 +653,80 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
         requires=requires,
         provides=provides,
         unavailable=declared.unavailable,
+        license_note=license_notes(prerequisites),
     )
+
+
+class StepTypeNotFound(ClassifiedError, LookupError):
+    """A name that no step type of the editor catalog has."""
+
+    error_kind: ClassVar[ErrorKind] = "not_found"
+
+    def __init__(self, name: str) -> None:
+        super().__init__(f"no step type named {name!r} in the catalog")
+        self.name: str = name
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the name that was looked up."""
+        return {"name": self.name}
+
+
+def describe_step_type(name: str) -> CatalogEntry:
+    """The editor-catalog entry of the step type *name*, params schema included.
+
+    Raises:
+        StepTypeNotFound: When the catalog has no step type of that name, which
+            includes an op that a recipe may not run.
+    """
+    for entry in editor_catalog().entries:
+        if entry.name == name:
+            return entry
+    raise StepTypeNotFound(name)
+
+
+def catalog_index() -> CatalogIndex:
+    """Every step type of :func:`editor_catalog`, summarized without params schemas.
+
+    A row per entry, in the catalog's order. The full catalog dumps to about
+    500 KB of JSON, almost all of it params schemas, and
+    :func:`describe_step_type` returns one entry whole.
+    """
+    catalog = editor_catalog()
+    return CatalogIndex(
+        schema_version=catalog.schema_version,
+        mosaic_version=catalog.mosaic_version,
+        entries=tuple(_index_entry(entry) for entry in catalog.entries),
+    )
+
+
+def _index_entry(entry: CatalogEntry) -> CatalogIndexEntry:
+    """One catalog entry as its index row."""
+    declared = entry.declaration
+    provides = entry.provides
+    return CatalogIndexEntry(
+        name=entry.name,
+        type=entry.type,
+        version=entry.version,
+        category=entry.category,
+        summary=entry.summary,
+        lane=step_type_lane(entry),
+        emits=declared.emits,
+        requires=None
+        if entry.requires is None
+        else tuple(names.label for names in entry.requires),
+        provides=None
+        if provides is None
+        else tuple(names.label for names in provides.adds),
+        passthrough=provides is not None and provides.passthrough,
+        payload_families=provides is not None and provides.payload_families,
+        unavailable=entry.unavailable,
+        license_note=entry.license_note,
+    )
+
+
+def step_type_lane(entry: CatalogEntry) -> str | None:
+    """The lane *entry*'s work is offered to, or ``None`` for ``tracks``, which runs nothing."""
+    return None if entry.type == "tracks" else lane_for(entry.declaration)
 
 
 def _first_docstring_line(cls: object) -> str:

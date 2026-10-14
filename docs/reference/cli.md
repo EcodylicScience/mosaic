@@ -630,11 +630,14 @@ $ mosaic features [OPTIONS] COMMAND [ARGS]...
 **Commands**:
 
 * `list`: List every registered feature, sorted by...
-* `describe`: Describe one feature: name, version,...
+* `describe`: Describe one feature: its params...
 
 ### `mosaic features list`
 
-List every registered feature, sorted by slug.
+List every registered feature, sorted by slug, with its lane and columns.
+
+Under --json each row also names what the installation lacks to run the
+feature and any use its license forbids.
 
 **Usage**:
 
@@ -649,7 +652,10 @@ $ mosaic features list [OPTIONS]
 
 ### `mosaic features describe`
 
-Describe one feature: name, version, category, and its params JSON-Schema.
+Describe one feature: its params JSON-Schema and the columns it reads and writes.
+
+Also names its version, category and lane, what the installation lacks to
+run it, and any use its license forbids.
 
 **Usage**:
 

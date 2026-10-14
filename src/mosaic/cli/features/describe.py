@@ -1,4 +1,4 @@
-"""``mosaic features describe <slug>``: the feature's params JSON-Schema + metadata."""
+"""``mosaic features describe <slug>``: one feature's catalog entry, params schema included."""
 
 from __future__ import annotations
 
@@ -17,24 +17,30 @@ def describe_command(
         bool, typer.Option("--json", help="Emit the description as JSON.")
     ] = False,
 ) -> None:
-    """Describe one feature: name, version, category, and its params JSON-Schema."""
-    from pydantic import BaseModel
+    """Describe one feature: its params JSON-Schema and the columns it reads and writes.
 
-    cls = feature_class_for_slug(slug)
-    name_raw = getattr(cls, "name", None)
-    version_raw = getattr(cls, "version", None)
-    category_raw = getattr(cls, "category", None)
-    params_cls = getattr(cls, "Params", None)
-    schema: dict[str, object] | None = None
-    if isinstance(params_cls, type) and issubclass(params_cls, BaseModel):
-        schema = params_cls.model_json_schema()
+    Also names its version, category and lane, what the installation lacks to
+    run it, and any use its license forbids.
+    """
+    from mosaic.core.pipeline.graph import describe_step_type, step_type_lane
 
-    payload: dict[str, object] = {
-        "name": name_raw if isinstance(name_raw, str) else cls.__name__,
-        "version": version_raw if isinstance(version_raw, str) else "0.0",
-        "category": category_raw if isinstance(category_raw, str) else None,
-        "params_schema": schema,
-    }
+    _ = feature_class_for_slug(slug)
+    entry = describe_step_type(slug)
+    payload = entry.model_dump(
+        mode="json",
+        include={
+            "name",
+            "version",
+            "category",
+            "summary",
+            "params_schema",
+            "requires",
+            "provides",
+            "unavailable",
+            "license_note",
+        },
+    )
+    payload["lane"] = step_type_lane(entry)
     if as_json:
         emit_json(payload)
     else:

@@ -252,6 +252,24 @@ options and its output. New in the library: `entry_errors_wire`,
 `parse_entry_key` are defined in `mosaic.core.entry`, whose import leaves pandas
 unloaded, and `mosaic.core.helpers` still exports all four.
 
+**The step-type catalog has an index, and `kpms` is marked restricted.**
+`catalog_index()` returns one row per step type of `editor_catalog()` without
+its params schema, about 30 KB of JSON in place of about 480 KB. A row gives
+`name`, `type`, `version`, `category`, `summary`, `lane`, `emits`, the labels of
+`requires` and `provides`, `passthrough`, `payload_families`, `unavailable` and
+`license_note`. `describe_step_type(name)` returns one `CatalogEntry`, and
+raises `StepTypeNotFound`, a `not_found` error, for a name the catalog lacks.
+`CatalogEntry` gains `license_note`, which is `None` unless a prerequisite
+limits use. A prerequisite declares a limit by implementing `RestrictedUse`
+(`mosaic.optional_dependency`), and `kpms` declares that keypoint-MoSeq's
+license forbids commercial and fee-for-service use. The catalog lists the note
+whether or not the license is accepted. `mosaic features list --json` prints
+each feature's index row, keeping `name`, `version` and `category`, and the
+plain table adds `lane`, `available` and `restricted`. `mosaic features describe
+--json` keeps its keys and adds `summary`, `requires`, `provides`,
+`unavailable`, `license_note` and `lane`. `mosaic pipeline catalog --json` adds
+`license_note` to each entry.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

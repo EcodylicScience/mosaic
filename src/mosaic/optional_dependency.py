@@ -23,7 +23,9 @@ needs as ``prerequisites``, a tuple of :class:`Prerequisite`. The pipeline catal
 and recipe validation read them through :func:`unmet`, which imports none of the
 modules it checks. A step type lacking one is offered as unavailable, with a
 sentence naming the package to install or the variable to set, and a recipe step
-running it is a problem.
+running it is a problem. A prerequisite whose license limits use also declares
+:class:`RestrictedUse`, and the catalog lists its sentence through
+:func:`license_notes` whether the prerequisite is met or not.
 """
 
 from __future__ import annotations
@@ -45,6 +47,8 @@ __all__ = [
     "MissingOptionalDependency",
     "OptionalModule",
     "Prerequisite",
+    "RestrictedUse",
+    "license_notes",
     "require",
     "unmet",
 ]
@@ -174,3 +178,26 @@ def unmet(prerequisites: Iterable[Prerequisite]) -> str | None:
         if message is not None
     ]
     return " ".join(lacking) or None
+
+
+@runtime_checkable
+class RestrictedUse(Protocol):
+    """A prerequisite whose license forbids some uses of the step type needing it.
+
+    Meeting the prerequisite does not lift the limit. The catalog therefore
+    lists the sentence beside the step type on every installation.
+    """
+
+    def license_note(self) -> str:
+        """A sentence naming the uses that the license forbids."""
+        ...
+
+
+def license_notes(prerequisites: Iterable[Prerequisite]) -> str | None:
+    """The restricted prerequisites' sentences, in declaration order, or ``None``."""
+    notes = [
+        prerequisite.license_note()
+        for prerequisite in prerequisites
+        if isinstance(prerequisite, RestrictedUse)
+    ]
+    return " ".join(notes) or None

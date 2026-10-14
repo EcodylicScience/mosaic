@@ -132,6 +132,13 @@ LICENSE_NOTICE = (
     "commercial rights to the sponsor or collaborator.\n" + _ACCEPT_LICENSE
 )
 
+_USE_RESTRICTION = (
+    "keypoint-MoSeq is licensed for non-commercial research and academic use "
+    "only. Commercial use is prohibited, including fee-for-service analysis and "
+    "research services to for-profit third parties."
+)
+"""The limit that the catalog lists beside ``kpms``, accepted or not."""
+
 _LICENSE_UNACCEPTED = (
     "keypoint-MoSeq is licensed for non-commercial research and academic use "
     "only, and this installation has not accepted its license. " + _ACCEPT_LICENSE
@@ -211,12 +218,18 @@ class KpmsLicense:
     """A prerequisite of :class:`KpmsFeature`: the accepted keypoint-MoSeq license.
 
     Read from the environment, as :func:`check_license_accepted` reads it before
-    the feature starts its runner.
+    the feature starts its runner. It is also a
+    :class:`~mosaic.optional_dependency.RestrictedUse`, and the catalog lists
+    its license note beside ``kpms``.
     """
 
     def missing(self) -> str | None:
         """How to accept the license, or ``None`` once it is accepted."""
         return None if license_accepted() else _LICENSE_UNACCEPTED
+
+    def license_note(self) -> str:
+        """The uses that keypoint-MoSeq's license forbids."""
+        return _USE_RESTRICTION
 
 
 # --- Data conversion ---
