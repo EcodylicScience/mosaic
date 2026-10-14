@@ -127,7 +127,7 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for one phase. Unset leaves the ceiling to whatever queue submitted the run. [s] |
 | `model_paths` | list of `string` | _required_ |  | One trained SLEAP model directory, or two for a top-down model (centroid, then centered-instance). |
 | `tracking` | `boolean` | `true` |  | Assign identities to detections across frames. When False, no tracker is attached. |
-| `use_flow` | `boolean` | `true` |  | Shift each candidate pose by optical flow before matching it to a detection, sent as --use_flow. |
+| `use_flow` | `boolean` | `false` |  | Shift each candidate pose by optical flow before matching it to a detection, sent as --use_flow. |
 | `candidates_method` | `"fixed_window"` \| `"local_queues"` | `"fixed_window"` |  | Where match candidates come from, sent as --candidates_method: fixed_window takes every instance of the last few frames, local_queues the last few instances of each track. |
 | `features` | `"keypoints"` \| `"centroids"` \| `"bboxes"` \| `"image"` | `"keypoints"` |  | What a detection and a candidate are compared by, sent as --features: keypoints, centroids, bboxes or image. |
 | `scoring_method` | `"oks"` \| `"cosine_sim"` \| `"iou"` \| `"euclidean_dist"` | `"oks"` |  | How that comparison is scored, sent as --scoring_method: oks, cosine_sim, iou or euclidean_dist. |

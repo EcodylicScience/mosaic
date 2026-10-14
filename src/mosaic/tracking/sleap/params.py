@@ -121,10 +121,11 @@ class SleapParams(TrackerOpParams, MediaInputParams):
     # the weights, never the paths themselves.
     model_paths: Annotated[list[str], Declared(_MODEL_PATHS_DESCRIPTION)]
     # tracking (part of the run_id identity). Named for the sleap-nn track
-    # options they are sent as; the defaults are what the legacy defaults ran
-    # (the flow tracker, keypoint OKS, hungarian matching, a five-frame window).
+    # options they are sent as; the defaults are sleap-nn track's own (no
+    # optical flow, fixed-window candidates, keypoint OKS, hungarian matching, a
+    # five-frame window).
     tracking: Annotated[bool, Declared(_TRACKING_DESCRIPTION)] = True
-    use_flow: Annotated[bool, Declared(_USE_FLOW_DESCRIPTION)] = True
+    use_flow: Annotated[bool, Declared(_USE_FLOW_DESCRIPTION)] = False
     candidates_method: Annotated[
         SleapCandidatesMethod, Declared(_CANDIDATES_METHOD_DESCRIPTION)
     ] = "fixed_window"

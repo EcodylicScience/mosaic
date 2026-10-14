@@ -276,7 +276,7 @@ def run_sleap_track(
     *,
     model_paths: Sequence[Path | str],
     tracking: bool = True,
-    use_flow: bool = True,
+    use_flow: bool = False,
     candidates_method: SleapCandidatesMethod = "fixed_window",
     features: SleapFeatures = "keypoints",
     scoring_method: SleapScoringMethod = "oks",

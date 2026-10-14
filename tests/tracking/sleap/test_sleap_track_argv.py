@@ -202,15 +202,14 @@ def test_the_default_tracker_is_spelled_out_in_full(
     """Every option is sent, so no sleap-nn default can move under a run_id.
 
     sleap-nn's ``track`` and ``predict`` already disagree on the default
-    ``--candidates_method``. These defaults are what mosaic's legacy defaults ran
-    under SLEAP 1.6: the flow tracker, keypoint OKS, hungarian, five frames.
+    ``--candidates_method``. The other defaults are sleap-nn's own: no optical
+    flow, keypoint OKS, hungarian, five frames.
     """
     run_sleap_track(tmp_path / "v.mp4", tmp_path / "out.slp", model_paths=["m"])
 
     tracking = launched.args[launched.args.index("-t") :]
     assert tracking == [
         "-t",
-        "--use_flow",
         "--candidates_method",
         "fixed_window",
         "--features",
