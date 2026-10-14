@@ -1,0 +1,45 @@
+"""``mosaic describe``: a dataset's manifest fields, counts, track schemas and frame rates."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from mosaic.core.dataset import Dataset
+from mosaic.core.dataset_summary import SUMMARY_KINDS, DatasetSummary, dataset_summary
+from mosaic.tracking import dataset_inventory
+from tests.helpers import add_tracks_variant, invoke_ok, make_dataset
+
+VARIANT = "convert-trex.0.2-1111111111"
+
+
+@pytest.fixture
+def dataset(tmp_path: Path) -> Dataset:
+    ds = make_dataset(tmp_path / "ds", name="described")
+    add_tracks_variant(ds, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    return ds
+
+
+def test_json_is_the_library_summary(dataset: Dataset) -> None:
+    result = invoke_ok(["describe", "--manifest", str(dataset.manifest_path), "--json"])
+
+    printed = DatasetSummary.model_validate_json(result.stdout)
+    expected = dataset_summary(
+        dataset, found=dataset_inventory(dataset, kinds=SUMMARY_KINDS)
+    )
+    assert printed == expected
+    assert printed.counts.sequences == 2
+    assert printed.counts.models == 0
+
+
+def test_the_plain_output_lists_the_fields_counts_and_schemas(
+    dataset: Dataset,
+) -> None:
+    result = invoke_ok(["describe", "--manifest", str(dataset.base_dir)])
+
+    assert "name: described" in result.stdout
+    assert "sequences: 2" in result.stdout
+    assert "tracks_variants: 1" in result.stdout
+    assert "managed_by: none" in result.stdout
+    assert "name\ttables\nmosaic_v1\t2" in result.stdout

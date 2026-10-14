@@ -290,6 +290,30 @@ and an integer column's min and max are exact.
 `mosaic.core.pipeline.writers` to `mosaic.core.pipeline.parquet_reader`, which
 holds every footer read.
 
+**`mosaic describe` summarizes a dataset.** `dataset_summary(ds, *, found)` in
+`mosaic.core.dataset_summary` returns a `DatasetSummary`: the manifest's name,
+`uuid`, on-disk `manifest_version`, notes, tags, libraries and continuous
+groups; the counts of sequences with a tracks table, indexed videos, tracks
+variants, feature runs and trained models; the tracks tables per schema; and
+the indexed videos per frame rate. A count is `null` for an artifact kind that
+the inventory `found` did not report. Without `found` the summary reads an
+inventory of `SUMMARY_KINDS` itself, and the CLI passes
+`mosaic.tracking.dataset_inventory`, which reports models. The summary writes
+nothing.
+
+**A manifest's top-level `managed_by` key names the service that manages the
+dataset.** `DatasetManifest.managed_by` returns its value, read from the
+preserved keys, and `DatasetManifest.is_managed` whether it is non-empty. The
+summary reports both, as `managed_by` and `api_managed`. The format version is
+unchanged.
+
+**`discover_datasets(root, *, max_depth=3)` in `mosaic.core.dataset_discovery`
+finds the datasets below a directory** by their manifests and returns each as a
+`DiscoveredDataset` with its manifest path, `uuid` and `name`, or the error of a
+manifest that does not read. The walk follows symbolic links once and passes over
+a directory it cannot read. It does not enter a hidden directory, or a directory
+of a dataset named as one of its roots, such as `features` or `_tracking`.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

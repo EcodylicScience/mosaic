@@ -309,6 +309,25 @@ id, so if a different dataset later appears at that path it is refused instead o
 being used by mistake. See [train one model from several
 datasets](guides/tracking/train-a-pose-model.md#5-train-one-model-from-several-datasets).
 
+## Describe a dataset
+
+```python
+from mosaic.core.dataset_summary import dataset_summary
+from mosaic.tracking import dataset_inventory
+
+dataset_summary(ds, found=dataset_inventory(ds))  # what `mosaic describe --json` prints
+```
+
+```bash
+mosaic describe -m ~/dataset/dataset.yaml
+```
+
+The summary gives the manifest's name, `uuid`, notes, tags and libraries, and
+counts the sequences, videos, tracks variants, feature runs and trained models
+the dataset holds. It also lists the track schemas of its tables and the frame
+rates of its videos. To find the datasets in a directory and up to three levels
+below it, call `discover_datasets(root)` from `mosaic.core.dataset_discovery`.
+
 ## Dataset inventory
 
 ```python

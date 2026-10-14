@@ -17,6 +17,7 @@ from mosaic.cli.cancel import cancel_command
 from mosaic.cli.release import release_command
 from mosaic.cli.convert_labels import convert_labels_command
 from mosaic.cli.convert_tracks import convert_tracks_command
+from mosaic.cli.describe import describe_command
 from mosaic.cli.features import features_app
 from mosaic.cli.init import init_command
 from mosaic.cli.inventory import inventory_app
@@ -62,6 +63,7 @@ _ = app.command(name="track")(track_command)
 app.add_typer(features_app, name="features")
 app.add_typer(tracking_app, name="tracking")
 app.add_typer(media_app, name="media")
+_ = app.command(name="describe")(describe_command)
 _ = app.command(name="sequences")(sequences_command)
 _ = app.command(name="preview")(preview_command)
 app.add_typer(inventory_app, name="inventory")

@@ -51,8 +51,10 @@ from .model import (
 )
 from .scan import (
     entry_universe,
+    existing_tracks_records,
     inventory,
     narrow_target,
+    reportable_universe,
     run_covers,
 )
 from .params import (
@@ -130,6 +132,7 @@ __all__ = [
     "ref_address",
     "run_tracks_variants",
     "entry_universe",
+    "existing_tracks_records",
     "inventory",
     "inventory_contributor",
     "narrow_target",
@@ -137,5 +140,6 @@ __all__ = [
     "read_run_params",
     "register_inventory_contributor",
     "registered_inventory_kinds",
+    "reportable_universe",
     "run_covers",
 ]

@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.dataset import Dataset, open_dataset
+from mosaic.core.dataset_discovery import discover_datasets
+from mosaic.core.dataset_summary import dataset_summary
 from mosaic.core.pipeline.graph import (
     FileFailureStore,
     Recipe,
@@ -165,6 +167,7 @@ def unpopulated(tmp_path: Path) -> ReadDataset:
 type CliArguments = Callable[[ReadDataset], list[str]]
 
 CLI_READS: dict[str, CliArguments] = {
+    "describe": lambda _: ["describe"],
     "inventory": lambda _: ["inventory"],
     "inventory --limit": lambda _: ["inventory", "--limit", "1", "--entry", ":seq_a"],
     "inventory show": lambda _: ["inventory", "show", MODEL_REF],
@@ -193,6 +196,7 @@ CLI_READS: dict[str, CliArguments] = {
 """Each read verb's arguments, without ``--manifest`` and ``--json``."""
 
 CLI_READS_OF_NOTHING = (
+    "describe",
     "inventory",
     "inventory --limit",
     "libraries list",
@@ -304,6 +308,8 @@ type LibraryRead = Callable[[ReadDataset], object]
 
 LIBRARY_READS: dict[str, LibraryRead] = {
     "dataset_inventory": _dataset_inventory,
+    "dataset_summary": lambda f: dataset_summary(f.reopened()),
+    "discover_datasets": lambda f: discover_datasets(f.root),
     "entry_errors_wire": _lossy_entry_errors,
     "inventory": _inventory,
     "inventory_wire": _inventory_wire,
@@ -338,6 +344,8 @@ def test_a_library_read_writes_nothing(populated: ReadDataset, read: str) -> Non
     "read",
     [
         "dataset_inventory",
+        "dataset_summary",
+        "discover_datasets",
         "inventory",
         "inventory_wire",
         "list_requests",

@@ -1,0 +1,215 @@
+"""``dataset_summary``: a dataset's manifest fields, counts, track schemas and frame rates."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+
+from mosaic.core.dataset import Dataset, open_dataset
+from mosaic.core.dataset_summary import (
+    SUMMARY_KINDS,
+    DatasetCounts,
+    FrameRateCount,
+    TrackSchemaCount,
+    dataset_summary,
+)
+from mosaic.core.manifest import MANAGED_BY_KEY, DatasetTag
+from mosaic.core.pipeline.graph import Recipe, run_pipeline
+from mosaic.core.pipeline.inventory import inventory
+from mosaic.core.pipeline.media_index import frame_from_rows, write_media_index_rows
+from mosaic.core.pipeline.models import model_run_root
+from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.tracking import dataset_inventory
+from tests.helpers import (
+    UPDATE_GOLDEN_ENV,
+    add_tracks_variant,
+    make_dataset,
+    read_golden,
+    regenerate_command,
+    register_trained_model,
+    updating_golden,
+    write_golden,
+)
+
+GOLDEN = "dataset_summary_golden.json"
+"""The ``mosaic describe --json`` document of the ``populated`` fixture."""
+
+VARYING_FIELDS = ("manifest", "uuid", "created_at")
+"""The summary fields that differ between two builds of one fixture."""
+
+PIXEL_VARIANT = "convert-trex.0.2-1111111111"
+LEGACY_VARIANT = "convert-trex.0.1-2222222222"
+MODEL_KIND = "train-pose"
+MODEL_RUN_ID = "train-pose.0.1-0123456789"
+
+SPEED_RECIPE: dict[str, object] = {
+    "schema_version": 1,
+    "name": "speed",
+    "steps": [
+        {
+            "id": "speed",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": ["tracks"],
+        }
+    ],
+}
+
+
+def _index_media(ds: Dataset, rates: list[object]) -> None:
+    """Write an originals media index with one row per frame rate cell."""
+    rows: list[dict[str, object]] = [
+        {"group": "", "sequence": f"seq_{i}", "fps": rate}
+        for i, rate in enumerate(rates)
+    ]
+    write_media_index_rows(
+        ds.get_root("media_raw") / "index.csv", frame_from_rows(rows)
+    )
+
+
+@pytest.fixture
+def populated(tmp_path: Path) -> Dataset:
+    """Two tracks variants of two schemas, a feature run, a trained model and media."""
+    ds = make_dataset(tmp_path / "ds", name="populated")
+    add_tracks_variant(ds, PIXEL_VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    _ = run_pipeline(ds, Recipe.model_validate(SPEED_RECIPE))
+    add_tracks_variant(ds, LEGACY_VARIANT, "seq_c")
+    run_root = model_run_root(ds, MODEL_KIND, MODEL_RUN_ID)
+    run_root.mkdir(parents=True)
+    weights = run_root / "best.pt"
+    _ = weights.write_bytes(b"weights")
+    register_trained_model(ds, MODEL_KIND, MODEL_RUN_ID, weights)
+    _index_media(ds, [30.0, 30.0, 29.97, ""])
+    return ds
+
+
+def test_the_counts_schemas_and_frame_rates_are_read_from_the_indexes(
+    populated: Dataset,
+) -> None:
+    summary = dataset_summary(
+        populated, found=dataset_inventory(populated, kinds=SUMMARY_KINDS)
+    )
+
+    assert summary.counts == DatasetCounts(
+        sequences=3, videos=4, tracks_variants=2, feature_runs=1, models=1
+    )
+    assert summary.track_schemas == (
+        TrackSchemaCount(name="mosaic_v1", tables=2),
+        TrackSchemaCount(name="trex_v1", tables=1),
+    )
+    assert summary.frame_rates == (
+        FrameRateCount(fps=29.97, videos=1),
+        FrameRateCount(fps=30.0, videos=2),
+    )
+    assert summary.inventory_errors == ()
+
+
+def test_a_media_row_shorter_than_its_header_counts_without_a_rate(
+    populated: Dataset,
+) -> None:
+    index = populated.get_root("media_raw") / "index.csv"
+    with index.open("a", encoding="utf-8") as stream:
+        _ = stream.write(",seq_short\n")
+
+    summary = dataset_summary(
+        populated, found=dataset_inventory(populated, kinds=SUMMARY_KINDS)
+    )
+
+    assert summary.counts.videos == 5
+    assert summary.frame_rates == (
+        FrameRateCount(fps=29.97, videos=1),
+        FrameRateCount(fps=30.0, videos=2),
+    )
+
+
+def test_a_kind_the_inventory_did_not_report_counts_as_unknown(
+    populated: Dataset,
+) -> None:
+    found = inventory(populated, kinds=["feature", "tracks-variant"])
+
+    counts = dataset_summary(populated, found=found).counts
+
+    assert counts.models is None
+    assert counts.feature_runs == 1
+
+
+def test_the_manifest_fields_are_echoed(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds", name="echoed")
+    ds.set_notes("pilot sessions")
+    ds.define_tag(DatasetTag(name="cohort", type="text", value="spring"))
+    ds.set_continuous_groups(["night"])
+
+    summary = dataset_summary(open_dataset(ds.manifest_path, ensure_roots=False))
+
+    assert summary.manifest == str(ds.manifest_path.absolute())
+    assert summary.name == "echoed"
+    assert summary.uuid == ds.uuid
+    assert summary.notes == "pilot sessions"
+    assert [tag.name for tag in summary.tags] == ["cohort"]
+    assert summary.continuous_groups == ("night",)
+    assert summary.managed_by is None
+    assert not summary.api_managed
+    assert summary.counts.sequences == 0
+    assert summary.frame_rates == ()
+
+
+def test_a_managing_service_is_read_from_the_preserved_key(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    with ds.manifest_path.open("a", encoding="utf-8") as handle:
+        _ = handle.write(f"{MANAGED_BY_KEY}: mosaic-api\n")
+
+    summary = dataset_summary(open_dataset(ds.manifest_path, ensure_roots=False))
+
+    assert summary.managed_by == "mosaic-api"
+    assert summary.api_managed
+
+
+def test_the_version_on_disk_is_reported_before_migration(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    payload = yaml.safe_load(ds.manifest_path.read_text(encoding="utf-8"))
+    payload["manifest_version"] = 2
+    _ = ds.manifest_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    summary = dataset_summary(open_dataset(ds.manifest_path, ensure_roots=False))
+
+    assert summary.manifest_version == 2
+
+
+def test_the_summary_dumps_as_json_and_reads_back(populated: Dataset) -> None:
+    summary = dataset_summary(populated)
+
+    assert type(summary).model_validate_json(summary.model_dump_json()) == summary
+
+
+def test_a_table_missing_from_disk_is_left_out_of_every_count(
+    populated: Dataset,
+) -> None:
+    index = read_tracks_index(populated)
+    legacy = index.loc[index["run_id"] == LEGACY_VARIANT, "abs_path"].iloc[0]
+    populated.resolve_path(str(legacy)).unlink()
+
+    summary = dataset_summary(populated)
+
+    assert summary.counts.sequences == 2
+    assert summary.track_schemas == (TrackSchemaCount(name="mosaic_v1", tables=2),)
+
+
+def _wire(populated: Dataset) -> dict[str, object]:
+    """Return the summary's JSON document with the fields that vary per build masked."""
+    document = dataset_summary(
+        populated, found=dataset_inventory(populated, kinds=SUMMARY_KINDS)
+    ).model_dump(mode="json")
+    return {**document, **dict.fromkeys(VARYING_FIELDS, "<varies>")}
+
+
+def test_the_json_document_matches_golden(populated: Dataset) -> None:
+    if updating_golden():
+        write_golden(GOLDEN, _wire(populated))
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: rewrote {GOLDEN}")
+
+    assert _wire(populated) == read_golden(GOLDEN), (
+        f"The summary document changed. If the change is intended, run "
+        f"`{regenerate_command(__name__)}` and review the diff."
+    )

@@ -1,0 +1,42 @@
+{
+  "api_managed": false,
+  "continuous_groups": [],
+  "counts": {
+    "feature_runs": 1,
+    "models": 1,
+    "sequences": 3,
+    "tracks_variants": 2,
+    "videos": 4
+  },
+  "created_at": "<varies>",
+  "frame_rates": [
+    {
+      "fps": 29.97,
+      "videos": 1
+    },
+    {
+      "fps": 30.0,
+      "videos": 2
+    }
+  ],
+  "inventory_errors": [],
+  "libraries": [],
+  "managed_by": null,
+  "manifest": "<varies>",
+  "manifest_version": 3,
+  "name": "populated",
+  "notes": "",
+  "tags": [],
+  "track_schemas": [
+    {
+      "name": "mosaic_v1",
+      "tables": 2
+    },
+    {
+      "name": "trex_v1",
+      "tables": 1
+    }
+  ],
+  "uuid": "<varies>",
+  "version": "0.1.0"
+}

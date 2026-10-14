@@ -16,6 +16,7 @@ import yaml
 from pydantic import ValidationError
 
 from mosaic.core.manifest import (
+    MANAGED_BY_KEY,
     MANIFEST_VERSION,
     NOTES_MAX_CHARS,
     TAGS_MAX_COUNT,
@@ -557,6 +558,35 @@ class TestNotes:
         assert (
             len(DatasetManifest(notes="x" * NOTES_MAX_CHARS).notes) == NOTES_MAX_CHARS
         )
+
+
+class TestManagedBy:
+    def test_an_absent_key_is_not_managed(self) -> None:
+        manifest = DatasetManifest()
+        assert manifest.managed_by is None
+        assert not manifest.is_managed
+
+    def test_the_key_is_read_without_a_version_bump_and_survives_a_round_trip(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text(
+            f"name: x\nmanifest_version: {MANIFEST_VERSION}\n"
+            f"{MANAGED_BY_KEY}: mosaic-api\n",
+            encoding="utf-8",
+        )
+        manifest = read_manifest(path)
+        assert manifest.managed_by == "mosaic-api"
+        assert manifest.is_managed
+        write_manifest(path, manifest)
+        assert yaml.safe_load(path.read_text(encoding="utf-8"))[MANAGED_BY_KEY] == (
+            "mosaic-api"
+        )
+
+    @pytest.mark.parametrize("value", [None, "", {}])
+    def test_an_empty_value_is_not_managed(self, value: object) -> None:
+        manifest = DatasetManifest.model_validate({MANAGED_BY_KEY: value})
+        assert not manifest.is_managed
 
 
 class TestResolveManifestPath:

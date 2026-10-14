@@ -62,7 +62,9 @@ from mosaic.core.typed_attribute import (
 )
 
 __all__ = [
+    "MANAGED_BY_KEY",
     "MANIFEST_FILENAMES",
+    "MANIFEST_MARKER_KEYS",
     "MANIFEST_VERSION",
     "NOTES_MAX_CHARS",
     "TAGS_MAX_COUNT",
@@ -94,7 +96,9 @@ __all__ = [
     "migrate_to_current",
     "new_manifest",
     "now_stamp",
+    "is_mosaic_manifest",
     "overlapping_sources",
+    "parse_manifest",
     "read_manifest",
     "resolve_manifest_path",
     "validate_root_inside",
@@ -117,6 +121,22 @@ bump: it is a top-level key, and unknown top-level keys are preserved.
 
 MANIFEST_FILENAMES: Final = ("dataset.yaml", "dataset.yml", "dataset.json")
 """Names probed, in order, when a dataset *directory* is handed to a reader."""
+
+MANIFEST_MARKER_KEYS: Final = frozenset({"manifest_version", "uuid", "roots"})
+"""Top-level keys of which every manifest mosaic writes holds at least one.
+
+Other tools write files under the names in :data:`MANIFEST_FILENAMES`, such as
+an Ultralytics data YAML saved as ``dataset.yaml``. Such a file parses as a
+manifest, because unknown keys are preserved and an absent version reads as 1,
+so a search tells it apart by these keys.
+"""
+
+MANAGED_BY_KEY: Final = "managed_by"
+"""The top-level key naming the service that manages the dataset, such as mosaic-api.
+
+The service writes it. The manifest does not model it, so it is read from
+``preserved`` and needed no version bump.
+"""
 
 NOTES_MAX_CHARS: Final = 65_536
 TAGS_MAX_COUNT: Final = 200
@@ -1067,6 +1087,16 @@ class DatasetManifest(BaseModel):
         """
         return group in self.continuous_groups
 
+    @property
+    def managed_by(self) -> JsonValue:
+        """Return the value of the top-level ``managed_by`` key, ``None`` when absent."""
+        return self.preserved.get(MANAGED_BY_KEY)
+
+    @property
+    def is_managed(self) -> bool:
+        """Return whether a service manages the dataset: ``managed_by`` is non-empty."""
+        return bool(self.managed_by)
+
     def tag(self, name: str) -> DatasetTag | None:
         """The tag called *name*, matched case-insensitively, or ``None``."""
         folded = name.casefold()
@@ -1118,7 +1148,14 @@ disk. Validating it here means the rest of the module works with
 """
 
 
-def _parse(path: Path) -> dict[str, JsonValue]:
+def parse_manifest(path: Path) -> dict[str, JsonValue]:
+    """Parse the manifest file at *path* into a mapping, unvalidated and unmigrated.
+
+    Raises:
+        OSError: If the file cannot be read.
+        ValueError: If the file is not JSON or YAML, or is not a mapping.
+        yaml.YAMLError: If a YAML file does not parse.
+    """
     text = path.read_text(encoding="utf-8")
     suffix = path.suffix.lower()
     if suffix == ".json":
@@ -1139,6 +1176,11 @@ def _parse(path: Path) -> dict[str, JsonValue]:
     except ValidationError as exc:
         msg = f"manifest {path} is a {type(parsed).__name__}, not a mapping"
         raise ValueError(msg) from exc
+
+
+def is_mosaic_manifest(data: Mapping[str, JsonValue]) -> bool:
+    """Return whether parsed *data* holds a key of :data:`MANIFEST_MARKER_KEYS`."""
+    return not MANIFEST_MARKER_KEYS.isdisjoint(data)
 
 
 def migrate_to_current(
@@ -1199,7 +1241,7 @@ def read_manifest(path: Path) -> DatasetManifest:
         ValueError: If the file is not a mapping, or violates the schema.
     """
     resolved = resolve_manifest_path(path)
-    return migrate_to_current(_parse(resolved), source=str(resolved))
+    return migrate_to_current(parse_manifest(resolved), source=str(resolved))
 
 
 def manifest_header() -> str:

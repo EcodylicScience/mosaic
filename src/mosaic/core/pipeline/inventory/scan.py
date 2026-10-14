@@ -73,6 +73,7 @@ __all__ = [
     "GLOBAL_MARKER",
     "CORE_KINDS",
     "entry_universe",
+    "existing_tracks_records",
     "inventory",
     "narrow_target",
     "parquet_is_readable",
@@ -137,12 +138,25 @@ def entry_universe(ds: Dataset, tracks_run_id: str | None = None) -> frozenset[E
     directory it never had.
     """
     frame = select_variant_rows(read_tracks_index(ds), tracks_run_id)
-    found: set[Entry] = set()
-    for record in index_records(frame):
-        stored = str(record.get("abs_path", ""))
-        if stored and ds.resolve_path(stored).exists():
-            found.add((str(record.get("group", "")), str(record.get("sequence", ""))))
-    return frozenset(found)
+    return _entries_of(existing_tracks_records(ds, frame))
+
+
+def existing_tracks_records(ds: Dataset, frame: pd.DataFrame) -> list[dict[str, str]]:
+    """Return the rows of the tracks index *frame* whose table exists on disk."""
+    return [record for record in index_records(frame) if _table_exists(ds, record)]
+
+
+def _table_exists(ds: Dataset, record: dict[str, str]) -> bool:
+    """Return whether the table that a tracks index *record* names is on disk."""
+    stored = record.get("abs_path", "")
+    return bool(stored) and ds.resolve_path(stored).exists()
+
+
+def _entries_of(records: Iterable[dict[str, str]]) -> frozenset[Entry]:
+    """Return the ``(group, sequence)`` entries of tracks index *records*."""
+    return frozenset(
+        (record.get("group", ""), record.get("sequence", "")) for record in records
+    )
 
 
 def narrow_target(
@@ -247,10 +261,8 @@ def _rows_of(frame: pd.DataFrame, run_id: str) -> frozenset[Entry]:
     """The ``(group, sequence)`` pairs one run's index rows name."""
     if frame.empty or "run_id" not in frame.columns:
         return frozenset()
-    return frozenset(
-        (str(record.get("group", "")), str(record.get("sequence", "")))
-        for record in index_records(frame)
-        if str(record.get("run_id", "")) == run_id
+    return _entries_of(
+        record for record in index_records(frame) if record.get("run_id", "") == run_id
     )
 
 
@@ -323,13 +335,7 @@ def reportable_universe(
     try:
         return entry_universe(ds, tracks_run_id)
     except ValueError:
-        frame = read_tracks_index(ds)
-        return frozenset(
-            (record.get("group", ""), record.get("sequence", ""))
-            for record in index_records(frame)
-            if record.get("abs_path", "")
-            and ds.resolve_path(record["abs_path"]).exists()
-        )
+        return _entries_of(existing_tracks_records(ds, read_tracks_index(ds)))
 
 
 def _feature_records(
@@ -465,8 +471,7 @@ def _variant_table_exists(
             continue
         if (str(record.get("group", "")), str(record.get("sequence", ""))) != entry:
             continue
-        stored = str(record.get("abs_path", ""))
-        return bool(stored) and ds.resolve_path(stored).exists()
+        return _table_exists(ds, record)
     return False
 
 

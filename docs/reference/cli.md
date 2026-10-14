@@ -22,6 +22,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `cancel`: Request cancellation of a running attempt...
 * `release`: Release the run roots claimed by an...
 * `track`: Run an integrated tracker over scoped...
+* `describe`: Describe a dataset: its manifest, counts,...
 * `sequences`: List sequences (optionally filtered by...
 * `preview`: Preview one entry's table: schema, row...
 * `init`: Create a dataset: write dataset.yaml and...
@@ -167,6 +168,22 @@ $ mosaic track [OPTIONS] {kind}
 * `--owner <str>`
 * `--execution-id <str>`: Reuse an externally minted ULID.
 * `--json`: Emit one JSON object on stdout.
+* `--help`: Show this message and exit.
+
+## `mosaic describe`
+
+Describe a dataset: its manifest, counts, track schemas and frame rates.
+
+**Usage**:
+
+```console
+$ mosaic describe [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
 ## `mosaic sequences`
