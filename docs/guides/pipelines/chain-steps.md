@@ -60,10 +60,13 @@ sentence as `unavailable`.
 `plan` says what each step will be called and what is already done, without
 submitting anything. It refuses a recipe that the dataset cannot run, naming each
 problem at the step and the field that would change: a time filter on a dataset
-without `meta.fps_default`, and a column that a step requires and every tracks table
-lacks. `submit` and `run` refuse the same recipe. On first use the recipe is copied to
-`<dataset>/.mosaic/pipelines/<digest>.json`, so the dataset records which pipelines
-were applied to it.
+without `meta.fps_default`, a column that a step requires and every tracks table
+lacks, and a tracker or inference step reading video that needs an analysis
+transcode, with no `transcode` step of `"target": "analysis"` above it. That problem
+is reported at the step's `after`, and its message names the entries and the
+transcode step to add. `submit` and `run` refuse the same recipe. On first use the
+recipe is copied to `<dataset>/.mosaic/pipelines/<digest>.json`. The dataset then
+records which pipelines were applied to it.
 
 ### The four ways a step references another
 

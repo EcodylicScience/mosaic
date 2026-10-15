@@ -42,6 +42,10 @@ each such problem at the place in the recipe that would change, and
   only the columns that the schemas allow, and ``ANGLE`` is a caution there on
   any tracks.
   Read off ``mosaic_v1`` tables, which forbid it, it is a problem.
+- An op step reading media that requires an analysis transcode and lacks its
+  analysis derivative, at ``after``, unless a ``transcode`` step of target
+  ``analysis`` is upstream of the step. The plan routes the step's entries as
+  the op does, and the message names the transcode step to add.
 """
 
 from __future__ import annotations
@@ -50,6 +54,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
 
 from mosaic.core.helpers import resolve_frame_range
+from mosaic.core.media.facts_columns import AnalysisDerivativeMissingError
 from mosaic.core.scope import Scope
 
 from ..manifest import tracks_table_columns
@@ -94,8 +99,9 @@ from .resolve import (
 )
 from .columns import ColumnSet, measured_columns
 from .scope import intended_scope
-from .topo import parents_of, topological_order
+from .topo import ancestors_of, parents_of, topological_order
 from .validate import (
+    MEDIA_FIELD,
     RecipeInvalid,
     check_recipe,
     one_run_problems,
@@ -105,6 +111,8 @@ from .wire import Problem
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
+
+    from mosaic_media import MediaProbeError
 
     from mosaic.core.dataset import Dataset
     from mosaic.core.params import Params
@@ -574,6 +582,12 @@ def plan_pipeline(
                 # A tracks reference to a producer whose identity is unresolved
                 # does not name a variant, and its tables cannot be read.
                 findings.read_tracks(ds, step.id, step_plan.spec.tracks_run_id, target)
+        else:
+            findings.problems.extend(
+                _untranscoded_media_problems(
+                    ds, recipe, step, step_plan, catalog=catalog, planned=planned
+                )
+            )
         planned[step.id] = step_plan
         steps.append(step_plan)
         resolved[step.id] = ResolvedStep(
@@ -979,6 +993,100 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
     if kind == PREPROCESS_KIND:
         return MediaVariantRef(run_id=identity.run_id)
     return None
+
+
+_ANALYSIS_DERIVATIVES: Final = MediaDerivativeRef(target="analysis")
+"""The artifact of a ``transcode`` step whose target is ``analysis``."""
+
+_ADD_AN_ANALYSIS_TRANSCODE: Final = (
+    'Add the step {"id": "transcode", "type": "op", "kind": "transcode", '
+    '"params": {"target": "analysis"}} and "after": ["transcode"] on this step'
+)
+
+
+def _untranscoded_media_problems(
+    ds: Dataset,
+    recipe: Recipe,
+    step: OpStepSpec,
+    planned_step: PlannedStep,
+    *,
+    catalog: DeclarationCatalog,
+    planned: Mapping[str, PlannedStep],
+) -> list[Problem]:
+    """A problem at *step*'s ``after`` for its entries awaiting an analysis transcode.
+
+    An op whose declaration sets ``reads_media``
+    (:class:`~.compatibility.ConsumerDecl`) routes each entry through
+    :meth:`~mosaic.core.dataset.Dataset.resolve_media_scope`, and an entry whose
+    media requires an analysis transcode resolves to its analysis derivative.
+    The plan routes the planned entries the same way and reports the entries
+    refused with
+    :class:`~mosaic.core.media.facts_columns.AnalysisDerivativeMissingError`.
+    The run reports every other routing failure.
+
+    The check is skipped for a step that names a media variant in ``media``,
+    which it reads in place of the derivative. It is skipped for a step with a
+    ``transcode`` step of target ``analysis`` among its ancestors, and for a
+    complete step, which does not run.
+    """
+    if not catalog.entries[step.kind].consumes.reads_media:
+        return []
+    if step.params.get(MEDIA_FIELD) or planned_step.is_complete:
+        return []
+    above = ancestors_of(recipe, step.id) - {step.id}
+    if any(planned[parent].artifact == _ANALYSIS_DERIVATIVES for parent in above):
+        return []
+    entries = planned_step.spec.entries.entry_pairs
+    if not entries:
+        return []
+    unrouted: dict[Entry, MediaProbeError] = {}
+    try:
+        _ = ds.resolve_media_scope(sorted(entries), errors=unrouted)
+    except FileNotFoundError:
+        return []
+    awaiting = sorted(
+        entry
+        for entry, error in unrouted.items()
+        if isinstance(error, AnalysisDerivativeMissingError)
+    )
+    if not awaiting:
+        return []
+    named = ", ".join(str(entry) for entry in awaiting[:MISSING_SAMPLE])
+    if len(awaiting) > MISSING_SAMPLE:
+        named += f" and {len(awaiting) - MISSING_SAMPLE} more"
+    counted = (
+        "1 entry requires an analysis transcode and has"
+        if len(awaiting) == 1
+        else f"{len(awaiting)} entries require an analysis transcode and have"
+    )
+    unordered = _analysis_transcodes(recipe, excluding=step.id)
+    fix = (
+        f'Add "after": ["{unordered[0]}"] on this step, so that transcode runs first'
+        if unordered
+        else _ADD_AN_ANALYSIS_TRANSCODE
+    )
+    message = (
+        f"{counted} no analysis derivative, which {step.kind} reads in place of "
+        f"the original: {named}. {fix}"
+    )
+    return [Problem(step.id, "after", message)]
+
+
+def _analysis_transcodes(recipe: Recipe, *, excluding: str) -> list[str]:
+    """The ids of *recipe*'s ``transcode`` steps that make the analysis derivative.
+
+    Read from the recipe rather than the plan, because a step outside the
+    checked step's ancestry may not be planned yet. The rule is
+    :func:`_op_artifact`'s: every target but ``playback`` makes ``analysis``.
+    """
+    return sorted(
+        other.id
+        for other in recipe.steps
+        if isinstance(other, OpStepSpec)
+        and other.kind == "transcode"
+        and other.params.get("target", "analysis") != "playback"
+        and other.id != excluding
+    )
 
 
 @dataclass(frozen=True, slots=True)

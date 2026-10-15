@@ -41,10 +41,12 @@ from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
     CHAIN_RECIPE,
     SPEED_RECIPE,
+    MediaClip,
     add_tracks_variant,
     chain_recipe,
     make_dataset,
     wait_for,
+    write_media_index,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -296,6 +298,34 @@ def test_a_plan_names_its_fingerprint_and_a_malformed_recipe_is_invalid(
         ("speed", "absent", 2)
     ]
     assert malformed.kind == "invalid"
+
+
+def test_a_plan_lists_the_media_that_awaits_an_analysis_transcode(
+    tmp_path: Path,
+) -> None:
+    awaiting = make_dataset(tmp_path / "awaiting", name="awaiting")
+    write_media_index(
+        awaiting, [MediaClip(sequence="vid1", video_uuid="u1", rotation=90)]
+    )
+    backend = LocalBackend([awaiting.manifest_path], warm=False)
+    tracker = {
+        "id": "trex",
+        "type": "op",
+        "kind": "trex",
+        "params": {"track_max_individuals": 2},
+    }
+
+    plan = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=_uuid(awaiting),
+        recipe={"steps": [tracker]},
+    )
+
+    assert [(problem.step, problem.where) for problem in plan.problems] == [
+        ("trex", "after")
+    ]
 
 
 def test_a_submitted_request_runs_detached_and_its_output_is_previewed(

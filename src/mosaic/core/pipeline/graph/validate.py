@@ -834,7 +834,7 @@ def _tracks_reference_problems(step: Step, walk: _Walk) -> list[Problem]:
     ]
 
 
-_MEDIA_FIELD: Final = "media"
+MEDIA_FIELD: Final = "media"
 """The params field that names the media variant that a step reads."""
 
 
@@ -846,7 +846,7 @@ def _media_reference_problems(step: Step, walk: _Walk) -> list[Problem]:
     named by recipe. The validator refuses a transcode's run id in ``media``, which
     names a variant without rows.
     """
-    reference = params_step_refs(step.params).get(_MEDIA_FIELD)
+    reference = params_step_refs(step.params).get(MEDIA_FIELD)
     if reference is None:
         return []
     upstream = walk.declaration_behind(reference.step)
@@ -857,9 +857,9 @@ def _media_reference_problems(step: Step, walk: _Walk) -> list[Problem]:
     return [
         Problem(
             step.id,
-            f"params.{_MEDIA_FIELD}",
+            f"params.{MEDIA_FIELD}",
             f"{reference.step!r} runs {upstream.produces.name!r}, which does not "
-            f"write a media variant for {_MEDIA_FIELD!r} to name. A media "
+            f"write a media variant for {MEDIA_FIELD!r} to name. A media "
             f"reference names a {PREPROCESS_KIND} step",
         )
     ]

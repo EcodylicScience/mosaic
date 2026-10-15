@@ -45,6 +45,7 @@ from .helpers import (
 from .media.drift import MeasurementOrigin, MediaDrift, classify_identity
 from .media.facts_columns import (
     MEDIA_INDEX_COLUMNS as MEDIA_INDEX_COLUMNS,  # re-exported for API/tests
+    AnalysisDerivativeMissingError,
     ProbeMetadata,
     derivative_path_for_target,
     media_row_uuid,
@@ -5110,14 +5111,14 @@ class Dataset:
         a clean derivative or fail. If it has no analysis derivative -- whether
         the link is missing or the dataset is legacy ``media``-only with no
         ``media_raw`` split (*route_derivatives* is ``False``) -- this raises
-        :class:`~mosaic_media.MediaProbeError` telling the caller to transcode
-        first. A clean row whose stored measurement cannot be reconstructed
-        raises the same way, telling the caller to re-probe the media index
-        instead: transcoding and re-probing are distinct remedies for distinct
-        problems, so the two failures stay textually distinct rather than
-        collapsing into one message. There is no silent-degrade arm that opens
-        the defective original, and there is no silent-degrade arm that opens a
-        file without a measurement to hand the reader.
+        :class:`~mosaic.core.media.facts_columns.AnalysisDerivativeMissingError`
+        telling the caller to transcode first. A clean row whose stored
+        measurement cannot be reconstructed raises its base class,
+        :class:`~mosaic_media.MediaProbeError`, telling the caller to re-probe
+        the media index instead. Transcoding and re-probing remedy distinct
+        problems, and the two failures differ in type and in text. This method
+        opens neither the defective original nor a file without a measurement
+        to hand the reader.
 
         *route_derivatives* and *derivative_df* come from
         :meth:`media_routing_context`; load them once and reuse across a batch.
@@ -5140,7 +5141,7 @@ class Dataset:
                 f"entry {group}/{sequence} requires an analysis transcode but "
                 f"has no analysis derivative; transcode it first"
             )
-            raise MediaProbeError(message)
+            raise AnalysisDerivativeMissingError(message)
 
         routed = self.resolve_path(row["abs_path"])
         facts = series_facts_or_none(row)

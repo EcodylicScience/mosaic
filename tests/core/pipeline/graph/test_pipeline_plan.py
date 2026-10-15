@@ -21,12 +21,16 @@ rather than left as folklore.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from mosaic_media import MediaProbeError
+from mosaic_media import MediaFacts, MediaProbeError
+from typer.testing import CliRunner
 
 import mosaic.tracking.trex.dataset_runs as trex_runs
+from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
     CoverageShort,
@@ -56,7 +60,9 @@ from tests.helpers import (
     MediaClip,
     add_media_variant,
     add_tracks_variant,
+    add_transcode_derivative,
     assert_tree_unchanged,
+    clip_facts,
     finish_media_variant,
     install_fake_trex,
     make_dataset,
@@ -300,23 +306,22 @@ def fake_trex(monkeypatch: pytest.MonkeyPatch) -> FakeTrex:
     return install_fake_trex(monkeypatch)
 
 
-TREX_TO_SPEED: Document = {
-    "steps": [
-        {
-            "id": "trex",
-            "type": "op",
-            "kind": "trex",
-            "params": {"track_max_individuals": 2},
-        },
-        {
-            "id": "speed",
-            "type": "feature",
-            "feature": "speed-angvel",
-            "inputs": ["tracks"],
-            "tracks": {"step": "trex"},
-        },
-    ]
+TREX: Document = {
+    "id": "trex",
+    "type": "op",
+    "kind": "trex",
+    "params": {"track_max_individuals": 2},
 }
+
+SPEED_BELOW_TREX: Document = {
+    "id": "speed",
+    "type": "feature",
+    "feature": "speed-angvel",
+    "inputs": ["tracks"],
+    "tracks": {"step": "trex"},
+}
+
+TREX_TO_SPEED: Document = {"steps": [TREX, SPEED_BELOW_TREX]}
 
 
 @pytest.mark.tracker
@@ -732,30 +737,54 @@ def test_a_graph_that_makes_its_own_tracks_is_planned_over_its_media(
     assert plan.scope == frozenset({("", "vid1"), ("", "vid2")})
 
 
+TRANSCODE_FOR_ANALYSIS: Document = {
+    "id": "transcode",
+    "type": "op",
+    "kind": "transcode",
+    "params": {"target": "analysis"},
+}
+
 TRANSCODE_THEN_TREX: Document = {
     "steps": [
-        {
-            "id": "transcode",
-            "type": "op",
-            "kind": "transcode",
-            "params": {"target": "analysis"},
-        },
-        {
-            "id": "trex",
-            "type": "op",
-            "kind": "trex",
-            "params": {"track_max_individuals": 2},
-            "after": ["transcode"],
-        },
-        {
-            "id": "speed",
-            "type": "feature",
-            "feature": "speed-angvel",
-            "inputs": ["tracks"],
-            "tracks": {"step": "trex"},
-        },
+        TRANSCODE_FOR_ANALYSIS,
+        {**TREX, "after": ["transcode"]},
+        SPEED_BELOW_TREX,
     ]
 }
+
+
+def _one_clip(tmp_path: Path, rotation: int) -> Dataset:
+    """Return a dataset whose one clip, ``vid1``, is turned by *rotation* degrees."""
+    dataset = make_dataset(tmp_path / "media")
+    write_media_index(
+        dataset, [MediaClip(sequence="vid1", video_uuid="u1", rotation=rotation)]
+    )
+    return dataset
+
+
+def _awaiting_transcode(tmp_path: Path) -> Dataset:
+    """Return a dataset whose one clip, ``vid1``, awaits an analysis transcode.
+
+    A rotated clip's verdict requires one, and the dataset lacks its derivative.
+    """
+    return _one_clip(tmp_path, 90)
+
+
+def _upright(tmp_path: Path) -> Dataset:
+    """Return a dataset whose one clip, ``vid1``, reads without a transcode."""
+    return _one_clip(tmp_path, 0)
+
+
+def _transcoded(tmp_path: Path) -> Dataset:
+    """Return a dataset whose rotated clip, ``vid1``, has its analysis derivative."""
+
+    def encode(_source: Path, derivative: Path) -> MediaFacts:
+        _ = derivative.write_bytes(b"derivative")
+        return clip_facts(video_uuid="u1-analysis")
+
+    dataset = _awaiting_transcode(tmp_path)
+    _ = add_transcode_derivative(dataset, "vid1", target="analysis", encode=encode)
+    return dataset
 
 
 @pytest.mark.parametrize(
@@ -773,10 +802,7 @@ def test_a_graph_that_transcodes_first_is_planned_before_the_derivative_exists(
     the entry without routing its media, and the tracker routes it when it runs,
     after the transcode.
     """
-    dataset = make_dataset(tmp_path / "media")
-    write_media_index(
-        dataset, [MediaClip(sequence="vid1", video_uuid="u1", rotation=90)]
-    )
+    dataset = _awaiting_transcode(tmp_path)
     with pytest.raises(MediaProbeError, match="transcode it first"):
         _ = dataset.resolve_media("", "vid1")
 
@@ -787,6 +813,145 @@ def test_a_graph_that_transcodes_first_is_planned_before_the_derivative_exists(
     assert plan.scope == frozenset({("", "vid1")})
     assert plan.step("transcode").spec.entries == Scope(entries=[("", "vid1")])
     assert plan.step("trex").run_id is not None
+
+
+def test_a_tracker_over_media_awaiting_a_transcode_is_refused_at_its_after(
+    tmp_path: Path,
+) -> None:
+    """The tracker reads the analysis derivative, which no step above it makes.
+
+    The problem names the entry and the step to add, and planning writes nothing.
+    """
+    dataset = _awaiting_transcode(tmp_path)
+    before = tree_snapshot(Path(dataset.base_dir))
+
+    with pytest.raises(RecipeRefused) as raised:
+        _ = plan_pipeline(dataset, Recipe.model_validate(TREX_TO_SPEED))
+
+    (problem,) = raised.value.problems
+    assert (problem.step, problem.where) == ("trex", "after")
+    assert "1 entry requires an analysis transcode" in problem.message
+    assert "('', 'vid1')" in problem.message
+    assert json.dumps(TRANSCODE_FOR_ANALYSIS) in problem.message
+    assert '"after": ["transcode"] on this step' in problem.message
+    assert_tree_unchanged(Path(dataset.base_dir), before)
+
+
+def test_the_problem_names_a_few_entries_and_counts_the_rest(tmp_path: Path) -> None:
+    dataset = make_dataset(tmp_path / "media")
+    write_media_index(
+        dataset,
+        [
+            MediaClip(sequence=f"vid{n}", video_uuid=f"u{n}", rotation=90)
+            for n in range(7)
+        ],
+    )
+
+    plan = plan_pipeline(dataset, Recipe.model_validate(TREX_TO_SPEED), refuse=False)
+
+    (problem,) = plan.problems
+    assert "7 entries require an analysis transcode" in problem.message
+    assert "('', 'vid4') and 2 more" in problem.message
+    assert "vid5" not in problem.message
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        [TRANSCODE_FOR_ANALYSIS, TREX],
+        [
+            {**TRANSCODE_FOR_ANALYSIS, "params": {"target": "playback"}},
+            {**TREX, "after": ["transcode"]},
+        ],
+    ],
+    ids=["analysis-transcode-unordered", "playback-transcode-upstream"],
+)
+def test_a_transcode_that_does_not_make_the_derivative_first_leaves_the_problem(
+    tmp_path: Path, steps: list[Document]
+) -> None:
+    """Only an analysis transcode upstream of the tracker makes its derivative first."""
+    recipe = Recipe.model_validate({"steps": steps})
+
+    plan = plan_pipeline(_awaiting_transcode(tmp_path), recipe, refuse=False)
+
+    assert [(problem.step, problem.where) for problem in plan.problems] == [
+        ("trex", "after")
+    ]
+
+
+def test_an_unordered_analysis_transcode_is_named_for_after(tmp_path: Path) -> None:
+    """The fix orders the transcode the recipe has, rather than adding a second."""
+    recipe = Recipe.model_validate(
+        {"steps": [{**TRANSCODE_FOR_ANALYSIS, "id": "make_analysis"}, TREX]}
+    )
+
+    plan = plan_pipeline(_awaiting_transcode(tmp_path), recipe, refuse=False)
+
+    (problem,) = plan.problems
+    assert 'Add "after": ["make_analysis"] on this step' in problem.message
+    assert "Add the step" not in problem.message
+
+
+@pytest.mark.parametrize(
+    "readable", [_upright, _transcoded], ids=["upright", "transcoded"]
+)
+def test_media_the_tracker_can_read_raises_no_problem(
+    tmp_path: Path, readable: Callable[[Path], Dataset]
+) -> None:
+    plan = plan_pipeline(
+        readable(tmp_path), Recipe.model_validate(TREX_TO_SPEED), refuse=False
+    )
+
+    assert plan.problems == ()
+
+
+def test_a_tracker_reading_a_media_variant_is_not_checked(tmp_path: Path) -> None:
+    """The tracker reads the variant's file in place of the analysis derivative."""
+    recipe = Recipe.model_validate(
+        {
+            "steps": [
+                {
+                    "id": "pre",
+                    "type": "op",
+                    "kind": "preprocess",
+                    "params": {"steps": [_crop()]},
+                },
+                {
+                    **TREX,
+                    "params": {"track_max_individuals": 2, "media": {"step": "pre"}},
+                },
+            ]
+        }
+    )
+
+    plan = plan_pipeline(_awaiting_transcode(tmp_path), recipe, refuse=False)
+
+    assert plan.problems == ()
+
+
+def test_the_cli_plan_lists_the_media_awaiting_a_transcode(tmp_path: Path) -> None:
+    dataset = _awaiting_transcode(tmp_path)
+    recipe_path = tmp_path / "recipe.json"
+    _ = recipe_path.write_text(json.dumps(TREX_TO_SPEED))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            f"@{recipe_path}",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    wire = PlanWire.model_validate_json(result.stdout)
+    assert [(problem.step, problem.where) for problem in wire.problems] == [
+        ("trex", "after")
+    ]
 
 
 def test_a_dataset_with_neither_tracks_nor_media_plans_over_nothing(

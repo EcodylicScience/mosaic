@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
 
-from mosaic_media import MediaFacts, Verdict
+from mosaic_media import MediaFacts, MediaProbeError, Verdict
 from mosaic_media.transcode import Target
 
 if TYPE_CHECKING:
@@ -217,6 +217,16 @@ def derivative_path_for_target(
     """
     cell = derivative_cell(row, target)
     return media_root / cell if cell else None
+
+
+class AnalysisDerivativeMissingError(MediaProbeError):
+    """Refuse an analysis read of a row whose required derivative is missing.
+
+    ``Dataset.route_media_row`` raises it. Transcoding the entry for ``analysis``
+    is the remedy. It subclasses :class:`~mosaic_media.MediaProbeError`. A caller
+    that handles routing failures handles it too, and a planner tells it apart
+    from a failure that a re-probe remedies.
+    """
 
 
 class MediaFactsRow(TypedDict):

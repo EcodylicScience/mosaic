@@ -169,6 +169,19 @@ The group is not part of a conversion's identity, so a dataset that declared a
 rule and converts again keeps its run id and files its entries under the new
 names.
 
+**A plan refuses a tracker or inference step whose media awaits an analysis
+transcode.** `plan_pipeline`, `mosaic pipeline plan` and the MCP tool
+`plan_recipe` accepted a tracker or `infer-*` step over media that requires an
+analysis transcode and lacks its analysis derivative, and the step failed when
+it ran. The plan now reports a problem at that step's `after`,
+naming the entries and the `transcode` step to add, unless a `transcode` step of
+`"target": "analysis"` is above the step or the step names a media variant in
+`media`. `submit` and `run` refuse the same recipe, and the step refuses itself
+with `recipe_refused` when it starts. `Dataset.route_media_row` raises the new
+`AnalysisDerivativeMissingError` in `mosaic.core.media.facts_columns`, a
+`MediaProbeError`, for such an entry, and an attempt that fails on one records
+that name as its error's `type`.
+
 **Names moved or removed.**
 
 - `mosaic.tracking.common.toolenv` is now `mosaic.core.pipeline.toolenv`.
