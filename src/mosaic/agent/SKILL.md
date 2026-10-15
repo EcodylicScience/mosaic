@@ -233,6 +233,18 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `partial` or `complete-but-drifted`. `mosaic runs` and `mosaic status` report
   attempts.
 
+## Mosaic's MCP tools
+
+When your client offers mosaic's MCP tools (`mosaic agent serve`), use them for the
+work they cover (https://ecodylicscience.github.io/mosaic/agents/).
+
+- Validate a recipe with `validate_recipe`, then plan it with `plan_recipe`. Show the
+  user the plan, then pass its fingerprint to `submit_pipeline`.
+- Set `confirm` only after the user agrees in the conversation to the conditions
+  that the refusal lists.
+- The tools do not overwrite, delete, sweep, prune, reindex or change the manifest.
+  Propose the `mosaic` command and let the user run it.
+
 ## Pitfalls
 
 - **`IndexLockUnsupported`**: the filesystem refuses file locks. Keep the dataset on a

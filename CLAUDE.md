@@ -246,6 +246,8 @@ Each loads when an agent works in its directory.
   label converters, the sandboxed kpms and VAME runners.
 - [src/mosaic/tracking/CLAUDE.md](src/mosaic/tracking/CLAUDE.md): trackers, Ultralytics
   environments, frame axis and joins, model references, training provenance.
+- [src/mosaic/agent/CLAUDE.md](src/mosaic/agent/CLAUDE.md): the users' agent guide and
+  the MCP server: its import budget, tool contract and standard output.
 - [tests/CLAUDE.md](tests/CLAUDE.md): agent detail for the suite.
 
 User documentation: [docs/installation.md](docs/installation.md),

@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: a `vame` feature embeds keypoints, and `kpms` fits and applies in one run
+## Unreleased: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, and `mosaic agent serve` serves an MCP client
 
 **New feature `vame`.** It trains a recurrent variational autoencoder on windows
 of egocentrically aligned keypoints and embeds each window in a continuous
@@ -464,6 +464,12 @@ the modules `config`, `prompts`, `resources`, `summaries` and `server` of
 `with_mcp_server`, the `mcp_datasets` argument of `install_agent_files`,
 `Installation.mosaic_command` and `Installation.interpreter_command` in
 `mosaic.agent`.
+
+**[docs/agents.md](docs/agents.md#tools-for-an-mcp-client) documents the MCP
+server**: its installation, its registration in Claude Code and Claude Desktop,
+the datasets it serves, when it asks to confirm, the operations it leaves to
+the user, and the values its tools send to the model provider. The
+installation page lists the `mcp` extra.
 
 No run identifier moves.
 

@@ -68,7 +68,7 @@ PyTorch, and on Linux about 4 GB of CUDA wheels.
 | `movement`         | The [movement](https://movement.neuroinformatics.dev/) smoothing and filtering features, and the xarray / netCDF4 / pynwb / sleap-io stack they sit on |
 | `lightning-action` | Lightning-Action temporal action classifier                     |
 | `feral`            | FERAL V-JEPA behavior classifier, training and inference        |
-| `mcp`              | The MCP SDK behind `mosaic agent serve`, mosaic's tools for an MCP client such as Claude Code |
+| `mcp`              | The MCP SDK behind `mosaic agent serve`, [mosaic's tools for an MCP client](agents.md#tools-for-an-mcp-client) such as Claude Code. Not part of `all` |
 
 Two things to know before choosing:
 

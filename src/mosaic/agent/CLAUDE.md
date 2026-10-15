@@ -1,0 +1,52 @@
+# mosaic.agent
+
+This package serves the agents of mosaic's users. `SKILL.md` is the guide that
+`mosaic agent guide` prints, and `__init__.py` installs it into a project. `mcp/` is
+the MCP server behind `mosaic agent serve`. The user documentation is
+`docs/agents.md`.
+
+## Layering
+
+- `mosaic.agent` is an adapter beside `mosaic.cli`. It imports `core`, `behavior` and
+  `tracking`. A module under those three does not import it
+  (`tests/meta/test_agent_layering.py`).
+- `mcp/spec.py` declares the tool contract. It imports neither the MCP SDK, pandas,
+  cv2, av, `mosaic.behavior` nor `mosaic.tracking`. A server outside this repository
+  can then import it. An output model from a module beyond that budget is named by a
+  `ModelRef` and imported on use (`tests/agent/mcp/test_tool_spec.py`).
+- `mcp/_binding.py` is the one module that imports the SDK. `mcp/server.py` loads
+  `MCP_SDK` before importing it, which names the `mcp` extra when the SDK is absent
+  (`tests/agent/mcp/test_mcp_extra.py`). The modules beside the server leave the SDK
+  unloaded.
+- `mcp/local.py` imports the library inside the methods that use it. Building a
+  `LocalBackend` loads neither pandas nor the feature library.
+
+## Tool contract
+
+- `TOOLS` in `spec.py` declares each tool once, and a backend answers it through the
+  `ToolBackend` method of the same name. The set contains at most 15 tools
+  (`tests/meta/test_shared_tool_cap.py`), and each schema stays under
+  `MAX_SCHEMA_BYTES`.
+- A tool wraps a library function and its wire model, which live beside their concept
+  with a CLI verb printing the same model under `--json`. Compute in the library and
+  keep the adapter to addressing, paging and the confirmation gate.
+- A failure returns the error envelope (`core/pipeline/error_envelope.py`). Dataset
+  content (notes, tags, names, error text) is returned in typed fields only.
+- `submit_pipeline` and `cancel_request` are the only tools that change a dataset, and
+  both declare `confirm_when`. No tool takes `overwrite` (`test_tool_spec.py`).
+- `docs/agents.md` lists the operations the server leaves to the user, such as
+  deletion, `--apply` on a sweep or prune verb, and manifest writes. Do not add a tool
+  for one.
+
+## Standard output
+
+Standard output is reserved for JSON-RPC. `serve` enters the SDK's `stdio_server`
+before it imports the binding and the library. A submitted request runs in a detached
+driver whose streams go to a log file. `tests/agent/mcp/test_mcp_stdio.py` plans,
+submits, polls and previews over a real stdio pipe and checks the stream.
+
+## Tests
+
+Tests are in `tests/agent/mcp/`. The CI `test` job installs `.[mcp]` and sets
+`MOSAIC_CI_MCP=1`. `tests/conftest.py` then fails a run that cannot import the SDK
+instead of skipping its tests.
