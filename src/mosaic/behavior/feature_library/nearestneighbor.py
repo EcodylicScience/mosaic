@@ -37,7 +37,8 @@ class NearestNeighbor:
     Per-sequence feature computing nearest-neighbor identity and relative kinematics.
 
     Outputs per frame (one row per individual):
-      - nn_id: id of nearest neighbor (NaN if none)
+      - nn_id: id of nearest neighbor (NaN if none). An individual whose
+        position is missing in a frame is nobody's neighbor there, and has none.
       - nn_delta_x / nn_delta_y: neighbor position minus focal, world frame
       - nn_dist: Euclidean distance to nearest neighbor
       - nn_delta_angle: neighbor heading minus focal, wrapped to [-pi, pi]
@@ -48,7 +49,9 @@ class NearestNeighbor:
 
     category = "per-frame"
     name = "nearest-neighbor"
-    version = "0.2"
+    # 0.3: an individual missing from a frame is nobody's neighbor. Its NaN
+    # distance used to win argmin, which blanked every row of that frame.
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -149,23 +152,32 @@ class NearestNeighbor:
             dy_matrix = gy[np.newaxis, :] - gy[:, np.newaxis]
             dist_matrix = np.sqrt(dx_matrix**2 + dy_matrix**2)
             np.fill_diagonal(dist_matrix, np.inf)
+            # An individual without a position is never the nearest. argmin
+            # returns the first NaN it meets, so a missing one would otherwise
+            # be every row's neighbor, at a NaN distance.
+            dist_matrix[np.isnan(dist_matrix)] = np.inf
 
             nn_idx = np.argmin(dist_matrix, axis=1)
-            nn_id[idx] = gids[nn_idx]
-            nn_dx[idx] = gx[nn_idx] - gx
-            nn_dy[idx] = gy[nn_idx] - gy
-            nn_dist[idx] = dist_matrix[np.arange(len(idx)), nn_idx]
+            nearest = dist_matrix[np.arange(len(idx)), nn_idx]
+            # A row whose own position is missing, or whose every other
+            # individual is, has no neighbor and keeps NaN.
+            found = np.isfinite(nearest)
+            rows, nn_idx = idx[found], nn_idx[found]
+            nn_id[rows] = gids[nn_idx]
+            nn_dx[rows] = gx[nn_idx] - gx[found]
+            nn_dy[rows] = gy[nn_idx] - gy[found]
+            nn_dist[rows] = nearest[found]
 
-            if nn_dangle is not None:
-                nn_dangle[idx] = wrap_angle(gang[nn_idx] - gang)
+            if nn_dangle is not None and gang is not None:
+                nn_dangle[rows] = wrap_angle(gang[nn_idx] - gang[found])
 
             dx_ego, dy_ego = ego_rotate(
-                nn_dx[idx],
-                nn_dy[idx],
-                gang if angles is not None else np.zeros(len(idx)),
+                nn_dx[rows],
+                nn_dy[rows],
+                gang[found] if gang is not None else np.zeros(len(rows)),
             )
-            nn_dx_ego[idx] = dx_ego
-            nn_dy_ego[idx] = dy_ego
+            nn_dx_ego[rows] = dx_ego
+            nn_dy_ego[rows] = dy_ego
 
         out = pd.DataFrame(
             {

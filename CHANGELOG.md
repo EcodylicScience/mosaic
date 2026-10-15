@@ -148,6 +148,14 @@ the scaler's fit and left it in every later fit. Its declared output is no longe
 a passthrough. It declares the identity and bookkeeping columns, kept when
 present, and a family per payload column of its input.
 
+**`nearest-neighbor` gives every individual a neighbor when another is missing.**
+An individual without a position in a frame had a NaN distance to every other,
+and `argmin` returns the first NaN it meets, so in any frame where one was
+missing every row named it as the nearest and read NaN. Such frames were 16% of a
+10-fish TRex recording's rows. A missing individual is now nobody's neighbor and
+has none itself. `nearest-neighbor` moves to 0.3, the version segment only, and
+every step reading its output moves its digest.
+
 **A track conversion files a file's sequences under the group its source
 declares.** `convert_all_tracks` and `mosaic convert-tracks` used `infile` when no
 `group_from` was passed, so a source declared with `--group-from filename` had its

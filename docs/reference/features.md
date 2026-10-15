@@ -164,7 +164,7 @@ Smooth trajectory positions using the ``movement`` library.
 
 ### `nearest-neighbor`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.nearestneighbor.NearestNeighbor`
+Version `0.3` &middot; `mosaic.behavior.feature_library.nearestneighbor.NearestNeighbor`
 
 Per-sequence feature computing nearest-neighbor identity and relative kinematics.
 
