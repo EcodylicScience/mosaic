@@ -103,7 +103,8 @@ in the root guide.
   blank recorded schema means. That schema, `trex_v1` (centimeters, `X` at the head),
   stays registered so archived datasets keep resolving. Do not use it for new data.
 - A converter receives its entry through `EntryHints`, which is not a `Params` and is
-  not hashed (`test_no_converter_can_hash_an_entry_name`).
+  not hashed (`test_no_converter_can_hash_an_entry_name`). Its `fps` is the measured
+  frame rate of the media the tool read, `None` when unmeasured.
 
 ## Parameter models
 

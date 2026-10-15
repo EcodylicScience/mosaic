@@ -31,6 +31,7 @@ here: this module imports nothing from ``mosaic.core.dataset``.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import import_module
@@ -76,6 +77,13 @@ class EntryHints:
     Both default to empty, which means "the converter decides" -- typically from
     the filename stem.
 
+    ``fps`` is the measured frame rate of the media the tool read, which a caller
+    knows only when it handed the tool that media. It is a fact about the entry's
+    input, as the file's bytes are, and not a choice of recipe: a converter that
+    reads it applies one rule to every entry, and the rate decides only the
+    numbers. ``None`` means not measured, and a converter then keeps the tool's
+    own timing.
+
     Validated on construction, so a converter structurally cannot emit a name
     that is not usable as one path component. This is the earliest of the three
     write boundaries: catching it here names the converter in the traceback,
@@ -84,10 +92,17 @@ class EntryHints:
 
     group: str = ""
     sequence: str = ""
+    fps: float | None = None
 
     def __post_init__(self) -> None:
         _ = validate_entry_name(self.group, "group")
         _ = validate_entry_name(self.sequence, "sequence")
+        if self.fps is not None and not (math.isfinite(self.fps) and self.fps > 0):
+            msg = (
+                f"fps={self.fps} is not a measured frame rate. Pass None when "
+                "the media's rate is unknown."
+            )
+            raise ValueError(msg)
 
 
 class TrackConvertParams(Params):

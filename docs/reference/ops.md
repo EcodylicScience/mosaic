@@ -143,7 +143,7 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 
 #### `trex`
 
-Version `0.2` &middot; `mosaic.tracking.ops.trex.TrexOp` &middot; resource class `gpu`
+Version `0.3` &middot; `mosaic.tracking.ops.trex.TrexOp` &middot; resource class `gpu`
 
 Run TRex (convert + track) over scoped videos, bridging results into ``tracks/``.
 

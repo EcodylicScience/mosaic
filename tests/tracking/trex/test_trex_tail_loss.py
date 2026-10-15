@@ -359,7 +359,7 @@ def _tracked_clips(
     for named in names.values():
         if len(named) > 1:
             _ = stub_join(ds, [f"uid-{name}" for name in named])
-    monkeypatch.setattr(trex_runs, "TREX_VERSION", version)
+    monkeypatch.setattr(trex_runs, "TREX_TRACK_VERSION", version)
     trex = install_fake_trex(monkeypatch)
     trex.npz_frames, trex.pv_frames = 20, max(clips.values()) * _FRAMES - 2
     _ = trex_runs.run_trex(ds, TrexParams())

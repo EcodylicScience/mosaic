@@ -42,7 +42,7 @@ from mosaic.tracking.frame_extraction.dataset_runs import (
     frames_run_id,
 )
 from mosaic.tracking.ops.trex import TrexOp
-from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
+from mosaic.tracking.trex.version import TREX_KIND, TREX_TRACK_VERSION
 
 VERSIONED = re.compile(r"^[a-z0-9-]+\.[0-9]+(?:\.[0-9]+)*-[0-9a-f]{10}$")
 FROZEN_FRAMES = re.compile(r"^[a-z]+-[0-9a-f]{10}$")
@@ -124,7 +124,7 @@ def test_every_op_declares_a_version() -> None:
 
 def test_the_trex_op_and_the_standalone_runner_share_one_version() -> None:
     """Two entry points, one integration: they must not name a run two ways."""
-    assert TrexOp.version == TREX_VERSION
+    assert TrexOp.version == TREX_TRACK_VERSION
     assert TrexOp.kind == TREX_KIND
 
 

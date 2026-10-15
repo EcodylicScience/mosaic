@@ -31,7 +31,7 @@ from mosaic.tracking.trex.dataset_runs import (
     trex_settings,
 )
 from mosaic.tracking.trex.params import TREX_DETECT_MODEL, TrexParams
-from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
+from mosaic.tracking.trex.version import TREX_KIND, TREX_TRACK_VERSION
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -49,7 +49,7 @@ class TrexOp(Op[TrexParams]):
     resource_class: ClassVar[str] = "gpu"
     # Read from the integration rather than restated, so the op and the
     # standalone run_trex cannot drift into naming the same run two ways.
-    version = TREX_VERSION
+    version = TREX_TRACK_VERSION
     scope_takes = "any"
     scope_dependent = False
     model_reference = TREX_DETECT_MODEL

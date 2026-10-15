@@ -110,7 +110,11 @@ from mosaic.tracking.trex.conversion_cache import (
     slot_marker_is_usable,
     staging_dir,
 )
-from mosaic.tracking.trex.version import CLIP_LIST_VERSION, TREX_KIND, TREX_VERSION
+from mosaic.tracking.trex.version import (
+    CLIP_LIST_VERSION,
+    TREX_KIND,
+    TREX_TRACK_VERSION,
+)
 from mosaic.core.pipeline.index_csv import IndexCSV, index_records
 from mosaic.core.pipeline.job import CancelToken, JobContext
 from mosaic.core.pipeline.media_input import media_identity_terms
@@ -222,7 +226,7 @@ PHASES: Final[tuple[PhaseName, ...]] = ("convert", "track")
 
 def trex_run_id(settings: Mapping[str, object]) -> str:
     """Mint a tracker run identifier from the resolved TREx settings."""
-    return op_run_id(TREX_KIND, TREX_VERSION, dict(settings))
+    return op_run_id(TREX_KIND, TREX_TRACK_VERSION, dict(settings))
 
 
 SETTING_FIELDS: Final[tuple[str, ...]] = tuple(
@@ -324,6 +328,7 @@ def _bridge_npz_to_tracks(
     producer_run_id: str,
     consumed_media: Sequence[Path],
     axis: EntryAxis,
+    fps: float | None,
     conversion: PvHeader | None,
     overwrite: bool,
 ) -> BridgeCounts | None:
@@ -334,6 +339,11 @@ def _bridge_npz_to_tracks(
     for one individual and absent for another survives as NaN rather than
     dropping the column. The conversion stays here rather than in the shared
     publisher because the publisher takes one frame, not a set of them.
+
+    *fps* is the measured frame rate of the file TREx read
+    (:attr:`~mosaic.tracking.common.scope.TrackerWorkItem.measured_fps`), or
+    ``None``. The converter times each export at it instead of at the integer
+    rate TREx labels the file with.
 
     *axis* places the merged table on the entry's axes, as it does every
     tracker's: a joined entry's ``time`` goes onto the clips' own measured rates
@@ -381,7 +391,7 @@ def _bridge_npz_to_tracks(
     # hints are exact rather than guessed from a filename. No params: the TRex
     # NPZ conversion has none.
     conv_params = type(converter).Params()
-    hints = EntryHints(group=group, sequence=sequence)
+    hints = EntryHints(group=group, sequence=sequence, fps=fps)
     frames: list[pd.DataFrame] = []
     for npz in npz_paths:
         # A conversion failure propagates to `publish_or_record`, which records
@@ -511,6 +521,7 @@ def _republish_entry(
         producer_run_id=run_id,
         consumed_media=item.consumed_media,
         axis=axis,
+        fps=item.measured_fps,
         conversion=_recorded_conversion(job.ds, work_dir),
         overwrite=True,
     )
@@ -872,7 +883,7 @@ def run_trex(
     minted = mint_tracker_run(
         ds,
         kind=TREX_KIND,
-        version=TREX_VERSION,
+        version=TREX_TRACK_VERSION,
         settings=settings,
         # Both models, and a linked library that served either. A run without
         # a model records that it used none.
@@ -1188,6 +1199,7 @@ def run_trex(
                     producer_run_id=minted.run_id,
                     consumed_media=item.consumed_media,
                     axis=axis,
+                    fps=item.measured_fps,
                     conversion=_recorded_conversion(job.ds, work_dir),
                     overwrite=job.overwrite or recomputed,
                 ),

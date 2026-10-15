@@ -407,6 +407,7 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
         producer_run_id: str,
         consumed_media: Sequence[Path],
         axis: object,
+        fps: object,
         conversion: object,
         overwrite: bool,
     ) -> BridgeCounts | None:

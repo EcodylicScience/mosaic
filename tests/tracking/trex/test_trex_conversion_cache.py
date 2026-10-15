@@ -39,7 +39,7 @@ from mosaic.tracking.trex.conversion_cache import (
     conversion_slot,
 )
 from mosaic.tracking.trex.params import TrexParams
-from mosaic.tracking.trex.version import TREX_VERSION
+from mosaic.tracking.trex.version import TREX_CONVERT_VERSION
 
 from tests.helpers import (
     FakeTrex,
@@ -89,7 +89,7 @@ def test_the_slot_run_id_is_the_convert_phase_hash(ds: Dataset, trex: FakeTrex) 
     parsed = parse_op_run_id(slot.parent.name)
     assert parsed is not None
     assert parsed.kind == CONVERT_KIND
-    assert parsed.version == TREX_VERSION
+    assert parsed.version == TREX_CONVERT_VERSION
 
     marker = read_phase_marker(slot, "convert")
     assert marker is not None
@@ -103,7 +103,7 @@ def test_the_slot_name_carries_the_source_and_the_recipe(
     _ = dr.run_trex(ds, TrexParams())
     slot = slot_of(ds)
     assert slot.name == "uid-vid1"
-    assert slot.parent.name.startswith(f"{CONVERT_KIND}.{TREX_VERSION}-")
+    assert slot.parent.name.startswith(f"{CONVERT_KIND}.{TREX_CONVERT_VERSION}-")
 
 
 @pytest.mark.parametrize(

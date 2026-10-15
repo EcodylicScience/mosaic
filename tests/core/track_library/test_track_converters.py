@@ -596,6 +596,13 @@ def test_entry_hints_refuse_a_path_separator() -> None:
     assert validate_entry_name("task1__test__m075", "sequence") == "task1__test__m075"
 
 
+@pytest.mark.parametrize("fps", [0.0, -29.97, float("nan"), float("inf")])
+def test_entry_hints_refuse_a_rate_that_is_not_a_measurement(fps: float) -> None:
+    """An unknown rate is ``None``, never a placeholder a converter would apply."""
+    with pytest.raises(ValueError, match="not a measured frame rate"):
+        _ = EntryHints(fps=fps)
+
+
 def test_the_error_says_what_to_do_instead() -> None:
     from mosaic.core.helpers import validate_entry_name
 

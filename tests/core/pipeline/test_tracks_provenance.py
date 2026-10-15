@@ -224,6 +224,7 @@ def test_the_tracker_bridge_records_the_run_and_a_portable_source(
         # This suite is about provenance, not the frame axis: an axis without
         # clip facts records no media length to compare against.
         axis=EntryAxis(),
+        fps=None,
         conversion=None,
         overwrite=True,
     )
@@ -263,6 +264,7 @@ def test_the_tracker_bridge_prefers_the_deepest_root_it_read(tmp_path: Path) -> 
         # This suite is about provenance, not the frame axis: an axis without
         # clip facts records no media length to compare against.
         axis=EntryAxis(),
+        fps=None,
         conversion=None,
         overwrite=True,
     )

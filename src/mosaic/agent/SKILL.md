@@ -172,6 +172,10 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 - Read raw `.h264` streams (Raspberry Pi) only through mosaic, which measures their
   frame count. Other readers misjudge a bare stream.
 - Run `mosaic upgrade-tracks` on TRex tables an older mosaic wrote in centimeters.
+- TRex tables an older mosaic tracked are timed at TRex's whole-number frame rate, not
+  the media's measured one. Run `mosaic track trex` again with the same `--set`
+  values. It tracks from the cached conversion and publishes a retimed table under a
+  new variant.
 
 ## Running features
 

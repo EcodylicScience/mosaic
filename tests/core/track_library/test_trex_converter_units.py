@@ -41,6 +41,7 @@ from mosaic.core.track_converter import (
 )
 from mosaic.core.track_library.trex import (
     CALIBRATION_COLUMN,
+    FRAME_RATE_COLUMN,
     TRACKLET_START_COLUMN,
     MissingBodyCentreError,
     MissingTrexCalibrationError,
@@ -53,6 +54,8 @@ from mosaic.core.track_library.trex import (
     UnknownTrexUnitsError,
     load_npz_to_df,
     calibration_from_frame,
+    frame_rate_from_frame,
+    retime_to_measured_rate,
     tracklet_starts,
     unscale_to_pixels,
 )
@@ -765,3 +768,156 @@ def test_every_reader_carries_the_tracklet_key(
 
     assert TRACKLET_START_COLUMN in table.columns
     assert "tracklet_id" not in table.columns
+
+
+# --- the frame rate -----------------------------------------------------------
+#
+# TRex keeps a video's frame rate as an integer, so a 29.97 fps video is timed at
+# 29: `time` is frame / 29, and every per-second column is computed against that
+# time. Given the measured rate of the media TRex read, the table is retimed.
+
+_TREX_RATE = 29.0
+_MEASURED_RATE = 29.97
+_RATIO = _MEASURED_RATE / _TREX_RATE
+
+_RATE_POWERS: dict[str, int] = {
+    "VX": 1,
+    "VY": 1,
+    "SPEED#wcentroid": 1,
+    "SPEED_SMOOTH": 1,
+    "SPEED_OLD": 1,
+    "ANGULAR_V": 1,
+    "AX": 2,
+    "AY": 2,
+    "ACCELERATION#wcentroid": 2,
+    "ACCELERATION_SMOOTH": 2,
+    "ANGULAR_A": 2,
+    "timestamp": -1,
+}
+"""Each timed column TRex exports, and the power of the rate ratio it scales by."""
+
+
+def _write_timed_by_trex(path: Path, *, n: int = 6, **columns: np.ndarray) -> None:
+    """Write an export TRex timed at 29 fps, carrying every kind of timed column."""
+    frames = np.arange(n, dtype=float)
+    timed: dict[str, np.ndarray] = {
+        FRAME_RATE_COLUMN: np.array([_TREX_RATE]),
+        "time": frames / _TREX_RATE,
+        "ANGLE": np.full(n, 0.5),
+    }
+    for name in _RATE_POWERS:
+        timed[name] = np.linspace(1.0, 2.0, n)
+    timed["timestamp"] = frames / _TREX_RATE * 1e6
+    timed.update(columns)
+    write_trex_npz(path, n=n, columns=timed)
+
+
+def _convert_at(path: Path, fps: float | None) -> pd.DataFrame:
+    return TrexNpzConverter().convert(
+        path, TrackConvertParams(), EntryHints(sequence="seq", fps=fps)
+    )
+
+
+def test_a_measured_rate_times_every_frame_by_it(tmp_path: Path) -> None:
+    """``time`` is frame / the measured rate, and ``frame_rate`` is that rate."""
+    path = tmp_path / "seq_fish0.npz"
+    _write_timed_by_trex(path)
+
+    out = _convert_at(path, _MEASURED_RATE)
+
+    frames = out["frame"].to_numpy(dtype=float)
+    assert out["time"].to_numpy() == pytest.approx(frames / _MEASURED_RATE)
+    assert out[FRAME_RATE_COLUMN].to_list() == [_MEASURED_RATE] * len(out)
+
+
+@pytest.mark.parametrize(("column", "power"), sorted(_RATE_POWERS.items()))
+def test_each_timed_column_scales_by_its_power_of_the_ratio(
+    tmp_path: Path, column: str, power: int
+) -> None:
+    """A velocity scales by the ratio, an acceleration by its square."""
+    path = tmp_path / "seq_fish0.npz"
+    _write_timed_by_trex(path)
+
+    out = _convert_at(path, _MEASURED_RATE)
+
+    trex_values = load_npz_to_df(path)[column].to_numpy(dtype=float)
+    assert out[column].to_numpy() == pytest.approx(trex_values * _RATIO**power)
+
+
+def test_a_retimed_timestamp_agrees_with_the_retimed_time(tmp_path: Path) -> None:
+    path = tmp_path / "seq_fish0.npz"
+    _write_timed_by_trex(path)
+
+    out = _convert_at(path, _MEASURED_RATE)
+
+    assert out["timestamp"].to_numpy() == pytest.approx(out["time"].to_numpy() * 1e6)
+
+
+def test_untimed_columns_are_not_retimed(tmp_path: Path) -> None:
+    path = tmp_path / "seq_fish0.npz"
+    _write_timed_by_trex(path)
+
+    out = _convert_at(path, _MEASURED_RATE)
+
+    trex = load_npz_to_df(path)
+    for column in ("frame", "X#wcentroid", "ANGLE", "poseX0"):
+        np.testing.assert_array_equal(out[column].to_numpy(), trex[column].to_numpy())
+
+
+def test_without_a_measured_rate_trex_timing_is_kept(tmp_path: Path) -> None:
+    """A TRex export converted with no media has no other rate to be timed by."""
+    path = tmp_path / "seq_fish0.npz"
+    _write_timed_by_trex(path)
+
+    out = _convert_at(path, None)
+
+    trex = load_npz_to_df(path)
+    for column in ["time", FRAME_RATE_COLUMN, *_RATE_POWERS]:
+        np.testing.assert_array_equal(out[column].to_numpy(), trex[column].to_numpy())
+
+
+def test_an_export_that_records_no_rate_keeps_its_timing(tmp_path: Path) -> None:
+    """Retiming needs TRex's rate as well as the measured one."""
+    path = tmp_path / "seq_fish0.npz"
+    _write_timed_by_trex(path)
+    fields = {name: array for name, array in np.load(path).items()}
+    del fields[FRAME_RATE_COLUMN]
+    np.savez(path, allow_pickle=False, **fields)
+
+    out = _convert_at(path, _MEASURED_RATE)
+
+    trex = load_npz_to_df(path)
+    for column in ["time", *_RATE_POWERS]:
+        np.testing.assert_array_equal(out[column].to_numpy(), trex[column].to_numpy())
+
+
+def test_an_unclassified_column_refuses_a_retime(tmp_path: Path) -> None:
+    """Whether an unknown field is per second cannot be guessed."""
+    path = tmp_path / "seq_fish0.npz"
+    _write_timed_by_trex(path, some_new_trex_field=np.arange(6, dtype=float))
+
+    with pytest.raises(UnknownTrexUnitsError, match="some_new_trex_field"):
+        _ = _convert_at(path, _MEASURED_RATE)
+
+
+def test_an_unclassified_column_is_fine_when_the_rates_agree(tmp_path: Path) -> None:
+    """At one rate no column is scaled, so no unit can be got wrong."""
+    path = tmp_path / "seq_fish0.npz"
+    _write_timed_by_trex(path, some_new_trex_field=np.arange(6, dtype=float))
+
+    out = _convert_at(path, _TREX_RATE)
+
+    trex = load_npz_to_df(path)
+    np.testing.assert_array_equal(out["VX"].to_numpy(), trex["VX"].to_numpy())
+    assert out["time"].to_numpy() == pytest.approx(trex["time"].to_numpy())
+
+
+def test_individuals_timed_at_different_rates_refuse() -> None:
+    frame = pd.DataFrame({FRAME_RATE_COLUMN: [29.0, np.nan, 30.0, np.nan]})
+    with pytest.raises(ValueError, match="different"):
+        _ = frame_rate_from_frame(frame)
+
+
+def test_retiming_needs_trex_rate_as_well() -> None:
+    frame = pd.DataFrame({"frame": [0, 1], "time": [0.0, 1 / 29], "VX": [1.0, 2.0]})
+    assert retime_to_measured_rate(frame, _MEASURED_RATE) is frame

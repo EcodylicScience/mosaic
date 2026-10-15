@@ -8,7 +8,49 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, and a fit reads the columns it is given
+## Unreleased: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
+
+**A table that TRex tracks is timed at the measured rate of the media TRex
+read.** TRex keeps a video's frame rate as an integer, so it timed a 29.97 fps
+video at 29 fps. Its `time` ran 3.3% long, 124.0 s at the end of a 120.0 s
+video, and every per-second column it exports was off by the same factor. Now
+`time` is the frame divided by the measured rate, and `frame_rate` is that rate
+on every row. Velocities, speeds and angular velocities are multiplied by the
+measured rate over TRex's rate, accelerations and angular accelerations by its
+square, and `timestamp` is divided by it. A video recorded at a whole number of
+frames per second keeps its times and rates. A TRex run with
+`track_enforce_frame_rate` turned off times its frames by their timestamps
+instead, and its table should not be retimed.
+
+**TRex tracking runs re-address from `0.2` to `0.3`, and the conversion cache
+stays at `0.2`.** The version is a visible segment of an identifier and is not
+hashed. A tracking run and its tracks variant move from `trex.0.2-<digest>` to
+`trex.0.3-<digest>` with the same digest, and every cached conversion keeps its
+`trex-convert.0.2-<digest>`. Existing TRex tables keep their identifier and
+their timing. The next `mosaic track trex` with the same settings tracks each
+entry again from its cached `.pv`, without detecting again, and publishes a
+retimed table under the new identifier. An entry whose `.pv` is not in the
+cache, because its media carries no content identity or the cache was swept, is
+converted again. The entry then has two tracks variants, and a scope that
+resolves both raises until `tracks_run_id=` names one or
+`Dataset.drop_entries(..., run_id=)` retires the older. A feature computed from a TRex tracks variant
+hashes that variant's identifier, so its run id moves with it.
+
+A TRex export converted with `mosaic convert-tracks` keeps TRex's timing,
+because mosaic does not know which media TRex read. The `trex_npz` converter
+stays at `0.3`, and no `convert-trex_npz` identifier moves.
+
+`mosaic.tracking.trex.version.TREX_VERSION` is replaced by `TREX_TRACK_VERSION`,
+which names a tracking run, and `TREX_CONVERT_VERSION`, which names the
+conversion cache.
+
+**A TRex table with a numeric column that mosaic has not classified is refused
+when the two rates differ**, as it already was when its `cm_per_pixel` is not 1.
+Whether such a column is per second is unknown. Classify the field in
+`mosaic.core.track_library.trex`.
+
+`EntryHints` takes `fps`, the measured frame rate of the media a tool read, or
+`None`.
 
 **New feature `vame`.** It trains a recurrent variational autoencoder on windows
 of egocentrically aligned keypoints and embeds each window in a continuous
@@ -542,7 +584,8 @@ The other two and `global-scaler` move the version segment only. `xgboost` and
 `extract-labeled-templates` 0.2 run would otherwise fit other columns under the
 same run id. A step reading one of these outputs hashes its run id, and its
 digest moves too: the t-SNE step of the plan golden moves from `0.4-9ef3a62a39`
-to `0.4-8fedc8d788`.
+to `0.4-3f5b267c0b`. TRex tracking runs move to `trex.0.3`, as the TRex entry above
+describes, and a feature computed from one moves with it.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows
 

@@ -38,7 +38,11 @@ from mosaic_media import MediaFacts
 from mosaic.core.media.preprocess.geometry import FrameMap, Placement
 from mosaic.core.media.timeline import ConcatenatedTimeline, concatenated_timeline
 from mosaic.core.track_library.helpers import column_array, column_names
-from mosaic.core.track_library.trex import base_field
+from mosaic.core.track_library.trex import (
+    PER_SECOND_FIELDS,
+    PER_SECOND_SQUARED_FIELDS,
+    base_field,
+)
 
 __all__ = [
     "EXTENT_DEPENDENT_BASES",
@@ -92,20 +96,8 @@ _RETIMED_BASES: Final = frozenset({"time", "frame_rate"})
 _DROPPED_BY_RETIMING_BASES: Final = frozenset({"timestamp"})
 """Base fields that :func:`retime` drops, minted from a frame index and one rate."""
 
-RATE_DEPENDENT_BASES: Final[frozenset[str]] = frozenset(
-    {
-        "VX",
-        "VY",
-        "AX",
-        "AY",
-        "SPEED",
-        "SPEED_SMOOTH",
-        "SPEED_OLD",
-        "ACCELERATION",
-        "ACCELERATION_SMOOTH",
-        "ANGULAR_V",
-        "ANGULAR_A",
-    }
+RATE_DEPENDENT_BASES: Final[frozenset[str]] = (
+    PER_SECOND_FIELDS | PER_SECOND_SQUARED_FIELDS
 )
 """Base fields that TRex computes per second, and therefore against one frame rate.
 
@@ -113,7 +105,8 @@ TRex differentiates over each frame's time, which it derives from the frame
 index and the one rate that the file is labeled at. TRex's output annotations give
 ``SPEED``, ``SPEED_SMOOTH`` and ``SPEED_OLD`` in cm/s and ``ACCELERATION`` and
 ``ACCELERATION_SMOOTH`` in cm/s2, and ``ACCELERATION`` is the length of the
-second derivative taken over that time.
+second derivative taken over that time. The TRex converter declares the two
+sets, because it rescales them to the media's measured rate.
 
 The set is matched on the base name, which covers every ``#`` variant.
 ``SPEED``, ``SPEED#wcentroid`` and ``SPEED#pcentroid`` are one quantity under

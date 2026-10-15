@@ -39,7 +39,7 @@ from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
 from mosaic.tracking.trex.dataset_runs import run_trex, trex_settings
 from mosaic.tracking.trex.params import TrexParams
-from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
+from mosaic.tracking.trex.version import TREX_KIND, TREX_TRACK_VERSION
 
 from tests.helpers import (
     add_track_sequences,
@@ -109,7 +109,7 @@ def test_both_of_trexs_models_are_found(tmp_path: Path) -> None:
     minted = mint_tracker_run(
         ds,
         kind=TREX_KIND,
-        version=TREX_VERSION,
+        version=TREX_TRACK_VERSION,
         settings=trex_settings(
             TrexParams(), detect_model_id=detect, vi_model_id=identify
         ),

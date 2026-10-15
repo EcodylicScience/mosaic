@@ -91,7 +91,7 @@ from mosaic.tracking.ops.infer import infer_run_id
 from mosaic.tracking.ops.prepare import ResolvedSet, prepare_training_data_run_id
 from mosaic.tracking.ops.train import train_run_id
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
-from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
+from mosaic.tracking.trex.version import TREX_KIND, TREX_TRACK_VERSION
 from mosaic.tracking.ultralytics_track.version import (
     ULTRALYTICS_KIND,
     ULTRALYTICS_VERSION,
@@ -363,7 +363,7 @@ def _trex_variant() -> str:
     # byte-identical to trex_run_id(settings) for the same settings.
     return tracks_run_id(
         TREX_KIND,
-        TREX_VERSION,
+        TREX_TRACK_VERSION,
         tracker_variant_payload({"track_max_individuals": 4, "cm_per_pixel": 0.5}),
     )
 
@@ -434,13 +434,34 @@ def _trex_run_id_settings(media: str = "") -> str:
     the variant case above passes a hand-built two-key dict -- so a rename
     inside ``trex_settings`` moves every TREx run root and tracks variant on
     disk with a fully green suite. This is the case that fails instead.
+    """
+    from mosaic.tracking.trex.dataset_runs import trex_run_id
+
+    return trex_run_id(_trex_settings(media))
+
+
+def _trex_conversion_run_id() -> str:
+    """The conversion cache's identifier for the settings of ``trex/run-id-settings``.
+
+    It addresses every cached ``.pv``. Its version is apart from the tracking
+    run's, so a change to tracking or publication re-tracks from the cached
+    conversions, and this line does not move with the tracking run's.
+    """
+    from mosaic.tracking.trex.conversion_cache import conversion_run_id
+    from mosaic.tracking.trex.dataset_runs import phase_settings
+
+    return conversion_run_id(phase_settings(_trex_settings(), "convert"))
+
+
+def _trex_settings(media: str = "") -> dict[str, object]:
+    """The settings ``trex_settings`` builds from a fully stated ``TrexParams``.
 
     Every field is set explicitly rather than relying on defaults, because a
-    default that changed would move this line for a reason unrelated to the key
-    set it exists to guard. Both model references arrive as the identities the
-    caller resolved them to, which the settings record.
+    default that changed would move the identifiers minted from these for a
+    reason unrelated to the key set they guard. Both model references arrive as
+    the identities the caller resolved them to, which the settings record.
     """
-    from mosaic.tracking.trex.dataset_runs import trex_run_id, trex_settings
+    from mosaic.tracking.trex.dataset_runs import trex_settings
     from mosaic.tracking.trex.params import TrexParams
 
     params = TrexParams(
@@ -462,12 +483,10 @@ def _trex_run_id_settings(media: str = "") -> str:
         track_extra_settings=None,
         media=media,
     )
-    return trex_run_id(
-        trex_settings(
-            params,
-            detect_model_id="train-points.0.1-aaaaaaaaaa",
-            vi_model_id="train-identity.0.1-bbbbbbbbbb",
-        )
+    return trex_settings(
+        params,
+        detect_model_id="train-points.0.1-aaaaaaaaaa",
+        vi_model_id="train-identity.0.1-bbbbbbbbbb",
     )
 
 
@@ -892,6 +911,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "tracks/resample-variant-other-upstream": _resample_variant_other_upstream,
     "labels/convert-variant": _labels_convert_variant,
     "trex/run-id-settings": _trex_run_id_settings,
+    "trex/conversion-run-id": _trex_conversion_run_id,
     "sleap/run-id-settings": _sleap_run_id_settings,
     "litpose/run-id-settings": _litpose_run_id_settings,
     "ultralytics/run-id-settings": _ultralytics_run_id_settings,

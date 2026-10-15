@@ -67,7 +67,7 @@ from mosaic.tracking.common.index import (
     tracker_index,
     tracker_index_path,
 )
-from mosaic.tracking.trex.version import TREX_VERSION
+from mosaic.tracking.trex.version import TREX_CONVERT_VERSION
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -161,7 +161,7 @@ def conversion_run_id(convert_settings: Mapping[str, object]) -> str:
     the ``params_hash`` every convert marker already records, which is what lets
     the gate and the address be one decision instead of two that can drift.
     """
-    return op_run_id(CONVERT_KIND, TREX_VERSION, dict(convert_settings))
+    return op_run_id(CONVERT_KIND, TREX_CONVERT_VERSION, dict(convert_settings))
 
 
 def conversion_index_path(ds: Dataset) -> Path:

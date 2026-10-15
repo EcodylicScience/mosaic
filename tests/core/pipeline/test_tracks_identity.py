@@ -309,10 +309,12 @@ def test_a_trex_variant_is_the_tracker_run_it_came_from() -> None:
     recipe and produce two near-identical directory names.
     """
     from mosaic.tracking.trex.dataset_runs import trex_run_id
-    from mosaic.tracking.trex.version import TREX_KIND, TREX_VERSION
+    from mosaic.tracking.trex.version import TREX_KIND, TREX_TRACK_VERSION
 
     settings = {"track_max_individuals": 4, "cm_per_pixel": 0.5}
-    variant = tracks_run_id(TREX_KIND, TREX_VERSION, tracker_variant_payload(settings))
+    variant = tracks_run_id(
+        TREX_KIND, TREX_TRACK_VERSION, tracker_variant_payload(settings)
+    )
 
     assert variant == trex_run_id(settings)
 

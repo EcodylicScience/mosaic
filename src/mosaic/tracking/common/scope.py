@@ -176,6 +176,20 @@ class TrackerWorkItem:
         return self.source_facts[0] if self.source_facts else None
 
     @property
+    def measured_fps(self) -> float | None:
+        """The measured frame rate of the file the tool reads, or ``None``.
+
+        The first clip's probed rate, which a join of the clips is labeled at, or
+        the variant file's. ``None`` where the facts are absent or report no
+        rate. :attr:`fps` falls back to the dataset's default there, and a
+        default is not a measurement to correct a tool's timing by.
+        """
+        facts = self.facts
+        if facts is None or facts.fps <= 0:
+            return None
+        return facts.fps
+
+    @property
     def video_uids(self) -> tuple[str, ...]:
         """Every clip's content identity, in ``video_order``.
 

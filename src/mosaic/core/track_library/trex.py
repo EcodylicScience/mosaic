@@ -38,6 +38,14 @@ TRex frames without posture. So ``X``/``Y`` are taken from ``#wcentroid``,
 TRex's own bare pair is preserved as ``X#head``/``Y#head``, and ``#wcentroid``
 is kept as well -- one body centre under both names, so TRex-aware code that
 already reads ``X#wcentroid`` keeps working.
+
+**TRex times frames at a whole number of frames per second.** It stores a
+video's frame rate as an integer, so a 29.97 fps video is labeled 29, and it
+times each frame by that label: ``time`` is frame / 29, and every per-second
+column is computed against that ``time``. When the caller knows the measured
+rate of the media TRex read (``EntryHints.fps``), :class:`TrexNpzConverter`
+retimes the table at that rate (:func:`retime_to_measured_rate`). Without one,
+TRex's timing is kept, because no other rate is known.
 """
 
 from __future__ import annotations
@@ -61,7 +69,10 @@ from mosaic.core.track_converter import (
 __all__ = [
     "CALIBRATION_COLUMN",
     "DIMENSIONLESS_FIELDS",
+    "FRAME_RATE_COLUMN",
     "LENGTH_FIELDS",
+    "PER_SECOND_FIELDS",
+    "PER_SECOND_SQUARED_FIELDS",
     "PIXEL_PREFIXES",
     "TRACKLET_START_COLUMN",
     "MissingBodyCentreError",
@@ -74,9 +85,11 @@ __all__ = [
     "TrexTrackletBoundsError",
     "UnknownTrexUnitsError",
     "calibration_from_frame",
+    "frame_rate_from_frame",
     "is_per_individual_export",
     "load_npz_to_df",
     "name_the_body_centre",
+    "retime_to_measured_rate",
     "tracklet_starts",
     "unscale_to_pixels",
 ]
@@ -127,6 +140,14 @@ CALIBRATION_COLUMN = "cm_per_pixel"
 Written as a one-element array rather than a scalar, so the flattener pads it to
 full length with NaN: the value sits in the first row of each individual's block
 and nowhere else. That is why it is read by dropping NaN rather than by position.
+"""
+
+FRAME_RATE_COLUMN = "frame_rate"
+"""The field TRex writes the frame rate it timed every frame by into.
+
+A one-element array like :data:`CALIBRATION_COLUMN`, and NaN-padded the same
+way. TRex keeps the rate as an integer, so the value is the media's rate
+truncated to a whole number.
 """
 
 TRACKLET_START_COLUMN = "tracklet_start"
@@ -185,13 +206,14 @@ class TrexTrackletBoundsError(ValueError):
 
 
 class UnknownTrexUnitsError(ValueError):
-    """A calibrated file carries a column whose units are not classified.
+    """A file to be rescaled carries a column whose units are not classified.
 
     ``output_fields`` is user-configurable, so the set of columns a TRex export
     holds is open. Guessing wrong is a silent constant-factor error, so an
     unrecognized numeric column refuses -- but only when there is a conversion to
     get wrong. At ``cm_per_pixel == 1`` centimetres and pixels are the same
-    number, no column is touched, and any field set is accepted.
+    number, and where the measured frame rate equals TRex's, a second is the same
+    second. No column is then scaled, and any field set is accepted.
     """
 
 
@@ -267,7 +289,7 @@ DIMENSIONLESS_FIELDS: frozenset[str] = frozenset(
         "tracklet_id",
         "blobid",
         "blob_id",
-        "frame_rate",
+        FRAME_RATE_COLUMN,
         "video_size",
         "detect_type",
         "detect_format",
@@ -276,6 +298,34 @@ DIMENSIONLESS_FIELDS: frozenset[str] = frozenset(
         CALIBRATION_COLUMN,
     }
 )
+
+PER_SECOND_FIELDS: frozenset[str] = frozenset(
+    {"VX", "VY", "SPEED", "SPEED_SMOOTH", "SPEED_OLD", "ANGULAR_V"}
+)
+"""Base field names TRex reports per second, against its own frame times.
+
+Verified against ``OutputLibrary.cpp`` and ``MotionRecord.h``. TRex
+differentiates over each frame's ``time``, which is frame / its integer
+``frame_rate``, so a velocity is a difference divided by that time step. A speed
+is the norm of a velocity, and a smoothed value is an average of them.
+
+Together with :data:`PER_SECOND_SQUARED_FIELDS`, ``time``, ``timestamp`` and
+``frame_rate``, this lists every classified field that carries a unit of time. A
+field classified by :data:`LENGTH_FIELDS` or :data:`DIMENSIONLESS_FIELDS` and
+listed in none of those carries none.
+"""
+
+PER_SECOND_SQUARED_FIELDS: frozenset[str] = frozenset(
+    {"AX", "AY", "ACCELERATION", "ACCELERATION_SMOOTH", "ANGULAR_A"}
+)
+"""Base field names TRex reports per second squared, against its own frame times.
+
+Each is a difference of a :data:`PER_SECOND_FIELDS` quantity divided by the same
+time step, or the norm or an average of one.
+"""
+
+_TIMESTAMP_FIELD = "timestamp"
+"""TRex's ``time`` of each frame, in microseconds, timed by the same rate."""
 
 # Keypoint columns are already pixels -- TRex passes through what the pose model
 # reported, unscaled -- and are prefix-shaped rather than named, so they are
@@ -414,6 +464,20 @@ def tracklet_starts(
     return pd.arrays.IntegerArray(np.where(inside, starts[clipped], 0), ~inside)
 
 
+def _recorded_values(frame: pd.DataFrame, column: str) -> list[float]:
+    """The distinct values of one of TRex's one-element fields in *frame*, sorted.
+
+    Read by dropping NaN, because the flattener pads the one value to the length
+    of the table (see :data:`CALIBRATION_COLUMN`). Empty when *frame* has no such
+    column or it holds no value.
+    """
+    if column not in column_names(frame):
+        return []
+    raw = column_array(frame, column).astype("float64", copy=False)
+    present = raw[~np.isnan(raw)]
+    return sorted({float(value) for value in present.tolist()})
+
+
 def calibration_from_frame(frame: pd.DataFrame) -> float | None:
     """The ``cm_per_pixel`` TRex applied, or ``None`` when the file records none.
 
@@ -428,11 +492,7 @@ def calibration_from_frame(frame: pd.DataFrame) -> float | None:
             and merged, and there is no defensible single answer -- averaging
             them would put every column off by a different amount.
     """
-    if CALIBRATION_COLUMN not in column_names(frame):
-        return None
-    raw = column_array(frame, CALIBRATION_COLUMN).astype("float64", copy=False)
-    present = raw[~np.isnan(raw)]
-    distinct = sorted({float(value) for value in present.tolist()})
+    distinct = _recorded_values(frame, CALIBRATION_COLUMN)
     if not distinct:
         return None
     if len(distinct) > 1:
@@ -442,6 +502,51 @@ def calibration_from_frame(frame: pd.DataFrame) -> float | None:
             "calibrations, so no single factor converts it."
         )
     return distinct[0]
+
+
+def frame_rate_from_frame(frame: pd.DataFrame) -> float | None:
+    """The frame rate TRex timed the table by, or ``None`` when it records none.
+
+    Read from the value TRex wrote, as :func:`calibration_from_frame` reads the
+    factor. It is TRex's integer rate, not the media's.
+
+    Raises:
+        ValueError: If the frame carries more than one distinct rate, because
+            no single rate then retimes it.
+    """
+    distinct = _recorded_values(frame, FRAME_RATE_COLUMN)
+    if not distinct:
+        return None
+    if len(distinct) > 1:
+        raise ValueError(
+            f"This table records {len(distinct)} different {FRAME_RATE_COLUMN} "
+            f"values ({distinct}). Its individuals were timed at different rates, "
+            "so no single rate retimes it."
+        )
+    return distinct[0]
+
+
+def _unclassified_columns(frame: pd.DataFrame) -> list[str]:
+    """The numeric columns of *frame* whose units are not classified, sorted.
+
+    A column is classified by its base field in :data:`LENGTH_FIELDS` or
+    :data:`DIMENSIONLESS_FIELDS`, or by a :data:`PIXEL_PREFIXES` prefix. Only a
+    numeric column can carry a unit to get wrong, so a label or a flag is never
+    listed, whatever it is called.
+    """
+    unknown: list[str] = []
+    for name in column_names(frame):
+        base = base_field(name)
+        if base in LENGTH_FIELDS or base in DIMENSIONLESS_FIELDS:
+            continue
+        if name.startswith(PIXEL_PREFIXES):
+            continue
+        # ``kind`` is "f" for floats and "iu" for integers, and deliberately not
+        # "b": a boolean is a flag, so scaling one would be meaningless rather
+        # than merely wrong.
+        if column_array(frame, name).dtype.kind in "fiu":
+            unknown.append(name)
+    return sorted(unknown)
 
 
 def unscale_to_pixels(frame: pd.DataFrame, cm_per_pixel: float) -> pd.DataFrame:
@@ -463,26 +568,10 @@ def unscale_to_pixels(frame: pd.DataFrame, cm_per_pixel: float) -> pd.DataFrame:
             f"{CALIBRATION_COLUMN}={cm_per_pixel} is not a usable scale factor."
         )
 
-    unknown: list[str] = []
-    scaled: dict[str, np.ndarray] = {}
-    for name in column_names(frame):
-        base = base_field(name)
-        if base in LENGTH_FIELDS:
-            values = column_array(frame, name).astype("float64", copy=False)
-            scaled[name] = values / cm_per_pixel
-            continue
-        if base in DIMENSIONLESS_FIELDS or name.startswith(PIXEL_PREFIXES):
-            continue
-        # Only a numeric column can carry a unit to get wrong; a label or a flag
-        # is passed through whatever it is called. ``kind`` is "f" for floats and
-        # "iu" for integers, and deliberately not "b": a boolean is a flag, so
-        # dividing one would be meaningless rather than merely unscaled.
-        if column_array(frame, name).dtype.kind in "fiu":
-            unknown.append(name)
-
+    unknown = _unclassified_columns(frame)
     if unknown:
         raise UnknownTrexUnitsError(
-            f"Cannot convert this TRex table to pixels: {sorted(unknown)} "
+            f"Cannot convert this TRex table to pixels: {unknown} "
             f"{'are' if len(unknown) > 1 else 'is'} not classified as a length or as "
             f"dimensionless, and {CALIBRATION_COLUMN}={cm_per_pixel} means guessing "
             "would scale them wrongly. TRex's `output_fields` is configurable, so a "
@@ -491,8 +580,85 @@ def unscale_to_pixels(frame: pd.DataFrame, cm_per_pixel: float) -> pd.DataFrame:
         )
 
     out = frame.copy()
-    for name, values in scaled.items():
-        out[name] = values
+    for name in column_names(frame):
+        if base_field(name) in LENGTH_FIELDS:
+            values = column_array(frame, name).astype("float64", copy=False)
+            out[name] = values / cm_per_pixel
+    return out
+
+
+def _rate_power(column: str) -> int:
+    """The power of a rate ratio that retiming multiplies *column* by.
+
+    One for a :data:`PER_SECOND_FIELDS` column, two for a
+    :data:`PER_SECOND_SQUARED_FIELDS` one, minus one for ``timestamp``, which is
+    a time, and zero for a column that carries no unit of time. ``time`` and
+    ``frame_rate`` are zero here, because retiming sets them outright.
+    """
+    base = base_field(column)
+    if base in PER_SECOND_FIELDS:
+        return 1
+    if base in PER_SECOND_SQUARED_FIELDS:
+        return 2
+    if base == _TIMESTAMP_FIELD:
+        return -1
+    return 0
+
+
+def retime_to_measured_rate(frame: pd.DataFrame, fps: float | None) -> pd.DataFrame:
+    """Return *frame* timed at *fps*, the measured rate of the media TRex read.
+
+    TRex times each frame by its integer rate (:func:`frame_rate_from_frame`).
+    Retiming sets ``time`` to frame / *fps* and ``frame_rate`` to *fps* on every
+    row. It multiplies each column by the ratio *fps* / TRex's rate raised to the
+    column's power of the rate: once for a per-second column, twice for a
+    per-second-squared one, and inversely for ``timestamp``. One ratio holds for
+    every frame, so the result is exact for TRex's differences over its frame
+    times and for the norms and averages built from them.
+
+    That is the timing TRex applies under its default ``track_enforce_frame_rate``.
+    A run that turns it off is timed by its frames' timestamps instead, and this
+    correction does not apply to it.
+
+    Args:
+        frame: One export's table, with the ``frame`` column that
+            :func:`load_npz_to_df` always gives it.
+        fps: The measured rate, or ``None`` when it is unknown.
+
+    Returns:
+        The retimed table. *frame* itself when *fps* is ``None`` or TRex recorded
+        no rate, because retiming needs both rates.
+
+    Raises:
+        UnknownTrexUnitsError: If the two rates differ and a numeric column's
+            units are not classified, because whether it is per second is then
+            unknown.
+        ValueError: As :func:`frame_rate_from_frame` raises it.
+    """
+    labeled = frame_rate_from_frame(frame)
+    if fps is None or labeled is None or labeled <= 0.0:
+        return frame
+
+    ratio = fps / labeled
+    unknown = _unclassified_columns(frame) if ratio != 1.0 else []
+    if unknown:
+        raise UnknownTrexUnitsError(
+            f"Cannot retime this TRex table from {labeled:g} to {fps:g} fps: "
+            f"{unknown} {'are' if len(unknown) > 1 else 'is'} not classified, so "
+            "whether a column is per second is unknown and scaling it would be a "
+            "guess. TRex's `output_fields` is configurable, so a field mosaic has "
+            "not seen is expected; classify it in mosaic.core.track_library.trex."
+        )
+
+    out = frame.copy()
+    out["time"] = column_array(frame, "frame").astype("float64", copy=False) / fps
+    out[FRAME_RATE_COLUMN] = fps
+    if ratio != 1.0:
+        for name in column_names(frame):
+            power = _rate_power(name)
+            if power:
+                values = column_array(frame, name).astype("float64", copy=False)
+                out[name] = values * ratio**power
     return out
 
 
@@ -587,8 +753,8 @@ def load_npz_to_df(filepath: Path) -> pd.DataFrame:
     if "frame" not in df.columns:
         df["frame"] = np.arange(len(df), dtype=int)
     if "time" not in df.columns:
-        if "frame_rate" in data.files:
-            fr = float(np.array(data["frame_rate"]).ravel()[0])
+        if FRAME_RATE_COLUMN in data.files:
+            fr = float(np.array(data[FRAME_RATE_COLUMN]).ravel()[0])
             fr = fr if fr > 0 else 1.0
             df["time"] = df["frame"] / fr
         else:
@@ -644,7 +810,9 @@ class TrexNpzConverter(TrackConverter[TrackConvertParams]):
     """Per-id TRex NPZ -> the standard T-Rex-like table.
 
     Carries no parameters of its own: the conversion is fully determined by the
-    file. What it declares instead is the shape of TRex's output -- one file per
+    file and by the measured frame rate of the media TRex read, when the caller
+    passes one in ``EntryHints.fps``. The two readers below keep TRex's timing.
+    What it declares instead is the shape of TRex's output -- one file per
     individual, so several files make one sequence. ``merges_per_sequence`` is
     how ``core`` learns that without comparing ``src_format`` to a literal, and
     ``sequence_from_stem`` is the rule that recognizes those files as one entry.
@@ -658,6 +826,9 @@ class TrexNpzConverter(TrackConverter[TrackConvertParams]):
     # the numbers mean, so they are a new recipe rather than the same one.
     # 0.3: rows carry ``tracklet_start`` from TRex's exact tracklet bounds, and
     # TRex's collapsed ``tracklet_id`` is dropped wherever those bounds exist.
+    # Retiming at ``EntryHints.fps`` changes no table under this version. Only
+    # the TRex tracker passes a rate, and its tables are named by the version of
+    # the tracking run, not by this one.
     version = "0.3"
     output_schema = "trex_v2"
     merges_per_sequence = True
@@ -693,6 +864,7 @@ class TrexNpzConverter(TrackConverter[TrackConvertParams]):
                 "says so in the schema."
             )
         df = unscale_to_pixels(df, cm_per_pixel)
+        df = retime_to_measured_rate(df, hints.fps)
         df = name_the_body_centre(df, source=path)
         df["group"] = hints.group
         df["sequence"] = hints.sequence or self.sequence_from_stem(path.stem)
