@@ -208,6 +208,29 @@ def test_step_types_are_searched_by_words_and_paged(backend: LocalBackend) -> No
     assert {entry.type for entry in (*ops.entries, *more.entries)} == {"op"}
 
 
+def test_step_types_are_ranked_and_paged_in_rank_order(backend: LocalBackend) -> None:
+    whole = _call(backend, "search_step_types", StepTypePage, query="speed", limit=100)
+    paged: list[str] = []
+    cursor: str | None = None
+    while True:
+        page = _call(
+            backend,
+            "search_step_types",
+            StepTypePage,
+            query="speed",
+            limit=1,
+            cursor=cursor,
+        )
+        paged.extend(entry.name for entry in page.entries)
+        cursor = page.next_cursor
+        if cursor is None:
+            break
+
+    assert whole.entries[0].name == "speed-angvel"
+    assert len(whole.entries) > 1
+    assert paged == [entry.name for entry in whole.entries]
+
+
 def test_one_step_type_is_described_whole(backend: LocalBackend) -> None:
     entry = _call(backend, "describe_step_type", CatalogEntry, name="speed-angvel")
     missing = _refusal(backend, "describe_step_type", name="no-such-step")

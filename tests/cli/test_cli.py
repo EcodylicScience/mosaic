@@ -504,6 +504,22 @@ def test_features_list_and_describe() -> None:
     assert kpms["license_note"] == by_name["kpms"]["license_note"]
 
 
+def test_features_list_ranks_the_features_a_query_matches() -> None:
+    every = json.loads(runner.invoke(app, ["features", "list", "--json"]).stdout)
+    found = json.loads(
+        runner.invoke(app, ["features", "list", "--query", "speed", "--json"]).stdout
+    )
+    plain = runner.invoke(app, ["features", "list", "--query", "Speed_Angvel"])
+
+    names = [row["name"] for row in every]
+    assert names == sorted(names)
+    assert found[0]["name"] == "speed-angvel"
+    assert 1 < len(found) < len(every)
+    assert {row["type"] for row in found} == {"feature"}
+    assert plain.exit_code == 0
+    assert plain.stdout.splitlines()[1].split()[0] == "speed-angvel"
+
+
 # Every registered op kind, as one literal. Separated from the discovery test
 # below because the two answer different questions and change for different
 # reasons: discovery asks whether ``tracking list`` and ``tracking describe``

@@ -78,7 +78,6 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.graph import (
         CatalogEntry,
         CatalogIndex,
-        CatalogIndexEntry,
         DeclarationCatalog,
         DetachedDriver,
         Plan,
@@ -419,25 +418,25 @@ class LocalBackend:
     # -------------------------------------------------------------- catalog
 
     def _search_step_types(self, args: SearchStepTypesInput) -> StepTypePage:
+        from mosaic.core.pipeline.graph import search_catalog
+
         from .outputs import StepTypePage
 
         index = self._catalog_index()
-        words = args.query.lower().split()
         matched = [
-            entry
-            for entry in index.entries
-            if _matches(entry, words)
-            and (args.type is None or entry.type == args.type)
-            and (args.category is None or entry.category == args.category)
-            and not (args.available_only and entry.unavailable)
+            match
+            for match in search_catalog(index.entries, args.query)
+            if (args.type is None or match.entry.type == args.type)
+            and (args.category is None or match.entry.category == args.category)
+            and not (args.available_only and match.entry.unavailable)
         ]
         page, next_cursor = _page(
-            matched, lambda entry: (entry.name,), args.limit, args.cursor
+            matched, lambda match: match.key, args.limit, args.cursor
         )
         return StepTypePage(
             schema_version=index.schema_version,
             mosaic_version=index.mosaic_version,
-            entries=tuple(page),
+            entries=tuple(match.entry for match in page),
             total=len(matched),
             next_cursor=next_cursor,
         )
@@ -969,12 +968,6 @@ def _recipe(document: object) -> Recipe:
     from mosaic.core.pipeline.graph import read_recipe
 
     return read_recipe(document)
-
-
-def _matches(entry: CatalogIndexEntry, words: Sequence[str]) -> bool:
-    """Whether every word occurs in *entry*'s name, summary or category."""
-    text = f"{entry.name} {entry.summary} {entry.category}".lower()
-    return all(word in text for word in words)
 
 
 def _submission_findings(

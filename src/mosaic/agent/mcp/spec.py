@@ -912,9 +912,11 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         title="Search step types",
         description=(
             "Search the features and ops a recipe may run, by words in their name, "
-            "summary or category. Each result names its lane, the columns it reads "
-            "and writes, what this installation lacks to run it and any license "
-            "restriction. describe_step_type gives one in full." + _PAGING
+            "summary or category, best match first: the name, then words of the "
+            "name, then the summary or category. Each result names its lane, the "
+            "columns it reads and writes, what this installation lacks to run it "
+            "and any license restriction. describe_step_type gives one in full."
+            + _PAGING
         ),
         input_model=SearchStepTypesInput,
         output=ModelRef("mosaic.agent.mcp.outputs", "StepTypePage"),

@@ -33,6 +33,10 @@ from typing import TYPE_CHECKING, Final
 from mosaic.lazy_exports import lazy_export
 
 if TYPE_CHECKING:
+    from .catalog_search import (
+        CatalogMatch as CatalogMatch,
+        search_catalog as search_catalog,
+    )
     from .claims import (
         FileFailureStore as FileFailureStore,
         claims_root as claims_root,
@@ -296,6 +300,8 @@ if TYPE_CHECKING:
     )
 
 _MODULE_OF: Final[dict[str, str]] = {
+    "CatalogMatch": ".catalog_search",
+    "search_catalog": ".catalog_search",
     "FileFailureStore": ".claims",
     "claims_root": ".claims",
     "UNKNOWN_COLUMNS": ".columns",
@@ -548,6 +554,7 @@ __all__ = [
     "CatalogEntry",
     "CatalogIndex",
     "CatalogIndexEntry",
+    "CatalogMatch",
     "ColumnNames",
     "ColumnProvider",
     "ColumnSet",
@@ -727,6 +734,7 @@ __all__ = [
     "run_status_wire",
     "save_recipe",
     "save_request",
+    "search_catalog",
     "start_detached_driver",
     "step_argv",
     "step_type_lane",

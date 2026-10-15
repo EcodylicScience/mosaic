@@ -465,6 +465,21 @@ the modules `config`, `prompts`, `resources`, `summaries` and `server` of
 `Installation.mosaic_command` and `Installation.interpreter_command` in
 `mosaic.agent`.
 
+**A step-type search ranks its matches.** `search_step_types` and the new
+`mosaic features list --query TEXT` rank a step type first when its name is the
+query. Next come the names whose words each query word equals or begins, then
+the names that contain every query word, and last the step types matched partly
+or only by their summary or category. Within one of these, a name ranks higher
+with more words that equal a query word or its plural, so `track` lists `tracks`
+before `track-subsample`. Case, spaces, hyphens and underscores are alike, so
+`speed_angvel` finds `speed-angvel`. Each word of a hyphenated query now matches
+on its own. `per-frame` used to need that text, and now needs `per` and `frame`
+anywhere in the name, summary or category. `search_step_types` used to list its
+matches by name, so `speed` listed `nn-delta-bins` before `speed-angvel`. A
+search cursor records the ranking. Without a query, both list by name as before.
+New in the library: `search_catalog` and `CatalogMatch` in
+`mosaic.core.pipeline.graph`.
+
 **[docs/agents.md](docs/agents.md#tools-for-an-mcp-client) documents the MCP
 server**: its installation, its registration in Claude Code and Claude Desktop,
 the datasets it serves, when it asks to confirm, the operations it leaves to

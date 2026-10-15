@@ -674,15 +674,17 @@ $ mosaic features [OPTIONS] COMMAND [ARGS]...
 
 **Commands**:
 
-* `list`: List every registered feature, sorted by...
+* `list`: List the registered features with their...
 * `describe`: Describe one feature: its params...
 
 ### `mosaic features list`
 
-List every registered feature, sorted by slug, with its lane and columns.
+List the registered features with their lanes and columns.
 
-Under --json each row also names what the installation lacks to run the
-feature and any use its license forbids.
+Without --query the list is sorted by slug. With --query it holds only the
+features that match, best match first: the name, then words of the name,
+then the summary or category. Under --json each row also names what the
+installation lacks to run the feature and any use its license forbids.
 
 **Usage**:
 
@@ -692,6 +694,7 @@ $ mosaic features list [OPTIONS]
 
 **Options**:
 
+* `--query <str>`: List only the features whose name, summary or category contains every word, best match first.
 * `--json`: Emit the list as a JSON array.
 * `--help`: Show this message and exit.
 

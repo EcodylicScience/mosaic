@@ -21,7 +21,9 @@ __all__ = ["StepSuggestions", "StepTypePage"]
 
 
 class StepTypePage(StrictModel):
-    """One page of the step types that a search matches, ordered by name.
+    """One page of the step types that a search matches, most relevant first.
+
+    A search without words lists every step type, ordered by name.
 
     Attributes:
         schema_version: The recipe format this installation reads.
