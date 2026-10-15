@@ -111,7 +111,7 @@ it has to, because an epoch on a large dataset outruns any window that would
 otherwise be reasonable.
 """
 
-_TRAIN_CANCEL_GRACE_SECONDS = 900.0
+TRAIN_CANCEL_GRACE_SECONDS = 900.0
 """How long a cancelled training run is given to finish its epoch and stop.
 
 Ultralytics reads its stop flag between epochs and nowhere else, so a cancel is a
@@ -527,7 +527,7 @@ def train_through_the_tool[RequestT: TrainRequestBase](
         cancel_check=stop_then_kill(
             ctx.cancel_token.is_cancelled,
             Path(request.cancel_sentinel),
-            _TRAIN_CANCEL_GRACE_SECONDS,
+            TRAIN_CANCEL_GRACE_SECONDS,
         ),
         on_output=training_activity(
             ctx,

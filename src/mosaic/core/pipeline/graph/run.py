@@ -90,11 +90,15 @@ __all__ = [
 MOSAIC_COMMAND: Final[tuple[str, ...]] = (sys.executable, "-m", "mosaic")
 """The command that starts mosaic in this interpreter, for each step and driver."""
 
-STEP_CANCEL_GRACE_SECONDS: Final = 30.0
+STEP_CANCEL_GRACE_SECONDS: Final = 1800.0
 """How long a step has to stop after its driver forwards SIGTERM, before SIGKILL.
 
-A step stops at its next cancel checkpoint, which ``run_feature`` reaches between
-entries.
+A feature step stops at its next cancel checkpoint, which ``run_feature`` reaches
+between entries. A training op stops cooperatively at the end of its epoch and
+kills its tool only after a grace of its own, so the driver plays the part a
+substrate plays for a queued run: its grace equals the termination grace a
+mosaic-queue pod is given by default and exceeds every in-step grace. A shorter
+one would kill the step while its tool, in a session of its own, kept writing.
 """
 
 _POLL_SECONDS: Final = 0.2

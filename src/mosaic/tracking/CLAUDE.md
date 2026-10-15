@@ -133,9 +133,11 @@ hashed, codec refusal, source-space publication) are in the root `CLAUDE.md`.
 
 - Ultralytics training (`train-pose`, `train-points`) cancels cooperatively.
   `stop_then_kill` (`common/cooperative_cancel.py`) writes the sentinel the runner
-  reads between epochs, and kills only after `_TRAIN_CANCEL_GRACE_SECONDS`
+  reads between epochs, and kills only after `TRAIN_CANCEL_GRACE_SECONDS`
   (`ops/train.py`). The grace must exceed one epoch and stay under the substrate's own
-  kill timer. Every other tool, SLEAP and Lightning Pose
+  kill timer. A local request driver is that substrate for `mosaic pipeline run`, and
+  `STEP_CANCEL_GRACE_SECONDS` (`core/pipeline/graph/run.py`) is its timer;
+  `tests/tracking/ops/test_train_cancel_grace.py` pins the order. Every other tool, SLEAP and Lightning Pose
   training included, keeps the immediate kill of `run_supervised`.
 - The exchange directory is per attempt (`pose_training/ultralytics_train.py`):
   `models/<kind>/<run_id>/.mosaic-train/<execution_id>/`. A run root is reused across
