@@ -411,6 +411,30 @@ processes on this host only". New in the library: `cancel_attempt`,
 `AttemptNotFound`, `RequestNotFound` and `CannotSignal` in
 `mosaic.core.pipeline.cancel`.
 
+**`mosaic.agent.mcp` declares the tools an MCP client calls, and answers them
+from the library.** `mosaic.agent.mcp.spec` declares fifteen tools, each with a
+description for a model, an input and an output model, annotations and the
+conditions under which it asks the user to confirm. It imports no MCP SDK and
+neither pandas, cv2, av, the feature library nor `mosaic.tracking`.
+`LocalBackend` in `mosaic.agent.mcp.local` serves the datasets of an allowlist
+by manifest `uuid`, opened without creating roots, and returns every failure as
+the error envelope. `submit_pipeline` requires the fingerprint of a current
+plan, starts the request's detached driver, and refuses until confirmed when a
+step runs on a GPU lane, trains, tracks or infers, or is asked for more than 100
+entries, when `allow_partial` or `bind` is set, when the submission covers the
+whole dataset, or when a request of the recipe over an overlapping scope is
+open. `cancel_request` asks to confirm when a running step loses its work. A
+dataset whose manifest names `managed_by` refuses both unless the backend was
+built with `allow_managed`. `ArtifactKind`, `ArtifactStatus` and their value
+tuples and guards are defined in `mosaic.core.pipeline.artifact_kinds`, which
+imports the standard library only, and `mosaic.core.pipeline.inventory`
+re-exports them. `count_cell` in `mosaic.core.pipeline.tracks_index` reads a
+count cell of the tracks index, blank as `None`. `load_request` and
+`list_requests` raise `RequestUnreadable`, a `ValueError` with reason
+`request_unreadable` naming the request and its file, for a request file that
+is not valid JSON or not a valid request, and `read_request` in
+`mosaic.core.pipeline.cancel` reads a request or raises `RequestNotFound`.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows

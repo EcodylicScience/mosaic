@@ -21,6 +21,7 @@ from mosaic.core.pipeline.inventory import (
     DatasetInventory,
     existing_tracks_records,
     inventory,
+    reportable_universe,
 )
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.schema import LEGACY_SCHEMA
@@ -174,12 +175,7 @@ def dataset_summary(
         managed_by=manifest.managed_by,
         api_managed=manifest.is_managed,
         counts=DatasetCounts(
-            sequences=len(
-                {
-                    (record.get("group", ""), record.get("sequence", ""))
-                    for record in tracks
-                }
-            ),
+            sequences=len(reportable_universe(ds)),
             videos=len(media),
             tracks_variants=_count(held, "tracks-variant"),
             feature_runs=_count(held, "feature"),

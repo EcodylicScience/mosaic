@@ -1,0 +1,1259 @@
+"""The shared tools of mosaic's MCP servers, declared without an MCP SDK.
+
+Each tool is one :class:`ToolSpec`: its name, a description written for a model,
+an input model, an output model, its annotations and the conditions under which
+it refuses without the user's confirmation. :data:`TOOLS` lists the shared set in
+the order a server registers it. A server answers each tool through a
+:class:`ToolBackend`, and :func:`call_tool` validates a call's arguments and
+dispatches it to the backend's method of the same name.
+
+A failure is returned as an
+:class:`~mosaic.core.pipeline.error_envelope.ErrorEnvelope`, never raised, so a
+server reports every tool's failures in one shape.
+
+The module imports the standard library, pydantic and the status, cancel and
+error modules of the pipeline, and loads neither pandas, cv2, av, the feature
+library nor ``mosaic.tracking`` (``tests/agent/mcp/test_tool_spec.py``). An
+output model whose module loads them is named by a :class:`ModelRef` and
+imported when :meth:`ToolSpec.output_model` is called.
+"""
+
+from __future__ import annotations
+
+import importlib
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol
+
+from pydantic import BaseModel, Field, ValidationError
+
+from mosaic.core.json_value import JsonValue
+from mosaic.core.pipeline.artifact_kinds import ArtifactKind, ArtifactStatus
+from mosaic.core.pipeline.cancel import RequestCancel
+from mosaic.core.pipeline.error_envelope import ErrorEnvelope
+from mosaic.core.pipeline.graph import (
+    BoundRef,
+    EntryErrorsWire,
+    RecordedErrorWire,
+    RequestStatusWire,
+    RequestSummaryWire,
+    RequestVerdict,
+)
+from mosaic.core.strict_model import StrictModel
+from mosaic.runlog import AttemptOutcome
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset_summary import DatasetSummary
+    from mosaic.core.pipeline.graph import CatalogEntry, PlanWire, ValidationReport
+    from mosaic.core.pipeline.inventory import InventoryWire
+    from mosaic.core.pipeline.preview import ArtifactPreview
+
+    from .outputs import StepSuggestions, StepTypePage
+
+__all__ = [
+    "CONFIRMATION_CONDITIONS",
+    "CONFIRMATION_REQUIRED",
+    "DATASET_MANAGED",
+    "DEFAULT_PAGE_SIZE",
+    "INVALID_ARGUMENTS",
+    "INVALID_CURSOR",
+    "LARGE_SCOPE_ENTRIES",
+    "LISTED_STATUS_NOT",
+    "MAX_PAGE_SIZE",
+    "MAX_PREVIEW_ROWS",
+    "SHARED_TOOL_LIMIT",
+    "TOOLS",
+    "UNKNOWN_DATASET",
+    "UNKNOWN_TOOL",
+    "ActivityPage",
+    "ActivityView",
+    "AttemptDiagnosis",
+    "CancelRequestInput",
+    "ConfirmationCondition",
+    "ConfirmationFinding",
+    "DatasetList",
+    "DatasetListItem",
+    "DescribeDatasetInput",
+    "DescribeStepTypeInput",
+    "DiagnoseFailuresInput",
+    "FailureDiagnosis",
+    "GetInventoryInput",
+    "GetRequestStatusInput",
+    "ListActivityInput",
+    "ListDatasetsInput",
+    "ListSequencesInput",
+    "ModelRef",
+    "PlanRecipeInput",
+    "PreviewOutputInput",
+    "RunSummary",
+    "SearchStepTypesInput",
+    "SequencePage",
+    "SequenceRow",
+    "SubmitPipelineInput",
+    "SubmittedPipeline",
+    "SubmittedStep",
+    "SuggestMode",
+    "SuggestStepsInput",
+    "ToolAnnotations",
+    "ToolBackend",
+    "ToolInput",
+    "ToolName",
+    "ToolResult",
+    "ToolSpec",
+    "ValidateRecipeInput",
+    "call_tool",
+    "confirmation_required",
+    "dataset_managed",
+    "invalid_cursor",
+    "tool_spec",
+    "unknown_dataset",
+]
+
+SHARED_TOOL_LIMIT: Final = 15
+"""The most tools the shared set may declare. Each tool costs a model context."""
+
+MAX_PAGE_SIZE: Final = 100
+"""The most items one page of a listing returns."""
+
+DEFAULT_PAGE_SIZE: Final = 20
+"""The items a listing returns when its call names no limit."""
+
+MAX_PREVIEW_ROWS: Final = 50
+"""The most rows a preview returns, as ``preview_artifact`` allows."""
+
+LARGE_SCOPE_ENTRIES: Final = 100
+"""The most entries a step may be asked for before a submission asks to confirm."""
+
+LISTED_STATUS_NOT: Final[tuple[ArtifactStatus, ...]] = ("complete",)
+"""The statuses that an inventory listing leaves out when its call names none."""
+
+CONFIRMATION_REQUIRED: Final = "confirmation_required"
+"""The ``reason`` of a refusal that a call with ``confirm: true`` answers."""
+
+DATASET_MANAGED: Final = "dataset_managed"
+"""The ``reason`` of a refusal to change a dataset that a service manages."""
+
+UNKNOWN_DATASET: Final = "unknown_dataset"
+"""The ``reason`` of a call naming a dataset that the server does not serve."""
+
+UNKNOWN_TOOL: Final = "unknown_tool"
+"""The ``reason`` of a call naming a tool that the shared set lacks."""
+
+INVALID_ARGUMENTS: Final = "invalid_arguments"
+"""The ``reason`` of a call whose arguments do not fit the tool's input model."""
+
+INVALID_CURSOR: Final = "invalid_cursor"
+"""The ``reason`` of a listing given a cursor that no page of it returned."""
+
+type ToolName = Literal[
+    "list_datasets",
+    "describe_dataset",
+    "list_sequences",
+    "get_inventory",
+    "search_step_types",
+    "describe_step_type",
+    "validate_recipe",
+    "suggest_steps",
+    "plan_recipe",
+    "submit_pipeline",
+    "get_request_status",
+    "cancel_request",
+    "list_activity",
+    "diagnose_failures",
+    "preview_output",
+]
+"""The name of each shared tool."""
+
+type ConfirmationCondition = Literal[
+    "gpu_lane",
+    "training_op",
+    "tracking_op",
+    "allow_partial",
+    "bind",
+    "large_scope",
+    "whole_dataset",
+    "open_duplicate",
+    "hard_cancel",
+]
+"""A condition under which a tool refuses until the user confirms the call."""
+
+CONFIRMATION_CONDITIONS: Final[Mapping[ConfirmationCondition, str]] = {
+    "gpu_lane": "a step runs on a GPU lane",
+    "training_op": "a step trains a model",
+    "tracking_op": (
+        "a step runs a tracker or model inference, and TRex requires a paid "
+        "license for use by a company"
+    ),
+    "allow_partial": "allow_partial lets a step run over fewer entries than planned",
+    "bind": "bind pins artifacts that the recipe did not produce",
+    "large_scope": (f"a step is asked for more than {LARGE_SCOPE_ENTRIES} entries"),
+    "whole_dataset": "the submission covers the whole dataset",
+    "open_duplicate": (
+        "a request of this recipe over an overlapping scope has not ended, and "
+        "both compute the same runs"
+    ),
+    "hard_cancel": (
+        "a running step loses its work when cancelled. A keypoint-MoSeq or VAME "
+        "fit stops at once, and training loses the epoch in progress"
+    ),
+}
+"""What each confirmation condition means, as a person reads it."""
+
+type SuggestMode = Literal["attach", "insert", "input"]
+"""Which question ``suggest_steps`` answers about a recipe."""
+
+type ActivityView = Literal["requests", "runs"]
+"""Which records ``list_activity`` lists."""
+
+PageSize = Annotated[
+    int,
+    Field(
+        ge=1,
+        le=MAX_PAGE_SIZE,
+        description=f"The most items to return, 1 to {MAX_PAGE_SIZE}.",
+    ),
+]
+"""The ``limit`` of a listing."""
+
+_CURSOR_DESCRIPTION: Final = (
+    "The next_cursor of the previous page, to read the next one."
+)
+
+Cursor = Annotated[str | None, Field(description=_CURSOR_DESCRIPTION)]
+"""The ``cursor`` of a listing."""
+
+_RecordId = Annotated[str, Field(pattern=r"^[0-9A-Za-z_-]+$")]
+"""A request or attempt id: one file name stem of letters, digits, ``_`` and ``-``."""
+
+DatasetId = Annotated[
+    str, Field(description="The dataset's uuid, as list_datasets returns it.")
+]
+"""The ``dataset`` that a dataset tool reads."""
+
+RecipeDocument = Annotated[
+    dict[str, JsonValue],
+    Field(
+        description=(
+            "The recipe as a JSON object: schema_version, name and steps. A step "
+            "is {id, type: 'feature', feature, inputs, params} or {id, type: 'op', "
+            "kind, params}. An input is 'tracks' or {step: <id>}."
+        )
+    ),
+]
+"""A recipe document, parsed by the backend so that a malformed one is reported."""
+
+Entries = Annotated[
+    list[tuple[str, str]] | None,
+    Field(
+        description=(
+            "The [group, sequence] entries to cover, or null for every entry of "
+            "the dataset."
+        )
+    ),
+]
+"""The entries a plan or a submission covers."""
+
+
+class ToolInput(StrictModel):
+    """The arguments of one tool call. Each tool's input model subclasses it."""
+
+
+class ListDatasetsInput(ToolInput):
+    """The arguments of ``list_datasets``."""
+
+    limit: PageSize = DEFAULT_PAGE_SIZE
+    cursor: Cursor = None
+
+
+class DescribeDatasetInput(ToolInput):
+    """The arguments of ``describe_dataset``."""
+
+    dataset: DatasetId
+
+
+class ListSequencesInput(ToolInput):
+    """The arguments of ``list_sequences``."""
+
+    dataset: DatasetId
+    group: str | None = Field(
+        default=None, description="List the sequences of this group only."
+    )
+    tracks_variant: str | None = Field(
+        default=None,
+        description=(
+            "List this tracks variant's tables. Null lists the variant each entry "
+            "resolves to. '' names the unlabeled tables."
+        ),
+    )
+    limit: PageSize = DEFAULT_PAGE_SIZE
+    cursor: Cursor = None
+
+
+class GetInventoryInput(ToolInput):
+    """The arguments of ``get_inventory``."""
+
+    dataset: DatasetId
+    kinds: list[ArtifactKind] | None = Field(
+        default=None, description="Report these artifact kinds only."
+    )
+    entries: Entries = None
+    tracks_variant: str | None = Field(
+        default=None,
+        description="Keep the feature runs that read this tracks variant.",
+    )
+    status_not: list[ArtifactStatus] | None = Field(
+        default=None,
+        description=(
+            "Leave out artifacts with these statuses. Null leaves out the complete "
+            "ones from a listing and none from a ref. [] reports every artifact."
+        ),
+    )
+    ref: str | None = Field(
+        default=None,
+        description=(
+            "Report only this artifact, in depth, as a listing's ref names it."
+        ),
+    )
+    limit: PageSize = DEFAULT_PAGE_SIZE
+    cursor: Cursor = None
+
+
+class SearchStepTypesInput(ToolInput):
+    """The arguments of ``search_step_types``."""
+
+    query: str = Field(
+        default="",
+        description="Words to find in a step type's name, summary or category.",
+    )
+    type: Literal["feature", "op", "tracks"] | None = Field(
+        default=None, description="Return step types of this type only."
+    )
+    category: str | None = Field(
+        default=None, description="Return step types of this category only."
+    )
+    available_only: bool = Field(
+        default=False,
+        description="Leave out step types this installation cannot run.",
+    )
+    limit: PageSize = DEFAULT_PAGE_SIZE
+    cursor: Cursor = None
+
+
+class DescribeStepTypeInput(ToolInput):
+    """The arguments of ``describe_step_type``."""
+
+    name: str = Field(
+        description="The feature slug or op kind, as search_step_types names it."
+    )
+
+
+class ValidateRecipeInput(ToolInput):
+    """The arguments of ``validate_recipe``."""
+
+    recipe: RecipeDocument
+
+
+class SuggestStepsInput(ToolInput):
+    """The arguments of ``suggest_steps``."""
+
+    recipe: RecipeDocument
+    mode: SuggestMode = Field(
+        description=(
+            "'attach': step types to add below step. 'insert': step types to "
+            "insert between step and the steps that read it. 'input': inputs to "
+            "add to step."
+        )
+    )
+    step: str | None = Field(
+        default=None,
+        description=(
+            "The step asked about. Null asks about the top of the recipe under "
+            "'attach' and 'insert'. Required under 'input'."
+        ),
+    )
+
+
+class PlanRecipeInput(ToolInput):
+    """The arguments of ``plan_recipe``."""
+
+    dataset: DatasetId
+    recipe: RecipeDocument
+    entries: Entries = None
+
+
+class SubmitPipelineInput(ToolInput):
+    """The arguments of ``submit_pipeline``."""
+
+    dataset: DatasetId
+    recipe: RecipeDocument
+    plan_fingerprint: str = Field(
+        description=(
+            "The fingerprint of the plan_recipe result that the user reviewed. A "
+            "plan that has changed since refuses the submission."
+        )
+    )
+    entries: Entries = None
+    allow_partial: bool = Field(
+        default=False,
+        description=(
+            "Let a step proceed when it would run over fewer entries than planned."
+        ),
+    )
+    bind: dict[str, BoundRef] | None = Field(
+        default=None,
+        description=(
+            "Artifacts the recipe did not produce, pinned by step id as "
+            "{feature, run_id}."
+        ),
+    )
+    owner: str = Field(default="", description="Recorded on the request.")
+    confirm: bool = Field(
+        default=False,
+        description=(
+            "Set only after the user agreed to the conditions that a refusal "
+            "with reason confirmation_required listed."
+        ),
+    )
+
+
+class GetRequestStatusInput(ToolInput):
+    """The arguments of ``get_request_status``."""
+
+    dataset: DatasetId
+    request_id: _RecordId = Field(
+        description="The request, as submit_pipeline named it."
+    )
+
+
+class CancelRequestInput(ToolInput):
+    """The arguments of ``cancel_request``."""
+
+    dataset: DatasetId
+    request_id: _RecordId = Field(description="The request to cancel.")
+    confirm: bool = Field(
+        default=False,
+        description=(
+            "Set only after the user agreed to the conditions that a refusal "
+            "with reason confirmation_required listed."
+        ),
+    )
+
+
+class ListActivityInput(ToolInput):
+    """The arguments of ``list_activity``."""
+
+    dataset: DatasetId
+    view: ActivityView = Field(
+        default="requests",
+        description=(
+            "'requests': pipeline submissions with their verdicts. 'runs': every "
+            "attempt with its outcome."
+        ),
+    )
+    limit: PageSize = DEFAULT_PAGE_SIZE
+    cursor: _RecordId | None = Field(default=None, description=_CURSOR_DESCRIPTION)
+
+
+class DiagnoseFailuresInput(ToolInput):
+    """The arguments of ``diagnose_failures``. Exactly one of the two ids is given."""
+
+    dataset: DatasetId
+    request_id: _RecordId | None = Field(
+        default=None, description="Diagnose every failed step of this request."
+    )
+    execution_id: _RecordId | None = Field(
+        default=None, description="Diagnose this one attempt."
+    )
+
+
+class PreviewOutputInput(ToolInput):
+    """The arguments of ``preview_output``."""
+
+    dataset: DatasetId
+    ref: str = Field(
+        description=(
+            "'feature/<storage>/<run_id>' or 'tracks-variant/<run_id>', as "
+            "get_inventory names an artifact."
+        )
+    )
+    group: str = Field(description="The entry's group, '' when it has none.")
+    sequence: str = Field(description="The entry's sequence.")
+    columns: list[str] | None = Field(
+        default=None, description="The columns to read, or null for every column."
+    )
+    limit: int = Field(
+        default=DEFAULT_PAGE_SIZE,
+        ge=0,
+        le=MAX_PREVIEW_ROWS,
+        description=f"The rows of the head to return, 0 to {MAX_PREVIEW_ROWS}.",
+    )
+
+
+class DatasetListItem(StrictModel):
+    """One dataset that the server serves.
+
+    Attributes:
+        uuid: The manifest's uuid, which every dataset tool takes.
+        name: The manifest's name.
+        n_sequences: The ``(group, sequence)`` entries whose tracks table exists,
+            as ``describe_dataset`` counts them.
+        api_managed: Whether a service manages the dataset, which refuses the
+            tools that change it.
+    """
+
+    uuid: str
+    name: str
+    n_sequences: int
+    api_managed: bool
+
+
+class DatasetList(StrictModel):
+    """One page of the datasets that the server serves, ordered by name.
+
+    Attributes:
+        items: The page.
+        total: How many datasets the server serves.
+        next_cursor: The cursor of the next page, ``None`` on the last.
+    """
+
+    items: tuple[DatasetListItem, ...]
+    total: int
+    next_cursor: str | None
+
+
+class SequenceRow(StrictModel):
+    """One entry's tracks table, as the tracks index records it.
+
+    Attributes:
+        group: The entry's group, ``""`` when it has none.
+        sequence: The entry's sequence.
+        tracks_variant: The tracks variant of the table, ``""`` for an
+            unlabeled table.
+        producer: What wrote the table: a conversion, a tracker or inference.
+        std_format: The track schema of the table.
+        n_rows: The table's rows, ``None`` when unrecorded.
+        n_keypoints: The keypoints of the table, ``None`` when unrecorded.
+        frame_min: The table's first frame, ``None`` when unrecorded.
+        frame_max: The table's last frame, ``None`` when unrecorded.
+    """
+
+    group: str
+    sequence: str
+    tracks_variant: str
+    producer: str
+    std_format: str
+    n_rows: int | None
+    n_keypoints: int | None
+    frame_min: int | None
+    frame_max: int | None
+
+
+class SequencePage(StrictModel):
+    """One page of a dataset's entries, ordered by group and sequence.
+
+    Attributes:
+        items: The page.
+        total: How many entries the query matches.
+        next_cursor: The cursor of the next page, ``None`` on the last.
+    """
+
+    items: tuple[SequenceRow, ...]
+    total: int
+    next_cursor: str | None
+
+
+class SubmittedStep(StrictModel):
+    """One step of a submitted request.
+
+    Attributes:
+        step: The step's id in the recipe.
+        runs: The feature slug or op kind it runs.
+        execution_id: The attempt the request assigned it.
+        lane: The queue lane of its work.
+        run_id: The run the plan resolved, ``None`` when it could not.
+        status: The plan's status for the step when it was submitted.
+    """
+
+    step: str
+    runs: str
+    execution_id: str
+    lane: str
+    run_id: str | None
+    status: ArtifactStatus
+
+
+class SubmittedPipeline(StrictModel):
+    """A submitted request and the process running it.
+
+    Attributes:
+        request_id: The request, which ``get_request_status`` takes.
+        recipe_digest: The recipe the request names.
+        plan_fingerprint: The fingerprint of the plan it was submitted under.
+        steps: Each step, in topological order.
+        duplicates: The open requests of the same recipe over an overlapping
+            scope.
+        driver_pid: The process driving the request.
+        driver_log: The log that the driver and its steps append to.
+        poll_after_seconds: How long to wait before polling the status.
+    """
+
+    request_id: str
+    recipe_digest: str
+    plan_fingerprint: str
+    steps: tuple[SubmittedStep, ...]
+    duplicates: tuple[str, ...]
+    driver_pid: int
+    driver_log: str
+    poll_after_seconds: int
+
+
+class RunSummary(StrictModel):
+    """One attempt in a listing, as its run-log reports it.
+
+    Attributes:
+        execution_id: The attempt.
+        kind: Its job kind.
+        target: Its run-log target, the storage name for a feature run.
+        run_id: The run it recorded producing, ``""`` before it named one.
+        status: Its run-log status.
+        outcome: ``status``, with ``partial`` for a finished attempt that lost
+            entries.
+        owner: Who started it, ``""`` when unrecorded.
+        created_at: When it was created.
+        started_at: When its process started, ``""`` before.
+        finished_at: When it ended, ``""`` before.
+        entries_failed: How many entities it lost.
+        entries_written: How many entries hold its output.
+        cache_hit: Whether it found its work already done.
+        error: The failure it recorded, ``None`` when none.
+    """
+
+    execution_id: str
+    kind: str
+    target: str
+    run_id: str
+    status: str
+    outcome: AttemptOutcome
+    owner: str
+    created_at: str
+    started_at: str
+    finished_at: str
+    entries_failed: int
+    entries_written: int
+    cache_hit: bool
+    error: RecordedErrorWire | None
+
+
+class ActivityPage(StrictModel):
+    """One page of a dataset's requests or attempts, newest first.
+
+    Attributes:
+        view: Which records the page lists.
+        requests: The requests, under the ``requests`` view.
+        runs: The attempts, under the ``runs`` view.
+        next_cursor: The cursor of the next page, ``None`` on the last.
+    """
+
+    view: ActivityView
+    requests: tuple[RequestSummaryWire, ...] = ()
+    runs: tuple[RunSummary, ...] = ()
+    next_cursor: str | None
+
+
+class AttemptDiagnosis(StrictModel):
+    """One failed or partial attempt, with what it lost and what answers it.
+
+    Attributes:
+        step: The attempt's step in its request, ``""`` outside a request.
+        execution_id: The attempt.
+        outcome: How it stands.
+        error: The failure it recorded, ``None`` when none.
+        entry_errors: The entities it lost with their failure records, ``None``
+            when it lost none.
+        allow_partial_applies: Whether resubmitting with ``allow_partial``
+            answers the failure: a coverage shortfall, or a quarantined entity.
+    """
+
+    step: str
+    execution_id: str
+    outcome: AttemptOutcome
+    error: RecordedErrorWire | None
+    entry_errors: EntryErrorsWire | None
+    allow_partial_applies: bool
+
+
+class FailureDiagnosis(StrictModel):
+    """The failures of one request or one attempt.
+
+    Attributes:
+        request_id: The request diagnosed, ``None`` for one attempt.
+        verdict: The request's verdict, ``None`` for one attempt.
+        attempts: Each attempt that failed or lost entries, in step order.
+    """
+
+    request_id: str | None
+    verdict: RequestVerdict | None
+    attempts: tuple[AttemptDiagnosis, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRef:
+    """A pydantic model named by its module and name, imported on use.
+
+    Attributes:
+        module: The module that defines the model.
+        name: The model's name in the module.
+    """
+
+    module: str
+    name: str
+
+    def resolve(self) -> type[BaseModel]:
+        """Import the module and return the model.
+
+        Raises:
+            TypeError: The name is bound to something other than a pydantic model.
+        """
+        found: object = getattr(importlib.import_module(self.module), self.name)
+        if isinstance(found, type) and issubclass(found, BaseModel):
+            return found
+        msg = f"{self.module}.{self.name} is not a pydantic model"
+        raise TypeError(msg)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolAnnotations:
+    """The hints that a client reads about a tool's effects.
+
+    Attributes:
+        read_only: The tool changes nothing.
+        destructive: A change it makes can lose work.
+        idempotent: A second identical call changes nothing more.
+        open_world: The tool reaches beyond the datasets it serves. False for
+            every shared tool.
+    """
+
+    read_only: bool
+    destructive: bool
+    idempotent: bool
+    open_world: bool = False
+
+
+READ: Final = ToolAnnotations(read_only=True, destructive=False, idempotent=True)
+"""The annotations of a tool that only reads."""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolSpec:
+    """One shared tool, declared once for every server and backend.
+
+    Attributes:
+        name: The tool's name.
+        title: A short name a client displays.
+        description: What the tool does, written for a model.
+        input_model: The model its arguments validate against.
+        output: Its output model, or a reference to one whose module is outside
+            this module's import budget.
+        annotations: Its effects, as hints.
+        confirm_when: The conditions under which it refuses until called with
+            ``confirm: true``. Empty when it never asks.
+    """
+
+    name: ToolName
+    title: str
+    description: str
+    input_model: type[ToolInput]
+    output: type[BaseModel] | ModelRef
+    annotations: ToolAnnotations
+    confirm_when: tuple[ConfirmationCondition, ...] = ()
+
+    @property
+    def needs_confirmation(self) -> bool:
+        """Whether a call may be refused until the user confirms it."""
+        return bool(self.confirm_when)
+
+    def output_model(self) -> type[BaseModel]:
+        """Return the output model, importing its module when it is referenced."""
+        output = self.output
+        return output.resolve() if isinstance(output, ModelRef) else output
+
+
+_PAGING = (
+    " Returns one page. Pass next_cursor back as cursor to read the next, until "
+    "it is null."
+)
+
+TOOLS: Final[tuple[ToolSpec, ...]] = (
+    ToolSpec(
+        name="list_datasets",
+        title="List datasets",
+        description=(
+            "List the mosaic datasets this server serves, each with the uuid that "
+            "every other dataset tool takes, its name and its number of sequences."
+            + _PAGING
+        ),
+        input_model=ListDatasetsInput,
+        output=DatasetList,
+        annotations=READ,
+    ),
+    ToolSpec(
+        name="describe_dataset",
+        title="Describe a dataset",
+        description=(
+            "Describe one dataset: its manifest fields, notes and tags, the counts "
+            "of sequences, videos, tracks variants, feature runs and trained models, "
+            "the track schemas of its tables and the frame rates of its videos."
+        ),
+        input_model=DescribeDatasetInput,
+        output=ModelRef("mosaic.core.dataset_summary", "DatasetSummary"),
+        annotations=READ,
+    ),
+    ToolSpec(
+        name="list_sequences",
+        title="List sequences",
+        description=(
+            "List a dataset's entries, (group, sequence), with the tracks table "
+            "each resolves to: its variant, producer, schema, rows, keypoints and "
+            "frame extent." + _PAGING
+        ),
+        input_model=ListSequencesInput,
+        output=SequencePage,
+        annotations=READ,
+    ),
+    ToolSpec(
+        name="get_inventory",
+        title="Get the inventory",
+        description=(
+            "Report what a dataset holds: each computed artifact with its kind, "
+            "status, coverage and recorded params. By default only artifacts that "
+            "are not complete are listed. Pass a listed ref to report one artifact "
+            "in depth." + _PAGING
+        ),
+        input_model=GetInventoryInput,
+        output=ModelRef("mosaic.core.pipeline.inventory", "InventoryWire"),
+        annotations=READ,
+    ),
+    ToolSpec(
+        name="search_step_types",
+        title="Search step types",
+        description=(
+            "Search the features and ops a recipe may run, by words in their name, "
+            "summary or category. Each result names its lane, the columns it reads "
+            "and writes, what this installation lacks to run it and any license "
+            "restriction. describe_step_type gives one in full." + _PAGING
+        ),
+        input_model=SearchStepTypesInput,
+        output=ModelRef("mosaic.agent.mcp.outputs", "StepTypePage"),
+        annotations=READ,
+    ),
+    ToolSpec(
+        name="describe_step_type",
+        title="Describe a step type",
+        description=(
+            "Describe one feature or op in full: its params JSON Schema with each "
+            "field's meaning, the params fields that take a step reference, the "
+            "columns it reads and writes, and what it consumes and produces."
+        ),
+        input_model=DescribeStepTypeInput,
+        output=ModelRef("mosaic.core.pipeline.graph", "CatalogEntry"),
+        annotations=READ,
+    ),
+    ToolSpec(
+        name="validate_recipe",
+        title="Validate a recipe",
+        description=(
+            "Check a recipe against the step types, without a dataset. Returns "
+            "every problem and caution with the step and field it is at. A recipe "
+            "that is not valid is reported, not refused."
+        ),
+        input_model=ValidateRecipeInput,
+        output=ModelRef("mosaic.core.pipeline.graph", "ValidationReport"),
+        annotations=READ,
+    ),
+    ToolSpec(
+        name="suggest_steps",
+        title="Suggest steps",
+        description=(
+            "Suggest what may be added to a recipe: step types to attach below a "
+            "step, step types to insert above a step's readers, or inputs to add "
+            "to a step. Each allowed step type comes with the step to add, "
+            "complete but for its id. Refused ones are only counted."
+        ),
+        input_model=SuggestStepsInput,
+        output=ModelRef("mosaic.agent.mcp.outputs", "StepSuggestions"),
+        annotations=READ,
+    ),
+    ToolSpec(
+        name="plan_recipe",
+        title="Plan a recipe",
+        description=(
+            "Resolve a recipe against a dataset without running it: each step's "
+            "run id, status, coverage, entries asked, lane and why it waits, the "
+            "problems that refuse it, and the plan fingerprint that submit_pipeline "
+            "requires. Show the user the plan before submitting."
+        ),
+        input_model=PlanRecipeInput,
+        output=ModelRef("mosaic.core.pipeline.graph", "PlanWire"),
+        annotations=READ,
+    ),
+    ToolSpec(
+        name="submit_pipeline",
+        title="Submit a pipeline",
+        description=(
+            "Submit a planned recipe and start running it in the background. "
+            "Requires the fingerprint of a current plan_recipe result. Returns the "
+            "request id and how long to wait before polling get_request_status. "
+            "Refused with reason confirmation_required when the work is costly or "
+            "a choice is the user's. Ask the user, then call again with confirm "
+            "true. Do not set confirm without the user's agreement."
+        ),
+        input_model=SubmitPipelineInput,
+        output=SubmittedPipeline,
+        annotations=ToolAnnotations(
+            read_only=False, destructive=False, idempotent=False
+        ),
+        confirm_when=(
+            "gpu_lane",
+            "training_op",
+            "tracking_op",
+            "allow_partial",
+            "bind",
+            "large_scope",
+            "whole_dataset",
+            "open_duplicate",
+        ),
+    ),
+    ToolSpec(
+        name="get_request_status",
+        title="Get a request's status",
+        description=(
+            "Report how far a submitted request got: its verdict, and per step the "
+            "outcome, progress, recorded error and a sample of lost entries. A "
+            "request reads 'orphaned' when its driver stopped. The user resumes it "
+            "with mosaic pipeline run --manifest <manifest> --request "
+            "<request_id>, where <manifest> is the path describe_dataset reports."
+        ),
+        input_model=GetRequestStatusInput,
+        output=RequestStatusWire,
+        annotations=READ,
+    ),
+    ToolSpec(
+        name="cancel_request",
+        title="Cancel a request",
+        description=(
+            "Cancel a request that has not ended. Its running step is stopped and "
+            "its unstarted steps are recorded cancelled. Refused with reason "
+            "confirmation_required when a running step loses its work. Ask the "
+            "user, then call again with confirm true."
+        ),
+        input_model=CancelRequestInput,
+        output=RequestCancel,
+        annotations=ToolAnnotations(read_only=False, destructive=True, idempotent=True),
+        confirm_when=("hard_cancel",),
+    ),
+    ToolSpec(
+        name="list_activity",
+        title="List activity",
+        description=(
+            "List a dataset's pipeline requests with their verdicts, or every "
+            "attempt with its outcome, newest first." + _PAGING
+        ),
+        input_model=ListActivityInput,
+        output=ActivityPage,
+        annotations=READ,
+    ),
+    ToolSpec(
+        name="diagnose_failures",
+        title="Diagnose failures",
+        description=(
+            "Explain why a request or an attempt failed: each failed attempt's "
+            "error and refusal, the entities it lost with their attempts, backoff "
+            "and quarantine, and whether resubmitting with allow_partial answers "
+            "it. The tool changes nothing. Propose the remedies to the user."
+        ),
+        input_model=DiagnoseFailuresInput,
+        output=FailureDiagnosis,
+        annotations=READ,
+    ),
+    ToolSpec(
+        name="preview_output",
+        title="Preview an output",
+        description=(
+            "Preview one entry's table of a feature run or a tracks variant: its "
+            "columns with per-column statistics, its row count and frame extent, "
+            "the first rows, and the path of the whole file."
+        ),
+        input_model=PreviewOutputInput,
+        output=ModelRef("mosaic.core.pipeline.preview", "ArtifactPreview"),
+        annotations=READ,
+    ),
+)
+"""The shared tools, in the order a server lists them."""
+
+_BY_NAME: Final[Mapping[str, ToolSpec]] = {spec.name: spec for spec in TOOLS}
+
+
+def tool_spec(name: str) -> ToolSpec | None:
+    """Return the shared tool named *name*, ``None`` when the set has none."""
+    return _BY_NAME.get(name)
+
+
+type ToolResult[T: BaseModel] = T | ErrorEnvelope
+"""What a backend returns for a call: the tool's output, or why it failed."""
+
+
+class ToolBackend(Protocol):
+    """What answers the shared tools: one method per tool, named for it.
+
+    Each method takes the tool's validated input and returns its output model or
+    an :class:`ErrorEnvelope`. A method raises only for a fault of the backend.
+    """
+
+    def list_datasets(self, args: ListDatasetsInput) -> ToolResult[DatasetList]:
+        """Answer ``list_datasets``."""
+        ...
+
+    def describe_dataset(
+        self, args: DescribeDatasetInput
+    ) -> ToolResult[DatasetSummary]:
+        """Answer ``describe_dataset``."""
+        ...
+
+    def list_sequences(self, args: ListSequencesInput) -> ToolResult[SequencePage]:
+        """Answer ``list_sequences``."""
+        ...
+
+    def get_inventory(self, args: GetInventoryInput) -> ToolResult[InventoryWire]:
+        """Answer ``get_inventory``."""
+        ...
+
+    def search_step_types(self, args: SearchStepTypesInput) -> ToolResult[StepTypePage]:
+        """Answer ``search_step_types``."""
+        ...
+
+    def describe_step_type(
+        self, args: DescribeStepTypeInput
+    ) -> ToolResult[CatalogEntry]:
+        """Answer ``describe_step_type``."""
+        ...
+
+    def validate_recipe(
+        self, args: ValidateRecipeInput
+    ) -> ToolResult[ValidationReport]:
+        """Answer ``validate_recipe``."""
+        ...
+
+    def suggest_steps(self, args: SuggestStepsInput) -> ToolResult[StepSuggestions]:
+        """Answer ``suggest_steps``."""
+        ...
+
+    def plan_recipe(self, args: PlanRecipeInput) -> ToolResult[PlanWire]:
+        """Answer ``plan_recipe``."""
+        ...
+
+    def submit_pipeline(
+        self, args: SubmitPipelineInput
+    ) -> ToolResult[SubmittedPipeline]:
+        """Answer ``submit_pipeline``."""
+        ...
+
+    def get_request_status(
+        self, args: GetRequestStatusInput
+    ) -> ToolResult[RequestStatusWire]:
+        """Answer ``get_request_status``."""
+        ...
+
+    def cancel_request(self, args: CancelRequestInput) -> ToolResult[RequestCancel]:
+        """Answer ``cancel_request``."""
+        ...
+
+    def list_activity(self, args: ListActivityInput) -> ToolResult[ActivityPage]:
+        """Answer ``list_activity``."""
+        ...
+
+    def diagnose_failures(
+        self, args: DiagnoseFailuresInput
+    ) -> ToolResult[FailureDiagnosis]:
+        """Answer ``diagnose_failures``."""
+        ...
+
+    def preview_output(self, args: PreviewOutputInput) -> ToolResult[ArtifactPreview]:
+        """Answer ``preview_output``."""
+        ...
+
+
+def call_tool(
+    backend: ToolBackend, name: str, arguments: Mapping[str, object]
+) -> BaseModel:
+    """Validate *arguments* for the tool *name* and answer it through *backend*.
+
+    Args:
+        backend: What answers the tool.
+        name: The tool's name.
+        arguments: The call's arguments, as a client sent them.
+
+    Returns:
+        The tool's output, or an :class:`ErrorEnvelope`: ``not_found`` for an
+        unknown tool, ``invalid`` for arguments the input model refuses, or the
+        backend's own.
+    """
+    spec = tool_spec(name)
+    if spec is None:
+        return ErrorEnvelope(
+            kind="not_found",
+            reason=UNKNOWN_TOOL,
+            message=f"no tool named {name!r}",
+            detail={"tool": name},
+        )
+    try:
+        request = spec.input_model.model_validate(dict(arguments))
+    except ValidationError as error:
+        return _invalid_arguments(spec.name, error)
+    return _dispatch(backend, request)
+
+
+def _dispatch(backend: ToolBackend, request: ToolInput) -> BaseModel:
+    """Call the method of *backend* that answers *request*'s tool."""
+    match request:
+        case ListDatasetsInput():
+            return backend.list_datasets(request)
+        case DescribeDatasetInput():
+            return backend.describe_dataset(request)
+        case ListSequencesInput():
+            return backend.list_sequences(request)
+        case GetInventoryInput():
+            return backend.get_inventory(request)
+        case SearchStepTypesInput():
+            return backend.search_step_types(request)
+        case DescribeStepTypeInput():
+            return backend.describe_step_type(request)
+        case ValidateRecipeInput():
+            return backend.validate_recipe(request)
+        case SuggestStepsInput():
+            return backend.suggest_steps(request)
+        case PlanRecipeInput():
+            return backend.plan_recipe(request)
+        case SubmitPipelineInput():
+            return backend.submit_pipeline(request)
+        case GetRequestStatusInput():
+            return backend.get_request_status(request)
+        case CancelRequestInput():
+            return backend.cancel_request(request)
+        case ListActivityInput():
+            return backend.list_activity(request)
+        case DiagnoseFailuresInput():
+            return backend.diagnose_failures(request)
+        case PreviewOutputInput():
+            return backend.preview_output(request)
+        case _:
+            msg = f"no tool takes {type(request).__name__}"
+            raise TypeError(msg)
+
+
+def _invalid_arguments(name: ToolName, error: ValidationError) -> ErrorEnvelope:
+    """Report the arguments of a call to *name* that its input model refuses."""
+    errors: list[JsonValue] = [
+        {
+            "field": ".".join(str(part) for part in item["loc"]),
+            "message": item["msg"],
+        }
+        for item in error.errors(include_url=False)
+    ]
+    message = (
+        f"the arguments of {name} do not fit its input: "
+        f"{error.error_count()} problem(s)"
+    )
+    return ErrorEnvelope(
+        kind="invalid",
+        reason=INVALID_ARGUMENTS,
+        message=message,
+        detail={"tool": name, "errors": errors},
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmationFinding:
+    """One confirmation condition that a call meets, and where.
+
+    Attributes:
+        condition: The condition.
+        message: What in the call meets it, naming the step or the count.
+    """
+
+    condition: ConfirmationCondition
+    message: str
+
+
+def confirmation_required(
+    name: ToolName, findings: Sequence[ConfirmationFinding]
+) -> ErrorEnvelope:
+    """Refuse a call to *name* until the user confirms *findings*.
+
+    Args:
+        name: The tool refused.
+        findings: Each condition the call meets, at least one.
+
+    Returns:
+        An ``invalid`` envelope with reason :data:`CONFIRMATION_REQUIRED`, whose
+        detail lists each condition and what meets it.
+    """
+    conditions: list[JsonValue] = [finding.condition for finding in findings]
+    listed: list[JsonValue] = [
+        {
+            "condition": finding.condition,
+            "meaning": CONFIRMATION_CONDITIONS[finding.condition],
+            "message": finding.message,
+        }
+        for finding in findings
+    ]
+    sentences = "; ".join(finding.message for finding in findings)
+    message = (
+        f"{name} needs the user's confirmation: {sentences}. Ask the user, and "
+        "call again with confirm true if they agree."
+    )
+    return ErrorEnvelope(
+        kind="invalid",
+        reason=CONFIRMATION_REQUIRED,
+        message=message,
+        detail={"tool": name, "conditions": conditions, "findings": listed},
+    )
+
+
+def dataset_managed(
+    name: ToolName, dataset: str, managed_by: JsonValue
+) -> ErrorEnvelope:
+    """Refuse a call to *name* that would change a dataset a service manages."""
+    message = (
+        f"dataset {dataset} is managed by {managed_by!r}, and {name} would change "
+        "it. Make the change through the managing service."
+    )
+    return ErrorEnvelope(
+        kind="unavailable",
+        reason=DATASET_MANAGED,
+        message=message,
+        detail={"tool": name, "dataset": dataset, "managed_by": managed_by},
+    )
+
+
+def unknown_dataset(dataset: str) -> ErrorEnvelope:
+    """Report a call naming a dataset that the server does not serve."""
+    message = (
+        f"this server serves no dataset {dataset!r}; list_datasets names the "
+        "datasets it serves"
+    )
+    return ErrorEnvelope(
+        kind="not_found",
+        reason=UNKNOWN_DATASET,
+        message=message,
+        detail={"dataset": dataset},
+    )
+
+
+def invalid_cursor(cursor: str) -> ErrorEnvelope:
+    """Report a listing given a cursor that no page of it returned."""
+    return ErrorEnvelope(
+        kind="invalid",
+        reason=INVALID_CURSOR,
+        message=f"cursor {cursor!r} was not returned by this listing",
+        detail={"field": "cursor"},
+    )

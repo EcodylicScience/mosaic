@@ -226,6 +226,7 @@ if TYPE_CHECKING:
     )
     from .storage import storage_name_of as storage_name_of
     from .store import (
+        RequestUnreadable as RequestUnreadable,
         list_requests as list_requests,
         load_recipe as load_recipe,
         load_request as load_request,
@@ -449,6 +450,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "execute_step": ".step",
     "record_step_ended": ".step",
     "storage_name_of": ".storage",
+    "RequestUnreadable": ".store",
     "list_requests": ".store",
     "load_recipe": ".store",
     "load_request": ".store",
@@ -612,6 +614,7 @@ __all__ = [
     "RequestStatus",
     "RequestStatusWire",
     "RequestSummaryWire",
+    "RequestUnreadable",
     "RequestVerdict",
     "ResolvedStep",
     "RetryState",

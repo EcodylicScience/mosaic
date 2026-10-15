@@ -99,6 +99,7 @@ __all__ = [
     "backfill_media_frames",
     "consumed_composition_for",
     "consumed_roots_for",
+    "count_cell",
     "encode_source_roots",
     "FrameAxisFindings",
     "FrameAxisMismatch",
@@ -937,7 +938,7 @@ def read_media_frames(row: CellRow) -> int | None:
     reason. ``None`` covers a legacy row, a producer that did not ask the
     question, and a value that will not parse.
     """
-    return _count_cell(row.get(_MEDIA_FRAMES))
+    return count_cell(row.get(_MEDIA_FRAMES))
 
 
 def read_frames_read(row: CellRow) -> int | None:
@@ -947,7 +948,7 @@ def read_frames_read(row: CellRow) -> int | None:
     ``None`` covers a legacy row, a producer that cannot know the count, and a
     value that will not parse.
     """
-    return _count_cell(row.get(_FRAMES_READ))
+    return count_cell(row.get(_FRAMES_READ))
 
 
 def read_known_tail_loss(row: CellRow) -> int | None:
@@ -957,10 +958,10 @@ def read_known_tail_loss(row: CellRow) -> int | None:
     ``None`` covers a legacy row, a producer that declares no loss, a file whose
     header was not read, and a value that will not parse.
     """
-    return _count_cell(row.get(_KNOWN_TAIL_LOSS))
+    return count_cell(row.get(_KNOWN_TAIL_LOSS))
 
 
-def _count_cell(value: object) -> int | None:
+def count_cell(value: object) -> int | None:
     """Parse the count in one cell, or ``None`` for a blank or bad one."""
     raw = text_cell(value)
     if not raw:
@@ -1426,7 +1427,7 @@ def _backfill_cell(
                 cleared.append(position)
                 df.at[position, column] = ""
                 continue
-            if _count_cell(held) == value.count:
+            if count_cell(held) == value.count:
                 continue
             written.append(position)
             df.at[position, column] = str(value.count)

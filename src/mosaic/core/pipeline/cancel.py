@@ -55,6 +55,7 @@ __all__ = [
     "RequestNotFound",
     "cancel_attempt",
     "cancel_request",
+    "read_request",
 ]
 
 type CancelOutcome = Literal["signalled", "recorded", "ended", "other_host"]
@@ -286,11 +287,13 @@ def cancel_request(ds: Dataset, request_id: str) -> RequestCancel:
 
     Raises:
         RequestNotFound: The request file is absent.
+        RequestUnreadable: The request file is not valid JSON or not a valid
+            request.
         CannotSignal: A running step's run-log records a pid of 0, or this
             process may not signal the driver or a step. A step refused before
             any is signalled leaves the request as it was.
     """
-    request = _load(ds.base_dir, request_id)
+    request = read_request(ds.base_dir, request_id)
     rollup = request_rollup(ds.base_dir, request)
     if rollup.is_terminal:
         return RequestCancel(
@@ -359,8 +362,13 @@ def cancel_request(ds: Dataset, request_id: str) -> RequestCancel:
     )
 
 
-def _load(base_dir: Path, request_id: str) -> Request:
-    """Read a request file, raising :class:`RequestNotFound` when it is absent."""
+def read_request(base_dir: Path, request_id: str) -> Request:
+    """Read the request *request_id* of the dataset at *base_dir*.
+
+    Raises:
+        RequestNotFound: The dataset holds no such request.
+        RequestUnreadable: Its file is not valid JSON or not a valid request.
+    """
     try:
         return load_request(base_dir, request_id)
     except FileNotFoundError as missing:

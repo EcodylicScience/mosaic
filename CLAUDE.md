@@ -110,6 +110,10 @@ an unmarked slow test goes green on push.
 only through files on disk. The deprecated `behavior.tracking` alias in
 `behavior/__init__.py` is the one exception. No test checks this rule.
 
+`mosaic.agent` is an adapter beside `mosaic.cli`. It may import `core`, `behavior` and
+`tracking`, and no module under those three imports it
+(`tests/meta/test_agent_layering.py`).
+
 `core` imports upward only inside functions, at the sites below. Any other upward
 import is a layering break.
 
@@ -134,6 +138,7 @@ importing `mosaic.tracking` registers neither.
 ```
 src/mosaic/
   cli/                          every `mosaic` verb (Typer)
+  agent/                        the guide for users' agents; `agent/mcp/` the MCP tools
   runlog.py                     append-only JSONL run-log; stdlib-only leaf
   lazy_exports.py               the body of a package `__getattr__`; stdlib-only leaf
   core/                         Dataset, manifest, schema, Params, Scope, converters

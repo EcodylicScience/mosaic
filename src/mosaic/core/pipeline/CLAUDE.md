@@ -147,6 +147,9 @@ pipeline graph are in `graph/CLAUDE.md`.
 - `classify` (`inventory/model.py`) is the one place a status is decided. Files ahead
   of index rows are damage only on a finished run
   (`tests/core/pipeline/inventory/test_inventory_model.py`).
+- `ArtifactKind` and `ArtifactStatus` are defined in `artifact_kinds.py`, which
+  imports the standard library only, and the inventory re-exports them. A caller
+  that declares a field over them loads no pandas.
 - Coverage is the set of keys that exist, and the key type differs by kind (the
   `DatasetInventory.coverage` overloads). A kind nobody registered is listed in
   `unavailable_kinds`.

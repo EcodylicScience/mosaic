@@ -23,8 +23,9 @@ import json
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
+from ..error_kind import ClassifiedError, ErrorKind
 from ..index_lock import index_lock
 from .digest import recipe_digest
 from .model import Recipe, Request
@@ -34,9 +35,11 @@ from .status import JSON_OBJECT, RequestPageWire, request_summary, request_verdi
 if TYPE_CHECKING:
     from collections.abc import Generator
 
+    from mosaic.core.json_value import JsonValue
     from mosaic.core.scope import Scope
 
 __all__ = [
+    "RequestUnreadable",
     "list_requests",
     "load_recipe",
     "load_request",
@@ -49,6 +52,30 @@ __all__ = [
     "save_request",
     "submission_lock",
 ]
+
+
+class RequestUnreadable(ClassifiedError, ValueError):
+    """A request file that is not valid JSON or not a valid request.
+
+    Attributes:
+        request_id: The request read.
+        path: The request file.
+    """
+
+    error_kind: ClassVar[ErrorKind] = "unavailable"
+
+    def __init__(self, request_id: str, path: Path, problem: str) -> None:
+        super().__init__(f"request file {path} does not read as a request: {problem}")
+        self.request_id: str = request_id
+        self.path: Path = path
+
+    def error_reason(self) -> str:
+        """Return ``request_unreadable``."""
+        return "request_unreadable"
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the request and its file."""
+        return {"request_id": self.request_id, "path": str(self.path)}
 
 
 def pipelines_root(base_dir: Path | str) -> Path:
@@ -106,9 +133,17 @@ def save_request(base_dir: Path | str, request: Request) -> Path:
 
 
 def load_request(base_dir: Path | str, request_id: str) -> Request:
-    """Read one submission's request file."""
+    """Read one submission's request file.
+
+    Raises:
+        FileNotFoundError: There is no request file *request_id*.
+        RequestUnreadable: The file is not valid JSON or not a valid request.
+    """
     path = request_path(base_dir, request_id)
-    return Request.model_validate(_read_json(path, "request"))
+    try:
+        return Request.model_validate(_read_json(path, "request"))
+    except ValueError as error:
+        raise RequestUnreadable(request_id, path, str(error)) from error
 
 
 def list_requests(
@@ -132,8 +167,9 @@ def list_requests(
         The page, and the ``after`` of the next page while unread requests remain.
 
     Raises:
-        ValueError: *limit* is below 1, or a request file on the page is not valid
-            JSON or not a valid request.
+        ValueError: *limit* is below 1.
+        RequestUnreadable: A request file on the page is not valid JSON or not a
+            valid request.
     """
     if limit is not None and limit < 1:
         raise ValueError(f"limit must be at least 1, got {limit}")

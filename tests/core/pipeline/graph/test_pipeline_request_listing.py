@@ -8,6 +8,7 @@ import pytest
 
 from mosaic.core.pipeline.graph import (
     Request,
+    RequestUnreadable,
     list_requests,
     request_path,
     save_request,
@@ -154,3 +155,18 @@ def test_a_temporary_file_beside_the_requests_is_not_listed(requests: Path) -> N
     temporary.write_text("{")
 
     assert _ids(requests, limit=1, after=None) == ["01E"]
+
+
+def test_a_damaged_request_file_on_the_page_is_reported_by_name(
+    requests: Path,
+) -> None:
+    damaged = request_path(requests, "01Z")
+    _ = damaged.write_text('{"bad": 1}')
+
+    with pytest.raises(RequestUnreadable) as raised:
+        _ = list_requests(requests, limit=1)
+
+    assert raised.value.error_detail() == {
+        "request_id": "01Z",
+        "path": str(damaged),
+    }
