@@ -163,6 +163,12 @@ lightning-action = ["lightning-action>=1.0"]
 # and point it at the same datasets.
 feral = ["feral>=1.0,<2"]
 
+# The MCP SDK behind `mosaic agent serve`, the server an MCP client such as
+# Claude Code starts. Outside `all`: an analysis environment does not need it,
+# and it brings an HTTP server stack. The cap holds the server to the 2.x API,
+# which the 2.0 release renamed and a 3.0 release is free to change again.
+mcp = ["mcp>=2.3,<3"]
+
 # The documented install: everything that belongs in one general-purpose
 # environment. Self-referential rather than a copied list, so it cannot drift
 # from its parts -- which is what `recommended` was one careless edit away from

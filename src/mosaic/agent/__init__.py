@@ -4,24 +4,32 @@ The guide is ``SKILL.md`` in this package, shipped as package data. An agent
 reads it from the installed mosaic, and nothing copies it into a project.
 :func:`install_agent_files` writes a stub skill and a short pointer that both
 tell the agent to run ``mosaic agent guide``, which prints :func:`guide_text`
-and :func:`find_installation`'s paths.
+and :func:`find_installation`'s paths. Given the datasets to serve, it also
+registers ``mosaic agent serve`` as an MCP server in a project's ``.mcp.json``,
+the project configuration that Claude Code reads.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import sys
 import sysconfig
+from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
 from typing import Final, Literal
 
+from mosaic.core.json_value import JsonValue
+
 __all__ = [
     "AGENT_FILES",
     "BLOCK_BEGIN",
     "BLOCK_END",
+    "MCP_CONFIG",
+    "MCP_SERVER_NAME",
     "SITE_URL",
     "SKILL_DIRECTORY",
     "AgentFileWrite",
@@ -30,8 +38,10 @@ __all__ = [
     "find_installation",
     "guide_text",
     "install_agent_files",
+    "mcp_server_entry",
     "pointer_block",
     "skill_stub",
+    "with_mcp_server",
     "with_pointer_block",
 ]
 
@@ -52,6 +62,12 @@ BLOCK_BEGIN: Final = "<!-- mosaic-agent-guide:begin -->"
 
 BLOCK_END: Final = "<!-- mosaic-agent-guide:end -->"
 """The line closing the pointer block in an agent memory file."""
+
+MCP_CONFIG: Final = ".mcp.json"
+"""The project's MCP server configuration, relative to the project directory."""
+
+MCP_SERVER_NAME: Final = "mosaic"
+"""The name under which ``.mcp.json`` lists mosaic's server."""
 
 _BLOCK_PATTERN: Final = re.compile(
     re.escape(BLOCK_BEGIN) + r".*?" + re.escape(BLOCK_END), re.DOTALL
@@ -90,16 +106,29 @@ class Installation:
     manifest: Path | None
 
     @property
+    def mosaic_command(self) -> tuple[str, ...]:
+        """The arguments that run this installation's ``mosaic``.
+
+        The executable when it was found, else :attr:`interpreter_command`.
+        """
+        if self.executable is not None:
+            return (str(self.executable),)
+        return self.interpreter_command
+
+    @property
+    def interpreter_command(self) -> tuple[str, ...]:
+        """The arguments that run ``mosaic`` through the interpreter, without a script."""
+        return (str(self.interpreter), "-m", "mosaic")
+
+    @property
     def guide_command(self) -> str:
         """The shell command that prints the guide for this installation."""
-        if self.executable is not None:
-            return shlex.join([str(self.executable), "agent", "guide"])
-        return self.fallback_command
+        return shlex.join([*self.mosaic_command, "agent", "guide"])
 
     @property
     def fallback_command(self) -> str:
         """The same command through the interpreter, which needs no script."""
-        return shlex.join([str(self.interpreter), "-m", "mosaic", "agent", "guide"])
+        return shlex.join([*self.interpreter_command, "agent", "guide"])
 
 
 def find_installation(working_directory: Path) -> Installation:
@@ -261,41 +290,107 @@ class AgentFileWrite:
 
 
 def install_agent_files(
-    directory: Path, installation: Installation, *, memory: bool
+    directory: Path,
+    installation: Installation,
+    *,
+    memory: bool,
+    mcp_datasets: Sequence[Path] | None = None,
 ) -> list[AgentFileWrite]:
     """Point the agents working in *directory* at the mosaic guide.
 
     Writes the stub skill to ``<directory>/.claude/skills/mosaic/SKILL.md``. With
     *memory*, puts the pointer block in every agent memory file in *directory*,
-    creating ``CLAUDE.md`` when none exists. A second call replaces what the
-    first wrote and adds nothing beside it.
+    creating ``CLAUDE.md`` when none exists. With *mcp_datasets*, sets mosaic's
+    server entry of ``.mcp.json`` (:func:`with_mcp_server`). A second call
+    replaces what the first wrote and adds nothing beside it. Every file is read
+    and checked before any is written, so a refusal writes nothing.
 
     Args:
         directory: The project directory. It must exist.
         installation: The mosaic the files point at.
         memory: Whether to write the pointer block.
+        mcp_datasets: The manifests, or the directories that hold them, that the
+            MCP server serves. ``None`` leaves ``.mcp.json`` alone.
 
     Returns:
-        Every file written or checked, the skill first.
+        Every file written or checked, the skill first and ``.mcp.json`` last.
 
     Raises:
         NotADirectoryError: If *directory* is not an existing directory.
-        ValueError: If an agent memory file opens a block that it never closes.
+        ValueError: If an agent memory file opens a block that it never closes,
+            or ``.mcp.json`` is not JSON or not an object of servers.
     """
     if not directory.is_dir():
         raise NotADirectoryError(directory)
     skill_path = directory / SKILL_DIRECTORY / "SKILL.md"
+    contents = [(skill_path, skill_stub(installation))]
+    if memory:
+        present = [
+            directory / name for name in AGENT_FILES if (directory / name).is_file()
+        ]
+        block = pointer_block(installation)
+        contents += [
+            (target, with_pointer_block(_read(target), block))
+            for target in present or [directory / AGENT_FILES[0]]
+        ]
+    if mcp_datasets is not None:
+        config = directory / MCP_CONFIG
+        entry = mcp_server_entry(installation, mcp_datasets)
+        contents.append((config, with_mcp_server(_read(config), entry)))
     skill_path.parent.mkdir(parents=True, exist_ok=True)
-    written = [_write(skill_path, skill_stub(installation))]
-    if not memory:
-        return written
-    present = [directory / name for name in AGENT_FILES if (directory / name).is_file()]
-    targets = present or [directory / AGENT_FILES[0]]
-    block = pointer_block(installation)
-    for target in targets:
-        current = target.read_text(encoding="utf-8") if target.exists() else ""
-        written.append(_write(target, with_pointer_block(current, block)))
-    return written
+    return [_write(path, text) for path, text in contents]
+
+
+def mcp_server_entry(
+    installation: Installation, datasets: Sequence[Path]
+) -> dict[str, JsonValue]:
+    """The ``.mcp.json`` entry that starts ``mosaic agent serve`` over *datasets*.
+
+    Args:
+        installation: The mosaic whose server the entry starts.
+        datasets: The manifests, or the directories that hold them, to serve.
+            Each is written as given, so pass absolute paths.
+
+    Returns:
+        A stdio server entry: its ``type``, ``command`` and ``args``.
+    """
+    command, *leading = installation.mosaic_command
+    arguments: list[JsonValue] = [*leading, "agent", "serve"]
+    for dataset in datasets:
+        arguments += ["--dataset", str(dataset)]
+    return {"type": "stdio", "command": command, "args": arguments}
+
+
+def with_mcp_server(text: str, entry: dict[str, JsonValue]) -> str:
+    """*text*, a ``.mcp.json`` document, with mosaic's server set to *entry*.
+
+    Every other key and server is kept. An empty *text* starts a new document.
+
+    Args:
+        text: The current contents of ``.mcp.json``.
+        entry: The server entry, as :func:`mcp_server_entry` returns it.
+
+    Returns:
+        The new contents, indented JSON ending in a newline.
+
+    Raises:
+        ValueError: *text* is not a JSON object, or its ``mcpServers`` is not one.
+    """
+    configured: JsonValue = json.loads(text) if text.strip() else {}
+    if not isinstance(configured, dict):
+        msg = f"{MCP_CONFIG} does not hold a JSON object"
+        raise ValueError(msg)
+    servers = configured.get("mcpServers", {})
+    if not isinstance(servers, dict):
+        msg = f"mcpServers in {MCP_CONFIG} is not a JSON object"
+        raise ValueError(msg)
+    configured["mcpServers"] = {**servers, MCP_SERVER_NAME: entry}
+    return json.dumps(configured, indent=2) + "\n"
+
+
+def _read(path: Path) -> str:
+    """The text of *path*, empty when it does not exist."""
+    return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
 def _write(path: Path, text: str) -> AgentFileWrite:

@@ -38,6 +38,7 @@ from pathlib import Path
 from tests.helpers import (
     CI_FERAL_MODULES,
     CI_IDENTITY_MODULES,
+    CI_MCP_MODULES,
     CI_REQUIRED_MODULES,
     REPO_ROOT,
     TESTS_ROOT,
@@ -130,7 +131,12 @@ def _ci_modules() -> set[str]:
     Without one, such a guard fails the audit below, which is the right answer.
     ``tests/conftest.py`` holds that job to its real requirement directly.
     """
-    return set(CI_REQUIRED_MODULES) | set(CI_IDENTITY_MODULES) | set(CI_FERAL_MODULES)
+    return (
+        set(CI_REQUIRED_MODULES)
+        | set(CI_IDENTITY_MODULES)
+        | set(CI_FERAL_MODULES)
+        | set(CI_MCP_MODULES)
+    )
 
 
 def _core_import_names() -> set[str]:

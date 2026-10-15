@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -13,12 +14,15 @@ from typer.testing import CliRunner
 from mosaic.agent import (
     BLOCK_BEGIN,
     BLOCK_END,
+    MCP_CONFIG,
     SKILL_DIRECTORY,
     Installation,
     guide_text,
     skill_stub,
 )
 from mosaic.cli import app
+from mosaic.core.json_value import JsonValue
+from tests.helpers import make_dataset
 
 runner = CliRunner()
 
@@ -183,3 +187,104 @@ class TestInstall:
         assert result.exit_code != 0
         assert "Directory not found" in result.output
         assert not missing.exists()
+
+
+def mcp_servers(directory: Path) -> dict[str, dict[str, object]]:
+    """The ``mcpServers`` object of *directory*'s ``.mcp.json``."""
+    document: dict[str, dict[str, dict[str, object]]] = json.loads(
+        (directory / MCP_CONFIG).read_text(encoding="utf-8")
+    )
+    return document["mcpServers"]
+
+
+class TestInstallMcp:
+    def test_it_registers_the_server_over_the_datasets_below(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = make_dataset(tmp_path / "study", name="study")
+        result = runner.invoke(app, ["agent", "install", str(tmp_path), "--mcp"])
+        assert result.exit_code == 0, result.output
+        entry = mcp_servers(tmp_path)["mosaic"]
+        assert entry["type"] == "stdio"
+        assert isinstance(entry["command"], str) and entry["command"]
+        args = entry["args"]
+        assert isinstance(args, list)
+        assert args[-4:] == [
+            "agent",
+            "serve",
+            "--dataset",
+            str(dataset.manifest_path.resolve()),
+        ]
+        assert (
+            str(tmp_path.resolve() / MCP_CONFIG) in result.output.split("To remove")[1]
+        )
+
+    def test_it_keeps_the_other_servers_and_replaces_its_own(
+        self, tmp_path: Path
+    ) -> None:
+        other: dict[str, JsonValue] = {"command": "other-server", "args": []}
+        existing: JsonValue = {
+            "mcpServers": {"other": other, "mosaic": {"command": "old"}}
+        }
+        _ = (tmp_path / MCP_CONFIG).write_text(json.dumps(existing), encoding="utf-8")
+        named = tmp_path / "named"
+        result = runner.invoke(
+            app,
+            ["agent", "install", str(tmp_path), "--mcp", "--dataset", str(named)],
+        )
+        assert result.exit_code == 0, result.output
+        servers = mcp_servers(tmp_path)
+        assert servers["other"] == other
+        args = servers["mosaic"]["args"]
+        assert isinstance(args, list)
+        assert args[-4:] == ["agent", "serve", "--dataset", str(named.resolve())]
+
+    def test_a_directory_without_a_dataset_is_refused(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["agent", "install", str(tmp_path), "--mcp"])
+        assert result.exit_code != 0
+        assert "--dataset" in result.output
+        assert not (tmp_path / MCP_CONFIG).exists()
+
+    def test_a_dataset_without_mcp_is_refused(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            app, ["agent", "install", str(tmp_path), "--dataset", str(tmp_path)]
+        )
+        assert result.exit_code != 0
+        assert "--mcp" in result.output
+
+    @pytest.mark.parametrize("config", ["[]", "{not json"])
+    def test_a_config_it_cannot_merge_is_refused_before_anything_is_written(
+        self, tmp_path: Path, config: str
+    ) -> None:
+        _ = (tmp_path / MCP_CONFIG).write_text(config, encoding="utf-8")
+        result = runner.invoke(
+            app,
+            ["agent", "install", str(tmp_path), "--mcp", "--dataset", str(tmp_path)],
+        )
+        assert result.exit_code != 0
+        assert "install failed" in result.output
+        assert (tmp_path / MCP_CONFIG).read_text(encoding="utf-8") == config
+        assert not (tmp_path / SKILL_DIRECTORY).exists()
+        assert not (tmp_path / "CLAUDE.md").exists()
+
+
+class TestServe:
+    def test_without_a_dataset_it_refuses_to_start(self) -> None:
+        result = runner.invoke(app, ["agent", "serve"])
+        assert result.exit_code != 0
+        assert "No dataset to serve" in result.output
+
+    def test_an_invalid_config_is_refused(self, tmp_path: Path) -> None:
+        config = tmp_path / "server.yaml"
+        _ = config.write_text("datasets: 3\n", encoding="utf-8")
+        result = runner.invoke(app, ["agent", "serve", "--config", str(config)])
+        assert result.exit_code != 0
+        assert "is invalid" in result.output
+
+    def test_without_the_sdk_it_names_the_extra(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setitem(sys.modules, "mcp", None)
+        result = runner.invoke(app, ["agent", "serve", "--dataset", str(tmp_path)])
+        assert result.exit_code != 0
+        assert 'pip install "mosaic-behavior[mcp]"' in result.output

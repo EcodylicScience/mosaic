@@ -57,6 +57,10 @@ path breaks `pip install -e .`, because pip does not read that table.
 - `feral>=1.0,<2`: mosaic imports FERAL symbols outside its `__all__`, and the `feral`
   CI job fails on a release that moves one.
 - `imgstore` is in the `test` dependency group, because only the suite writes stores.
+- `mcp` (`mcp>=2.3,<3`) is outside `all`. The `test` CI job installs `.[mcp]`, and
+  the extra stays out of the `test` group, which the feral job installs over FERAL's
+  pins. `mosaic.agent.mcp.server` calls `MCP_SDK.load()` before importing
+  `_binding`, the one module that imports the SDK.
 - Ultralytics, POLO, keypoint-MoSeq and VAME run only as separate programs in
   environments the user builds. No extra or dependency group declares them. The
   [behavior](src/mosaic/behavior/CLAUDE.md) and [tracking](src/mosaic/tracking/CLAUDE.md)

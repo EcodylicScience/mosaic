@@ -50,6 +50,7 @@ from mosaic.core.pipeline.toolenv import ToolNotFoundError, tool_invocation
 from tests.helpers import (
     CI_FERAL_MODULES,
     CI_IDENTITY_MODULES,
+    CI_MCP_MODULES,
     CI_REQUIRED_MODULES,
     FFMPEG_TOOLCHAIN,
     SEPARATED_TOOLS,
@@ -188,6 +189,8 @@ def pytest_configure() -> None:
         required += CI_IDENTITY_MODULES
     if os.environ.get("MOSAIC_CI_FERAL"):
         required += CI_FERAL_MODULES
+    if os.environ.get("MOSAIC_CI_MCP"):
+        required += CI_MCP_MODULES
     missing = [name for name in required if importlib.util.find_spec(name) is None]
     if missing:
         raise pytest.UsageError(

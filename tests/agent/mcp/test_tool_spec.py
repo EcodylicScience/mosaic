@@ -113,3 +113,12 @@ def test_no_tool_takes_an_overwrite_argument() -> None:
     offered = {name for spec in TOOLS for name in spec.input_model.model_fields}
 
     assert "overwrite" not in offered
+
+
+def test_the_modules_beside_the_server_load_no_sdk() -> None:
+    statement = (
+        "import mosaic.agent.mcp.config, mosaic.agent.mcp.prompts, "
+        "mosaic.agent.mcp.resources, mosaic.agent.mcp.summaries"
+    )
+
+    assert modules_loaded_by(statement, ("mcp", "mcp_types")) == []

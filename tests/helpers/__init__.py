@@ -12,6 +12,7 @@ What lives where:
   a revision of one is claimed by.
 - ``datasets`` -- the `Dataset` a test runs against.
 - ``driver_leases``: the lease of a request's driver, live or stale.
+- ``agents``: a stand-in for the detached driver that an MCP submission starts.
 - ``catalogs``: the declaration catalogs a graph test validates or plans against.
 - ``cli`` -- a ``mosaic`` command run for its exit status or its ``--json``
   output.
@@ -77,6 +78,7 @@ there. Their bodies delegate here, so the logic has one home either way.
 
 from __future__ import annotations
 
+from tests.helpers.agents import RecordingStarter
 from tests.helpers.annotations import (
     KEYPOINTS_PAYLOAD,
     MOUSE,
@@ -93,6 +95,7 @@ from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
 from tests.helpers.environment import (
     CI_FERAL_MODULES,
     CI_IDENTITY_MODULES,
+    CI_MCP_MODULES,
     CI_REQUIRED_MODULES,
     FAKE_CONDA,
     FFMPEG_TOOLCHAIN,
@@ -267,6 +270,7 @@ __all__ = [
     "CHAIN_RECIPE",
     "CI_FERAL_MODULES",
     "CI_IDENTITY_MODULES",
+    "CI_MCP_MODULES",
     "CI_REQUIRED_MODULES",
     "CropLike",
     "EnvironmentMarker",
@@ -290,6 +294,7 @@ __all__ = [
     "PlainFeature",
     "REPO_ROOT",
     "RUNNER_LINE_SECONDS",
+    "RecordingStarter",
     "RunnerJournal",
     "SELF_REFERENCE",
     "SEPARATED_TOOLS",

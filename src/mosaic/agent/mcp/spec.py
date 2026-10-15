@@ -52,6 +52,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CONFIRMATION_CONDITIONS",
+    "CONFIRMATION_DECLINED",
     "CONFIRMATION_REQUIRED",
     "DATASET_MANAGED",
     "DEFAULT_PAGE_SIZE",
@@ -61,6 +62,7 @@ __all__ = [
     "LISTED_STATUS_NOT",
     "MAX_PAGE_SIZE",
     "MAX_PREVIEW_ROWS",
+    "MAX_SCHEMA_BYTES",
     "SHARED_TOOL_LIMIT",
     "TOOLS",
     "UNKNOWN_DATASET",
@@ -102,6 +104,7 @@ __all__ = [
     "ToolSpec",
     "ValidateRecipeInput",
     "call_tool",
+    "confirmation_declined",
     "confirmation_required",
     "dataset_managed",
     "invalid_cursor",
@@ -111,6 +114,9 @@ __all__ = [
 
 SHARED_TOOL_LIMIT: Final = 15
 """The most tools the shared set may declare. Each tool costs a model context."""
+
+MAX_SCHEMA_BYTES: Final = 8192
+"""The most bytes of compact JSON that one tool's input or output schema takes."""
 
 MAX_PAGE_SIZE: Final = 100
 """The most items one page of a listing returns."""
@@ -129,6 +135,9 @@ LISTED_STATUS_NOT: Final[tuple[ArtifactStatus, ...]] = ("complete",)
 
 CONFIRMATION_REQUIRED: Final = "confirmation_required"
 """The ``reason`` of a refusal that a call with ``confirm: true`` answers."""
+
+CONFIRMATION_DECLINED: Final = "confirmation_declined"
+"""The ``reason`` of a call that the user declined when the server asked."""
 
 DATASET_MANAGED: Final = "dataset_managed"
 """The ``reason`` of a refusal to change a dataset that a service manages."""
@@ -777,6 +786,71 @@ class ToolSpec:
         output = self.output
         return output.resolve() if isinstance(output, ModelRef) else output
 
+    def input_schema(self) -> dict[str, JsonValue]:
+        """Return the JSON Schema that a client is given for the arguments.
+
+        The input model's validation schema without its ``title`` keywords,
+        which repeat the field names. The descriptions stay, because they tell a
+        model what each argument means.
+        """
+        schema: dict[str, JsonValue] = self.input_model.model_json_schema()
+        return _without_keywords(schema, _INPUT_DROPPED_KEYWORDS)
+
+    def output_schema(self) -> dict[str, JsonValue]:
+        """Return the JSON Schema that the structured result of a call validates against.
+
+        The output model's serialization schema without its ``title``,
+        ``description`` and ``default`` keywords. The tool's description says
+        what the result reports, and a result contains every field. The schema
+        of the largest output then stays under :data:`MAX_SCHEMA_BYTES`.
+        """
+        schema: dict[str, JsonValue] = self.output_model().model_json_schema(
+            mode="serialization"
+        )
+        return _without_keywords(schema, _OUTPUT_DROPPED_KEYWORDS)
+
+
+_INPUT_DROPPED_KEYWORDS: Final = frozenset({"title"})
+"""The schema keywords left out of an input schema."""
+
+_OUTPUT_DROPPED_KEYWORDS: Final = frozenset({"title", "description", "default"})
+"""The schema keywords left out of an output schema."""
+
+_SCHEMA_MAPS: Final = frozenset({"properties", "patternProperties", "$defs"})
+"""The keywords whose value maps names to schemas. The names are not keywords."""
+
+_DATA_KEYWORDS: Final = frozenset({"default", "const", "enum", "examples"})
+"""The keywords whose value is data, which is copied as it is."""
+
+
+def _without_keywords(
+    schema: dict[str, JsonValue], dropped: frozenset[str]
+) -> dict[str, JsonValue]:
+    """Return *schema* without the keywords in *dropped*, in every subschema."""
+    kept: dict[str, JsonValue] = {}
+    for keyword, value in schema.items():
+        if keyword in dropped:
+            continue
+        if keyword in _DATA_KEYWORDS:
+            kept[keyword] = value
+        elif keyword in _SCHEMA_MAPS and isinstance(value, dict):
+            kept[keyword] = {
+                name: _subschema_without(subschema, dropped)
+                for name, subschema in value.items()
+            }
+        else:
+            kept[keyword] = _subschema_without(value, dropped)
+    return kept
+
+
+def _subschema_without(value: JsonValue, dropped: frozenset[str]) -> JsonValue:
+    """Apply :func:`_without_keywords` to each schema that *value* holds."""
+    if isinstance(value, dict):
+        return _without_keywords(value, dropped)
+    if isinstance(value, list):
+        return [_subschema_without(item, dropped) for item in value]
+    return value
+
 
 _PAGING = (
     " Returns one page. Pass next_cursor back as cursor to read the next, until "
@@ -1216,6 +1290,20 @@ def confirmation_required(
         reason=CONFIRMATION_REQUIRED,
         message=message,
         detail={"tool": name, "conditions": conditions, "findings": listed},
+    )
+
+
+def confirmation_declined(name: ToolName) -> ErrorEnvelope:
+    """Report a call to *name* that the user declined when asked to confirm it."""
+    message = (
+        f"the user declined to confirm {name}, which did not run. Do not call it "
+        "again unless the user asks for it."
+    )
+    return ErrorEnvelope(
+        kind="invalid",
+        reason=CONFIRMATION_DECLINED,
+        message=message,
+        detail={"tool": name},
     )
 
 

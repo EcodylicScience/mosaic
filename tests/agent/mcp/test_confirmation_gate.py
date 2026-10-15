@@ -7,7 +7,6 @@ request is recorded and nothing runs.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -26,7 +25,6 @@ from mosaic.core.pipeline import graph
 from mosaic.core.pipeline.cancel import RequestCancel
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
-    DetachedDriver,
     PlanWire,
     Recipe,
     Request,
@@ -36,27 +34,17 @@ from mosaic.core.pipeline.graph import (
     save_request,
 )
 from mosaic.runlog import JsonlRunLog, new_execution_id, run_log_path
-from tests.helpers import SPEED_RECIPE, add_tracks_variant, make_dataset
+from tests.helpers import (
+    SPEED_RECIPE,
+    RecordingStarter,
+    add_tracks_variant,
+    make_dataset,
+)
 
 VARIANT = "convert-trex.0.2-1111111111"
 
 ENTRIES: list[JsonValue] = [["", "seq_a"], ["", "seq_b"]]
 """Both entries of the fixture, named explicitly."""
-
-
-@dataclass
-class RecordingStarter:
-    """A stand-in for the detached driver that records each request it is given."""
-
-    started: list[str] = field(default_factory=list)
-
-    def __call__(self, dataset: Dataset, request: Request) -> DetachedDriver:
-        self.started.append(request.request_id)
-        return DetachedDriver(
-            request_id=request.request_id,
-            pid=4242,
-            log_path=dataset.base_dir / "driver.log",
-        )
 
 
 @pytest.fixture

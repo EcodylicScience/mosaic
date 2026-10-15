@@ -101,6 +101,9 @@ __all__ = [
     "POLL_AFTER_TRAINING_SECONDS",
     "DriverStarter",
     "LocalBackend",
+    "ToolFailure",
+    "answer",
+    "discovered_manifests",
 ]
 
 _LOG = logging.getLogger(__name__)
@@ -115,8 +118,12 @@ type DriverStarter = Callable[[Dataset, Request], DetachedDriver]
 """What starts the process driving a submitted request."""
 
 
-class _ToolFailure(Exception):
-    """A tool's failure, as the envelope the backend returns."""
+class ToolFailure(Exception):
+    """A tool's failure, as the envelope the backend returns.
+
+    :func:`answer` turns it into the envelope. A reader of the served datasets
+    beside the tools, such as a server's resources, raises it the same way.
+    """
 
     def __init__(self, envelope: ErrorEnvelope) -> None:
         super().__init__(envelope.message)
@@ -208,28 +215,25 @@ class LocalBackend:
             warm: As for :class:`LocalBackend`.
             start_driver: As for :class:`LocalBackend`.
         """
-        from mosaic.core.dataset_discovery import (
-            DEFAULT_DISCOVERY_DEPTH,
-            discover_datasets,
-        )
-
-        depth = DEFAULT_DISCOVERY_DEPTH if max_depth is None else max_depth
-        manifests: list[Path] = []
-        for found in discover_datasets(root, max_depth=depth):
-            if found.error is not None or found.uuid is None:
-                _LOG.warning(
-                    "not serving %s: %s",
-                    found.manifest,
-                    found.error or "its manifest has no uuid",
-                )
-                continue
-            manifests.append(Path(found.manifest))
+        manifests = discovered_manifests(root, max_depth=max_depth)
         return cls(
             manifests,
             allow_managed=allow_managed,
             warm=warm,
             start_driver=start_driver,
         )
+
+    def dataset(self, uuid: str) -> Dataset:
+        """Return the served dataset *uuid*, as opened without creating roots.
+
+        Raises:
+            ToolFailure: The allowlist names no dataset *uuid*.
+        """
+        return self._dataset(uuid).dataset
+
+    def catalog(self) -> CatalogIndex:
+        """Return the step-type catalog index, building it once across threads."""
+        return self._catalog_index()
 
     def wait_until_warm(self, timeout: float | None = None) -> None:
         """Block until the warming thread, if any, has finished."""
@@ -240,75 +244,75 @@ class LocalBackend:
 
     def list_datasets(self, args: ListDatasetsInput) -> ToolResult[DatasetList]:
         """Answer ``list_datasets``."""
-        return _answer(lambda: self._list_datasets(args))
+        return answer(lambda: self._list_datasets(args))
 
     def describe_dataset(
         self, args: DescribeDatasetInput
     ) -> ToolResult[DatasetSummary]:
         """Answer ``describe_dataset``."""
-        return _answer(lambda: self._describe_dataset(args))
+        return answer(lambda: self._describe_dataset(args))
 
     def list_sequences(self, args: ListSequencesInput) -> ToolResult[SequencePage]:
         """Answer ``list_sequences``."""
-        return _answer(lambda: self._list_sequences(args))
+        return answer(lambda: self._list_sequences(args))
 
     def get_inventory(self, args: GetInventoryInput) -> ToolResult[InventoryWire]:
         """Answer ``get_inventory``."""
-        return _answer(lambda: self._get_inventory(args))
+        return answer(lambda: self._get_inventory(args))
 
     def search_step_types(self, args: SearchStepTypesInput) -> ToolResult[StepTypePage]:
         """Answer ``search_step_types``."""
-        return _answer(lambda: self._search_step_types(args))
+        return answer(lambda: self._search_step_types(args))
 
     def describe_step_type(
         self, args: DescribeStepTypeInput
     ) -> ToolResult[CatalogEntry]:
         """Answer ``describe_step_type``."""
-        return _answer(lambda: self._describe_step_type(args))
+        return answer(lambda: self._describe_step_type(args))
 
     def validate_recipe(
         self, args: ValidateRecipeInput
     ) -> ToolResult[ValidationReport]:
         """Answer ``validate_recipe``."""
-        return _answer(lambda: self._validate_recipe(args))
+        return answer(lambda: self._validate_recipe(args))
 
     def suggest_steps(self, args: SuggestStepsInput) -> ToolResult[StepSuggestions]:
         """Answer ``suggest_steps``."""
-        return _answer(lambda: self._suggest_steps(args))
+        return answer(lambda: self._suggest_steps(args))
 
     def plan_recipe(self, args: PlanRecipeInput) -> ToolResult[PlanWire]:
         """Answer ``plan_recipe``."""
-        return _answer(lambda: self._plan_recipe(args))
+        return answer(lambda: self._plan_recipe(args))
 
     def submit_pipeline(
         self, args: SubmitPipelineInput
     ) -> ToolResult[SubmittedPipeline]:
         """Answer ``submit_pipeline``."""
-        return _answer(lambda: self._submit_pipeline(args))
+        return answer(lambda: self._submit_pipeline(args))
 
     def get_request_status(
         self, args: GetRequestStatusInput
     ) -> ToolResult[RequestStatusWire]:
         """Answer ``get_request_status``."""
-        return _answer(lambda: self._get_request_status(args))
+        return answer(lambda: self._get_request_status(args))
 
     def cancel_request(self, args: CancelRequestInput) -> ToolResult[RequestCancel]:
         """Answer ``cancel_request``."""
-        return _answer(lambda: self._cancel_request(args))
+        return answer(lambda: self._cancel_request(args))
 
     def list_activity(self, args: ListActivityInput) -> ToolResult[ActivityPage]:
         """Answer ``list_activity``."""
-        return _answer(lambda: self._list_activity(args))
+        return answer(lambda: self._list_activity(args))
 
     def diagnose_failures(
         self, args: DiagnoseFailuresInput
     ) -> ToolResult[FailureDiagnosis]:
         """Answer ``diagnose_failures``."""
-        return _answer(lambda: self._diagnose_failures(args))
+        return answer(lambda: self._diagnose_failures(args))
 
     def preview_output(self, args: PreviewOutputInput) -> ToolResult[ArtifactPreview]:
         """Answer ``preview_output``."""
-        return _answer(lambda: self._preview_output(args))
+        return answer(lambda: self._preview_output(args))
 
     # ------------------------------------------------------------- datasets
 
@@ -363,7 +367,7 @@ class LocalBackend:
         try:
             selected = select_variant_rows(index, args.tracks_variant)
         except ValueError as error:
-            raise _ToolFailure(
+            raise ToolFailure(
                 ErrorEnvelope(
                     kind="invalid",
                     reason="ambiguous_tracks_variant",
@@ -462,7 +466,7 @@ class LocalBackend:
         catalog = self._declarations()
         if args.mode == "input":
             if args.step is None:
-                raise _ToolFailure(
+                raise ToolFailure(
                     ErrorEnvelope(
                         kind="invalid",
                         reason="step_required",
@@ -551,7 +555,7 @@ class LocalBackend:
                 raise PlanChanged(expected=args.plan_fingerprint, found=found)
             findings = _submission_findings(dataset, recipe, plan, args, catalog)
             if findings and not args.confirm:
-                raise _ToolFailure(confirmation_required("submit_pipeline", findings))
+                raise ToolFailure(confirmation_required("submit_pipeline", findings))
             # An unconfirmed submission is checked for open duplicates again
             # under the submission lock, which another process also takes.
             submitted = submit_request(
@@ -573,9 +577,7 @@ class LocalBackend:
         except ClassifiedError as error:
             envelope = error_envelope(error)
             detail = {**(envelope.detail or {}), "request_id": request.request_id}
-            raise _ToolFailure(
-                envelope.model_copy(update={"detail": detail})
-            ) from error
+            raise ToolFailure(envelope.model_copy(update={"detail": detail})) from error
         lanes = {planned.lane for planned in submitted.plan.steps}
         return SubmittedPipeline(
             request_id=request.request_id,
@@ -618,7 +620,7 @@ class LocalBackend:
         request = read_request(dataset.base_dir, args.request_id)
         findings = self._cancel_findings(dataset, request)
         if findings and not args.confirm:
-            raise _ToolFailure(confirmation_required("cancel_request", findings))
+            raise ToolFailure(confirmation_required("cancel_request", findings))
         return cancel_request(dataset, args.request_id)
 
     def _list_activity(self, args: ListActivityInput) -> ActivityPage:
@@ -646,7 +648,7 @@ class LocalBackend:
         from mosaic.core.pipeline.graph import request_status_wire, run_status_wire
 
         if (args.request_id is None) == (args.execution_id is None):
-            raise _ToolFailure(
+            raise ToolFailure(
                 ErrorEnvelope(
                     kind="invalid",
                     reason="one_id_required",
@@ -709,11 +711,11 @@ class LocalBackend:
         """Return the served dataset *uuid*.
 
         Raises:
-            _ToolFailure: The allowlist names no dataset *uuid*.
+            ToolFailure: The allowlist names no dataset *uuid*.
         """
         held = self._datasets().get(uuid)
         if held is None:
-            raise _ToolFailure(unknown_dataset(uuid))
+            raise ToolFailure(unknown_dataset(uuid))
         return held
 
     def _changeable(self, held: _Served, tool: ToolName) -> Dataset:
@@ -723,14 +725,14 @@ class LocalBackend:
         refuses the change.
 
         Raises:
-            _ToolFailure: The dataset is managed and the backend does not allow
+            ToolFailure: The dataset is managed and the backend does not allow
                 changing a managed one.
         """
         from mosaic.core.dataset import open_dataset
 
         dataset = open_dataset(held.manifest, ensure_roots=False)
         if dataset.manifest.is_managed and not self._allow_managed:
-            raise _ToolFailure(
+            raise ToolFailure(
                 dataset_managed(tool, held.uuid, dataset.manifest.managed_by)
             )
         return dataset
@@ -820,14 +822,43 @@ class LocalBackend:
         return findings
 
 
-def _answer[T: BaseModel](compute: Callable[[], T]) -> T | ErrorEnvelope:
+def answer[T: BaseModel](compute: Callable[[], T]) -> T | ErrorEnvelope:
     """Return *compute*'s result, or the envelope of the failure it raised."""
     try:
         return compute()
-    except _ToolFailure as failure:
+    except ToolFailure as failure:
         return failure.envelope
     except ClassifiedError as error:
         return error_envelope(error)
+
+
+def discovered_manifests(root: Path, *, max_depth: int | None = None) -> list[Path]:
+    """Return the manifests of the datasets in *root* and below it.
+
+    A manifest that does not read or has no ``uuid`` is left out and logged.
+
+    Args:
+        root: The directory to search.
+        max_depth: How many levels below *root* to search, the discovery
+            default when ``None``.
+    """
+    from mosaic.core.dataset_discovery import (
+        DEFAULT_DISCOVERY_DEPTH,
+        discover_datasets,
+    )
+
+    depth = DEFAULT_DISCOVERY_DEPTH if max_depth is None else max_depth
+    manifests: list[Path] = []
+    for found in discover_datasets(root, max_depth=depth):
+        if found.error is not None or found.uuid is None:
+            _LOG.warning(
+                "not serving %s: %s",
+                found.manifest,
+                found.error or "its manifest has no uuid",
+            )
+            continue
+        manifests.append(Path(found.manifest))
+    return manifests
 
 
 def _open_allowlist(manifests: Sequence[Path]) -> dict[str, _Served]:
@@ -895,7 +926,7 @@ def _page[T](
     added or removed between pages neither repeats nor skips one that stays.
 
     Raises:
-        _ToolFailure: *cursor* is not a key that this function wrote.
+        ToolFailure: *cursor* is not a key that this function wrote.
     """
     after = None if cursor is None else _cursor_key(cursor)
     remaining = [
@@ -910,19 +941,19 @@ def _cursor_key(cursor: str) -> tuple[str, ...]:
     """Return the key that *cursor* encodes.
 
     Raises:
-        _ToolFailure: *cursor* is not a JSON array of strings.
+        ToolFailure: *cursor* is not a JSON array of strings.
     """
     from mosaic.core.narrowing import is_object_list
 
     try:
         parsed: object = json.loads(cursor)
     except ValueError as error:
-        raise _ToolFailure(invalid_cursor(cursor)) from error
+        raise ToolFailure(invalid_cursor(cursor)) from error
     if not is_object_list(parsed):
-        raise _ToolFailure(invalid_cursor(cursor))
+        raise ToolFailure(invalid_cursor(cursor))
     parts = [part for part in parsed if isinstance(part, str)]
     if len(parts) != len(parsed):
-        raise _ToolFailure(invalid_cursor(cursor))
+        raise ToolFailure(invalid_cursor(cursor))
     return tuple(parts)
 
 

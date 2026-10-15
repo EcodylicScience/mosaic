@@ -129,6 +129,11 @@ CI_IDENTITY_MODULES = ("torch", "timm")
 # exactly, so the environment it produces is not the one the other jobs install.
 CI_FERAL_MODULES = ("feral",)
 
+# And for the `test` job, which installs the `mcp` extra for the MCP server's
+# tests and sets MOSAIC_CI_MCP=1. The other jobs do not install it, and their
+# markers select none of those tests.
+CI_MCP_MODULES = ("mcp",)
+
 
 def missing_ffmpeg_tools() -> tuple[str, ...]:
     """Which of the ffmpeg toolchain's binaries are not on ``PATH``."""

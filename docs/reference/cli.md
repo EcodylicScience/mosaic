@@ -44,7 +44,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `inventory`: Report every computed artifact, its...
 * `models`: Ask about trained models: this dataset's,...
 * `pipeline`: Validate, plan and run a pipeline recipe.
-* `agent`: Print or install the guide for an AI...
+* `agent`: Print or install the guide for an AI agent...
 * `sources`: Declare and inspect the directories and...
 * `notes`: Read and write the dataset's free-text notes.
 * `tags`: Declare and set the dataset's typed tags.
@@ -1147,7 +1147,7 @@ $ mosaic pipeline list [OPTIONS]
 
 ## `mosaic agent`
 
-Print or install the guide for an AI coding agent that uses mosaic.
+Print or install the guide for an AI agent that uses mosaic, or serve it MCP tools.
 
 **Usage**:
 
@@ -1163,6 +1163,7 @@ $ mosaic agent [OPTIONS] COMMAND [ARGS]...
 
 * `guide`: Print the agent guide for this version,...
 * `install`: Point a project's AI coding agents at...
+* `serve`: Serve mosaic's MCP tools, resources and...
 
 ### `mosaic agent guide`
 
@@ -1183,8 +1184,9 @@ $ mosaic agent guide [OPTIONS]
 Point a project's AI coding agents at `mosaic agent guide`.
 
 Writes .claude/skills/mosaic/SKILL.md, and a marked block in CLAUDE.md and
-AGENTS.md (creating CLAUDE.md when neither exists). Running it again replaces
-both.
+AGENTS.md (creating CLAUDE.md when neither exists). With --mcp, also writes
+the `mosaic` server entry of .mcp.json, which Claude Code reads, and keeps
+the file's other servers. Running it again replaces what it wrote.
 
 **Usage**:
 
@@ -1199,6 +1201,30 @@ $ mosaic agent install [OPTIONS] [directory]
 **Options**:
 
 * `--no-memory`: Write the skill only, and leave CLAUDE.md and AGENTS.md alone.
+* `--mcp`: Also register `mosaic agent serve` in the project's .mcp.json.
+* `--dataset <path>`: With --mcp, a dataset the server serves: its manifest or its directory. Repeatable. Defaults to the datasets in and below the project directory, else the one enclosing it.
+* `--help`: Show this message and exit.
+
+### `mosaic agent serve`
+
+Serve mosaic's MCP tools, resources and prompts to one client over stdio.
+
+An MCP client starts this command and speaks JSON-RPC on its standard input
+and output, so the command writes its own messages to standard error. It
+needs the `mcp` extra. `mosaic agent install --mcp` registers it for Claude
+Code.
+
+**Usage**:
+
+```console
+$ mosaic agent serve [OPTIONS]
+```
+
+**Options**:
+
+* `--dataset <path>`: A dataset to serve: its manifest or its directory. Repeatable.
+* `--config <path>`: A YAML file listing `datasets`, `discover` directories and `allow_managed_writes`. Its relative paths are read from its directory.
+* `--allow-managed-writes`: Let submit_pipeline and cancel_request change a dataset whose manifest names a managing service.
 * `--help`: Show this message and exit.
 
 ## `mosaic sources`

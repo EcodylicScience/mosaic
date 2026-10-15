@@ -435,6 +435,36 @@ count cell of the tracks index, blank as `None`. `load_request` and
 is not valid JSON or not a valid request, and `read_request` in
 `mosaic.core.pipeline.cancel` reads a request or raises `RequestNotFound`.
 
+**`mosaic agent serve` serves mosaic's tools to an MCP client over stdio.** It
+needs the new `mcp` extra (`pip install "mosaic-behavior[mcp]"`), which `all`
+does not include. The server lists the fifteen shared tools, each returning
+structured content that validates against its output schema and a one-paragraph
+summary, and reports a failure as an error result with the error envelope. A
+tool refused with reason `confirmation_required` asks the user through form
+elicitation when the client declares it, and then ignores a `confirm` that the
+model passed. The answer confirms only a call with the arguments the user was
+shown. Otherwise the tool refuses until the call is repeated with `confirm:
+true`. A declined confirmation returns reason `confirmation_declined`.
+Resources: `mosaic://guide`, `mosaic://catalog`, `mosaic://catalog/{name}`, and
+per dataset `manifest`, `inventory{?kind,status}`, `recipes/{digest}`,
+`requests/{rid}`, `runs/{eid}`, `runs/{eid}/log{?tail}` and
+`artifacts/feature/{name}/{run_id}/params` under `mosaic://dataset/{uuid}/`.
+Prompts: `build_pipeline`, `diagnose_dataset`, `explain_request`, `compare_runs`
+and `summarize_dataset`. The server serves the datasets named by `--dataset` and
+by a YAML `--config` file (`datasets`, `discover`, `allow_managed_writes`), and
+`--allow-managed-writes` lets it change a dataset whose manifest names
+`managed_by`. `mosaic agent install --mcp [--dataset PATH]` writes the `mosaic`
+entry of the project's `.mcp.json` and keeps its other servers. New in the
+library: `ToolSpec.input_schema` and `ToolSpec.output_schema`,
+`MAX_SCHEMA_BYTES`, `CONFIRMATION_DECLINED` and `confirmation_declined` in
+`mosaic.agent.mcp.spec`; `LocalBackend.dataset`, `LocalBackend.catalog`,
+`ToolFailure`, `answer` and `discovered_manifests` in `mosaic.agent.mcp.local`;
+the modules `config`, `prompts`, `resources`, `summaries` and `server` of
+`mosaic.agent.mcp`; and `MCP_CONFIG`, `MCP_SERVER_NAME`, `mcp_server_entry`,
+`with_mcp_server`, the `mcp_datasets` argument of `install_agent_files`,
+`Installation.mosaic_command` and `Installation.interpreter_command` in
+`mosaic.agent`.
+
 No run identifier moves.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows
