@@ -15,6 +15,8 @@ import datetime
 import errno
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -34,6 +36,7 @@ from mosaic.core.pipeline.markers import (
     inflight_state,
     new_inflight,
     phase_marker_path,
+    process_running,
     process_running_since,
     read_inflight,
     read_phase_marker,
@@ -43,6 +46,7 @@ from mosaic.core.pipeline.markers import (
     write_phase_marker,
 )
 from mosaic.runlog import JsonlRunLog, run_log_path
+from tests.helpers import wait_for
 
 UTC = datetime.timezone.utc
 
@@ -473,3 +477,18 @@ def test_a_process_counts_as_running_only_when_it_began_by_the_stamp() -> None:
     assert not process_running_since(os.getpid(), "2000-01-01T00:00:00+00:00")
     assert process_running_since(os.getpid(), "not-a-timestamp")
     assert not process_running_since(0, now)
+
+
+def test_an_exited_child_that_is_not_reaped_is_not_running() -> None:
+    """A zombie has exited, and its pid still answers signal 0."""
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    try:
+        assert process_running(os.getpid())
+        wait_for(
+            lambda: not process_running(child.pid),
+            60.0,
+            "an exited child read as running before it was reaped",
+        )
+        assert not process_running_since(child.pid, "not-a-timestamp")
+    finally:
+        _ = child.wait()

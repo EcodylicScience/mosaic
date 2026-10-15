@@ -577,7 +577,9 @@ def process_running(pid: int) -> bool:
 
     ``signal 0`` performs the existence and permission checks and delivers no
     signal. A process owned by another user raises ``PermissionError`` and is
-    live. A pid of 0 or below names no process.
+    live. A pid of 0 or below names no process. A zombie has exited and is not
+    live: a detached driver that ends, or is killed, stays a zombie of the
+    long-lived process that started it until that process reaps it.
     """
     if pid <= 0:
         return False
@@ -587,7 +589,14 @@ def process_running(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    return True
+    import psutil
+
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.Error:
+        return True
 
 
 def process_running_since(pid: int, started_by: str) -> bool:

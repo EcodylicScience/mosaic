@@ -35,6 +35,7 @@ from mosaic.core.pipeline.graph import (
     submit_request,
 )
 from mosaic.core.pipeline.inventory import InventoryWire
+from mosaic.core.pipeline.markers import process_running
 from mosaic.core.pipeline.preview import ArtifactPreview
 from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
@@ -321,6 +322,13 @@ def test_a_submitted_request_runs_detached_and_its_output_is_previewed(
         request_id=submitted.request_id,
     )
     assert status.verdict == "finished", status
+    # The driver outlives this test's process otherwise, and its handle warns
+    # when the worker exits.
+    wait_for(
+        lambda: not process_running(submitted.driver_pid),
+        REQUEST_SECONDS,
+        "the detached driver never exited",
+    )
     speed = status.steps[0]
     preview = _call(
         backend,
