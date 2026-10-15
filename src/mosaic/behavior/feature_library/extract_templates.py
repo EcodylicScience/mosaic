@@ -108,7 +108,9 @@ class ExtractTemplates:
 
     category = "global"
     name = "extract-templates"
-    version = "0.2"
+    # 0.3: ``nn_id`` and ``attention_target_id``, track ids, are no longer
+    # template columns (``BOOKKEEPING_COLS``).
+    version = "0.3"
     parallelizable = False
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing

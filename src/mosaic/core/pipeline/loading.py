@@ -24,7 +24,7 @@ from .index import (
     resolve_artifact_file,
 )
 from .types import ArtifactSpec, NNResult
-from .types.data_config import ALIGN_COLS, COLUMNS, ID_COLS, META_COLS
+from .types.data_config import ALIGN_COLS, COLUMNS, ID_COLS, NON_PAYLOAD_COLS
 
 if TYPE_CHECKING:
     from ..dataset import Dataset
@@ -125,8 +125,8 @@ class MergeNaming:
 
     Attributes:
         keys: The columns joined on, sorted.
-        dropped: The incoming identity columns that the merged side already
-            contains, dropped from the incoming input.
+        dropped: The incoming identity and bookkeeping columns that the merged
+            side already contains, dropped from the incoming input.
         renamed: Each incoming payload column that the merged side already
             contains, mapped to its numbered name ``<column>__<position>``.
         columns: Every column of the merged frame afterwards.
@@ -147,12 +147,14 @@ def merge_naming(
     applies it, and pipeline validation applies it to declared column sets. The
     two then agree on the columns of a step's merged input.
 
-    A collided ``META_COLS`` column is **dropped** from the incoming input, and
-    not numbered. Identity is either joined on or constant within an entry, and
-    the two copies state the same value. A numbered ``perspective__1`` is
-    numeric and outside every exclusion list, and was once read downstream as a
-    measurement and fitted as data. Only payload keeps the ``__<position>``
-    suffix.
+    A collided ``NON_PAYLOAD_COLS`` column is **dropped** from the incoming
+    input, and not numbered. Identity is either joined on or constant within an
+    entry, and the two copies state the same value. Of two bookkeeping copies
+    the merged frame keeps the first input's, and a later ``nn_id`` that names
+    a different neighbor is lost. A numbered copy such as ``perspective__1`` or
+    ``nn_id__1`` matches no exclusion list, and ``perspective__1`` was once read
+    downstream as a measurement and fitted as data. Only payload keeps the
+    ``__<position>`` suffix.
 
     Args:
         merged: The columns merged so far.
@@ -163,11 +165,11 @@ def merge_naming(
     right = frozenset(incoming)
     keys = alignment_keys([left, right])
     collided = sorted((right - keys) & left)
-    dropped = tuple(column for column in collided if column in META_COLS)
+    dropped = tuple(column for column in collided if column in NON_PAYLOAD_COLS)
     renamed = {
         column: f"{column}__{position}"
         for column in collided
-        if column not in META_COLS
+        if column not in NON_PAYLOAD_COLS
     }
     kept = (right - frozenset(dropped) - frozenset(renamed)) | frozenset(
         renamed.values()

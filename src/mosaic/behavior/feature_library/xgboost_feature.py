@@ -133,7 +133,10 @@ class XgboostFeature:
 
     category = "global"
     name = "xgboost"
-    version = "0.1"
+    # 0.2: ``nn_id`` and ``attention_target_id``, track ids, are no longer
+    # fitted, from templates written before ``extract-labeled-templates``
+    # 0.3 too (``BOOKKEEPING_COLS``).
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing

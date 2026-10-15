@@ -245,7 +245,9 @@ class TemporalStackingFeature:
 
     category = "per-frame"
     name = "temporal-stack"
-    version = "0.4"
+    # 0.5: ``nn_id`` and ``attention_target_id``, track ids, are neither
+    # stacked nor carried (``BOOKKEEPING_COLS``).
+    version = "0.5"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = True

@@ -1,4 +1,4 @@
-"""`temporal-stack` must not lose or mix a pair's perspective.
+"""`temporal-stack` must not lose or mix a pair's perspective, or stack a track id.
 
 Two defects, both silent, both reached only through the pair branch of `apply`.
 
@@ -25,9 +25,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
 from mosaic.behavior.feature_library.temporal_stacking import TemporalStackingFeature
 from mosaic.core.pipeline.types import Result
-from tests.helpers import make_pair_df
+from tests.helpers import make_pair_df, track_table
 
 _KEY = ["frame", "id1", "id2", "perspective"]
 
@@ -108,6 +109,17 @@ def test_an_individual_frame_keeps_its_metadata() -> None:
 
     assert {"frame", "time", "id", "group", "sequence"} <= set(out.columns)
     assert len(out) == 5
+
+
+def test_a_neighbor_id_is_neither_stacked_nor_carried() -> None:
+    """`nn_id` is dropped as `fps` is, and the neighbor's measurements stack."""
+    df = NearestNeighbor().apply(track_table("g", "s", n_rows=5, n_ids=3))
+
+    out = _feature().apply(df)
+
+    assert not [column for column in out.columns if column.startswith("nn_id")]
+    assert "nn_dist__t+00" in out.columns
+    assert {"frame", "time", "id", "group", "sequence"} <= set(out.columns)
 
 
 def test_an_empty_frame_returns_empty() -> None:

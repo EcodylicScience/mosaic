@@ -207,9 +207,9 @@ def merged_input(inputs: Sequence[ColumnSet]) -> ColumnSet:
     Applies the naming rule of the merge once to the guaranteed sets and once to
     the possible ones. A column of the first input keeps its name. A colliding
     payload column of a later input is numbered ``<column>__<position>``, and a
-    colliding identity column is dropped. Over the guaranteed sets the rule gives
-    the columns of every merge. Over the possible sets it gives the columns that
-    some merge may contain.
+    colliding identity or bookkeeping column is dropped. Over the guaranteed sets
+    the rule gives the columns of every merge. Over the possible sets it gives the
+    columns that some merge may contain.
     """
     if not inputs:
         return ColumnSet()
@@ -465,6 +465,8 @@ def _provider(
     for conditional in provides.conditional:
         if not conditional.when_param and conditional.when_present is None:
             continue
+        if conditional.when_present == conditional.column:
+            continue
         if not _supplies(resolve_names(conditional.column, values), need):
             continue
         present = (
@@ -494,9 +496,9 @@ def providers_of(
 
     The tracks come first when they guarantee *need*, and the features follow,
     sorted by slug and read under their default params. A feature passing its
-    input through counts here only for the columns it adds. It copies a column of
-    its input only when that input has it, and the tracks or another provider
-    decide that.
+    input through, or keeping a column of its input (``kept``), counts here only
+    for the columns it adds. It copies a column of its input only when that input
+    has it, and the tracks or another provider decide that.
 
     Args:
         need: The requirement.

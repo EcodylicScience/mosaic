@@ -132,6 +132,18 @@ class TestApply:
         )
         pd.testing.assert_series_equal(result["group"], df["group"], check_names=False)
 
+    def test_apply_keeps_bookkeeping_columns(self, tmp_path: Path) -> None:
+        """``nn_id`` is kept unfitted beside ``fps``, as ``NON_PAYLOAD_KEPT`` says."""
+        feat = _fit_feature(tmp_path, k=5)
+
+        df = make_sequence_df(20, 5)
+        df["fps"] = 30.0
+        df["nn_id"] = np.arange(20) % 3
+        result = feat.apply(df)
+
+        pd.testing.assert_series_equal(result["fps"], df["fps"], check_names=False)
+        pd.testing.assert_series_equal(result["nn_id"], df["nn_id"], check_names=False)
+
     def test_apply_removes_feature_columns(self, tmp_path: Path) -> None:
         feat = _fit_feature(tmp_path, k=5)
 

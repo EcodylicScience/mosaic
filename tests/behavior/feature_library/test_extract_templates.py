@@ -11,7 +11,9 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.extract_templates import ExtractTemplates
+from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
 from mosaic.core.pipeline.types import InputStream, Result
+from tests.helpers import track_table
 
 InputFactory = Callable[[], Iterator[tuple[str, pd.DataFrame]]]
 
@@ -410,6 +412,33 @@ class TestFarthestFirst:
         )
 
         assert provenance["count"].sum() == 10
+
+    def test_farthest_first_over_nearest_neighbor_output_writes_no_neighbor_id(
+        self, tmp_path: Path
+    ) -> None:
+        """A neighbor's track id neither selects the templates nor is written."""
+        entries = [
+            (sequence, NearestNeighbor().apply(track_table("g", sequence, n_ids=3)))
+            for sequence in ("s1", "s2")
+        ]
+        feat = _make_feature(
+            inputs=ExtractTemplates.Inputs((Result(feature="nearest-neighbor"),)),
+            params={
+                "n_templates": 10,
+                "strategy": "farthest_first",
+                "pool": {"size": 40},
+            },
+        )
+        templates, _ = _fit_and_save(feat, _make_factory(entries), tmp_path)
+
+        assert len(templates) == 10
+        assert list(templates.columns) == [
+            "nn_delta_x",
+            "nn_delta_x_ego",
+            "nn_delta_y",
+            "nn_delta_y_ego",
+            "nn_dist",
+        ]
 
 
 # --- Save/load round-trip ---

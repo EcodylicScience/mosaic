@@ -164,7 +164,9 @@ class ArHmmFeature:
     # Backends are numerically-equivalent implementations of the same algorithm,
     # so a stable version lets numpy- and numba-computed runs share one cache
     # entry (run_id = f"{version}-{params_hash}", and `backend` is HASH_EXCLUDE).
-    version = "0.1"
+    # 0.2: ``nn_id`` and ``attention_target_id``, track ids, are no longer
+    # fitted (``BOOKKEEPING_COLS``).
+    version = "0.2"
     parallelizable = False
     scope_dependent = True
     accepts_overlap = (

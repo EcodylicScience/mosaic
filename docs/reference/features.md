@@ -414,7 +414,7 @@ Per-sequence feature computing translational speed and angular velocity.
 
 ### `temporal-stack`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.temporal_stacking.TemporalStackingFeature`
+Version `0.5` &middot; `mosaic.behavior.feature_library.temporal_stacking.TemporalStackingFeature`
 
 Build temporal context windows over per-sequence feature data.
 
@@ -576,7 +576,7 @@ Per-fish summary of social-interaction and locomotor-style metrics.
 
 ### `arhmm`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.arhmm.ArHmmFeature`
+Version `0.2` &middot; `mosaic.behavior.feature_library.arhmm.ArHmmFeature`
 
 AR-HMM behavioral syllable discovery as a pipeline feature.
 
@@ -618,7 +618,7 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 
 ### `extract-labeled-templates`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates`
+Version `0.3` &middot; `mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates`
 
 Extract labeled, split-annotated templates from upstream features.
 
@@ -677,7 +677,7 @@ Extract labeled, split-annotated templates from upstream features.
 
 ### `extract-templates`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.extract_templates.ExtractTemplates`
+Version `0.3` &middot; `mosaic.behavior.feature_library.extract_templates.ExtractTemplates`
 
 Subsample per-sequence data into a representative template matrix.
 
@@ -1229,7 +1229,7 @@ Fits keypoint-MoSeq to keypoint tracks and applies it, in a runner process.
 
 ### `lightning-action`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
+Version `0.3` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
 
 Supervised temporal action segmentation via lightning-action.
 
@@ -1388,7 +1388,7 @@ Fits VAME to keypoint tracks, and embeds each frame in its latent space.
 
 ### `xgboost`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostFeature`
+Version `0.2` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostFeature`
 
 XGBoost behavior classifier as a pipeline feature.
 

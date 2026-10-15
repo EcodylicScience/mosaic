@@ -179,7 +179,10 @@ class LightningActionFeature:
 
     category = "global"
     name = "lightning-action"
-    version = "0.2"
+    # 0.3: ``nn_id`` and ``attention_target_id``, track ids, are no longer
+    # fitted, from templates written before ``extract-labeled-templates``
+    # 0.3 too (``BOOKKEEPING_COLS``).
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing

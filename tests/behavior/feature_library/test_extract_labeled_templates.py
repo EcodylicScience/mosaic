@@ -9,11 +9,21 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mosaic.behavior.feature_library.attention_target import AttentionTarget
 from mosaic.behavior.feature_library.extract_labeled_templates import (
     ExtractLabeledTemplates,
 )
 from mosaic.behavior.feature_library.helpers import feature_columns
-from mosaic.core.pipeline.types import GroundTruthLabelsSource, InputStream, Result
+from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
+from mosaic.core.pipeline.loading import load_entry_data
+from mosaic.core.pipeline.types import (
+    GroundTruthLabelsSource,
+    InputStream,
+    LoadSpec,
+    ParquetLoadSpec,
+    Result,
+)
+from tests.helpers import track_table
 
 
 class TestMetaColumnReservation:
@@ -33,6 +43,64 @@ class TestMetaColumnReservation:
         assert "label" not in cols
         assert "split" not in cols
         assert cols == ["feat_a", "feat_b"]
+
+
+def _attention_target_output() -> pd.DataFrame:
+    """``attention-target`` over two individuals, with one focal frame facing no one."""
+    facing = pd.DataFrame(
+        {
+            "frame": [0, 0, 1, 1],
+            "id1": [0, 1, 0, 1],
+            "id2": [1, 0, 1, 0],
+            "angle_diff_deg": [5.0, 10.0, 7.0, 40.0],
+            "is_facing": [True, True, True, False],
+        }
+    )
+    return AttentionTarget().apply(facing)
+
+
+class TestNeighborIdReservation:
+    """A column that records another individual's track id is no measurement."""
+
+    def test_feature_columns_excludes_the_nearest_neighbor_id(self) -> None:
+        df = NearestNeighbor().apply(track_table("g", "s", n_rows=4, n_ids=3))
+        assert pd.api.types.is_numeric_dtype(df["nn_id"])
+
+        cols = feature_columns(df)
+
+        assert "nn_id" not in cols
+        assert cols == [
+            "nn_delta_x",
+            "nn_delta_x_ego",
+            "nn_delta_y",
+            "nn_delta_y_ego",
+            "nn_dist",
+        ]
+
+    def test_feature_columns_excludes_the_attention_target_id(self) -> None:
+        df = _attention_target_output()
+        assert pd.api.types.is_numeric_dtype(df["attention_target_id"])
+        assert df["attention_target_id"].isna().any()
+
+        assert feature_columns(df) == ["attention_target_angle_diff_deg"]
+
+    def test_a_merge_of_two_neighbor_ids_numbers_no_copy(self, tmp_path: Path) -> None:
+        """The later input's ``nn_id`` is dropped, as a collided identity column is."""
+        tracks = track_table("g", "s", n_rows=4, n_ids=3)
+        specs: list[tuple[Path, LoadSpec]] = []
+        for position in range(2):
+            path = tmp_path / f"{position}.parquet"
+            NearestNeighbor().apply(tracks).to_parquet(path)
+            specs.append((path, ParquetLoadSpec()))
+
+        merged = load_entry_data(specs)
+
+        assert merged is not None
+        assert "nn_id" in merged.columns
+        assert not [column for column in merged.columns if column.startswith("nn_id_")]
+        cols = feature_columns(merged)
+        assert "nn_dist__1" in cols
+        assert not [column for column in cols if column.startswith("nn_id")]
 
 
 class TestParams:

@@ -259,13 +259,31 @@ ALIGN_COLS: frozenset[str] = frozenset(
 )
 META_COLS: frozenset[str] = frozenset(COLUMNS.meta_set() | PAIR_COLS)
 
-BOOKKEEPING_COLS: frozenset[str] = frozenset({"entity_level", "fps", "label", "split"})
+BOOKKEEPING_COLS: frozenset[str] = frozenset(
+    {"attention_target_id", "entity_level", "fps", "label", "nn_id", "split"}
+)
 """Columns that are neither identity nor measurement.
 
 A sampling rate, a ground-truth label, a train/test assignment and a level
 marker record facts about a run and say nothing about whom a row describes. A
 frame's payload excludes them as it excludes the identity columns, and a feature
 rebuilding its output drops them.
+
+``nn_id`` (``nearest-neighbor``) and ``attention_target_id``
+(``attention-target``) record another individual's track id. Trackers number
+individuals per recording, and a fit that reads the id as a number puts ids 3
+and 4 close together and ids 0 and 9 far apart. Neither column is identity. The
+row describes the focal individual, and a frame without a neighbor or a target
+leaves the id NaN, so neither can be a join key.
+
+These two columns are dropped like ``fps`` and ``label``, and ``meta_columns``
+leaves them out. A feature that rebuilds its output from ``meta_columns``
+(``temporal-stack``, ``xgboost``, ``lightning-action``) writes neither. A global
+model's ``apply`` keeps every column outside its fitted set, so
+``global-tsne``, ``global-kmeans`` and ``global-ward`` keep them unfitted beside
+``fps`` and ``label``. Readers of the neighbor (``nn-delta-response``,
+``social-motion-summary``, the ``pair_filter`` lookup) read ``nn_id`` by name
+from ``nearest-neighbor``'s output.
 
 The identity names are in ``META_COLS`` and absent here. The payload and the
 metadata passthrough both read them there. Two lists once disagreed, and

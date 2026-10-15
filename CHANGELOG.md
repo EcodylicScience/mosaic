@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, and `mosaic agent serve` serves an MCP client
+## Unreleased: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, and no fit reads a track id
 
 **New feature `vame`.** It trains a recurrent variational autoencoder on windows
 of egocentrically aligned keypoints and embeds each window in a continuous
@@ -61,6 +61,29 @@ and `--config-name` flags, which sleap-nn 0.3.1 accepts as well.
 - Extracting a keypoint's position now sets both of its coordinates to NaN
   when either one is not finite. `kpms` already treated such a keypoint as
   missing.
+
+**A neighbor's track id is no measurement.** `nearest-neighbor` writes `nn_id`
+and `attention-target` writes `attention_target_id`, each another individual's
+track id. `feature_columns` returned both as payload, so every template,
+scaler, embedding, clustering, `arhmm` fit, temporal stack and classifier over
+either output fitted the id as a number, and a `farthest_first` template
+selection compared rows on it. Both columns now join `BOOKKEEPING_COLS` beside
+`fps` and `label`. The payload, the `Payload` requirement and recipe validation
+leave them out. `temporal-stack`, `xgboost` and `lightning-action` drop them
+from their output, as they drop `fps`. `global-tsne`, `global-kmeans` and
+`global-ward` keep them unfitted beside `fps`. A reader of the neighbor reads
+`nn_id` by name from `nearest-neighbor`'s output, as `nn-delta-response` and
+`social-motion-summary` do.
+
+**A merge keeps one copy of a bookkeeping column.** When two inputs both
+contain a `BOOKKEEPING_COLS` column, the merge keeps the first input's and
+drops the later one, as it drops a second identity column. It used to number
+the later copy (`nn_id__1`, `fps__1`), and a numbered copy was read as payload.
+Of two `nn_id` columns that name different neighbors, the later one is lost.
+
+**A missing column names only the features that write it.** Recipe validation
+and `input_candidates` no longer list a feature as a provider of a column that
+it only copies from its input when the input has it.
 
 **Names moved or removed.**
 
@@ -486,7 +509,14 @@ the datasets it serves, when it asks to confirm, the operations it leaves to
 the user, and the values its tools send to the model provider. The
 installation page lists the `mcp` extra.
 
-No run identifier moves.
+**Identifiers that move.** `extract-templates` and `extract-labeled-templates`
+move to 0.3, `arhmm` to 0.2, `temporal-stack` to 0.5, `xgboost` to 0.2 and
+`lightning-action` to 0.3, the version segment only. Their run ids move on every
+dataset, with or without `nn_id`. `xgboost` and `lightning-action` move because
+a templates reference that resolves to an `extract-labeled-templates` 0.2 run
+would otherwise fit other columns under the same run id. A step reading one of
+these outputs hashes its run id, and its digest moves too: the t-SNE step of the
+plan golden moves from `0.4-9ef3a62a39` to `0.4-ff82280303`.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows
 
