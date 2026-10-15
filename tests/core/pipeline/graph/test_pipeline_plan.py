@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from mosaic_media import MediaProbeError
 
 import mosaic.tracking.trex.dataset_runs as trex_runs
 from mosaic.core.dataset import Dataset
@@ -52,6 +53,7 @@ from mosaic.core.pipeline.tracks_index import (
 from mosaic.tracking.trex.params import TrexParams
 from tests.helpers import (
     FakeTrex,
+    MediaClip,
     add_media_variant,
     add_tracks_variant,
     assert_tree_unchanged,
@@ -728,6 +730,63 @@ def test_a_graph_that_makes_its_own_tracks_is_planned_over_its_media(
     plan = plan_pipeline(dataset, Recipe.model_validate(TREX_TO_SPEED))
 
     assert plan.scope == frozenset({("", "vid1"), ("", "vid2")})
+
+
+TRANSCODE_THEN_TREX: Document = {
+    "steps": [
+        {
+            "id": "transcode",
+            "type": "op",
+            "kind": "transcode",
+            "params": {"target": "analysis"},
+        },
+        {
+            "id": "trex",
+            "type": "op",
+            "kind": "trex",
+            "params": {"track_max_individuals": 2},
+            "after": ["transcode"],
+        },
+        {
+            "id": "speed",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": ["tracks"],
+            "tracks": {"step": "trex"},
+        },
+    ]
+}
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [None, Scope(sequences=["vid1"])],
+    ids=["whole-dataset", "named-sequence"],
+)
+def test_a_graph_that_transcodes_first_is_planned_before_the_derivative_exists(
+    tmp_path: Path, scope: Scope | None
+) -> None:
+    """An entry whose media cannot be read yet is still in the scope.
+
+    A rotated clip's verdict requires an analysis transcode, and the derivative
+    that the tracker reads is what the graph's first step makes. The plan lists
+    the entry without routing its media, and the tracker routes it when it runs,
+    after the transcode.
+    """
+    dataset = make_dataset(tmp_path / "media")
+    write_media_index(
+        dataset, [MediaClip(sequence="vid1", video_uuid="u1", rotation=90)]
+    )
+    with pytest.raises(MediaProbeError, match="transcode it first"):
+        _ = dataset.resolve_media("", "vid1")
+
+    plan = plan_pipeline(
+        dataset, Recipe.model_validate(TRANSCODE_THEN_TREX), scope=scope
+    )
+
+    assert plan.scope == frozenset({("", "vid1")})
+    assert plan.step("transcode").spec.entries == Scope(entries=[("", "vid1")])
+    assert plan.step("trex").run_id is not None
 
 
 def test_a_dataset_with_neither_tracks_nor_media_plans_over_nothing(

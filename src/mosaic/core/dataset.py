@@ -665,6 +665,28 @@ class ResolvedScopeEntry:
 
 
 @dataclass(frozen=True)
+class _ScopedMediaRows:
+    """One scoped ``(group, sequence, camera)`` of the originals index, unrouted.
+
+    ``group`` and ``sequence`` are the entry's cells as indexed.
+    ``sequence_label`` is the sequence a media scope reports, which differs from
+    ``sequence`` only for a nameless entry. ``rows`` are this camera's index
+    rows, ``video_order``-sorted.
+    """
+
+    group: str
+    sequence: str
+    sequence_label: str
+    camera: str
+    rows: pd.DataFrame
+
+    @property
+    def entry(self) -> Entry:
+        """The ``(group, sequence)`` pair as indexed."""
+        return (self.group, self.sequence)
+
+
+@dataclass(frozen=True)
 class MediaIndexDisagreement:
     """A scoped file whose stored video_uuid differs from the injected one.
 
@@ -5286,41 +5308,90 @@ class Dataset:
         # here as a method (mirroring resolve_media) rather than as a free function in
         # a consumer package: the read-and-route logic stays in one layer instead of
         # being duplicated upward.
-        df = self._load_media_index(index_filename)
-
-        mask = pd.Series(True, index=df.index)
-        if entries is not None:
-            mask &= _entry_mask(df, entries)
-        scoped = df[mask]
+        scoped = self._scoped_media_rows(entries, index_filename)
 
         route_derivatives, derivative_df = self.media_routing_context(index_filename)
         resolved_entries: list[tuple[Entry, ResolvedScopeEntry]] = []
         failed: dict[Entry, MediaProbeError] = {}
-        for (group, sequence, camera), sub in scoped.groupby(
-            ["group", "sequence", "camera"]
-        ):
-            group, sequence, camera = str(group), str(sequence), str(camera)
-            entry = (group, sequence)
-            if entry in failed:
+        for block in scoped:
+            if block.entry in failed:
                 continue
-            sub = sub.sort_values("video_order")
             try:
                 resolved = self._resolve_matched_rows(
-                    group, sequence, sub, route_derivatives, derivative_df
+                    block.group,
+                    block.sequence,
+                    block.rows,
+                    route_derivatives,
+                    derivative_df,
                 )
             except MediaProbeError as exc:
                 if errors is None:
                     raise
-                failed[entry] = exc
+                failed[block.entry] = exc
                 continue
-            if is_nameless_entry(group, sequence):
-                sequence = self.resolve_path(str(sub.iloc[0]["abs_path"])).stem
             resolved_entries.append(
-                (entry, ResolvedScopeEntry(group, sequence, camera, resolved))
+                (
+                    block.entry,
+                    ResolvedScopeEntry(
+                        block.group, block.sequence_label, block.camera, resolved
+                    ),
+                )
             )
         if errors is not None:
             errors.update(failed)
         return [media for entry, media in resolved_entries if entry not in failed]
+
+    def media_entries(self) -> frozenset[Entry]:
+        """Every ``(group, sequence)`` the originals index holds media for.
+
+        Each entry is named as :meth:`resolve_media_scope` names it, and the
+        cameras of one recording are one entry. Nothing is routed, so an entry
+        whose media cannot be read yet is listed too, such as one that requires
+        an analysis transcode that has not run. The read that routes the entry
+        reports why it cannot.
+
+        Raises:
+            FileNotFoundError: If the originals index does not exist.
+        """
+        return frozenset(
+            (block.group, block.sequence_label)
+            for block in self._scoped_media_rows(None, "index.csv")
+        )
+
+    def _scoped_media_rows(
+        self, entries: Iterable[Entry] | None, index_filename: str
+    ) -> list[_ScopedMediaRows]:
+        """Split the originals index into one block per ``(group, sequence, camera)``.
+
+        The one enumeration behind :meth:`resolve_media_scope` and
+        :meth:`media_entries`, so both name an entry alike: a nameless entry
+        (:func:`~mosaic.core.helpers.is_nameless_entry`) is labeled by its first
+        original file's stem. Blocks come in ``(group, sequence, camera)`` order,
+        and nothing is routed.
+
+        Args:
+            entries: The ``(group, sequence)`` pairs to keep, or ``None`` for
+                every indexed entry.
+            index_filename: The originals index to read.
+
+        Raises:
+            FileNotFoundError: If the originals index does not exist.
+        """
+        df = self._load_media_index(index_filename)
+        mask = pd.Series(True, index=df.index)
+        if entries is not None:
+            mask &= _entry_mask(df, entries)
+        blocks: list[_ScopedMediaRows] = []
+        for (group, sequence, camera), sub in df[mask].groupby(
+            ["group", "sequence", "camera"]
+        ):
+            group, sequence, camera = str(group), str(sequence), str(camera)
+            rows = sub.sort_values("video_order")
+            label = sequence
+            if is_nameless_entry(group, sequence):
+                label = self.resolve_path(str(rows.iloc[0]["abs_path"])).stem
+            blocks.append(_ScopedMediaRows(group, sequence, label, camera, rows))
+        return blocks
 
     def _build_media_sequence_keymap(self) -> dict[str, list[dict[str, str]]]:
         """

@@ -54,6 +54,12 @@ def media_universe(ds: Dataset) -> frozenset[tuple[str, str]]:
     those terms. The camera axis matters to what a *frame run* covers, and this
     is not that.
 
+    **An entry is listed whether or not its media can be read yet.** A graph
+    whose first step transcodes the originals a tracker step reads is planned
+    before that derivative exists, so the entries are enumerated from the index
+    without routing them to the files a read would open. The step that reads
+    the media reports an entry it cannot route when it runs.
+
     **A dataset with no media index has no media, which is an answer.** The
     accessor raises for it, correctly, because a caller about to *read* media
     needs to be told to index first. This caller is deciding what a graph would
@@ -63,10 +69,9 @@ def media_universe(ds: Dataset) -> frozenset[tuple[str, str]]:
     run.
     """
     try:
-        scope = ds.resolve_media_scope(None)
+        return ds.media_entries()
     except FileNotFoundError:
         return frozenset()
-    return frozenset((entry.group, entry.sequence) for entry in scope)
 
 
 def graph_writes_tracks(recipe: Recipe, produces_tracks: Iterable[str]) -> bool:

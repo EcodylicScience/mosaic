@@ -623,3 +623,31 @@ def test_a_scope_with_no_error_record_raises_for_an_entry_it_cannot_route(
 
     with pytest.raises(MediaProbeError, match="requires an analysis transcode"):
         _ = ds.resolve_media_scope([("", "a"), ("", "b")])
+
+
+def test_the_entries_with_media_include_those_that_cannot_be_routed_yet(
+    tmp_path: Path,
+):
+    """Listing an entry routes none of its cameras, so a pending transcode is moot."""
+    ds = _scope_awaiting_transcodes(tmp_path)
+
+    assert ds.media_entries() == {("", "a"), ("", "b"), ("", "c")}
+
+
+def test_a_nameless_entry_is_listed_under_the_name_its_scope_reports(
+    tmp_path: Path,
+):
+    """Both name it by the stem of its first file in recording order."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(sequence="", filename="second.mp4", video_order=1),
+            MediaClip(sequence="", filename="first.mp4", video_order=0),
+        ],
+    )
+
+    scope = ds.resolve_media_scope(None)
+
+    assert [(entry.group, entry.sequence) for entry in scope] == [("", "first")]
+    assert ds.media_entries() == {("", "first")}
