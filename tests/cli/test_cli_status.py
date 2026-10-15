@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from pydantic import TypeAdapter
 from typer.testing import CliRunner
 
 from mosaic.cli import app
@@ -213,10 +214,12 @@ def test_runs_without_paging_flags_prints_the_array_of_every_run(
     assert [run["execution_id"] for run in rows] == [newer, older]
 
 
+_ROWS = TypeAdapter(list[dict[str, object]])
+"""A page's ``items``, each run an object."""
+
+
 def _rows(page: dict[str, object]) -> list[dict[str, object]]:
-    items = page["items"]
-    assert isinstance(items, list)
-    return [row for row in items if isinstance(row, dict)]
+    return _ROWS.validate_python(page["items"])
 
 
 def _lost_two(ds: Dataset) -> None:
