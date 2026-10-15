@@ -10,6 +10,7 @@ import pytest
 
 from mosaic.behavior.feature_library.arhmm import ArHmmFeature
 from mosaic.core.pipeline.types import Result
+from tests.helpers import run_id_digest
 
 _INPUTS = ArHmmFeature.Inputs((Result(feature="speed-angvel"),))
 
@@ -145,6 +146,60 @@ class TestSerialization:
         feat_np = _make_feature("numpy")
         feat_np.load_state(tmp_path, {}, {})
         pd.testing.assert_frame_equal(feat_np.apply(df), via_numba)
+
+
+def _fitted_columns(run_root: Path) -> list[str]:
+    """The columns that the model saved in *run_root* was fitted on."""
+    bundle = ArHmmFeature.ModelArtifact().from_path(run_root / "arhmm_model.joblib")
+    return bundle["feature_columns"]
+
+
+class TestColumns:
+    """``columns`` names the payload columns that the model is fitted on."""
+
+    def test_the_model_reads_only_the_named_columns(self, tmp_path: Path) -> None:
+        """An unnamed column changes neither the fit nor the decoded states."""
+        df = _make_sequence_df("s1", seed=4)
+        feat = _fit(_make_feature("numpy", columns=["f2", "f0"]), [df])
+        feat.save_state(tmp_path)
+        noisy = df.assign(f1=np.random.default_rng(5).standard_normal(len(df)))
+
+        assert _fitted_columns(tmp_path) == ["f0", "f2"]
+        reference = _fit(_make_feature("numpy"), [df.drop(columns=["f1"])])
+        pd.testing.assert_frame_equal(feat.apply(noisy), reference.apply(df))
+
+    def test_unset_columns_fits_every_payload_column(self, tmp_path: Path) -> None:
+        feat = _fit(_make_feature("numpy"), [_make_sequence_df("s1", seed=4)])
+        feat.save_state(tmp_path)
+
+        assert _fitted_columns(tmp_path) == ["f0", "f1", "f2"]
+
+    @pytest.mark.parametrize(
+        ("named", "reason"),
+        [
+            (["f0", "id"], "Identity or bookkeeping columns: ['id']."),
+            (["f0", "f9"], "Not a numeric column of the input: ['f9']."),
+        ],
+        ids=["identity", "absent"],
+    )
+    def test_a_name_outside_the_payload_is_refused(
+        self, named: list[str], reason: str
+    ) -> None:
+        feat = _make_feature("numpy", columns=named)
+
+        with pytest.raises(ValueError, match="columns may name only payload") as raised:
+            _ = _fit(feat, [_make_sequence_df("s1")])
+
+        assert reason in str(raised.value)
+        payload = "The input's payload columns: ['f0', 'f1', 'f2']."
+        assert payload in str(raised.value)
+
+    def test_the_order_and_repeats_of_the_names_leave_the_run_id(self) -> None:
+        def digest(columns: list[str]) -> str:
+            return run_id_digest(_make_feature(columns=columns).params)
+
+        assert digest(["f2", "f0", "f2"]) == digest(["f0", "f2"])
+        assert digest(["f0"]) != digest(["f0", "f2"])
 
 
 class TestCacheKey:

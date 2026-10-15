@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, and no fit reads a track id
+## Unreleased: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, and a fit reads the columns it is given
 
 **New feature `vame`.** It trains a recurrent variational autoencoder on windows
 of egocentrically aligned keypoints and embeds each window in a continuous
@@ -85,6 +85,27 @@ Of two `nn_id` columns that name different neighbors, the later one is lost.
 and `input_candidates` no longer list a feature as a provider of a column that
 it only copies from its input when the input has it.
 
+**A fit reads the columns it is given.** `extract-templates`,
+`extract-labeled-templates`, `arhmm` and `temporal-stack` take a `columns` param,
+a list of payload column names. Unset, each reads every numeric payload column of
+its input, as before. Set, each reads the named columns alone, and the scaler,
+embeddings, clusterings and classifiers fitted on its templates fit those alone.
+The list is sorted and each name kept once before it is hashed, and the order and
+repeats of the names leave the run id unchanged. A name of an identity or
+bookkeeping column, or of a column absent from the input, raises an error. The
+error lists the input's payload columns. Recipe validation does not check the names,
+because a column requirement on a list param is met by any one of its names.
+
+**`global-scaler` writes only the columns it fitted.** Its output keeps the
+identity and bookkeeping columns and the fitted columns, scaled, and drops every
+other payload column. It used to keep every column of its input and scale only
+the fitted ones. A `farthest_first` `extract-templates` over its output then
+sampled the unfitted columns unscaled beside the scaled ones, and a templates
+reference loaded with `ParquetLoadSpec(drop_columns=[...])` kept a column out of
+the scaler's fit and left it in every later fit. Its declared output is no longer
+a passthrough. It declares the identity and bookkeeping columns, kept when
+present, and a family per payload column of its input.
+
 **Names moved or removed.**
 
 - `mosaic.tracking.common.toolenv` is now `mosaic.core.pipeline.toolenv`.
@@ -123,8 +144,10 @@ it only copies from its input when the input has it.
   `keypoint_arrays`, `keypoint_suffixes`, `reindex_contiguous` and
   `resolve_keypoint_refs` in `mosaic.core.pose_columns`; the module
   `mosaic.core.individuals`, with `iter_individuals` and `refuse_repeated_rows`;
-  `label_individuals` and `entry_identity` in
-  `mosaic.behavior.feature_library.helpers`; `RunnerProcess`,
+  `label_individuals`, `entry_identity` and `chosen_payload_columns` in
+  `mosaic.behavior.feature_library.helpers`; `PayloadColumnNames` and
+  `PAYLOAD_COLUMNS_DESCRIPTION` in `mosaic.behavior.feature_library.types`;
+  `RunnerProcess`,
   `RunnerInterpreter`, `RunnerCommandError`, `RunnerVersionError` and `OnStart`
   in `mosaic.behavior.feature_library.runner_client`; `KPMS_ENV`,
   `KpmsExitError` and `KpmsFeature.close` in `kpms`; `VameFeature`, `VAME_ENV`,
@@ -510,13 +533,16 @@ the user, and the values its tools send to the model provider. The
 installation page lists the `mcp` extra.
 
 **Identifiers that move.** `extract-templates` and `extract-labeled-templates`
-move to 0.3, `arhmm` to 0.2, `temporal-stack` to 0.5, `xgboost` to 0.2 and
-`lightning-action` to 0.3, the version segment only. Their run ids move on every
-dataset, with or without `nn_id`. `xgboost` and `lightning-action` move because
-a templates reference that resolves to an `extract-labeled-templates` 0.2 run
-would otherwise fit other columns under the same run id. A step reading one of
-these outputs hashes its run id, and its digest moves too: the t-SNE step of the
-plan golden moves from `0.4-9ef3a62a39` to `0.4-ff82280303`.
+move to 0.3, `arhmm` to 0.2, `temporal-stack` to 0.5, `xgboost` to 0.2,
+`lightning-action` to 0.3 and `global-scaler` to 0.2. Their run ids move on every
+dataset, with or without `nn_id`. The `columns` field enters the hashed params of
+the first four even when unset, and their digest moves as well as their version.
+The other two and `global-scaler` move the version segment only. `xgboost` and
+`lightning-action` move because a templates reference that resolves to an
+`extract-labeled-templates` 0.2 run would otherwise fit other columns under the
+same run id. A step reading one of these outputs hashes its run id, and its
+digest moves too: the t-SNE step of the plan golden moves from `0.4-9ef3a62a39`
+to `0.4-8fedc8d788`.
 
 ## 0.16.0: every feature declares its columns, an editor reads the pipeline graph, and global fits skip non-finite rows
 

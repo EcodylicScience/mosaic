@@ -47,8 +47,9 @@ from mosaic.core.params import (
 )
 
 from .arhmm_model import ARHMM, fit_numba, predict_numba
-from .helpers import feature_columns, label_individuals
+from .helpers import chosen_payload_columns, label_individuals
 from .registry import register_feature
+from .types import PAYLOAD_COLUMNS_DESCRIPTION, PayloadColumnNames
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -174,8 +175,11 @@ class ArHmmFeature:
     )
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
-    # Apply decodes each individual's payload columns in frame order. Its code
-    # names the frame and id columns literally, and so does this declaration.
+    # Apply decodes each individual's payload columns in frame order, every one
+    # or those that ``columns`` names. Its code names the frame and id columns
+    # literally, and so does this declaration. ``columns`` is not declared,
+    # because a requirement on a list param is met by any one of its names. The
+    # fit refuses each named column that the input lacks.
     requires: ClassVar[tuple[Requirement, ...]] = (Column("frame"), Payload())
     provides: ClassVar[Provides] = Provides(
         adds=(Column("frame"), Column("syllable")), conditional=kept("id")
@@ -212,6 +216,9 @@ class ArHmmFeature:
             Field(default=0.01, ge=0, le=1)
         )
         random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
+        columns: Annotated[
+            PayloadColumnNames | None, Declared(PAYLOAD_COLUMNS_DESCRIPTION)
+        ] = None
         # HASH_EXCLUDE: backends are numerically equivalent, so this is dropped
         # from the run_id hash (a numpy run and a numba run share one cache entry).
         backend: Annotated[
@@ -267,7 +274,7 @@ class ArHmmFeature:
 
         for entry_key, df in inputs():
             if self._feature_columns is None:
-                self._feature_columns = feature_columns(df)
+                self._feature_columns = chosen_payload_columns(df, p.columns, self.name)
                 if not self._feature_columns:
                     msg = "[arhmm] No numeric feature columns found in input."
                     raise RuntimeError(msg)

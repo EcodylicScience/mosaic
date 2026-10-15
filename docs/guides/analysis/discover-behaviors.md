@@ -81,6 +81,33 @@ row](../../concepts/features.md#what-identifies-a-pair-row).
     `local-order-metrics` where no neighbor falls inside the radius. Feed it wavelet
     features, or drop the incomplete rows first.
 
+## The measurements a fit reads
+
+`extract-templates`, `extract-labeled-templates`, `arhmm` and `temporal-stack` read
+every numeric column of their input except the identity columns and bookkeeping
+columns such as `fps`, `label` and `nn_id`. The scaler, the embedding, the clustering
+and the classifiers fit the columns of the templates. To fit on chosen measurements,
+name them in `columns`. Leave out a column that encodes something you do not want to
+cluster on, such as `vx` and `vy`, which encode the direction of motion:
+
+```json
+{"id": "templates", "type": "feature", "feature": "extract-templates",
+ "inputs": [{"step": "speed"}],
+ "params": {"n_templates": 2000, "columns": ["speed", "angvel", "nn_dist"]}}
+```
+
+From Python, pass the same list: `params={"n_templates": 2000, "columns": [...]}`.
+
+Name the columns once, on the first templates step. `global-scaler` writes the columns
+that it fitted beside the identity and bookkeeping columns, and drops the others. The
+`farthest_first` templates resampled from its output, and every fit on them, read the
+named columns alone.
+
+The order of the names and repeated names leave the run id unchanged. A name that is
+an identity or bookkeeping column, or that the input lacks, fails the step with an
+error that lists the input's measurements. `mosaic pipeline validate` does not check
+the names.
+
 ## Fit a state model directly
 
 `arhmm` fits an autoregressive hidden Markov model over the features and returns a

@@ -8,7 +8,12 @@ import pandas as pd
 from pydantic import Field
 from sklearn.preprocessing import StandardScaler
 
-from mosaic.core.pipeline.column_contract import Payload, Provides, Requirement
+from mosaic.core.pipeline.column_contract import (
+    NON_PAYLOAD_KEPT,
+    Payload,
+    Provides,
+    Requirement,
+)
 from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
@@ -25,7 +30,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared
 
-from .helpers import ensure_columns
+from .helpers import ensure_columns, feature_columns
 from .registry import register_feature
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
@@ -70,20 +75,33 @@ class GlobalScaler:
     producing templates.parquet). Produces a scaler model bundle and
     scaled templates.
 
+    Apply returns its input with the template columns scaled and every other
+    numeric payload column (:func:`feature_columns`) dropped. The identity and
+    bookkeeping columns are kept. A step reading its output, such as an
+    ``extract-templates`` over the scaled data, reads the scaled template
+    columns alone.
+
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.global_scaler.GlobalScaler.Params`.
     """
 
     category = "global"
     name = "global-scaler"
-    version = "0.1"
+    # 0.2: the output keeps the identity and bookkeeping columns and the fitted
+    # columns, and drops every other payload column.
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
-    provides: ClassVar[Provides] = Provides(passthrough=True)
+    # The templates decide the fitted columns, which a declaration cannot name.
+    # Each is a payload column of the input under the same name. Validation reads
+    # a family per payload column of the input, fitted or not.
+    provides: ClassVar[Provides] = Provides(
+        conditional=NON_PAYLOAD_KEPT, payload_families=True
+    )
     ScalerModelArtifact = ScalerModelArtifact
     ScaledTemplatesArtifact = ScaledTemplatesArtifact
 
@@ -169,7 +187,8 @@ class GlobalScaler:
             raise RuntimeError(msg)
 
         ensure_columns(df, self._feature_columns)
-        result = df.copy()
+        unfitted = sorted(set(feature_columns(df)) - set(self._feature_columns))
+        result = df.drop(columns=unfitted)
         feature_data = df[self._feature_columns].to_numpy(dtype=np.float64)
         scaled = self._scaler.transform(feature_data)
         result[self._feature_columns] = scaled

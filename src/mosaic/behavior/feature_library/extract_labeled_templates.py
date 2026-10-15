@@ -34,9 +34,15 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import ensure_columns, entry_identity, farthest_first, feature_columns
+from .helpers import (
+    chosen_payload_columns,
+    ensure_columns,
+    entry_identity,
+    farthest_first,
+    feature_columns,
+)
 from .registry import register_feature
-from .types import PoolConfig
+from .types import PAYLOAD_COLUMNS_DESCRIPTION, PayloadColumnNames, PoolConfig
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
 _LABELS_DESCRIPTION = (
@@ -132,8 +138,11 @@ class ExtractLabeledTemplates:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
-    # Fit aligns each entry's labels by frame and samples its payload columns.
-    # Apply passes its input through with the split and the aligned label.
+    # Fit aligns each entry's labels by frame and samples its payload columns,
+    # every one or those that ``columns`` names. Apply passes its input through
+    # with the split and the aligned label. ``columns`` is not declared, because
+    # a requirement on a list param is met by any one of its names. The fit
+    # refuses each named column that the input lacks.
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.seq_col),
         Column(C.frame_col),
@@ -164,6 +173,9 @@ class ExtractLabeledTemplates:
             default=0.2, ge=0.0, le=1.0
         )
         random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
+        columns: Annotated[
+            PayloadColumnNames | None, Declared(PAYLOAD_COLUMNS_DESCRIPTION)
+        ] = None
 
         @model_validator(mode="after")
         def _require_sampling_spec(self) -> Self:
@@ -384,7 +396,9 @@ class ExtractLabeledTemplates:
 
         for _entry_key, df in inputs():
             if self._feature_columns is None:
-                self._feature_columns = feature_columns(df)
+                self._feature_columns = chosen_payload_columns(
+                    df, self.params.columns, self.name
+                )
                 ensure_columns(df, [C.seq_col])
 
             group, sequence = entry_identity(df)
@@ -538,7 +552,9 @@ class ExtractLabeledTemplates:
 
         for entry_key, df in inputs():
             if self._feature_columns is None:
-                self._feature_columns = feature_columns(df)
+                self._feature_columns = chosen_payload_columns(
+                    df, self.params.columns, self.name
+                )
                 ensure_columns(df, [C.seq_col])
 
             group, sequence = entry_identity(df)

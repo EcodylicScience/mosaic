@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 from typer.testing import CliRunner, Result
 
+from mosaic.behavior.feature_library.global_kmeans import GlobalKMeansClustering
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import validate as validate_module
@@ -208,6 +209,85 @@ def test_a_global_fit_runs_over_a_feature_with_nan_edges(tracked: Dataset) -> No
     assert (provenance["dropped"] > 0).all()
     templates = _table(tracked, templates_run, "templates.parquet")
     assert templates.notna().all().all()
+
+
+NAMED_MEASUREMENTS: Document = {
+    "schema_version": 1,
+    "name": "clustering on named measurements",
+    "steps": [
+        {
+            "id": "speed",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": ["tracks"],
+            "params": {"step_size": 2},
+        },
+        {
+            "id": "templates",
+            "type": "feature",
+            "feature": "extract-templates",
+            "inputs": [{"step": "speed"}],
+            "params": {"n_templates": 100, "columns": ["speed_step", "speed"]},
+        },
+        {
+            "id": "scaler",
+            "type": "feature",
+            "feature": "global-scaler",
+            "inputs": [{"step": "speed"}],
+            "params": {"templates": {"step": "templates"}},
+        },
+        {
+            "id": "scaled_templates",
+            "type": "feature",
+            "feature": "extract-templates",
+            "inputs": [{"step": "scaler"}],
+            "params": {
+                "n_templates": 10,
+                "strategy": "farthest_first",
+                "pool": {"size": 40},
+            },
+        },
+        {
+            "id": "kmeans",
+            "type": "feature",
+            "feature": "global-kmeans",
+            "inputs": [{"step": "scaler"}],
+            "params": {"templates": {"step": "scaled_templates"}, "k": 1, "n_init": 1},
+        },
+    ],
+}
+"""A clustering on two of the four measurements of ``speed-angvel``.
+
+The first templates name ``speed`` and ``speed_step``, and leave out ``vx`` and
+``vy``. The resampled templates read the scaler's output and leave ``columns``
+unset.
+"""
+
+
+def test_a_clustering_fits_only_the_named_measurements(tracked: Dataset) -> None:
+    """The scaler writes the fitted columns alone, and every later fit reads them.
+
+    The scaler once kept every column of its input and scaled only the fitted
+    ones, and the resampled templates sampled ``vx`` and ``vy`` unscaled beside
+    the two named columns.
+    """
+    done = run_pipeline(tracked, Recipe.model_validate(NAMED_MEASUREMENTS))
+
+    assert [outcome.state for outcome in done.outcomes] == ["ran"] * 5
+    run_ids = {outcome.step_id: outcome.run_id for outcome in done.outcomes}
+    named = ["speed", "speed_step"]
+    for step in ("templates", "scaled_templates"):
+        run_id = run_ids[step]
+        assert run_id is not None
+        assert list(_table(tracked, run_id, "templates.parquet").columns) == named
+    kmeans_run = run_ids["kmeans"]
+    assert kmeans_run is not None
+    found = list(
+        Path(tracked.get_root("features")).glob(f"*/{kmeans_run}/model.joblib")
+    )
+    assert len(found) == 1
+    model = GlobalKMeansClustering.ModelArtifact().from_path(found[0])
+    assert model["feature_columns"] == named
 
 
 def test_a_run_records_the_identifiers_the_plan_resolved(tracked: Dataset) -> None:

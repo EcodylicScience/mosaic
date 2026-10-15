@@ -7,7 +7,7 @@ feature_library to avoid code duplication.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "apply_exclude_cols",
+    "chosen_payload_columns",
     "clean_animal_track",
     "clean_tracks_grouped",
     "ego_rotate",
@@ -67,6 +68,47 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
     a feature that asks both questions cannot answer them with two different sets.
     """
     return sorted(set(df.select_dtypes(include="number").columns) - NON_PAYLOAD_COLS)
+
+
+def chosen_payload_columns(
+    df: pd.DataFrame, columns: Sequence[str] | None, feature: str
+) -> list[str]:
+    """Return the payload columns of *df* that a step reads.
+
+    Args:
+        df: The step's merged input.
+        columns: The names that the step's ``columns`` param lists. ``None``
+            reads every payload column, as :func:`feature_columns` returns them.
+        feature: The step's feature name, which the error names.
+
+    Returns:
+        *columns* in their order, or every payload column when it is ``None``.
+
+    Raises:
+        ValueError: A name is an identity or bookkeeping column, or is not a
+            numeric column of *df*. The message lists the payload columns of
+            *df*.
+    """
+    payload = feature_columns(df)
+    if columns is None:
+        return payload
+    not_payload = [name for name in columns if name in NON_PAYLOAD_COLS]
+    not_found = [
+        name for name in columns if name not in NON_PAYLOAD_COLS and name not in payload
+    ]
+    if not_payload or not_found:
+        reasons: list[str] = []
+        if not_payload:
+            reasons.append(f"Identity or bookkeeping columns: {not_payload}.")
+        if not_found:
+            reasons.append(f"Not a numeric column of the input: {not_found}.")
+        listed = " ".join(reasons)
+        msg = (
+            f"[{feature}] columns may name only payload columns. {listed} "
+            f"The input's payload columns: {payload}."
+        )
+        raise ValueError(msg)
+    return list(columns)
 
 
 def finite_rows(matrix: np.ndarray) -> np.ndarray:

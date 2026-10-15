@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeAlias
 
-from pydantic import Field
+from pydantic import AfterValidator, Field
 
 from mosaic.core.params import Declared, DeclaredModel
 
 __all__ = [
     "INTERPOLATION_CONFIG_DESCRIPTION",
+    "PAYLOAD_COLUMNS_DESCRIPTION",
     "InterpolationConfig",
+    "PayloadColumnNames",
     "PoolConfig",
     "SamplingConfig",
 ]
@@ -69,6 +71,35 @@ than pose, so both say something this does not.
 
 As with ``POSE_CONFIG_DESCRIPTION``, it must not restate the class docstring
 above: pydantic drops a field description identical to the referenced schema's.
+"""
+
+
+def _sorted_unique(names: list[str]) -> list[str]:
+    """*names* sorted, each once."""
+    return sorted(set(names))
+
+
+PayloadColumnNames: TypeAlias = Annotated[
+    list[str], Field(min_length=1), AfterValidator(_sorted_unique)
+]
+"""The payload columns that a step reads, sorted and each named once.
+
+The normalized list enters the run identity. Two spellings that differ in order
+or repeats name one run. Each field states its prose beside the field, as
+``mosaic.core.params.Probability`` explains.
+"""
+
+PAYLOAD_COLUMNS_DESCRIPTION = (
+    "The payload columns to read. Unset, every numeric payload column of the "
+    "input is read. A name of an identity or bookkeeping column, or of a "
+    "column that the input lacks, raises. The order and repeats of the names "
+    "do not change the run."
+)
+"""The prose of a ``columns: PayloadColumnNames | None`` field.
+
+``ExtractTemplates``, ``ExtractLabeledTemplates``, ``ArHmmFeature`` and
+``TemporalStackingFeature`` read every numeric payload column of their input
+unless the field names some.
 """
 
 

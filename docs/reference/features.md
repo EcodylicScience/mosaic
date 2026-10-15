@@ -430,6 +430,7 @@ Build temporal context windows over per-sequence feature data.
 | `fps` | `number` | `30.0` | > `0` | The frame rate used to convert win_sec into a frame count. [fps] |
 | `win_sec` | `number` | `0.5` | > `0` | The width of the pooling window. [s] |
 | `pair_filter` | `NNResult` \| `None` | `null` |  | Unset, every row is read. A nearest-neighbor result narrows the input, while it loads, to rows where one individual in the pair is the other's nearest neighbor. On an input without id1/id2 columns, the filter has no effect. |
+| `columns` | list of `string` \| `None` | `null` |  | The payload columns to read. Unset, every numeric payload column of the input is read. A name of an identity or bookkeeping column, or of a column that the input lacks, raises. The order and repeats of the names do not change the run. |
 
 ??? note "`NNResult`"
 
@@ -594,6 +595,7 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 | `downsample_rate` | `integer` \| `None` | `null` |  | The factor every sequence is subsampled by before fitting and inference, upsampled back afterward. Unset, no downsampling is applied. |
 | `prune_threshold` | `number` | `0.01` | >= `0`, <= `1` | The posterior mass fraction below which a fitted state is dropped. |
 | `random_state` | `integer` | `42` |  | The random seed for PCA and model fitting, for reproducible restarts. |
+| `columns` | list of `string` \| `None` | `null` |  | The payload columns to read. Unset, every numeric payload column of the input is read. A name of an identity or bookkeeping column, or of a column that the input lacks, raises. The order and repeats of the names do not change the run. |
 | `backend` | `"auto"` \| `"numpy"` \| `"numba"` \| `"jax"` | `"auto"` |  | The compute backend for EM and Viterbi decoding. auto uses the numba-compiled path when available and falls back to numpy. numba requests the compiled path but still falls back to numpy if it raises. numpy forces the plain path. jax is reserved for a future GPU path and is not implemented yet. |
 
 ??? note "`ArHmmModelArtifact`"
@@ -631,6 +633,7 @@ Extract labeled, split-annotated templates from upstream features.
 | `pool` | `PoolConfig` | _constructed_ |  | Candidate pool size and per-entry allocation strategy consulted before final template selection. |
 | `test_fraction` | `number` | `0.2` | >= `0.0`, <= `1.0` | Fraction of sequences held out for the test split. |
 | `random_state` | `integer` | `42` |  | The random seed for split assignment and template sampling. |
+| `columns` | list of `string` \| `None` | `null` |  | The payload columns to read. Unset, every numeric payload column of the input is read. A name of an identity or bookkeeping column, or of a column that the input lacks, raises. The order and repeats of the names do not change the run. |
 
 ??? note "`GroundTruthLabelsSource`"
 
@@ -688,6 +691,7 @@ Subsample per-sequence data into a representative template matrix.
 | `pool` | `PoolConfig` | _constructed_ |  | The candidate pool's size, allocation strategy, and per-entry caps. |
 | `random_state` | `integer` | `42` |  | The random seed for the feature's random sampling steps. |
 | `pair_filter` | `NNResult` \| `None` | `null` |  | Unset, every row is read. A nearest-neighbor result narrows the input, while it loads, to rows where one individual in the pair is the other's nearest neighbor. On an input without id1/id2 columns, the filter has no effect. |
+| `columns` | list of `string` \| `None` | `null` |  | The payload columns to read. Unset, every numeric payload column of the input is read. A name of an identity or bookkeeping column, or of a column that the input lacks, raises. The order and repeats of the names do not change the run. |
 
 ??? note "`NNResult`"
 
@@ -962,7 +966,7 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
 
 ### `global-scaler`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.global_scaler.GlobalScaler`
+Version `0.2` &middot; `mosaic.behavior.feature_library.global_scaler.GlobalScaler`
 
 Fit a StandardScaler on templates and scale per-sequence data.
 

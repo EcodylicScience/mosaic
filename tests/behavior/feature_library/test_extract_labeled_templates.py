@@ -23,7 +23,7 @@ from mosaic.core.pipeline.types import (
     ParquetLoadSpec,
     Result,
 )
-from tests.helpers import track_table
+from tests.helpers import run_id_digest, track_table
 
 
 class TestMetaColumnReservation:
@@ -508,6 +508,78 @@ class TestSaveLoadLabeled:
         # Original columns are preserved
         for col in df.columns:
             assert col in result.columns
+
+
+class TestColumns:
+    """``columns`` names the payload columns that the templates sample."""
+
+    def _templates(
+        self, tmp_path: Path, run: str, params: dict[str, object]
+    ) -> pd.DataFrame:
+        """Fit on one sequence of two 25-row classes, keeping every row."""
+        labels_lookup = _setup_labels_lookup(
+            tmp_path / "labels" / "behavior",
+            [("g", "s1", np.array([0] * 25 + [1] * 25))],
+        )
+        feat = _make_feature_with_labels(
+            labels_lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_per_class": 25,
+                "test_fraction": 0.0,
+                **params,
+            },
+        )
+        df = _make_labeled_df(50, sequence="s1", group="g")
+        feat.fit(_make_factory([("g__s1", df)]))
+        feat.save_state(tmp_path / run)
+        return pd.read_parquet(tmp_path / run / "templates.parquet")
+
+    def test_the_templates_hold_only_the_named_columns(self, tmp_path: Path) -> None:
+        every = self._templates(tmp_path, "every", {})
+        named = self._templates(tmp_path, "named", {"columns": ["feat_2", "feat_0"]})
+
+        assert list(every.columns) == ["feat_0", "feat_1", "feat_2", "label", "split"]
+        kept = ["feat_0", "feat_2", "label", "split"]
+        pd.testing.assert_frame_equal(named, every[kept])
+
+    @pytest.mark.parametrize(
+        ("named", "reason"),
+        [
+            (["feat_0", "split"], "Identity or bookkeeping columns: ['split']."),
+            (["feat_0", "feat_9"], "Not a numeric column of the input: ['feat_9']."),
+        ],
+        ids=["bookkeeping", "absent"],
+    )
+    def test_a_name_outside_the_payload_is_refused(
+        self, tmp_path: Path, named: list[str], reason: str
+    ) -> None:
+        feat = _make_feature_with_labels(
+            {},
+            params={"labels": {"kind": "behavior"}, "n_per_class": 5, "columns": named},
+        )
+        df = _make_labeled_df(10, sequence="s1", group="g")
+
+        with pytest.raises(ValueError, match="columns may name only payload") as raised:
+            feat.fit(_make_factory([("g__s1", df)]))
+
+        assert reason in str(raised.value)
+        payload = "The input's payload columns: ['feat_0', 'feat_1', 'feat_2']."
+        assert payload in str(raised.value)
+
+    def test_the_order_and_repeats_of_the_names_leave_the_run_id(self) -> None:
+        def digest(columns: list[str]) -> str:
+            params = ExtractLabeledTemplates.Params.from_overrides(
+                {
+                    "labels": GroundTruthLabelsSource(),
+                    "n_total": 10,
+                    "columns": columns,
+                }
+            )
+            return run_id_digest(params)
+
+        assert digest(["feat_2", "feat_0", "feat_2"]) == digest(["feat_0", "feat_2"])
+        assert digest(["feat_0"]) != digest(["feat_0", "feat_2"])
 
 
 class TestEdgeCasesLabeled:

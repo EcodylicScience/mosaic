@@ -200,9 +200,10 @@ class Payload:
 
     A payload column is any column outside ``NON_PAYLOAD_COLS``: the identity
     columns and the bookkeeping ones. ``extract-templates`` samples every
-    payload column of its merged input, and the global models fitted on the
-    templates read the same columns. A kind of column meets the requirement, and
-    a frame without a payload column leaves them nothing to read.
+    payload column of its merged input unless its ``columns`` param names some,
+    and the global models fitted on the templates read the same columns. A kind
+    of column meets the requirement, and a frame without a payload column leaves
+    them nothing to read.
 
     Validation, which reads names alone, counts any column outside
     ``NON_PAYLOAD_COLS``. The check before ``apply`` reads the frame's numeric

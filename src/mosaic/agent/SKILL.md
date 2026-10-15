@@ -187,6 +187,9 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 - A run that loses some entries finishes as `partial` and names them in
   `result.failed_entries`. Check it before any global fit, since a fit over fewer
   entries is a different result. Losing every entry raises.
+- A global fit reads every numeric payload column of its input unless the `columns`
+  param of `extract-templates`, `extract-labeled-templates`, `arhmm` or
+  `temporal-stack` names the measurements to fit.
 - Inputs combine at one entity level. Mosaic refuses to merge per-individual output
   with per-pair output.
 - A custom feature must be deterministic, with typed Pydantic parameters:

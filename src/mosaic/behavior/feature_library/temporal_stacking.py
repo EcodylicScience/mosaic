@@ -30,9 +30,10 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import feature_columns, meta_columns
+from .helpers import chosen_payload_columns, meta_columns
 from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
 from .registry import register_feature
+from .types import PAYLOAD_COLUMNS_DESCRIPTION, PayloadColumnNames
 
 # --- Computation helpers ---
 
@@ -255,11 +256,16 @@ class TemporalStackingFeature:
     emits: EmitsLevel = "as-input"
     # ``apply`` also sorts a pair input, one with ``id1`` and ``id2``, by
     # ``frame``. A requirement cannot depend on the input's other columns.
+    # ``columns`` is not declared, because a requirement on a list param is met
+    # by any one of its names. ``apply`` refuses each named column that the
+    # input lacks.
     requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
-    # Each numeric payload column is written as ``<column>__t<offset>`` per
-    # offset, or unchanged without the stack, and as
-    # ``<column>__pool_mean``, ``__pool_var`` or ``__pool_std`` per pooled
-    # statistic. The bookkeeping columns are dropped.
+    # ``apply`` reads every payload column, or those that ``columns`` names. Each
+    # is written as ``<column>__t<offset>`` per offset, or unchanged without the
+    # stack, and as ``<column>__pool_mean``, ``__pool_var`` or ``__pool_std``
+    # per pooled statistic. The other payload columns and the bookkeeping
+    # columns are dropped. A declared family cannot depend on ``columns``, and
+    # validation expects one per payload column.
     provides: ClassVar[Provides] = Provides(
         conditional=META_COLUMNS_KEPT, payload_families=True
     )
@@ -298,6 +304,9 @@ class TemporalStackingFeature:
         pair_filter: Annotated[NNResult | None, Declared(PAIR_FILTER_DESCRIPTION)] = (
             None
         )
+        columns: Annotated[
+            PayloadColumnNames | None, Declared(PAYLOAD_COLUMNS_DESCRIPTION)
+        ] = None
 
         @model_validator(mode="before")
         @classmethod
@@ -338,7 +347,7 @@ class TemporalStackingFeature:
         if df.empty:
             return pd.DataFrame()
 
-        cols = feature_columns(df)
+        cols = chosen_payload_columns(df, self.params.columns, self.name)
         if not cols:
             msg = "[temporal-stack] No feature columns found in input"
             raise ValueError(msg)

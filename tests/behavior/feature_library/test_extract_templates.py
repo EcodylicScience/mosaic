@@ -13,7 +13,7 @@ import pytest
 from mosaic.behavior.feature_library.extract_templates import ExtractTemplates
 from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
 from mosaic.core.pipeline.types import InputStream, Result
-from tests.helpers import track_table
+from tests.helpers import run_id_digest, track_table
 
 InputFactory = Callable[[], Iterator[tuple[str, pd.DataFrame]]]
 
@@ -439,6 +439,78 @@ class TestFarthestFirst:
             "nn_delta_y_ego",
             "nn_dist",
         ]
+
+
+# --- Named columns ---
+
+
+class TestColumns:
+    """``columns`` names the payload columns that the templates sample."""
+
+    def _entries(self) -> list[tuple[str, pd.DataFrame]]:
+        return [
+            ("a", _make_df(30, sequence="seq_a")),
+            ("b", _make_df(20, sequence="seq_b")),
+        ]
+
+    def test_the_templates_hold_only_the_named_columns(self, tmp_path: Path) -> None:
+        """Both runs keep every row in one order, because every row fits the pool."""
+        every, _ = _fit_and_save(
+            _make_feature(params={"n_templates": 50}),
+            _make_factory(self._entries()),
+            tmp_path / "every",
+        )
+        named, _ = _fit_and_save(
+            _make_feature(params={"n_templates": 50, "columns": ["feat_2", "feat_0"]}),
+            _make_factory(self._entries()),
+            tmp_path / "named",
+        )
+
+        assert list(every.columns) == ["feat_0", "feat_1", "feat_2"]
+        pd.testing.assert_frame_equal(named, every[["feat_0", "feat_2"]])
+
+    def test_an_unnamed_column_drops_no_row(self, tmp_path: Path) -> None:
+        """Only a named column decides which rows are finite."""
+        df = _with_edges(_make_df(30, sequence="seq_a"), 3)
+        feat = _make_feature(params={"n_templates": 50, "columns": ["feat_2"]})
+
+        templates, provenance = _fit_and_save(
+            feat, _make_factory([("a", df)]), tmp_path
+        )
+
+        assert list(templates.columns) == ["feat_2"]
+        assert len(templates) == 30
+        assert provenance.iloc[0]["dropped"] == 0
+
+    @pytest.mark.parametrize(
+        ("named", "reason"),
+        [
+            (["feat_0", "frame"], "Identity or bookkeeping columns: ['frame']."),
+            (["feat_0", "feat_9"], "Not a numeric column of the input: ['feat_9']."),
+        ],
+        ids=["identity", "absent"],
+    )
+    def test_a_name_outside_the_payload_is_refused(
+        self, named: list[str], reason: str
+    ) -> None:
+        feat = _make_feature(params={"n_templates": 5, "columns": named})
+
+        with pytest.raises(ValueError, match="columns may name only payload") as raised:
+            feat.fit(InputStream(_make_factory(self._entries()), n_entries=2))
+
+        assert reason in str(raised.value)
+        payload = "The input's payload columns: ['feat_0', 'feat_1', 'feat_2']."
+        assert payload in str(raised.value)
+
+    def test_the_order_and_repeats_of_the_names_leave_the_run_id(self) -> None:
+        def digest(columns: list[str]) -> str:
+            params = ExtractTemplates.Params.from_overrides(
+                {"n_templates": 5, "columns": columns}
+            )
+            return run_id_digest(params)
+
+        assert digest(["feat_2", "feat_0", "feat_2"]) == digest(["feat_0", "feat_2"])
+        assert digest(["feat_0"]) != digest(["feat_0", "feat_2"])
 
 
 # --- Save/load round-trip ---

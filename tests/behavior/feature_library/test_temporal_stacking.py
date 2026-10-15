@@ -28,7 +28,7 @@ import pytest
 from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
 from mosaic.behavior.feature_library.temporal_stacking import TemporalStackingFeature
 from mosaic.core.pipeline.types import Result
-from tests.helpers import make_pair_df, track_table
+from tests.helpers import make_pair_df, run_id_digest, track_table
 
 _KEY = ["frame", "id1", "id2", "perspective"]
 
@@ -120,6 +120,50 @@ def test_a_neighbor_id_is_neither_stacked_nor_carried() -> None:
     assert not [column for column in out.columns if column.startswith("nn_id")]
     assert "nn_dist__t+00" in out.columns
     assert {"frame", "time", "id", "group", "sequence"} <= set(out.columns)
+
+
+def test_named_columns_are_the_only_ones_stacked() -> None:
+    """Each named column stacks as it does unnamed, and the others are dropped."""
+    df = make_pair_df(6, 3)
+
+    every = _feature().apply(df)
+    named = _feature(columns=["feat_2", "feat_0"]).apply(df)
+
+    stacked = [column for column in every.columns if "__t" in column]
+    assert {column.split("__t")[0] for column in stacked} == {
+        "feat_0",
+        "feat_1",
+        "feat_2",
+    }
+    kept = [column for column in every.columns if not column.startswith("feat_1")]
+    pd.testing.assert_frame_equal(named, every[kept])
+
+
+@pytest.mark.parametrize(
+    ("named", "reason"),
+    [
+        (
+            ["feat_0", "perspective"],
+            "Identity or bookkeeping columns: ['perspective'].",
+        ),
+        (["feat_0", "feat_9"], "Not a numeric column of the input: ['feat_9']."),
+    ],
+    ids=["identity", "absent"],
+)
+def test_a_name_outside_the_payload_is_refused(named: list[str], reason: str) -> None:
+    with pytest.raises(ValueError, match="columns may name only payload") as raised:
+        _ = _feature(columns=named).apply(make_pair_df(6, 2))
+
+    assert reason in str(raised.value)
+    assert "The input's payload columns: ['feat_0', 'feat_1']." in str(raised.value)
+
+
+def test_the_order_and_repeats_of_the_names_leave_the_run_id() -> None:
+    def digest(columns: list[str]) -> str:
+        return run_id_digest(_feature(columns=columns).params)
+
+    assert digest(["feat_1", "feat_0", "feat_1"]) == digest(["feat_0", "feat_1"])
+    assert digest(["feat_0"]) != digest(["feat_0", "feat_1"])
 
 
 def test_an_empty_frame_returns_empty() -> None:
