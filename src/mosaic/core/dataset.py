@@ -275,6 +275,16 @@ chose, and a column in ``tracks_raw/index.csv`` would be a second place for it t
 disagree from.
 """
 
+_GROUP_FROM_DEFAULT: Final = "filename"
+"""The group policy a track conversion applies when its caller names none.
+
+The default of ``LabelConvertParams.group_from``, so a file that feeds both the
+tracks and the labels root, as a CalMS21 ``.npy`` does, names each entry alike in
+both. ``filename`` takes the file-level group the scan recorded, which it records
+only where the source declares a grouping rule, and the group inside the file
+everywhere else.
+"""
+
 _INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
     "tracks": TRACKS_INDEX_PATH_COLUMNS,
     # ``labels`` belongs here for the same reason ``tracks`` does: its rows carry
@@ -6032,10 +6042,10 @@ class Dataset:
         # If sequence missing/blank and the format can hold several, expand this
         # file into multiple per-sequence outputs
         if (not seq_value) and converter.enumerable:
-            # policy: 'infile' (default), 'filename', 'both'
-            policy = str(params.get("group_from", "infile")).lower()
+            # policy: 'filename' (default), 'infile', 'both'
+            policy = str(params.get("group_from", _GROUP_FROM_DEFAULT)).lower()
             if policy not in {"infile", "filename", "both"}:
-                policy = "infile"
+                policy = _GROUP_FROM_DEFAULT
 
             pairs = converter.enumerate_sequences(src_path)
             if not pairs:
@@ -6328,12 +6338,16 @@ class Dataset:
             merge into, and its file holds several sequences instead.
         group_from : {'infile','filename','both'} | None
             Controls which *group* ends up in the standardized output & index:
-            - 'infile' (default): use the group from inside the source file (e.g., 'annotator-id_0').
-            - 'filename'   : use the raw file-level group hint from tracks_raw/index.csv (e.g., 'calms21_task1_test').
+            - 'filename' (default): use the raw file-level group from tracks_raw/index.csv
+                        (e.g., 'calms21_task1_test') where the scan recorded one, and the
+                        group from inside the source file otherwise. The scan records one
+                        only when the source declares a grouping rule.
+            - 'infile' : use the group from inside the source file (e.g., 'annotator-id_0').
             - 'both'  : set output group to the raw file-level group, and still record in-file group in the data
                         (converters should already keep in-file columns; we always keep raw file-level hint in
                         the 'collection' column).
-            If None, defaults to 'infile'.
+            If None, defaults to 'filename', as label conversion does, so one
+            file feeding both roots names each entry alike.
         """
         raw_idx = self.get_root("tracks_raw") / "index.csv"
         if not raw_idx.exists():
@@ -6377,7 +6391,7 @@ class Dataset:
             merging = set()
 
         # normalize group_from
-        group_from = (group_from or "infile").lower()
+        group_from = (group_from or _GROUP_FROM_DEFAULT).lower()
         if group_from not in {"infile", "filename", "both"}:
             raise ValueError(
                 f"group_from must be one of 'infile', 'filename', 'both'; got {group_from}"

@@ -25,7 +25,12 @@ import mosaic.core.track_library  # noqa: F401  -- registers the converters
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 
-from tests.helpers import make_dataset, write_dlc_csv, write_trex_npz
+from tests.helpers import (
+    make_dataset,
+    write_calms21_npy,
+    write_dlc_csv,
+    write_trex_npz,
+)
 
 # The DeepLabCut fixture's bodyparts, which a single-animal format neither merges
 # nor expands.
@@ -44,18 +49,6 @@ def _trex_npz(path: Path, *, individual: int, n: int = 5) -> None:
             "poseY": np.stack([np.linspace(1.0, 0.0, n)] * 2, axis=1),
         },
     )
-
-
-def _calms21_npy(path: Path, pairs: dict[str, dict[str, int]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        group: {
-            seq: {"keypoints": np.zeros((n, 2, 2, 7), dtype=float)}
-            for seq, n in sequences.items()
-        }
-        for group, sequences in pairs.items()
-    }
-    np.save(path, payload, allow_pickle=True)
 
 
 def _entry_names(ds: Dataset) -> list[str]:
@@ -151,7 +144,7 @@ def test_a_file_holding_several_sequences_does_not_borrow_a_blank_group(
     was not there and overwrote the real one the file carries.
     """
     ds = make_dataset((tmp_path / "ds").resolve(), roots=_ROOTS)
-    _calms21_npy(ds.base_dir / "raw" / "task1.npy", {"annotator0": {"seq_a": 4}})
+    write_calms21_npy(ds.base_dir / "raw" / "task1.npy", {"annotator0": {"seq_a": 4}})
 
     ds.index_tracks_raw(
         [ds.base_dir / "raw"],

@@ -148,6 +148,19 @@ the scaler's fit and left it in every later fit. Its declared output is no longe
 a passthrough. It declares the identity and bookkeeping columns, kept when
 present, and a family per payload column of its input.
 
+**A track conversion files a file's sequences under the group its source
+declares.** `convert_all_tracks` and `mosaic convert-tracks` used `infile` when no
+`group_from` was passed, so a source declared with `--group-from filename` had its
+tracks filed under the group inside the file, such as CalMS21's `annotator-id_0`,
+while `convert-labels` filed the same file's labels under the file's name. A label
+lookup by group and sequence then found nothing, and every row read label 0. The
+default is now `filename`, the label conversion's: the file-level group where the
+scan recorded one, which it does only for a source that declares a grouping rule,
+and the in-file group everywhere else. `--group-from infile` keeps the old naming.
+The group is not part of a conversion's identity, so a dataset that declared a
+rule and converts again keeps its run id and files its entries under the new
+names.
+
 **Names moved or removed.**
 
 - `mosaic.tracking.common.toolenv` is now `mosaic.core.pipeline.toolenv`.

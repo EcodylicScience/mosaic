@@ -269,6 +269,30 @@ def write_sleap_analysis_h5(
             handle["track_names"] = np.array([n.encode() for n in track_names], "S")
 
 
+def write_calms21_npy(path: Path, pairs: Mapping[str, Mapping[str, int]]) -> None:
+    """Write a CalMS21 ``.npy`` holding several sequences, grouped as it groups them.
+
+    Args:
+        path: The file to write. Its parent is created.
+        pairs: Each in-file group (an annotator in CalMS21), mapped to its
+            sequences and their frame counts. Every sequence holds two mice of
+            seven keypoints, all zero, and a behavior annotation per frame,
+            all 0, so the file feeds both the tracks and the labels converter.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        group: {
+            seq: {
+                "keypoints": np.zeros((n, 2, 2, 7), dtype=float),
+                "annotations": np.zeros(n, dtype=int),
+            }
+            for seq, n in sequences.items()
+        }
+        for group, sequences in pairs.items()
+    }
+    np.save(path, payload, allow_pickle=True)
+
+
 def write_dlc_csv(
     path: Path,
     bodyparts: Sequence[str],

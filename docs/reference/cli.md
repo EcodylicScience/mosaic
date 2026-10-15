@@ -582,7 +582,7 @@ $ mosaic convert-tracks [OPTIONS]
 * `--params <str>`: Converter params as JSON, @file.json, or @-.
 * `--overwrite`: Overwrite existing output parquet files.
 * `--merge-per-sequence / --no-merge-per-sequence`: Merge rows per (group, sequence). Default: each format's converter decides. --merge-per-sequence forces it for every format, --no-merge-per-sequence for none.
-* `--group-from <str>`: 'infile' | 'filename' | 'both'.
+* `--group-from <str>`: 'filename' | 'infile' | 'both'. Default: filename, the group the source's --group-from gives each file, else the group inside the file, as convert-labels names the same file's labels.
 * `--strict-schema / --no-strict-schema`: Refuse a table that fails schema validation instead of warning and skipping its sequence. Off by default, which is the converter default.  [default: no-strict-schema]
 * `--json`: Emit the result as JSON.
 * `--help`: Show this message and exit.

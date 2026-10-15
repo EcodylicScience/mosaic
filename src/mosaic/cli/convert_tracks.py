@@ -38,7 +38,15 @@ def convert_tracks_command(
         ),
     ] = None,
     group_from: Annotated[
-        str | None, typer.Option("--group-from", help="'infile' | 'filename' | 'both'.")
+        str | None,
+        typer.Option(
+            "--group-from",
+            help=(
+                "'filename' | 'infile' | 'both'. Default: filename, the group the "
+                "source's --group-from gives each file, else the group inside the "
+                "file, as convert-labels names the same file's labels."
+            ),
+        ),
     ] = None,
     strict_schema: Annotated[
         bool,
