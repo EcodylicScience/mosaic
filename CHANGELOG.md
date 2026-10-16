@@ -8,7 +8,15 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
+## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
+
+**mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the
+clone and editable install, after the conda step that installs `ffmpeg`, `av` and
+`py-opencv` (see the installation page). The Ultralytics, POLO, keypoint-MoSeq and
+VAME environments are still built from files in the repository, which the wheel
+does not carry. NOTICE now credits the file formats mosaic reads and the behavioral
+map that follows Berman et al. (2014), and `CITATION.cff` and a citing page state
+how to cite mosaic.
 
 **A table that TRex tracks is timed at the measured rate of the media TRex
 read.** TRex keeps a video's frame rate as an integer, so it timed a 29.97 fps
