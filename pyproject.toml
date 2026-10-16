@@ -15,6 +15,27 @@ requires-python = ">=3.12"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Jacob Davidson" }, { name = "Paul Nuehrenberg" }]
+keywords = [
+    "animal behavior",
+    "pose tracking",
+    "behavioral features",
+    "ethology",
+    "computational ethology",
+]
+# No `License ::` trove classifier, for the reason given at `license` above.
+# No `Typing :: Typed` either: the wheel ships no `py.typed` marker. Python 3.12
+# is the one version the suite runs against. Native Windows supports the core
+# analysis only (docs/installation.md), so it is left out of the operating
+# systems listed.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 dependencies = [
     "numpy>=1.22",
     "pandas>=1.5",
@@ -55,6 +76,13 @@ dependencies = [
     "typer>=0.12",
     "mosaic-media[io,cli]>=0.3.4,<0.4.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/EcodylicScience/mosaic"
+Documentation = "https://ecodylicscience.github.io/mosaic/"
+Source = "https://github.com/EcodylicScience/mosaic"
+Issues = "https://github.com/EcodylicScience/mosaic/issues"
+Changelog = "https://github.com/EcodylicScience/mosaic/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [

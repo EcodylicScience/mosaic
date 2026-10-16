@@ -1,0 +1,241 @@
+name: Release
+
+# Publishes to PyPI and creates a GitHub release when a `v*` tag is pushed.
+#
+# A tag push runs no tests by itself, so `verify` refuses a tag unless the
+# commit it points at is on `main` and `ci.yml` has already passed for that
+# exact sha. The release commit therefore has to be pushed to `main` and be
+# green before the tag is created. CONTRIBUTING.md#releasing has the steps.
+#
+# Nothing here runs pytest. `tests/meta/test_pytest_config.py` holds the
+# workflows that do to `ci.yml` and `slow.yml`, so the checks in this file are
+# about the artifact: the wheel's contents and a clean install of it.
+#
+# `uv publish` authenticates by OpenID Connect against a PyPI trusted
+# publisher, so no API token is stored as a secret. One-time setup:
+#
+#   1. On pypi.org, add a pending trusted publisher for `mosaic-behavior`:
+#      owner `EcodylicScience`, repository `mosaic`, workflow `release.yml`,
+#      environment `pypi`.
+#   2. On GitHub, create the `pypi` environment for this repository. A required
+#      reviewer on it turns `publish` into a manual gate.
+#
+# PyPI never lets a version number be replaced, so a bad upload is yanked and
+# the next version is released.
+#
+# Action pins match `ci.yml` (`checkout@v4`, `setup-uv@v5`).
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # to read the CI runs of this commit
+    steps:
+      # The whole history, because the next step asks whether the tagged commit
+      # is an ancestor of `origin/main`.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # The tag is the release, so it must agree with the version the build
+      # reads from pyproject.toml. `--frozen` keeps uv from resolving or
+      # touching the lock just to print a version.
+      - name: Check the tag matches the packaged version
+        run: |
+          packaged=$(uv version --short --frozen)
+          tagged="${GITHUB_REF_NAME#v}"
+          if [ "$packaged" != "$tagged" ]; then
+            echo "tag $GITHUB_REF_NAME declares $tagged, pyproject.toml says $packaged" >&2
+            exit 1
+          fi
+
+      - name: Check the tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "$GITHUB_SHA is not an ancestor of origin/main" >&2
+            exit 1
+          fi
+
+      # The release notes are this section, so a tag cut before the changelog
+      # was retitled would publish "Unreleased" as the notes.
+      - name: Check the changelog names this version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! grep -Eq "^## ${version//./\\.}([: ]|$)" CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## $version' heading" >&2
+            exit 1
+          fi
+          top=$(grep -m1 '^## ' CHANGELOG.md)
+          case "$top" in
+            "## Unreleased"*)
+              echo "the first heading of CHANGELOG.md is still: $top" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Check CI passed for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          passed=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success" \
+            --jq .total_count)
+          if [ "$passed" -lt 1 ]; then
+            echo "no successful ci.yml run for $GITHUB_SHA" >&2
+            exit 1
+          fi
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv build
+
+      # `readme_renderer[md]` is what renders the Markdown README. Without it
+      # twine skips that rendering check and passes a README PyPI would show
+      # as plain text.
+      - name: Check the package metadata
+        run: uvx --from twine --with 'readme_renderer[md]' twine check --strict dist/*
+
+      # What a wheel must carry, and what it must not. SKILL.md and the
+      # LitPose template are package data that a wheel loses when the
+      # `package-data` table in pyproject.toml drifts from the tree.
+      - name: Check the wheel contents
+        run: |
+          python3 - <<'PY'
+          import glob
+          import sys
+          import zipfile
+
+          (wheel,) = glob.glob("dist/*.whl")
+          names = zipfile.ZipFile(wheel).namelist()
+
+          required = [
+              "mosaic/agent/SKILL.md",
+              "mosaic/tracking/litpose/templates/config_default.yaml",
+          ]
+          problems = [f"missing {path}" for path in required if path not in names]
+          for document in ("LICENSE", "NOTICE"):
+              if not any(
+                  name.endswith(f".dist-info/licenses/{document}") for name in names
+              ):
+                  problems.append(f"missing {document} under dist-info/licenses")
+          problems += [
+              f"unexpected {name}"
+              for name in names
+              if name.startswith(("tests/", "docs/")) or "/tests/" in name
+          ]
+
+          if problems:
+              print("\n".join(problems), file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      # A clean environment that holds nothing but the wheel and what PyPI
+      # resolves for it. `mosaic-media` comes from PyPI here, where the suite's
+      # jobs install a sibling checkout over it. `av` and `opencv-python` each
+      # bundle an ffmpeg and collide on macOS; on this Ubuntu runner their
+      # wheels coexist (docs/installation.md explains the macOS case).
+      - name: Smoke test the wheel in a clean environment
+        run: |
+          # The full `opencv-python` wheel links libGL, which a runner image
+          # may not carry.
+          sudo apt-get update
+          sudo apt-get install -y libgl1
+          uv venv "$RUNNER_TEMP/smoke"
+          uv pip install --python "$RUNNER_TEMP/smoke/bin/python" dist/*.whl
+          "$RUNNER_TEMP/smoke/bin/python" -I - "${GITHUB_REF_NAME#v}" <<'PY'
+          import importlib.metadata
+          import importlib.resources
+          import sys
+
+          installed = importlib.metadata.version("mosaic-behavior")
+          if installed != sys.argv[1]:
+              sys.exit(f"installed {installed}, tag declares {sys.argv[1]}")
+          skill = importlib.resources.files("mosaic.agent").joinpath("SKILL.md")
+          if not skill.is_file():
+              sys.exit("mosaic.agent does not resolve SKILL.md")
+          PY
+          "$RUNNER_TEMP/smoke/bin/mosaic" --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # OIDC, for PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: astral-sh/setup-uv@v5
+
+      - run: uv publish
+
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to create the GitHub release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # The body of the `## X.Y.Z` section, up to the next `## ` heading.
+      - name: Extract the release notes
+        run: |
+          awk -v version="${GITHUB_REF_NAME#v}" '
+            /^## / {
+              if (found) exit
+              heading = substr($0, 4)
+              sub(/:.*/, "", heading)
+              sub(/ .*/, "", heading)
+              if (heading == version) found = 1
+              next
+            }
+            found
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if [ ! -s "$RUNNER_TEMP/notes.md" ]; then
+            echo "CHANGELOG.md has no body under the ${GITHUB_REF_NAME#v} heading" >&2
+            exit 1
+          fi
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Named suffixes rather than `dist/*`: uv build drops a .gitignore in
+        # there, which is not a release asset.
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            dist/*.whl dist/*.tar.gz

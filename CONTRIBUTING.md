@@ -142,6 +142,59 @@ rename therefore rewrites its references in the same change.
   `CLAUDE.md` files in subdirectories, each loaded when an agent works in that
   directory.
 
+## Releasing
+
+A release is a commit on `main` followed by a tag. The tag starts
+`.github/workflows/release.yml`, which publishes to PyPI.
+
+**The release commit.** It changes three things and is titled `Release X.Y.Z: ...`:
+
+- In `CHANGELOG.md`, the `## Unreleased: ...` heading becomes `## X.Y.Z: ...`.
+- `version` in `pyproject.toml` becomes `X.Y.Z`.
+- In `uv.lock`, the version of the `mosaic-behavior` entry becomes `X.Y.Z`. Leave
+  every other entry as it is.
+
+**Before tagging**, run these on the release commit:
+
+```bash
+basedpyright
+pytest -m "slow or not slow"
+python scripts/gen_docs_reference.py --check
+mkdocs build --strict
+```
+
+Then push the commit to `main` and wait for the CI workflow to pass on it. The
+tag is created only after that.
+
+**Tag and push.**
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+`release.yml` runs four jobs in order:
+
+- `verify` fails the run unless the tag equals the version in `pyproject.toml`,
+  the tagged commit is an ancestor of `origin/main`, `CHANGELOG.md` has a
+  `## X.Y.Z` heading with no `Unreleased` heading above it, and the CI workflow
+  succeeded for that exact commit.
+- `build` builds the sdist and wheel, runs `twine check --strict`, and checks that
+  the wheel carries `SKILL.md`, the LitPose template, `LICENSE` and `NOTICE` and
+  carries no `tests/` or `docs/`. It then installs the wheel into a clean
+  environment, where `mosaic-media` resolves from PyPI, and checks the installed
+  version, `mosaic --help` and the packaged `SKILL.md`.
+- `publish` uploads to PyPI through trusted publishing, in the `pypi` environment.
+- `release` creates the GitHub release for the tag from the `## X.Y.Z` section of
+  `CHANGELOG.md`, with the wheel and sdist attached.
+
+A failure in `verify` or `build` publishes nothing. Delete the tag, fix the cause
+on `main`, and tag again. Once `publish` has run, the version is taken for good:
+PyPI refuses to replace a file under a version number it has served. Yank a bad
+release on pypi.org and publish the next version.
+
+The workflow's header comment lists the one-time PyPI and GitHub setup it needs.
+
 ## Contributor License Agreement
 
 Two things are true at once, and both are intended. Your contribution enters this repository under the repository's own license, and separately you grant the Max-Planck-Gesellschaft zur Foerderung der Wissenschaften e.V. (MPG), which holds the rights in this project, a license broad enough to also distribute the work under other terms. The second does not narrow the first: the AGPL grant to everyone who receives this repository is irrevocable, so nothing contributed here can later be withdrawn from the AGPL version, and a differently licensed distribution by MPG, or by those it licenses, is an additional channel rather than a replacement.
