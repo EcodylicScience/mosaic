@@ -107,11 +107,7 @@ bb_pipeline_models (BeesBook)
                    are preserved; the framework and the surrounding code
                    are mosaic's own. Stated as Apache-2.0 section 4(b)
                    requires.
-  Citation:        The network is based on the BeesBook localizer. No
-                   publication describes get_conv_model itself; the
-                   closest description is:
-
-                   Wild, B., Sixt, L., Landgraf, T. (2018). Automatic
+  Citation:        Wild, B., Sixt, L., Landgraf, T. (2018). Automatic
                    localization and decoding of honeybee markers using deep
                    convolutional neural networks. arXiv:1802.04557.
                    https://doi.org/10.48550/arXiv.1802.04557
@@ -428,7 +424,9 @@ CVAT
                cvat_localizer.py and cvat_points.py, which read CVAT
                annotation exports.
   Citation:    CVAT.ai Corporation. Computer Vision Annotation Tool (CVAT).
-               https://doi.org/10.5281/zenodo.4009388
+               Zenodo. https://doi.org/10.5281/zenodo.3497105
+               That DOI always resolves to the latest release. To cite the
+               release you used, take its version DOI from the same page.
 
 imgstore
   Origin:      https://github.com/loopbio/imgstore
@@ -548,20 +546,6 @@ MotionMapper
                pair-posedistance-pca -> pair-wavelet -> extract-templates
                -> global-scaler -> global-tsne -> global-kmeans |
                global-ward.
-  Differences: four.
-               1. The postural basis is rotation-invariant Euclidean
-               distances between keypoints, within each animal of a pair
-               and across the two, reduced by incremental PCA. It is not
-               the eigenmodes of single-animal images.
-               2. pair-wavelet takes a complex Morlet spectrogram over a
-               default band of 0.2 to 5 Hz.
-               3. No step normalizes each time point's spectrogram.
-               pair-wavelet writes the log of the wavelet power, floored,
-               and global-scaler standardizes each column across the
-               templates.
-               4. Behavioral states come from k-means or Ward clustering
-               of the scaled templates, not from a watershed segmentation
-               of a density estimate of the embedding.
   Citation:    Berman, G. J., Choi, D. M., Bialek, W., Shaevitz, J. W.
                (2014). Mapping the stereotyped behaviour of freely moving
                fruit flies. Journal of the Royal Society Interface
