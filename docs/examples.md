@@ -1,8 +1,8 @@
 # Examples
 
 Five worked notebooks live in
-[`notebooks/`](https://github.com/EcodylicScience/mosaic/tree/main/notebooks). The
-three analysis notebooks render on GitHub with their outputs; the two that train a
+[`notebooks/`](https://github.com/EcodylicScience/mosaic/tree/main/notebooks) in the
+repository. The pip package does not carry them. The three analysis notebooks render on GitHub with their outputs; the two that train a
 model and drive a tracker render as code, since they need external tools to produce
 anything.
 
@@ -13,16 +13,26 @@ external tools ([TRex](https://trex.run), and Ultralytics or POLO for training)
 which mosaic runs as separate programs and does not install. Both say so where it
 matters and skip those sections cleanly when the tool is absent.
 
-## Run a copy, not the tracked file
+## Download a notebook and run the copy
 
-The notebooks are tracked in the repository, so running one in place rewrites a
-tracked file — its outputs and execution counts — and `git pull` then refuses to
-update it. Copy the notebook out and run the copy:
+Download the notebook you want from the repository, into a directory of your own, and
+run it there:
 
 ```bash
 mkdir -p ~/mosaic-examples
-cp notebooks/calms21-template.ipynb ~/mosaic-examples/
+curl -L -o ~/mosaic-examples/calms21-template.ipynb \
+    https://raw.githubusercontent.com/EcodylicScience/mosaic/main/notebooks/calms21-template.ipynb
 ```
+
+The other four download the same way, under their names in
+[`notebooks/`](https://github.com/EcodylicScience/mosaic/tree/main/notebooks). A
+notebook needs the mosaic version it was written against, and `main` may be ahead of
+the release you installed. To pin a notebook to your release, replace `main` in the URL
+with `v` followed by your `mosaic-behavior` version.
+
+In a clone of the repository the notebooks are tracked files, so running one in place
+rewrites its outputs and execution counts, and `git pull` then refuses to update it.
+Copy it out and run the copy there as well.
 
 Each notebook unpacks its data into `~/mosaic-examples/<name>-example/` wherever it is
 run from, so copies started in different places share one download. `DOWNLOAD_DIR` in

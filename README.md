@@ -40,28 +40,50 @@ tells you exactly what a dataset already holds.
 ## Install
 
 ```bash
-git clone https://github.com/EcodylicScience/mosaic.git
-cd mosaic
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
+pip install "mosaic-behavior[all]"
+```
+
+The distribution is `mosaic-behavior` and the import name is `mosaic`. An unrelated
+project named `mosaic` exists on PyPI, so never run `pip install mosaic`.
+
+`pip install mosaic-behavior` on its own is a complete analysis install: converters,
+features, clustering, classifiers, overlays. `[all]` adds the deep-learning surface:
+the heatmap localizer and the identity models, which means PyTorch. YOLO pose and POLO
+point work is not in it. Tracking, inference and training alike run in an environment
+you build, so no install of mosaic carries an AGPL-licensed dependency.
+
+`ffmpeg` and `ffprobe` must be on `PATH`. `av` and `py-opencv` are installed from
+conda-forge, before pip runs, so that the environment holds a single ffmpeg build. A
+plain pip install brings the PyPI wheels of both, which collide on macOS.
+
+### Install from source
+
+To work on mosaic itself, or to build the Ultralytics, POLO, keypoint-MoSeq or VAME
+environment, clone the repository and install it editable into the same kind of conda
+environment:
+
+```bash
+git clone https://github.com/EcodylicScience/mosaic.git
+cd mosaic
 pip install -e ".[all]"
 ```
 
-`pip install -e .` on its own is a complete analysis install — converters, features,
-clustering, classifiers, overlays. `[all]` adds the deep-learning surface: the heatmap
-localizer and the identity models, which means PyTorch. YOLO pose and POLO point work
-is not in it — tracking, inference and training alike run in an environment you build,
-so no install of mosaic carries an AGPL-licensed dependency. `av` and `py-opencv` are installed from conda-forge, before pip runs, so that
-the environment holds a single ffmpeg build.
+The
+[environment notes](https://github.com/EcodylicScience/mosaic/blob/main/CONTRIBUTING.md#environment-notes)
+of CONTRIBUTING.md cover working against an unreleased `mosaic-media`.
 
 [Installation](https://ecodylicscience.github.io/mosaic/installation/) has the extras table, a CPU-only PyTorch line, the
-tools mosaic drives but does not install, and Windows/WSL2 support.
+tools mosaic drives but does not install, and Windows/WSL2 support. The Ultralytics,
+POLO, keypoint-MoSeq and VAME environments are built from files in the repository that
+the pip package does not carry.
 
 ## In 60 seconds
 
 ```bash
-# Work in a directory of your own, outside the mosaic clone.
+# Work in a directory of your own, not inside a mosaic source checkout.
 cd ~
 mosaic init study --name "Experiment 1"
 
@@ -90,8 +112,9 @@ their `--src-format`, and `mosaic convert-tracks` standardizes them.
 | [**Reference**](https://ecodylicscience.github.io/mosaic/reference/) | Every feature, op, CLI command and track format — generated from the code |
 | [**AI coding agents**](https://ecodylicscience.github.io/mosaic/agents/) | Run `mosaic agent install` to give an agent the mosaic guide |
 
-Five worked examples live in [`notebooks/`](https://github.com/EcodylicScience/mosaic/tree/main/notebooks), and each fetches its own
-data from Hugging Face, so they run as written:
+Five worked examples live in [`notebooks/`](https://github.com/EcodylicScience/mosaic/tree/main/notebooks)
+in the repository, not in the pip package. Each fetches its own data from Hugging Face,
+so they run as written:
 
 | Notebook | What it shows |
 | --- | --- |
@@ -108,6 +131,14 @@ and skip those sections when the tool is absent.
 
 Early development (0.x). Public APIs, feature names, and on-disk layouts may change
 between releases; [CHANGELOG.md](https://github.com/EcodylicScience/mosaic/blob/main/CHANGELOG.md) records what moved and why.
+
+## How to cite
+
+Cite the tools that produced your results first: the tracker, the pose model and the
+method behind each feature you used. Cite mosaic second, as the software that ran them.
+The [citing page](https://ecodylicscience.github.io/mosaic/citing/) says how, and
+[NOTICE](https://github.com/EcodylicScience/mosaic/blob/main/NOTICE) records the
+origin, license and citation of each component.
 
 ## Contributing
 

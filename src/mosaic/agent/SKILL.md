@@ -12,14 +12,17 @@ description: >-
 You are working in the user's project, which uses mosaic (the `mosaic-behavior`
 distribution, imported as `mosaic`) as a library and a CLI. This guide ships with the
 installed mosaic and matches its version. The block after it names this installation's
-`mosaic` executable, its Python interpreter and its local documentation.
+`mosaic` executable, its Python interpreter and its documentation.
 
-- **Do not modify mosaic's installed source**, including an editable checkout of it.
-  Extend mosaic from the user's project through its plugin seams: a feature, a track
-  converter, a label converter.
+- **Do not modify mosaic's installed source**, including an editable install of a
+  clone. Extend mosaic from the user's project through its plugin seams: a feature, a
+  track converter, a label converter.
 - **Report a defect upstream** at https://github.com/EcodylicScience/mosaic/issues with
-  the command, the full error and the output of `git -C <checkout> rev-parse HEAD`.
-  Work around it in the user's code meanwhile.
+  the command, the full error and the `mosaic-behavior` version, which
+  `pip show mosaic-behavior` prints and `mosaic.version.installed_version()` returns. An empty
+  string there means mosaic is running from a source tree that is not installed, and
+  the report then needs that tree's commit. Work around it in the user's code
+  meanwhile.
 
 ## Mosaic in brief
 
@@ -72,8 +75,9 @@ constructor reads nothing, and every accessor on it fails.
 Prefer these sources, in this order, over memory and over the website. The website
 follows mosaic's main branch, which may differ from this installation.
 
-1. **The local docs**. The block below names their directory and the file that each
-   site URL in this guide maps to.
+1. **The local docs**, when the block below names a directory. A pip install carries
+   no `docs/`, and the block then names the website instead. The directory, when it
+   exists, also says which file each site URL in this guide maps to.
 2. **`mosaic --help`** and `mosaic <verb> --help`.
 3. **The registries:** `mosaic features list`, `mosaic features describe <slug> --json`
    (the parameter schema), `mosaic tracking list`, `mosaic tracking describe <kind>
@@ -105,8 +109,9 @@ When `mosaic` is not on `PATH`, run `<python> -m mosaic` with the interpreter be
 
 Commands and environments are on https://ecodylicscience.github.io/mosaic/installation/.
 
-- Mosaic installs from a git checkout. `ffmpeg`, `av` and `py-opencv` come from
-  conda-forge (or apt on Linux) before `pip install -e ".[all]"`, which keeps one ffmpeg
+- Mosaic installs from PyPI as `mosaic-behavior`, imported as `mosaic`. Never run
+  `pip install mosaic`, which is an unrelated project. `ffmpeg`, `av` and `py-opencv`
+  come from conda-forge before `pip install "mosaic-behavior[all]"`, which keeps one ffmpeg
   build in the environment. On macOS use conda and do not add pip wheels of `av` or
   OpenCV.
 - An extra named in an older install command may be retired. pip only warns and
@@ -115,7 +120,9 @@ Commands and environments are on https://ecodylicscience.github.io/mosaic/instal
   mosaic's dependencies.
 - TRex, SLEAP, Lightning Pose, Ultralytics, POLO, keypoint-MoSeq and VAME each run in an
   environment the user builds, and mosaic finds each through the variables the
-  installation page lists. Do not install Ultralytics into mosaic's environment.
+  installation page lists. The Ultralytics, POLO, keypoint-MoSeq and VAME environments
+  are built from files in the mosaic repository that a pip install does not carry, so
+  they need a clone. Do not install Ultralytics into mosaic's environment.
 - Licenses differ. keypoint-MoSeq is for non-commercial research and academic use
   only, and mosaic refuses to start it until the user sets the acceptance variable.
   Setting it is the user's assertion. Ask, and do not set it yourself. TRex needs a
@@ -260,8 +267,9 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   filesystem enforces it across them. A synced folder or an NFS volume mounted with
   `nolock` does not. Write such a dataset from one machine at a time.
 - **Mosaic is 0.x.** Interfaces, feature names and on-disk layouts may change. Record
-  the checkout's commit with every result, read `CHANGELOG.md` after an update, and run
-  `mosaic reconcile` if the changelog says an identifier moved.
+  the `mosaic-behavior` version with every result, read the changelog
+  (https://github.com/EcodylicScience/mosaic/blob/main/CHANGELOG.md) after an update,
+  and run `mosaic reconcile` if it says an identifier moved.
 - **Two ffmpeg builds** in one environment crash a process at a different point each
   run (`Trace/BPT trap: 5`). On macOS every import also warns that `AVFFrameReceiver`
   is implemented twice, with or without a crash. Either symptom means the environment
@@ -272,5 +280,6 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 
 ## Examples
 
-The checkout's `notebooks/` are end-to-end examples that download their data
-(https://ecodylicscience.github.io/mosaic/examples/). Run a copy in the user's project.
+The repository's `notebooks/` on GitHub are end-to-end examples that download their
+data (https://ecodylicscience.github.io/mosaic/examples/). A pip install does not carry
+them, so download one from the repository and run the copy in the user's project.

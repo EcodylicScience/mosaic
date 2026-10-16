@@ -3,7 +3,7 @@
 When a tracker loses identities across an occlusion, a model trained on how each animal
 *looks* can recover them. Three identity models ship, all reading egocentric crops.
 
-All three need `pip install -e ".[deep-learning]"` (PyTorch and timm), which `[all]`
+All three need `pip install "mosaic-behavior[deep-learning]"` (PyTorch and timm), which `[all]`
 includes.
 
 ## 1. Cut the crops

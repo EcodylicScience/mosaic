@@ -1,21 +1,22 @@
 # Installation
 
-Mosaic needs Python 3.12 or newer, and installs from a checkout:
+Mosaic needs Python 3.12 or newer. Install it into a conda environment:
 
 ```bash
-git clone https://github.com/EcodylicScience/mosaic.git
-cd mosaic
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
-pip install -e ".[all]"
+pip install "mosaic-behavior[all]"
 ```
 
+The PyPI distribution is `mosaic-behavior` and the import name is `mosaic`. An unrelated
+project named `mosaic` exists on PyPI, so never run `pip install mosaic`.
+
 `av` and `py-opencv` are installed from conda-forge, before pip runs, so that the
-environment holds a single ffmpeg build. `ffmpeg` and `ffprobe` are used for media
-indexing and for `mosaic media transcode`. On Linux,
-`apt install ffmpeg python3-av python3-opencv` links both against the distribution's
-ffmpeg instead.
+environment holds a single ffmpeg build. conda's `py-opencv` registers itself as
+`opencv-python`, which lets pip accept it, and its `av` satisfies mosaic's `av>=18,<19`
+requirement. `ffmpeg` and `ffprobe` must be on `PATH`. They are used for media indexing
+and for `mosaic media transcode`.
 
 Confirm the install:
 
@@ -31,14 +32,15 @@ often with `Trace/BPT trap: 5`. On macOS every import also warns that
 `AVFFrameReceiver` is implemented twice, with or without a crash. Either symptom means
 the environment contains two builds.
 
-A plain pip install produces two builds in two ways. The PyPI wheels of `av` and of
-OpenCV each bundle a complete ffmpeg, and on macOS the two collide. On Linux mosaic's CI
-runs use both wheels without a crash, and on Windows OpenCV loads its ffmpeg as a
-separate library on demand. Separately, the `lightning-action` and `movement` extras
-require `opencv-python-headless` beside mosaic's `opencv-python`, and pip installs both
-wheels into one `cv2` package on every platform. The conda-forge builds avoid both,
-because they link the environment's ffmpeg and one `py-opencv` registers both OpenCV
-names.
+A pip install without the conda step produces two builds in two ways.
+`pip install mosaic-behavior` resolves the full `opencv-python` wheel and, through
+`mosaic-media[io]`, the `av` wheel. Each bundles a complete ffmpeg, and on macOS the two
+collide. On Linux mosaic's CI runs use both wheels without a crash, and on Windows
+OpenCV loads its ffmpeg as a separate library on demand. Separately, the
+`lightning-action` and `movement` extras require `opencv-python-headless` beside
+mosaic's `opencv-python`, and pip installs both wheels into one `cv2` package on every
+platform. The conda-forge builds avoid both, because they link the environment's ffmpeg
+and one `py-opencv` registers both OpenCV names.
 
 On macOS, install `av` and `py-opencv` from conda-forge, and do not install either one
 with pip afterward. To repair an environment that shows either symptom, remove the
@@ -50,14 +52,14 @@ conda install -c conda-forge --force-reinstall ffmpeg av py-opencv -y
 ```
 
 `--force-reinstall` restores conda files that a wheel overwrote or the uninstall
-removed. On Linux, reinstalling the apt packages above repairs it too.
+removed.
 
 ## Optional extras
 
-`pip install -e .` on its own is a complete analysis install: every track and label
-converter, all per-frame and social features, wavelets, scaling, t-SNE, k-means, Ward,
-ARHMM, the XGBoost classifier, overlays and crops. What `[all]` adds is the
-deep-learning surface — the heatmap localizer and the identity models — which means
+`pip install mosaic-behavior` on its own is a complete analysis install: every track
+and label converter, all per-frame and social features, wavelets, scaling, t-SNE,
+k-means, Ward, ARHMM, the XGBoost classifier, overlays and crops. What `[all]` adds is
+the deep-learning surface (the heatmap localizer and the identity models), which means
 PyTorch, and on Linux about 4 GB of CUDA wheels.
 
 | Extra              | Adds                                                            |
@@ -81,7 +83,7 @@ Two things to know before choosing:
 Note: for an install without CUDA, take PyTorch from its own index:
 
 ```bash
-pip install -e ".[all]" --extra-index-url https://download.pytorch.org/whl/cpu
+pip install "mosaic-behavior[all]" --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
 Spectral features, the SLEAP analysis reader and the DeepLabCut HDF5 reader are **not**
@@ -92,7 +94,7 @@ reading a file you already have rather than an integration you opted into.
 
 An install command saved from an older mosaic may name an extra that is gone. pip
 warns about an unknown extra and installs the base without it.
-`pip install -e ".[recommended]"` therefore gives an environment with no PyTorch.
+`pip install "mosaic-behavior[recommended]"` therefore gives an environment with no PyTorch.
 Replace each retired name:
 
 | Retired extra | Install instead |
@@ -103,10 +105,33 @@ Replace each retired name:
 | `pose`, `polo` | `deep-learning`, and for YOLO work the [Ultralytics or POLO environment](#ultralytics-and-polo) |
 | `yolo-augment` | `--extra augment` on that environment's `uv sync` |
 
+## Install from source
+
+To work on mosaic itself, or to build one of the tool environments below that come from
+the repository, clone it and install it editable into the same kind of conda
+environment:
+
+```bash
+git clone https://github.com/EcodylicScience/mosaic.git
+cd mosaic
+conda create -n mosaic python=3.12 -y
+conda activate mosaic
+conda install -c conda-forge ffmpeg av py-opencv -y
+pip install -e ".[all]"
+```
+
+The
+[environment notes](https://github.com/EcodylicScience/mosaic/blob/main/CONTRIBUTING.md#environment-notes)
+of CONTRIBUTING.md cover working against an unreleased `mosaic-media`. The notebooks
+under `notebooks/` are in the repository only, and the pip package does not carry them.
+
 ## Tools that run in their own environment
 
 Seven of the tools mosaic drives are **not installed by mosaic**. Install each
-one yourself, then tell mosaic where it went, and mosaic launches it there.
+one yourself, then tell mosaic where it went, and mosaic launches it there. The
+Ultralytics, POLO, keypoint-MoSeq and VAME environments are built from files that live
+in the repository and that the pip package does not carry, so they need a
+[clone](#install-from-source).
 
 | Install it yourself | Used by | Tell mosaic where it is |
 | ------------------- | ------- | ----------------------- |
@@ -121,8 +146,8 @@ one yourself, then tell mosaic where it went, and mosaic launches it there.
 A `_CONDA_ENV` variable names a conda environment, which mosaic activates with `conda
 run`. A `_BIN` or `_PYTHON` variable names a path directly. With neither set, mosaic
 looks on `$PATH`. For keypoint-MoSeq it looks in the environment built under
-`src/mosaic/behavior/feature_library/external` instead, and for VAME under
-`.../external/vame-env`. A tool's location does not enter a `run_id`. Two machines
+`src/mosaic/behavior/feature_library/external` of the clone that mosaic is installed
+from instead, and for VAME under `.../external/vame-env`. A tool's location does not enter a `run_id`. Two machines
 that place a tool differently therefore agree on what a run is called.
 
 Mosaic looks for a conda environment in each directory that `CONDA_ENVS_DIRS` lists,
@@ -243,8 +268,9 @@ under a DALI release whose reader adds it.
 
 ### Ultralytics and POLO
 
-These are two separate environments, and one machine can hold both. Build whichever
-you need:
+These are two separate environments, and one machine can hold both. Each is built from
+a directory of the repository that the pip package does not carry, so build them from a
+[clone](#install-from-source). Build whichever you need:
 
 ```bash
 cd src/mosaic/tracking/external/ultralytics-env
@@ -278,7 +304,8 @@ directly and needs no export.
 
 ### keypoint-MoSeq
 
-Built the same way, from its own directory:
+Built the same way, from its own directory of a [clone](#install-from-source) of the
+repository, since the pip package does not carry it:
 
 ```bash
 cd src/mosaic/behavior/feature_library/external
@@ -286,7 +313,8 @@ uv sync --python 3.13
 export MOSAIC_KPMS_LICENSE_ACCEPTED=1
 ```
 
-Built here, mosaic finds the interpreter by itself. Built anywhere else, name it:
+Built in the clone that mosaic is installed from, mosaic finds the interpreter by
+itself. Built anywhere else, name it:
 `export MOSAIC_KPMS_PYTHON=/path/to/env/bin/python`, or, for a conda environment,
 `export MOSAIC_KPMS_CONDA_ENV=kpms`.
 
@@ -298,14 +326,15 @@ has the terms in full.
 
 ### VAME
 
-Built the same way, in a separate directory:
+Built the same way, in a separate directory of the clone:
 
 ```bash
 cd src/mosaic/behavior/feature_library/external/vame-env
 uv sync --python 3.12
 ```
 
-Built here, mosaic finds the interpreter by itself. Built anywhere else, name it:
+Built in the clone that mosaic is installed from, mosaic finds the interpreter by
+itself. Built anywhere else, name it:
 `export MOSAIC_VAME_PYTHON=/path/to/env/bin/python`, or, for a conda environment,
 `export MOSAIC_VAME_CONDA_ENV=vame`. On a GPU older than Turing, such as a GTX
 1080 Ti, reinstall torch from the cu126 index as the

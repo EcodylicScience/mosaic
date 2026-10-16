@@ -49,7 +49,7 @@ does not include it.
 
 ```bash
 conda activate mosaic
-pip install "mosaic-behavior[mcp]"     # in a checkout: pip install -e ".[all,mcp]"
+pip install "mosaic-behavior[mcp]"
 ```
 
 The [one-ffmpeg rule](installation.md#one-ffmpeg-build-per-environment) applies to any
