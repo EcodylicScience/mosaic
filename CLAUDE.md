@@ -18,7 +18,7 @@ pose models. See [README.md](README.md) and [docs/index.md](docs/index.md).
 ```bash
 conda create -p ./.venv python=3.12 -y      # the path [tool.basedpyright] expects
 conda activate ./.venv
-conda install -c conda-forge ffmpeg av py-opencv -y
+conda install -c conda-forge ffmpeg "av>=18,<19" py-opencv -y
 pip install -e ".[all]"
 ```
 
