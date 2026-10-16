@@ -71,6 +71,8 @@ _COLS_DESCRIPTION = (
 class PairWavelet:
     """
     CWT spectrograms on PairPoseDistancePCA outputs.
+    It is the spectral stage of a behavioral map that follows the approach of
+    Berman et al. (2014), MotionMapper.
 
     Expects input df to contain columns:
       - 'perspective' (0 = A->B, 1 = B->A)
@@ -85,8 +87,20 @@ class PairWavelet:
       and (optionally) passthrough group/sequence if present in df.
 
     Stateless (no fitting). FPS is inferred from constant df['fps'] if
-    present, otherwise from fps_default. Frequencies are dyadically spaced
-    in [f_min, f_max].
+    present, otherwise from fps_default. Frequencies are geometrically spaced
+    in [f_min, f_max] (equal steps in log2 frequency).
+
+    The transform is a continuous wavelet transform with PyWavelets, by default
+    the complex Morlet wavelet ``cmor1.5-1.0`` at 25 frequencies. Each column
+    gives the natural log of the squared coefficient magnitude, clamped from
+    below at ``log_floor``.
+
+    Differences from Berman et al. (2014):
+
+    - The band defaults to 0.2 to 5 Hz, where the original used 1 to 50 Hz.
+    - The spectrogram at each time point is not normalized to sum to one. The
+      columns are the clamped log power, and a ``global-scaler`` downstream
+      standardizes each column across the templates instead.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.pair_wavelet.PairWavelet.Params`.

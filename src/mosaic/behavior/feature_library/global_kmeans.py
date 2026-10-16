@@ -148,7 +148,10 @@ class KMeansArtifactLabelsArtifact(NpzArtifact):
 class GlobalKMeansClustering:
     """
     Global K-Means clustering on templates loaded via load_state.
-    Per-sequence cluster assignment is done in apply().
+    Per-sequence cluster assignment is done in apply(). It is a clustering
+    stage of a behavioral map that follows the approach of Berman et al. (2014),
+    MotionMapper, with k-means in place of a watershed segmentation of a density
+    estimate.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.global_kmeans.GlobalKMeansClustering.Params`.

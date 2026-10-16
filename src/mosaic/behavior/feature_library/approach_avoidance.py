@@ -3,6 +3,12 @@ ApproachAvoidance feature.
 
 Detects approach-avoidance (AA) events for all C(n,2) unordered pairs per sequence.
 
+The decision logic follows trajognize (https://github.com/vasarhelyi/trajognize,
+GPL-3.0) and the approach-avoidance analyses of Nagy et al. (2013), PNAS
+110:13049, doi:10.1073/pnas.1305552110, and Nagy, Davidson, Vasarhelyi, Abel,
+Kubinyi, El Hady and Vicsek (2024), Sci Rep 14:22857,
+doi:10.1038/s41598-024-72437-5. See NOTICE.
+
 Default decision logic follows trajognize AA:
   - role-specific speed thresholds (approacher vs avoider)
   - distance threshold

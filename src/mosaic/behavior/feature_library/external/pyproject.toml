@@ -10,7 +10,7 @@ dependencies = [
     # this must never be folded into mosaic's own dependencies and never
     # bundled into a packaged mosaic installer. This file declares an
     # environment the user builds; it does not ship one. See ../README.md and
-    # docs/licensing.md.
+    # NOTICE.
     "keypoint-moseq",
     "lark",
     "pydantic",

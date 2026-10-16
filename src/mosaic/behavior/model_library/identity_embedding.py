@@ -30,13 +30,16 @@ time and carries its own license, independent of mosaic's own AGPLv3+.
 The default, ``timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k``, is MIT:
 permissive, commercially usable, and pretrained on ImageNet-22k.
 
-``BVRA/MegaDescriptor-L-384`` (Cermak et al., WACV 2024, `WildlifeDatasets`_)
-is the same Swin architecture pretrained on a metadataset of 53 wildlife
-re-identification datasets, and substantially outperforms generic ImageNet
-backbones on animal individuals. It is released under **CC-BY-NC-4.0**, which
-does not permit commercial use. It is the right choice for academic wildlife
+``BVRA/MegaDescriptor-L-384`` (Cermak, Picek, Adam and Papafitsoros,
+"WildlifeDatasets: An open-source toolkit for animal re-identification", WACV
+2024, doi:10.1109/WACV57701.2024.00585, `WildlifeDatasets`_) is the same Swin
+architecture pretrained on a metadataset of 53 wildlife re-identification
+datasets, and substantially outperforms generic ImageNet backbones on animal
+individuals. It is released under **CC-BY-NC-4.0**, which does not permit
+commercial use and requires attribution and a link to the license when the
+weights are used or redistributed. It is the right choice for academic wildlife
 re-identification and is one parameter away; selecting it is your decision and
-your license to comply with.
+your license to comply with. Cite the paper when you use it. See NOTICE.
 
 .. _WildlifeDatasets: https://github.com/WildlifeDatasets/wildlife-tools
 """

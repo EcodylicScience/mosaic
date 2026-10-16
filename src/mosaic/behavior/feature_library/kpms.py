@@ -6,6 +6,11 @@ fits and applies the model. One runner serves a feature from its first request
 until :meth:`KpmsFeature.close`, which avoids repeated JAX startup costs. The
 mosaic environment does not need the kpms package.
 
+The method is keypoint-MoSeq: Weinreb et al. (2024), Nature Methods
+21(7):1329-1339, doi:10.1038/s41592-024-02318-2, which builds on the AR-HMM
+syllables of MoSeq: Wiltschko et al. (2015), Neuron 88(6):1121-1135,
+doi:10.1016/j.neuron.2015.11.031. See NOTICE.
+
 keypoint-MoSeq is licensed for non-commercial research and academic use only,
 and mosaic does not bundle it. :data:`LICENSE_NOTICE` and ``external/README.md``
 state the terms. This module does not import it. The licensed code runs only in

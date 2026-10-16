@@ -144,7 +144,7 @@ _FERAL_NOTE: Final = (
     "license identifier -- no expression and no classifier, only the MIT text in "
     "the free-text field, which this script reports truncated and flags for a "
     "human. Also downloads backbone weights from the HuggingFace hub at first "
-    "use; those carry their own terms -- see docs/licensing.md."
+    "use; those carry their own terms -- see NOTICE."
 )
 _KPMS_NOTE: Final = (
     "Read from the project's own LICENSE.md, which PyPI does not carry: "
@@ -152,7 +152,7 @@ _KPMS_NOTE: Final = (
     "non-commercial research and academic use. Commercial use is expressly "
     "prohibited and no paid exception cures it; a separate agreement with "
     "Harvard's Office of Technology Development is required. Mosaic never "
-    "installs or imports it -- see docs/licensing.md."
+    "installs or imports it -- see NOTICE."
 )
 
 # Keyed by source URL with uv's revision query and fragment stripped, never by
@@ -598,7 +598,7 @@ def render_text(
 def render_markdown(
     lock: Path, root: LockedPackage, rows: list[InventoryRow], show_all: bool
 ) -> str:
-    """A table that can be pasted into docs/licensing.md."""
+    """A markdown table of the distributions the inventory flags."""
     shown = rows if show_all else [row for row in rows if is_flagged(row)]
     header = (
         "| Distribution | Version | Source | License | Origin | Obligation "

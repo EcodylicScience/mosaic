@@ -1,6 +1,11 @@
 """YOLO dataset preparation utilities.
 
-Adapted from train-custom-YOLO-Colab/utils/prep.py.  Provides dataset
+Dataset-preparation utilities developed with Angela Albi, Max Planck Institute
+of Animal Behavior
+(https://github.com/albiangela/train-custom-YOLO-Colab, utils/prep.py);
+mosaic's version has diverged.  See NOTICE.
+
+Provides dataset
 filtering, label simplification, train/val/test splitting, and data.yaml
 generation — with extensions for pose (kpt_shape) and POLO (radii).
 

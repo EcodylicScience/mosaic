@@ -73,7 +73,13 @@ class GlobalScaler:
 
     Consumes a templates artifact (from ExtractTemplates or any feature
     producing templates.parquet). Produces a scaler model bundle and
-    scaled templates.
+    scaled templates. In a behavioral map that follows the approach of Berman
+    et al. (2014), MotionMapper, it puts the spectral features on a common scale
+    before embedding and clustering.
+
+    Where that approach normalizes each time point's spectrogram to sum to one,
+    this feature fits a StandardScaler, which standardizes each column across
+    the templates and leaves each time point's columns unnormalized.
 
     Apply returns its input with the template columns scaled and every other
     numeric payload column (:func:`feature_columns`) dropped. The identity and

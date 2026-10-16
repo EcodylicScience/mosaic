@@ -97,7 +97,9 @@ class PairPoseDistancePCA:
     """Principal components of the pose distances between every pair, per frame.
 
     Builds per-frame pairwise pose-distance features, fits an IncrementalPCA over
-    every sequence, and writes the PC scores per sequence and perspective.
+    every sequence, and writes the PC scores per sequence and perspective. This is
+    the postural stage of a behavioral map that follows the approach of Berman et
+    al. (2014), MotionMapper, with keypoint distances in place of image eigenmodes.
 
     One row per **ordered** pair per frame: ``id1`` is the focal, ``id2`` the other,
     and ``perspective`` says which ordering, so the key is

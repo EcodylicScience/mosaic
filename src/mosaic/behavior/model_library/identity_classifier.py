@@ -25,7 +25,7 @@ backbone is no longer the one the hub would hand back.
 
 Mosaic distributes no model weights. Whatever ``model_name`` names is fetched at
 run time under its own license -- see
-:mod:`mosaic.behavior.model_library.timm_backbone` and ``docs/licensing.md``.
+:mod:`mosaic.behavior.model_library.timm_backbone` and ``NOTICE``.
 """
 
 from __future__ import annotations

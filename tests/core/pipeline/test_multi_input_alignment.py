@@ -58,7 +58,7 @@ def _frame(columns: list[str], rows: int = 4) -> pd.DataFrame:
 
 
 def test_an_individual_level_input_and_a_pair_level_input_refuse_to_merge() -> None:
-    """The exact pairing docs/getting-started.md recommends."""
+    """The exact pairing docs/guides/analysis/write-your-own-feature.md warns about."""
     with pytest.raises(MultiInputAlignmentError, match="individual"):
         _ = _merge_parquet_inputs(iter([(0, _frame(_INDIVIDUAL)), (1, _frame(_PAIR))]))
 

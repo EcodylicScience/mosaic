@@ -367,7 +367,7 @@ Egocentric and kinematic features of every pair, from position and heading.
 
 Version `0.1` &middot; `mosaic.behavior.feature_library.pair_wavelet.PairWavelet`
 
-CWT spectrograms on PairPoseDistancePCA outputs.
+CWT spectrograms on PairPoseDistancePCA outputs. It is the spectral stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -721,7 +721,7 @@ FERAL vision-transformer behavior classifier as a pipeline feature.
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `feral_code_dir` | `string` \| `None` | `null` |  | A local checkout of the feral package, prepended to sys.path. Unset, the pip-installed package is used. |
-| `model_name` | `string` | `"facebook/vjepa2-vitl-fpc32-256-diving48"` |  | The FERAL backbone: a feral.backbones.BACKBONES key or the matching HuggingFace slug. An unrecognized value raises. The choice also selects the pretrained weights FERAL downloads from the HuggingFace hub on first use, whose license differs per entry and is tabulated in docs/licensing.md. In inference mode this is a fallback: a loaded config.json or checkpoint that records its own backbone overrides it. |
+| `model_name` | `string` | `"facebook/vjepa2-vitl-fpc32-256-diving48"` |  | The FERAL backbone: a feral.backbones.BACKBONES key or the matching HuggingFace slug. An unrecognized value raises. The choice also selects the pretrained weights FERAL downloads from the HuggingFace hub on first use, whose license differs per entry; see NOTICE. In inference mode this is a fallback: a loaded config.json or checkpoint that records its own backbone overrides it. |
 | `predict_per_item` | `integer` | `64` |  | How many predictions the model emits per chunk. In inference mode this is a fallback: a loaded config.json or checkpoint that records its own value overrides it. |
 | `chunk_length` | `integer` | `64` |  | The length of one video chunk. [frames] |
 | `chunk_shift` | `integer` | `32` |  | The stride between the starts of consecutive chunks. [frames] |
@@ -895,7 +895,7 @@ Train a visual identity model from individual animal sequences.
 
 Version `0.4` &middot; `mosaic.behavior.feature_library.global_kmeans.GlobalKMeansClustering`
 
-Global K-Means clustering on templates loaded via load_state. Per-sequence cluster assignment is done in apply().
+Global K-Means clustering on templates loaded via load_state. Per-sequence cluster assignment is done in apply(). It is a clustering stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper, with k-means in place of a watershed segmentation of a density estimate.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -1106,7 +1106,7 @@ Fit an openTSNE embedding on templates and map per-sequence data.
 
 Version `0.3` &middot; `mosaic.behavior.feature_library.global_ward.GlobalWardClustering`
 
-Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
+Ward hierarchical clustering on templates with per-sequence 1-NN assignment. It is a clustering stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper, with Ward clustering in place of a watershed segmentation of a density estimate.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |

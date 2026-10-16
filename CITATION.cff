@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+title: "Mosaic (mosaic-behavior)"
+message: >-
+  If you use mosaic in your work, cite the tools that produced the science
+  first, as their authors ask (NOTICE lists them), and cite mosaic second,
+  as the platform that organized the data and the runs. Cite the version
+  recorded in the run's params.json as _mosaic_version.
+type: software
+authors:
+  - family-names: Davidson
+    given-names: Jacob
+    affiliation: "Max Planck Institute of Animal Behavior"
+  - family-names: Nuehrenberg
+    given-names: Paul
+    affiliation: "Max Planck Institute of Animal Behavior"
+license: AGPL-3.0-or-later
+repository-code: "https://github.com/EcodylicScience/mosaic"
+url: "https://ecodylicscience.github.io/mosaic/"
+abstract: >-
+  Mosaic is a platform for behavior analysis. It drives trackers (TRex, SLEAP,
+  Lightning Pose, Ultralytics) or imports tracks something else already
+  produced, then provides an extensible analysis framework built on the
+  feature construct: individual behavioral metrics, collective motion,
+  unsupervised methods, and supervised model fitting on annotated behaviors.
+  A feature can be calculated on individuals, on pairs, or on all animals at
+  once. Results are organized by a content-addressed scheme for run caching
+  and reproducibility.
+keywords:
+  - animal behavior
+  - pose tracking
+  - behavioral features
+  - ethology
+  - computational ethology

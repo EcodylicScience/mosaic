@@ -257,10 +257,9 @@ _MODEL_NAME_DESCRIPTION = (
     "The FERAL backbone: a feral.backbones.BACKBONES key or the matching "
     "HuggingFace slug. An unrecognized value raises. The choice also "
     "selects the pretrained weights FERAL downloads from the HuggingFace "
-    "hub on first use, whose license differs per entry and is tabulated "
-    "in docs/licensing.md. In inference mode this is a fallback: a "
-    "loaded config.json or checkpoint that records its own backbone "
-    "overrides it."
+    "hub on first use, whose license differs per entry; see NOTICE. In "
+    "inference mode this is a fallback: a loaded config.json or "
+    "checkpoint that records its own backbone overrides it."
 )
 
 _PREDICT_PER_ITEM_DESCRIPTION = (
@@ -557,7 +556,7 @@ class FeralFeature:
         ] = None
         # Shared model config. The backbone also selects the pretrained weights
         # FERAL downloads from the HuggingFace hub on first use. The default's
-        # model card declares MIT; per-entry licenses are in docs/licensing.md.
+        # model card declares MIT; per-entry licenses are in NOTICE.
         model_name: Annotated[
             str,
             Field(
@@ -1967,8 +1966,7 @@ def feral_setup_check(
     no hub token or license acceptance is involved for any registry entry: the
     default backbone's model card declares MIT, and none of the entries is
     gated. The licenses do differ per entry, so which backbone you name decides
-    what terms the weights arrive under -- the per-backbone table is in
-    ``docs/licensing.md``.
+    what terms the weights arrive under -- see ``NOTICE``.
 
     Prints a human-readable report and returns a summary dict. Designed to
     replace the old cryptic failures (``HFModel`` ImportError, silent state_dict

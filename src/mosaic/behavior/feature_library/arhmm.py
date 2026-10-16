@@ -4,6 +4,10 @@ Fits an autoregressive Hidden Markov Model on arbitrary upstream feature
 inputs and produces per-frame syllable (state) labels.  This is a native
 mosaic implementation — no KPMS or JAX dependency.
 
+The model follows the AR-HMM behavioral syllable approach of MoSeq: Wiltschko
+et al. (2015), Neuron 88(6):1121-1135, doi:10.1016/j.neuron.2015.11.031. See
+NOTICE.
+
 The feature accepts any combination of upstream ``Result`` inputs.  Mosaic's
 manifest system merges them via inner join on alignment columns, so the
 feature receives a single merged DataFrame whose numeric columns are the

@@ -21,7 +21,7 @@ Nothing here imports torch or timm at module scope: :func:`import_torch` and
 
 Mosaic distributes no model weights. Whatever ``model_name`` a caller passes is
 fetched at run time under its own license, independent of mosaic's own AGPLv3+.
-See ``docs/licensing.md``.
+See ``NOTICE``.
 """
 
 from __future__ import annotations

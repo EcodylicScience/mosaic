@@ -88,6 +88,9 @@ class WardModelArtifact(JoblibArtifact[WardModelBundle]):
 class GlobalWardClustering:
     """
     Ward hierarchical clustering on templates with per-sequence 1-NN assignment.
+    It is a clustering stage of a behavioral map that follows the approach of
+    Berman et al. (2014), MotionMapper, with Ward clustering in place of a
+    watershed segmentation of a density estimate.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.global_ward.GlobalWardClustering.Params`.

@@ -272,7 +272,9 @@ class GlobalTSNE:
 
     Consumes a templates artifact (from ExtractTemplates, GlobalScaler, or
     any feature producing templates). Produces an embedding model bundle
-    and template coordinates.
+    and template coordinates. It is the embedding stage of a behavioral map
+    that follows the approach of Berman et al. (2014), MotionMapper, and maps
+    every row into the fitted embedding as a new point.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.global_tsne.GlobalTSNE.Params`.

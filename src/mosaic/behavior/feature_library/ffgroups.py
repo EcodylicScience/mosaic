@@ -219,7 +219,7 @@ class FFGroups:
     Outputs per (frame, id):
       - group_membership (component label)
       - group_size (size of that component)
-      - event (event id from dp.get_events_info, -1 if not in an event)
+      - event (event id from _get_events_info, -1 if not in an event)
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.ffgroups.FFGroups.Params`.
@@ -373,7 +373,7 @@ class FFGroups:
         else:
             pairwise_smooth = pairwise
 
-        # Prepare input for dp.calculate_gmembership: (T, N, N-1)
+        # Prepare input for _calculate_gmembership_numba: (T, N, N-1)
         mask = ~np.eye(N, dtype=bool)
         pwdf = pairwise_smooth[:, mask].reshape(T, N, N - 1)
         groupmembership = _calculate_gmembership_numba(pwdf, N, T, distance_cutoff)

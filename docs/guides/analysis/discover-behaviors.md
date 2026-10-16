@@ -70,6 +70,23 @@ branches — `pair-posedistance-pca` → `pair-wavelet` for posture, and `pair-e
 its own recent history, which is what makes nearby points in the embedding mean
 similar movement.
 
+**Where this comes from.** The chain follows the approach of Berman et al. (2014),
+MotionMapper ([doi:10.1098/rsif.2014.0672](https://doi.org/10.1098/rsif.2014.0672)),
+which maps the stereotyped behavior of one animal from wavelet spectra of its posture.
+Mosaic differs in four ways:
+
+- The posture basis is rotation-invariant keypoint distances within and between the two
+  animals of a pair, not image eigenmodes of a single animal.
+- `pair-wavelet` defaults to a 0.2 to 5 Hz band, where the original used 1 to 50 Hz.
+- Nothing normalizes each time point's spectrogram to sum to one. `pair-wavelet` writes
+  the clamped log power, and `global-scaler` standardizes each column across the
+  templates.
+- States come from k-means or Ward clustering of the scaled templates, not from a
+  watershed segmentation of a density estimate over the embedding.
+
+The credit is in
+[NOTICE](https://github.com/EcodylicScience/mosaic/blob/main/NOTICE).
+
 Those are pair features, so everything downstream stays pair-level and carries
 `perspective`. See [What identifies a pair
 row](../../concepts/features.md#what-identifies-a-pair-row).

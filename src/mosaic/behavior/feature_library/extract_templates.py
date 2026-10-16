@@ -94,7 +94,9 @@ class ExtractTemplates:
 
     Entry point for the global feature pipeline. Streams per-sequence
     inputs, builds a candidate pool with proportional per-entry
-    contribution, and selects templates using the configured strategy.
+    contribution, and selects templates using the configured strategy. In a
+    behavioral map that follows the approach of Berman et al. (2014),
+    MotionMapper, it draws the sample that the scaler and the embedding fit on.
 
     Only rows finite in every template column are sampled, because the global
     models fitted on templates read a row as one vector and refuse NaN. A

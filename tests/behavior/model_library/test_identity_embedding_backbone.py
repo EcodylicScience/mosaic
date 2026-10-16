@@ -51,7 +51,7 @@ def test_default_backbone_is_permissively_licensed() -> None:
     the value a user gets by not choosing -- a default that cannot be shipped
     commercially is a licensing decision made silently. Changing this literal is
     a licensing decision, not a tuning one, and moving it belongs in the same
-    commit as the corresponding row in ``docs/licensing.md``.
+    commit as the corresponding entry in ``NOTICE``.
     """
     assert DEFAULT_MODEL_NAME == "timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"
     assert not DEFAULT_MODEL_NAME.startswith("BVRA/")

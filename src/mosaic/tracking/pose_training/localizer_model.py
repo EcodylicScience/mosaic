@@ -2,7 +2,9 @@
 
 Fully convolutional heatmap encoder for animal location detection.
 Ported from the TensorFlow/Keras implementation in bb_pipeline_models
-(``get_conv_model``).
+(``get_conv_model``; https://github.com/BioroboticsLab/bb_pipeline_models,
+Apache-2.0). The network is based on the BeesBook localizer of Wild, Sixt and
+Landgraf (2018), arXiv:1802.04557. See NOTICE.
 
 Architecture
 ------------

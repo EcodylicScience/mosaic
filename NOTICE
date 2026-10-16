@@ -26,6 +26,9 @@ trained model weights.
                  a socket or the filesystem. Mosaic does not link, import or
                  ship it; the user installs it.
 
+  read           A file format mosaic reads or writes without importing,
+                 shipping or starting the program that produces it.
+
   optional       A distribution named in an optional extra. Installing
                  mosaic-behavior does not install it.
 
@@ -33,11 +36,14 @@ trained model weights.
                  is fetched at install time and nothing is redistributed
                  here.
 
+  implemented    A method mosaic carries out in its own code from a
+                 published description. No upstream code is used.
+
 Three components carry restrictions the AGPL does not. keypoint-MoSeq
 prohibits commercial use. TRex requires a paid license for company use. The
 MegaDescriptor identity weights, which a user may name but mosaic never
-selects, are CC-BY-NC-4.0 and likewise prohibit commercial use. All three
-are stated in full below.
+selects, are CC-BY-NC-4.0: they prohibit commercial use and require
+attribution. All three are stated in full below.
 
 
 INCORPORATED SOURCE
@@ -84,13 +90,15 @@ trajognize
                    https://doi.org/10.1073/pnas.1305552110
 
                    Nagy, M., Davidson, J. D., Vasarhelyi, G., Abel, D.,
-                   et al. (2024). Long-term tracking of social structure
-                   in groups of rats. Scientific Reports 14:22857.
+                   Kubinyi, E., El Hady, A., Vicsek, T. (2024). Long-term
+                   tracking of social structure in groups of rats.
+                   Scientific Reports 14:22857.
                    https://doi.org/10.1038/s41598-024-72437-5
 
 bb_pipeline_models (BeesBook)
   Origin:          https://github.com/BioroboticsLab/bb_pipeline_models
-  Copyright:       Biorobotics Lab, Freie Universitaet Berlin
+  Copyright:       the BioroboticsLab contributors (the upstream LICENSE
+                   names no holder)
   License:         Apache-2.0
   In:              src/mosaic/tracking/pose_training/localizer_model.py
   Taken:           get_conv_model, a fully convolutional heatmap encoder.
@@ -99,6 +107,14 @@ bb_pipeline_models (BeesBook)
                    are preserved; the framework and the surrounding code
                    are mosaic's own. Stated as Apache-2.0 section 4(b)
                    requires.
+  Citation:        The network is based on the BeesBook localizer. No
+                   publication describes get_conv_model itself; the
+                   closest description is:
+
+                   Wild, B., Sixt, L., Landgraf, T. (2018). Automatic
+                   localization and decoding of honeybee markers using deep
+                   convolutional neural networks. arXiv:1802.04557.
+                   https://doi.org/10.48550/arXiv.1802.04557
 
 Lightning Pose configuration template
   Origin:          https://github.com/paninski-lab/lightning-pose
@@ -167,18 +183,26 @@ keypoint-MoSeq
                The kpms feature will not start until the user sets
                MOSAIC_KPMS_LICENSE_ACCEPTED=1. The arhmm feature fits a
                comparable model in mosaic's own code, under no such
-               restriction.
+               restriction. It follows the autoregressive hidden Markov
+               model of MoSeq (Wiltschko et al. 2015, below) and uses no
+               MoSeq or keypoint-MoSeq code.
   Acknowledgement:
                keypoint-MoSeq is provided by the President and Fellows of
                Harvard College, through the Harvard University Office of
                Technology Development, as the license asks.
-  Citation:    Weinreb, C., Osman, M. A. M., Zhang, L., Lin, S., Pearl, J.,
-               Annapragada, S., Conlin, E., Hoffmann, R., Makowska, S.,
-               Gillis, W. F., Jay, M., Ye, S., Mathis, A., Mathis, M. W.,
-               Pereira, T., Linderman, S. W., Datta, S. R. (2024).
-               Keypoint-MoSeq: parsing behavior by linking point tracking
-               to pose dynamics. Nature Methods 21:1329-1339.
+  Citation:    Weinreb, C., Pearl, J. E., Lin, S., Osman, M. A. M.,
+               Zhang, L., Annapragada, S., Conlin, E., Hoffmann, R.,
+               Makowska, S., Gillis, W. F., Jay, M., Ye, S., Mathis, A.,
+               Mathis, M. W., Pereira, T., Linderman, S. W., Datta, S. R.
+               (2024). Keypoint-MoSeq: parsing behavior by linking point
+               tracking to pose dynamics. Nature Methods 21:1329-1339.
                https://doi.org/10.1038/s41592-024-02318-2
+
+               Wiltschko, A. B., Johnson, M. J., Iurilli, G., Peterson,
+               R. E., Katon, J. M., Pashkovski, S. L., Abraira, V. E.,
+               Adams, R. P., Datta, S. R. (2015). Mapping sub-second
+               structure in mouse behavior. Neuron 88:1121-1135.
+               https://doi.org/10.1016/j.neuron.2015.11.031
 
 VAME
   Origin:      https://github.com/EthoML/VAME, the maintained fork of
@@ -357,6 +381,69 @@ cite it:
   Multi-Object Tracking. CVPR 2025.
 
 
+FILE FORMATS MOSAIC READS
+=========================
+
+Mosaic imports, ships and starts none of these programs. It reads, and in
+one case writes, files in a format the program defines. Reading or writing a
+file format creates no license obligation. The citations are the ones each
+project asks for from people who use it.
+
+DeepLabCut
+  Origin:      https://github.com/DeepLabCut/DeepLabCut
+  License:     LGPL-3.0-or-later
+  Read by:     src/mosaic/core/track_library/deeplabcut.py reads DeepLabCut
+               HDF5 and CSV track exports.
+               src/mosaic/tracking/litpose/labels.py writes the
+               CollectedData.csv layout.
+  Citation:    Mathis, A., Mamidanna, P., Cury, K. M., Abe, T., Murthy,
+               V. N., Mathis, M. W., Bethge, M. (2018). DeepLabCut:
+               markerless pose estimation of user-defined body parts with
+               deep learning. Nature Neuroscience 21:1281-1289.
+               https://doi.org/10.1038/s41593-018-0209-y
+
+               Lauer, J., Zhou, M., Ye, S., Menegas, W., Schneider, S.,
+               Nath, T., Rahman, M. M., Di Santo, V., Soberanes, D., Feng,
+               G., Murthy, V. N., Lauder, G., Dulac, C., Mathis, M. W.,
+               Mathis, A. (2022). Multi-animal pose estimation,
+               identification and tracking with DeepLabCut. Nature Methods
+               19:496-504. https://doi.org/10.1038/s41592-022-01443-0
+
+BORIS
+  Origin:      https://github.com/olivierfriard/BORIS
+  License:     GPL-3.0
+  Read by:     the label converters in
+               src/mosaic/behavior/label_library/, boris_aggregated_csv.py
+               and boris_pandas_pickle.py, which read BORIS event exports.
+  Citation:    Friard, O. and Gamba, M. (2016). BORIS: a free, versatile
+               open-source event-logging software for video/audio coding
+               and live observations. Methods in Ecology and Evolution
+               7:1325-1330. https://doi.org/10.1111/2041-210X.12584
+
+CVAT
+  Origin:      https://github.com/cvat-ai/cvat
+  License:     MIT
+  Read by:     src/mosaic/core/annotations/readers/cvat.py and the
+               converters src/mosaic/tracking/pose_training/converters/
+               cvat_localizer.py and cvat_points.py, which read CVAT
+               annotation exports.
+  Citation:    CVAT.ai Corporation. Computer Vision Annotation Tool (CVAT).
+               https://doi.org/10.5281/zenodo.4009388
+
+imgstore
+  Origin:      https://github.com/loopbio/imgstore
+  Copyright:   (c) 2017 The imgstore developers
+  License:     BSD-3-Clause
+  Read by:     src/mosaic/core/media/imgstore_native.py, a native reader of
+               the imgstore on-disk format. It never imports the imgstore
+               package. The test suite installs the package to write
+               stores; nothing under src/ imports it and it is not
+               distributed with mosaic.
+
+  Stores are also written by Motif, the proprietary recording system of
+  loopbio gmbh (https://www.loopbio.com/recording/). Mosaic does not run it.
+
+
 OPTIONAL DISTRIBUTIONS
 ======================
 
@@ -427,9 +514,58 @@ The default, timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k, is MIT.
   mosaic's code and not on the architecture. Mosaic never selects
   MegaDescriptor; naming it is the user's act.
 
+  Attribution. CC-BY-NC-4.0 also requires credit. Anyone who uses or
+  redistributes the weights must give appropriate credit (the creator's
+  name, a copyright notice, a license notice, a disclaimer notice and a
+  link to the material), link to the license at
+  https://creativecommons.org/licenses/by-nc/4.0/, and indicate whether
+  they changed the material. The credit must not suggest that the licensor
+  endorses them. The license also forbids adding terms that restrict what
+  it permits. The model card asks that results obtained with the weights
+  cite:
+
+      Cermak, V., Picek, L., Adam, L., Papafitsoros, K. (2024).
+      WildlifeDatasets: An open-source toolkit for animal
+      re-identification. IEEE/CVF Winter Conference on Applications of
+      Computer Vision (WACV), pp. 5941-5951.
+      https://doi.org/10.1109/WACV57701.2024.00585
+
   DINOv2. Copyright (c) Meta Platforms, Inc. and affiliates.
   Apache-2.0. https://github.com/facebookresearch/dinov2
   Loaded through torch.hub by the DINOv2 identity backbone.
+
+
+IMPLEMENTED FROM PUBLISHED DESCRIPTIONS
+=======================================
+
+MotionMapper
+  Method:      the behavioral mapping of Berman et al.: a wavelet
+               spectrogram of posture, embedded in two dimensions with
+               t-SNE, then segmented into behavioral states. Mosaic uses
+               no MotionMapper code; the steps are written from the
+               published description.
+  In:          src/mosaic/behavior/feature_library/, the feature chain
+               pair-posedistance-pca -> pair-wavelet -> extract-templates
+               -> global-scaler -> global-tsne -> global-kmeans |
+               global-ward.
+  Differences: four.
+               1. The postural basis is rotation-invariant Euclidean
+               distances between keypoints, within each animal of a pair
+               and across the two, reduced by incremental PCA. It is not
+               the eigenmodes of single-animal images.
+               2. pair-wavelet takes a complex Morlet spectrogram over a
+               default band of 0.2 to 5 Hz.
+               3. No step normalizes each time point's spectrogram.
+               pair-wavelet writes the log of the wavelet power, floored,
+               and global-scaler standardizes each column across the
+               templates.
+               4. Behavioral states come from k-means or Ward clustering
+               of the scaled templates, not from a watershed segmentation
+               of a density estimate of the embedding.
+  Citation:    Berman, G. J., Choi, D. M., Bialek, W., Shaevitz, J. W.
+               (2014). Mapping the stereotyped behaviour of freely moving
+               fruit flies. Journal of the Royal Society Interface
+               11:20140672. https://doi.org/10.1098/rsif.2014.0672
 
 
 REQUIRED DEPENDENCIES
@@ -451,6 +587,28 @@ PyAV
                and x265 encoders (GPL-2.0-or-later); see FFmpeg above.
   Installed as the av wheel through mosaic-media[io], for in-process frame
   decoding.
+
+openTSNE
+  Origin:      https://github.com/pavlin-policar/openTSNE
+  License:     BSD-3-Clause
+  Installed as a core dependency. Imported by the global-tsne feature,
+  src/mosaic/behavior/feature_library/global_tsne.py.
+  Citation:    Policar, P. G., Strazar, M., Zupan, B. (2024). openTSNE: A
+               Modular Python Library for t-SNE Dimensionality Reduction
+               and Embedding. Journal of Statistical Software 109(3).
+               https://doi.org/10.18637/jss.v109.i03
+               Cite it if your methods section names the method.
+
+PyWavelets
+  Origin:      https://github.com/PyWavelets/pywt
+  License:     MIT
+  Installed as a core dependency. Imported by the pair-wavelet feature,
+  src/mosaic/behavior/feature_library/pair_wavelet.py.
+  Citation:    Lee, G. R., Gommers, R., Waselewski, F., Wohlfahrt, K.,
+               O'Leary, A. (2019). PyWavelets: A Python package for wavelet
+               analysis. Journal of Open Source Software 4(36):1237.
+               https://doi.org/10.21105/joss.01237
+               Cite it if your methods section names the method.
 
 The remaining runtime and development dependencies are permissively
 licensed (BSD, MIT, Apache-2.0, PSF), with the exceptions below that a
