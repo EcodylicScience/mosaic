@@ -42,6 +42,7 @@ from mosaic.core.pipeline.graph import (
     submit_request,
 )
 from mosaic.core.pipeline.graph.claims import FileFailureStore
+from mosaic.core.pipeline.graph.digest import document_digest, recipe_digest
 from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from mosaic.core.scope import Scope
@@ -293,6 +294,27 @@ def test_a_recipe_that_no_longer_digests_to_its_name_refuses(
         _ = load_recipe_for_request(tracked.base_dir, request)
 
     assert raised.value.reason == "digest_mismatch"
+    assert "saved" in raised.value.detail
+
+
+def test_a_recipe_file_is_accepted_when_its_bytes_are_what_its_name_digests(
+    tracked: Dataset,
+) -> None:
+    """A file an earlier canonical form wrote still loads for its request.
+
+    The document is saved without the defaults pydantic fills, so the recipe it
+    holds digests differently from its name, while the bytes match the name.
+    """
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    raw = _chain()
+    name = document_digest(raw)
+    _ = recipe_path(tracked.base_dir, name).write_text(json.dumps(raw))
+    legacy = request.model_copy(update={"recipe_digest": name})
+
+    recipe = load_recipe_for_request(tracked.base_dir, legacy)
+
+    assert recipe == Recipe.model_validate(raw)
+    assert recipe_digest(recipe) != name
 
 
 def test_a_producer_version_that_moved_refuses_rather_than_re_planning(

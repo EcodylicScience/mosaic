@@ -29,15 +29,15 @@ from mosaic.runlog import new_execution_id, now_iso
 from mosaic.core.scope import Scope
 
 from ..error_kind import ClassifiedError, ErrorKind
-from .digest import recipe_digest
+from .digest import document_digest, recipe_digest
 from .model import BoundRef, FeatureStepSpec, Recipe, Request
 from .plan import Plan, plan_pipeline
 from .serialize import plan_fingerprint
 from .step_preflight import StepRefused, refuse_mixed_schemas
 from .resolve import declared_version
 from .store import (
-    load_recipe,
     open_requests_matching,
+    read_recipe_document,
     recipe_path,
     save_recipe,
     save_request,
@@ -279,12 +279,19 @@ def load_recipe_for_request(base_dir: Path | str, request: Request) -> Recipe:
     which would make every step below the edit resolve under a graph its
     predecessors never ran.
 
+    The file matches when the recipe it holds digests to the name, or when the
+    document as written does. The second reading covers a file that an earlier
+    mosaic saved before a change to the canonical form, such as a new defaulted
+    field or the normalization of numbers in ``params``: its bytes are still the
+    bytes its name digests. An edit changes both digests and still refuses.
+
     Raises:
         StepRefused: ``recipe_missing`` or ``digest_mismatch``.
     """
     path = recipe_path(base_dir, request.recipe_digest)
     try:
-        recipe = load_recipe(path)
+        document = read_recipe_document(path)
+        recipe = Recipe.model_validate(document)
     except (FileNotFoundError, ValueError) as exc:
         raise StepRefused(
             "recipe_missing",
@@ -294,7 +301,8 @@ def load_recipe_for_request(base_dir: Path | str, request: Request) -> Recipe:
             {"recipe_digest": request.recipe_digest, "path": str(path)},
         ) from exc
     found = recipe_digest(recipe)
-    if found != request.recipe_digest:
+    saved = document_digest(document)
+    if request.recipe_digest not in {found, saved}:
         raise StepRefused(
             "digest_mismatch",
             "",
@@ -302,7 +310,12 @@ def load_recipe_for_request(base_dir: Path | str, request: Request) -> Recipe:
             f"{request.request_id!r} names {request.recipe_digest!r}. The file "
             f"was changed underneath an open request; submit a new one rather "
             f"than running half a graph against each version.",
-            {"expected": request.recipe_digest, "found": found, "path": str(path)},
+            {
+                "expected": request.recipe_digest,
+                "found": found,
+                "saved": saved,
+                "path": str(path),
+            },
         )
     return recipe
 

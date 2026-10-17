@@ -45,6 +45,7 @@ __all__ = [
     "load_request",
     "open_requests_matching",
     "pipelines_root",
+    "read_recipe_document",
     "recipe_path",
     "request_path",
     "requests_root",
@@ -113,6 +114,20 @@ def save_recipe(base_dir: Path | str, recipe: Recipe) -> Path:
     return path
 
 
+def read_recipe_document(path: Path | str) -> dict[str, JsonValue]:
+    """Read a recipe file as the JSON object it holds, without validating it.
+
+    The bytes a saved recipe holds are what its file name digests, so a reader
+    that verifies a file against its name needs the document as written, before
+    pydantic fills defaults or normalizes a value.
+
+    Raises:
+        FileNotFoundError: There is no file there.
+        ValueError: It is not valid JSON, or not a JSON object.
+    """
+    return JSON_OBJECT.validate_python(_read_json(Path(path), "recipe"))
+
+
 def load_recipe(path: Path | str) -> Recipe:
     """Read a recipe file.
 
@@ -122,7 +137,7 @@ def load_recipe(path: Path | str) -> Recipe:
             ``schema_version`` newer than this mosaic understands, which is
             refused rather than read under the wrong rules.
     """
-    return Recipe.model_validate(_read_json(Path(path), "recipe"))
+    return Recipe.model_validate(read_recipe_document(path))
 
 
 def save_request(base_dir: Path | str, request: Request) -> Path:
