@@ -891,7 +891,9 @@ def _request_holds(
         if verdict in ("running", "orphaned"):
             try:
                 recipe = load_recipe_for_request(base_dir, request)
-            except StepRefused:
+            except StepRefused as error:
+                # What it may still read is unknown, so it holds every run.
+                holds.unreadable = holds.unreadable or f"{label}: {error}"
                 continue
             for step in recipe.steps:
                 if not isinstance(step, FeatureStepSpec):

@@ -29,6 +29,7 @@ from mosaic.core.pipeline.graph import (
     plan_pipeline,
     plan_wire,
     plan_with_cleanup,
+    recipe_path,
     run_pipeline,
     submit_request,
 )
@@ -642,3 +643,16 @@ def test_a_run_an_attempt_that_has_not_named_its_run_may_read_is_kept(
 
     assert _reasons(cleanup) == {old: "read_by"}
     assert execution_id in cleanup.runs[0].detail
+
+
+def test_a_running_request_whose_recipe_does_not_read_removes_nothing(
+    dataset: Dataset,
+) -> None:
+    old = run_speed(dataset, 1)
+    request = submit_request(dataset, speed_recipe_stepping(9)).request
+    recipe_path(dataset.base_dir, request.recipe_digest).unlink()
+
+    cleanup = _cleanup(dataset, speed_recipe_stepping(2), now=LATER)
+
+    assert _reasons(cleanup) == {old: "request_unreadable"}
+    assert request.request_id in cleanup.runs[0].detail
