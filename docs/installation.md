@@ -5,7 +5,7 @@ Mosaic needs Python 3.12 or newer. Install it into a conda environment:
 ```bash
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
-conda install -c conda-forge ffmpeg "av>=18,<19" py-opencv -y
+conda install -c conda-forge ffmpeg av py-opencv -y
 pip install "mosaic-behavior[all]"
 ```
 
@@ -14,12 +14,9 @@ project named `mosaic` exists on PyPI, so never run `pip install mosaic`.
 
 `av` and `py-opencv` are installed from conda-forge, before pip runs, so that the
 environment holds a single ffmpeg build. conda's `py-opencv` registers itself as
-`opencv-python`, which lets pip accept it. The `"av>=18,<19"` pin matters: mosaic-media
-requires `av` 18, and conda-forge's newest `av` is 19, so an unpinned install lets pip
-replace conda's `av` with the PyPI wheel, which carries a second ffmpeg and prints the
-`AVFFrameReceiver is implemented in both` warning on macOS. `ffmpeg` and `ffprobe`
-must be on `PATH`. They are used for media indexing
-and for `mosaic media transcode`.
+`opencv-python`, which lets pip accept it, and its `av` satisfies the `av>=18,<20`
+requirement of mosaic-media. `ffmpeg` and `ffprobe` must be on `PATH`. They are used
+for media indexing and for `mosaic media transcode`.
 
 Confirm the install:
 
@@ -51,7 +48,7 @@ wheels and reinstall the conda builds:
 
 ```bash
 pip uninstall -y av opencv-python opencv-python-headless
-conda install -c conda-forge --force-reinstall ffmpeg "av>=18,<19" py-opencv -y
+conda install -c conda-forge --force-reinstall ffmpeg av py-opencv -y
 ```
 
 `--force-reinstall` restores conda files that a wheel overwrote or the uninstall
@@ -119,7 +116,7 @@ git clone https://github.com/EcodylicScience/mosaic.git
 cd mosaic
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
-conda install -c conda-forge ffmpeg "av>=18,<19" py-opencv -y
+conda install -c conda-forge ffmpeg av py-opencv -y
 pip install -e ".[all]"
 ```
 

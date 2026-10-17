@@ -8,6 +8,16 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
+
+**mosaic needs mosaic-media 0.3.5, which accepts PyAV 19.** mosaic-media 0.3.4
+required `av>=18,<19`, and conda-forge now ships `av` 19, so the documented conda
+recipe followed by pip replaced conda's `av` with the PyPI wheel. That wheel bundles
+its own ffmpeg, which printed the `AVFFrameReceiver is implemented in both` warning on
+macOS. mosaic-media 0.3.5 requires `av>=18,<20`, and mosaic requires
+`mosaic-media[io,cli]>=0.3.5,<0.4.0`, so the install lines in the README, the
+installation page and the agent guide take `av` from conda-forge without a version.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

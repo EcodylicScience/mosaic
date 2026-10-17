@@ -112,8 +112,7 @@ Commands and environments are on https://ecodylicscience.github.io/mosaic/instal
 - Mosaic installs from PyPI as `mosaic-behavior`, imported as `mosaic`. Never run
   `pip install mosaic`, which is an unrelated project. `ffmpeg`, `av` and `py-opencv`
   come from conda-forge before `pip install "mosaic-behavior[all]"`, which keeps one ffmpeg
-  build in the environment. Install `"av>=18,<19"`: the newest conda `av` is 19, and pip
-  then replaces it with a wheel. On macOS use conda and do not add pip wheels of `av` or
+  build in the environment. On macOS use conda and do not add pip wheels of `av` or
   OpenCV.
 - An extra named in an older install command may be retired. pip only warns and
   installs the base without it. Check the retired names on the installation page.

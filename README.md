@@ -42,7 +42,7 @@ tells you exactly what a dataset already holds.
 ```bash
 conda create -n mosaic python=3.12 -y
 conda activate mosaic
-conda install -c conda-forge ffmpeg "av>=18,<19" py-opencv -y
+conda install -c conda-forge ffmpeg av py-opencv -y
 pip install "mosaic-behavior[all]"
 ```
 
@@ -57,9 +57,7 @@ you build, so no install of mosaic carries an AGPL-licensed dependency.
 
 `ffmpeg` and `ffprobe` must be on `PATH`. `av` and `py-opencv` are installed from
 conda-forge, before pip runs, so that the environment holds a single ffmpeg build. A
-plain pip install brings the PyPI wheels of both, which collide on macOS. Keep the
-`"av>=18,<19"` pin: conda-forge's newest `av` is 19, which mosaic-media does not accept,
-so pip would replace it with the PyPI wheel.
+plain pip install brings the PyPI wheels of both, which collide on macOS.
 
 ### Install from source
 
