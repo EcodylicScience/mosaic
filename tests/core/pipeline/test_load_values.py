@@ -15,9 +15,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from mosaic.core.pipeline import run as run_module
+from mosaic.core.pipeline.loading import row_individual_pairs
 from mosaic.core.pipeline.labels_index import _ambiguous_label_variant_message
 from mosaic.core.pipeline.run import load_values
 from mosaic.core.pipeline.types import GroundTruthLabelsSource, TracksColumn
@@ -57,3 +60,26 @@ def test_load_values_threads_the_labels_selector(
     )
 
     assert seen == ["chosen.0.1-abc"]
+
+
+def test_row_individual_pairs_prefers_pair_ids() -> None:
+    """A pair row is aligned by its own direction, an individual row by its id."""
+    pairs = pd.DataFrame({"frame": [0, 0], "id": [7, 7], "id1": [0, 1], "id2": [1, 0]})
+    individuals = pd.DataFrame({"frame": [0, 0], "id": [0.0, np.nan]})
+
+    pair_ids = row_individual_pairs(pairs)
+    individual_ids = row_individual_pairs(individuals)
+
+    assert pair_ids is not None and pair_ids.tolist() == [[0, 1], [1, 0]]
+    assert individual_ids is not None
+    assert individual_ids.tolist() == [[0, -1], [-1, -1]]
+    assert row_individual_pairs(pd.DataFrame({"frame": [0]})) is None
+
+
+def test_non_integer_ids_fall_back_to_frame_alignment() -> None:
+    """Named individuals cannot be matched to an event's integer ids."""
+    named = pd.DataFrame({"frame": [0, 1], "id": ["ant_a", "ant_b"]})
+    fractional = pd.DataFrame({"frame": [0], "id1": [0.5], "id2": [1.0]})
+
+    assert row_individual_pairs(named) is None
+    assert row_individual_pairs(fractional) is None

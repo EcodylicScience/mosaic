@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Callable
 import numpy as np
 import pandas as pd
 
+from ..helpers import load_labels_for_feature_frames
 from ..scope import Scope
 from ._loaders import JoblibLoadSpec, LoadSpec, ParquetLoadSpec
 from .index import (
@@ -391,6 +392,74 @@ def nn_pair_mask(
             mask[i] = True
 
     return mask
+
+
+def row_individual_pairs(df: pd.DataFrame) -> np.ndarray | None:
+    """Each row's ``(id1, id2)``, for aligning labels to rows rather than to frames.
+
+    A pair row gives its ``id1`` (the focal) and ``id2``. An individual row gives
+    ``(id, -1)``, so an individual label and every pair label focal on that
+    individual match it. A missing id is ``-1``, a wildcard.
+
+    Returns:
+        An ``(len(df), 2)`` int64 array, or ``None`` when *df* carries no id
+        column, or carries ids that are not integers (names, say). ``None``
+        means the frame alone aligns a row to its label, as it did before rows
+        carried individuals.
+    """
+    if "id1" in df.columns and "id2" in df.columns:
+        columns = [df["id1"], df["id2"]]
+    elif COLUMNS.id_col in df.columns:
+        columns = [df[COLUMNS.id_col], pd.Series(-1, index=df.index)]
+    else:
+        return None
+    pairs = np.empty((len(df), 2), dtype=np.int64)
+    for position, column in enumerate(columns):
+        numeric = pd.to_numeric(column, errors="coerce")
+        if bool((numeric.isna() & column.notna()).any()):
+            return None
+        filled = numeric.fillna(-1).to_numpy(dtype=np.float64)
+        if not np.all(np.mod(filled, 1) == 0):
+            return None
+        pairs[:, position] = filled.astype(np.int64)
+    return pairs
+
+
+def labels_for_rows(
+    path: Path, df: pd.DataFrame, *, default_label: int | None = None
+) -> np.ndarray:
+    """One label per row of *df*, from the label file at *path*.
+
+    The one per-row alignment: extract-labeled-templates, ``load_values`` and the
+    scoring helpers all call it, so a row is labeled one way everywhere. A row is
+    matched by its frame and its own individuals (:func:`row_individual_pairs`),
+    so a pair row takes the label of its own direction, and a row no event
+    matches takes the file's background class -- :data:`~mosaic.core.helpers.UNLABELED`
+    (``-1``) for a file with none.
+
+    Args:
+        path: The ``.npz`` label file of the row's entry.
+        df: Rows with a ``frame`` column.
+        default_label: The label for an unmatched row. ``None`` takes the
+            file's background class.
+
+    Returns:
+        An int64 array of ``len(df)`` labels.
+
+    Raises:
+        ValueError: *df* has no ``frame`` column.
+    """
+    if COLUMNS.frame_col not in df.columns:
+        raise ValueError(
+            f"labels align to rows by their {COLUMNS.frame_col!r} column, which "
+            f"these rows lack"
+        )
+    return load_labels_for_feature_frames(
+        path,
+        df[COLUMNS.frame_col].to_numpy(),
+        default_label=default_label,
+        individual_filter=row_individual_pairs(df),
+    )
 
 
 def resolve_sequence_identity(

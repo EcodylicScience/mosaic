@@ -157,6 +157,29 @@ only from `convert-labels`. Converting again writes a new tracks variant beside 
 After reconverting, pass `tracks_run_id=` or remove the old variant, since an entry
 with two variants is refused.
 
+**A frame with no label event is unlabeled (`-1`), not class 0.** The label loaders
+filled every frame no event covered with `default_label=0`, which in CalMS21 is
+`attack`, and in a BORIS file whose background sorted after a behavior was that
+behavior. `mosaic.core.helpers.UNLABELED` (`-1`) now marks such a frame, unless the
+file names a background class.
+
+- `load_labels_auto`, `load_labels_for_feature_frames` and `expand_labels_to_dense`
+  take `default_label=None`. For a sparse file it means the file's background class:
+  its `background_id`, or the `background_label` its labels variant recorded, or a
+  class named `none`, or `-1`. The last two warn with `LegacyLabelFileWarning`, which
+  reconverting the labels silences. A dense file labels every frame it holds, so a
+  frame past its end is `-1`.
+- `load_labels_for_feature_frames(individual_filter=)` also takes one `(id1, id2)`
+  per row, with `-1` as a wildcard on either side. An event labels the row whose
+  individuals it names: a scene event every row, an individual event every row focal
+  on that individual, a pair event only the row of its direction. **The tuple form is
+  now directed**: `(0, 1)` no longer matches an event stored as `(1, 0)`.
+- Without a filter, an individual or scene event is no longer dropped as the second
+  direction of a symmetric pair, which left a BORIS focal-subject event unread.
+- New `mosaic.core.pipeline.loading.labels_for_rows(path, df)` labels each row of a
+  frame by its `frame` and its own ids (`row_individual_pairs`). Rows whose ids are
+  not integers align by frame alone.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

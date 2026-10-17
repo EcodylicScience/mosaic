@@ -32,10 +32,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from ._utils import atomic_write, json_ready
 from .op_identity import op_run_id
+
+if TYPE_CHECKING:
+    from .tracks_identity import VariantSidecar
 
 __all__ = [
     "LABELS_IDENTITY_SCHEME",
@@ -43,6 +46,7 @@ __all__ = [
     "label_converter_op",
     "labels_run_id",
     "labels_variant_root",
+    "read_labels_variant",
     "write_labels_variant",
 ]
 
@@ -162,3 +166,19 @@ def write_labels_variant(
     path = root / "params.json"
     atomic_write(path, lambda p: p.write_text(json.dumps(record, indent=2)))
     return path
+
+
+def read_labels_variant(variant_root: Path) -> VariantSidecar | None:
+    """The record :func:`write_labels_variant` left in *variant_root*, if readable.
+
+    Args:
+        variant_root: ``labels/<kind>/<run_id>``, the directory holding the
+            variant's label files.
+
+    Returns:
+        The record, or ``None`` when it is absent or unreadable -- a legacy
+        unversioned ``labels/<kind>/`` directory has none.
+    """
+    from .tracks_identity import read_variant_sidecar
+
+    return read_variant_sidecar(variant_root / "params.json")

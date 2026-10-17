@@ -1,6 +1,7 @@
 import math
+import warnings
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Final, Optional, Tuple, cast
 
 import numpy as np
 import pandas as pd
@@ -135,6 +136,186 @@ def entry_directory(root: Path, group: str, sequence: str) -> Path:
 # =============================================================================
 
 
+UNLABELED: Final = -1
+"""The label of a row that no label event covers.
+
+Distinct from every class id, so a frame nobody annotated is never read as class 0
+(which is ``attack`` in CalMS21). A label file states its own background class, the
+class an annotator meant by "nothing happening", in ``background_id``; a file that
+declares ``background_id = -1`` has none, and its unannotated rows are unlabeled.
+"""
+
+
+class LegacyLabelFileWarning(UserWarning):
+    """A label file states no background class, so its unannotated rows were guessed.
+
+    Written before converters recorded ``background_id``. Reconverting the labels
+    (``mosaic convert-labels``) writes it and silences this warning.
+    """
+
+
+_NO_MATCH: Final = np.iinfo(np.int64).min
+"""A row no event matched, before the background is resolved."""
+
+
+def _npz_keys(npz_data: object) -> set[str]:
+    """The keys of a loaded ``.npz`` or of a dict standing in for one."""
+    files = getattr(npz_data, "files", None)
+    if files is not None:
+        return {str(key) for key in cast(list[object], files)}
+    return {str(key) for key in cast(dict[object, object], npz_data)}
+
+
+def _variant_background_label(path: Path) -> str | None:
+    """The ``background_label`` param of the labels variant holding *path*, if any.
+
+    A variant records its converter params beside the files it wrote
+    (``labels_identity.write_labels_variant``).
+    """
+    from mosaic.core.pipeline.labels_identity import read_labels_variant
+
+    record = read_labels_variant(path.parent)
+    background = None if record is None else record.params.get("background_label")
+    return background if isinstance(background, str) else None
+
+
+def label_background_id(path: Path, npz: "np.lib.npyio.NpzFile") -> int:
+    """The class a sparse label file means for a frame no event covers.
+
+    Called only for a sparse (``individual_pair_v1``) file with at least one
+    unmatched row. Resolved in this order:
+
+    1. ``background_id`` in the file, which converters write. ``-1`` means the
+       file has no background class, and its unmatched rows are unlabeled.
+    2. The ``background_label`` param recorded by the labels variant the file
+       belongs to, matched against ``label_names``. Exact for a BORIS file written
+       before ``background_id`` existed, whatever id its background took.
+    3. A class named ``"none"``, the convention ``convert_labels_custom``
+       documents. Warns.
+    4. Otherwise :data:`UNLABELED`. Warns. A CalMS21 file written before
+       ``background_id`` is this case: every CalMS21 class is a behavior.
+
+    Args:
+        path: The label file, which locates its variant's ``params.json``.
+        npz: The opened file.
+
+    Returns:
+        The background class id, or :data:`UNLABELED`.
+
+    Warns:
+        LegacyLabelFileWarning: The file states no background and the variant
+            record names none, so the answer is a guess.
+    """
+    keys = _npz_keys(npz)
+    if "background_id" in keys:
+        return int(np.asarray(npz["background_id"]).item())
+
+    names = (
+        [str(name) for name in np.asarray(npz["label_names"]).ravel()]
+        if "label_names" in keys
+        else []
+    )
+    ids = (
+        [int(i) for i in np.asarray(npz["label_ids"]).ravel()]
+        if "label_ids" in keys
+        else list(range(len(names)))
+    )
+    by_name = dict(zip(names, ids))
+
+    recorded = _variant_background_label(path)
+    if recorded is not None and recorded in by_name:
+        return by_name[recorded]
+
+    if "none" in by_name:
+        guess, said = by_name["none"], "the class 'none'"
+    else:
+        guess, said = UNLABELED, "unlabeled (-1)"
+    warnings.warn(
+        f"{path} records no background_id, so its frames without a label event "
+        f"are read as {said}. Reconvert the labels (mosaic convert-labels) to "
+        f"record it.",
+        LegacyLabelFileWarning,
+        stacklevel=3,
+    )
+    return guess
+
+
+def _event_ids(npz: "np.lib.npyio.NpzFile") -> np.ndarray:
+    """The ``(n_events, 2)`` ``individual_ids`` of a sparse file."""
+    individual_ids = np.asarray(npz["individual_ids"], dtype=np.int64)
+    if individual_ids.ndim == 1:
+        individual_ids = individual_ids.reshape(-1, 2)
+    return individual_ids
+
+
+def _rows_of_filter(
+    individual_filter: "Tuple[int, int] | np.ndarray", n_rows: int
+) -> np.ndarray:
+    """*individual_filter* as one ``(id1, id2)`` per row, a tuple broadcast."""
+    if isinstance(individual_filter, tuple):
+        pair = np.asarray(individual_filter, dtype=np.int64).reshape(1, 2)
+        return np.repeat(pair, n_rows, axis=0)
+    rows = np.asarray(individual_filter)
+    if rows.shape != (n_rows, 2):
+        raise ValueError(
+            f"individual_filter must be one (id1, id2) per feature frame, shape "
+            f"({n_rows}, 2); got {rows.shape}"
+        )
+    return rows.astype(np.int64, copy=False)
+
+
+def _match_events(
+    feature_frames: np.ndarray,
+    row_ids: np.ndarray,
+    frames: np.ndarray,
+    labels: np.ndarray,
+    event_ids: np.ndarray,
+) -> np.ndarray:
+    """Each row's label from the events at its frame that match its individuals.
+
+    ``-1`` is a wildcard on either side: event ``(e1, e2)`` labels row
+    ``(r1, r2)`` at its frame iff ``e1`` is ``-1`` or ``r1`` or equals it, and
+    likewise for the second id. So a scene event ``(-1, -1)`` labels every row, an
+    individual event ``(i, -1)`` labels every pair row focal on ``i``, and a
+    directed pair event labels only the row of that direction. The last matching
+    event in file order wins. A row nothing matches is :data:`_NO_MATCH`.
+    """
+    result = np.full(len(feature_frames), _NO_MATCH, dtype=np.int64)
+    if len(feature_frames) == 0 or len(frames) == 0:
+        return result
+    rows = pd.DataFrame(
+        {
+            "row": np.arange(len(feature_frames)),
+            "frame": feature_frames,
+            "r1": row_ids[:, 0],
+            "r2": row_ids[:, 1],
+        }
+    )
+    events = pd.DataFrame(
+        {
+            "order": np.arange(len(frames)),
+            "frame": frames,
+            "e1": event_ids[:, 0],
+            "e2": event_ids[:, 1],
+            "label": labels,
+        }
+    )
+    joined = rows.merge(events, on="frame", how="inner")
+    first = (joined["e1"] == -1) | (joined["r1"] == -1) | (joined["e1"] == joined["r1"])
+    second = (
+        (joined["e2"] == -1) | (joined["r2"] == -1) | (joined["e2"] == joined["r2"])
+    )
+    matched = (
+        joined.loc[first & second]
+        .sort_values(["row", "order"])
+        .drop_duplicates("row", keep="last")
+    )
+    result[matched["row"].to_numpy(dtype=np.int64)] = matched["label"].to_numpy(
+        dtype=np.int64
+    )
+    return result
+
+
 def detect_label_format(npz_data: "dict[str, object] | np.lib.npyio.NpzFile") -> str:
     """
     Detect the label format from an NPZ file's contents.
@@ -186,7 +367,7 @@ def expand_labels_to_dense(
     labels: np.ndarray,
     individual_ids: Optional[np.ndarray] = None,
     n_frames: Optional[int] = None,
-    default_label: int = 0,
+    default_label: int | None = None,
     individual_filter: Optional[Tuple[int, int]] = None,
 ) -> np.ndarray:
     """
@@ -207,8 +388,9 @@ def expand_labels_to_dense(
         are included.
     n_frames : int, optional
         Total number of frames in the dense output. If None, uses max(frames) + 1.
-    default_label : int, default=0
-        Label value for frames without events (typically 0 = "none"/"background")
+    default_label : int, optional
+        Label value for frames without events. ``None`` (the default) means
+        :data:`UNLABELED`: there is no file here to say what the background is.
     individual_filter : tuple of (int, int), optional
         If provided, only include events where individual_ids matches this pair.
         For symmetric behaviors, you may want to filter for a specific direction.
@@ -226,7 +408,7 @@ def expand_labels_to_dense(
     >>> labels = np.array([1, 1, 1, 2, 2])
     >>> dense = expand_labels_to_dense(frames, labels, n_frames=100)
     >>> dense[10:13]  # [1, 1, 1]
-    >>> dense[0]      # 0 (default)
+    >>> dense[0]      # -1 (UNLABELED)
 
     With individual filtering:
     >>> individual_ids = np.array([[0, 1], [0, 1], [0, 1], [1, 0], [1, 0]])
@@ -234,6 +416,8 @@ def expand_labels_to_dense(
     ...                                    individual_filter=(0, 1))
     >>> # Only includes events where individual_ids == [0, 1]
     """
+    if default_label is None:
+        default_label = UNLABELED
     frames = np.asarray(frames, dtype=np.int64).ravel()
     labels = np.asarray(labels, dtype=np.int64).ravel()
 
@@ -273,7 +457,7 @@ def expand_labels_to_dense(
 def load_labels_auto(
     path: "str | Path",
     n_frames: Optional[int] = None,
-    default_label: int = 0,
+    default_label: int | None = None,
     individual_filter: Optional[Tuple[int, int]] = None,
     return_format: str = "dense",
     allow_pickle: bool = True,
@@ -290,8 +474,11 @@ def load_labels_auto(
     n_frames : int, optional
         For sparse formats, the total number of frames to expand to.
         If None, uses max(frames) + 1 from the file.
-    default_label : int, default=0
-        Label for unlabeled frames when expanding sparse to dense
+    default_label : int, optional
+        Label for frames without an event when expanding sparse to dense.
+        ``None`` (the default) takes the file's background class
+        (:func:`label_background_id`), which is :data:`UNLABELED` for a file
+        with none. Ignored for a dense file, which labels every frame.
     individual_filter : tuple of (int, int), optional
         For individual_pair_v1 format, filter to specific individual pair
     return_format : str, default="dense"
@@ -334,15 +521,20 @@ def load_labels_auto(
             if return_format == "sparse":
                 return frames, labels, individual_ids
 
-            # Expand to dense
-            return expand_labels_to_dense(
+            # Expand to dense. The background is read only if a frame needs it,
+            # so a file every frame of which is an event never warns.
+            dense = expand_labels_to_dense(
                 frames,
                 labels,
                 individual_ids,
                 n_frames=n_frames,
-                default_label=default_label,
+                default_label=_NO_MATCH if default_label is None else default_label,
                 individual_filter=individual_filter,
             )
+            unmatched = dense == _NO_MATCH
+            if unmatched.any():
+                dense[unmatched] = label_background_id(path, npz)
+            return dense
 
         elif fmt == "dense" or "labels" in (
             npz.files if hasattr(npz, "files") else npz
@@ -362,11 +554,11 @@ def load_labels_auto(
 
 
 def load_labels_for_feature_frames(
-    path,
+    path: "str | Path",
     feature_frames: np.ndarray,
-    default_label: int = 0,
+    default_label: int | None = None,
     deduplicate_symmetric: bool = True,
-    individual_filter: Optional[Tuple[int, int]] = None,
+    individual_filter: "Tuple[int, int] | np.ndarray | None" = None,
 ) -> np.ndarray:
     """
     Load labels from NPZ file and align to specific feature frame indices.
@@ -384,16 +576,26 @@ def load_labels_for_feature_frames(
         1D array of frame indices from the feature data. Each element
         specifies which video frame that feature row corresponds to.
         The output will have one label per element in feature_frames.
-    default_label : int, default=0
-        Label for frames that don't have labeled events (typically 0 = "none")
+    default_label : int, optional
+        Label for rows no event matches. ``None`` (the default) takes the
+        file's background class (:func:`label_background_id`), read only when
+        some row is unmatched, which is :data:`UNLABELED` for a file with none.
+        For a dense file, a frame outside the file is :data:`UNLABELED`: every
+        frame inside it is labeled, so one outside is outside the annotation.
     deduplicate_symmetric : bool, default=True
         For individual_pair_v1 format with symmetric storage (both [i,j] and
-        [j,i] stored), deduplicate by keeping only id1 <= id2 events.
-        Ignored when individual_filter is set (filtering is more specific).
-    individual_filter : tuple of (int, int), optional
-        For individual_pair_v1 format, only include events matching this
-        specific (id1, id2) pair. When set, deduplicate_symmetric is skipped
-        since the filter is already pair-specific.
+        [j,i] stored), deduplicate by keeping only id1 <= id2 pair events.
+        An event with a ``-1`` side is kept. Ignored when individual_filter
+        is set (filtering is more specific).
+    individual_filter : tuple of (int, int) or np.ndarray, optional
+        For individual_pair_v1 format, the individuals of each row: an array
+        of shape ``(len(feature_frames), 2)`` gives each row's ``(id1, id2)``,
+        and a tuple is the same pair for every row. An event ``(e1, e2)``
+        labels a row ``(r1, r2)`` at its frame when each id equals the row's
+        or either side is ``-1``, so a scene event labels every row, an
+        individual event ``(i, -1)`` every row focal on ``i``, and a pair
+        event only the row of its direction. The last matching event wins.
+        When set, deduplicate_symmetric is skipped. A dense file ignores it.
 
     Returns
     -------
@@ -417,8 +619,9 @@ def load_labels_for_feature_frames(
       a specific video frame stored in a 'frame' column
     - The feature frame range may not fully overlap with labeled frames
 
-    For frames without labeled events, default_label is returned.
-    For frames with multiple labeled events, the last one wins.
+    For frames without labeled events, the background is returned (see
+    ``default_label``). For frames with multiple labeled events, the last one
+    wins.
     """
     from pathlib import Path
 
@@ -431,40 +634,47 @@ def load_labels_for_feature_frames(
         if fmt == "individual_pair_v1":
             frames = np.asarray(npz["frames"], dtype=np.int64).ravel()
             labels = np.asarray(npz["labels"], dtype=np.int64).ravel()
-            individual_ids = np.asarray(npz["individual_ids"])
-            if individual_ids.ndim == 1:
-                individual_ids = individual_ids.reshape(-1, 2)
+            individual_ids = _event_ids(npz)
 
             if individual_filter is not None:
-                # Filter to specific pair — check both orderings for symmetric labels
-                id1, id2 = individual_filter
-                mask_fwd = (individual_ids[:, 0] == id1) & (individual_ids[:, 1] == id2)
-                mask_rev = (individual_ids[:, 0] == id2) & (individual_ids[:, 1] == id1)
-                mask = mask_fwd | mask_rev
-                frames = frames[mask]
-                labels = labels[mask]
-            elif deduplicate_symmetric:
-                # Deduplicate symmetric pairs if requested
-                mask = individual_ids[:, 0] <= individual_ids[:, 1]
-                frames = frames[mask]
-                labels = labels[mask]
+                row_ids = _rows_of_filter(individual_filter, len(feature_frames))
+                result = _match_events(
+                    feature_frames, row_ids, frames, labels, individual_ids
+                )
+            else:
+                if deduplicate_symmetric:
+                    # Drops the second direction of a pair only. An individual
+                    # or scene event, with a -1 side, is never a duplicate.
+                    first, second = individual_ids[:, 0], individual_ids[:, 1]
+                    mask = (first <= second) | (first < 0) | (second < 0)
+                    frames = frames[mask]
+                    labels = labels[mask]
+                # Frame -> label (last event wins if multiple per frame)
+                frame_to_label = dict(zip(frames.tolist(), labels.tolist()))
+                result = np.array(
+                    [frame_to_label.get(f, _NO_MATCH) for f in feature_frames.tolist()],
+                    dtype=np.int64,
+                )
 
-            # Build frame -> label mapping (last event wins if multiple per frame)
-            frame_to_label = dict(zip(frames, labels))
-
-            # Look up labels for each feature frame
-            result = np.array(
-                [frame_to_label.get(f, default_label) for f in feature_frames],
-                dtype=np.int64,
-            )
+            unmatched = result == _NO_MATCH
+            if unmatched.any():
+                result[unmatched] = (
+                    label_background_id(path, npz)
+                    if default_label is None
+                    else default_label
+                )
             return result
 
         elif "labels" in (npz.files if hasattr(npz, "files") else npz):
             # Dense format - direct indexing
             dense = np.asarray(npz["labels"], dtype=np.int64).ravel()
 
-            # Handle out-of-bounds frames with default label
-            result = np.full(len(feature_frames), default_label, dtype=np.int64)
+            # A frame outside a dense file is outside the annotation
+            result = np.full(
+                len(feature_frames),
+                UNLABELED if default_label is None else default_label,
+                dtype=np.int64,
+            )
             valid_mask = (feature_frames >= 0) & (feature_frames < len(dense))
             result[valid_mask] = dense[feature_frames[valid_mask]]
             return result
