@@ -18,7 +18,9 @@ from mosaic.agent.mcp.spec import (
     TOOLS,
     DatasetList,
     DatasetListItem,
+    GroupSelector,
     ListDatasetsInput,
+    PlanRecipeInput,
     SubmitPipelineInput,
     SubmittedPipeline,
     SubmittedStep,
@@ -307,3 +309,28 @@ def test_the_modules_beside_the_server_load_no_sdk() -> None:
     )
 
     assert modules_loaded_by(statement, ("mcp", "mcp_types")) == []
+
+
+def test_entries_accept_a_groups_selector() -> None:
+    """A plan names entries, whole groups, or every entry, and so does each step."""
+    planned = PlanRecipeInput.model_validate(
+        {
+            "dataset": "d",
+            "recipe": {},
+            "entries": {"groups": ["train", "test"]},
+            "step_entries": {
+                "fit": {"groups": ["train"]},
+                "score": [["test", "s3"]],
+            },
+        }
+    )
+
+    assert planned.entries == GroupSelector(groups=["train", "test"])
+    assert planned.step_entries == {
+        "fit": GroupSelector(groups=["train"]),
+        "score": [("test", "s3")],
+    }
+    with pytest.raises(ValueError, match="groups"):
+        _ = PlanRecipeInput.model_validate(
+            {"dataset": "d", "recipe": {}, "entries": {"groups": []}}
+        )

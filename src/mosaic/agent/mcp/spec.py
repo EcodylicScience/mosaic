@@ -96,6 +96,7 @@ __all__ = [
     "FailureDiagnosis",
     "GetInventoryInput",
     "GetRequestStatusInput",
+    "GroupSelector",
     "ListActivityInput",
     "ListDatasetsInput",
     "ListSequencesInput",
@@ -363,16 +364,37 @@ RecipeDocument = Annotated[
 ]
 """A recipe document, parsed by the backend so that a malformed one is reported."""
 
+
+class GroupSelector(StrictModel):
+    """Every entry of the named groups, as a selector."""
+
+    groups: list[str] = Field(min_length=1, description="The groups to cover.")
+
+
 Entries = Annotated[
-    list[tuple[str, str]] | None,
+    list[tuple[str, str]] | GroupSelector | None,
     Field(
         description=(
-            "The [group, sequence] entries to cover, or null for every entry of "
-            "the dataset."
+            "The [group, sequence] entries to cover, {groups: [...]} for every "
+            "entry of those groups, or null for every entry of the dataset."
         )
     ),
 ]
 """The entries a plan or a submission covers."""
+
+StepEntries = Annotated[
+    dict[str, list[tuple[str, str]] | GroupSelector] | None,
+    Field(
+        description=(
+            "Narrow single steps, keyed by step id, each to [group, sequence] "
+            "entries or {groups: [...]} within entries: a fit on the training "
+            "groups and its scoring on the test groups in one request. A step "
+            "reading another through inputs or tracks must narrow to a subset "
+            "of it."
+        )
+    ),
+]
+"""The scopes narrowing single steps of a plan or a submission."""
 
 
 class ToolInput(StrictModel):
@@ -545,6 +567,7 @@ class PlanRecipeInput(ToolInput):
     dataset: DatasetId
     recipe: RecipeDocument
     entries: Entries = None
+    step_entries: StepEntries = None
 
 
 class SubmitPipelineInput(ToolInput):
@@ -559,6 +582,7 @@ class SubmitPipelineInput(ToolInput):
         )
     )
     entries: Entries = None
+    step_entries: StepEntries = None
     allow_partial: bool = Field(
         default=False,
         description=(

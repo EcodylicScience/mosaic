@@ -49,6 +49,7 @@ from .spec import (
     FailureDiagnosis,
     GetInventoryInput,
     GetRequestStatusInput,
+    GroupSelector,
     ListActivityInput,
     ListDatasetsInput,
     ListSequencesInput,
@@ -423,7 +424,7 @@ class LocalBackend:
             held.dataset,
             found,
             kinds=args.kinds,
-            scope=_scope(args.entries),
+            scope=_entry_scope(held.dataset, args.entries),
             tracks_run_id=args.tracks_variant,
             status_not=args.status_not
             if args.status_not is not None or args.ref is not None
@@ -609,6 +610,7 @@ class LocalBackend:
                 inventory=self._inventory(held),
                 catalog=catalog,
                 refuse=False,
+                step_scopes=_step_scopes(args.step_entries),
             )
         # Read outside the lock: it reads request files and run-logs only.
         unended = requests_matching(
@@ -636,10 +638,16 @@ class LocalBackend:
         recipe = _recipe(args.recipe)
         catalog = self._declarations()
         narrowing = _scope(args.entries) or Scope()
+        step_scopes = _step_scopes(args.step_entries)
         with held.lock:
             cache = self._inventory(held)
             plan = plan_pipeline(
-                dataset, recipe, scope=narrowing, inventory=cache, catalog=catalog
+                dataset,
+                recipe,
+                scope=narrowing,
+                inventory=cache,
+                catalog=catalog,
+                step_scopes=step_scopes,
             )
             found = plan_fingerprint(plan)
             if found != args.plan_fingerprint:
@@ -660,6 +668,7 @@ class LocalBackend:
                 catalog=catalog,
                 expect_plan=args.plan_fingerprint,
                 refuse_duplicates=not args.confirm,
+                step_scopes=step_scopes,
             )
         request = submitted.request
         start = self._start_driver or start_detached_driver
@@ -1055,11 +1064,45 @@ def _cursor_key(cursor: str) -> tuple[str, ...]:
     return tuple(parts)
 
 
-def _scope(entries: list[tuple[str, str]] | None) -> Scope | None:
-    """Return the scope naming *entries*, ``None`` for the whole dataset."""
+def _scope(entries: list[tuple[str, str]] | GroupSelector | None) -> Scope | None:
+    """Return the scope naming *entries* or groups, ``None`` for the whole dataset."""
     from mosaic.core.scope import Scope
 
-    return None if entries is None else Scope(entries=list(entries))
+    if entries is None:
+        return None
+    if isinstance(entries, GroupSelector):
+        return Scope(groups=list(entries.groups))
+    return Scope(entries=list(entries))
+
+
+def _entry_scope(
+    dataset: Dataset, entries: list[tuple[str, str]] | GroupSelector | None
+) -> Scope | None:
+    """Return the scope naming *entries*, a groups selector enumerated to entries.
+
+    The inventory narrows a tracks or labels variant by named entries alone,
+    so a groups selector is resolved against the dataset's entries first, and
+    every kind of artifact is narrowed alike.
+    """
+    from mosaic.core.pipeline.inventory.scan import narrow_target, reportable_universe
+    from mosaic.core.scope import Scope
+
+    scope = _scope(entries)
+    if scope is None or scope.groups is None:
+        return scope
+    return Scope(entries=sorted(narrow_target(reportable_universe(dataset), scope)))
+
+
+def _step_scopes(
+    step_entries: dict[str, list[tuple[str, str]] | GroupSelector] | None,
+) -> dict[str, Scope]:
+    """Return the scope narrowing each step that *step_entries* names."""
+    found: dict[str, Scope] = {}
+    for step_id, chosen in (step_entries or {}).items():
+        narrowed = _scope(chosen)
+        if narrowed is not None:
+            found[step_id] = narrowed
+    return found
 
 
 def _recipe(document: object) -> Recipe:
@@ -1126,7 +1169,7 @@ def _submission_findings(
     duplicates = open_requests_matching(
         dataset.base_dir,
         recipe_digest(recipe),
-        Scope() if args.entries is None else Scope(entries=list(args.entries)),
+        _scope(args.entries) or Scope(),
     )
     if duplicates:
         findings.append(

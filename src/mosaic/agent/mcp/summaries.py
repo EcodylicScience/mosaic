@@ -224,6 +224,24 @@ def _plan(plan: PlanWire) -> str:
         if plan.cautions
         else ""
     )
+    narrowed = [
+        f"{step.step} to {step.coverage.target}"
+        for step in plan.steps
+        if step.step_scope is not None
+    ]
+    narrowing = (
+        f" Narrowed by step_entries: {_names(narrowed)} entries." if narrowed else ""
+    )
+    waiting = [
+        f"{step.step} on {step.reason.step}"
+        for step in plan.steps
+        if step.reason is not None
+        and step.reason.kind == "identity_unresolved"
+        and step.reason.step != step.step
+    ]
+    deferred = (
+        f" Named only once the step above runs: {_names(waiting)}." if waiting else ""
+    )
     orphaned = sum(1 for item in plan.open_requests if item.verdict == "orphaned")
     unended = (
         f" {len(plan.open_requests)} request(s) of this recipe have not ended, "
@@ -234,9 +252,9 @@ def _plan(plan: PlanWire) -> str:
     )
     return (
         f"The plan covers {plan.scope_size} entries in {len(plan.steps)} step(s): "
-        f"{_names(steps)}.{done}{problems}{cautions}{unended} Its fingerprint "
-        f"is {plan.fingerprint}, which submit_pipeline requires. Show the user "
-        f"the plan and its cautions before submitting. {_STRUCTURED}"
+        f"{_names(steps)}.{done}{narrowing}{deferred}{problems}{cautions}{unended} "
+        f"Its fingerprint is {plan.fingerprint}, which submit_pipeline requires. "
+        f"Show the user the plan and its cautions before submitting. {_STRUCTURED}"
     )
 
 

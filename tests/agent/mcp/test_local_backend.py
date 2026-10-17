@@ -59,6 +59,7 @@ from tests.helpers import (
     SPEED_OF_CONVERTED_STEP,
     SPEED_RECIPE,
     MediaClip,
+    RecordingStarter,
     add_tracks_table,
     add_tracks_variant,
     calms21_dataset,
@@ -572,6 +573,125 @@ def test_plan_and_submit_a_recipe_whose_first_step_converts(tmp_path: Path) -> N
     assert [step.run_id for step in status.steps] == [
         step.run_id for step in plan.steps
     ]
+
+
+SPLIT_RECIPE: dict[str, object] = {
+    "schema_version": 1,
+    "name": "split",
+    "steps": [
+        {
+            "id": "speed",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": ["tracks"],
+        },
+        {
+            "id": "templates",
+            "type": "feature",
+            "feature": "extract-templates",
+            "inputs": [{"step": "speed"}],
+            "params": {"n_templates": 4},
+        },
+    ],
+}
+"""Speed over every entry and templates fitted on part of them."""
+
+
+@pytest.fixture
+def split(tmp_path: Path) -> Dataset:
+    """Converted tracks of a train group of two sequences and a test group of one."""
+    ds = calms21_dataset(
+        tmp_path / "split",
+        {"train": {"a": {"s1": 20, "s2": 20}}, "test": {"a": {"s3": 20}}},
+        seed=4,
+    )
+    _ = ds.convert_all_tracks()
+    return ds
+
+
+def test_plan_recipe_step_entries_fingerprint_matches_submit(split: Dataset) -> None:
+    starter = RecordingStarter()
+    backend = LocalBackend([split.manifest_path], warm=False, start_driver=starter)
+    uuid = _uuid(split)
+    arguments: dict[str, object] = {
+        "dataset": uuid,
+        "recipe": SPLIT_RECIPE,
+        "entries": {"groups": ["train", "test"]},
+        "step_entries": {"templates": {"groups": ["train"]}},
+    }
+    plan = _call(backend, "plan_recipe", PlanWire, **arguments)
+    other = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        **{**arguments, "step_entries": {"templates": {"groups": ["test"]}}},
+    )
+
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        **arguments,
+        plan_fingerprint=plan.fingerprint,
+    )
+
+    assert plan.fingerprint != other.fingerprint
+    assert submitted.plan_fingerprint == plan.fingerprint
+    assert [step.coverage.target for step in plan.steps] == [3, 2]
+    assert starter.started == [submitted.request_id]
+
+
+def test_submit_pipeline_records_step_scopes(split: Dataset) -> None:
+    from mosaic.core.pipeline.graph import load_request
+
+    backend = LocalBackend(
+        [split.manifest_path], warm=False, start_driver=RecordingStarter()
+    )
+    uuid = _uuid(split)
+    step_entries = {"templates": [["train", "s1"], ["train", "s2"]]}
+    plan = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=uuid,
+        recipe=SPLIT_RECIPE,
+        entries={"groups": ["train", "test"]},
+        step_entries=step_entries,
+    )
+
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        dataset=uuid,
+        recipe=SPLIT_RECIPE,
+        entries={"groups": ["train", "test"]},
+        step_entries=step_entries,
+        plan_fingerprint=plan.fingerprint,
+    )
+
+    request = load_request(split.base_dir, submitted.request_id)
+    assert request.scope == Scope(groups=["train", "test"])
+    assert request.step_scopes == {
+        "templates": Scope(entries=[("train", "s1"), ("train", "s2")])
+    }
+
+
+def test_get_inventory_accepts_a_groups_selector(split: Dataset) -> None:
+    backend = LocalBackend([split.manifest_path], warm=False)
+
+    listing = _call(
+        backend,
+        "get_inventory",
+        InventoryWire,
+        dataset=_uuid(split),
+        kinds=["tracks-variant"],
+        entries={"groups": ["test"]},
+        status_not=[],
+    )
+
+    (record,) = listing.artifacts
+    assert record.coverage.target == 1
 
 
 def test_a_diagnosis_says_where_allow_partial_answers_a_failure(
