@@ -115,7 +115,8 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   driver stops with `LeaseNotRefreshed` before a step once its lease has gone
   unrefreshed for half the grace.
 - `run_pipeline` (`run.py`) holds an `in_process` lease that names its own pid as the
-  running step's, deletes it when the request ends, and keeps it after a shortfall.
+  running step's, deletes it when the request ends, and keeps it after a shortfall
+  until a later call in the same process takes it over.
   It stops before a step that a cancel recorded `cancelled`, and records its unended
   steps `cancelled` on `Cancelled` or `KeyboardInterrupt` (`test_pipeline_run.py`).
 - `cancel_attempt` and `cancel_request` (`core/pipeline/cancel.py`) send SIGTERM to

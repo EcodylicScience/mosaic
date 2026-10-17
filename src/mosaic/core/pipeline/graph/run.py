@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -81,6 +82,7 @@ if TYPE_CHECKING:
 
     from ..inventory.cache import InventoryCache
     from .compatibility import DeclarationCatalog
+    from .driver_lease import DriverLease
     from .failures import FailureStore
     from .model import Recipe, Request
     from .rollup import RequestStatus
@@ -121,6 +123,13 @@ _DETACHED: list[subprocess.Popen[bytes]] = []
 
 A ``Popen`` collected while its child runs warns, and a long-lived process reaps an
 exited driver at its next start.
+"""
+
+_IN_PROCESS_LEASES: set[tuple[str, str]] = set()
+"""The leases that a :func:`run_pipeline` call in this process holds now.
+
+Each is named by its request and the time it was taken. A lease of this process
+missing from it was kept by a run that has returned, as after a shortfall.
 """
 
 
@@ -171,7 +180,8 @@ def run_pipeline(
     The run holds the request's driver lease, marked ``in_process``, and names in
     it the step that runs. It deletes the lease when the request has ended and
     keeps it otherwise, so a run stopped by a shortfall reads ``orphaned`` once
-    the lease goes stale, and ``mosaic pipeline run --request`` resumes it.
+    the lease goes stale, and ``mosaic pipeline run --request`` resumes it. A
+    later call in this process takes over the lease that an earlier one kept.
 
     Before each step the run stops when its cancel token has fired or a cancel
     recorded the step ``cancelled`` (:func:`~mosaic.core.pipeline.cancel.cancel_request`
@@ -210,6 +220,7 @@ def run_pipeline(
         Cancelled: The cancel token fired, or a cancel recorded a step.
     """
     if request is not None:
+        _release_own_leftover_lease(ds, request.request_id)
         _refuse_running_step(ds, request)
     submitted = request
     if submitted is None:
@@ -230,6 +241,7 @@ def run_pipeline(
     lease = take_driver_lease(ds.base_dir, submitted.request_id, in_process=True)
     keeper = LeaseKeeper(ds.base_dir, lease)
     keeper.start()
+    _IN_PROCESS_LEASES.add(_lease_key(lease))
     outcomes: list[StepOutcome] = []
     try:
         for step_id in order:
@@ -275,6 +287,7 @@ def run_pipeline(
         raise
     finally:
         keeper.stop()
+        _IN_PROCESS_LEASES.discard(_lease_key(lease))
         if request_rollup(ds.base_dir, submitted).is_terminal:
             release_driver_lease(ds.base_dir, lease)
 
@@ -547,6 +560,31 @@ def _refuse_undrivable(ds: Dataset, request: Request) -> tuple[str, ...]:
     refuse_live_driver(ds.base_dir, request.request_id)
     _refuse_running_step(ds, request)
     return order
+
+
+def _lease_key(lease: DriverLease) -> tuple[str, str]:
+    """Name one taking of a lease in :data:`_IN_PROCESS_LEASES`."""
+    return (lease.request_id, lease.started_at)
+
+
+def _release_own_leftover_lease(ds: Dataset, request_id: str) -> None:
+    """Delete the lease that an earlier :func:`run_pipeline` call here kept.
+
+    A run stopped by a shortfall keeps its lease, and for the grace that follows
+    it reads as live. Running the request again from the same process, as a
+    notebook does with ``allow_partial``, would then be refused as driven by this
+    very process. A lease of this process that no running call holds is released
+    instead.
+    """
+    held = read_driver_lease(ds.base_dir, request_id)
+    if (
+        held is not None
+        and held.in_process
+        and held.host == socket.gethostname()
+        and held.pid == os.getpid()
+        and _lease_key(held) not in _IN_PROCESS_LEASES
+    ):
+        release_driver_lease(ds.base_dir, held)
 
 
 def _refuse_running_step(ds: Dataset, request: Request) -> None:

@@ -876,3 +876,28 @@ def test_an_in_process_step_that_raises_unrecorded_leaves_no_step_named(
     rollup = request_rollup(tracked.base_dir, submitted)
     later = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
     assert request_verdict_of(tracked.base_dir, rollup, now=later) == "orphaned"
+
+
+def test_a_request_stopped_in_this_process_runs_again_at_once(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A kept lease of an earlier call here does not refuse the next one.
+
+    A notebook that meets a shortfall runs the same request again with
+    ``allow_partial`` within the lease's grace.
+    """
+    states = iter(["stalled", "ran", "ran"])
+
+    def steps(ds: Dataset, request: Request, step_id: str, **_: object):
+        return _finish_step(ds, request, step_id, state=next(states))
+
+    monkeypatch.setattr(run_module, "execute_step", steps)
+    submitted = submit_request(tracked, chain_recipe()).request
+    with pytest.raises(CoverageShortfall):
+        _ = run_pipeline(tracked, chain_recipe(), request=submitted)
+    assert read_driver_lease(tracked.base_dir, submitted.request_id) is not None
+
+    done = run_pipeline(tracked, chain_recipe(), request=submitted, allow_partial=True)
+
+    assert [outcome.step_id for outcome in done.outcomes] == ["speed", "templates"]
+    assert not driver_lease_path(tracked.base_dir, submitted.request_id).exists()
