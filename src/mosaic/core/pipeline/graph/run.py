@@ -245,14 +245,18 @@ def run_pipeline(
     outcomes: list[StepOutcome] = []
     try:
         for step_id in order:
-            if (
-                token.is_cancelled()
-                or _recorded_status(ds, submitted, step_id) == "cancelled"
-            ):
-                raise Cancelled()
             keeper.ensure_held()
             keeper.record_step(step_id, os.getpid())
             try:
+                # Checked once the lease names the step. A cancel that reads the
+                # lease from then on signals this process instead of recording
+                # the step, so only a cancel already under way can record it
+                # behind this check.
+                if (
+                    token.is_cancelled()
+                    or _recorded_status(ds, submitted, step_id) == "cancelled"
+                ):
+                    raise Cancelled()
                 outcome = execute_step(
                     ds,
                     submitted,
