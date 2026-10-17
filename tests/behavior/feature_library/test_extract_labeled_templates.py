@@ -501,13 +501,95 @@ class TestSaveLoadLabeled:
         result = feat.apply(df)
         assert "label" in result.columns
         assert "split" in result.columns
-        # Without labels_lookup, all labels default to 0
-        assert (result["label"] == 0).all()
+        # Without labels_lookup, every row is unlabeled (-1), never class 0
+        assert (result["label"] == -1).all()
         # Without sequence_splits, split defaults to "train"
         assert (result["split"] == "train").all()
         # Original columns are preserved
         for col in df.columns:
             assert col in result.columns
+
+
+def _sparse_labels(
+    path: Path, events: list[tuple[int, int, int, int]]
+) -> dict[tuple[str, str], Path]:
+    """A CalMS21-shaped file of ``(frame, id1, id2, label)`` events, no background."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        path,
+        label_format="individual_pair_v1",
+        frames=np.array([e[0] for e in events]),
+        individual_ids=np.array([[e[1], e[2]] for e in events]),
+        labels=np.array([e[3] for e in events]),
+        label_ids=np.arange(4),
+        label_names=np.array(["attack", "investigation", "mount", "other"]),
+        background_id=np.int32(-1),
+    )
+    return {("g", "s"): path}
+
+
+@pytest.mark.parametrize("allocation", ["reservoir", "exact"])
+def test_a_frame_without_a_label_event_yields_no_template(
+    tmp_path: Path, allocation: str
+) -> None:
+    """Twenty frames, ten annotated: the other ten are unlabeled, not class 0."""
+    lookup = _sparse_labels(
+        tmp_path / "labels" / "s.npz", [(f, 0, -1, 1) for f in range(10)]
+    )
+    feat = _make_feature_with_labels(
+        lookup,
+        params={
+            "labels": {"kind": "behavior"},
+            "n_per_class": 100,
+            "test_fraction": 0.0,
+            "pool": {"allocation": allocation},
+        },
+    )
+
+    feat.fit(_make_factory([("g__s", _make_labeled_df(20, sequence="s", group="g"))]))
+    feat.save_state(tmp_path / "run")
+
+    templates = pd.read_parquet(tmp_path / "run" / "templates.parquet")
+    assert templates["label"].tolist() == [1] * 10
+
+
+@pytest.mark.parametrize("allocation", ["reservoir", "exact"])
+def test_only_the_labeled_perspective_is_sampled(
+    tmp_path: Path, allocation: str
+) -> None:
+    """A resident -> intruder event labels the resident-focal pair row only."""
+    n_frames = 8
+    lookup = _sparse_labels(
+        tmp_path / "labels" / "s.npz", [(f, 0, 1, 0) for f in range(n_frames)]
+    )
+    rng = np.random.default_rng(0)
+    pairs = pd.DataFrame(
+        {
+            "frame": np.repeat(np.arange(n_frames), 2),
+            "id1": [0, 1] * n_frames,
+            "id2": [1, 0] * n_frames,
+            "group": "g",
+            "sequence": "s",
+            "feat_0": rng.standard_normal(2 * n_frames),
+        }
+    )
+    feat = _make_feature_with_labels(
+        lookup,
+        params={
+            "labels": {"kind": "behavior"},
+            "n_per_class": 100,
+            "test_fraction": 0.0,
+            "pool": {"allocation": allocation},
+        },
+    )
+
+    feat.fit(_make_factory([("g__s", pairs)]))
+    feat.save_state(tmp_path / "run")
+
+    templates = pd.read_parquet(tmp_path / "run" / "templates.parquet")
+    resident_focal = pairs.loc[pairs["id1"] == 0, "feat_0"]
+    assert sorted(templates["feat_0"]) == sorted(resident_focal)
+    assert feat.apply(pairs)["label"].tolist() == [0, -1] * n_frames
 
 
 class TestColumns:

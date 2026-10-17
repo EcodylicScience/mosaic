@@ -255,6 +255,29 @@ def ensure_columns(df: pd.DataFrame, required: list[str]) -> None:
     raise ValueError("\n".join(lines))
 
 
+def refuse_unlabeled_templates(templates: pd.DataFrame, feature: str) -> None:
+    """Raise when a labeled templates table holds a row with a negative label.
+
+    ``-1`` marks an unlabeled row (``mosaic.core.helpers.UNLABELED``), which a
+    classifier would otherwise learn as a class of its own. extract-labeled-templates
+    0.4 never samples one, so such a row comes from an older run or a table built by
+    hand.
+
+    Args:
+        templates: The table, with a ``label`` column.
+        feature: The consuming feature's name, for the message.
+    """
+    labels = templates["label"].to_numpy()
+    n_unlabeled = int((labels < 0).sum())
+    if n_unlabeled:
+        msg = (
+            f"[{feature}] {n_unlabeled} template rows have a negative label, which "
+            f"marks a row with no label; rerun extract-labeled-templates (0.4 or "
+            f"later), which samples labeled rows only"
+        )
+        raise ValueError(msg)
+
+
 # --- Shared helpers for per-sequence features ---
 
 

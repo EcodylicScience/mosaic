@@ -219,6 +219,25 @@ class TestXgboostFit:
         assert isinstance(feat._model, XGBClassifier)
         assert feat._classes == [0, 1, 2]
 
+    def test_templates_with_unlabeled_rows_are_refused(self, tmp_path: Path) -> None:
+        """A -1 row from an older templates run would be learned as a class."""
+        templates = pd.read_parquet(_make_templates_parquet(tmp_path / "templates"))
+        templates.loc[0, "label"] = -1
+        feat = XgboostFeature(
+            XgboostFeature.Inputs((Result(feature="upstream"),)),
+            params={
+                "templates": {"feature": "extract-labeled-templates"},
+                "default_class": 0,
+                "n_estimators": 10,
+            },
+        )
+        feat._templates = templates
+        feat._feature_columns = [f"feat_{i}" for i in range(5)]
+
+        with pytest.raises(ValueError, match="negative label"):
+            feat.fit(InputStream(lambda: iter([]), n_entries=0))
+        assert feat._model is None
+
     def test_one_vs_rest_fit(self, tmp_path: Path) -> None:
         templates_path = _make_templates_parquet(tmp_path / "templates")
         feat = XgboostFeature(

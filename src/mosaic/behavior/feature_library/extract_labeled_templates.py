@@ -9,7 +9,8 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
-from mosaic.core.helpers import load_labels_for_feature_frames
+from mosaic.core.helpers import UNLABELED
+from mosaic.core.pipeline.loading import labels_for_rows
 from mosaic.core.pipeline.column_contract import (
     Column,
     Payload,
@@ -132,7 +133,10 @@ class ExtractLabeledTemplates:
     # value made every distance 0, and either way the selection repeated row 0.
     # 0.3: ``nn_id`` and ``attention_target_id``, track ids, are no longer
     # template columns (``BOOKKEEPING_COLS``).
-    version = "0.3"
+    # 0.4: a row no label event matches is unlabeled (-1) and never sampled,
+    # where it was class 0, and a pair row takes the label of its own direction
+    # (``labels_for_rows``), so a CalMS21 intruder-focal row is unlabeled.
+    version = "0.4"
     parallelizable = False
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -413,10 +417,10 @@ class ExtractLabeledTemplates:
             if npz_path is None:
                 continue
 
-            labels = load_labels_for_feature_frames(
-                npz_path, df[C.frame_col].to_numpy()
-            )
-            matrix = df[self._feature_columns].to_numpy(dtype=np.float64)
+            labels = labels_for_rows(npz_path, df)
+            keep = labels != UNLABELED
+            labels = labels[keep]
+            matrix = df[self._feature_columns].to_numpy(dtype=np.float64)[keep]
 
             # Check for newly discovered classes and rebalance if using n_total
             unique_labels = set(np.unique(labels).tolist())
@@ -573,9 +577,8 @@ class ExtractLabeledTemplates:
             if npz_path is None:
                 continue
 
-            labels = load_labels_for_feature_frames(
-                npz_path, df[C.frame_col].to_numpy()
-            )
+            labels = labels_for_rows(npz_path, df)
+            labels = labels[labels != UNLABELED]
             for label_int in np.unique(labels).tolist():
                 key = (split, int(label_int))
                 class_counts[key] = class_counts.get(key, 0) + int(
@@ -625,10 +628,10 @@ class ExtractLabeledTemplates:
             if npz_path is None:
                 continue
 
-            labels = load_labels_for_feature_frames(
-                npz_path, df[C.frame_col].to_numpy()
-            )
-            matrix = df[cols].to_numpy(dtype=np.float64)
+            labels = labels_for_rows(npz_path, df)
+            keep = labels != UNLABELED
+            labels = labels[keep]
+            matrix = df[cols].to_numpy(dtype=np.float64)[keep]
 
             for label_int in np.unique(labels).tolist():
                 label_int = int(label_int)
@@ -710,15 +713,13 @@ class ExtractLabeledTemplates:
         df = df.copy()
         df["split"] = split
 
-        # Add aligned labels
+        # Add aligned labels. A row no event labels, or of an entry with no
+        # label file, is unlabeled rather than class 0.
         npz_path = self._labels_lookup.get((group, sequence))
         if npz_path is not None and C.frame_col in df.columns:
-            labels = load_labels_for_feature_frames(
-                npz_path, df[C.frame_col].to_numpy()
-            )
-            df["label"] = labels
+            df["label"] = labels_for_rows(npz_path, df)
         else:
-            df["label"] = 0
+            df["label"] = UNLABELED
 
         return df
 

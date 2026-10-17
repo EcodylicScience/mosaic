@@ -36,6 +36,7 @@ from .helpers import (
     feature_columns,
     finite_rows,
     meta_columns,
+    refuse_unlabeled_templates,
 )
 from .registry import register_feature
 
@@ -304,6 +305,7 @@ class XgboostFeature:
 
         templates = self._templates
         ensure_columns(templates, ["label", "split"])
+        refuse_unlabeled_templates(templates, self.name)
         train_mask = templates["split"] == "train"
         test_mask = templates["split"] == "test"
 

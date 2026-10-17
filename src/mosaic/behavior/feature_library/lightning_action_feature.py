@@ -56,6 +56,7 @@ from .helpers import (
     ensure_columns,
     feature_columns,
     meta_columns,
+    refuse_unlabeled_templates,
 )
 from .registry import register_feature
 
@@ -322,6 +323,7 @@ class LightningActionFeature:
 
         templates = self._templates
         ensure_columns(templates, ["label", "split"])
+        refuse_unlabeled_templates(templates, self.name)
         feat_cols = self._feature_columns
 
         # Determine classes

@@ -190,6 +190,21 @@ reconverting, the dataset holds two label variants, so pass `labels_run_id=` or
 remove the old one; until then the old files still read correctly, through the
 background the variant recorded. `convert_labels_custom` documents the key.
 
+**Templates and `load_values` leave unlabeled rows out of class 0
+(`extract-labeled-templates` 0.4).** `extract-labeled-templates` samples only rows
+that a label event covers, and a pair row takes the label of its own direction. Its
+apply writes `-1` for a row with no label. On CalMS21 the intruder-focal pair rows and
+the intruder's individual rows become unlabeled, which halves the training rows of a
+pair feature: a CalMS21 label describes the resident. Its run ids move, and so do the
+ids of the runs downstream of it when they rerun.
+
+- `load_values` returns `-1` for a row no event covers and for every row of an entry
+  with no label file, where it returned 0. It raises when an entry has a label file
+  but its rows have no `frame` column. `pair_filter` selects rows first, and labels
+  then align to each surviving row.
+- `xgboost` and `lightning-action` refuse templates with a negative label, which an
+  older templates run can hold.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

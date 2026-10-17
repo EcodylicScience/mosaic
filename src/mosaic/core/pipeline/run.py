@@ -22,8 +22,8 @@ import pandas as pd
 
 from mosaic.version import installed_version
 from mosaic.core.helpers import (
+    UNLABELED,
     filter_time_range,
-    load_labels_for_feature_frames,
     make_entry_key,
     resolve_frame_range,
 )
@@ -55,6 +55,7 @@ from .index import (
 from .loading import (
     CROSS_JOIN_FEATURES,
     build_nn_lookup,
+    labels_for_rows,
     nn_pair_mask,
     resolve_sequence_identity,
 )
@@ -82,6 +83,7 @@ from .types import (
     Feature,
     InputStream,
     Inputs,
+    GroundTruthLabelsSource,
     LabelsSource,
     NNResult,
     Result,
@@ -1847,7 +1849,9 @@ def _run_feature_impl(
 # --- load_values ---
 
 
-ValueSource = ResultColumn | TracksColumn | LabelsSource
+# ``GroundTruthLabelsSource`` is named beside ``LabelsSource``: its kind is a
+# ``Literal``, and the type parameter is invariant, so the bare base does not admit it.
+ValueSource = ResultColumn | TracksColumn | LabelsSource | GroundTruthLabelsSource
 
 
 def _source_column_name(source: ValueSource) -> str:
@@ -1962,6 +1966,17 @@ def load_values(
     column from a dataset holding two recipes for one sequence would meet the
     resolver's refusal with no keyword able to answer it. ``labels_run_id`` is the
     same argument for labels, which this function accepted no answer for at all.
+
+    A labels column holds one label per row, aligned by the row's frame and its
+    own individuals (:func:`~mosaic.core.pipeline.loading.labels_for_rows`): a
+    pair row takes the label of its own direction. ``-1``
+    (:data:`~mosaic.core.helpers.UNLABELED`) marks a row no label event covers,
+    and every row of an entry with no label file. ``pair_filter`` selects the
+    rows first, and the labels then align to each row that survives it.
+
+    Raises:
+        ValueError: An entry has a label file but its rows have no ``frame``
+            column to align it by.
     """
     source_list = list(sources)
     if not source_list:
@@ -2060,13 +2075,19 @@ def load_values(
             else:
                 label_lookup = labels_lookups.get(source.kind, {})
                 label_path = label_lookup.get((group, sequence))
-                if label_path is not None and "frame" in entry_df.columns:
-                    feature_frames = entry_df["frame"].to_numpy()
-                    entry_data[col_name] = load_labels_for_feature_frames(
-                        label_path, feature_frames, default_label=0
+                if label_path is None:
+                    entry_data[col_name] = np.full(
+                        len(entry_df), UNLABELED, dtype=np.int64
                     )
+                elif "frame" not in entry_df.columns:
+                    # It used to return zeros here, which read as class 0.
+                    msg = (
+                        f"labels for {make_entry_key(group, sequence)!r} align to "
+                        f"rows by frame, and its rows have no 'frame' column"
+                    )
+                    raise ValueError(msg)
                 else:
-                    entry_data[col_name] = np.zeros(len(entry_df), dtype=np.int64)
+                    entry_data[col_name] = labels_for_rows(label_path, entry_df)
 
         if entry_data:
             all_parts.append(pd.DataFrame(entry_data))
