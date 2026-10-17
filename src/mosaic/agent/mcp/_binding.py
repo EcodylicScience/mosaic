@@ -90,12 +90,12 @@ SERVER_NAME: Final = "mosaic"
 """The name the server reports to a client."""
 
 _CONFIRMATION_RULES: Final = (
-    "Show the plan's cautions with it. submit_pipeline and cancel_request ask "
-    "the user themselves when the work is costly; set confirm only when the "
-    "user agreed in this conversation. After confirmation_declined or "
-    "confirmation_unanswered, stop and report: do not run the same work another "
-    "way, such as through the mosaic CLI. For what these tools do not offer, "
-    "propose the mosaic CLI command to the user."
+    "Show the user the plan's cautions with the plan. submit_pipeline and "
+    "cancel_request ask the user themselves when the work is costly; set "
+    "confirm only when the user agreed in this conversation. After "
+    "confirmation_declined or confirmation_unanswered, stop and report: do not "
+    "run the same work another way, such as through the mosaic CLI. For what "
+    "these tools do not offer, propose the mosaic CLI command to the user."
 )
 """The instructions' rules on confirmation, after the workflow.
 

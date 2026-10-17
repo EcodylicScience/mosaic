@@ -68,26 +68,27 @@ def plan_wire(
             :func:`~.store.requests_matching` reads them. They are reported as
             given and do not enter the fingerprint.
     """
+    steps = tuple(_step_wire(planned, plan, missing_sample) for planned in plan.steps)
     return PlanWire(
         recipe_digest=plan.recipe_digest,
         fingerprint=plan_fingerprint(plan),
         scope_size=len(plan.scope),
         complete=plan.is_complete,
-        steps=tuple(
-            _step_wire(planned, plan, missing_sample) for planned in plan.steps
-        ),
+        steps=steps,
         problems=plan.problems,
-        cautions=_plan_cautions(plan),
+        cautions=_plan_cautions(plan, steps),
         open_requests=open_requests,
     )
 
 
-def _plan_cautions(plan: Plan) -> tuple[Problem, ...]:
+def _plan_cautions(
+    plan: Plan, steps: tuple[PlannedStepWire, ...]
+) -> tuple[Problem, ...]:
     """What the person submitting *plan* should know first. None refuses it.
 
-    A plan asked for no narrowing covers the whole dataset. A step is
-    cautioned on the entries it is asked for (:func:`~.plan.asked_of`), its own
-    and not the plan's scope.
+    A plan asked for no narrowing covers the whole dataset. A step of *steps*
+    is cautioned on the entries it is asked for (:func:`~.plan.asked_of`), its
+    own and not the plan's scope.
     """
     cautions: list[Problem] = []
     if plan.covers_dataset:
@@ -98,14 +99,13 @@ def _plan_cautions(plan: Plan) -> tuple[Problem, ...]:
                 f"the plan covers all {len(plan.scope)} entries of the dataset",
             )
         )
-    for planned in plan.steps:
-        asked = len(asked_of(planned, plan))
-        if asked > LARGE_SCOPE_ENTRIES:
+    for step in steps:
+        if step.asked > LARGE_SCOPE_ENTRIES:
             cautions.append(
                 Problem(
-                    planned.step_id,
+                    step.step,
                     "scope",
-                    f"asked for {asked} entries, more than {LARGE_SCOPE_ENTRIES}",
+                    f"asked for {step.asked} entries, more than {LARGE_SCOPE_ENTRIES}",
                 )
             )
     return tuple(cautions)
