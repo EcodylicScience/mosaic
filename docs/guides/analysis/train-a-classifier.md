@@ -49,6 +49,13 @@ drowned by a common one. `test_fraction` holds sequences back, not frames — a 
 frame leaks, because neighboring frames of one bout are nearly identical.
 `default_class` names the majority or "other" class.
 
+Templates are drawn only from labeled rows. A row no annotation covers is unlabeled
+(`-1`) and is never sampled. On a pair feature, each row takes the label of its own
+direction. A CalMS21 label describes the resident's behavior toward the intruder, so
+CalMS21 pair features train on the resident-focal rows, and the intruder-focal rows
+are unlabeled. See [Labeled, background and unlabeled
+frames](import-labels.md#labeled-background-and-unlabeled-frames).
+
 `strategy="multiclass"` fits one model over all behaviors. `"one_vs_rest"` fits one
 model per behavior, which is what you want when behaviors can co-occur.
 

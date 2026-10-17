@@ -59,20 +59,49 @@ mosaic convert-labels -m dataset.yaml --kind behavior \
 | --- | --- |
 | `fps` | Converts BORIS's second-based start and stop times into frames. Set it when the recording's frame rate is not on the media index |
 | `subject_id_map` | Maps BORIS subject names onto the `id` values in your tracks. Get this wrong and the labels attach to the wrong animal |
-| `background_label` | What an unannotated frame is called. `"none"` by default |
+| `background_label` | What an unannotated frame is called. `"none"` by default, and always label id 0 |
 | `pair_behaviors` | Behaviors that belong to a pair rather than to one individual |
 | `include_point_events` | Whether zero-duration events become single-frame labels |
 
 `subject_id_map` is the one to check first: BORIS records subject names, tracks record
 integer ids, and nothing can align them for you.
 
+## Labeled, background and unlabeled frames
+
+Each converted file records its `background_id`: the label a frame with no annotated
+event takes. A BORIS file's background is its `background_label`, at id 0. CalMS21 has
+no background class, because all four of its classes are behaviors, so its files
+record `-1`.
+
+A label of `-1` means **unlabeled**: nobody annotated that row, and it is not any
+class. Templates leave unlabeled rows out, and scoring drops and counts them.
+
+Labels attach to rows, not just to frames. A row of a pair feature takes the label of
+its own direction, so a CalMS21 label, which describes the resident's behavior toward
+the intruder, labels the resident-focal row and leaves the intruder-focal row
+unlabeled. An individual label applies to that individual's rows and to the pair rows
+focal on it, and a label with no subject applies to every row of the frame.
+
+Files converted before mosaic recorded `background_id` still load. A BORIS file takes
+its background from the conversion's recorded parameters. Any other such file warns
+(`LegacyLabelFileWarning`) and reads unannotated frames as `-1`, or as a class named
+`none` if it has one. Convert the labels again to record the background and silence
+the warning. The dataset then holds two label variants, so pass `labels_run_id=` to
+choose one, or remove the old one.
+
 ## Check the result
 
 ```python
 from mosaic.core.helpers import load_labels_auto
 
-labels = load_labels_auto(ds.get_root("labels") / "behavior" / "day1__trial01.npz")
+labels = load_labels_auto(
+    ds.get_root("labels") / "behavior" / "<run_id>" / "day1__trial01.npz"
+)
 ```
+
+Labels are stored per conversion run, in `labels/behavior/<run_id>/<entry>.npz`.
+`load_labels_auto` returns one label per frame, with the file's background for a frame
+no event covers.
 
 `mosaic inventory` reports label coverage beside everything else. The surest check is
 visual: render an overlay and watch whether the labels track the right animal.

@@ -105,6 +105,8 @@ When `mosaic` is not on `PATH`, run `<python> -m mosaic` with the interpreter be
   `extract_frames`. Each tracker's parameter model is in `mosaic.tracking.<tool>`.
 - `mosaic.core.pipeline.inventory`: `inventory`. `mosaic.core.pipeline.graph`:
   `load_recipe`, `plan_pipeline`, `run_pipeline`.
+- `mosaic.core.evaluation`: `align_predictions_to_labels` pairs a run's rows with
+  their labels, and `cluster_label_scores` scores a clustering against them.
 
 ## Installation
 
@@ -204,6 +206,9 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `temporal-stack` names the measurements to fit.
 - Inputs combine at one entity level. Mosaic refuses to merge per-individual output
   with per-pair output.
+- A label of `-1` means unlabeled: no annotation covers the row. Templates leave it
+  out and scoring drops and counts it. Never read it as a class. A pair row takes the
+  label of its own direction, so a CalMS21 label marks only the resident-focal row.
 - A custom feature must be deterministic, with typed Pydantic parameters:
   https://ecodylicscience.github.io/mosaic/guides/analysis/write-your-own-feature/.
 
@@ -246,7 +251,9 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   https://ecodylicscience.github.io/mosaic/concepts/pipelines/.
 - `mosaic inventory` reports what exists, with coverage and a status such as
   `partial` or `complete-but-drifted`. `mosaic runs` and `mosaic status` report
-  attempts.
+  attempts. A run whose scope is part of its id, such as templates drawn from the
+  training groups, is measured over that scope, so `complete` means it holds all of
+  it.
 
 ## Mosaic's MCP tools
 

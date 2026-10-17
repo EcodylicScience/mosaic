@@ -244,7 +244,34 @@ them:
 
 ```python
 from mosaic.core.analysis import compute_cluster_label_agreement
+
+agreement = compute_cluster_label_agreement(
+    ds, kmeans_result.feature, kmeans_result.run_id, perspective=0
+)
+print(agreement["metrics"]["purity"], agreement["metrics"]["ARI"])
 ```
+
+Each clustered row is scored against the label of that row. Rows nobody annotated
+are unlabeled; they are dropped and counted in `n_unlabeled_dropped`, not scored as a
+class.
+
+- **Purity** (`purity`, the same number as `majority_accuracy`) maps each cluster to
+  its most frequent behavior and asks how many rows that gets right. Read it when there
+  are more clusters than behaviors, which is the usual case.
+- **Hungarian accuracy** (`hungarian_accuracy`) pairs behaviors and clusters one to
+  one. With more clusters than behaviors, every cluster beyond the pairing counts as
+  wrong, so a clustering that splits each behavior cleanly still scores low.
+  `hungarian_one_to_one` says whether the pairing covered every cluster.
+- **ARI, AMI, homogeneity and completeness** compare the two labelings without
+  mapping one onto the other.
+
+On a pair feature, pass `perspective=0` to score each pair once, from the focal
+individual of the lower id: a label that describes one animal's behavior, such as
+CalMS21's, labels only that animal's rows. `perspective="each"` scores every
+perspective separately, and `perspective_consistency` reports how often the two rows
+of one pair at one frame fall in the same cluster.
+`mosaic.core.evaluation.align_predictions_to_labels` returns the aligned rows
+themselves.
 
 That is a check on the clustering, not a classifier. To predict labels, see
 [Train a behavior classifier](train-a-classifier.md).
