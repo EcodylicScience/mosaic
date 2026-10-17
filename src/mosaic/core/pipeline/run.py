@@ -69,7 +69,7 @@ from .manifest import (
     verify_overlap_supported,
 )
 from .op_identity import parse_op_run_id
-from .fit_scope import write_fit_scope
+from .fit_scope import derive_fit_scope, write_fit_scope
 from .labels_index import read_labels_index, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
 from .sequence_index import encode_entry_composition, read_entry_compositions
@@ -927,7 +927,9 @@ def build_run_params_payload(
 
     ``_scope`` is the scope of *this invocation*, not the fit scope (item 5.3):
     written unconditionally, so for a scope-free feature it is "whichever ran
-    last"; ``fit_scope.json`` answers "what was this state trained on". The values
+    last"; ``fit_scope.json`` answers "what was this state trained on", and for a
+    scope-free fitter it takes that from the fit records of its pinned artifacts
+    rather than from any invocation's scope. The values
     are load-bearing, not garnish -- two runs both marked one scheme can differ
     because one ran before a ``sequences.csv`` existed and one after, honest only
     if the values are written down. Compositions are recorded for *every* root, so
@@ -1361,10 +1363,14 @@ def _run_feature_impl(
         # Item 5.3, and the placement is the item. Written here rather than
         # beside params.json because only this branch means a fit actually ran:
         # params.json is written on every invocation, before load_state, so its
-        # `_scope` is the scope of whichever run came last. For a params-level
-        # fitter -- scope-free, so every apply scope shares one run root -- those
-        # two are different answers, and this is the one that stays true.
-        write_fit_scope(run_root, resolved, scope_dependent=feature.scope_dependent)
+        # `_scope` is the scope of whichever run came last. A params-level fitter
+        # -- scope-free, so every apply scope shares one run root -- fits from
+        # its pinned artifacts, not from this invocation's scope, so its record
+        # is derived from theirs.
+        write_fit_scope(
+            run_root,
+            derive_fit_scope(ds, feature, resolved, resolutions, artifact_paths),
+        )
         ctx.phase("apply")
 
     # Apply phase — index rows are flushed periodically for interrupt recovery

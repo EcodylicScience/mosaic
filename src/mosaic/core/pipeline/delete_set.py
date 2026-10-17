@@ -208,7 +208,7 @@ def _decline_partial_fits(
 
     for (name, run_id), group in by_run.items():
         scope = read_fit_scope(feature_run_root(ds, name, run_id))
-        if scope is None or not scope.scope_dependent:
+        if scope is None or not scope.scope_dependent or scope.entries is None:
             kept.extend(group)
             continue
         fitted = set(scope.entries)

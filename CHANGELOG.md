@@ -122,6 +122,23 @@ every attempt as `alive`, `unknown`, `dead` or `ended`.
   and `liveness`.
 - No identifier moves.
 
+**`fit_scope.json` records what a fit was trained on, not where it was run.** A
+scope-free fitter (`global-scaler`, `global-kmeans`, `xgboost`, ...) trains on the
+templates it pins, but its record held the scope of the invocation that fitted it. Its
+entries and its tracks and labels variants are now the union of the fit records of the
+artifacts it pins, and a new `via` lists those artifacts. The entries are an upper
+bound: `xgboost` fits only the `split == "train"` rows of its templates.
+
+- The record gains `source` (`stream`, `artifacts` or `unknown`) and `via`.
+- `entries`, `tracks_variants` and `labels_variants` are `null` when they are unknown:
+  for a fitter that pins no artifact (`feral` reads a directory of videos), or one
+  whose artifact has no record. `FitScope` holds `None` for them.
+- An older record still reads. One from a scope-free run reads with unknown entries,
+  because it held the invocation scope; one from a scope-dependent run keeps its
+  entries. Nothing is rewritten.
+- `write_fit_scope(run_root, scope)` takes a `FitScope`, which the new
+  `derive_fit_scope` builds. No run id moves.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the
