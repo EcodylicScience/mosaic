@@ -405,9 +405,9 @@ class JsonlRunLog:
     (``on_entry_*`` / ``on_epoch_end`` / ``on_class_start`` / ``on_phase``) **and** carries
     the attempt-lifecycle methods (``started`` / ``set_run_id`` / ``set_total`` /
     ``heartbeat`` / ``finished`` / ``failed`` / ``cancelled``). One file, one writer, flush
-    after every line so a concurrent reader only ever sees a partial last line. A line
-    written after a failed write begins with a newline, so a partial line the failure
-    left ends there and the lines after it decode.
+    after every line, so a concurrent reader sees a partial line only at the end of the
+    file or where a write failed. The first line after a failed write, or after a file
+    that ends mid-line, begins with a newline, so the lines after the partial one decode.
 
     :meth:`start_liveness` adds a daemon thread that appends ``alive`` after each
     interval of silence. Writes from it and from the job go through one lock, and
@@ -430,8 +430,9 @@ class JsonlRunLog:
         self._lock = threading.Lock()
         self._last_write: float = time.monotonic()
         self._ended: bool = False
-        # Whether the last write raised, possibly leaving a partial line.
-        self._torn: bool = False
+        # Whether the file may end in a partial line: an earlier writer's write
+        # failed, or this one's last write raised.
+        self._torn: bool = _ends_mid_line(self.path)
         self._stop_liveness = threading.Event()
         self._liveness: threading.Thread | None = None
 
@@ -470,9 +471,9 @@ class JsonlRunLog:
     def _append(self, line: str) -> None:
         """Write and flush *line*, with the lock held.
 
-        After a write that raised, *line* begins with a newline, which ends any
-        partial line that write left. The reader skips the partial line and the
-        blank one and decodes *line*.
+        After a write that raised, or on a file that ends mid-line, *line* begins
+        with a newline, which ends the partial line. The reader skips the partial
+        line and the blank one and decodes *line*.
         """
         if self._torn:
             line = "\n" + line
@@ -839,6 +840,18 @@ class JsonlRunLog:
 
     def __exit__(self, *exc: object) -> None:
         self.close()
+
+
+def _ends_mid_line(path: Path) -> bool:
+    """Whether *path* is non-empty and its last byte is not a newline."""
+    try:
+        with path.open("rb") as file:
+            if file.seek(0, os.SEEK_END) == 0:
+                return False
+            _ = file.seek(-1, os.SEEK_END)
+            return file.read(1) != b"\n"
+    except OSError:
+        return False
 
 
 def record_exited_attempt(

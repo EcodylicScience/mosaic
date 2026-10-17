@@ -447,6 +447,29 @@ def test_the_line_after_a_partial_line_still_reduces(
     assert snap["status"] == "finished"
 
 
+def test_an_exit_record_after_a_partial_last_line_still_reduces(
+    tmp_path: Path,
+) -> None:
+    path = _write_lines(tmp_path, "E1", {"t": "2026-01-01T00:00:00Z", "ev": "started"})
+    with path.open("a") as file:
+        _ = file.write('{"t": "2026-01-01T00:00:01Z", "ev": "fini')
+
+    runlog.record_exited_attempt(run_log_dir(tmp_path), "E1", "cancelled")
+
+    snap = runlog.reduce_run_log(path)
+    assert _decoded_events(tmp_path, "E1") == ["started", "cancelled"]
+    assert snap is not None
+    assert snap["status"] == "cancelled"
+
+
+def test_a_log_that_ends_on_a_full_line_gains_no_blank_line(tmp_path: Path) -> None:
+    path = _write_lines(tmp_path, "E1", {"t": "2026-01-01T00:00:00Z", "ev": "started"})
+
+    runlog.record_exited_attempt(run_log_dir(tmp_path), "E1", "cancelled")
+
+    assert "" not in path.read_text().splitlines()
+
+
 def test_an_alive_event_only_advances_heartbeat_at(tmp_path: Path) -> None:
     path = _write_lines(
         tmp_path,
