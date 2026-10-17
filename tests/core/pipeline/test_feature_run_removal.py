@@ -231,3 +231,31 @@ def test_the_record_rebuilds_the_feature_to_its_run_id(dataset: Dataset) -> None
 
     assert again.run_id == old
     assert feature_run_root(dataset, STORAGE, old).is_dir()
+
+
+@pytest.mark.parametrize("linked", ["run", "storage"])
+def test_a_symlink_into_another_run_is_refused(dataset: Dataset, linked: str) -> None:
+    """A link that resolves to another run's directory never removes that run."""
+    kept = run_speed(dataset, 1)
+    features = dataset.get_root("features")
+    if linked == "run":
+        storage, run_id = STORAGE, "0.2-linkedrun00"
+        (features / STORAGE / run_id).symlink_to(features / STORAGE / kept)
+    else:
+        storage, run_id = "alias__from__tracks", kept
+        (features / storage).symlink_to(features / STORAGE)
+
+    with _log(dataset) as log, pytest.raises(RuntimeError, match="refusing"):
+        _ = remove_feature_run(
+            dataset,
+            storage,
+            run_id,
+            params=_params(dataset, kept),
+            log=log,
+            reason="superseded",
+            superseded_by="",
+        )
+
+    assert feature_run_root(dataset, STORAGE, kept).is_dir()
+    assert len(_rows(dataset, kept)) == 2
+    assert read_removal_records(run_log_dir(dataset.base_dir), log.execution_id) == []

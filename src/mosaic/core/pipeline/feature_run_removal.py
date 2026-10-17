@@ -172,8 +172,9 @@ def finish_feature_run_removal(
 def _checked_run_root(ds: Dataset, storage: str, run_id: str) -> Path:
     """Return the run's directory, refusing one this module may not delete.
 
-    It must lie strictly inside the ``features`` root, two levels down, and every
-    index row of the run must name a file inside it. A run that fails either is
+    It must lie strictly inside the ``features`` root, two levels down, reached
+    through no symlink, and every index row of the run must name a file inside
+    it. A run that fails either is
     evidence that what was asked for was computed wrongly, so this raises rather
     than skipping it, as ``delete_set`` does.
 
@@ -189,11 +190,18 @@ def _checked_run_root(ds: Dataset, storage: str, run_id: str) -> Path:
                 f"refusing to remove feature run {storage!r}/{run_id!r}: "
                 f"{part!r} is not one path component"
             )
-    run_root = feature_run_root(ds, storage, run_id).resolve()
-    if run_root.parent.parent != features:
+    named = feature_run_root(ds, storage, run_id)
+    run_root = named.resolve()
+    # Resolved, it must be the very path it names: a symlinked storage or run
+    # directory resolves to another run, whose rows this would not drop.
+    if (
+        run_root != features / storage / run_id
+        or named.is_symlink()
+        or named.parent.is_symlink()
+    ):
         raise RuntimeError(
-            f"refusing to remove {run_root}: it is not a run directory of the "
-            f"features root {features}"
+            f"refusing to remove {named}: it is not a run directory of the "
+            f"features root {features}, or it is reached through a symlink"
         )
     index_path = feature_index_path(ds, storage)
     if not index_path.exists():
