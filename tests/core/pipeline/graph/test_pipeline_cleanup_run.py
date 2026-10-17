@@ -384,3 +384,24 @@ def test_an_interrupted_removal_is_not_finished_under_an_open_attempt(
 
     assert _exists(dataset, old)
     assert [(kept[1], kept[2]) for kept in outcome.kept] == [(old, "attempt_open")]
+
+
+def test_the_cleanup_records_its_process_as_a_step_does(dataset: Dataset) -> None:
+    """A cancel judges the cleanup's pid by its boot and namespace, as a step's."""
+    from mosaic.core.pipeline.markers import current_boot_id, current_pid_namespace
+    from mosaic.runlog import read_run, run_log_dir
+
+    _ = run_speed(dataset, 1)
+    request = _submit(dataset, speed_recipe_stepping(2))
+    _run_steps(dataset, request)
+    assert request.cleanup is not None
+
+    _ = run_cleanup(dataset, request, token=CancelToken())
+
+    snapshot = read_run(run_log_dir(dataset.base_dir), request.cleanup.execution_id)
+    assert snapshot is not None
+    assert (snapshot["pid"], snapshot["boot_id"], snapshot["pid_ns"]) == (
+        os.getpid(),
+        current_boot_id(),
+        current_pid_namespace(),
+    )

@@ -439,17 +439,23 @@ def run_cleanup(
         run_log_path,
     )
 
+    from ..markers import current_boot_id, current_pid_namespace
+
     spec = request.cleanup
     if spec is None:
         raise ValueError(f"request {request.request_id!r} has no cleanup")
     base = ds.base_dir
     with JsonlRunLog(run_log_path(base, spec.execution_id), spec.execution_id) as log:
+        # The boot and the pid namespace, as a step records them, so a cancel
+        # signals this process and no other that reuses its pid.
         log.started(
             kind=CLEANUP_KIND,
             target=request.request_id,
             owner=request.owner,
             host=socket.gethostname(),
             pid=os.getpid(),
+            boot_id=current_boot_id(),
+            pid_ns=current_pid_namespace(),
         )
         log.set_total(len(spec.approved))
         prior = {
