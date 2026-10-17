@@ -32,6 +32,7 @@ from mosaic.core.pipeline.graph import (
     read_driver_lease,
     request_rollup,
     submit_request,
+    take_driver_lease,
 )
 from mosaic.core.pipeline.markers import process_running
 from mosaic.runlog import JsonlRunLog, new_execution_id, read_run, run_log_dir
@@ -392,3 +393,28 @@ def _lease_step_pid(ds: Dataset, request: Request) -> int:
     """The step process that the request's driver lease names, 0 without one."""
     lease = read_driver_lease(ds.base_dir, request.request_id)
     return 0 if lease is None else lease.step_pid
+
+
+def test_an_in_process_request_is_cancelled_step_by_step(
+    tracked: Dataset, submitted: Request, sleeper: subprocess.Popen[bytes]
+) -> None:
+    """A run in one process has no driver that forwards SIGTERM to its step."""
+    speed = submitted.execution_of("speed")
+    _start(tracked, speed, pid=sleeper.pid)
+    lease = take_driver_lease(tracked.base_dir, submitted.request_id, in_process=True)
+    in_sleeper = lease.model_copy(
+        update={"pid": sleeper.pid, "step_id": "speed", "step_pid": sleeper.pid}
+    )
+    _ = driver_lease_path(tracked.base_dir, submitted.request_id).write_text(
+        in_sleeper.model_dump_json(), encoding="utf-8"
+    )
+
+    result = cancel_request(tracked, submitted.request_id)
+
+    assert (result.outcome, result.driver_pid) == ("signalled", 0)
+    assert [(step.execution_id, step.outcome) for step in result.steps] == [
+        (speed, "signalled"),
+        (submitted.execution_of("templates"), "recorded"),
+    ]
+    assert sleeper.wait(timeout=10) == -signal.SIGTERM
+    assert result.status == "cancelled"

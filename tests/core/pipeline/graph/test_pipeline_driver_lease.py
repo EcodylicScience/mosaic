@@ -290,3 +290,12 @@ def test_a_stale_other_host_lease_naming_an_unstarted_step_is_dead_after_the_win
         "unknown",
     )
     assert live_step_process(rollup, lease, now=after) is None
+
+
+def test_an_in_process_lease_says_so(tmp_path: Path) -> None:
+    lease = take_driver_lease(tmp_path, "R1", in_process=True)
+
+    assert lease.in_process
+    assert read_driver_lease(tmp_path, "R1") == lease
+    release_driver_lease(tmp_path, lease)
+    assert not take_driver_lease(tmp_path, "R2").in_process

@@ -325,6 +325,81 @@ def test_cancel_takes_exactly_one_of_an_attempt_and_a_request(
     assert "exactly one of --execution-id or --request" in result.stderr
 
 
+STOPPED_STEP_PROGRAM = (
+    "import sys, time\n"
+    "from mosaic.core.pipeline.graph import run\n"
+    "from mosaic.core.pipeline.job import Cancelled\n"
+    "def waits(ds, request, step_id, *, cancel_token, **_):\n"
+    "    while not cancel_token.is_cancelled():\n"
+    "        time.sleep(0.05)\n"
+    "    raise Cancelled()\n"
+    "run.execute_step = waits\n"
+    "from mosaic.cli import app\n"
+    "app(sys.argv[1:], prog_name='mosaic')\n"
+)
+"""``mosaic`` with every step of an in-process run waiting for its cancel token."""
+
+
+def test_pipeline_run_recipe_exits_130_on_sigterm(
+    dataset: tuple[Path, Dataset], tmp_path: Path
+) -> None:
+    import signal
+    import subprocess
+    import sys
+
+    from mosaic.core.pipeline.graph import (
+        driver_lease_path,
+        drivers_root,
+        list_requests,
+        load_request,
+        read_driver_lease,
+        request_rollup,
+    )
+    from tests.helpers import wait_for
+
+    manifest, ds = dataset
+    recipe = tmp_path / "speed.json"
+    _ = recipe.write_text(speed_recipe().model_dump_json())
+
+    def step_lease_named() -> bool:
+        leases = list(drivers_root(ds.base_dir).glob("*.lease.json"))
+        if not leases:
+            return False
+        lease = read_driver_lease(ds.base_dir, leases[0].name.split(".")[0])
+        return lease is not None and lease.step_id == "speed"
+
+    with (tmp_path / "run.out").open("w") as output:
+        driver = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                STOPPED_STEP_PROGRAM,
+                "pipeline",
+                "run",
+                "-m",
+                str(manifest),
+                "-r",
+                f"@{recipe}",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=output,
+        )
+    try:
+        wait_for(step_lease_named, 180.0, "the run did not start its step")
+        driver.send_signal(signal.SIGTERM)
+        assert driver.wait(timeout=180) == 130
+    finally:
+        if driver.poll() is None:
+            driver.kill()
+            _ = driver.wait()
+
+    (summary,) = list_requests(ds.base_dir).items
+    request = load_request(ds.base_dir, summary.request_id)
+    assert request_rollup(ds.base_dir, request).status == "cancelled"
+    assert not driver_lease_path(ds.base_dir, request.request_id).exists()
+
+
 # --- release ---------------------------------------------------------------
 
 

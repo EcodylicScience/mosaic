@@ -118,7 +118,9 @@ def attempt_liveness(
             return "unknown"
         moment = now or datetime.datetime.now(datetime.UTC)
         silent = (moment - last).total_seconds()
-        return "dead" if silent > LIVENESS_STALE_INTERVALS * liveness_interval else "alive"
+        return (
+            "dead" if silent > LIVENESS_STALE_INTERVALS * liveness_interval else "alive"
+        )
     return "unknown"
 
 
@@ -156,7 +158,9 @@ def step_liveness(
     )
 
 
-def may_still_run(attempt: StepAttempt, *, now: datetime.datetime | None = None) -> bool:
+def may_still_run(
+    attempt: StepAttempt, *, now: datetime.datetime | None = None
+) -> bool:
     """Return whether a step's attempt may still be running, for a refusal to act.
 
     ``alive`` may run. ``unknown`` may run on another host, which this process

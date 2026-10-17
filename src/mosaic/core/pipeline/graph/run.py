@@ -21,6 +21,11 @@ are kept apart because the queue package already depends on this one, so a
 planner that submitted would be a package cycle -- and because a preview that
 could start work is a preview nobody dares ask for.
 
+**Running here holds the request's lease too.** :func:`run_pipeline` takes an
+``in_process`` driver lease (:mod:`~.driver_lease`), so a request run from a notebook
+or by ``mosaic pipeline run --recipe`` reads ``orphaned`` once that process is gone,
+and a second driver is refused while it lives.
+
 **A submitted request is driven step by step, one process per step.**
 :func:`run_request` runs each step's :func:`~.request.step_argv` in topological
 order, as ``mosaic run --graph-request`` does under a queue, and holds the
@@ -33,6 +38,7 @@ a new session, which outlives the process that started it.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -42,7 +48,7 @@ from mosaic.core.scope import Scope
 from mosaic.runlog import TERMINAL_STATUSES, now_iso, read_run, run_log_dir
 
 from ..error_kind import ClassifiedError, ErrorKind
-from ..job import CancelToken
+from ..job import Cancelled, CancelToken
 from ..subprocess_util import terminate_group
 from .driver_lease import (
     LeaseKeeper,
@@ -152,8 +158,20 @@ def run_pipeline(
     catalog: DeclarationCatalog | None = None,
     store: FailureStore | None = None,
     owner: str = "",
+    cancel_token: CancelToken | None = None,
 ) -> PipelineRun:
     """Run every step of *recipe* against *ds*, in order, in this process.
+
+    The run holds the request's driver lease, marked ``in_process``, and names in
+    it the step that runs. It deletes the lease when the request has ended and
+    keeps it otherwise, so a run stopped by a shortfall reads ``orphaned`` once
+    the lease goes stale, and ``mosaic pipeline run --request`` resumes it.
+
+    Before each step the run stops when its cancel token has fired or a cancel
+    recorded the step ``cancelled`` (:func:`~mosaic.core.pipeline.cancel.cancel_request`
+    records the steps of an in-process run that have not started). A cancel, or a
+    ``KeyboardInterrupt``, records every step without a terminal record
+    ``cancelled`` before it propagates.
 
     Args:
         ds: The dataset to run against.
@@ -167,6 +185,8 @@ def run_pipeline(
         catalog: The declarations to resolve against.
         store: Where failures are recorded.
         owner: Recorded on each attempt.
+        cancel_token: Fired to stop the run, as ``mosaic pipeline run --recipe``
+            does on SIGTERM and SIGINT. Each step's work checks it.
 
     Returns:
         One :class:`~mosaic.core.pipeline.graph.step.StepOutcome` per step, in
@@ -176,7 +196,15 @@ def run_pipeline(
         StepRefused: A step declined to run, naming why. ``CoverageShortfall`` is
             the case a caller most often means to catch.
         RecipeInvalid: The recipe is malformed.
+        DriverRunning: A live driver holds the request's lease.
+        StepStillRunning: A process of one of the request's steps is running.
+        LeaseLost: The lease was deleted while this process ran the request.
+        LeaseNotRefreshed: The lease could not be refreshed, checked before each
+            step.
+        Cancelled: The cancel token fired, or a cancel recorded a step.
     """
+    if request is not None:
+        _refuse_running_step(ds, request)
     submitted = request
     if submitted is None:
         submitted = submit_request(
@@ -191,30 +219,52 @@ def run_pipeline(
     elif allow_partial and not submitted.allow_partial:
         submitted = submitted.model_copy(update={"allow_partial": True})
 
+    token = CancelToken() if cancel_token is None else cancel_token
+    order = tuple(step.id for step in topological_order(recipe))
+    lease = take_driver_lease(ds.base_dir, submitted.request_id, in_process=True)
+    keeper = LeaseKeeper(ds.base_dir, lease)
+    keeper.start()
     outcomes: list[StepOutcome] = []
-    for step in topological_order(recipe):
-        outcome = execute_step(
-            ds,
-            submitted,
-            step.id,
-            store=store,
-            inventory=inventory,
-            catalog=catalog,
-            owner=owner,
-        )
-        outcomes.append(outcome)
-        if outcome.state == "stalled" and not submitted.allow_partial:
-            # Stopped after one stall rather than after K attempts. A feature
-            # legitimately producing fewer outputs than inputs never reads as
-            # complete and would be resubmitted forever; an attempt counter
-            # renders a *correct* pipeline red and invites a retry that cannot
-            # succeed.
-            raise CoverageShortfall(
-                step.id,
-                outcome.covered,
-                outcome.target,
-                "the attempt exited clean and coverage did not move",
+    try:
+        for step_id in order:
+            if (
+                token.is_cancelled()
+                or _recorded_status(ds, submitted, step_id) == "cancelled"
+            ):
+                raise Cancelled()
+            keeper.ensure_held()
+            keeper.record_step(step_id, os.getpid())
+            outcome = execute_step(
+                ds,
+                submitted,
+                step_id,
+                store=store,
+                inventory=inventory,
+                catalog=catalog,
+                owner=owner,
+                cancel_token=token,
             )
+            keeper.record_step("", 0)
+            outcomes.append(outcome)
+            if outcome.state == "stalled" and not submitted.allow_partial:
+                # Stopped after one stall rather than after K attempts. A feature
+                # legitimately producing fewer outputs than inputs never reads as
+                # complete and would be resubmitted forever; an attempt counter
+                # renders a *correct* pipeline red and invites a retry that
+                # cannot succeed.
+                raise CoverageShortfall(
+                    step_id,
+                    outcome.covered,
+                    outcome.target,
+                    "the attempt exited clean and coverage did not move",
+                )
+    except (Cancelled, KeyboardInterrupt):
+        _ = _cancel_unended(ds, submitted, order)
+        raise
+    finally:
+        keeper.stop()
+        if request_rollup(ds.base_dir, submitted).is_terminal:
+            release_driver_lease(ds.base_dir, lease)
 
     final = plan_pipeline(
         ds,
@@ -450,13 +500,23 @@ def _refuse_undrivable(ds: Dataset, request: Request) -> tuple[str, ...]:
     recipe = load_recipe_for_request(ds.base_dir, request)
     order = tuple(step.id for step in topological_order(recipe))
     refuse_live_driver(ds.base_dir, request.request_id)
+    _refuse_running_step(ds, request)
+    return order
+
+
+def _refuse_running_step(ds: Dataset, request: Request) -> None:
+    """Raise when a process of one of *request*'s steps may still be running.
+
+    Raises:
+        StepStillRunning: The process that a step's run-log, or a stale driver
+            lease, names may still run (:func:`~.driver_lease.live_step_process`).
+    """
     stale = read_driver_lease(ds.base_dir, request.request_id)
     running = live_step_process(request_rollup(ds.base_dir, request), stale)
     if running is not None:
         raise StepStillRunning(
             running.step_id, running.execution_id, host=running.host, pid=running.pid
         )
-    return order
 
 
 def _recorded_status(ds: Dataset, request: Request, step_id: str) -> str:

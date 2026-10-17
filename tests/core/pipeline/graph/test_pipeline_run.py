@@ -9,7 +9,9 @@ quietly run over less of it.
 
 from __future__ import annotations
 
+import datetime
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -19,21 +21,45 @@ from typer.testing import CliRunner, Result
 from mosaic.behavior.feature_library.global_kmeans import GlobalKMeansClustering
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.cancel import RequestCancel, cancel_request
+from mosaic.core.pipeline.graph import run as run_module
 from mosaic.core.pipeline.graph import validate as validate_module
 from mosaic.core.pipeline.graph import (
     CoverageShortfall,
+    DriverLease,
+    DriverRunning,
     Recipe,
+    Request,
+    StepOutcome,
     build_step_feature,
+    driver_lease_path,
+    execute_step,
     plan_pipeline,
     plan_wire,
+    read_driver_lease,
     recipe_digest,
+    request_rollup,
+    request_verdict_of,
     run_pipeline,
+    submit_request,
 )
+from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from mosaic.core.pipeline.run import run_feature
-from mosaic.core.pipeline.run_log import read_run, run_log_dir
+from mosaic.core.pipeline.run_log import (
+    JsonlRunLog,
+    read_run,
+    run_log_dir,
+    run_log_path,
+)
 from mosaic.core.scope import Scope
-from tests.helpers import add_tracks_variant, catalog_without_contract, make_dataset
+from tests.helpers import (
+    add_tracks_variant,
+    catalog_without_contract,
+    chain_recipe,
+    make_dataset,
+    write_driver_lease,
+)
 
 runner = CliRunner()
 
@@ -686,3 +712,140 @@ def test_a_model_the_op_does_not_run_is_refused_as_a_message(
     assert result.exit_code == 1
     assert isinstance(result.exception, SystemExit), result.exception
     assert "runs models trained by train-pose" in result.stderr
+
+
+# --- the in-process driver lease ---------------------------------------------
+
+
+def _finish_step(
+    ds: Dataset, request: Request, step_id: str, *, state: str = "ran"
+) -> StepOutcome:
+    """Record *step_id*'s attempt finished, as a step that ran does."""
+    execution_id = request.execution_of(step_id)
+    with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as log:
+        log.started(kind="feature", target=step_id, pid=os.getpid())
+        log.finished()
+    return StepOutcome(
+        step_id=step_id,
+        kind="feature",
+        run_id="0.1-0000000000",
+        state="stalled" if state == "stalled" else "ran",
+        execution_id=execution_id,
+        covered=1,
+        target=2,
+    )
+
+
+def test_an_in_process_run_holds_the_lease_while_a_step_runs(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[DriverLease | None] = []
+
+    def observed(ds: Dataset, request: Request, step_id: str, **kwargs: object):
+        seen.append(read_driver_lease(ds.base_dir, request.request_id))
+        return execute_step(ds, request, step_id, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(run_module, "execute_step", observed)
+
+    _ = run_pipeline(tracked, chain_recipe())
+
+    assert [
+        (lease.in_process, lease.step_id, lease.step_pid)
+        for lease in seen
+        if lease is not None
+    ] == [(True, "speed", os.getpid()), (True, "templates", os.getpid())]
+
+
+def test_an_in_process_run_releases_its_lease_when_the_request_ends(
+    tracked: Dataset,
+) -> None:
+    done = run_pipeline(tracked, chain_recipe())
+
+    assert not driver_lease_path(tracked.base_dir, done.request_id).exists()
+
+
+def test_an_in_process_run_that_stalls_keeps_its_lease_and_reads_orphaned(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The process outlives the run, as a notebook kernel does, and stops refreshing."""
+
+    def stalls(ds: Dataset, request: Request, step_id: str, **_: object):
+        return _finish_step(ds, request, step_id, state="stalled")
+
+    monkeypatch.setattr(run_module, "execute_step", stalls)
+    submitted = submit_request(tracked, chain_recipe()).request
+
+    with pytest.raises(CoverageShortfall):
+        _ = run_pipeline(tracked, chain_recipe(), request=submitted)
+
+    lease = read_driver_lease(tracked.base_dir, submitted.request_id)
+    assert lease is not None and lease.in_process
+    rollup = request_rollup(tracked.base_dir, submitted)
+    later = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+    assert request_verdict_of(tracked.base_dir, rollup) == "running"
+    assert request_verdict_of(tracked.base_dir, rollup, now=later) == "orphaned"
+
+
+def test_an_in_process_run_refuses_a_request_another_driver_holds(
+    tracked: Dataset,
+) -> None:
+    submitted = submit_request(tracked, chain_recipe()).request
+    held = write_driver_lease(tracked.base_dir, submitted.request_id, stale=False)
+
+    with pytest.raises(DriverRunning):
+        _ = run_pipeline(tracked, chain_recipe(), request=submitted)
+
+    assert read_driver_lease(tracked.base_dir, submitted.request_id) == held
+    assert request_rollup(tracked.base_dir, submitted).steps[0].status == ""
+
+
+def test_a_cancelled_in_process_run_records_its_unended_steps_cancelled(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def cancelled(
+        ds: Dataset,
+        request: Request,
+        step_id: str,
+        *,
+        cancel_token: CancelToken,
+        **_: object,
+    ):
+        cancel_token.cancel()
+        raise Cancelled()
+
+    monkeypatch.setattr(run_module, "execute_step", cancelled)
+    submitted = submit_request(tracked, chain_recipe()).request
+
+    with pytest.raises(Cancelled):
+        _ = run_pipeline(tracked, chain_recipe(), request=submitted)
+
+    rollup = request_rollup(tracked.base_dir, submitted)
+    assert [attempt.status for attempt in rollup.steps] == ["cancelled", "cancelled"]
+    assert not driver_lease_path(tracked.base_dir, submitted.request_id).exists()
+
+
+def test_an_in_process_run_stops_before_a_step_a_cancel_recorded(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``mosaic cancel --request`` records the steps of an in-process run."""
+    ran: list[str] = []
+    cancels: list[RequestCancel] = []
+
+    def then_cancelled(ds: Dataset, request: Request, step_id: str, **_: object):
+        ran.append(step_id)
+        outcome = _finish_step(ds, request, step_id)
+        cancels.append(cancel_request(ds, request.request_id))
+        return outcome
+
+    monkeypatch.setattr(run_module, "execute_step", then_cancelled)
+    submitted = submit_request(tracked, chain_recipe()).request
+
+    with pytest.raises(Cancelled):
+        _ = run_pipeline(tracked, chain_recipe(), request=submitted)
+
+    assert ran == ["speed"]
+    assert [(cancel.outcome, cancel.driver_pid) for cancel in cancels] == [
+        ("recorded", 0)
+    ]
+    rollup = request_rollup(tracked.base_dir, submitted)
+    assert [attempt.status for attempt in rollup.steps] == ["finished", "cancelled"]

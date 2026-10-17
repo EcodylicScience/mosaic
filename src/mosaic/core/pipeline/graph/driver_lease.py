@@ -13,6 +13,9 @@ another host and a host that rebooted. A request whose rollup is ``running``, wh
 lease is stale and none of whose step processes may still run reads ``orphaned``
 (:func:`~.status.request_verdict_of`). Running the request again resumes it.
 
+A driver that runs its steps in its own process (:func:`~.run.run_pipeline`) takes
+an ``in_process`` lease, which names its own pid as the running step's process.
+
 Reading a lease imports pydantic and the standard library alone, as the status
 reports that read it do (``tests/meta/test_status_imports.py``). Deciding whether
 a step process runs on this host also imports psutil.
@@ -120,6 +123,11 @@ class DriverLease(BaseModel):
         step_pid: That process, 0 between steps. A step runs in a session of its
             own and outlives a driver that is killed, so a driver taking over a
             stale lease is refused while this process runs.
+        in_process: Whether the driver runs its steps in its own process, as
+            :func:`~.run.run_pipeline` does. ``step_pid`` is then the driver's
+            own pid, and a cancel signals the running step and records the
+            others itself, because no driver forwards it. A reader that predates
+            the field drops it.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="ignore")
@@ -131,6 +139,7 @@ class DriverLease(BaseModel):
     refreshed_at: str
     step_id: str = ""
     step_pid: int = 0
+    in_process: bool = False
 
     def same_holder(self, other: DriverLease) -> bool:
         """Return whether *other* was taken by the same driver as this lease.
@@ -398,7 +407,9 @@ def refuse_live_driver(base_dir: Path | str, request_id: str) -> None:
         raise DriverRunning(lease)
 
 
-def take_driver_lease(base_dir: Path | str, request_id: str) -> DriverLease:
+def take_driver_lease(
+    base_dir: Path | str, request_id: str, *, in_process: bool = False
+) -> DriverLease:
     """Create the lease of *request_id* for this process.
 
     The lease is published whole (:func:`~mosaic.core.pipeline.markers.create_exclusive`),
@@ -406,6 +417,12 @@ def take_driver_lease(base_dir: Path | str, request_id: str) -> DriverLease:
     replaced. The replacement holds :func:`_takeover_lock`, and of two drivers
     replacing one stale lease on one mount, the second finds the first one's live
     lease.
+
+    Args:
+        base_dir: The dataset root.
+        request_id: The request to drive.
+        in_process: Whether this process runs the steps itself
+            (:attr:`DriverLease.in_process`).
 
     Returns:
         The lease taken.
@@ -420,6 +437,7 @@ def take_driver_lease(base_dir: Path | str, request_id: str) -> DriverLease:
         pid=os.getpid(),
         started_at=stamp,
         refreshed_at=stamp,
+        in_process=in_process,
     )
     path = driver_lease_path(base_dir, request_id)
     text = lease.model_dump_json(indent=2)
@@ -522,6 +540,7 @@ class LeaseKeeper:
     def record_step(self, step_id: str, pid: int) -> None:
         """Name the step whose process runs, or clear it with ``("", 0)``.
 
+        The process is the step's own, or this process for an in-process run.
         A write that raises is reported as a refresh's is.
         """
         _ = self._try_rewrite(step_id=step_id, step_pid=pid)

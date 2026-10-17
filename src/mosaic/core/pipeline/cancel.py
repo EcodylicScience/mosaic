@@ -271,6 +271,13 @@ def cancel_request(ds: Dataset, request_id: str) -> RequestCancel:
     stale lease names receives SIGTERM, and every other step that has not started
     is recorded ``cancelled``. The rollup then reads ``cancelled``.
 
+    A request run in one process (:func:`~mosaic.core.pipeline.graph.run.run_pipeline`)
+    holds an ``in_process`` lease, and no driver process forwards a cancel. Its
+    running step is cancelled by :func:`cancel_attempt`, which signals that one
+    process, and its steps that have not started are recorded ``cancelled``, which
+    the run reads before it starts each step. A notebook kernel that runs a
+    request receives SIGTERM like any other process.
+
     A request is left as it is when its live driver runs on another host, or when
     one of its running step processes does.
 
@@ -319,6 +326,7 @@ def cancel_request(ds: Dataset, request_id: str) -> RequestCancel:
     if (
         lease is not None
         and lease.host == here
+        and not lease.in_process
         and process_running_since(lease.pid, lease.started_at)
         and _send_sigterm(lease.pid, execution_id="")
     ):
@@ -345,19 +353,22 @@ def cancel_request(ds: Dataset, request_id: str) -> RequestCancel:
     )
     signalled = any(step.signalled for step in steps)
     after = request_rollup(ds.base_dir, request).status
+    driver = (
+        f"request {request_id} runs in process {lease.pid}; "
+        if lease is not None and lease.in_process and lease_is_live(lease)
+        else f"the driver of request {request_id} is not running; "
+    )
     return RequestCancel(
         request_id=request_id,
         outcome="signalled" if signalled else "recorded",
         status=after,
         driver_pid=0,
         steps=steps,
-        message=(
-            f"the driver of request {request_id} is not running; "
-            + (
-                "sent SIGTERM to its running steps."
-                if signalled
-                else f"recorded {len(steps)} unended steps as cancelled."
-            )
+        message=driver
+        + (
+            "sent SIGTERM to its running steps."
+            if signalled
+            else f"recorded {len(steps)} unended steps as cancelled."
         ),
     )
 

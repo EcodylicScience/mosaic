@@ -361,9 +361,15 @@ def run_command(
 
     An open request of the same recipe over an overlapping scope is reported on
     stderr. With ``--request`` the steps of a submitted request run instead, and
-    the command exits 1 when the request failed and 130 when it was cancelled.
+    the command exits 1 when the request failed. Either way it exits 130 when the
+    run was cancelled, by SIGTERM, SIGINT or ``mosaic cancel``.
     """
-    from mosaic.core.pipeline.graph import run_pipeline, submit_request
+    from mosaic.core.pipeline.graph import (
+        request_status_wire,
+        run_pipeline,
+        submit_request,
+    )
+    from mosaic.core.pipeline.job import Cancelled, CancelToken, install_signal_handler
 
     if request_id is not None:
         if recipe is not None:
@@ -382,6 +388,8 @@ def run_command(
     ds = load_dataset(manifest)
     parsed = _recipe(recipe, as_json=as_json)
     submitted: Request | None = None
+    token = CancelToken()
+    install_signal_handler(token)
     try:
         with stdout_to_stderr():
             # Submitted here rather than inside run_pipeline, so that a refusal
@@ -395,7 +403,17 @@ def run_command(
             )
             submitted = recorded.request
             _warn_duplicates(recorded.duplicates)
-            done = run_pipeline(ds, parsed, request=submitted, owner=owner)
+            done = run_pipeline(
+                ds, parsed, request=submitted, owner=owner, cancel_token=token
+            )
+    except Cancelled:
+        if submitted is not None:
+            report = request_status_wire(ds.base_dir, submitted)
+            if as_json:
+                emit_json(report.model_dump(mode="json"))
+            else:
+                _render_request_status(report)
+        raise typer.Exit(code=130) from None
     except Refusal as refusal:
         # A step's own refusal, or one raised inside a step's attempt, such as a
         # tracker's refusal of a codec. Either ends the run at that step.
