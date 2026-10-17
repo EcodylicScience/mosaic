@@ -73,7 +73,7 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
 - `_step_scope_problems` refuses a step scope naming no step, on an op that takes no
   scope or a bound step, or selecting nothing, and a reader planned over entries its
   `inputs` or `tracks` parent is not. A params reference and `after` carry no entry
-  rule, so `refuse_shortfall` asks a params parent (`PlannedStep.params_parents`) only
+  rule, so `refuse_shortfall` asks such a parent (`PlannedStep.status_parents`) only
   to be complete.
 - A writer of tracks that takes no scope (`convert-tracks`) does not make the media
   universe the target. On a dataset with no tracks, a graph holding one leaves its

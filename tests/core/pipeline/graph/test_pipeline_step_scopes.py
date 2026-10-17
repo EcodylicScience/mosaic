@@ -186,7 +186,7 @@ def test_a_params_reference_to_a_narrower_step_is_allowed(split: Dataset) -> Non
     )
 
     assert plan.problems == ()
-    assert plan.step("kmeans").params_parents == ("templates",)
+    assert plan.step("kmeans").status_parents == ("templates",)
     assert plan.step("kmeans").coverage.target == {("test", "s3")}
 
 
@@ -200,6 +200,21 @@ def test_step_scopes_change_the_fingerprint(split: Dataset) -> None:
     test = plan_pipeline(split, recipe, step_scopes={"templates": TEST})
 
     assert plan_fingerprint(train) != plan_fingerprint(test)
+
+
+def test_the_order_a_step_scope_lists_its_groups_in_names_nothing(
+    split: Dataset,
+) -> None:
+    recipe = _recipe(SPEED, TEMPLATES)
+
+    one = plan_pipeline(
+        split, recipe, step_scopes={"templates": Scope(groups=["train", "test"])}
+    )
+    other = plan_pipeline(
+        split, recipe, step_scopes={"templates": Scope(groups=["test", "train"])}
+    )
+
+    assert plan_fingerprint(one) == plan_fingerprint(other)
 
 
 def test_a_plan_without_step_scopes_keeps_its_fingerprint(split: Dataset) -> None:
@@ -252,6 +267,19 @@ def test_a_request_without_step_scopes_omits_the_key(split: Dataset) -> None:
         request_path(split.base_dir, submitted.request.request_id).read_text()
     )
     assert "step_scopes" not in written
+
+
+def test_camera_entries_in_a_step_scope_are_a_plan_problem(split: Dataset) -> None:
+    """The plan refuses what the request would, rather than the submission raising."""
+    plan = plan_pipeline(
+        split,
+        _recipe(SPEED),
+        step_scopes={"speed": Scope(entries=[("train", "s1", "cam0")])},
+        refuse=False,
+    )
+
+    assert _where(plan) == [("speed", "step_scopes.speed")]
+    assert "names cameras" in plan.problems[0].message
 
 
 def test_camera_entries_in_a_step_scope_are_refused() -> None:
@@ -319,6 +347,23 @@ def test_a_params_parent_narrower_than_the_step_is_not_a_shortfall(
     templates = plan.step("templates")
     assert plan.step("speed").is_complete
 
-    with pytest.raises(CoverageShortfall):
+    with pytest.raises(CoverageShortfall, match=r"missing \('test', 's3'\)"):
         refuse_shortfall(plan, templates)
-    refuse_shortfall(plan, replace(templates, params_parents=("speed",)))
+    refuse_shortfall(plan, replace(templates, status_parents=("speed",)))
+
+
+def test_an_after_parent_is_asked_only_to_be_complete(split: Dataset) -> None:
+    """An ordering edge reads no entry, so a narrower parent named by it is not short."""
+    recipe = _recipe(
+        SPEED,
+        {**SPEED, "id": "ordered"},
+        {**TEMPLATES, "inputs": [{"step": "ordered"}], "after": ["speed"]},
+    )
+    _ = run_pipeline(split, _recipe(SPEED), step_scopes={"speed": TRAIN})
+    _ = run_pipeline(split, _recipe({**SPEED, "id": "ordered"}))
+    plan = plan_pipeline(split, recipe, step_scopes={"speed": TRAIN})
+
+    assert plan.problems == ()
+    templates = plan.step("templates")
+    assert templates.status_parents == ("speed",)
+    refuse_shortfall(plan, templates)

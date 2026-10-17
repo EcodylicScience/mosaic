@@ -286,9 +286,10 @@ class PlannedStep:
         spec: Exactly what it takes to run it, entries already narrowed.
         lane: Which queue this work is offered to.
         parents: The steps it references, ``after`` included.
-        params_parents: The parents it reads only through a params reference,
-            such as templates or a label map, which answer for what they were
-            fitted on rather than entry by entry.
+        status_parents: The parents it does not read entry by entry: those
+            named only through a params reference, such as templates or a
+            label map, which answer for what they were fitted on, and those
+            named only by ``after``. A step scope sets no entry rule on them.
         run_id: What the run will be called, or ``None`` when neither it nor
             something above it can say yet.
         storage_name: Where a feature step's outputs live.
@@ -318,7 +319,7 @@ class PlannedStep:
     spec: StepSpec
     lane: str = ""
     parents: tuple[str, ...] = ()
-    params_parents: tuple[str, ...] = ()
+    status_parents: tuple[str, ...] = ()
     run_id: str | None = None
     storage_name: str = ""
     tracks_variant: str = ""
@@ -752,7 +753,7 @@ def _plan_step(
     return replace(
         base,
         parents=parents,
-        params_parents=_params_parents(step),
+        status_parents=_status_parents(step, parents),
         lane=lane_for(declared),
         spec=replace(
             base.spec,
@@ -844,8 +845,9 @@ def _step_scope_problems(
     """What is wrong with the step scopes of a plan, at ``step_scopes.<id>``.
 
     A key naming no step, a scope on a step that takes none (an op declaring
-    ``scope_takes = "none"``, or a step a ``bind`` resolves), and a scope that
-    selects no entry are refused. The last is skipped while a conversion of
+    ``scope_takes = "none"``, or a step a ``bind`` resolves), a scope naming
+    cameras, which a request refuses, and a scope that selects no entry are
+    refused. The last is skipped while a conversion of
     this graph defers the entries, and the step refuses it when it runs. A
     step reading another's entries through ``inputs`` or ``tracks`` must be
     planned over a subset of that step's target, at the place it reads it. A
@@ -870,6 +872,13 @@ def _step_scope_problems(
             continue
         if step_id in bind:
             message = "the submission binds this step to a run, which takes no scope"
+            found.append(Problem(step_id, where, message))
+            continue
+        if step_scopes[step_id].addresses_cameras:
+            message = (
+                "names cameras. A step scope narrows the (group, sequence) "
+                "entries a step covers"
+            )
             found.append(Problem(step_id, where, message))
             continue
         if not planned[step_id].coverage.target and deferred is None:
@@ -974,18 +983,14 @@ def _inherited_deferral(
     return None
 
 
-def _params_parents(step: Step) -> tuple[str, ...]:
-    """The steps this one reads only through a params reference."""
+def _status_parents(step: Step, parents: tuple[str, ...]) -> tuple[str, ...]:
+    """The *parents* this step reads through no ``inputs`` or ``tracks`` edge."""
     reads: set[str] = set()
     if isinstance(step, FeatureStepSpec):
         reads = {item.step for item in step.inputs if isinstance(item, StepRef)}
         if step.tracks is not None:
             reads.add(step.tracks.step)
-    found: list[str] = []
-    for reference in params_step_refs(step.params).values():
-        if reference.step not in reads and reference.step not in found:
-            found.append(reference.step)
-    return tuple(found)
+    return tuple(parent for parent in parents if parent not in reads)
 
 
 def _data_parents(step: Step) -> tuple[str, ...]:

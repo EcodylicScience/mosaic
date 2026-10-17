@@ -173,33 +173,28 @@ def refuse_shortfall(plan: Plan, planned: PlannedStep) -> None:
 
     Measured against the step's own target (:func:`~.plan.step_target`). A
     parent read through ``inputs`` or ``tracks`` must hold every entry of it. A
-    parent read through a params reference -- templates, a label map -- answers
-    for the whole of what it was fitted on, and must only be complete: a
-    test-scoped step reads a model fitted on the training entries.
+    parent read otherwise -- through a params reference such as templates or a
+    label map, or by ``after`` alone (:attr:`~.plan.PlannedStep.status_parents`)
+    -- answers for the whole of what it was planned over, and must only be
+    complete: a test-scoped step reads a model fitted on the training entries.
     """
     if planned.kind != "feature":
         return
     if not build_step_feature(planned.spec).scope_dependent:
         return
     target = step_target(planned, plan)
-    referenced = frozenset(planned.params_parents)
-    short = [
-        parent
-        for parent in planned.parents
-        if not (
-            _is_complete(plan, parent)
-            if parent in referenced
-            else _covers_scope(plan, parent, target)
-        )
-    ]
-    if not short:
+    by_status = frozenset(planned.status_parents)
+    lacking: dict[str, frozenset[Entry]] = {}
+    for parent in planned.parents:
+        found = _lacking(plan, parent, target, entry_by_entry=parent not in by_status)
+        if found is not None:
+            lacking[parent] = found
+    if not lacking:
         return
     covered = min(
-        (len(plan.step(parent).coverage.covered) for parent in short), default=0
+        (len(plan.step(parent).coverage.covered) for parent in lacking), default=0
     )
-    missing = sorted(
-        str(entry) for parent in short for entry in plan.step(parent).coverage.missing
-    )
+    missing = sorted(str(entry) for entries in lacking.values() for entry in entries)
     raise CoverageShortfall(
         planned.step_id,
         covered,
@@ -208,28 +203,31 @@ def refuse_shortfall(plan: Plan, planned: PlannedStep) -> None:
     )
 
 
-def _is_complete(plan: Plan, step_id: str) -> bool:
-    """Is this parent complete, whatever it was planned over?"""
-    try:
-        parent = plan.step(step_id)
-    except KeyError:  # pragma: no cover - parents come from the same recipe
-        return True
-    return parent.status in COMPLETE_STATUSES
+def _lacking(
+    plan: Plan, step_id: str, target: frozenset[Entry], *, entry_by_entry: bool
+) -> frozenset[Entry] | None:
+    """What a parent lacks of what its reader is planned over, ``None`` for nothing.
 
-
-def _covers_scope(plan: Plan, step_id: str, scope: frozenset[Entry]) -> bool:
-    """Does this parent hold every entry of *scope*, the reading step's target?
-
-    A complete parent holds what it was planned over, which a step scope can
-    make fewer entries than its reader's target.
+    A complete parent lacks nothing it was planned over. Read entry by entry, it
+    must also have been planned over the whole of *target*, which a step scope
+    can make wider than the parent's own target; the entries it lacks are then
+    those of *target* it does not hold. A parent read otherwise lacks only what
+    its own coverage misses.
     """
     try:
         parent = plan.step(step_id)
     except KeyError:  # pragma: no cover - parents come from the same recipe
-        return True
-    if parent.status in COMPLETE_STATUSES and scope <= parent.coverage.target:
-        return True
-    return not (scope - parent.coverage.covered)
+        return None
+    held = parent.coverage.covered
+    complete = parent.status in COMPLETE_STATUSES
+    if entry_by_entry:
+        if complete and target <= parent.coverage.target:
+            return None
+        outside = target - held
+        return outside or None
+    if complete or not (target - held):
+        return None
+    return parent.coverage.missing or (target - held)
 
 
 def _refuse_empty_upstream(plan: Plan, planned: PlannedStep) -> None:

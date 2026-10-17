@@ -282,7 +282,7 @@ and score on the test groups.
   such as `extract-labeled-templates`' `labels`, is listed in
   `CatalogEntry.reference_fields`), `ResolvedStep.labels_variant` and `labels_kind`,
   `StepSpec.labels_run_id`, `PlannedStep.labels_variant`, `labels_kind` and
-  `params_parents`, `Plan.step_scopes`, and `PlannedStepWire.labels_variant` and
+  `status_parents`, `Plan.step_scopes`, and `PlannedStepWire.labels_variant` and
   `step_scope`.
 - A `labels` field takes `{"step": <convert-labels step>}`: the field gets its label
   kind, and the run reads the variant that step writes. `resolve_labels_variants`
@@ -298,8 +298,8 @@ and score on the test groups.
   shortfall are measured over its narrowed target. The plan refuses a step scope
   naming no step, on an op that takes no scope or a bound step, or selecting
   nothing, and a reader narrowed wider than an `inputs` or `tracks` parent. A params
-  reference carries no entry rule, and a shortfall asks a params parent only to be
-  complete. The request file leaves out `step_scopes` when it is empty, so such a
+  reference or an `after` edge carries no entry rule, and a shortfall asks such a
+  parent only to be complete. The request file leaves out `step_scopes` when it is empty, so such a
   request still reads in 0.17, and the plan fingerprint includes them only when
   there are any. **A request file with step scopes is unreadable by an older
   mosaic**: upgrade mosaic-queue workers and mosaic-api together before using them.
