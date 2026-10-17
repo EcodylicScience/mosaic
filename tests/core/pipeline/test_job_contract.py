@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pytest
@@ -38,6 +39,7 @@ from mosaic.core.pipeline.run_log import (
     run_log_path,
 )
 from mosaic.core.pipeline.types import (
+    Feature,
     Inputs,
     InputStream,
     Result,
@@ -725,19 +727,19 @@ def test_a_job_declares_its_liveness_interval_and_boot(tmp_path: Path) -> None:
 
 
 def test_a_feature_fit_records_its_fit_and_apply_phases(tmp_path: Path) -> None:
-    ds = MockDataset(tmp_path)
+    ds = make_dataset(tmp_path)
     add_track_sequences(ds, ("g", "s1"), ("g", "s2"))
 
-    result = run_feature(ds, _Fitting())
+    result = run_feature(ds, cast("Feature", _Fitting()))
 
     assert result.execution_id is not None
     phases = [
         event["message"]
-        for event in read_run_progress(_run_dir(ds), result.execution_id)
+        for event in read_run_progress(run_log_dir(ds.base_dir), result.execution_id)
         if event["step_type"] == "phase"
     ]
     assert phases == ["fit: 2 entries", "apply: "]
-    snap = read_run(_run_dir(ds), result.execution_id)
+    snap = read_run(run_log_dir(ds.base_dir), result.execution_id)
     assert snap is not None
     assert snap["phase"] == "apply"
 
