@@ -28,6 +28,10 @@ from .config import MCP_SDK
 if TYPE_CHECKING:
     from mcp.server import Server
 
+    from mosaic.core.pipeline.graph.model import CleanupPolicy
+
+    from .config import CleanupClass
+
     from .local import LocalBackend
 
 __all__ = ["build_server", "serve"]
@@ -54,7 +58,13 @@ def build_server(backend: LocalBackend) -> Server[None]:
     return bind_server(backend)
 
 
-def serve(manifests: Sequence[Path], *, allow_managed: bool = False) -> None:
+def serve(
+    manifests: Sequence[Path],
+    *,
+    allow_managed: bool = False,
+    allow_cleanup: frozenset[CleanupClass] = frozenset(),
+    cleanup_policy: CleanupPolicy | None = None,
+) -> None:
     """Serve the datasets of *manifests* to one client over standard input and output.
 
     Standard output is claimed for the transport before the server and the
@@ -66,6 +76,10 @@ def serve(manifests: Sequence[Path], *, allow_managed: bool = False) -> None:
         manifests: The manifest files, or the directories holding them.
         allow_managed: Whether ``submit_pipeline`` and ``cancel_request`` may
             change a dataset whose manifest names a managing service.
+        allow_cleanup: The artifacts the tools may remove. ``feature-runs``
+            lets ``submit_pipeline`` remove superseded feature runs.
+        cleanup_policy: Which superseded runs a cleanup keeps, the default
+            policy when ``None``.
 
     Raises:
         MissingOptionalDependency: The ``mcp`` extra is not installed.
@@ -73,17 +87,36 @@ def serve(manifests: Sequence[Path], *, allow_managed: bool = False) -> None:
     _ = MCP_SDK.load()
     import anyio
 
-    anyio.run(partial(_serve, tuple(manifests), allow_managed=allow_managed))
+    anyio.run(
+        partial(
+            _serve,
+            tuple(manifests),
+            allow_managed=allow_managed,
+            allow_cleanup=allow_cleanup,
+            cleanup_policy=cleanup_policy,
+        )
+    )
 
 
-async def _serve(manifests: tuple[Path, ...], *, allow_managed: bool) -> None:
+async def _serve(
+    manifests: tuple[Path, ...],
+    *,
+    allow_managed: bool,
+    allow_cleanup: frozenset[CleanupClass],
+    cleanup_policy: CleanupPolicy | None,
+) -> None:
     from mcp.server.stdio import stdio_server
 
     async with stdio_server() as (read_stream, write_stream):
         from ._binding import bind_server
         from .local import LocalBackend
 
-        backend = LocalBackend(manifests, allow_managed=allow_managed)
+        backend = LocalBackend(
+            manifests,
+            allow_managed=allow_managed,
+            allow_cleanup=allow_cleanup,
+            cleanup_policy=cleanup_policy,
+        )
         server = bind_server(backend)
         _LOG.info("serving %d dataset manifest(s) over stdio", len(manifests))
         await server.run(

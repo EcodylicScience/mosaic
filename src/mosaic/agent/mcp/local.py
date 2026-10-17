@@ -66,6 +66,7 @@ from .spec import (
     ToolName,
     ToolResult,
     ValidateRecipeInput,
+    cleanup_not_allowed,
     confirmation_required,
     dataset_managed,
     invalid_cursor,
@@ -80,6 +81,7 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.graph import (
         CatalogEntry,
         CatalogIndex,
+        CleanupPolicy,
         DeclarationCatalog,
         DetachedDriver,
         Plan,
@@ -95,6 +97,7 @@ if TYPE_CHECKING:
     from mosaic.core.scope import Scope
     from mosaic.runlog import AttemptOutcome, RunLogSnapshot
 
+    from .config import CleanupClass
     from .outputs import StepSuggestions, StepTypes
 
 __all__ = [
@@ -174,6 +177,8 @@ class LocalBackend:
         allow_managed: bool = False,
         warm: bool = True,
         start_driver: DriverStarter | None = None,
+        allow_cleanup: frozenset[CleanupClass] = frozenset(),
+        cleanup_policy: CleanupPolicy | None = None,
     ) -> None:
         """Serve the datasets of *manifests*.
 
@@ -181,6 +186,11 @@ class LocalBackend:
             manifests: The manifest files, or the directories holding them.
             allow_managed: Whether the tools that change a dataset may change one
                 that a service manages.
+            allow_cleanup: The artifacts the tools may remove. With
+                ``feature-runs``, ``submit_pipeline`` removes superseded feature
+                runs when called with ``cleanup: superseded``.
+            cleanup_policy: Which superseded runs a cleanup keeps, fixed by the
+                operator. The default policy when ``None``.
             warm: Whether to open the datasets and build the step-type catalog
                 on a background thread now. Otherwise the first call that needs
                 each builds it.
@@ -190,6 +200,8 @@ class LocalBackend:
         """
         self._manifests: tuple[Path, ...] = tuple(manifests)
         self._allow_managed: bool = allow_managed
+        self._allow_cleanup: frozenset[CleanupClass] = allow_cleanup
+        self._cleanup_policy: CleanupPolicy | None = cleanup_policy
         self._start_driver: DriverStarter | None = start_driver
         self._served: dict[str, _Served] | None = None
         self._served_lock: threading.Lock = threading.Lock()
@@ -211,6 +223,8 @@ class LocalBackend:
         allow_managed: bool = False,
         warm: bool = True,
         start_driver: DriverStarter | None = None,
+        allow_cleanup: frozenset[CleanupClass] = frozenset(),
+        cleanup_policy: CleanupPolicy | None = None,
     ) -> LocalBackend:
         """Serve the datasets found in *root* and below it.
 
@@ -223,6 +237,8 @@ class LocalBackend:
             allow_managed: As for :class:`LocalBackend`.
             warm: As for :class:`LocalBackend`.
             start_driver: As for :class:`LocalBackend`.
+            allow_cleanup: As for :class:`LocalBackend`.
+            cleanup_policy: As for :class:`LocalBackend`.
         """
         manifests = discovered_manifests(root, max_depth=max_depth)
         return cls(
@@ -230,6 +246,8 @@ class LocalBackend:
             allow_managed=allow_managed,
             warm=warm,
             start_driver=start_driver,
+            allow_cleanup=allow_cleanup,
+            cleanup_policy=cleanup_policy,
         )
 
     def dataset(self, uuid: str) -> Dataset:
@@ -592,8 +610,8 @@ class LocalBackend:
 
     def _plan_recipe(self, args: PlanRecipeInput) -> PlanWire:
         from mosaic.core.pipeline.graph import (
-            plan_pipeline,
             plan_wire,
+            plan_with_cleanup,
             requests_matching,
         )
         from mosaic.core.scope import Scope
@@ -603,9 +621,11 @@ class LocalBackend:
         catalog = self._declarations()
         scope = _scope(args.entries)
         with held.lock:
-            plan = plan_pipeline(
+            # A read, so it needs no --allow-cleanup.
+            plan = plan_with_cleanup(
                 held.dataset,
                 recipe,
+                cleanup=self._cleanup(args.cleanup),
                 scope=scope,
                 inventory=self._inventory(held),
                 catalog=catalog,
@@ -627,7 +647,7 @@ class LocalBackend:
             GPU_TRAIN_LANE,
             PlanChanged,
             plan_fingerprint,
-            plan_pipeline,
+            plan_with_cleanup,
             start_detached_driver,
             submit_request,
         )
@@ -635,15 +655,19 @@ class LocalBackend:
 
         held = self._dataset(args.dataset)
         dataset = self._changeable(held, "submit_pipeline")
+        if args.cleanup == "superseded" and "feature-runs" not in self._allow_cleanup:
+            raise ToolFailure(cleanup_not_allowed("submit_pipeline"))
+        cleanup = self._cleanup(args.cleanup)
         recipe = _recipe(args.recipe)
         catalog = self._declarations()
         narrowing = _scope(args.entries) or Scope()
         step_scopes = _step_scopes(args.step_entries)
         with held.lock:
             cache = self._inventory(held)
-            plan = plan_pipeline(
+            plan = plan_with_cleanup(
                 dataset,
                 recipe,
+                cleanup=cleanup,
                 scope=narrowing,
                 inventory=cache,
                 catalog=catalog,
@@ -669,6 +693,7 @@ class LocalBackend:
                 expect_plan=args.plan_fingerprint,
                 refuse_duplicates=not args.confirm,
                 step_scopes=step_scopes,
+                cleanup=cleanup,
             )
         request = submitted.request
         start = self._start_driver or start_detached_driver
@@ -700,6 +725,10 @@ class LocalBackend:
             poll_after_seconds=POLL_AFTER_TRAINING_SECONDS
             if GPU_TRAIN_LANE in lanes
             else POLL_AFTER_MIN_SECONDS,
+            cleanup_runs=0
+            if request.cleanup is None
+            else len(request.cleanup.approved),
+            cleanup_bytes=_approved_bytes(submitted.plan, request),
         )
 
     # ------------------------------------------------------------- requests
@@ -819,6 +848,14 @@ class LocalBackend:
         if held is None:
             raise ToolFailure(unknown_dataset(uuid))
         return held
+
+    def _cleanup(self, mode: str) -> CleanupPolicy | None:
+        """The operator's cleanup policy when *mode* asks for one, else ``None``."""
+        from mosaic.core.pipeline.graph import CleanupPolicy
+
+        if mode != "superseded":
+            return None
+        return self._cleanup_policy or CleanupPolicy()
 
     def _changeable(self, held: _Served, tool: ToolName) -> Dataset:
         """Return *held* opened again, refusing a dataset that a service manages.
@@ -1164,8 +1201,19 @@ def _submission_findings(
         findings.append(
             ConfirmationFinding("bind", f"the submission pins steps {pinned}")
         )
-    # The cleanup finding joins here, once a submission can remove the
-    # superseded runs of its steps' storage.
+    removable = plan.cleanup.removable if plan.cleanup is not None else ()
+    if removable:
+        storages = ", ".join(
+            repr(name) for name in sorted({run.storage for run in removable})
+        )
+        gigabytes = sum(run.bytes for run in removable) / 1e9
+        findings.append(
+            ConfirmationFinding(
+                "cleanup",
+                f"the submission deletes {len(removable)} superseded run(s), "
+                f"{gigabytes:.1f} GB, in {storages}",
+            )
+        )
     duplicates = open_requests_matching(
         dataset.base_dir,
         recipe_digest(recipe),
@@ -1179,6 +1227,16 @@ def _submission_findings(
             )
         )
     return findings
+
+
+def _approved_bytes(plan: Plan, request: Request) -> int:
+    """The bytes the runs that *request* approved for removal hold, per *plan*."""
+    if request.cleanup is None or plan.cleanup is None:
+        return 0
+    approved = {(target.storage, target.run_id) for target in request.cleanup.approved}
+    return sum(
+        run.bytes for run in plan.cleanup.runs if (run.storage, run.run_id) in approved
+    )
 
 
 def _diagnosis(

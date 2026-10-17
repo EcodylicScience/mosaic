@@ -6,6 +6,7 @@ request is recorded and nothing runs.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from mosaic.core.pipeline.cancel import RequestCancel
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
     LARGE_SCOPE_ENTRIES,
+    CleanupPolicy,
     PlanWire,
     Recipe,
     Request,
@@ -40,6 +42,8 @@ from tests.helpers import (
     RecordingStarter,
     add_tracks_variant,
     make_dataset,
+    run_speed,
+    speed_recipe_stepping,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -420,3 +424,139 @@ def test_a_request_that_never_started_is_cancelled_without_confirmation(
     )
 
     assert (cancelled.outcome, cancelled.status) == ("recorded", "cancelled")
+
+
+# --- the cleanup of superseded runs ----------------------------------------------------
+
+LOOSE = CleanupPolicy(keep_newest=0, min_age_hours=0)
+
+SPEED_STEP_2: dict[str, object] = json.loads(speed_recipe_stepping(2).model_dump_json())
+
+
+def _cleaning(
+    dataset: Dataset, starter: RecordingStarter, *, allowed: bool
+) -> LocalBackend:
+    return LocalBackend(
+        [dataset.manifest_path],
+        warm=False,
+        start_driver=starter,
+        allow_cleanup=frozenset({"feature-runs"}) if allowed else frozenset(),
+        cleanup_policy=LOOSE,
+    )
+
+
+def _cleanup_plan(backend: LocalBackend, dataset: Dataset) -> PlanWire:
+    return _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=_uuid(dataset),
+        recipe=SPEED_STEP_2,
+        cleanup="superseded",
+    )
+
+
+def _submit_cleanup(
+    backend: LocalBackend, dataset: Dataset, fingerprint: str, **arguments: object
+) -> SubmittedPipeline | ErrorEnvelope:
+    answered = call_tool(
+        backend,
+        "submit_pipeline",
+        {
+            "dataset": _uuid(dataset),
+            "recipe": SPEED_STEP_2,
+            "plan_fingerprint": fingerprint,
+            "cleanup": "superseded",
+            **arguments,
+        },
+    )
+    assert isinstance(answered, SubmittedPipeline | ErrorEnvelope)
+    return answered
+
+
+def test_plan_recipe_reports_superseded_runs_without_the_flag(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    old = run_speed(dataset, 1)
+
+    plan = _cleanup_plan(_cleaning(dataset, starter, allowed=False), dataset)
+
+    assert plan.cleanup is not None
+    assert plan.cleanup.removable_runs == 1
+    assert [run.run_id for run in plan.steps[0].superseded] == [old]
+
+
+def test_submit_with_cleanup_is_refused_without_the_operator_flag(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    _ = run_speed(dataset, 1)
+    backend = _cleaning(dataset, starter, allowed=False)
+    plan = _cleanup_plan(backend, dataset)
+
+    refused = _submit_cleanup(backend, dataset, plan.fingerprint, confirm=True)
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert (refused.kind, refused.reason) == ("unavailable", "cleanup_not_allowed")
+    assert "--allow-cleanup feature-runs" in refused.message
+    assert (starter.started, _requests(dataset)) == ([], [])
+
+
+def test_submit_with_cleanup_needs_the_cleanup_fingerprint(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    _ = run_speed(dataset, 1)
+    backend = _cleaning(dataset, starter, allowed=True)
+    plain = _call(
+        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_STEP_2
+    )
+
+    refused = _submit_cleanup(backend, dataset, plain.fingerprint, confirm=True)
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert refused.kind == "conflict"
+    assert (starter.started, _requests(dataset)) == ([], [])
+
+
+def test_submit_with_removable_runs_meets_the_cleanup_condition(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    old = run_speed(dataset, 1)
+    backend = _cleaning(dataset, starter, allowed=True)
+    plan = _cleanup_plan(backend, dataset)
+
+    refused = _submit_cleanup(backend, dataset, plan.fingerprint)
+    submitted = _submit_cleanup(backend, dataset, plan.fingerprint, confirm=True)
+
+    assert _conditions(refused) == {"cleanup"}
+    assert isinstance(refused, ErrorEnvelope)
+    assert "deletes 1 superseded run(s)" in refused.message
+    assert isinstance(submitted, SubmittedPipeline)
+    assert submitted.cleanup_runs == 1
+    assert submitted.cleanup_bytes > 0
+    request = graph.load_request(dataset.base_dir, submitted.request_id)
+    assert request.cleanup is not None
+    assert [target.run_id for target in request.cleanup.approved] == [old]
+
+
+def test_the_policy_comes_from_the_server_not_the_call(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    _ = run_speed(dataset, 1)
+    backend = _cleaning(dataset, starter, allowed=True)
+
+    plan = _cleanup_plan(backend, dataset)
+    refused = call_tool(
+        backend,
+        "plan_recipe",
+        {
+            "dataset": _uuid(dataset),
+            "recipe": SPEED_STEP_2,
+            "cleanup": "superseded",
+            "keep_newest": 5,
+        },
+    )
+
+    assert plan.cleanup is not None
+    assert plan.cleanup.policy == LOOSE
+    assert isinstance(refused, ErrorEnvelope)
+    assert refused.reason == "invalid_arguments"

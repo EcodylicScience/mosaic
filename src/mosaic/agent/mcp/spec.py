@@ -35,6 +35,7 @@ from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
     SCHEMA_VERSION,
     BoundRef,
+    CleanupMode,
     EntryErrorsWire,
     RecordedErrorWire,
     RequestStatusWire,
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
     from .outputs import StepSuggestions, StepTypes
 
 __all__ = [
+    "CLEANUP_NOT_ALLOWED",
     "CONFIRMATION_CONDITIONS",
     "CONFIRMATION_DECLINED",
     "CONFIRMATION_REQUIRED",
@@ -120,6 +122,7 @@ __all__ = [
     "ToolSpec",
     "ValidateRecipeInput",
     "call_tool",
+    "cleanup_not_allowed",
     "confirmation_declined",
     "confirmation_required",
     "confirmation_tag",
@@ -224,6 +227,9 @@ INVALID_ARGUMENTS: Final = "invalid_arguments"
 
 INVALID_CURSOR: Final = "invalid_cursor"
 """The ``reason`` of a listing given a cursor that no page of it returned."""
+
+CLEANUP_NOT_ALLOWED: Final = "cleanup_not_allowed"
+"""The ``reason`` of a cleanup the server was not started to allow."""
 
 RESULT_TOO_LARGE: Final = "result_too_large"
 """The ``reason`` of a read whose result is above :data:`MAX_RESULT_CHARS`."""
@@ -561,6 +567,12 @@ class SuggestStepsInput(ToolInput):
     )
 
 
+_CLEANUP_DESCRIPTION: Final = (
+    "'superseded' also judges the other runs of the recipe's feature storages, "
+    "each removable or kept with its reason, under the server's cleanup policy."
+)
+
+
 class PlanRecipeInput(ToolInput):
     """The arguments of ``plan_recipe``."""
 
@@ -568,6 +580,11 @@ class PlanRecipeInput(ToolInput):
     recipe: RecipeDocument
     entries: Entries = None
     step_entries: StepEntries = None
+    cleanup: CleanupMode = Field(
+        default="none",
+        description=_CLEANUP_DESCRIPTION
+        + " The fingerprint then covers the removable runs.",
+    )
 
 
 class SubmitPipelineInput(ToolInput):
@@ -597,6 +614,14 @@ class SubmitPipelineInput(ToolInput):
         ),
     )
     owner: str = Field(default="", description="Recorded on the request.")
+    cleanup: CleanupMode = Field(
+        default="none",
+        description=(
+            "'superseded' removes the runs the plan_recipe result with cleanup "
+            "'superseded' found removable, after every step finished. The server "
+            "must allow it."
+        ),
+    )
     confirm: bool = Field(
         default=False,
         description=(
@@ -799,6 +824,9 @@ class SubmittedPipeline(StrictModel):
         driver_pid: The process driving the request.
         driver_log: The log that the driver and its steps append to.
         poll_after_seconds: How long to wait before polling the status.
+        cleanup_runs: How many superseded runs the request removes after its
+            steps, 0 without a cleanup.
+        cleanup_bytes: The bytes they hold.
     """
 
     request_id: str
@@ -809,6 +837,8 @@ class SubmittedPipeline(StrictModel):
     driver_pid: int
     driver_log: str
     poll_after_seconds: int
+    cleanup_runs: int = 0
+    cleanup_bytes: int = 0
 
 
 class RunSummary(StrictModel):
@@ -1164,8 +1194,9 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         ),
         input_model=SubmitPipelineInput,
         output=SubmittedPipeline,
+        # Destructive: with cleanup 'superseded' it removes feature runs.
         annotations=ToolAnnotations(
-            read_only=False, destructive=False, idempotent=False
+            read_only=False, destructive=True, idempotent=False
         ),
         confirm_when=(
             "gpu_lane",
@@ -1641,6 +1672,22 @@ def dataset_managed(
         reason=DATASET_MANAGED,
         message=message,
         detail={"tool": name, "dataset": dataset, "managed_by": managed_by},
+    )
+
+
+def cleanup_not_allowed(name: ToolName) -> ErrorEnvelope:
+    """Refuse a cleanup that the server was not started to allow."""
+    message = (
+        f"{name} with cleanup 'superseded' removes feature runs, and this server "
+        "does not allow it. The operator starts the server with --allow-cleanup "
+        "feature-runs, or lists feature-runs under allow_cleanup in its "
+        "configuration. Submit without cleanup, or report this to the user."
+    )
+    return ErrorEnvelope(
+        kind="unavailable",
+        reason=CLEANUP_NOT_ALLOWED,
+        message=message,
+        detail={"tool": name, "allow_cleanup": "feature-runs"},
     )
 
 

@@ -12,6 +12,7 @@ from mosaic.agent.mcp.config import (
     read_server_config,
     served_manifests,
 )
+from mosaic.core.pipeline.graph import CleanupPolicy
 from tests.helpers import make_dataset
 
 
@@ -59,3 +60,36 @@ def test_the_served_manifests_join_the_given_the_listed_and_the_discovered(
     served = served_manifests([tmp_path / "given"], config)
 
     assert served == [tmp_path / "given", tmp_path / "listed", found.manifest_path]
+
+
+def test_allow_cleanup_and_policy_read_from_the_file(tmp_path: Path) -> None:
+    config = tmp_path / "server.yaml"
+    _ = config.write_text(
+        "allow_cleanup: [feature-runs]\ncleanup:\n  keep_newest: 0\n  min_age_hours: 1\n",
+        encoding="utf-8",
+    )
+
+    read = read_server_config(config)
+
+    assert read.allow_cleanup == ["feature-runs"]
+    assert read.cleanup == CleanupPolicy(keep_newest=0, min_age_hours=1)
+    assert ServerConfig().cleanup == CleanupPolicy()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "allow_cleanup: [tracks]\n",
+        "cleanup:\n  keep_newest: -1\n",
+        "cleanup:\n  x: 1\n",
+    ],
+    ids=["unknown-class", "negative", "unknown-key"],
+)
+def test_a_cleanup_setting_that_does_not_fit_is_invalid(
+    tmp_path: Path, text: str
+) -> None:
+    config = tmp_path / "server.yaml"
+    _ = config.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ServerConfigInvalid):
+        _ = read_server_config(config)

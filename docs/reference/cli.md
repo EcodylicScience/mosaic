@@ -1282,8 +1282,9 @@ $ mosaic agent serve [OPTIONS]
 **Options**:
 
 * `--dataset <path>`: A dataset to serve: its manifest or its directory. Repeatable.
-* `--config <path>`: A YAML file listing `datasets`, `discover` directories and `allow_managed_writes`. Its relative paths are read from its directory.
+* `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup` and the `cleanup` policy. Its relative paths are read from its directory.
 * `--allow-managed-writes`: Let submit_pipeline and cancel_request change a dataset whose manifest names a managing service.
+* `--allow-cleanup <str>`: Let submit_pipeline remove superseded feature runs with cleanup 'superseded', after the user confirms. Repeatable; the one class is feature-runs. The policy is the config file's cleanup.
 * `--help`: Show this message and exit.
 
 ### `mosaic agent confirm-hook`

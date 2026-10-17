@@ -198,9 +198,9 @@ def serve_command(
         typer.Option(
             "--config",
             help=(
-                "A YAML file listing `datasets`, `discover` directories and "
-                "`allow_managed_writes`. Its relative paths are read from its "
-                "directory."
+                "A YAML file listing `datasets`, `discover` directories, "
+                "`allow_managed_writes`, `allow_cleanup` and the `cleanup` policy. "
+                "Its relative paths are read from its directory."
             ),
         ),
     ] = None,
@@ -214,6 +214,17 @@ def serve_command(
             ),
         ),
     ] = False,
+    allow_cleanup: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allow-cleanup",
+            help=(
+                "Let submit_pipeline remove superseded feature runs with cleanup "
+                "'superseded', after the user confirms. Repeatable; the one "
+                "class is feature-runs. The policy is the config file's cleanup."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Serve mosaic's MCP tools, resources and prompts to one client over stdio.
 
@@ -223,6 +234,7 @@ def serve_command(
     Code.
     """
     from mosaic.agent.mcp.config import (
+        CLEANUP_FEATURE_RUNS,
         ServerConfig,
         ServerConfigInvalid,
         read_server_config,
@@ -238,6 +250,9 @@ def serve_command(
         )
     except ServerConfigInvalid as exc:
         fail(str(exc))
+    unknown = sorted(set(allow_cleanup or []) - {CLEANUP_FEATURE_RUNS})
+    if unknown:
+        fail(f"--allow-cleanup takes {CLEANUP_FEATURE_RUNS}, not {', '.join(unknown)}.")
     manifests = served_manifests([user_path(path) for path in datasets or []], settings)
     if not manifests:
         fail("No dataset to serve. Name one with --dataset or in a --config file.")
@@ -247,6 +262,13 @@ def serve_command(
         serve(
             manifests,
             allow_managed=allow_managed_writes or settings.allow_managed_writes,
+            allow_cleanup=frozenset(
+                [
+                    *([CLEANUP_FEATURE_RUNS] if allow_cleanup else []),
+                    *settings.allow_cleanup,
+                ]
+            ),
+            cleanup_policy=settings.cleanup,
         )
     except MissingOptionalDependency as exc:
         fail(str(exc))

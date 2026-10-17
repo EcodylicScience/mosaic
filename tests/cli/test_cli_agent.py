@@ -22,6 +22,7 @@ from mosaic.agent import (
 )
 from mosaic.cli import app
 from mosaic.core.json_value import JsonValue
+from mosaic.core.pipeline.graph import CleanupPolicy
 from tests.helpers import make_dataset
 
 runner = CliRunner()
@@ -280,6 +281,50 @@ class TestServe:
         result = runner.invoke(app, ["agent", "serve", "--config", str(config)])
         assert result.exit_code != 0
         assert "is invalid" in result.output
+
+    @pytest.mark.parametrize(
+        ("flags", "listed", "allowed"),
+        [
+            (["--allow-cleanup", "feature-runs"], "", True),
+            ([], "allow_cleanup: [feature-runs]\n", True),
+            ([], "", False),
+        ],
+        ids=["flag", "config", "neither"],
+    )
+    def test_serve_accepts_allow_cleanup_feature_runs(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        flags: list[str],
+        listed: str,
+        allowed: bool,
+    ) -> None:
+        served: dict[str, object] = {}
+
+        def record(manifests: object, **options: object) -> None:
+            served.update(options)
+
+        monkeypatch.setattr("mosaic.agent.mcp.server.serve", record)
+        config = tmp_path / "server.yaml"
+        _ = config.write_text(
+            f"datasets: [{tmp_path}]\n{listed}cleanup:\n  keep_newest: 0\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(app, ["agent", "serve", "--config", str(config), *flags])
+
+        assert result.exit_code == 0, result.output
+        assert served["allow_cleanup"] == (
+            frozenset({"feature-runs"}) if allowed else frozenset()
+        )
+        assert served["cleanup_policy"] == CleanupPolicy(keep_newest=0)
+
+    def test_an_unknown_cleanup_class_is_refused(self, tmp_path: Path) -> None:
+        result = runner.invoke(
+            app,
+            ["agent", "serve", "--dataset", str(tmp_path), "--allow-cleanup", "tracks"],
+        )
+        assert result.exit_code != 0
 
     def test_without_the_sdk_it_names_the_extra(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

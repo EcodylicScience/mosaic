@@ -250,9 +250,18 @@ def _plan(plan: PlanWire) -> str:
         if plan.open_requests
         else ""
     )
+    cleanup = (
+        f" {plan.cleanup.removable_runs} superseded run(s) "
+        f"({plan.cleanup.removable_bytes / 1e9:.1f} GB) are removable and "
+        f"{plan.cleanup.kept_runs} kept; each step lists its storage's under "
+        f"superseded."
+        if plan.cleanup is not None
+        else ""
+    )
     return (
         f"The plan covers {plan.scope_size} entries in {len(plan.steps)} step(s): "
-        f"{_names(steps)}.{done}{narrowing}{deferred}{problems}{cautions}{unended} "
+        f"{_names(steps)}.{done}{narrowing}{deferred}{problems}{cautions}{unended}"
+        f"{cleanup} "
         f"Its fingerprint is {plan.fingerprint}, which submit_pipeline requires. "
         f"Show the user the plan and its cautions before submitting. {_STRUCTURED}"
     )
@@ -264,10 +273,16 @@ def _submitted(submitted: SubmittedPipeline) -> str:
         if submitted.duplicates
         else ""
     )
+    cleanup = (
+        f" Once every step finished it removes {submitted.cleanup_runs} superseded "
+        f"run(s), {submitted.cleanup_bytes / 1e9:.1f} GB."
+        if submitted.cleanup_runs
+        else ""
+    )
     return (
         f"Submitted request {submitted.request_id} with "
         f"{len(submitted.steps)} step(s), driven by process "
-        f"{submitted.driver_pid}.{duplicates} Poll get_request_status after "
+        f"{submitted.driver_pid}.{duplicates}{cleanup} Poll get_request_status after "
         f"{submitted.poll_after_seconds} seconds."
     )
 
@@ -283,9 +298,17 @@ def _request_status(status: RequestStatusWire) -> str:
         if status.poll_after_seconds is not None
         else ""
     )
+    removal = status.cleanup
+    cleanup = (
+        f" Cleanup {removal.status}: removed {removal.removed_runs} of "
+        f"{removal.approved_runs} approved run(s), kept {removal.kept_runs}, failed "
+        f"{removal.failed_runs}."
+        if removal is not None
+        else ""
+    )
     return (
         f"Request {status.request_id} is {status.verdict}{poll}. "
-        f"Steps: {_names(steps)}. {_STRUCTURED}"
+        f"Steps: {_names(steps)}.{cleanup} {_STRUCTURED}"
     )
 
 

@@ -7,6 +7,10 @@
     discover:               # directories searched for datasets, three levels deep
       - ~/data/projects
     allow_managed_writes: false
+    allow_cleanup: []       # [feature-runs] lets submit_pipeline remove superseded runs
+    cleanup:                # which superseded runs a cleanup keeps
+      keep_newest: 1
+      min_age_hours: 24
 
 A relative path is read from the file's directory. :func:`served_manifests`
 joins the file's datasets with the ones named on the command line.
@@ -18,15 +22,18 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 from pydantic import Field, ValidationError
 
+from mosaic.core.pipeline.graph.model import CleanupPolicy
 from mosaic.core.strict_model import StrictModel
 from mosaic.optional_dependency import OptionalModule
 
 __all__ = [
+    "CLEANUP_FEATURE_RUNS",
     "MCP_SDK",
+    "CleanupClass",
     "ServerConfig",
     "ServerConfigInvalid",
     "read_server_config",
@@ -39,6 +46,13 @@ MCP_SDK: Final = OptionalModule(
 """The MCP SDK, which ``mosaic.agent.mcp.server`` loads before binding the server."""
 
 
+type CleanupClass = Literal["feature-runs"]
+"""A class of artifact a server may let its tools remove."""
+
+CLEANUP_FEATURE_RUNS: Final[CleanupClass] = "feature-runs"
+"""The superseded feature runs that ``submit_pipeline`` removes with ``cleanup``."""
+
+
 class ServerConfig(StrictModel):
     """The datasets that a server serves and whether it may change a managed one.
 
@@ -48,11 +62,18 @@ class ServerConfig(StrictModel):
             searches them.
         allow_managed_writes: Whether ``submit_pipeline`` and ``cancel_request``
             may change a dataset whose manifest names a managing service.
+        allow_cleanup: The artifacts the tools may remove. ``feature-runs``
+            lets ``submit_pipeline`` remove superseded feature runs with
+            ``cleanup: superseded``.
+        cleanup: Which superseded runs a cleanup keeps by recency and age. The
+            operator sets it here; no tool call does.
     """
 
     datasets: list[Path] = Field(default_factory=list)
     discover: list[Path] = Field(default_factory=list)
     allow_managed_writes: bool = False
+    allow_cleanup: list[CleanupClass] = Field(default_factory=list)
+    cleanup: CleanupPolicy = Field(default_factory=lambda: CleanupPolicy())
 
 
 class ServerConfigInvalid(ValueError):

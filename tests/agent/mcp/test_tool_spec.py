@@ -101,6 +101,16 @@ def test_only_submission_and_cancel_change_a_dataset_and_both_ask_to_confirm() -
     assert cancel.annotations.destructive
 
 
+def test_submission_is_destructive() -> None:
+    """With cleanup 'superseded' a submission removes feature runs."""
+    submit = tool_spec("submit_pipeline")
+
+    assert submit is not None
+    assert submit.annotations.destructive
+    assert "cleanup" in submit.confirm_when
+    assert "cleanup" in submit.input_model.model_fields
+
+
 def test_submission_asks_only_for_gpu_training_tracking_partial_bind_duplicate_and_cleanup() -> (
     None
 ):
