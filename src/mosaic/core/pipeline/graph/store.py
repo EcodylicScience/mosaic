@@ -215,6 +215,9 @@ def open_requests_matching(
     driver lease is stale and none of whose step processes may still run is
     ``orphaned`` (:func:`~.status.request_verdict_of`) and is not open.
 
+    A request saved under an earlier canonical form of the recipe names it by
+    an older digest; it is matched by what its saved recipe digests to now.
+
     Every request file is read, and the run-logs of each request of the recipe.
     A request file that cannot be read, or is not a valid request of the recipe,
     is skipped with a ``UserWarning`` naming it. A damaged request file therefore
@@ -230,8 +233,11 @@ def open_requests_matching(
         creation order for the ids that ``submit_request`` mints.
     """
     open_ids: list[str] = []
+    current: dict[str, str | None] = {}
     for name in _request_ids(base_dir):
-        request = _request_of_recipe(request_path(base_dir, name), recipe_digest)
+        request = _request_of_recipe(
+            base_dir, request_path(base_dir, name), recipe_digest, current
+        )
         if request is None or not request.scope.overlaps(scope):
             continue
         if request_verdict_of(base_dir, request_rollup(base_dir, request)) == "running":
@@ -239,16 +245,31 @@ def open_requests_matching(
     return tuple(open_ids)
 
 
-def _request_of_recipe(path: Path, recipe_digest: str) -> Request | None:
-    """Read the request at *path* when it names *recipe_digest*, else ``None``.
+def _request_of_recipe(
+    base_dir: Path | str,
+    path: Path,
+    recipe_digest: str,
+    current: dict[str, str | None],
+) -> Request | None:
+    """Read the request at *path* when it is a request of *recipe_digest*, else ``None``.
 
-    The digest is compared on the raw document, so a request file of another
-    recipe is not validated. A file that cannot be read or validated is ``None``
-    with a ``UserWarning`` naming it.
+    A request names its recipe by the digest it had when it was submitted. A
+    later canonical form can name the same recipe differently, so a request
+    whose digest differs is matched by what its saved recipe digests to now.
+    *current* caches that answer per digest across one scan. The digest is
+    compared on the raw document, so a request file of another recipe is not
+    validated. A file that cannot be read or validated is ``None`` with a
+    ``UserWarning`` naming it. A request whose saved recipe cannot be read is
+    not a request of *recipe_digest*; the status tools report it.
     """
     try:
         document = JSON_OBJECT.validate_python(_read_json(path, "request"))
-        if document.get("recipe_digest") != recipe_digest:
+        named = document.get("recipe_digest")
+        if not isinstance(named, str):
+            return None
+        if named != recipe_digest and (
+            _current_digest(base_dir, named, current) != recipe_digest
+        ):
             return None
         return Request.model_validate(document)
     except (OSError, ValueError) as error:
@@ -256,6 +277,18 @@ def _request_of_recipe(path: Path, recipe_digest: str) -> Request | None:
             f"skipped request file {path}: {error}", UserWarning, stacklevel=3
         )
         return None
+
+
+def _current_digest(
+    base_dir: Path | str, named: str, current: dict[str, str | None]
+) -> str | None:
+    """What the recipe saved under *named* digests to now, or ``None`` if unreadable."""
+    if named not in current:
+        try:
+            current[named] = recipe_digest(load_recipe(recipe_path(base_dir, named)))
+        except (OSError, ValueError):
+            current[named] = None
+    return current[named]
 
 
 @contextmanager

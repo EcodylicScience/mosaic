@@ -26,6 +26,8 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
 - `open_requests_matching` (`store.py`) returns the requests of one recipe digest whose
   scope overlaps (`Scope.overlaps`) and whose rollup verdict is `running`. A verdict
   of `orphaned` is not open, read from the driver lease as the status wires read it.
+  A request whose digest differs is matched by what its saved recipe digests to now, so
+  a request saved under an earlier canonical form is still found.
   `submit_request` reports them in `duplicates` and, given `refuse_duplicates`,
   raises `DuplicateRequest`, a `conflict`, before writing either file
   (`test_pipeline_duplicate_requests.py`). The check runs again with the write under

@@ -11,12 +11,14 @@ import json
 import os
 import socket
 from pathlib import Path
+from typing import cast
 
 import pytest
 from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
 from mosaic.core.pipeline.graph import (
     DeclarationCatalog,
@@ -26,11 +28,14 @@ from mosaic.core.pipeline.graph import (
     execute_step,
     open_requests_matching,
     recipe_digest,
+    recipe_path,
     request_path,
     requests_root,
+    save_request,
     submit_request,
 )
 from mosaic.core.pipeline.graph import request as request_module
+from mosaic.core.pipeline.graph.digest import document_digest
 from mosaic.core.pipeline.inventory.cache import InventoryCache
 from mosaic.core.scope import Scope
 from mosaic.runlog import JsonlRunLog, run_log_path
@@ -341,3 +346,40 @@ def test_pipeline_run_with_a_float_file_warns_of_an_integer_request(
 
     assert result.exit_code == 0
     assert first.request.request_id in result.stderr
+
+
+def test_a_request_saved_under_the_legacy_digest_is_open_for_its_recipe(
+    tracked: Dataset,
+) -> None:
+    """A request an earlier canonical form named is still a duplicate."""
+    submitted = submit_request(tracked, Recipe.model_validate(_speed_with(1)))
+    legacy = _speed_with(1.0)
+    name = document_digest(cast("JsonValue", legacy))
+    _ = recipe_path(tracked.base_dir, name).write_text(json.dumps(legacy))
+    older = submitted.request.model_copy(
+        update={"request_id": "00-legacy", "recipe_digest": name}
+    )
+    _ = save_request(tracked.base_dir, older)
+
+    found = open_requests_matching(
+        tracked.base_dir, submitted.request.recipe_digest, Scope()
+    )
+
+    assert name != submitted.request.recipe_digest
+    assert found == (submitted.request.request_id, "00-legacy")
+
+
+def test_a_request_whose_recipe_file_is_missing_is_not_a_duplicate(
+    tracked: Dataset,
+) -> None:
+    submitted = submit_request(tracked, speed_recipe())
+    orphan = submitted.request.model_copy(
+        update={"request_id": "00-missing", "recipe_digest": "0" * 16}
+    )
+    _ = save_request(tracked.base_dir, orphan)
+
+    found = open_requests_matching(
+        tracked.base_dir, submitted.request.recipe_digest, Scope()
+    )
+
+    assert found == (submitted.request.request_id,)
