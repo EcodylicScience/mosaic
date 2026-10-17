@@ -79,10 +79,11 @@ follows mosaic's main branch, which may differ from this installation.
    no `docs/`, and the block then names the website instead. The directory, when it
    exists, also says which file each site URL in this guide maps to.
 2. **`mosaic --help`** and `mosaic <verb> --help`.
-3. **The registries:** `mosaic features list`, `mosaic features describe <slug> --json`
-   (the parameter schema), `mosaic tracking list`, `mosaic tracking describe <kind>
-   --json`, and `mosaic pipeline catalog --json`, which also says why a feature is
-   unavailable here and what to install.
+3. **The registries:** `mosaic features list`, `mosaic features describe <slug>` (a
+   table of its params; `--detail schema` adds the JSON Schema), `mosaic pipeline
+   catalog <name>` (the same for any op), `mosaic tracking list`, `mosaic tracking
+   describe <kind> --json`, and `mosaic pipeline catalog --json`, which also says why
+   a feature is unavailable here and what to install.
 4. **The generated reference** (https://ecodylicscience.github.io/mosaic/reference/):
    features with their class paths, ops, media steps, the CLI and the track formats.
 5. **`help(obj)`** or the docstring in the source. No Python API reference is published.
@@ -252,8 +253,15 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 When your client offers mosaic's MCP tools (`mosaic agent serve`), use them for the
 work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 
+- Find step types with `describe_step_types` and a query, then call it with
+  `names=[...]` for the params of the ones you choose.
 - Validate a recipe with `validate_recipe`, then plan it with `plan_recipe`. Show the
   user the plan, then pass its fingerprint to `submit_pipeline`.
+- A read returns at most 40,000 characters. A `result_too_large` error names the
+  arguments that narrow the call. Narrow a preview with `columns` patterns
+  (`W_*_f0`) and `max_columns`. `preview_output` also previews a labels variant
+  (`labels-variant/<kind>/<run_id>`) with its events per class.
+- This guide is also the `mosaic://guide` resource. Read it once.
 - Set `confirm` only after the user agrees in the conversation to the conditions
   that the refusal lists.
 - The tools do not overwrite, delete, sweep, prune, reindex or change the manifest.

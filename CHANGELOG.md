@@ -41,6 +41,49 @@ macOS. mosaic-media 0.3.5 requires `av>=18,<20`, and mosaic requires
 `mosaic-media[io,cli]>=0.3.5,<0.4.0`, so the install lines in the README, the
 installation page and the agent guide take `av` from conda-forge without a version.
 
+**The MCP tools `search_step_types` and `describe_step_type` are one tool,
+`describe_step_types`.** A search by words returns index rows as before. `names` (up
+to 8) returns each step type's params as a flat table, nested fields as dotted paths
+and a run reference typed as a recipe writes it, and `detail: "schema"` adds the JSON
+Schema. The whole catalog entry it returned before took 12,000 to 16,000 characters
+per step type. The server now has 14 tools. A client that allow-lists tools by name
+must allow `describe_step_types`; a call to an old name is refused with
+`unknown_tool` and names the replacement in `detail.replacement`. An allow-list of the
+whole server (`mcp__mosaic`) is unaffected. The `mosaic://catalog/{name}` resource
+still returns the whole entry.
+
+**A read tool's result is at most 40,000 characters.** A larger one is refused with
+reason `result_too_large`, whose `detail.narrow_with` names the arguments that narrow
+the call. `submit_pipeline` and `cancel_request` are never refused for their size. The
+defaults shrink: `preview_output` returns 5 rows of at most 40 columns
+(`max_columns`), the identity and bookkeeping columns first, and lists only the
+columns read (`listed`); a `get_inventory` listing leaves out params, which a `ref`
+returns, and names 5 missing entries per artifact; `plan_recipe` names 3 per step. A
+successful call also returns its output as JSON text after the summary. The five
+tools of the pipeline workflow carry `anthropic/alwaysLoad`, and the server
+instructions are rewritten around `describe_step_types`.
+
+**`mosaic preview` bounds a wide table and previews a labels variant.**
+`--max-columns` reads at most that many columns, the identity and bookkeeping columns
+first, and names the rest in `columns_omitted`. `--column` takes `fnmatch` patterns
+(`W_*_f0`); a column of that exact name wins. `--listed read` lists only the columns
+read. A `labels-variant/<kind>/<run_id>` ref previews the entry's `.npz` file: its
+events as rows, and `labels` with each class's events, a pair event stored in both
+orders counted once, and the frames labeled. The file loads without unpickling, and
+`load_labels_auto` takes `allow_pickle` for that. `ArtifactPreview` gains
+`n_columns`, `columns_omitted`, `columns_omitted_has_more` and `labels`, all
+defaulted; the library defaults of `preview_artifact` are unchanged.
+
+**`mosaic features describe` prints a step type's params as a table.** The `--json`
+shape changes: it is a `StepTypeDetail`, whose `requires` and `provides` are labels
+and whose `params` are rows, and `params_schema` is given only under `--detail
+schema`. `mosaic pipeline catalog NAME` prints the same for any step type, ops and
+`tracks` included; without a name its output is unchanged. In the library,
+`step_type_detail` returns it, and `plan_wire(plan, missing_sample=)` and
+`inventory_wire(..., with_params=, missing_sample=)` take smaller samples. Their
+defaults are today's output, so `CatalogEntry`, `EditorCatalog`, `PlanWire` and the
+plan fingerprint are unchanged for mosaic-api. Nothing on disk moves.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

@@ -32,6 +32,18 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   keep the adapter to addressing, paging and the confirmation gate.
 - A failure returns the error envelope (`core/pipeline/error_envelope.py`). Dataset
   content (notes, tags, names, error text) is returned in typed fields only.
+- `call_tool` refuses a read tool's result above `MAX_RESULT_CHARS` with
+  `result_too_large`, naming the `ToolSpec.narrowing` arguments. A write tool's
+  result is returned whatever its size. A new argument that shrinks a result joins
+  its tool's `narrowing`, and a new `limit` must
+  (`test_every_tool_with_a_limit_names_it_among_its_narrowing`).
+- `ToolSpec.always_load` becomes the tool's `anthropic/alwaysLoad` meta in
+  `_binding.py`. A success returns the summary, the output as JSON text, and the
+  structured content.
+- A step type's projection (`step_type_detail`, `param_rows`) lives in `graph/`, and
+  `mosaic features describe` and `mosaic pipeline catalog <name>` print it. Each step
+  type's detail stays under `MAX_STEP_TYPE_DETAIL_CHARS`, which a test measures over
+  the catalog, so a new feature or op with a large params model must fit it.
 - `submit_pipeline` and `cancel_request` are the only tools that change a dataset, and
   both declare `confirm_when`. No tool takes `overwrite` (`test_tool_spec.py`).
 - `docs/agents.md` lists the operations the server leaves to the user, such as

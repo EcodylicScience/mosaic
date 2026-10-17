@@ -135,7 +135,7 @@ that does not read, is left out and reported on the server's standard error.
 | --- | --- |
 | `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags and counts |
 | `list_sequences` | The entries, with the tracks table each resolves to |
-| `get_inventory` | A dataset's computed artifacts, each with its status, coverage and params |
+| `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, found by words, and the ones named with their params as a table |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
 | `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, and the plan's fingerprint |
@@ -143,7 +143,7 @@ that does not read, is left out and reported on the server's standard error.
 | `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts |
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
-| `preview_output` | One entry's table of a feature run or tracks variant: its first rows, column statistics and file path |
+| `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class |
 
 Only `submit_pipeline` and `cancel_request` change a dataset. A submission must name the
 fingerprint of a plan made against the dataset as it is now. The agent therefore plans
@@ -156,7 +156,36 @@ with `mosaic pipeline status`, cancel it with `cancel_request` or
 The server also offers resources (the agent guide, the step-type catalog, and per
 dataset its manifest, inventory, recipes, requests, run-logs and recorded params) and
 prompts for building a pipeline, diagnosing a dataset, explaining a request, comparing
-runs and summarizing a dataset.
+runs and summarizing a dataset. The guide resource is the same text as
+`mosaic agent guide` and the installed `SKILL.md`, so an agent reads it once.
+
+### Result sizes
+
+Each result goes into the model's context, so the read tools return what an agent
+needs to choose its next call, and the server refuses a result above a budget.
+
+| Result | Bound |
+| --- | --- |
+| Any read tool | 40,000 characters |
+| `describe_step_types` with `names` | Up to 8 step types, each a params table of at most about 16,000 characters |
+| `preview_output` | 5 rows and 40 columns by default (`limit`, `max_columns`), the identity and bookkeeping columns first |
+| `get_inventory` listing | No params, and 5 missing entries per artifact. A `ref` returns one artifact with its params |
+| `plan_recipe` | 3 missing entries per step |
+
+A read whose result would be larger fails with reason `result_too_large`. Its detail
+names the arguments that narrow the call (`narrow_with`), such as `columns` or
+`max_columns` for a preview. `submit_pipeline` and `cancel_request` are never refused
+for their size, because their work is done by the time they return.
+
+A preview's `columns` takes names or `fnmatch` patterns (`W_*_f0`), and the columns
+left unread are named in `columns_omitted`. `describe_step_types` returns the params
+JSON Schema only under `detail: "schema"`.
+
+A successful result carries the output twice: as structured content, and as JSON text
+after the summary, for a client that reads only text. `describe_step_types`,
+`plan_recipe`, `submit_pipeline`, `get_request_status` and `cancel_request` are
+marked `anthropic/alwaysLoad`, so Claude Code loads them without a tool search. The
+server sets no `anthropic/maxResultSizeChars`, because it bounds its results itself.
 
 The server reads which features and ops this installation can run once, when it starts.
 Restart it after installing an extra or building a tool's environment.
@@ -204,7 +233,8 @@ The server does not expose them as tools. When one is needed, the agent proposes
 Every tool result, and every resource the client reads, goes to your client's model.
 With a hosted model, that is the model's provider. The resources include the manifest
 with its notes and tags, run-logs, recorded params and request files. `preview_output`
-returns up to 50 rows of a table and statistics of its columns, `describe_dataset`
+returns up to 50 rows of a table and statistics of its columns, and of a labels
+variant its events and class names, `describe_dataset`
 returns the manifest's notes and tags, and the other tools return entry names, params,
 paths and error messages. Serve only datasets whose values may leave your machine, or
 use a client with a local model.
