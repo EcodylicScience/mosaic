@@ -41,6 +41,13 @@ if TYPE_CHECKING:
         FileFailureStore as FileFailureStore,
         claims_root as claims_root,
     )
+    from .cleanup import (
+        CleanupPlan as CleanupPlan,
+        KeptReason as KeptReason,
+        SupersededRun as SupersededRun,
+        plan_cleanup as plan_cleanup,
+        plan_with_cleanup as plan_with_cleanup,
+    )
     from .columns import (
         UNKNOWN_COLUMNS as UNKNOWN_COLUMNS,
         ColumnSet as ColumnSet,
@@ -130,6 +137,11 @@ if TYPE_CHECKING:
         StepRun as StepRun,
         TRACKS_INPUT as TRACKS_INPUT,
         params_step_refs as params_step_refs,
+        REQUEST_HOLD_FLOOR_HOURS as REQUEST_HOLD_FLOOR_HOURS,
+        CleanupMode as CleanupMode,
+        CleanupPolicy as CleanupPolicy,
+        CleanupSpec as CleanupSpec,
+        CleanupTarget as CleanupTarget,
     )
     from .param_table import (
         compact_params_schema as compact_params_schema,
@@ -169,6 +181,8 @@ if TYPE_CHECKING:
         load_recipe_for_request as load_recipe_for_request,
         step_argv as step_argv,
         submit_request as submit_request,
+        CleanupNeedsPlan as CleanupNeedsPlan,
+        CleanupOnManagedDataset as CleanupOnManagedDataset,
     )
     from .resolve import (
         ReferenceSite as ReferenceSite,
@@ -318,6 +332,9 @@ if TYPE_CHECKING:
         ValidationReport as ValidationReport,
         WaitingOnResourceWire as WaitingOnResourceWire,
         render_location as render_location,
+        SUPERSEDED_SAMPLE as SUPERSEDED_SAMPLE,
+        CleanupPlanWire as CleanupPlanWire,
+        SupersededRunWire as SupersededRunWire,
     )
 
 _MODULE_OF: Final[dict[str, str]] = {
@@ -555,6 +572,21 @@ _MODULE_OF: Final[dict[str, str]] = {
     "ValidationReport": ".wire",
     "WaitingOnResourceWire": ".wire",
     "render_location": ".wire",
+    "CleanupPlan": ".cleanup",
+    "KeptReason": ".cleanup",
+    "SupersededRun": ".cleanup",
+    "plan_cleanup": ".cleanup",
+    "plan_with_cleanup": ".cleanup",
+    "REQUEST_HOLD_FLOOR_HOURS": ".model",
+    "CleanupMode": ".model",
+    "CleanupPolicy": ".model",
+    "CleanupSpec": ".model",
+    "CleanupTarget": ".model",
+    "SUPERSEDED_SAMPLE": ".wire",
+    "CleanupPlanWire": ".wire",
+    "SupersededRunWire": ".wire",
+    "CleanupNeedsPlan": ".request",
+    "CleanupOnManagedDataset": ".request",
 }
 """The submodule that defines each public name."""
 
@@ -581,10 +613,12 @@ __all__ = [
     "POLL_AFTER_MAX_SECONDS",
     "POLL_AFTER_MIN_SECONDS",
     "QUARANTINE_AFTER",
+    "REQUEST_HOLD_FLOOR_HOURS",
     "SCHEMA_VERSION",
     "STALE_STEP_SECONDS",
     "STEP_CANCEL_GRACE_SECONDS",
     "STEP_RUN_KIND",
+    "SUPERSEDED_SAMPLE",
     "TRACKS_DECLARATION",
     "TRACKS_INPUT",
     "TRANSCODE_LANE",
@@ -597,6 +631,14 @@ __all__ = [
     "CatalogIndex",
     "CatalogIndexEntry",
     "CatalogMatch",
+    "CleanupMode",
+    "CleanupNeedsPlan",
+    "CleanupOnManagedDataset",
+    "CleanupPlan",
+    "CleanupPlanWire",
+    "CleanupPolicy",
+    "CleanupSpec",
+    "CleanupTarget",
     "ColumnNames",
     "ColumnProvider",
     "ColumnSet",
@@ -632,6 +674,7 @@ __all__ = [
     "InputCandidate",
     "InputCandidates",
     "InsertReport",
+    "KeptReason",
     "LeaseKeeper",
     "LeaseLost",
     "LeaseNotRefreshed",
@@ -687,6 +730,8 @@ __all__ = [
     "StepTypeNotFound",
     "StillNeeded",
     "SubmittedRequest",
+    "SupersededRun",
+    "SupersededRunWire",
     "UnmetStatus",
     "ValidationReport",
     "Verdict",
@@ -749,9 +794,11 @@ __all__ = [
     "params_step_refs",
     "parents_of",
     "pipelines_root",
+    "plan_cleanup",
     "plan_fingerprint",
     "plan_pipeline",
     "plan_wire",
+    "plan_with_cleanup",
     "poll_after_seconds",
     "possible_connections",
     "preflight",

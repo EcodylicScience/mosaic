@@ -22,7 +22,7 @@ rather than an architecture.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, ClassVar
 
 from mosaic.runlog import new_execution_id, now_iso
@@ -30,7 +30,16 @@ from mosaic.core.scope import Scope
 
 from ..error_kind import ClassifiedError, ErrorKind
 from .digest import document_digest, recipe_digest
-from .model import BoundRef, FeatureStepSpec, Recipe, Request
+from .cleanup import plan_cleanup
+from .model import (
+    BoundRef,
+    CleanupPolicy,
+    CleanupSpec,
+    CleanupTarget,
+    FeatureStepSpec,
+    Recipe,
+    Request,
+)
 from .plan import Plan, plan_pipeline
 from .serialize import plan_fingerprint
 from .step_preflight import StepRefused, refuse_mixed_schemas
@@ -56,6 +65,8 @@ if TYPE_CHECKING:
     from .compatibility import DeclarationCatalog
 
 __all__ = [
+    "CleanupNeedsPlan",
+    "CleanupOnManagedDataset",
     "DuplicateRequest",
     "PlanChanged",
     "SubmittedRequest",
@@ -145,6 +156,55 @@ class DuplicateRequest(ClassifiedError):
         }
 
 
+class CleanupNeedsPlan(ClassifiedError):
+    """Refuse a cleanup submitted without the fingerprint of a reviewed plan.
+
+    A cleanup removes the runs that the reviewed plan found removable, so a
+    submission asking for one names that plan.
+    """
+
+    error_kind: ClassVar[ErrorKind] = "invalid"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "a cleanup removes the superseded runs of a reviewed plan, so it "
+            "needs that plan's fingerprint: plan the recipe with the cleanup, "
+            "review it, and submit with --expect-plan <fingerprint>"
+        )
+
+    def error_reason(self) -> str:
+        """Return ``cleanup_needs_plan``."""
+        return "cleanup_needs_plan"
+
+
+class CleanupOnManagedDataset(ClassifiedError):
+    """Refuse a cleanup on a dataset that a service manages.
+
+    The service removes what it manages, and a request file carrying a cleanup
+    is one that an older mosaic, such as a service's worker, cannot read.
+
+    Attributes:
+        managed_by: The service the manifest names.
+    """
+
+    error_kind: ClassVar[ErrorKind] = "unavailable"
+
+    def __init__(self, managed_by: JsonValue) -> None:
+        super().__init__(
+            f"the dataset is managed by {managed_by!r}, which removes its own "
+            f"runs; submit without a cleanup"
+        )
+        self.managed_by: JsonValue = managed_by
+
+    def error_reason(self) -> str:
+        """Return ``cleanup_on_managed_dataset``."""
+        return "cleanup_on_managed_dataset"
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the managing service."""
+        return {"managed_by": self.managed_by}
+
+
 def submit_request(
     ds: Dataset,
     recipe: Recipe,
@@ -160,6 +220,7 @@ def submit_request(
     expect_plan: str | None = None,
     refuse_duplicates: bool = False,
     step_scopes: Mapping[str, Scope] | None = None,
+    cleanup: CleanupPolicy | None = None,
 ) -> SubmittedRequest:
     """Record one submission of *recipe* against *ds*, and resolve its plan.
 
@@ -192,6 +253,12 @@ def submit_request(
         step_scopes: Narrow single steps, keyed by step id, each intersected
             with *scope*. Recorded on the request, which every step re-plans
             from.
+        cleanup: Remove the plan's superseded runs after every step has
+            finished, judged under this policy, or ``None`` for no cleanup.
+            The plan is resolved with them, as :func:`~.cleanup.plan_with_cleanup`
+            resolves it, so *expect_plan* must be the fingerprint of a plan reviewed with
+            the same policy. The request records the runs that plan found
+            removable, less any run *bind* pins, and removes no other.
 
     Returns:
         The request, the plan, the paths of both documents, and the open
@@ -206,11 +273,19 @@ def submit_request(
             request is written.
         StepRefused: The dataset's tracks tables are of incompatible schemas, so
             no feature identity resolves against it at all.
+        CleanupNeedsPlan: *cleanup* is given without *expect_plan*.
+        CleanupOnManagedDataset: *cleanup* is given and a service manages the
+            dataset.
     """
     # Before planning, and again at each step's own start. Resolving any feature
     # identity against a dataset of mixed schemas already fails; checking first
     # is what makes that a refusal naming the schemas rather than an exception
     # out of the middle of a hash.
+    if cleanup is not None:
+        if expect_plan is None:
+            raise CleanupNeedsPlan()
+        if ds.manifest.is_managed:
+            raise CleanupOnManagedDataset(ds.manifest.managed_by)
     refuse_mixed_schemas(ds, "")
     narrowing = scope if scope is not None else Scope()
     digest = recipe_digest(recipe)
@@ -218,6 +293,12 @@ def submit_request(
         # Refuses before planning, which can take seconds.
         _ = _open_duplicates(ds.base_dir, digest, narrowing, refuse=True)
     narrowed_steps = dict(step_scopes or {})
+    if cleanup is not None:
+        from ..inventory.cache import InventoryCache
+        from .resolve import declaration_catalog
+
+        inventory = InventoryCache(ds) if inventory is None else inventory
+        catalog = declaration_catalog() if catalog is None else catalog
     plan = plan_pipeline(
         ds,
         recipe,
@@ -226,10 +307,30 @@ def submit_request(
         catalog=catalog,
         step_scopes=narrowed_steps,
     )
-    if expect_plan is not None:
-        found = plan_fingerprint(plan)
-        if found != expect_plan:
-            raise PlanChanged(expected=expect_plan, found=found)
+    if cleanup is not None and inventory is not None and catalog is not None:
+        # What plan_with_cleanup does, with the plan_pipeline of this module.
+        found_runs = plan_cleanup(
+            ds, plan, policy=cleanup, inventory=inventory, catalog=catalog
+        )
+        plan = replace(plan, cleanup=found_runs)
+    found = plan_fingerprint(plan)
+    if expect_plan is not None and found != expect_plan:
+        raise PlanChanged(expected=expect_plan, found=found)
+    pinned = {(bound.feature, bound.run_id) for bound in (bind or {}).values()}
+    removal = (
+        None
+        if cleanup is None or plan.cleanup is None
+        else CleanupSpec(
+            policy=cleanup,
+            execution_id=new_execution_id(),
+            approved=[
+                CleanupTarget(storage=run.storage, run_id=run.run_id)
+                for run in plan.cleanup.removable
+                if (run.storage, run.run_id) not in pinned
+            ],
+            fingerprint=found,
+        )
+    )
     ordered = topological_order(recipe)
     request = Request(
         request_id=request_id or new_execution_id(),
@@ -249,6 +350,7 @@ def submit_request(
             )
             for step in ordered
         },
+        cleanup=removal,
     )
     with submission_lock(ds.base_dir):
         duplicates = _open_duplicates(

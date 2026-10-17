@@ -23,6 +23,8 @@ from .plan import (
 )
 from ..inventory.wire import MISSING_SAMPLE_WIRE, coverage_wire
 from .wire import (
+    SUPERSEDED_SAMPLE,
+    CleanupPlanWire,
     CoverageShortWire,
     DepsIncompleteWire,
     HeldOnParentsWire,
@@ -32,6 +34,7 @@ from .wire import (
     Problem,
     ReasonWire,
     StalledWire,
+    SupersededRunWire,
     WaitingOnResourceWire,
 )
 
@@ -39,6 +42,7 @@ if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
     from mosaic.core.scope import Scope
 
+    from .cleanup import CleanupPlan, SupersededRun
     from .status import RequestSummaryWire
 
 __all__ = ["LARGE_SCOPE_ENTRIES", "plan_fingerprint", "plan_wire"]
@@ -70,7 +74,11 @@ def plan_wire(
             :func:`~.store.requests_matching` reads them. They are reported as
             given and do not enter the fingerprint.
     """
-    steps = tuple(_step_wire(planned, plan, missing_sample) for planned in plan.steps)
+    superseded = _superseded_by_step(plan.cleanup)
+    steps = tuple(
+        _step_wire(planned, plan, missing_sample, superseded.get(planned.step_id, ()))
+        for planned in plan.steps
+    )
     return PlanWire(
         recipe_digest=plan.recipe_digest,
         fingerprint=plan_fingerprint(plan),
@@ -80,6 +88,44 @@ def plan_wire(
         problems=plan.problems,
         cautions=_plan_cautions(plan, steps),
         open_requests=open_requests,
+        cleanup=_cleanup_wire(plan.cleanup),
+    )
+
+
+def _superseded_by_step(
+    cleanup: CleanupPlan | None,
+) -> dict[str, tuple[SupersededRun, ...]]:
+    """The superseded runs of *cleanup*, grouped on the step that lists them."""
+    grouped: dict[str, list[SupersededRun]] = {}
+    for run in cleanup.runs if cleanup is not None else ():
+        grouped.setdefault(run.step_id, []).append(run)
+    return {step_id: tuple(runs) for step_id, runs in grouped.items()}
+
+
+def _cleanup_wire(cleanup: CleanupPlan | None) -> CleanupPlanWire | None:
+    """The totals of *cleanup*, ``None`` for a plan not asked for one."""
+    if cleanup is None:
+        return None
+    return CleanupPlanWire(
+        policy=cleanup.policy,
+        removable_runs=len(cleanup.removable),
+        removable_bytes=cleanup.removable_bytes,
+        kept_runs=len(cleanup.kept),
+        kept_bytes=cleanup.kept_bytes,
+    )
+
+
+def _superseded_wire(run: SupersededRun) -> SupersededRunWire:
+    return SupersededRunWire(
+        run_id=run.run_id,
+        storage=run.storage,
+        removable=run.removable,
+        reason=run.reason,
+        detail=run.detail,
+        bytes=run.bytes,
+        entries=run.entries,
+        finished_at=run.finished_at,
+        superseded_by=run.superseded_by,
     )
 
 
@@ -129,6 +175,11 @@ def plan_fingerprint(plan: Plan) -> str:
     enter it only when there are any, which leaves the fingerprint of a plan
     without them unchanged. They are needed while a conversion defers every
     step's entries, when the counts above cannot tell two narrowings apart.
+
+    A plan asked for a cleanup (:func:`~.cleanup.plan_with_cleanup`) adds the
+    policy and the runs it may remove, so a submission removes only the runs
+    its caller reviewed. Their sizes and the runs kept are left out. A plan not
+    asked for one fingerprints as before.
     """
     document: dict[str, JsonValue] = {
         "dataset": plan.dataset_uuid,
@@ -142,6 +193,17 @@ def plan_fingerprint(plan: Plan) -> str:
         document["step_scopes"] = {
             step_id: _scope_document(narrowed)
             for step_id, narrowed in sorted(plan.step_scopes.items())
+        }
+    if plan.cleanup is not None:
+        policy = plan.cleanup.policy
+        removable = sorted((run.storage, run.run_id) for run in plan.cleanup.removable)
+        remove: list[JsonValue] = [[storage, run_id] for storage, run_id in removable]
+        document["cleanup"] = {
+            "policy": {
+                "keep_newest": policy.keep_newest,
+                "min_age_hours": policy.min_age_hours,
+            },
+            "remove": remove,
         }
     return document_digest(document)
 
@@ -175,7 +237,10 @@ def _step_fingerprint(planned: PlannedStep, plan: Plan) -> dict[str, JsonValue]:
 
 
 def _step_wire(
-    planned: PlannedStep, plan: Plan, missing_sample: int
+    planned: PlannedStep,
+    plan: Plan,
+    missing_sample: int,
+    superseded: tuple[SupersededRun, ...] = (),
 ) -> PlannedStepWire:
     return PlannedStepWire(
         step=planned.step_id,
@@ -195,6 +260,10 @@ def _step_wire(
         reason=_reason_wire(planned.reason),
         labels_variant=planned.labels_variant,
         step_scope=plan.step_scopes.get(planned.step_id),
+        superseded=tuple(
+            _superseded_wire(run) for run in superseded[:SUPERSEDED_SAMPLE]
+        ),
+        superseded_omitted=max(len(superseded) - SUPERSEDED_SAMPLE, 0),
     )
 
 

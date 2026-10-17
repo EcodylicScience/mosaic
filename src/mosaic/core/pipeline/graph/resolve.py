@@ -106,6 +106,7 @@ __all__ = [
     "op_class_for_kind",
     "params_reference_site",
     "resolve_step_spec",
+    "run_reference_fields",
     "step_type_detail",
     "step_type_lane",
 ]
@@ -946,6 +947,21 @@ def params_reference_site(kind: str, name: str, field_name: str) -> ReferenceSit
     if field_name not in types:
         return "unknown"
     return _reference_site_of(types[field_name])
+
+
+def run_reference_fields(name: str) -> frozenset[str]:
+    """The top-level params fields of feature *name* that may name another run.
+
+    A field typed as a ``Result`` or an ``ArtifactSpec`` names a feature run, and
+    one typed as a bare identifier names a run or a model. A cleanup reads a run
+    whose params are unknown as reading every run when its feature declares one
+    (:mod:`~.cleanup`). Empty for a name the registry does not know.
+    """
+    return frozenset(
+        field_name
+        for field_name, annotation in _params_field_types("feature", name).items()
+        if _reference_site_of(annotation) in ("result", "identifier")
+    )
 
 
 def _reference_site_of(annotation: object) -> ReferenceSite:

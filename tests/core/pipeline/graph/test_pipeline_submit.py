@@ -18,16 +18,30 @@ from typer.testing import CliRunner
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
+    BoundRef,
+    CleanupNeedsPlan,
+    CleanupOnManagedDataset,
+    CleanupPolicy,
+    CleanupTarget,
+    PlanChanged,
     Recipe,
     declared_version,
     load_request,
+    plan_fingerprint,
+    plan_pipeline,
+    plan_with_cleanup,
     recipe_digest,
     recipe_path,
     request_path,
     step_argv,
     submit_request,
 )
-from tests.helpers import add_tracks_variant, make_dataset
+from tests.helpers import (
+    add_tracks_variant,
+    make_dataset,
+    run_speed,
+    speed_recipe_stepping,
+)
 
 runner = CliRunner()
 
@@ -267,3 +281,90 @@ def test_a_shell_loop_over_the_printed_commands_runs_the_graph(
         ],
     )
     assert json.loads(status.stdout)["status"] == "finished"
+
+
+# --- a cleanup ----------------------------------------------------------------------
+
+LOOSE = CleanupPolicy(keep_newest=0, min_age_hours=0)
+
+SPEED_STORAGE = "speed-angvel__from__tracks"
+
+
+def _cleanup_fingerprint(dataset: Dataset, recipe: Recipe) -> str:
+    return plan_fingerprint(plan_with_cleanup(dataset, recipe, cleanup=LOOSE))
+
+
+def test_cleanup_requires_an_expected_plan(tracked: Dataset) -> None:
+    with pytest.raises(CleanupNeedsPlan) as raised:
+        _ = submit_request(tracked, speed_recipe_stepping(2), cleanup=LOOSE)
+
+    assert raised.value.error_kind == "invalid"
+    assert not request_path(tracked.base_dir, "x").parent.exists()
+
+
+def test_cleanup_is_refused_on_a_managed_dataset(tracked: Dataset) -> None:
+    with tracked.manifest_path.open("a", encoding="utf-8") as manifest:
+        _ = manifest.write("managed_by: mosaic-api\n")
+    managed = Dataset(manifest_path=tracked.manifest_path).load(ensure_roots=False)
+
+    with pytest.raises(CleanupOnManagedDataset) as raised:
+        _ = submit_request(
+            managed, speed_recipe_stepping(2), cleanup=LOOSE, expect_plan="x"
+        )
+
+    assert raised.value.error_detail() == {"managed_by": "mosaic-api"}
+
+
+def test_the_request_records_the_approved_set_and_policy(tracked: Dataset) -> None:
+    old = run_speed(tracked, 1)
+    recipe = speed_recipe_stepping(2)
+    fingerprint = _cleanup_fingerprint(tracked, recipe)
+
+    submitted = submit_request(tracked, recipe, cleanup=LOOSE, expect_plan=fingerprint)
+
+    spec = load_request(tracked.base_dir, submitted.request.request_id).cleanup
+    assert spec is not None
+    assert (spec.mode, spec.policy, spec.fingerprint) == (
+        "superseded",
+        LOOSE,
+        fingerprint,
+    )
+    assert spec.approved == [CleanupTarget(storage=SPEED_STORAGE, run_id=old)]
+    assert spec.execution_id not in submitted.request.step_executions.values()
+    assert submitted.plan.cleanup is not None
+
+
+def test_a_bound_run_is_never_approved(tracked: Dataset) -> None:
+    old = run_speed(tracked, 1)
+    other = run_speed(tracked, 3)
+    recipe = speed_recipe_stepping(2)
+
+    submitted = submit_request(
+        tracked,
+        recipe,
+        bind={"elsewhere": BoundRef(feature=SPEED_STORAGE, run_id=old)},
+        cleanup=LOOSE,
+        expect_plan=_cleanup_fingerprint(tracked, recipe),
+    )
+
+    spec = submitted.request.cleanup
+    assert spec is not None
+    assert spec.approved == [CleanupTarget(storage=SPEED_STORAGE, run_id=other)]
+
+
+def test_a_fingerprint_without_cleanup_does_not_submit_a_cleanup(
+    tracked: Dataset,
+) -> None:
+    _ = run_speed(tracked, 1)
+    recipe = speed_recipe_stepping(2)
+    plain = plan_fingerprint(plan_pipeline(tracked, recipe))
+
+    with pytest.raises(PlanChanged):
+        _ = submit_request(tracked, recipe, cleanup=LOOSE, expect_plan=plain)
+    submitted = submit_request(tracked, recipe, expect_plan=plain)
+
+    assert submitted.request.cleanup is None
+    saved = json.loads(
+        request_path(tracked.base_dir, submitted.request.request_id).read_text()
+    )
+    assert "cleanup" not in saved

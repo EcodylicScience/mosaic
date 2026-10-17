@@ -56,6 +56,20 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   is the plan's entries narrowed by its scope (`step_target`), and its identity,
   coverage, asked entries, stall and shortfall are measured over it. The fingerprint
   includes the step scopes only when there are any (`test_pipeline_step_scopes.py`).
+- `plan_with_cleanup` (`cleanup.py`) is the one planner of superseded feature runs,
+  which the CLI's `pipeline plan`, the MCP tools and `submit_request` share.
+  `plan_cleanup` only reads: no lock, no write (`test_planning_a_cleanup_writes_nothing`
+  in `test_pipeline_cleanup.py`). Its candidates are the other runs of the plan's
+  feature storages, never tracks, models or another recipe's storages, and its
+  rules, in the order they decide, are in the module docstring. It does not import
+  `FEATURES`; `run_reference_fields` in `resolve.py` answers for it.
+- `plan_fingerprint` covers the cleanup's policy and removable runs only when a plan
+  was asked for a cleanup, so every other fingerprint is unchanged
+  (`test_pipeline_plan_fingerprint.py`). Given a policy, `submit_request` needs
+  `expect_plan` (`CleanupNeedsPlan`), refuses a managed dataset
+  (`CleanupOnManagedDataset`), and records `Request.cleanup`: the approved runs less
+  the submission's binds. `save_request` leaves the key out when it is `None`, because
+  an older mosaic cannot read a request file that has it.
 - `reject_unless_valid` (`validate.py`) runs before the dataset is touched and reports
   every problem. It refuses an `overwrite` key in `params` (`OVERWRITE_PARAM`) and the
   `extract-frames` op (`EXCLUDED_KINDS`), as `test_pipeline_validate.py` checks.

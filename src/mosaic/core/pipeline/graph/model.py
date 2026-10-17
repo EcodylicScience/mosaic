@@ -39,7 +39,12 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.scope import Scope
 
 __all__ = [
+    "REQUEST_HOLD_FLOOR_HOURS",
     "BoundRef",
+    "CleanupMode",
+    "CleanupPolicy",
+    "CleanupSpec",
+    "CleanupTarget",
     "FeatureStepSpec",
     "GraphModel",
     "OpStepSpec",
@@ -362,6 +367,61 @@ class BoundRef(GraphModel):
     run_id: str
 
 
+REQUEST_HOLD_FLOOR_HOURS: Final = 1.0
+"""The fewest hours a request that has ended holds the runs it recorded or bound.
+
+A cleanup holds them for ``max(min_age_hours, this)``, so a policy of
+``min_age_hours: 0`` cannot remove the output of a request that just finished.
+"""
+
+type CleanupMode = Literal["none", "superseded"]
+"""Whether a plan reports, and a submission removes, the superseded runs."""
+
+
+class CleanupPolicy(GraphModel):
+    """Which superseded feature runs a cleanup keeps by age and by recency.
+
+    Fixed by whoever runs the cleanup: the operator of an MCP server, or the
+    person running the CLI. It is never a tool argument.
+
+    Attributes:
+        keep_newest: How many superseded runs of each storage to keep, the
+            newest by ``finished_at`` first.
+        min_age_hours: The youngest a run may be and be removed, in hours.
+    """
+
+    keep_newest: int = Field(default=1, ge=0)
+    min_age_hours: float = Field(default=24.0, ge=0)
+
+
+class CleanupTarget(GraphModel):
+    """One feature run a submission approved for removal."""
+
+    storage: str
+    run_id: str
+
+
+class CleanupSpec(GraphModel):
+    """The cleanup a request runs after its steps, as it was approved at submit.
+
+    Attributes:
+        mode: Which runs it removes.
+        policy: The policy the plan was computed under.
+        execution_id: The cleanup's attempt, whose run-log records each run it
+            removed or kept.
+        approved: The runs the reviewed plan found removable. The cleanup
+            removes no other run, and keeps any of these that is no longer
+            removable when it runs.
+        fingerprint: The fingerprint of the plan the submission reviewed.
+    """
+
+    mode: Literal["superseded"] = "superseded"
+    policy: CleanupPolicy = Field(default_factory=lambda: CleanupPolicy())
+    execution_id: str
+    approved: list[CleanupTarget] = Field(default_factory=list)
+    fingerprint: str = ""
+
+
 class Request(GraphModel):
     """One submission of one recipe against one dataset.
 
@@ -417,6 +477,14 @@ class Request(GraphModel):
     narrowed to the training groups and the scoring step to the test groups.
     Left out of the request file when empty, so a request without one reads
     in an older mosaic.
+    """
+
+    cleanup: CleanupSpec | None = None
+    """The superseded runs to remove after every step finished, or ``None``.
+
+    Left out of the request file when ``None``, so a request without one reads
+    in an older mosaic. One with it does not, which is why a managed dataset
+    refuses it.
     """
 
     @model_validator(mode="after")

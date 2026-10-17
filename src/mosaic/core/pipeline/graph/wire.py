@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import Field
 
@@ -43,15 +43,17 @@ from ..inventory.wire import CoverageWire
 from ..ops import ScopeTakes
 from ..types.feature import EmitsLevel
 from .compatibility import Declaration
-from .model import GraphModel
+from .model import CleanupPolicy, GraphModel
 from .status import RequestSummaryWire
 
 __all__ = [
+    "SUPERSEDED_SAMPLE",
     "AttachReport",
     "Attachment",
     "CatalogEntry",
     "CatalogIndex",
     "CatalogIndexEntry",
+    "CleanupPlanWire",
     "ColumnNames",
     "ColumnProvider",
     "ConditionalColumns",
@@ -72,6 +74,7 @@ __all__ = [
     "ReasonWire",
     "ReferenceKind",
     "StalledWire",
+    "SupersededRunWire",
     "StepTypeDetail",
     "StillNeeded",
     "UnmetStatus",
@@ -583,6 +586,56 @@ type ReasonWire = Annotated[
 """Why a step is not simply running, tagged by ``kind``. One per ``Reason``."""
 
 
+SUPERSEDED_SAMPLE: Final = 50
+"""The most superseded runs one step of a plan lists."""
+
+
+class SupersededRunWire(GraphModel):
+    """One run of a step's storage that the plan does not expect.
+
+    Attributes:
+        run_id: The run.
+        storage: Its storage name under ``features/``.
+        removable: Whether a cleanup may remove it.
+        reason: ``superseded`` when removable, otherwise why it is kept, such as
+            ``costly_fit``, ``read_by`` or ``young``.
+        detail: What made the reason so, ``""`` when removable.
+        bytes: The bytes its directory holds.
+        entries: How many entries its index rows name.
+        finished_at: When it finished, ``""`` for a run that did not.
+        superseded_by: The run or runs the plan expects in its storage.
+    """
+
+    run_id: str
+    storage: str
+    removable: bool
+    reason: str
+    detail: str
+    bytes: int
+    entries: int
+    finished_at: str
+    superseded_by: str
+
+
+class CleanupPlanWire(GraphModel):
+    """What a cleanup of a plan's superseded runs would remove and keep.
+
+    Attributes:
+        policy: The age and recency rules the runs were judged under.
+        removable_runs: How many runs a cleanup may remove.
+        removable_bytes: The bytes they hold.
+        kept_runs: How many superseded runs are kept, each listed on its step
+            with its reason.
+        kept_bytes: The bytes they hold.
+    """
+
+    policy: CleanupPolicy
+    removable_runs: int
+    removable_bytes: int
+    kept_runs: int
+    kept_bytes: int
+
+
 class PlannedStepWire(GraphModel):
     """One step of a plan, as an editor renders it.
 
@@ -606,6 +659,10 @@ class PlannedStepWire(GraphModel):
         labels_variant: What names a label conversion step's labels variant.
         step_scope: The scope narrowing this step, or ``None`` when only the
             request's scope does. ``coverage.target`` counts the entries left.
+        superseded: The other runs of its storage, when the plan was asked for
+            a cleanup: at most :data:`SUPERSEDED_SAMPLE`, removable ones first,
+            on the first step of each storage.
+        superseded_omitted: How many more there are than ``superseded`` lists.
     """
 
     step: str
@@ -625,6 +682,8 @@ class PlannedStepWire(GraphModel):
     reason: ReasonWire | None
     labels_variant: str = ""
     step_scope: Scope | None = None
+    superseded: tuple[SupersededRunWire, ...] = ()
+    superseded_omitted: int = 0
 
 
 class PlanWire(GraphModel):
@@ -650,6 +709,9 @@ class PlanWire(GraphModel):
             that have not ended, ``running`` or ``orphaned``
             (:func:`~.store.requests_matching`). Empty unless the caller looked
             them up. The fingerprint leaves them out.
+        cleanup: The totals of the plan's superseded runs, when it was asked
+            for a cleanup, ``None`` otherwise. Each step lists its storage's
+            runs in ``superseded``.
     """
 
     recipe_digest: str
@@ -660,3 +722,4 @@ class PlanWire(GraphModel):
     problems: tuple[Problem, ...]
     cautions: tuple[Problem, ...] = ()
     open_requests: tuple[RequestSummaryWire, ...] = ()
+    cleanup: CleanupPlanWire | None = None

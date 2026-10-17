@@ -8,6 +8,7 @@ tracks entry has appeared in between.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -16,12 +17,16 @@ from typer.testing import CliRunner
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
+from mosaic.core.json_value import JsonValue
+from mosaic.core.pipeline.graph import serialize as serialize_module
 from mosaic.core.pipeline.graph import (
+    CleanupPolicy,
     PlanChanged,
     Recipe,
     plan_fingerprint,
     plan_pipeline,
     plan_wire,
+    plan_with_cleanup,
     pipelines_root,
     requests_matching,
     run_pipeline,
@@ -34,7 +39,9 @@ from tests.helpers import (
     invoke_json,
     make_dataset,
     run_fresh,
+    run_speed,
     speed_recipe,
+    speed_recipe_stepping,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -238,3 +245,53 @@ def test_an_integral_float_and_its_integer_plan_one_fingerprint(
         return plan_fingerprint(plan_pipeline(tracked, Recipe.model_validate(document)))
 
     assert fingerprint(1.0) == fingerprint(1)
+
+
+LOOSE = CleanupPolicy(keep_newest=0, min_age_hours=0)
+
+
+def test_a_plan_without_cleanup_fingerprints_as_before(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = run_speed(tracked, 1)
+    digested: list[Mapping[str, object]] = []
+    digest = serialize_module.document_digest
+
+    def capture(document: dict[str, JsonValue]) -> str:
+        digested.append(document)
+        return digest(document)
+
+    monkeypatch.setattr(serialize_module, "document_digest", capture)
+    plain = plan_pipeline(tracked, speed_recipe_stepping(2))
+    unasked = plan_with_cleanup(tracked, speed_recipe_stepping(2), cleanup=None)
+
+    assert plan_fingerprint(unasked) == plan_fingerprint(plain)
+    assert set(digested[-1]) == {"dataset", "recipe", "steps"}
+    assert plan_wire(unasked).cleanup is None
+
+
+def test_a_new_superseded_run_changes_a_cleanup_fingerprint(tracked: Dataset) -> None:
+    _ = run_speed(tracked, 1)
+    recipe = speed_recipe_stepping(2)
+    before = plan_fingerprint(plan_with_cleanup(tracked, recipe, cleanup=LOOSE))
+    plain = plan_fingerprint(plan_pipeline(tracked, recipe))
+
+    _ = run_speed(tracked, 3)
+
+    after = plan_fingerprint(plan_with_cleanup(tracked, recipe, cleanup=LOOSE))
+    assert after != before
+    assert plan_fingerprint(plan_pipeline(tracked, recipe)) == plain
+    assert before != plain
+
+
+def test_the_cleanup_policy_enters_the_fingerprint(tracked: Dataset) -> None:
+    _ = run_speed(tracked, 1)
+    recipe = speed_recipe_stepping(2)
+
+    loose = plan_with_cleanup(tracked, recipe, cleanup=LOOSE)
+    strict = plan_with_cleanup(
+        tracked, recipe, cleanup=CleanupPolicy(keep_newest=5, min_age_hours=0)
+    )
+
+    assert plan_fingerprint(loose) != plan_fingerprint(strict)
+    assert plan_wire(loose).fingerprint == plan_fingerprint(loose)

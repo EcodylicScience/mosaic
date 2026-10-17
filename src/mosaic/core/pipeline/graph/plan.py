@@ -122,6 +122,7 @@ if TYPE_CHECKING:
     from mosaic.core.params import Params
 
     from ..inventory.model import DatasetInventory
+    from .cleanup import CleanupPlan
     from .compatibility import DeclarationCatalog
 
 __all__ = [
@@ -361,6 +362,9 @@ class Plan:
         step_scopes: The scopes narrowing single steps, keyed by step id. A
             step's target is ``scope`` narrowed by its own, and its coverage
             is measured against that (:func:`step_target`).
+        cleanup: The superseded runs of the plan's feature storages, each
+            removable or kept with its reason, when the plan was asked for them
+            (:func:`~.cleanup.plan_with_cleanup`). ``None`` otherwise.
     """
 
     recipe_digest: str
@@ -372,6 +376,7 @@ class Plan:
     step_scopes: Mapping[str, Scope] = field(
         default_factory=lambda: cast("dict[str, Scope]", {})
     )
+    cleanup: CleanupPlan | None = None
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
