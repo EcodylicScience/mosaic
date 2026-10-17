@@ -23,6 +23,8 @@ from mcp.shared.exceptions import MCPError
 from mosaic.agent.mcp.local import LocalBackend
 from mosaic.agent.mcp.prompts import PROMPTS
 from mosaic.agent.mcp.server import build_server
+from mosaic.agent.mcp import spec
+from mosaic.agent.mcp._binding import ALWAYS_LOAD_META, INSTRUCTIONS
 from mosaic.agent.mcp.spec import MAX_SCHEMA_BYTES, SHARED_TOOL_LIMIT, TOOLS
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
@@ -204,7 +206,7 @@ print(json.dumps(anyio.run(connect)))
     assert measured["elapsed"] < INITIALIZE_SECONDS, measured
 
 
-def test_a_tool_returns_structured_content_and_a_summary(
+def test_a_tool_returns_structured_content_its_json_text_and_a_summary(
     backend: LocalBackend, dataset: Dataset
 ) -> None:
     async def body(client: Client) -> types.CallToolResult:
@@ -215,6 +217,67 @@ def test_a_tool_returns_structured_content_and_a_summary(
     content = _structured(result)
     assert content["total"] == 2
     assert _text(result).startswith("2 entry(s) match, 2 on this page.")
+    block = result.content[1]
+    assert isinstance(block, types.TextContent)
+    assert json.loads(block.text) == content
+
+
+def test_core_tools_are_marked_to_load_up_front(backend: LocalBackend) -> None:
+    async def body(client: Client) -> list[types.Tool]:
+        return (await client.list_tools()).tools
+
+    tools = _session(backend, body)
+
+    marked = {tool.name for tool in tools if tool.meta == {ALWAYS_LOAD_META: True}}
+    assert marked == {
+        "describe_step_types",
+        "plan_recipe",
+        "submit_pipeline",
+        "get_request_status",
+        "cancel_request",
+    }
+    assert all(tool.meta is None for tool in tools if tool.name not in marked)
+
+
+def test_the_instructions_stay_short_and_name_the_workflow(
+    backend: LocalBackend,
+) -> None:
+    async def body(client: Client) -> str | None:
+        return client.instructions
+
+    instructions = _session(backend, body)
+
+    assert instructions == INSTRUCTIONS
+    assert len(INSTRUCTIONS) < 2048
+    workflow = [
+        "describe_step_types",
+        "validate_recipe",
+        "plan_recipe",
+        "submit_pipeline",
+        "get_request_status",
+    ]
+    places = [INSTRUCTIONS.index(name) for name in workflow]
+    assert places == sorted(places)
+    assert "result_too_large" in INSTRUCTIONS
+    assert "search_step_types" not in INSTRUCTIONS
+
+
+def test_an_oversized_result_is_an_error_naming_its_narrowing(
+    backend: LocalBackend, dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(spec, "MAX_RESULT_CHARS", 100)
+
+    async def body(client: Client) -> types.CallToolResult:
+        return await client.call_tool("list_sequences", {"dataset": _uuid(dataset)})
+
+    result = _session(backend, body)
+
+    envelope = _error(result)
+    assert (envelope["kind"], envelope["reason"]) == ("invalid", "result_too_large")
+    detail = envelope["detail"]
+    assert isinstance(detail, dict)
+    assert detail["narrow_with"] == ["group", "tracks_variant", "limit"]
+    assert result.structured_content is None
 
 
 def test_a_failure_is_an_error_result_carrying_its_envelope(

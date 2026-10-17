@@ -7,9 +7,9 @@ through the low-level server of the MCP SDK. :func:`serve_stdio` runs it on the
 process's standard streams.
 
 A tool call returns the output model as ``structuredContent``, which validates
-against the tool's ``outputSchema``, and a paragraph from
-:func:`~mosaic.agent.mcp.summaries.summarize` as its text. A failure returns
-``isError`` with the paragraph and the error envelope as JSON text. Backend
+against the tool's ``outputSchema``, and two text blocks: a paragraph from
+:func:`~mosaic.agent.mcp.summaries.summarize` and the model as JSON. A failure
+returns ``isError`` with the paragraph and the error envelope as JSON text. Backend
 calls block, so each runs on a worker thread.
 
 A tool that asks for confirmation is confirmed by the user through elicitation
@@ -62,6 +62,7 @@ from .spec import (
 from .summaries import summarize
 
 __all__ = [
+    "ALWAYS_LOAD_META",
     "CONFIRM_FIELD",
     "CONFIRM_INPUT",
     "INSTRUCTIONS",
@@ -72,16 +73,37 @@ __all__ = [
 SERVER_NAME: Final = "mosaic"
 """The name the server reports to a client."""
 
-INSTRUCTIONS: Final = (
-    "mosaic computes behavioral features from animal tracking data, in datasets "
-    "named by uuid (list_datasets). Read mosaic://guide first. To compute "
-    "something: describe_step_types (a query, then names), draft a recipe, "
-    "validate_recipe, plan_recipe, show the user the plan and wait for their "
-    "approval, then submit_pipeline and poll get_request_status. Previews and "
-    "diagnoses change nothing. Never set confirm without the user's agreement, "
-    "and propose the mosaic CLI command for anything these tools do not offer."
+_CONFIRMATION_RULES: Final = (
+    "Never set confirm without the user's agreement, and propose the mosaic CLI "
+    "command for anything these tools do not offer."
 )
-"""What the server tells a client's model at initialization."""
+"""The instructions' rules on confirmation, one sentence of their own.
+
+The confirmation gate's wording replaces this sentence alone, and leaves the
+workflow before it as it is.
+"""
+
+INSTRUCTIONS: Final = (
+    "mosaic: animal behavior analysis from pose and tracking data. Datasets, "
+    "tracks, labels, features, embeddings, clusters, classifiers and pipeline "
+    "recipes. Datasets are named by uuid (list_datasets). Use these tools for the "
+    "work they cover. Workflow: describe_dataset and list_sequences; "
+    "describe_step_types with a query, then with names=[...] for the step types "
+    "you choose; draft a recipe and validate_recipe; plan_recipe, show the user "
+    "the plan and wait for their approval; submit_pipeline, then poll "
+    "get_request_status; get_inventory and preview_output read the results, "
+    "and diagnose_failures explains a failure. Reads change nothing. A result "
+    "is at most 40,000 characters, and a result_too_large error names the "
+    "arguments that narrow the call. The mosaic://guide resource, the "
+    "`mosaic agent guide` command and the installed SKILL.md are one text; read "
+    "it once, when the tools leave a question open. " + _CONFIRMATION_RULES
+)
+"""What the server tells a client's model at initialization.
+
+It leads with the words a client's tool search matches, then names the
+workflow, and stays under 2,048 characters, as a client may cut longer
+instructions.
+"""
 
 CONFIRM_INPUT: Final = "confirm"
 """The key of the elicitation that an ``input_required`` result asks for."""
@@ -108,6 +130,9 @@ _CONFIRM_SCHEMA: Final[dict[str, JsonValue]] = {
 RESOURCE_NOT_FOUND: Final = -32002
 """The JSON-RPC error code of a resource that does not exist."""
 
+ALWAYS_LOAD_META: Final = "anthropic/alwaysLoad"
+"""The ``_meta`` key of a tool that a client should load up front."""
+
 
 class _Tools:
     """The tool listing, built once on a worker thread.
@@ -129,7 +154,13 @@ class _Tools:
 
 
 def _tool(spec: ToolSpec) -> types.Tool:
-    """Return the listing of the shared tool *spec*."""
+    """Return the listing of the shared tool *spec*.
+
+    A tool that :attr:`~.spec.ToolSpec.always_load` marks carries
+    :data:`ALWAYS_LOAD_META`, which tells Claude Code to load it up front
+    instead of through tool search. No result-size hint is declared: the
+    server bounds its read results itself (:data:`~.spec.MAX_RESULT_CHARS`).
+    """
     hints = spec.annotations
     return types.Tool(
         name=spec.name,
@@ -137,6 +168,7 @@ def _tool(spec: ToolSpec) -> types.Tool:
         description=spec.description,
         input_schema=spec.input_schema(),
         output_schema=spec.output_schema(),
+        _meta={ALWAYS_LOAD_META: True} if spec.always_load else None,
         annotations=types.ToolAnnotations(
             title=spec.title,
             read_only_hint=hints.read_only,
@@ -416,13 +448,18 @@ def _declined(name: str) -> types.CallToolResult:
 
 
 def _tool_result(output: BaseModel) -> types.CallToolResult:
-    """Return *output* as a tool result: structured content and its summary."""
+    """Return *output* as a tool result: its summary, its JSON, and structured content.
+
+    The JSON is also a second text block, as the MCP specification advises for
+    a client that reads only the content. A failure carries no structured
+    content.
+    """
     summary = types.TextContent(text=summarize(output))
+    as_json = types.TextContent(text=output.model_dump_json())
     if isinstance(output, ErrorEnvelope):
-        envelope = types.TextContent(text=output.model_dump_json())
-        return types.CallToolResult(content=[summary, envelope], is_error=True)
+        return types.CallToolResult(content=[summary, as_json], is_error=True)
     return types.CallToolResult(
-        content=[summary], structured_content=output.model_dump(mode="json")
+        content=[summary, as_json], structured_content=output.model_dump(mode="json")
     )
 
 
