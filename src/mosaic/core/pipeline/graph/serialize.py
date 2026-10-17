@@ -5,7 +5,8 @@ The models it fills are defined in :mod:`.wire`, apart from the planning modules
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+import json
+from typing import TYPE_CHECKING, Final, cast
 
 from .digest import document_digest
 from .plan import (
@@ -36,6 +37,7 @@ from .wire import (
 
 if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
+    from mosaic.core.scope import Scope
 
     from .status import RequestSummaryWire
 
@@ -138,10 +140,23 @@ def plan_fingerprint(plan: Plan) -> str:
     }
     if plan.step_scopes:
         document["step_scopes"] = {
-            step_id: narrowed.model_dump(mode="json")
+            step_id: _scope_document(narrowed)
             for step_id, narrowed in sorted(plan.step_scopes.items())
         }
     return document_digest(document)
+
+
+def _scope_document(scope: Scope) -> JsonValue:
+    """*scope* as JSON with each list sorted, so its order names nothing."""
+    dumped: dict[str, JsonValue] = {}
+    for name, value in scope.model_dump(mode="json").items():
+        held = cast("JsonValue", value)
+        dumped[name] = (
+            sorted(held, key=lambda item: json.dumps(item))
+            if isinstance(held, list)
+            else held
+        )
+    return dumped
 
 
 def _step_fingerprint(planned: PlannedStep, plan: Plan) -> dict[str, JsonValue]:

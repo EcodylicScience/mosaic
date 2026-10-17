@@ -259,7 +259,13 @@ def parse_step_scopes(values: list[str] | None) -> dict[str, Scope]:
         if not isinstance(selector, dict):
             fail(f"--step-scope {token!r}: SCOPE must be a JSON object.")
         try:
-            found[step_id] = Scope.model_validate(selector)
+            narrowed = Scope.model_validate(selector)
         except ValidationError as exc:
             fail(f"--step-scope {token!r} is not a scope: {exc}")
+        if narrowed.addresses_cameras:
+            fail(
+                f"--step-scope {token!r} names cameras. A step scope narrows "
+                "(group, sequence) entries."
+            )
+        found[step_id] = narrowed
     return found

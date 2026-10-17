@@ -94,7 +94,13 @@ def test_plan_with_step_scope_narrows_the_step(split: Dataset, tmp_path: Path) -
 
 @pytest.mark.parametrize(
     "token",
-    ["templates", '={"groups": ["train"]}', "templates=[1, 2]", 'templates={"x": 1}'],
+    [
+        "templates",
+        '={"groups": ["train"]}',
+        "templates=[1, 2]",
+        'templates={"x": 1}',
+        'templates={"entries": [["train", "s1", "cam0"]]}',
+    ],
 )
 def test_a_malformed_step_scope_is_refused(
     split: Dataset, tmp_path: Path, token: str
