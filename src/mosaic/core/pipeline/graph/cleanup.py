@@ -398,8 +398,11 @@ def run_cleanup(
     (:func:`~mosaic.core.pipeline.feature_run_removal.remove_feature_run`). Every
     other approved run is recorded kept with its reason, and the set removed never
     grows past the one approved. Before each removal the attempts that may still
-    run are read again, and a run one of them names or reads is kept. The keepers
-    whose directories existed before are checked to exist after.
+    run, or that ended since the cleanup began, are read again, and a run one of
+    them names or reads is kept, as is a run that a request submitted since holds.
+    A removal that an earlier attempt began is finished only under the same
+    checks, and never for a run the plan now expects. The keepers whose
+    directories existed before are checked to exist after.
 
     A run whose removal raises is recorded as a lost entry and the cleanup goes
     on. The cancel token is read between runs. The cleanup runs again from its
@@ -508,6 +511,9 @@ def _remove_approved(
     base = ds.base_dir
     held = InventoryCache(ds) if inventory is None else inventory
     declarations = declaration_catalog() if catalog is None else catalog
+    # Before the runs are judged, so an attempt or a request that appears
+    # between the judging and a removal is read again before that removal.
+    watch = _Watch(base, exclude=request.request_id)
     recipe = load_recipe_for_request(base, request)
     rollup = request_rollup(base, request)
     recorded = {
@@ -540,7 +546,6 @@ def _remove_approved(
         for run_id in keeper.run_ids
         if feature_run_root(ds, storage, run_id).is_dir()
     ]
-    watch = _AttemptWatch(base)
 
     removed: list[RemovedRun] = []
     kept: list[tuple[str, str, str]] = []
@@ -558,25 +563,33 @@ def _remove_approved(
             pass
         elif judged_run is not None and not judged_run.removable:
             reason, detail = judged_run.reason, judged_run.detail
+        elif (
+            target.storage in keepers
+            and target.run_id in keepers[target.storage].run_ids
+        ):
+            reason, detail = "keeper", "the request's plan now expects it"
         elif judged_run is None:
             if prior.get(key) in ("interrupted", "failed"):
-                removed.append(
-                    finish_feature_run_removal(
-                        ds, target.storage, target.run_id, log=log
-                    )
+                # Its rows are gone and its files may not be: finish only what
+                # nothing has started to read or write since.
+                hold = watch.holding(ds, key) or _read_by_any(
+                    held.get().of_kind("feature"), key
                 )
-            elif (
-                target.storage in keepers
-                and target.run_id in keepers[target.storage].run_ids
-            ):
-                reason, detail = "keeper", "the request's plan now expects it"
+                if hold is not None:
+                    reason, detail = hold
+                else:
+                    removed.append(
+                        finish_feature_run_removal(
+                            ds, target.storage, target.run_id, log=log
+                        )
+                    )
             else:
                 reason, detail = "absent", "it is no longer in the feature index"
         else:
-            opened = watch.reading(ds, key)
+            hold = watch.holding(ds, key)
             params = read_run_params(run_root).params
-            if opened:
-                reason, detail = "attempt_open", opened
+            if hold is not None:
+                reason, detail = hold
             elif params is None:
                 reason, detail = "params_unknown", "its params.json no longer reads"
             else:
@@ -625,21 +638,46 @@ def _remove_approved(
     )
 
 
-class _AttemptWatch:
-    """The attempts that may still run, read again before each removal.
+class _Watch:
+    """What may read a run, read again before each removal.
 
-    A run-log already ended when the watch began is not read again, so each
-    check reads only the attempts that were open or have appeared since.
+    An attempt that may still run, or one that ended after the watch began, is
+    read for the run it names and the runs it reads; one already ended when the
+    watch began is not read again. A request file that appeared after the watch
+    began holds its binds, its recorded runs and every run of the features its
+    recipe names, and one that does not read holds every run. The watch begins
+    before the runs are judged, so nothing that appears between the judging and
+    a removal is missed.
     """
 
-    def __init__(self, base_dir: Path) -> None:
-        from mosaic.runlog import run_log_dir
+    def __init__(self, base_dir: Path, *, exclude: str) -> None:
+        from mosaic.runlog import TERMINAL_STATUSES, reduce_run_log, run_log_dir
 
+        from .store import requests_root
+
+        self._base: Path = base_dir
         self._runs: Path = run_log_dir(base_dir)
+        self._requests: Path = requests_root(base_dir)
+        self._exclude: str = exclude
         self._ended: set[str] = set()
+        for path in sorted(self._runs.glob("*.jsonl")):
+            snapshot = reduce_run_log(path)
+            if snapshot is not None and snapshot["status"] in TERMINAL_STATUSES:
+                self._ended.add(path.stem)
+        self._known_requests: frozenset[str] = frozenset(self._request_names())
 
-    def reading(self, ds: Dataset, key: tuple[str, str]) -> str:
-        """Name the attempt that names or reads run *key*, ``""`` for none."""
+    def _request_names(self) -> list[str]:
+        if not self._requests.is_dir():
+            return []
+        return sorted(path.stem for path in self._requests.glob("*.json"))
+
+    def holding(self, ds: Dataset, key: tuple[str, str]) -> tuple[str, str] | None:
+        """Why run *key* must be kept now, as ``(reason, detail)``, or ``None``."""
+        return self._attempt_holding(ds, key) or self._request_holding(key)
+
+    def _attempt_holding(
+        self, ds: Dataset, key: tuple[str, str]
+    ) -> tuple[str, str] | None:
         from mosaic.runlog import TERMINAL_STATUSES, reduce_run_log
 
         from ..fit_scope import read_fit_scope
@@ -647,30 +685,26 @@ class _AttemptWatch:
         from .liveness import is_local, snapshot_liveness
 
         features = ds.get_root("features")
-        names = sorted(path.stem for path in self._runs.glob("*.jsonl"))
-        for name in names:
+        for path in sorted(self._runs.glob("*.jsonl")):
+            name = path.stem
             if name in self._ended:
                 continue
-            snapshot = reduce_run_log(self._runs / f"{name}.jsonl")
-            if snapshot is None:
+            snapshot = reduce_run_log(path)
+            if snapshot is None or not snapshot["run_id"]:
                 continue
-            if snapshot["status"] in TERMINAL_STATUSES:
-                self._ended.add(name)
-                continue
-            liveness = snapshot_liveness(snapshot)
-            if not (
-                liveness == "alive"
-                or (
-                    liveness == "unknown"
-                    and not is_local(snapshot["host"], snapshot["pid_ns"])
-                )
-            ):
-                continue
+            if snapshot["status"] not in TERMINAL_STATUSES:
+                liveness = snapshot_liveness(snapshot)
+                if not (
+                    liveness == "alive"
+                    or (
+                        liveness == "unknown"
+                        and not is_local(snapshot["host"], snapshot["pid_ns"])
+                    )
+                ):
+                    continue
             run_id = snapshot["run_id"]
-            if not run_id:
-                continue
             if run_id == key[1]:
-                return f"attempt {name} may still run"
+                return ("attempt_open", f"attempt {name} writes run {run_id}")
             for params_path in features.glob(f"*/{run_id}/params.json"):
                 run_root = params_path.parent
                 reads = _reads_of(
@@ -679,8 +713,53 @@ class _AttemptWatch:
                     read_fit_scope(run_root),
                 )
                 if reads.covers(*key):
-                    return f"attempt {name} reads it"
-        return ""
+                    return ("attempt_open", f"attempt {name} reads it")
+        return None
+
+    def _request_holding(self, key: tuple[str, str]) -> tuple[str, str] | None:
+        from .request import load_recipe_for_request
+        from .rollup import request_rollup
+        from .step_preflight import StepRefused
+        from .store import RequestUnreadable, load_request
+
+        slug = key[0].split(_FROM, 1)[0]
+        for name in self._request_names():
+            if name in self._known_requests or name == self._exclude:
+                continue
+            label = f"request {name}, submitted during the cleanup,"
+            try:
+                request = load_request(self._base, name)
+                recipe = load_recipe_for_request(self._base, request)
+            except (RequestUnreadable, StepRefused, OSError) as error:
+                return ("request_unreadable", f"{label} does not read: {error}")
+            if any(
+                (bound.feature, bound.run_id) == key for bound in request.bind.values()
+            ):
+                return ("held_by_request", f"{label} pins it")
+            rollup = request_rollup(self._base, request)
+            if any(attempt.run_id == key[1] for attempt in rollup.steps):
+                return ("held_by_request", f"{label} recorded it")
+            if any(
+                isinstance(step, FeatureStepSpec) and step.feature == slug
+                for step in recipe.steps
+            ):
+                return ("held_by_request", f"{label} runs {slug}")
+        return None
+
+
+def _read_by_any(
+    records: Iterable[AnyRecord], key: tuple[str, str]
+) -> tuple[str, str] | None:
+    """The first feature run in *records* that reads run *key*, as a kept reason."""
+    from ..fit_scope import read_fit_scope
+
+    for record in records:
+        if (record.name, record.run_id) == key:
+            continue
+        fit = read_fit_scope(record.run_root) if record.run_root is not None else None
+        if _reads_of(record.name, record.params, fit).covers(*key):
+            return ("read_by", f"run {record.name}/{record.run_id} reads it")
+    return None
 
 
 # --- what the plan keeps --------------------------------------------------------

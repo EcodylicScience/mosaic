@@ -8,6 +8,10 @@ holds the request ``running`` until its run-log ends.
 
 from __future__ import annotations
 
+import importlib
+import os
+import socket
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -16,6 +20,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline import feature_run_removal
 from mosaic.core.pipeline.cancel import cancel_request
 from mosaic.core.pipeline.graph import (
+    BoundRef,
     CleanupPolicy,
     Recipe,
     Request,
@@ -32,6 +37,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.job import CancelToken
+from mosaic.runlog import JsonlRunLog, new_execution_id, run_log_path
 from tests.helpers import (
     add_tracks_variant,
     exited_pid,
@@ -293,3 +299,90 @@ def test_a_request_without_cleanup_rolls_up_as_before(dataset: Dataset) -> None:
     status = request_status_wire(dataset.base_dir, request)
 
     assert (rollup.status, rollup.cleanup, status.cleanup) == ("finished", None, None)
+
+
+# --- what appears while the cleanup runs ---------------------------------------------
+
+
+def _during_cleanup(
+    monkeypatch: pytest.MonkeyPatch, act: Callable[[], None]
+) -> None:
+    """Call *act* once the cleanup has judged its runs, before it removes any."""
+    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
+    judge = module.plan_cleanup
+
+    def judge_then_act(*args: object, **kwargs: object) -> object:
+        judged = judge(*args, **kwargs)
+        act()
+        return judged
+
+    monkeypatch.setattr(module, "plan_cleanup", judge_then_act)
+
+
+def test_a_run_read_by_an_attempt_that_ended_during_the_cleanup_is_kept(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An attempt that starts and ends between the judging and the removal."""
+    old = run_speed(dataset, 1)
+    request = _submit(dataset, speed_recipe_stepping(2))
+    _run_steps(dataset, request)
+
+    def read_old_and_finish() -> None:
+        write_reader_params(
+            dataset, "frame-aggregate", "0.1-reader0000", (STORAGE, old)
+        )
+        execution_id = new_execution_id()
+        path = run_log_path(dataset.base_dir, execution_id)
+        with JsonlRunLog(path, execution_id) as log:
+            log.started(
+                kind="feature",
+                target="frame-aggregate",
+                host=socket.gethostname(),
+                pid=os.getpid(),
+            )
+            log.set_run_id("0.1-reader0000")
+            log.finished()
+
+    _during_cleanup(monkeypatch, read_old_and_finish)
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert outcome.status == "finished"
+    assert _exists(dataset, old)
+    assert [kept[1] for kept in outcome.kept] == [old]
+
+
+def test_a_run_a_request_submitted_during_the_cleanup_binds_is_kept(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = run_speed(dataset, 1)
+    request = _submit(dataset, speed_recipe_stepping(2))
+    _run_steps(dataset, request)
+
+    def bind_old() -> None:
+        _ = submit_request(
+            dataset,
+            speed_recipe_stepping(5),
+            bind={"speed": BoundRef(feature=STORAGE, run_id=old)},
+        )
+
+    _during_cleanup(monkeypatch, bind_old)
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert outcome.status == "finished"
+    assert _exists(dataset, old)
+    assert [(kept[1], kept[2]) for kept in outcome.kept] == [(old, "held_by_request")]
+
+
+def test_an_interrupted_removal_is_not_finished_under_an_open_attempt(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rows dropped and files left, then an attempt writing that run again."""
+    request, old = _interrupted(dataset, monkeypatch)
+    _ = record_open_attempt(dataset, old)
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert _exists(dataset, old)
+    assert [(kept[1], kept[2]) for kept in outcome.kept] == [(old, "attempt_open")]
