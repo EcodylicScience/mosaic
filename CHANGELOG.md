@@ -359,6 +359,9 @@ and then the directory go, so the run can be computed again.
   unchanged. A killed driver leaves the request `orphaned`, and
   `mosaic pipeline run --request` finishes the cleanup. A queue that dispatches the
   steps itself runs no cleanup.
+- `plan_recipe` lists at most five superseded runs a step (`PLAN_SUPERSEDED_SAMPLE`,
+  through `plan_wire(superseded_sample=)`), and `pipeline plan` fifty. The totals count
+  every run.
 - Every `global` and `media` feature declares `costly_fit`.
 - New fields, all defaulted: `PlanWire.cleanup`, `PlannedStepWire.superseded` and
   `superseded_omitted`, `RequestStatusWire.cleanup`, `RequestRollup.cleanup`,

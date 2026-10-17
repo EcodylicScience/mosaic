@@ -338,8 +338,8 @@ can remove them only on a server started with `--allow-cleanup feature-runs`, or
 `allow_cleanup: [feature-runs]` in its configuration. `plan_recipe` with
 `cleanup: superseded` lists them on any server, because it only reads:
 
-- each step lists the other runs of its storage under `superseded`, each removable or
-  kept with its reason, and `cleanup` totals them;
+- each step lists up to five other runs of its storage under `superseded`, removable
+  ones first, each removable or kept with its reason, and `cleanup` totals them all;
 - `submit_pipeline` with `cleanup: superseded` and that plan's fingerprint asks you to
   confirm (`cleanup`), then removes the removable runs once every step has finished.
 
