@@ -348,9 +348,10 @@ class StepStillRunning(ClassifiedError):
             message = (
                 f"step {step_id!r} may still be running as attempt {execution_id} "
                 f"(pid {pid} on host {host!r}). This host cannot check host "
-                f"{host!r}, whose run-log declares no heartbeat. If that process "
-                f"is gone, run '{close}', then submit the recipe again; its "
-                f"finished steps are cache hits."
+                f"{host!r}: the step's run-log declares no heartbeat, or the "
+                f"step has not written one yet. If that process is gone, run "
+                f"'{close}', then submit the recipe again; its finished steps "
+                f"are cache hits."
             )
         else:
             message = (
