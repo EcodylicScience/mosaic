@@ -21,7 +21,8 @@ imported when :meth:`ToolSpec.output_model` is called.
 from __future__ import annotations
 
 import importlib
-from collections.abc import Mapping, Sequence
+import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self
 
@@ -56,6 +57,8 @@ __all__ = [
     "CONFIRMATION_CONDITIONS",
     "CONFIRMATION_DECLINED",
     "CONFIRMATION_REQUIRED",
+    "CONFIRMATION_TAG",
+    "CONFIRMATION_UNANSWERED",
     "DATASET_MANAGED",
     "DEFAULT_PAGE_SIZE",
     "INVALID_ARGUMENTS",
@@ -117,8 +120,11 @@ __all__ = [
     "call_tool",
     "confirmation_declined",
     "confirmation_required",
+    "confirmation_tag",
+    "confirmation_unanswered",
     "dataset_managed",
     "invalid_cursor",
+    "read_confirmation_tag",
     "result_too_large",
     "tool_spec",
     "unknown_dataset",
@@ -176,7 +182,28 @@ CONFIRMATION_REQUIRED: Final = "confirmation_required"
 """The ``reason`` of a refusal that a call with ``confirm: true`` answers."""
 
 CONFIRMATION_DECLINED: Final = "confirmation_declined"
-"""The ``reason`` of a call that the user declined when the server asked."""
+"""The ``reason`` of a call whose confirmation was declined when the server asked."""
+
+CONFIRMATION_UNANSWERED: Final = "confirmation_unanswered"
+"""The ``reason`` of a call whose confirmation nobody answered when the server asked.
+
+A client that cannot show the question, such as one run without a person,
+cancels it, and the call does not run.
+"""
+
+CONFIRMATION_TAG: Final = "mosaic-confirm"
+"""The name of the tag that ends a confirmation question.
+
+The question's last line is ``[mosaic-confirm tool=<tool> conditions=<a>,<b>]``,
+naming the tool and its conditions sorted, which a client's hook reads to answer
+by condition (:func:`read_confirmation_tag`). The grammar is a contract with
+those hooks.
+"""
+
+_TAG_LINE: Final = re.compile(
+    rf"\[{CONFIRMATION_TAG} tool=([a-z_]+) conditions=([a-z_]+(?:,[a-z_]+)*)\]\s*"
+)
+"""The last line of a confirmation question: the tag and nothing else."""
 
 DATASET_MANAGED: Final = "dataset_managed"
 """The ``reason`` of a refusal to change a dataset that a service manages."""
@@ -1473,18 +1500,100 @@ def confirmation_required(
     )
 
 
-def confirmation_declined(name: ToolName) -> ErrorEnvelope:
-    """Report a call to *name* that the user declined when asked to confirm it."""
+def confirmation_declined(
+    name: ToolName, conditions: Sequence[ConfirmationCondition] = ()
+) -> ErrorEnvelope:
+    """Report a call to *name* whose confirmation was declined when the server asked.
+
+    The decline may come from the user or from a client's hook, so the message
+    does not say who declined.
+
+    Args:
+        name: The tool that did not run.
+        conditions: The conditions the question asked about.
+    """
+    listed: list[JsonValue] = list(conditions)
     message = (
-        f"the user declined to confirm {name}, which did not run. Do not call it "
-        "again unless the user asks for it."
+        f"the confirmation of {name} was declined, so it did not run. Do not call "
+        "it again unless the user asks for it."
     )
     return ErrorEnvelope(
         kind="invalid",
         reason=CONFIRMATION_DECLINED,
         message=message,
-        detail={"tool": name},
+        detail={"tool": name, "conditions": listed},
     )
+
+
+def confirmation_unanswered(
+    name: ToolName, conditions: Sequence[ConfirmationCondition]
+) -> ErrorEnvelope:
+    """Report a call to *name* whose confirmation nobody answered.
+
+    A client that cannot show the question cancels it. No one can confirm in
+    that session, so the message tells the model to report and stop rather
+    than run the same work another way.
+
+    Args:
+        name: The tool that did not run.
+        conditions: The conditions the question asked about.
+    """
+    listed: list[JsonValue] = list(conditions)
+    asked = ", ".join(conditions) or "its conditions"
+    message = (
+        f"nobody answered the confirmation that {name} asked for ({asked}), so it "
+        "did not run. No one can confirm in this session: report the plan and "
+        "the conditions that need approval, and stop. Do not call it again, or "
+        "run the same work through the mosaic CLI, unless the user asks."
+    )
+    return ErrorEnvelope(
+        kind="invalid",
+        reason=CONFIRMATION_UNANSWERED,
+        message=message,
+        detail={"tool": name, "conditions": listed},
+    )
+
+
+def confirmation_tag(
+    name: ToolName, conditions: Iterable[ConfirmationCondition]
+) -> str:
+    """Return the tag that ends the question confirming *name* under *conditions*.
+
+    The conditions are sorted and each is named once, so one question has one
+    tag: ``[mosaic-confirm tool=submit_pipeline conditions=bind,gpu_lane]``.
+    """
+    listed = ",".join(sorted(set(conditions)))
+    return f"[{CONFIRMATION_TAG} tool={name} conditions={listed}]"
+
+
+def read_confirmation_tag(
+    message: str,
+) -> tuple[ToolName, frozenset[ConfirmationCondition]] | None:
+    """Return the tool and conditions that a confirmation question asks about.
+
+    Only the message's last line is read, and it must be the tag alone: the
+    findings above it name dataset content such as step ids, which must not be
+    able to pass for a tag.
+
+    Args:
+        message: The question, as a client's hook receives it.
+
+    Returns:
+        The tool and its conditions, or ``None`` when the last line is no tag,
+        names a tool outside :data:`TOOLS` or a condition outside
+        :data:`CONFIRMATION_CONDITIONS`.
+    """
+    matched = _TAG_LINE.fullmatch(message.rsplit("\n", 1)[-1])
+    if matched is None:
+        return None
+    spec = tool_spec(matched.group(1))
+    named = set(matched.group(2).split(","))
+    conditions: frozenset[ConfirmationCondition] = frozenset(
+        condition for condition in CONFIRMATION_CONDITIONS if condition in named
+    )
+    if spec is None or len(conditions) != len(named):
+        return None
+    return spec.name, conditions
 
 
 def dataset_managed(

@@ -25,6 +25,8 @@ from mosaic.agent.mcp.spec import (
     ToolBackend,
     ToolSpec,
     call_tool,
+    confirmation_tag,
+    read_confirmation_tag,
     tool_spec,
 )
 from mosaic.core.pipeline import preview
@@ -121,6 +123,27 @@ def test_every_confirmation_condition_belongs_to_a_tool() -> None:
     asked = {condition for spec in TOOLS for condition in spec.confirm_when}
 
     assert asked == set(CONFIRMATION_CONDITIONS)
+
+
+def test_the_confirmation_tag_round_trips_and_refuses_unknown_codes_and_earlier_lines() -> (
+    None
+):
+    tag = confirmation_tag("submit_pipeline", ["gpu_lane", "bind", "gpu_lane"])
+    question = f"mosaic asks you to confirm submit_pipeline: a; b. Proceed?\n\n{tag}"
+
+    assert tag == "[mosaic-confirm tool=submit_pipeline conditions=bind,gpu_lane]"
+    assert read_confirmation_tag(question) == (
+        "submit_pipeline",
+        frozenset({"bind", "gpu_lane"}),
+    )
+    assert read_confirmation_tag(f"{tag}\nProceed?") is None
+    assert read_confirmation_tag(f"note {tag}") is None
+    assert read_confirmation_tag(tag.replace("bind", "anything")) is None
+    assert read_confirmation_tag(tag.replace("submit_pipeline", "delete_all")) is None
+    assert read_confirmation_tag(tag.replace("bind,", "")) == (
+        "submit_pipeline",
+        frozenset({"gpu_lane"}),
+    )
 
 
 def test_the_preview_bound_is_the_one_the_preview_reader_enforces() -> None:

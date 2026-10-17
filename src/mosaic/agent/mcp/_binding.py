@@ -15,12 +15,22 @@ calls block, so each runs on a worker thread.
 A tool that asks for confirmation is confirmed by the user through elicitation
 when the client declares form elicitation, and the ``confirm`` argument that the
 model passes is then ignored. A client on the 2026-07-28 protocol is returned
-``input_required`` with the elicitation and a digest of the call as its request
-state, and retries the call with the answer. The answer confirms only a retry
-whose tool and arguments match the digest. A client on an earlier protocol is
-sent an ``elicitation/create`` request during the call. A client without form
-elicitation is refused until the call carries ``confirm: true``, and the tool's
-description tells the model to ask the user first.
+``input_required`` with the elicitation and a request state of
+``<call digest>.<conditions>``, and retries the call with the answer. The answer
+confirms only a retry whose tool and arguments match the digest. A client on an
+earlier protocol is sent an ``elicitation/create`` request during the call. A
+client without form elicitation is refused until the call carries
+``confirm: true``, and the tool's description tells the model to ask the user
+first.
+
+An answer is one of three. An accepted form with its box ticked confirms the
+call. A declined form, or one accepted and left unticked, is
+``confirmation_declined``. A cancelled form, which is what a client answers
+when nobody can see the question, is ``confirmation_unanswered``. The question
+ends in a last line naming the tool and its conditions
+(:func:`~mosaic.agent.mcp.spec.confirmation_tag`), which a client's hook reads
+to answer by condition. A finding's text is put on one line, so no step id can
+pass for that tag.
 """
 
 from __future__ import annotations
@@ -28,10 +38,10 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from functools import partial
-from typing import Final
+from typing import Final, Literal
 
 import anyio
 import anyio.to_thread
@@ -52,11 +62,16 @@ from .local import LocalBackend, ToolFailure
 from .prompts import PROMPTS, PromptArgumentsMissing, prompt_spec, render_prompt
 from .resources import RESOURCES, ResourceSpec, ResourceText, UriVariables
 from .spec import (
+    CONFIRMATION_CONDITIONS,
     CONFIRMATION_REQUIRED,
     TOOLS,
+    ConfirmationCondition,
+    ToolName,
     ToolSpec,
     call_tool,
     confirmation_declined,
+    confirmation_tag,
+    confirmation_unanswered,
     tool_spec,
 )
 from .summaries import summarize
@@ -132,6 +147,12 @@ RESOURCE_NOT_FOUND: Final = -32002
 
 ALWAYS_LOAD_META: Final = "anthropic/alwaysLoad"
 """The ``_meta`` key of a tool that a client should load up front."""
+
+_STATE_SEPARATOR: Final = "."
+"""What separates the call digest from the conditions in a request state."""
+
+type _Answer = Literal["accepted", "declined", "unanswered"]
+"""What a confirmation question was answered."""
 
 
 class _Tools:
@@ -325,20 +346,25 @@ async def _call_tool(
     if eliciting and spec is not None and spec.needs_confirmation:
         _ = arguments.pop(_CONFIRM_ARGUMENT, None)
     call_digest = _call_digest(params.name, arguments)
+    digest, _, asked = (params.request_state or "").partition(_STATE_SEPARATOR)
     answered = (
         _answered_confirmation(params.input_responses)
-        if params.request_state == call_digest
+        if digest == call_digest
         else None
     )
     if answered is not None:
-        if not answered:
-            return _declined(params.name)
+        if answered != "accepted":
+            # The conditions come back from the client and are not trusted:
+            # they only name what was asked in the refusal. The tool is not run
+            # again to find them, as it would run unasked if they had cleared.
+            return _refused(params.name, answered, _known(asked.split(",")))
         arguments[_CONFIRM_ARGUMENT] = True
     output = await _run_tool(backend, params.name, arguments)
     if not (_asks_to_confirm(output) and eliciting):
         return _tool_result(output)
     assert isinstance(output, ErrorEnvelope)
-    question = _confirmation_question(params.name, output)
+    conditions = _conditions_of(output)
+    question = _confirmation_question(params.name, output, conditions)
     if ctx.protocol_version in MODERN_PROTOCOL_VERSIONS:
         return types.InputRequiredResult(
             input_requests={
@@ -348,13 +374,14 @@ async def _call_tool(
                     )
                 )
             },
-            request_state=call_digest,
+            request_state=f"{call_digest}{_STATE_SEPARATOR}{','.join(conditions)}",
         )
     elicited = await ctx.session.elicit_form(
         question, _CONFIRM_SCHEMA, related_request_id=ctx.request_id
     )
-    if not _accepted(elicited):
-        return _declined(params.name)
+    answer = _answer(elicited)
+    if answer != "accepted":
+        return _refused(params.name, answer, conditions)
     arguments[_CONFIRM_ARGUMENT] = True
     return _tool_result(await _run_tool(backend, params.name, arguments))
 
@@ -404,8 +431,14 @@ def _call_digest(name: str, arguments: Mapping[str, object]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _confirmation_question(name: str, refusal: ErrorEnvelope) -> str:
-    """Return the question shown to the user: the tool and each condition met."""
+def _confirmation_question(
+    name: str, refusal: ErrorEnvelope, conditions: Sequence[ConfirmationCondition]
+) -> str:
+    """Return the question shown to the user: the tool, each condition met, its tag.
+
+    Each finding is put on one line, so the tag is the question's only last
+    line whatever a finding quotes.
+    """
     findings: object = (
         None if refusal.detail is None else refusal.detail.get("findings")
     )
@@ -414,37 +447,79 @@ def _confirmation_question(name: str, refusal: ErrorEnvelope) -> str:
     for finding in listed_findings:
         reason = finding.get("message") if is_str_mapping(finding) else None
         if isinstance(reason, str):
-            reasons.append(reason)
-    listed = "; ".join(reasons) if reasons else refusal.message
-    return f"mosaic asks you to confirm {name}: {listed}. Proceed?"
+            reasons.append(" ".join(reason.split()))
+    listed = "; ".join(reasons) if reasons else " ".join(refusal.message.split())
+    return (
+        f"mosaic asks you to confirm {name}: {listed}. Proceed?\n\n"
+        f"{confirmation_tag(_tool_name(name), conditions)}"
+    )
 
 
-def _answered_confirmation(responses: Mapping[str, object] | None) -> bool | None:
-    """Return the user's answer to a confirmation asked by ``input_required``.
+def _conditions_of(refusal: ErrorEnvelope) -> tuple[ConfirmationCondition, ...]:
+    """Return the conditions that a ``confirmation_required`` refusal lists."""
+    listed: object = (
+        None if refusal.detail is None else refusal.detail.get("conditions")
+    )
+    return _known(listed if is_object_list(listed) else [])
+
+
+def _known(values: Iterable[object]) -> tuple[ConfirmationCondition, ...]:
+    """Return the confirmation conditions among *values*, in their declared order."""
+    named = {value for value in values if isinstance(value, str)}
+    return tuple(
+        condition for condition in CONFIRMATION_CONDITIONS if condition in named
+    )
+
+
+def _answered_confirmation(responses: Mapping[str, object] | None) -> _Answer | None:
+    """Return the answer to a confirmation asked by ``input_required``.
 
     ``None`` when the call carries no answer to it.
     """
     answer = None if responses is None else responses.get(CONFIRM_INPUT)
     if not isinstance(answer, types.ElicitResult):
         return None
-    return _accepted(answer)
+    return _answer(answer)
 
 
-def _accepted(answer: types.ElicitResult) -> bool:
-    """Whether the user accepted the form and ticked the box."""
-    return (
-        answer.action == "accept"
-        and answer.content is not None
-        and answer.content.get(CONFIRM_FIELD) is True
-    )
+def _answer(result: types.ElicitResult) -> _Answer:
+    """Read an elicitation's result as a confirmation's answer.
+
+    Only an accepted form with its box ticked confirms. A cancel is what a
+    client answers when nobody saw the question, so it is not a decline.
+    """
+    if result.action == "cancel":
+        return "unanswered"
+    if (
+        result.action == "accept"
+        and result.content is not None
+        and result.content.get(CONFIRM_FIELD) is True
+    ):
+        return "accepted"
+    return "declined"
 
 
-def _declined(name: str) -> types.CallToolResult:
+def _tool_name(name: str) -> ToolName:
+    """Return the shared tool named *name*.
+
+    Raises:
+        MCPError: No shared tool has that name.
+    """
     spec = tool_spec(name)
     if spec is None:
         msg = f"no tool named {name!r} asks to confirm"
         raise MCPError(types.INVALID_PARAMS, msg)
-    return _tool_result(confirmation_declined(spec.name))
+    return spec.name
+
+
+def _refused(
+    name: str, answer: _Answer, conditions: Sequence[ConfirmationCondition]
+) -> types.CallToolResult:
+    """Return the refusal of a call to *name* whose confirmation was not given."""
+    tool = _tool_name(name)
+    if answer == "unanswered":
+        return _tool_result(confirmation_unanswered(tool, conditions))
+    return _tool_result(confirmation_declined(tool, conditions))
 
 
 def _tool_result(output: BaseModel) -> types.CallToolResult:
