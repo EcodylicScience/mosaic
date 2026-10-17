@@ -1,7 +1,8 @@
-"""``mosaic preview``: one entry's table of a feature run or a tracks variant.
+"""``mosaic preview``: one entry's table of a feature run, tracks or labels variant.
 
 The verb prints the table's schema, row count and frame extent, its first rows
-and statistics of each numeric column read. ``--json`` prints the
+and statistics of each numeric column read. A labels variant also prints each
+class with its events. ``--json`` prints the
 :class:`~mosaic.core.pipeline.preview.ArtifactPreview` that
 :func:`~mosaic.core.pipeline.preview.preview_artifact` returns. The verb writes
 nothing to the dataset.
@@ -10,7 +11,7 @@ nothing to the dataset.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import typer
 
@@ -19,7 +20,11 @@ from mosaic.cli._io import emit_json, fail_classified
 from mosaic.cli._render import render_kv, render_table
 
 if TYPE_CHECKING:
-    from mosaic.core.pipeline.preview import ArtifactPreview, PreviewColumn
+    from mosaic.core.pipeline.preview import (
+        ArtifactPreview,
+        LabelsPreview,
+        PreviewColumn,
+    )
 
 
 def preview_command(
@@ -28,7 +33,8 @@ def preview_command(
         typer.Argument(
             help=(
                 "The artifact's ref, as 'mosaic inventory' prints it: "
-                "feature/<storage>/<run_id> or tracks-variant/<run_id>."
+                "feature/<storage>/<run_id>, tracks-variant/<run_id> or "
+                "labels-variant/<kind>/<run_id>."
             )
         ),
     ],
@@ -53,11 +59,30 @@ def preview_command(
         typer.Option(
             "--column",
             help=(
-                "Read this column for the rows and statistics (repeatable). "
-                "Default: every column."
+                "Read this column for the rows and statistics (repeatable). A "
+                "name with *, ? or [ is a pattern, such as 'W_*_f0', unless a "
+                "column has that name. Default: every column."
             ),
         ),
     ] = None,
+    max_columns: Annotated[
+        int | None,
+        typer.Option(
+            "--max-columns",
+            min=1,
+            help=(
+                "Read at most this many columns, the identity and bookkeeping "
+                "columns first, and name the rest as omitted."
+            ),
+        ),
+    ] = None,
+    listed: Annotated[
+        Literal["all", "read"],
+        typer.Option(
+            "--listed",
+            help="List every column of the table, or only the columns read.",
+        ),
+    ] = "all",
     limit: Annotated[
         int | None,
         typer.Option(
@@ -86,6 +111,8 @@ def preview_command(
             parse_entry_tokens([entry])[0],
             columns=column,
             limit=DEFAULT_PREVIEW_ROWS if limit is None else limit,
+            max_columns=max_columns,
+            listed=listed,
         )
     except ClassifiedError as error:
         fail_classified(error, as_json=as_json)
@@ -124,6 +151,35 @@ def _render(preview: ArtifactPreview) -> None:
         typer.echo(
             f"note: {len(preview.rows)} of {preview.n_rows} rows printed", err=True
         )
+    omitted = preview.n_columns - len(preview.read_columns)
+    if preview.columns_omitted:
+        typer.echo(
+            f"note: {omitted} of {preview.n_columns} columns not read, "
+            "--max-columns or --column reads them",
+            err=True,
+        )
+    if preview.labels is not None:
+        _render_labels(preview.labels)
+
+
+def _render_labels(labels: LabelsPreview) -> None:
+    """Print a labels table's coverage and each class with its events."""
+    typer.echo()
+    render_kv(
+        {
+            "label_format": labels.label_format,
+            "events": labels.n_events,
+            "frames_labeled": labels.frames_labeled,
+            "coverage": "unknown" if labels.coverage is None else labels.coverage,
+        }
+    )
+    if labels.symmetric_deduplicated:
+        typer.echo("note: pair events stored in both orders are counted once", err=True)
+    typer.echo()
+    render_table(
+        [class_.model_dump() for class_ in labels.classes],
+        ["id", "name", "events", "fraction"],
+    )
 
 
 def _column_row(column: PreviewColumn) -> dict[str, object]:

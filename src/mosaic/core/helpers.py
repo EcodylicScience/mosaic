@@ -135,7 +135,7 @@ def entry_directory(root: Path, group: str, sequence: str) -> Path:
 # =============================================================================
 
 
-def detect_label_format(npz_data: dict) -> str:
+def detect_label_format(npz_data: "dict[str, object] | np.lib.npyio.NpzFile") -> str:
     """
     Detect the label format from an NPZ file's contents.
 
@@ -271,11 +271,12 @@ def expand_labels_to_dense(
 
 
 def load_labels_auto(
-    path,
+    path: "str | Path",
     n_frames: Optional[int] = None,
     default_label: int = 0,
     individual_filter: Optional[Tuple[int, int]] = None,
     return_format: str = "dense",
+    allow_pickle: bool = True,
 ) -> np.ndarray:
     """
     Load labels from NPZ file, auto-detecting format and converting as needed.
@@ -296,6 +297,10 @@ def load_labels_auto(
     return_format : str, default="dense"
         Output format: "dense" returns per-frame array, "sparse" returns
         (frames, labels, individual_ids) tuple for individual_pair_v1
+    allow_pickle : bool, default=True
+        Whether an object array in the file may be unpickled. A reader acting
+        for someone other than the file's author passes False, and a file that
+        needs unpickling then raises ValueError.
 
     Returns
     -------
@@ -316,7 +321,7 @@ def load_labels_auto(
     import numpy as np
 
     path = Path(path)
-    with np.load(path, allow_pickle=True) as npz:
+    with np.load(path, allow_pickle=allow_pickle) as npz:
         fmt = detect_label_format(npz)
 
         if fmt == "individual_pair_v1":

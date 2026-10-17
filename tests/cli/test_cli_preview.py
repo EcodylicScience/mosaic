@@ -1,9 +1,10 @@
-"""``mosaic preview``: one entry's table of a tracks variant or a feature run."""
+"""``mosaic preview``: one entry's table of a tracks, labels variant or a feature run."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 from typer.testing import CliRunner
 
@@ -11,6 +12,7 @@ from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.inventory import TracksVariantRef
+from mosaic.core.pipeline.labels_index import write_labels_row
 from mosaic.core.pipeline.preview import ArtifactPreview, preview_artifact
 from tests.helpers import add_tracks_variant, invoke_ok, make_dataset
 
@@ -100,3 +102,69 @@ def test_a_ref_of_another_kind_reports_invalid(dataset: Dataset) -> None:
     assert result.exit_code == 1
     envelope = ErrorEnvelope.model_validate_json(result.stdout)
     assert (envelope.kind, envelope.detail) == ("invalid", {"field": "ref"})
+
+
+def test_max_columns_and_patterns_reach_the_library(dataset: Dataset) -> None:
+    result = invoke_ok(
+        _preview(
+            dataset,
+            "--entry",
+            "seq_a",
+            "--column",
+            "[XY]",
+            "--column",
+            "frame",
+            "--max-columns",
+            "2",
+            "--listed",
+            "read",
+            "--json",
+        )
+    )
+
+    printed = ArtifactPreview.model_validate_json(result.stdout)
+    assert printed == preview_artifact(
+        dataset,
+        TracksVariantRef(VARIANT),
+        ("", "seq_a"),
+        columns=["[XY]", "frame"],
+        max_columns=2,
+        listed="read",
+    )
+    assert printed.read_columns == ("X", "Y")
+    assert printed.columns_omitted == ("frame",)
+    assert [column.name for column in printed.columns] == ["X", "Y"]
+
+
+def test_a_labels_variant_prints_its_classes(dataset: Dataset) -> None:
+    run_id = "boris.0.1-2222222222"
+    out_path = dataset.get_root("labels") / "behavior" / run_id / "seq_a.npz"
+    out_path.parent.mkdir(parents=True)
+    np.savez_compressed(out_path, labels=np.array([0, 1, 1]))
+    write_labels_row(
+        dataset,
+        run_id=run_id,
+        group="",
+        sequence="seq_a",
+        out_path=out_path,
+        producer="convert-labels-calms21",
+        label_kind="behavior",
+        n_frames=3,
+        label_ids="0,1",
+        label_names="other,attack",
+    )
+
+    result = invoke_ok(
+        [
+            "preview",
+            f"labels-variant/behavior/{run_id}",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--entry",
+            "seq_a",
+        ]
+    )
+
+    assert "coverage: 1.0" in result.stdout
+    assert "id\tname\tevents\tfraction" in result.stdout
+    assert "1\tattack\t2\t" in result.stdout

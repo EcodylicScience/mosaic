@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -18,8 +19,14 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import error_envelope
 from mosaic.core.pipeline.graph import run_pipeline
-from mosaic.core.pipeline.inventory import FeatureRunRef, TracksVariantRef
+from mosaic.core.pipeline.inventory import (
+    FeatureRunRef,
+    LabelsVariantRef,
+    TracksVariantRef,
+)
+from mosaic.core.pipeline.labels_index import write_labels_row
 from mosaic.core.pipeline.preview import (
+    MAX_OMITTED_NAMES,
     MAX_PREVIEW_ROWS,
     PreviewInvalid,
     PreviewNotFound,
@@ -31,11 +38,14 @@ from tests.helpers import (
     speed_recipe,
     add_track_sequences,
     add_tracks_table,
+    assert_tree_unchanged,
     make_dataset,
     track_table,
+    tree_snapshot,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
+LABELS_VARIANT = "boris.0.1-2222222222"
 ENTRY = ("", "seq_a")
 FEATURE_STORAGE = "speed-angvel__from__tracks"
 
@@ -311,10 +321,14 @@ def test_an_unreadable_file_is_a_conflict(dataset: Dataset) -> None:
         ),
         (f"tracks-variant/{VARIANT}", TracksVariantRef(VARIANT)),
         ("tracks-variant/", TracksVariantRef("")),
+        (
+            f"labels-variant/behavior/{LABELS_VARIANT}",
+            LabelsVariantRef("behavior", LABELS_VARIANT),
+        ),
     ],
 )
 def test_an_address_names_its_ref(
-    address: str, expected: TracksVariantRef | FeatureRunRef
+    address: str, expected: TracksVariantRef | FeatureRunRef | LabelsVariantRef
 ) -> None:
     assert preview_ref(address) == expected
 
@@ -333,3 +347,247 @@ def test_an_address_names_its_ref(
 def test_another_address_is_invalid(address: str) -> None:
     with pytest.raises(PreviewInvalid):
         _ = preview_ref(address)
+
+
+# --- wide tables: max_columns, patterns and listed ------------------------------
+
+WIDE_STORAGE = 400
+
+
+def _wide(tmp_path: Path) -> Dataset:
+    """A table of 400 payload columns before its identity and bookkeeping columns."""
+    ds = make_dataset(tmp_path / "ds")
+    base = track_table("", "seq_a", n_rows=4, n_ids=1)
+    payload = pd.DataFrame(
+        {f"W_{i:03d}_f{i % 2}": np.arange(4, dtype=float) for i in range(WIDE_STORAGE)}
+    )
+    meta = base[["frame", "id", "group", "sequence"]].assign(label="fish")
+    table = pd.concat([payload, meta], axis=1)
+    add_tracks_table(ds, VARIANT, table, std_format="mosaic_v1")
+    return ds
+
+
+def test_max_columns_reads_bookkeeping_columns_first(tmp_path: Path) -> None:
+    ds = _wide(tmp_path)
+
+    preview = preview_artifact(
+        ds, TracksVariantRef(VARIANT), ENTRY, max_columns=7, listed="read"
+    )
+
+    assert set(preview.read_columns) >= {"frame", "id", "group", "sequence", "label"}
+    assert preview.read_columns == (
+        "W_000_f0",
+        "W_001_f1",
+        "frame",
+        "id",
+        "group",
+        "sequence",
+        "label",
+    )
+
+
+def test_a_400_column_table_is_bounded_by_max_columns(tmp_path: Path) -> None:
+    ds = _wide(tmp_path)
+
+    preview = preview_artifact(
+        ds, TracksVariantRef(VARIANT), ENTRY, max_columns=40, listed="read", limit=5
+    )
+
+    assert len(preview.read_columns) == 40
+    assert preview.n_columns == WIDE_STORAGE + 5
+    assert len(preview.columns) == 40
+    assert len(preview.model_dump_json()) < 15_000
+
+
+def test_a_pattern_expands_in_table_order(tmp_path: Path) -> None:
+    ds = _wide(tmp_path)
+
+    preview = preview_artifact(
+        ds, TracksVariantRef(VARIANT), ENTRY, columns=["frame", "W_00?_f1"]
+    )
+
+    assert preview.read_columns == (
+        "frame",
+        "W_001_f1",
+        "W_003_f1",
+        "W_005_f1",
+        "W_007_f1",
+        "W_009_f1",
+    )
+
+
+def test_an_exact_name_wins_over_a_pattern_reading(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    table = track_table("", "seq_a", n_rows=4, n_ids=1).assign(**{"a*": 1.0, "ab": 2.0})
+    add_tracks_table(ds, VARIANT, table, std_format="mosaic_v1")
+
+    preview = preview_artifact(ds, TracksVariantRef(VARIANT), ENTRY, columns=["a*"])
+
+    assert preview.read_columns == ("a*",)
+
+
+def test_a_pattern_matching_nothing_is_unknown(dataset: Dataset) -> None:
+    with pytest.raises(PreviewInvalid, match="'Q_\\*'") as raised:
+        _ = preview_artifact(
+            dataset, TracksVariantRef(VARIANT), ENTRY, columns=["X", "Q_*"]
+        )
+
+    assert raised.value.error_detail()["unknown"] == ["Q_*"]
+
+
+def test_listed_read_lists_only_the_columns_read(dataset: Dataset) -> None:
+    table = _stored(dataset)
+
+    preview = preview_artifact(
+        dataset, TracksVariantRef(VARIANT), ENTRY, columns=["X", "id"], listed="read"
+    )
+
+    assert [column.name for column in preview.columns] == ["id", "X"]
+    assert preview.n_columns == len(table.columns)
+    assert preview.columns_omitted == ()
+
+
+def test_omitted_columns_are_named_up_to_the_cap(tmp_path: Path) -> None:
+    ds = _wide(tmp_path)
+
+    preview = preview_artifact(ds, TracksVariantRef(VARIANT), ENTRY, max_columns=10)
+
+    assert len(preview.columns_omitted) == MAX_OMITTED_NAMES
+    assert preview.columns_omitted_has_more
+    assert preview.columns_omitted[0] == "W_005_f1"
+    assert not set(preview.columns_omitted) & set(preview.read_columns)
+
+
+def test_an_unknown_column_error_is_bounded_and_suggests_close_names(
+    tmp_path: Path,
+) -> None:
+    ds = _wide(tmp_path)
+    asked = ["W_000_f2", *(f"nope_{i}" for i in range(30))]
+
+    with pytest.raises(PreviewInvalid) as raised:
+        _ = preview_artifact(ds, TracksVariantRef(VARIANT), ENTRY, columns=asked)
+
+    message = str(raised.value)
+    assert "and 11 more" in message
+    assert "nope_29" not in message
+    assert len(message) < 2_000
+    detail = raised.value.error_detail()
+    assert detail["field"] == "columns"
+    assert detail["n_columns"] == WIDE_STORAGE + 5
+    unknown = detail["unknown"]
+    assert isinstance(unknown, list)
+    assert len(unknown) == 10
+    close = detail["close"]
+    assert isinstance(close, dict)
+    found = close["W_000_f2"]
+    assert isinstance(found, list)
+    assert "W_000_f0" in found
+
+
+# --- labels variants ------------------------------------------------------------
+
+
+def _add_labels(ds: Dataset, arrays: dict[str, np.ndarray]) -> Path:
+    """Write one entry's labels file into the variant and index it."""
+    out_path = ds.get_root("labels") / "behavior" / LABELS_VARIANT / "seq_a.npz"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # numpy's stub types a splatted mapping as the allow_pickle keyword.
+    savez: Callable[..., None] = np.savez_compressed
+    savez(out_path, **arrays)
+    write_labels_row(
+        ds,
+        run_id=LABELS_VARIANT,
+        group="",
+        sequence="seq_a",
+        out_path=out_path,
+        producer="convert-labels-boris_aggregated_csv",
+        label_kind="behavior",
+        label_format="",
+        n_frames=100,
+        label_ids="0,1,2",
+        label_names="other,attack,mount",
+    )
+    return out_path
+
+
+def _pair_events(*events: tuple[int, int, int, int]) -> dict[str, np.ndarray]:
+    frames, labels, id1, id2 = zip(*events, strict=True)
+    return {
+        "label_format": np.array("individual_pair_v1"),
+        "frames": np.array(frames),
+        "labels": np.array(labels),
+        "individual_ids": np.array(list(zip(id1, id2, strict=True))),
+    }
+
+
+def test_a_labels_variant_is_previewed_with_class_counts_and_coverage(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    _ = _add_labels(
+        ds, _pair_events((10, 1, 0, 1), (11, 1, 0, 1), (12, 2, 0, 1), (40, 1, 1, 2))
+    )
+
+    preview = preview_artifact(
+        ds, LabelsVariantRef("behavior", LABELS_VARIANT), ENTRY, limit=2
+    )
+
+    assert preview.ref == f"labels-variant/behavior/{LABELS_VARIANT}"
+    assert preview.read_columns == ("frame", "label", "id1", "id2")
+    assert preview.rows == ((10, 1, 0, 1), (11, 1, 0, 1))
+    assert preview.has_more
+    assert (preview.frame_min, preview.frame_max) == (10, 40)
+    labels = preview.labels
+    assert labels is not None
+    assert labels.label_format == "individual_pair_v1"
+    assert (labels.n_events, labels.frames_labeled, labels.n_pairs) == (4, 4, 2)
+    assert labels.coverage == pytest.approx(0.04)
+    counts = {c.name: (c.id, c.events) for c in labels.classes}
+    assert counts == {"other": (0, 0), "attack": (1, 3), "mount": (2, 1)}
+    assert not labels.symmetric_deduplicated
+
+
+def test_mirrored_pair_events_are_counted_once(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    _ = _add_labels(
+        ds, _pair_events((10, 1, 0, 1), (10, 1, 1, 0), (11, 2, 0, 1), (11, 2, 1, 0))
+    )
+
+    preview = preview_artifact(ds, LabelsVariantRef("behavior", LABELS_VARIANT), ENTRY)
+
+    labels = preview.labels
+    assert labels is not None
+    assert preview.n_rows == 4
+    assert labels.n_events == 2
+    assert labels.symmetric_deduplicated
+    assert {c.id: c.events for c in labels.classes} == {0: 0, 1: 1, 2: 1}
+    assert labels.n_pairs == 1
+
+
+def test_a_dense_labels_table_is_previewed(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    _ = _add_labels(ds, {"labels": np.array([0, 0, 1, 2, 2, 2])})
+
+    preview = preview_artifact(ds, LabelsVariantRef("behavior", LABELS_VARIANT), ENTRY)
+
+    assert preview.read_columns == ("frame", "label")
+    labels = preview.labels
+    assert labels is not None
+    assert labels.label_format == "dense"
+    assert (labels.n_events, labels.frames_labeled, labels.n_pairs) == (6, 6, None)
+    assert {c.id: c.events for c in labels.classes} == {0: 2, 1: 1, 2: 3}
+
+
+def test_previewing_labels_writes_nothing_and_unpickles_nothing(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    events = _pair_events((10, 1, 0, 1))
+    events["individual_ids"] = np.array([(0, 1)], dtype=object)
+    _ = _add_labels(ds, events)
+    before = tree_snapshot(ds.base_dir)
+
+    with pytest.raises(PreviewUnreadable, match="unpickling"):
+        _ = preview_artifact(ds, LabelsVariantRef("behavior", LABELS_VARIANT), ENTRY)
+
+    assert_tree_unchanged(ds.base_dir, before)

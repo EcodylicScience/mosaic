@@ -219,13 +219,15 @@ $ mosaic preview [OPTIONS] {ref}
 
 **Arguments**:
 
-* `ref`: The artifact's ref, as 'mosaic inventory' prints it: feature/<storage>/<run_id> or tracks-variant/<run_id>.  [required]
+* `ref`: The artifact's ref, as 'mosaic inventory' prints it: feature/<storage>/<run_id>, tracks-variant/<run_id> or labels-variant/<kind>/<run_id>.  [required]
 
 **Options**:
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--entry <str>`: The group:sequence entry whose table to read. A bare name is a sequence in the empty group.  [required]
-* `--column <str>`: Read this column for the rows and statistics (repeatable). Default: every column.
+* `--column <str>`: Read this column for the rows and statistics (repeatable). A name with *, ? or [ is a pattern, such as 'W_*_f0', unless a column has that name. Default: every column.
+* `--max-columns <int range>`: Read at most this many columns, the identity and bookkeeping columns first, and name the rest as omitted.  [x>=1]
+* `--listed <all|read>`: List every column of the table, or only the columns read.  [default: all]
 * `--limit <int>`: How many rows to print, at most 50 (default 20).
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
