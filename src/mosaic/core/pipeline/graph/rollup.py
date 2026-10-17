@@ -114,11 +114,14 @@ class RequestRollup:
         request_id: Which request this is.
         status: The one-shot verdict.
         steps: One record per step, in the request's own order.
+        cleanup: The attempt of the request's cleanup, with an empty
+            ``step_id``, or ``None`` for a request without one.
     """
 
     request_id: str
     status: RequestStatus
     steps: tuple[StepAttempt, ...] = ()
+    cleanup: StepAttempt | None = None
 
     @property
     def is_terminal(self) -> bool:
@@ -128,6 +131,11 @@ class RequestRollup:
 
 def request_rollup(base_dir: Path | str, request: Request) -> RequestRollup:
     """How *request* stands, from the run-logs of the attempts it assigned.
+
+    A request with a cleanup whose steps all finished stays ``running`` until
+    the cleanup's run-log ends, whichever way. A failed or cancelled cleanup
+    leaves the verdict to the steps, and :func:`request_verdict` itself reads
+    the steps alone.
 
     Args:
         base_dir: The dataset root holding ``.mosaic/runs``.
@@ -141,8 +149,16 @@ def request_rollup(base_dir: Path | str, request: Request) -> RequestRollup:
         _attempt(logs, step_id, execution_id)
         for step_id, execution_id in request.step_executions.items()
     )
+    status = request_verdict(steps)
+    cleanup = (
+        None
+        if request.cleanup is None
+        else _attempt(logs, "", request.cleanup.execution_id)
+    )
+    if status == "finished" and cleanup is not None and not cleanup.terminal:
+        status = "running"
     return RequestRollup(
-        request_id=request.request_id, status=request_verdict(steps), steps=steps
+        request_id=request.request_id, status=status, steps=steps, cleanup=cleanup
     )
 
 

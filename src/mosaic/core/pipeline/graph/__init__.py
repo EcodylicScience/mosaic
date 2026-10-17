@@ -47,6 +47,9 @@ if TYPE_CHECKING:
         SupersededRun as SupersededRun,
         plan_cleanup as plan_cleanup,
         plan_with_cleanup as plan_with_cleanup,
+        CLEANUP_KIND as CLEANUP_KIND,
+        CleanupOutcome as CleanupOutcome,
+        run_cleanup as run_cleanup,
     )
     from .columns import (
         UNKNOWN_COLUMNS as UNKNOWN_COLUMNS,
@@ -253,6 +256,10 @@ if TYPE_CHECKING:
         request_verdict_of as request_verdict_of,
         rollup_verdict as rollup_verdict,
         run_status_wire as run_status_wire,
+        CLEANUP_RUN_SAMPLE as CLEANUP_RUN_SAMPLE,
+        CleanupRunWire as CleanupRunWire,
+        CleanupStatusWire as CleanupStatusWire,
+        cleanup_status_wire as cleanup_status_wire,
     )
     from .step import (
         STEP_RUN_KIND as STEP_RUN_KIND,
@@ -587,6 +594,13 @@ _MODULE_OF: Final[dict[str, str]] = {
     "SupersededRunWire": ".wire",
     "CleanupNeedsPlan": ".request",
     "CleanupOnManagedDataset": ".request",
+    "CLEANUP_RUN_SAMPLE": ".status",
+    "CleanupRunWire": ".status",
+    "CleanupStatusWire": ".status",
+    "cleanup_status_wire": ".status",
+    "CLEANUP_KIND": ".cleanup",
+    "CleanupOutcome": ".cleanup",
+    "run_cleanup": ".cleanup",
 }
 """The submodule that defines each public name."""
 
@@ -597,6 +611,8 @@ def __getattr__(name: str) -> object:
 
 
 __all__ = [
+    "CLEANUP_KIND",
+    "CLEANUP_RUN_SAMPLE",
     "COMPLETE_STATUSES",
     "DEFAULT_LANE",
     "DRIVER_LEASE_GRACE_SECONDS",
@@ -634,10 +650,13 @@ __all__ = [
     "CleanupMode",
     "CleanupNeedsPlan",
     "CleanupOnManagedDataset",
+    "CleanupOutcome",
     "CleanupPlan",
     "CleanupPlanWire",
     "CleanupPolicy",
+    "CleanupRunWire",
     "CleanupSpec",
+    "CleanupStatusWire",
     "CleanupTarget",
     "ColumnNames",
     "ColumnProvider",
@@ -753,6 +772,7 @@ __all__ = [
     "check_recipe",
     "children_of",
     "claims_root",
+    "cleanup_status_wire",
     "compact_params_schema",
     "compatible_consumers",
     "compatible_producers",
@@ -827,6 +847,7 @@ __all__ = [
     "resolved_levels",
     "resource_class_of",
     "rollup_verdict",
+    "run_cleanup",
     "run_pipeline",
     "run_request",
     "run_status_wire",

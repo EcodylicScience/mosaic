@@ -198,7 +198,13 @@ from tests.helpers.paths import (
     VAME_PROTOCOL,
     VAME_RUNNER,
 )
-from tests.helpers.runlog import entry_error_lines, latest_events, latest_snapshot
+from tests.helpers.runlog import (
+    entry_error_lines,
+    latest_events,
+    latest_snapshot,
+    record_open_attempt,
+    write_reader_params,
+)
 from tests.helpers.results import model_reference, result_outputs, result_run_root
 from tests.helpers.runner_programs import (
     FAKE_HANDLERS,
@@ -442,6 +448,7 @@ __all__ = [
     "revision_file",
     "run_fresh",
     "run_id_digest",
+    "record_open_attempt",
     "run_speed",
     "runs_in_an_external_environment",
     "sandbox_home",
@@ -457,6 +464,7 @@ __all__ = [
     "updating_golden",
     "video_store_maker",
     "wait_for",
+    "write_reader_params",
     "window_centers",
     "track_sequences",
     "track_table",

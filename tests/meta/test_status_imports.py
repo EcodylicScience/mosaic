@@ -12,12 +12,20 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.pipeline.graph import run_pipeline
+from mosaic.core.pipeline.graph import (
+    CleanupPolicy,
+    plan_fingerprint,
+    plan_with_cleanup,
+    run_pipeline,
+    submit_request,
+)
 from tests.helpers import (
     add_tracks_variant,
     make_dataset,
     modules_loaded_by,
+    run_speed,
     speed_recipe,
+    speed_recipe_stepping,
 )
 
 HEAVY_MODULES = ("pandas", "cv2", "av", "mosaic.behavior.feature_library")
@@ -70,6 +78,29 @@ def test_the_status_reads_load_no_heavy_module(tmp_path: Path) -> None:
         "page = list_requests(root, limit=1)\n"
         "request = load_request(root, page.items[0].request_id)\n"
         "_ = request_status_wire(root, request)"
+    )
+
+    assert modules_loaded_by(statement, HEAVY_MODULES) == []
+
+
+def test_a_status_with_a_cleanup_loads_no_heavy_module(tmp_path: Path) -> None:
+    """A request whose cleanup removed a run reports it without pandas."""
+    ds = make_dataset(tmp_path / "ds")
+    add_tracks_variant(ds, "convert-trex.0.2-1111111111", "seq_a")
+    _ = run_speed(ds, 1)
+    recipe = speed_recipe_stepping(2)
+    policy = CleanupPolicy(keep_newest=0, min_age_hours=0)
+    fingerprint = plan_fingerprint(plan_with_cleanup(ds, recipe, cleanup=policy))
+    request = submit_request(
+        ds, recipe, cleanup=policy, expect_plan=fingerprint
+    ).request
+    _ = run_pipeline(ds, recipe, request=request)
+    statement = (
+        "from mosaic.core.pipeline.graph import load_request, request_status_wire\n"
+        f"root = {str(ds.base_dir)!r}\n"
+        f"request = load_request(root, {request.request_id!r})\n"
+        "status = request_status_wire(root, request)\n"
+        "assert status.cleanup is not None and status.cleanup.removed_runs == 1"
     )
 
     assert modules_loaded_by(statement, HEAVY_MODULES) == []

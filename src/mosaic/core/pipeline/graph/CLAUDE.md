@@ -155,6 +155,15 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   until a later call in the same process takes it over.
   It stops before a step that a cancel recorded `cancelled`, and records its unended
   steps `cancelled` on `Cancelled` or `KeyboardInterrupt` (`test_pipeline_run.py`).
+- A request's cleanup runs in its driver after every step finished, in `run_request`
+  and `run_pipeline` alike (`run_cleanup`, `cleanup.py`), under the driver's lease; it
+  records no step. It removes only the approved runs that are still removable, rereads
+  the attempts that may still run before each removal, and records every run in its
+  own run-log (`kind` `feature-cleanup`). `request_rollup` reads `running` until that
+  run-log ends, and a failed or cancelled cleanup leaves the verdict to the steps.
+  `request_verdict` reads the steps alone, because mosaic-api calls it. A killed
+  driver leaves the request `orphaned`, and a resume finishes the cleanup. A queue
+  that dispatches steps runs no cleanup (`test_pipeline_cleanup_run.py`).
 - `cancel_attempt` and `cancel_request` (`core/pipeline/cancel.py`) send SIGTERM to
   the pid that a run-log or a driver lease records. They record an attempt
   `cancelled` only when its process has exited or is provably `dead`, or when its

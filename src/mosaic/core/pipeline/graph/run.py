@@ -51,6 +51,7 @@ from mosaic.runlog import (
     AttemptLiveness,
     now_iso,
     read_run,
+    record_exited_attempt,
     run_log_dir,
 )
 
@@ -66,6 +67,7 @@ from .driver_lease import (
     release_driver_lease,
     take_driver_lease,
 )
+from .cleanup import run_cleanup
 from .plan import plan_pipeline
 from .request import load_recipe_for_request, step_argv, submit_request
 from .rollup import request_rollup
@@ -145,12 +147,15 @@ class PipelineRun:
         request_id: The submission this run was recorded as. Every run is one,
             so that a graph driven here is as legible afterwards as one driven
             by a queue.
+        cleanup_status: How the request's cleanup ended (``finished``,
+            ``failed`` or ``cancelled``), ``""`` when none ran.
     """
 
     recipe_digest: str
     scope: frozenset[Entry]
     outcomes: tuple[StepOutcome, ...] = ()
     request_id: str = ""
+    cleanup_status: str = ""
 
     @property
     def ran(self) -> tuple[StepOutcome, ...]:
@@ -184,6 +189,10 @@ def run_pipeline(
     keeps it otherwise, so a run stopped by a shortfall reads ``orphaned`` once
     the lease goes stale, and ``mosaic pipeline run --request`` resumes it. A
     later call in this process takes over the lease that an earlier one kept.
+
+    A request with a cleanup (``Request.cleanup``) runs it here once every step
+    has finished (:func:`~.cleanup.run_cleanup`), under the same lease. A failed
+    cleanup does not fail the run.
 
     Before each step the run stops when its cancel token has fired or a cancel
     recorded the step ``cancelled`` (:func:`~mosaic.core.pipeline.cancel.cancel_request`
@@ -248,6 +257,7 @@ def run_pipeline(
     keeper.start()
     _IN_PROCESS_LEASES.add(_lease_key(lease))
     outcomes: list[StepOutcome] = []
+    cleanup_status = ""
     try:
         for step_id in order:
             keeper.ensure_held()
@@ -291,6 +301,11 @@ def run_pipeline(
                     outcome.target,
                     "the attempt exited clean and coverage did not move",
                 )
+        if _cleanup_due(ds, submitted):
+            keeper.ensure_held()
+            cleanup_status = run_cleanup(
+                ds, submitted, token=token, inventory=inventory, catalog=catalog
+            ).status
     except (Cancelled, KeyboardInterrupt):
         _ = _cancel_unended(ds, submitted, order)
         raise
@@ -312,6 +327,7 @@ def run_pipeline(
         scope=final.scope,
         outcomes=tuple(outcomes),
         request_id=submitted.request_id,
+        cleanup_status=cleanup_status,
     )
 
 
@@ -398,6 +414,8 @@ class RequestRun:
         cancelled: The steps without a terminal record that it recorded as
             cancelled when its cancel token fired.
         log_path: The log that the steps' output was appended to.
+        cleanup_status: How the request's cleanup ended (``finished``,
+            ``failed`` or ``cancelled``), ``""`` when none ran.
     """
 
     request_id: str
@@ -406,6 +424,7 @@ class RequestRun:
     skipped: tuple[str, ...]
     cancelled: tuple[str, ...]
     log_path: Path
+    cleanup_status: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -439,6 +458,11 @@ def run_request(
     and SIGKILL after :data:`STEP_CANCEL_GRACE_SECONDS`. Every step without a
     terminal record is then recorded ``cancelled``, and the request's rollup is
     ``cancelled``.
+
+    Once every step has finished, the driver runs the request's cleanup in its
+    own process, under its lease (:func:`~.cleanup.run_cleanup`). A request
+    whose cleanup has not ended is still running, so a driver killed during it
+    leaves the request ``orphaned``, and running it again finishes the cleanup.
 
     The driver holds the request's lease while it runs, names in it the step whose
     process runs, and deletes it when the request has ended. A driver that raises
@@ -474,6 +498,7 @@ def run_request(
     ran: list[str] = []
     skipped: list[str] = []
     cancelled: tuple[str, ...] = ()
+    cleanup_status = ""
     try:
         with log_path.open("a", encoding="utf-8") as log:
             for step_id in order:
@@ -492,6 +517,9 @@ def run_request(
                 )
                 if outcome != "finished":
                     break
+        if not token.is_cancelled() and _cleanup_due(ds, request):
+            keeper.ensure_held()
+            cleanup_status = run_cleanup(ds, request, token=token).status
         if token.is_cancelled():
             cancelled = _cancel_unended(ds, request, order)
     finally:
@@ -506,6 +534,7 @@ def run_request(
         skipped=tuple(skipped),
         cancelled=cancelled,
         log_path=log_path,
+        cleanup_status=cleanup_status,
     )
 
 
@@ -690,7 +719,11 @@ def _run_step(
 def _cancel_unended(
     ds: Dataset, request: Request, order: tuple[str, ...]
 ) -> tuple[str, ...]:
-    """Record every step without a terminal record as cancelled, and return them."""
+    """Record every step without a terminal record as cancelled, and return them.
+
+    A cleanup that the steps' finishing made due and that has not ended is
+    recorded cancelled too, so the request ends instead of waiting for it.
+    """
     unended = tuple(
         step_id
         for step_id in order
@@ -704,4 +737,18 @@ def _cancel_unended(
             owner=request.owner,
             status="cancelled",
         )
+    if request.cleanup is not None and _cleanup_due(ds, request):
+        record_exited_attempt(
+            run_log_dir(ds.base_dir), request.cleanup.execution_id, "cancelled"
+        )
     return unended
+
+
+def _cleanup_due(ds: Dataset, request: Request) -> bool:
+    """Whether *request* has a cleanup, every step finished, and it has not ended."""
+    if request.cleanup is None:
+        return False
+    rollup = request_rollup(ds.base_dir, request)
+    if any(attempt.status != "finished" for attempt in rollup.steps):
+        return False
+    return rollup.cleanup is None or not rollup.cleanup.terminal

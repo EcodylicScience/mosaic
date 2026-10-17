@@ -30,6 +30,7 @@ from mosaic.runlog import (
     attempt_outcome,
     error_summary,
     read_entry_errors,
+    read_removal_records,
     read_run,
     read_run_progress,
     run_log_dir,
@@ -41,7 +42,7 @@ from ..markers import parse_instant
 from .driver_lease import lease_is_live, live_step_process, read_driver_lease
 from .liveness import snapshot_liveness, step_liveness
 from .model import GraphModel
-from .rollup import RequestStatus, request_rollup
+from .rollup import RequestStatus, request_rollup, request_verdict
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -50,10 +51,13 @@ if TYPE_CHECKING:
     from .rollup import RequestRollup, StepAttempt
 
 __all__ = [
+    "CLEANUP_RUN_SAMPLE",
     "FAILED_ENTRY_SAMPLE",
     "JSON_OBJECT",
     "POLL_AFTER_MAX_SECONDS",
     "POLL_AFTER_MIN_SECONDS",
+    "CleanupRunWire",
+    "CleanupStatusWire",
     "FailedEntryWire",
     "RecordedErrorWire",
     "RequestPageWire",
@@ -62,6 +66,7 @@ __all__ = [
     "RequestVerdict",
     "RunStatusWire",
     "StepStatusWire",
+    "cleanup_status_wire",
     "poll_after_seconds",
     "recorded_error",
     "request_status_wire",
@@ -73,6 +78,9 @@ __all__ = [
 
 FAILED_ENTRY_SAMPLE: Final = 20
 """The most failed entries that one attempt's report lists."""
+
+CLEANUP_RUN_SAMPLE: Final = 20
+"""The most removed runs, and the most kept runs, that a cleanup's report lists."""
 
 POLL_AFTER_MIN_SECONDS: Final = 10
 """The fewest seconds a request report asks a poller to wait."""
@@ -243,6 +251,62 @@ class StepStatusWire(GraphModel):
     liveness: AttemptLiveness | None = None
 
 
+class CleanupRunWire(GraphModel):
+    """One run a request's cleanup was approved to remove, and how that ended.
+
+    Attributes:
+        storage: Its storage name under ``features/``.
+        run_id: The run.
+        reason: Why it was kept, ``""`` for a run removed.
+        detail: What kept it, ``""`` for a run removed.
+        bytes: The bytes its directory held, 0 for a run kept.
+    """
+
+    storage: str
+    run_id: str
+    reason: str = ""
+    detail: str = ""
+    bytes: int = 0
+
+
+class CleanupStatusWire(GraphModel):
+    """A request's cleanup of superseded runs, as its run-log reports it.
+
+    Attributes:
+        execution_id: The cleanup's attempt.
+        status: ``pending`` while a step has not finished, ``running`` until
+            its run-log ends, then ``finished``, ``failed`` or ``cancelled``.
+            ``skipped`` when a step did not finish, so the cleanup never ran.
+        approved_runs: How many runs the submission approved for removal.
+        removed_runs: How many it removed.
+        removed_bytes: The bytes they held.
+        kept_runs: How many approved runs it kept, each for a reason.
+        failed_runs: How many removals raised.
+        interrupted_runs: How many removals began and did not end, as when its
+            process was killed. Running the request again finishes them.
+        removed: The first removed runs, at most :data:`CLEANUP_RUN_SAMPLE`.
+        removed_omitted: How many more were removed.
+        kept: The first kept runs with their reasons, at most
+            :data:`CLEANUP_RUN_SAMPLE`.
+        kept_omitted: How many more were kept.
+        error: Why the cleanup as a whole failed, parsed, or ``None``.
+    """
+
+    execution_id: str
+    status: Literal["pending", "running", "finished", "failed", "cancelled", "skipped"]
+    approved_runs: int
+    removed_runs: int = 0
+    removed_bytes: int = 0
+    kept_runs: int = 0
+    failed_runs: int = 0
+    interrupted_runs: int = 0
+    removed: tuple[CleanupRunWire, ...] = ()
+    removed_omitted: int = 0
+    kept: tuple[CleanupRunWire, ...] = ()
+    kept_omitted: int = 0
+    error: RecordedErrorWire | None = None
+
+
 class RequestStatusWire(GraphModel):
     """One pipeline request, as its steps' run-logs report it.
 
@@ -255,6 +319,8 @@ class RequestStatusWire(GraphModel):
         poll_after_seconds: How long a poller should wait before reading the
             request again (:func:`poll_after_seconds`), ``None`` once nothing
             will change it by itself.
+        cleanup: The request's removal of superseded runs, ``None`` for a
+            request without one.
     """
 
     request_id: str
@@ -263,6 +329,7 @@ class RequestStatusWire(GraphModel):
     verdict: RequestVerdict
     steps: tuple[StepStatusWire, ...]
     poll_after_seconds: int | None = None
+    cleanup: CleanupStatusWire | None = None
 
 
 class RequestSummaryWire(GraphModel):
@@ -390,7 +457,77 @@ def request_status_wire(
         verdict=verdict,
         steps=tuple(_step_status(logs, attempt, now=now) for attempt in rollup.steps),
         poll_after_seconds=poll_after_seconds(rollup, verdict, now=now),
+        cleanup=cleanup_status_wire(base_dir, request, rollup),
     )
+
+
+def cleanup_status_wire(
+    base_dir: Path | str, request: Request, rollup: RequestRollup
+) -> CleanupStatusWire | None:
+    """Report *request*'s cleanup from its run-log, ``None`` for a request without one.
+
+    Args:
+        base_dir: The dataset root containing ``.mosaic/runs``.
+        request: The submission.
+        rollup: Its rollup (:func:`~.rollup.request_rollup`).
+    """
+    spec = request.cleanup
+    attempt = rollup.cleanup
+    if spec is None or attempt is None:
+        return None
+    steps = request_verdict(rollup.steps)
+    if attempt.terminal:
+        status = attempt.status
+    elif attempt.started:
+        status = "running"
+    elif steps in ("failed", "cancelled"):
+        status = "skipped"
+    else:
+        status = "pending"
+    records = read_removal_records(run_log_dir(base_dir), spec.execution_id)
+    removed = [record for record in records if record["state"] == "removed"]
+    kept = [record for record in records if record["state"] == "kept"]
+    return CleanupStatusWire(
+        execution_id=spec.execution_id,
+        status=_cleanup_status(status),
+        approved_runs=len(spec.approved),
+        removed_runs=len(removed),
+        removed_bytes=sum(record["bytes"] for record in removed),
+        kept_runs=len(kept),
+        failed_runs=sum(record["state"] == "failed" for record in records),
+        interrupted_runs=sum(record["state"] == "interrupted" for record in records),
+        removed=tuple(
+            CleanupRunWire(
+                storage=record["feature"],
+                run_id=record["run_id"],
+                bytes=record["bytes"],
+            )
+            for record in removed[:CLEANUP_RUN_SAMPLE]
+        ),
+        removed_omitted=max(len(removed) - CLEANUP_RUN_SAMPLE, 0),
+        kept=tuple(
+            CleanupRunWire(
+                storage=record["feature"],
+                run_id=record["run_id"],
+                reason=record["reason"],
+                detail=record["detail"],
+            )
+            for record in kept[:CLEANUP_RUN_SAMPLE]
+        ),
+        kept_omitted=max(len(kept) - CLEANUP_RUN_SAMPLE, 0),
+        error=recorded_error(attempt.error_json),
+    )
+
+
+def _cleanup_status(
+    status: str,
+) -> Literal["pending", "running", "finished", "failed", "cancelled", "skipped"]:
+    """*status* narrowed to a cleanup status, ``running`` for any other word."""
+    match status:
+        case "pending" | "finished" | "failed" | "cancelled" | "skipped":
+            return status
+        case _:
+            return "running"
 
 
 def request_summary(base_dir: Path | str, request: Request) -> RequestSummaryWire:

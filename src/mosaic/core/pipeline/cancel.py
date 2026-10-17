@@ -418,6 +418,13 @@ def cancel_request(
         for attempt in rollup.steps
         if not attempt.terminal
     )
+    cleanup = rollup.cleanup
+    if (
+        cleanup is not None
+        and not cleanup.terminal
+        and all(attempt.status == "finished" for attempt in rollup.steps)
+    ):
+        steps = (*steps, _cancel_cleanup(logs, cleanup, assume_exited=assume_exited))
     signalled = any(step.signalled for step in steps)
     after = request_rollup(ds.base_dir, request).status
     driver = (
@@ -623,6 +630,31 @@ def _cancel_unstarted(
         message=(
             f"step {attempt.step_id} had not started; recorded run "
             f"{attempt.execution_id} as cancelled."
+        ),
+    )
+
+
+def _cancel_cleanup(
+    logs: Path, cleanup: StepAttempt, *, assume_exited: bool
+) -> AttemptCancel:
+    """Cancel a request's cleanup, due once its steps all finished.
+
+    A cleanup that started runs in its driver's process and is cancelled like a
+    step (:func:`cancel_attempt`). One that has not started is recorded
+    ``cancelled``, which ends the request.
+    """
+    if cleanup.started:
+        return cancel_attempt(logs, cleanup.execution_id, assume_exited=assume_exited)
+    record_exited_attempt(logs, cleanup.execution_id, "cancelled")
+    return _attempt_result(
+        cleanup.execution_id,
+        "recorded",
+        "cancelled",
+        pid=0,
+        host="",
+        message=(
+            f"the cleanup had not started; recorded run {cleanup.execution_id} "
+            f"as cancelled."
         ),
     )
 

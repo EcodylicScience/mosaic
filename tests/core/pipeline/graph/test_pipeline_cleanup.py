@@ -9,9 +9,6 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-import json
-import os
-import socket
 from pathlib import Path
 
 import pytest
@@ -39,16 +36,18 @@ from mosaic.core.pipeline.cancel import cancel_request
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory import InventoryCache
 from mosaic.core.scope import Scope
-from mosaic.runlog import JsonlRunLog, new_execution_id, run_log_path
+from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
     add_tracks_variant,
     assert_tree_unchanged,
     make_dataset,
+    record_open_attempt,
     register_trained_model,
     run_speed,
     speed_recipe_stepping,
     tree_snapshot,
     write_driver_lease,
+    write_reader_params,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -132,31 +131,6 @@ def _run_ids(ds: Dataset, recipe: Recipe) -> dict[str, str]:
         for step_id, run_id in plan_pipeline(ds, recipe).run_ids.items()
         if run_id is not None
     }
-
-
-def _open_attempt(ds: Dataset, run_id: str) -> str:
-    """Record an attempt of this process that has named *run_id* and not ended."""
-    execution_id = new_execution_id()
-    with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as log:
-        log.started(
-            kind="feature", target="x", host=socket.gethostname(), pid=os.getpid()
-        )
-        log.set_run_id(run_id)
-    return execution_id
-
-
-def _write_reader(
-    ds: Dataset, storage: str, run_id: str, reads: tuple[str, str]
-) -> None:
-    """Write the ``params.json`` of a run of *storage* that reads one run."""
-    run_root = feature_run_root(ds, storage, run_id)
-    run_root.mkdir(parents=True)
-    document: dict[str, object] = {
-        "_params": {},
-        "_inputs": [{"feature": reads[0], "run_id": reads[1]}],
-        "_resolved": [{"where": "inputs[0]", "feature": reads[0], "run_id": reads[1]}],
-    }
-    _ = (run_root / "params.json").write_text(json.dumps(document))
 
 
 # --- what is a candidate ------------------------------------------------------------
@@ -268,10 +242,10 @@ def test_a_run_a_retained_run_reads_through_inputs_or_params_is_kept(
 def test_reads_are_followed_transitively_to_a_fixpoint(dataset: Dataset) -> None:
     _ = run_pipeline(dataset, _chain(1))
     first = _run_ids(dataset, _chain(1))
-    _write_reader(
+    write_reader_params(
         dataset, "frame-aggregate", "0.1-reader0000", (TEMPLATES, first["templates"])
     )
-    _ = _open_attempt(dataset, "0.1-reader0000")
+    _ = record_open_attempt(dataset, "0.1-reader0000")
 
     cleanup = _cleanup(dataset, _chain(2), now=LATER)
 
@@ -287,8 +261,8 @@ def test_reads_are_followed_transitively_to_a_fixpoint(dataset: Dataset) -> None
 
 def test_a_run_an_open_attempt_reads_is_kept(dataset: Dataset) -> None:
     old = run_speed(dataset, 1)
-    _write_reader(dataset, "frame-aggregate", "0.1-reader0000", (STORAGE, old))
-    _ = _open_attempt(dataset, "0.1-reader0000")
+    write_reader_params(dataset, "frame-aggregate", "0.1-reader0000", (STORAGE, old))
+    _ = record_open_attempt(dataset, "0.1-reader0000")
 
     cleanup = _cleanup(dataset, speed_recipe_stepping(2))
 
@@ -458,7 +432,7 @@ def test_the_own_requests_binds_are_kept(dataset: Dataset) -> None:
 
 def test_a_run_an_unended_attempt_names_is_kept(dataset: Dataset) -> None:
     old = run_speed(dataset, 1)
-    execution_id = _open_attempt(dataset, old)
+    execution_id = record_open_attempt(dataset, old)
 
     cleanup = _cleanup(dataset, speed_recipe_stepping(2))
 

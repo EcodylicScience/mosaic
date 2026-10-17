@@ -42,6 +42,7 @@ imports the feature registry.
 from __future__ import annotations
 
 import datetime
+import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -55,8 +56,12 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.scope import Scope
 
+    from ..feature_run_removal import RemovedRun
     from ..fit_scope import FitScope
     from ..inventory.cache import InventoryCache
+    from mosaic.runlog import JsonlRunLog
+
+    from ..job import CancelToken
     from ..inventory.model import AnyRecord
     from ..inventory.params import RunParams
     from .compatibility import DeclarationCatalog
@@ -64,12 +69,18 @@ if TYPE_CHECKING:
     from .plan import Plan
 
 __all__ = [
+    "CLEANUP_KIND",
+    "CleanupOutcome",
     "CleanupPlan",
     "KeptReason",
     "SupersededRun",
     "plan_cleanup",
     "plan_with_cleanup",
+    "run_cleanup",
 ]
+
+CLEANUP_KIND: Final = "feature-cleanup"
+"""The ``kind`` a cleanup's run-log records."""
 
 type KeptReason = Literal[
     "keeper",
@@ -341,6 +352,335 @@ def plan_cleanup(
         )
     )
     return CleanupPlan(policy=policy, runs=tuple(runs))
+
+
+# --- running a cleanup ---------------------------------------------------------------
+
+
+type CleanupStatus = Literal["finished", "failed", "cancelled"]
+"""How a cleanup that ran ended."""
+
+
+@dataclass(frozen=True, slots=True)
+class CleanupOutcome:
+    """What one run of a request's cleanup did.
+
+    Attributes:
+        execution_id: The cleanup's attempt, whose run-log records each run.
+        status: How it ended.
+        removed: The runs it removed.
+        kept: The approved runs it kept, as ``(storage, run_id, reason)``.
+        failed: The approved runs whose removal raised, as ``storage/run_id``.
+        error: What failed the cleanup as a whole, ``""`` otherwise.
+    """
+
+    execution_id: str
+    status: CleanupStatus
+    removed: tuple[RemovedRun, ...] = ()
+    kept: tuple[tuple[str, str, str], ...] = ()
+    failed: tuple[str, ...] = ()
+    error: str = ""
+
+
+def run_cleanup(
+    ds: Dataset,
+    request: Request,
+    *,
+    token: CancelToken,
+    inventory: InventoryCache | None = None,
+    catalog: DeclarationCatalog | None = None,
+    now: datetime.datetime | None = None,
+) -> CleanupOutcome:
+    """Remove the superseded runs that *request* approved, after its steps finished.
+
+    The request is planned again with the run ids its attempts recorded, and only
+    the approved runs that the plan still finds removable are removed
+    (:func:`~mosaic.core.pipeline.feature_run_removal.remove_feature_run`). Every
+    other approved run is recorded kept with its reason, and the set removed never
+    grows past the one approved. Before each removal the attempts that may still
+    run are read again, and a run one of them names or reads is kept. The keepers
+    whose directories existed before are checked to exist after.
+
+    A run whose removal raises is recorded as a lost entry and the cleanup goes
+    on. The cancel token is read between runs. The cleanup runs again from its
+    run-log: a run it removed is not removed twice, and a removal it began is
+    finished.
+
+    Args:
+        ds: The dataset.
+        request: The request, whose ``cleanup`` is set.
+        token: Fired to stop between runs.
+        inventory: A held inventory, revalidated by the plan.
+        catalog: The declarations.
+        now: The instant ages are judged at. ``None`` reads the clock.
+
+    Returns:
+        What it removed and kept, and how it ended. A failure of the cleanup
+        as a whole is recorded and returned, not raised, because a failed
+        cleanup does not fail the request.
+
+    Raises:
+        ValueError: *request* has no cleanup.
+    """
+    import json
+    import socket
+    import traceback
+
+    from mosaic.runlog import (
+        JsonlRunLog,
+        read_removal_records,
+        run_log_dir,
+        run_log_path,
+    )
+
+    spec = request.cleanup
+    if spec is None:
+        raise ValueError(f"request {request.request_id!r} has no cleanup")
+    base = ds.base_dir
+    with JsonlRunLog(run_log_path(base, spec.execution_id), spec.execution_id) as log:
+        log.started(
+            kind=CLEANUP_KIND,
+            target=request.request_id,
+            owner=request.owner,
+            host=socket.gethostname(),
+            pid=os.getpid(),
+        )
+        log.set_total(len(spec.approved))
+        prior = {
+            (record["feature"], record["run_id"]): record["state"]
+            for record in read_removal_records(run_log_dir(base), spec.execution_id)
+        }
+        try:
+            outcome = _remove_approved(
+                ds,
+                request,
+                log=log,
+                token=token,
+                prior=prior,
+                inventory=inventory,
+                catalog=catalog,
+                now=now,
+            )
+        except Exception as error:
+            blob = json.dumps(
+                {
+                    "type": type(error).__name__,
+                    "message": str(error)[:2000],
+                    "traceback": traceback.format_exc()[:8000],
+                }
+            )
+            log.failed(blob)
+            return CleanupOutcome(
+                execution_id=spec.execution_id, status="failed", error=str(error)
+            )
+        if outcome.status == "cancelled":
+            log.cancelled()
+        else:
+            log.finished()
+        return outcome
+
+
+def _remove_approved(
+    ds: Dataset,
+    request: Request,
+    *,
+    log: JsonlRunLog,
+    token: CancelToken,
+    prior: Mapping[tuple[str, str], str],
+    inventory: InventoryCache | None,
+    catalog: DeclarationCatalog | None,
+    now: datetime.datetime | None,
+) -> CleanupOutcome:
+    """Remove each approved run still removable, recording every one in *log*."""
+    import json
+
+    from ..feature_run_removal import finish_feature_run_removal, remove_feature_run
+    from ..index import feature_run_root
+    from ..inventory.cache import InventoryCache
+    from ..inventory.params import read_run_params
+    from .plan import plan_pipeline
+    from .request import load_recipe_for_request
+    from .resolve import declaration_catalog
+    from .rollup import request_rollup
+
+    spec = request.cleanup
+    assert spec is not None
+    base = ds.base_dir
+    held = InventoryCache(ds) if inventory is None else inventory
+    declarations = declaration_catalog() if catalog is None else catalog
+    recipe = load_recipe_for_request(base, request)
+    rollup = request_rollup(base, request)
+    recorded = {
+        attempt.step_id: attempt.run_id for attempt in rollup.steps if attempt.run_id
+    }
+    plan = plan_pipeline(
+        ds, recipe, request=request, inventory=held, catalog=declarations, refuse=False
+    )
+    short = {
+        plan.step(attempt.step_id).storage_name
+        for attempt in rollup.steps
+        if attempt.entries_failed > 0 and attempt.step_id in plan.run_ids
+    }
+    found = plan_cleanup(
+        ds,
+        plan,
+        policy=spec.policy,
+        inventory=held,
+        catalog=declarations,
+        own_request=request,
+        recorded=recorded,
+        now=now,
+        short_storages=short,
+    )
+    judged = {(run.storage, run.run_id): run for run in found.runs}
+    keepers = _keepers(plan, recorded)
+    kept_roots = [
+        feature_run_root(ds, storage, run_id)
+        for storage, keeper in keepers.items()
+        for run_id in keeper.run_ids
+        if feature_run_root(ds, storage, run_id).is_dir()
+    ]
+    watch = _AttemptWatch(base)
+
+    removed: list[RemovedRun] = []
+    kept: list[tuple[str, str, str]] = []
+    failed: list[str] = []
+    status: CleanupStatus = "finished"
+    for done, target in enumerate(spec.approved, start=1):
+        if token.is_cancelled():
+            status = "cancelled"
+            break
+        key = (target.storage, target.run_id)
+        run_root = feature_run_root(ds, target.storage, target.run_id)
+        judged_run = judged.get(key)
+        reason, detail = "", ""
+        if prior.get(key) == "removed":
+            pass
+        elif judged_run is not None and not judged_run.removable:
+            reason, detail = judged_run.reason, judged_run.detail
+        elif judged_run is None:
+            if prior.get(key) in ("interrupted", "failed"):
+                removed.append(
+                    finish_feature_run_removal(
+                        ds, target.storage, target.run_id, log=log
+                    )
+                )
+            elif (
+                target.storage in keepers
+                and target.run_id in keepers[target.storage].run_ids
+            ):
+                reason, detail = "keeper", "the request's plan now expects it"
+            else:
+                reason, detail = "absent", "it is no longer in the feature index"
+        else:
+            opened = watch.reading(ds, key)
+            params = read_run_params(run_root).params
+            if opened:
+                reason, detail = "attempt_open", opened
+            elif params is None:
+                reason, detail = "params_unknown", "its params.json no longer reads"
+            else:
+                try:
+                    removed.append(
+                        remove_feature_run(
+                            ds,
+                            target.storage,
+                            target.run_id,
+                            params=params,
+                            log=log,
+                            reason="superseded",
+                            superseded_by=judged_run.superseded_by,
+                        )
+                    )
+                except (OSError, RuntimeError) as error:
+                    failed.append(f"{target.storage}/{target.run_id}")
+                    log.entry_failed(
+                        f"{target.storage}/{target.run_id}",
+                        json.dumps(
+                            {"type": type(error).__name__, "message": str(error)}
+                        ),
+                    )
+        if reason:
+            kept.append((target.storage, target.run_id, reason))
+            log.run_kept(
+                feature=target.storage,
+                run_id=target.run_id,
+                reason=reason,
+                detail=detail,
+            )
+        log.heartbeat(done, len(spec.approved))
+
+    lost = [root for root in kept_roots if not root.is_dir()]
+    if lost:
+        raise RuntimeError(
+            f"the cleanup of request {request.request_id} left kept runs missing: "
+            f"{', '.join(str(root) for root in lost)}"
+        )
+    return CleanupOutcome(
+        execution_id=spec.execution_id,
+        status=status,
+        removed=tuple(removed),
+        kept=tuple(kept),
+        failed=tuple(failed),
+    )
+
+
+class _AttemptWatch:
+    """The attempts that may still run, read again before each removal.
+
+    A run-log already ended when the watch began is not read again, so each
+    check reads only the attempts that were open or have appeared since.
+    """
+
+    def __init__(self, base_dir: Path) -> None:
+        from mosaic.runlog import run_log_dir
+
+        self._runs: Path = run_log_dir(base_dir)
+        self._ended: set[str] = set()
+
+    def reading(self, ds: Dataset, key: tuple[str, str]) -> str:
+        """Name the attempt that names or reads run *key*, ``""`` for none."""
+        from mosaic.runlog import TERMINAL_STATUSES, reduce_run_log
+
+        from ..fit_scope import read_fit_scope
+        from ..inventory.params import read_run_params
+        from .liveness import is_local, snapshot_liveness
+
+        features = ds.get_root("features")
+        names = sorted(path.stem for path in self._runs.glob("*.jsonl"))
+        for name in names:
+            if name in self._ended:
+                continue
+            snapshot = reduce_run_log(self._runs / f"{name}.jsonl")
+            if snapshot is None:
+                continue
+            if snapshot["status"] in TERMINAL_STATUSES:
+                self._ended.add(name)
+                continue
+            liveness = snapshot_liveness(snapshot)
+            if not (
+                liveness == "alive"
+                or (
+                    liveness == "unknown"
+                    and not is_local(snapshot["host"], snapshot["pid_ns"])
+                )
+            ):
+                continue
+            run_id = snapshot["run_id"]
+            if not run_id:
+                continue
+            if run_id == key[1]:
+                return f"attempt {name} may still run"
+            for params_path in features.glob(f"*/{run_id}/params.json"):
+                run_root = params_path.parent
+                reads = _reads_of(
+                    run_root.parent.name,
+                    read_run_params(run_root).params,
+                    read_fit_scope(run_root),
+                )
+                if reads.covers(*key):
+                    return f"attempt {name} reads it"
+        return ""
 
 
 # --- what the plan keeps --------------------------------------------------------
