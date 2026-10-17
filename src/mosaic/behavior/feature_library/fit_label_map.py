@@ -179,11 +179,11 @@ class FitLabelMap:
                 prediction_column=self.params.prediction_column,
                 label_column="_label",
             ).frame
-            kept = scored[self.params.prediction_column].notna().to_numpy()
-            true.append(scored["_label"].to_numpy(dtype=np.int64)[kept])
-            pred.append(
-                scored[self.params.prediction_column].to_numpy(dtype=np.int64)[kept]
-            )
+            # A row with no cluster is dropped before the cast, which would
+            # turn its NaN into an arbitrary integer.
+            scored = scored.loc[scored[self.params.prediction_column].notna()]
+            true.append(scored["_label"].to_numpy(dtype=np.int64))
+            pred.append(scored[self.params.prediction_column].to_numpy(dtype=np.int64))
         y_true = np.concatenate(true) if true else np.empty(0, dtype=np.int64)
         y_pred = np.concatenate(pred) if pred else np.empty(0, dtype=np.int64)
         self._map = majority_mapping(y_true, y_pred)

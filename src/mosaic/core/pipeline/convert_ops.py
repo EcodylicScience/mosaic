@@ -164,7 +164,8 @@ class ConvertTracksOp(Op[ConvertTracksParams]):
         )
         # No ``tracks_variant`` event: it records the variants an attempt read,
         # and a conversion reads raw files. The variant it wrote is its run id.
-        ctx.entries_written(max(outcome.converted - outcome.failed, 0))
+        # ``converted`` counts the entries written; ``failed`` counts raw files.
+        ctx.entries_written(outcome.converted)
         if outcome.failed:
             # A missing entry here is missing from everything downstream, and a
             # rerun skips what was written, so the attempt fails and resumes.

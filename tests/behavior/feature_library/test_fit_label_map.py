@@ -69,3 +69,22 @@ def test_no_labeled_row_is_refused(tmp_path: Path) -> None:
                 n_entries=1,
             )
         )
+
+
+def test_a_row_without_a_cluster_is_left_out_of_the_fit(tmp_path: Path) -> None:
+    """A gap in the cluster column is skipped, not cast to an arbitrary cluster."""
+    events = [(frame, 0, 1, 1) for frame in range(FRAMES)]
+    labels = write_sparse_labels(tmp_path / "labels.npz", events)
+    rows = _rows([5] * FRAMES).astype({"cluster": float})
+    rows.loc[[2, 3], "cluster"] = np.nan
+    feature = FitLabelMap(FitLabelMap.Inputs((Result(feature="global-kmeans"),)), {})
+    run_root = tmp_path / "run"
+    _ = feature.load_state(run_root, {}, {"labels": {("g", "s"): labels}})
+
+    feature.fit(
+        InputStream(lambda: iter([(make_entry_key("g", "s"), rows)]), n_entries=1)
+    )
+    feature.save_state(run_root)
+
+    saved = pd.read_parquet(run_root / LABEL_MAP_FILE)
+    assert saved[["cluster", "label", "n_rows"]].values.tolist() == [[5, 1, 8]]
