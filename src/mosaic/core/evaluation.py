@@ -3,9 +3,15 @@
 Two halves, kept apart so either can be used without the other:
 
 - **Scorers** take arrays or frames and return plain dicts. They read no dataset,
-  so a feature's ``apply`` can call them on the rows it was handed.
+  so a feature's ``apply`` can call them on the rows it was handed:
+  :func:`classification_scores` for a classifier's predicted classes,
+  :func:`cluster_label_scores` for a clustering, and :func:`select_scored_rows`
+  for which perspective of a pair row is scored.
 - **Alignment** reads a run's output and the labels of the same entries from a
   dataset and pairs them row by row (:func:`align_predictions_to_labels`).
+
+:class:`EvaluationReport` is what the ``evaluate-labels`` feature writes, and
+reads the same whichever half produced its numbers.
 
 Both drop a row whose label is :data:`~mosaic.core.helpers.UNLABELED` and count
 it, so a score never treats "nobody annotated this frame" as a class, and a
@@ -18,14 +24,17 @@ use them, so importing this module stays cheap.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 import numpy as np
 import pandas as pd
 
 from .helpers import UNLABELED
+from .strict_model import StrictModel
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from .dataset import Dataset
     from .pipeline.types import NNResult, ResultColumn
     from .scope import Scope
@@ -34,11 +43,28 @@ __all__ = [
     "PREDICTION_COLUMN",
     "LABEL_COLUMN",
     "AlignedLabels",
+    "ClassScore",
+    "ClassScoreRow",
+    "ClassificationScores",
+    "EvaluationReport",
+    "Perspective",
+    "ScoredRows",
     "align_predictions_to_labels",
+    "classification_scores",
     "cluster_label_scores",
     "majority_mapping",
     "perspective_consistency",
+    "select_scored_rows",
 ]
+
+type Perspective = int | Literal["pooled", "mean_probabilities"] | None
+"""Which rows of a pair output are scored.
+
+An ``int`` keeps the rows of that ``perspective``. ``"pooled"`` scores every row.
+``"mean_probabilities"`` averages the class probabilities of a pair's two rows
+at one frame and scores the class they then favor. ``None`` scores the rows as
+they are and refuses an output holding more than one perspective.
+"""
 
 PREDICTION_COLUMN = "prediction"
 """The column of :attr:`AlignedLabels.frame` holding the run's value."""
@@ -191,6 +217,309 @@ def cluster_label_scores(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, ob
         "hungarian_one_to_one": bool(clusters.size <= classes.size),
         "confusion": counts,
     }
+
+
+class ClassScoreRow(TypedDict):
+    """One class's row of :class:`ClassificationScores`."""
+
+    label: int
+    precision: float
+    recall: float
+    f1: float
+    support: int
+    predicted: int
+
+
+class ClassificationScores(TypedDict):
+    """What :func:`classification_scores` returns."""
+
+    n_samples: int
+    n_unlabeled: int
+    accuracy: float
+    macro_f1: float
+    average_over: list[int]
+    classes: list[int]
+    per_class: list[ClassScoreRow]
+    confusion: np.ndarray
+
+
+def classification_scores(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    *,
+    classes: Sequence[int] | None = None,
+    average_over: Sequence[int] | None = None,
+) -> ClassificationScores:
+    """How well predicted classes agree with ground-truth classes.
+
+    Rows labeled :data:`~mosaic.core.helpers.UNLABELED` are dropped first and
+    counted in ``n_unlabeled``. Precision, recall and F1 are per class, and a
+    class nothing was predicted as has a precision of 0.
+
+    Args:
+        y_true: Ground-truth class per row.
+        y_pred: Predicted class per row.
+        classes: The classes to report, in order. Unset, every class a row
+            holds or is predicted as. A class neither holds is reported with
+            zeros, and one either holds outside this list is appended.
+        average_over: The classes ``macro_f1`` averages over, such as every
+            behavior but ``other``. Unset, every class a labeled row holds.
+
+    Returns:
+        ``n_samples``, ``n_unlabeled``, ``accuracy``, ``macro_f1``,
+        ``average_over``, ``classes``, ``per_class`` (one row per class of
+        ``label``, ``precision``, ``recall``, ``f1``, ``support`` and
+        ``predicted``) and ``confusion`` (rows the true classes, columns the
+        predicted ones, both in ``classes`` order).
+    """
+    true, pred = _as_int_arrays(y_true, y_pred)
+    labeled = true != UNLABELED
+    n_unlabeled = int((~labeled).sum())
+    true, pred = true[labeled], pred[labeled]
+    observed = sorted({int(value) for value in np.concatenate([true, pred])})
+    listed = [int(value) for value in classes] if classes is not None else []
+    order = listed + [value for value in observed if value not in listed]
+    position = {value: index for index, value in enumerate(order)}
+
+    confusion = np.zeros((len(order), len(order)), dtype=np.int64)
+    if true.size:
+        rows = np.array([position[int(value)] for value in true], dtype=np.int64)
+        cols = np.array([position[int(value)] for value in pred], dtype=np.int64)
+        np.add.at(confusion, (rows, cols), 1)
+
+    per_class: list[ClassScoreRow] = []
+    for index, value in enumerate(order):
+        hit = int(confusion[index, index])
+        support = int(confusion[index].sum())
+        predicted = int(confusion[:, index].sum())
+        precision = hit / predicted if predicted else 0.0
+        recall = hit / support if support else 0.0
+        f1 = (
+            2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        )
+        per_class.append(
+            {
+                "label": value,
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+                "support": support,
+                "predicted": predicted,
+            }
+        )
+
+    averaged = (
+        [int(value) for value in average_over]
+        if average_over is not None
+        else sorted({int(value) for value in true})
+    )
+    f1_of = {row["label"]: row["f1"] for row in per_class}
+    macro = (
+        float(np.mean([f1_of.get(value, 0.0) for value in averaged]))
+        if averaged
+        else 0.0
+    )
+    return {
+        "n_samples": int(true.size),
+        "n_unlabeled": n_unlabeled,
+        "accuracy": float((true == pred).mean()) if true.size else 0.0,
+        "macro_f1": macro,
+        "average_over": averaged,
+        "classes": order,
+        "per_class": per_class,
+        "confusion": confusion,
+    }
+
+
+@dataclass(frozen=True)
+class ScoredRows:
+    """The rows :func:`select_scored_rows` keeps, and what it set aside.
+
+    Attributes:
+        frame: The rows to score.
+        n_rows: Rows given.
+        n_conflicting: Pairs whose two rows carry different labels, which
+            ``"mean_probabilities"`` cannot score as one and drops.
+    """
+
+    frame: pd.DataFrame
+    n_rows: int
+    n_conflicting: int = 0
+
+
+def select_scored_rows(
+    frame: pd.DataFrame,
+    *,
+    perspective: Perspective,
+    prediction_column: str = PREDICTION_COLUMN,
+    label_column: str = LABEL_COLUMN,
+    probability_prefix: str = "prob_",
+) -> ScoredRows:
+    """Keep the rows of a pair output that one score is taken over.
+
+    A pair feature writes each pair twice per frame, once focal on each
+    individual, and a classifier then predicts each direction. Scoring both
+    rows counts every frame twice; :data:`Perspective` says which to score.
+
+    Args:
+        frame: Aligned rows, with ``group``, ``sequence``, ``frame``, the
+            prediction and the label, and ``perspective``, ``id1`` and ``id2``
+            for a pair output.
+        perspective: Which rows to keep. See :data:`Perspective`.
+        prediction_column: The predicted class.
+        label_column: The ground-truth class.
+        probability_prefix: The prefix of the per-class probability columns
+            ``"mean_probabilities"`` averages, as ``prob_<class>``.
+
+    Returns:
+        The kept rows. Under ``"mean_probabilities"`` one row per pair and
+        frame, whose prediction is the class of the highest mean probability
+        and whose label is that of the pair's labeled rows.
+
+    Raises:
+        ValueError: *perspective* is ``None`` and *frame* holds more than one
+            perspective, an ``int`` names a perspective on an output without
+            one, or ``"mean_probabilities"`` finds no probability column.
+    """
+    n_rows = int(frame.shape[0])
+    has_perspective = "perspective" in frame.columns
+    if perspective is None:
+        if has_perspective and frame["perspective"].nunique() > 1:
+            raise ValueError(
+                "these rows hold more than one perspective, so each pair is "
+                "scored twice. Choose a perspective, 'pooled' to score both "
+                "rows, or 'mean_probabilities'."
+            )
+        return ScoredRows(frame=frame, n_rows=n_rows)
+    if perspective == "pooled":
+        return ScoredRows(frame=frame, n_rows=n_rows)
+    if isinstance(perspective, int):
+        if not has_perspective:
+            raise ValueError(
+                f"perspective {perspective} names a perspective, and these rows "
+                "have no perspective column."
+            )
+        kept = frame.loc[frame["perspective"] == perspective]
+        return ScoredRows(frame=kept.reset_index(drop=True), n_rows=n_rows)
+    return _mean_probabilities(
+        frame,
+        prediction_column=prediction_column,
+        label_column=label_column,
+        probability_prefix=probability_prefix,
+    )
+
+
+def _mean_probabilities(
+    frame: pd.DataFrame,
+    *,
+    prediction_column: str,
+    label_column: str,
+    probability_prefix: str,
+) -> ScoredRows:
+    """One row per pair and frame, scored by the mean of its rows' probabilities."""
+    probability = {
+        int(column.removeprefix(probability_prefix)): column
+        for column in frame.columns
+        if column.startswith(probability_prefix)
+        and column.removeprefix(probability_prefix).lstrip("-").isdigit()
+    }
+    if not probability:
+        raise ValueError(
+            f"'mean_probabilities' averages the {probability_prefix}<class> "
+            "columns, and these rows have none."
+        )
+    key = ["group", "sequence", "frame"]
+    keyed = frame[[*key, label_column]].copy()
+    if {"id1", "id2"} <= set(frame.columns):
+        ids = frame[["id1", "id2"]].to_numpy()
+        keyed["_low"] = ids.min(axis=1)
+        keyed["_high"] = ids.max(axis=1)
+        key = [*key, "_low", "_high"]
+    classes = sorted(probability)
+    for value in classes:
+        keyed[f"_p{value}"] = frame[probability[value]].to_numpy(dtype=float)
+    labeled = keyed[label_column].where(keyed[label_column] != UNLABELED)
+    keyed["_label_min"] = labeled
+    keyed["_label_max"] = labeled
+    grouped = keyed.groupby(key, sort=True, dropna=False).agg(
+        **{f"_p{value}": (f"_p{value}", "mean") for value in classes},
+        _label_min=("_label_min", "min"),
+        _label_max=("_label_max", "max"),
+    )
+    conflicting = (grouped["_label_min"] != grouped["_label_max"]) & grouped[
+        "_label_min"
+    ].notna()
+    grouped = grouped.loc[~conflicting].reset_index()
+    means = grouped[[f"_p{value}" for value in classes]].to_numpy()
+    best = np.asarray(classes, dtype=np.int64)[means.argmax(axis=1)]
+    label = grouped["_label_min"].fillna(UNLABELED).to_numpy(dtype=np.int64)
+    out = grouped[["group", "sequence", "frame"]].copy()
+    out[prediction_column] = best
+    out[label_column] = label
+    for value in classes:
+        out[probability[value]] = grouped[f"_p{value}"].to_numpy()
+    return ScoredRows(
+        frame=out.reset_index(drop=True),
+        n_rows=int(frame.shape[0]),
+        n_conflicting=int(conflicting.sum()),
+    )
+
+
+class ClassScore(StrictModel):
+    """One class's score in an :class:`EvaluationReport`."""
+
+    label: int
+    name: str = ""
+    precision: float
+    recall: float
+    f1: float
+    support: int
+    predicted: int
+
+
+class EvaluationReport(StrictModel):
+    """What ``evaluate-labels`` measured, over every entry it scored.
+
+    Attributes:
+        mode: ``classifier`` for predicted classes, ``clusters`` for a
+            clustering scored against the classes.
+        n_entries: Entries scored.
+        n_scored: Rows scored.
+        n_unlabeled: Rows dropped because no label covers them.
+        n_missing_prediction: Rows dropped because they hold no prediction.
+        n_conflicting: Pairs dropped because their two rows carry different
+            labels, under ``mean_probabilities``.
+        perspective: Which rows were scored (:data:`Perspective`).
+        accuracy: The share of scored rows predicted correctly. In clusters
+            mode, after the label map, or the majority mapping without one.
+        macro_f1: Mean F1 over ``average_over``.
+        average_over: The classes ``macro_f1`` averages over.
+        classes: Every class reported, in confusion order.
+        per_class: One score per class in ``classes``.
+        confusion: Rows the true classes, columns the predicted ones.
+        clusters: In clusters mode, the scores of :func:`cluster_label_scores`
+            that a clustering has and a classifier does not: ``ARI``, ``AMI``,
+            ``purity``, ``hungarian_accuracy``, ``hungarian_one_to_one``,
+            ``n_clusters``.
+        label_map: The cluster to class map the predictions went through, empty
+            when none was given.
+    """
+
+    mode: Literal["classifier", "clusters"]
+    n_entries: int
+    n_scored: int
+    n_unlabeled: int
+    n_missing_prediction: int
+    n_conflicting: int = 0
+    perspective: int | Literal["pooled", "mean_probabilities"] | None = None
+    accuracy: float
+    macro_f1: float
+    average_over: list[int]
+    classes: list[int]
+    per_class: list[ClassScore]
+    confusion: list[list[int]]
+    clusters: dict[str, float | int | bool] = {}
+    label_map: dict[int, int] = {}
 
 
 _PAIR_KEY = ["group", "sequence", "frame", "_low", "_high"]
