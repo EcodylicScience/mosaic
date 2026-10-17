@@ -627,3 +627,18 @@ def test_a_feature_the_catalog_does_not_know_is_kept(dataset: Dataset) -> None:
     )
 
     assert _reasons(cleanup) == {old: "costly_fit"}
+
+
+def test_a_run_an_attempt_that_has_not_named_its_run_may_read_is_kept(
+    dataset: Dataset,
+) -> None:
+    """An attempt resolving its inputs reads its input storages, run unknown."""
+    old = run_speed(dataset, 1)
+    execution_id = record_open_attempt(
+        dataset, "", target=f"frame-aggregate__from__{STORAGE}"
+    )
+
+    cleanup = _cleanup(dataset, speed_recipe_stepping(2))
+
+    assert _reasons(cleanup) == {old: "read_by"}
+    assert execution_id in cleanup.runs[0].detail

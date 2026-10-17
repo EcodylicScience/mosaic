@@ -405,3 +405,21 @@ def test_the_cleanup_records_its_process_as_a_step_does(dataset: Dataset) -> Non
         current_boot_id(),
         current_pid_namespace(),
     )
+
+
+def test_a_run_an_attempt_resolving_its_inputs_may_read_is_kept(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = run_speed(dataset, 1)
+    request = _submit(dataset, speed_recipe_stepping(2))
+    _run_steps(dataset, request)
+
+    def start_reader() -> None:
+        _ = record_open_attempt(dataset, "", target=f"frame-aggregate__from__{STORAGE}")
+
+    _during_cleanup(monkeypatch, start_reader)
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert _exists(dataset, old)
+    assert [(kept[1], kept[2]) for kept in outcome.kept] == [(old, "attempt_open")]

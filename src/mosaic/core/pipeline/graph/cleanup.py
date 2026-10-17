@@ -58,6 +58,7 @@ from .model import REQUEST_HOLD_FLOOR_HOURS, CleanupPolicy, FeatureStepSpec
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.scope import Scope
+    from mosaic.runlog import RunLogSnapshot
 
     from ..feature_run_removal import RemovedRun
     from ..fit_scope import FitScope
@@ -84,6 +85,9 @@ __all__ = [
 
 CLEANUP_KIND: Final = "feature-cleanup"
 """The ``kind`` a cleanup's run-log records."""
+
+FEATURE_ATTEMPT_KIND: Final = "feature"
+"""The ``kind`` a feature run's run-log records, before it names its run."""
 
 type KeptReason = Literal[
     "keeper",
@@ -298,7 +302,7 @@ def plan_cleanup(
     hold_hours = max(policy.min_age_hours, REQUEST_HOLD_FLOOR_HOURS)
     holds = _request_holds(base, now=moment, hold_hours=hold_hours, exclude=own_id)
     whole = _whole_plan_hold(ds, holds)
-    opened = _open_attempts(base, now=moment)
+    opened, unnamed = _open_attempts(base, now=moment)
     short = frozenset(short_storages)
     ranks = _newest_ranks(candidates)
     fits: dict[tuple[str, str], FitScope | None] = {}
@@ -324,7 +328,7 @@ def plan_cleanup(
             global_entry=GLOBAL_ENTRY,
         )
 
-    _keep_what_is_read(ds, records, decided, opened, fits, plan)
+    _keep_what_is_read(ds, records, decided, opened, unnamed, fits, plan)
 
     runs: list[SupersededRun] = []
     for record in candidates:
@@ -691,7 +695,6 @@ class _Watch:
 
         from ..fit_scope import read_fit_scope
         from ..inventory.params import read_run_params
-        from .liveness import is_local, snapshot_liveness
 
         features = ds.get_root("features")
         for path in sorted(self._runs.glob("*.jsonl")):
@@ -699,19 +702,23 @@ class _Watch:
             if name in self._ended:
                 continue
             snapshot = reduce_run_log(path)
-            if snapshot is None or not snapshot["run_id"]:
+            if snapshot is None:
                 continue
-            if snapshot["status"] not in TERMINAL_STATUSES:
-                liveness = snapshot_liveness(snapshot)
-                if not (
-                    liveness == "alive"
-                    or (
-                        liveness == "unknown"
-                        and not is_local(snapshot["host"], snapshot["pid_ns"])
-                    )
-                ):
-                    continue
+            ended = snapshot["status"] in TERMINAL_STATUSES
+            if not ended and not _may_still_run(snapshot):
+                continue
             run_id = snapshot["run_id"]
+            if not run_id:
+                if (
+                    not ended
+                    and snapshot["kind"] == FEATURE_ATTEMPT_KIND
+                    and _reads_of(snapshot["target"], None, None).covers(*key)
+                ):
+                    return (
+                        "attempt_open",
+                        f"attempt {name} has not named its run and may read it",
+                    )
+                continue
             if run_id == key[1]:
                 return ("attempt_open", f"attempt {name} writes run {run_id}")
             for params_path in features.glob(f"*/{run_id}/params.json"):
@@ -912,27 +919,43 @@ def _whole_plan_hold(ds: Dataset, holds: _Holds) -> tuple[str, str] | None:
     return None
 
 
-def _open_attempts(base_dir: Path, *, now: datetime.datetime) -> dict[str, str]:
-    """The run ids of the attempts that may still run, by the attempt naming each.
+def _open_attempts(
+    base_dir: Path, *, now: datetime.datetime
+) -> tuple[dict[str, str], dict[str, str]]:
+    """The attempts that may still run: by the run each names, and those naming none.
 
     An attempt that has not ended is open while its process may still run
-    (:func:`~.liveness.snapshot_liveness`): ``alive``, or ``unknown`` on another
-    host, which this one cannot check.
+    (:func:`_may_still_run`). One that names its run is returned by that run id
+    with its execution id. A feature attempt that names none yet is returned by
+    its execution id with the storage it writes, which tells what its inputs
+    are: it is resolving them, and may read any run of theirs.
     """
     from mosaic.runlog import TERMINAL_STATUSES, list_runs, run_log_dir
 
+    opened: dict[str, str] = {}
+    unnamed: dict[str, str] = {}
+    for snapshot in list_runs(run_log_dir(base_dir))["items"]:
+        if snapshot["status"] in TERMINAL_STATUSES:
+            continue
+        if not _may_still_run(snapshot, now=now):
+            continue
+        if snapshot["run_id"]:
+            _ = opened.setdefault(snapshot["run_id"], snapshot["execution_id"])
+        elif snapshot["kind"] == FEATURE_ATTEMPT_KIND and snapshot["target"]:
+            unnamed[snapshot["execution_id"]] = snapshot["target"]
+    return opened, unnamed
+
+
+def _may_still_run(
+    snapshot: RunLogSnapshot, *, now: datetime.datetime | None = None
+) -> bool:
+    """Whether an attempt's process may still run: ``alive``, or ``unknown`` elsewhere."""
     from .liveness import is_local, snapshot_liveness
 
-    opened: dict[str, str] = {}
-    for snapshot in list_runs(run_log_dir(base_dir))["items"]:
-        if snapshot["status"] in TERMINAL_STATUSES or not snapshot["run_id"]:
-            continue
-        liveness = snapshot_liveness(snapshot, now=now)
-        if liveness == "alive" or (
-            liveness == "unknown" and not is_local(snapshot["host"], snapshot["pid_ns"])
-        ):
-            _ = opened.setdefault(snapshot["run_id"], snapshot["execution_id"])
-    return opened
+    liveness = snapshot_liveness(snapshot, now=now)
+    return liveness == "alive" or (
+        liveness == "unknown" and not is_local(snapshot["host"], snapshot["pid_ns"])
+    )
 
 
 # --- one candidate -----------------------------------------------------------------
@@ -1093,6 +1116,7 @@ def _keep_what_is_read(
     records: Iterable[AnyRecord],
     decided: dict[tuple[str, str], tuple[str, str]],
     opened: Mapping[str, str],
+    unnamed: Mapping[str, str],
     fits: Mapping[tuple[str, str], FitScope | None],
     plan: Plan,
 ) -> None:
@@ -1100,8 +1124,10 @@ def _keep_what_is_read(
 
     The readers are every feature run of the dataset that is not removable, the
     run of every attempt that may still run, found by its ``params.json``,
-    which an attempt writes once it names its run, and every feature step of
-    *plan*, which reads what its resolved inputs and params name.
+    which an attempt writes once it names its run, an attempt that has not
+    named its run yet, read by the storage it writes as a run of unknown params
+    is, and every feature step of *plan*, which reads what its resolved inputs
+    and params name.
     """
     from ..fit_scope import read_fit_scope
     from ..inventory.params import read_run_params
@@ -1128,6 +1154,10 @@ def _keep_what_is_read(
             else None
         )
         readers[key] = _reads_of(record.name, record.params, fit)
+    for execution_id, storage in unnamed.items():
+        readers[(f"attempt {execution_id}, which has not named its run,", "")] = (
+            _reads_of(storage, None, None)
+        )
     features = ds.get_root("features")
     for run_id in opened:
         for params_path in features.glob(f"*/{run_id}/params.json"):

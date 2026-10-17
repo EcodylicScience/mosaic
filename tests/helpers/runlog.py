@@ -43,10 +43,12 @@ def _latest_log(ds: Dataset) -> Path:
     return max(logs, key=lambda path: path.stat().st_mtime)
 
 
-def record_open_attempt(ds: Dataset, run_id: str) -> str:
-    """Record an attempt of this process that has named *run_id* and not ended.
+def record_open_attempt(ds: Dataset, run_id: str, *, target: str = "x") -> str:
+    """Record a feature attempt of this process that has named *run_id*, unended.
 
     Its process is this one, so the attempt reads ``alive`` while the test runs.
+    An empty *run_id* records an attempt that has not named its run yet, writing
+    the storage *target*.
 
     Returns:
         The attempt's execution id.
@@ -59,9 +61,10 @@ def record_open_attempt(ds: Dataset, run_id: str) -> str:
     execution_id = new_execution_id()
     with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as log:
         log.started(
-            kind="feature", target="x", host=socket.gethostname(), pid=os.getpid()
+            kind="feature", target=target, host=socket.gethostname(), pid=os.getpid()
         )
-        log.set_run_id(run_id)
+        if run_id:
+            log.set_run_id(run_id)
     return execution_id
 
 
