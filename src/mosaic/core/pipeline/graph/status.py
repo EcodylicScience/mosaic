@@ -119,7 +119,7 @@ class FailedEntryWire(GraphModel):
 class RunStatusWire(GraphModel):
     """One attempt, as its run-log reports it.
 
-    The fields from ``execution_id`` to ``tracks_variant`` are those of
+    The fields from ``execution_id`` to ``phase`` are those of
     :class:`~mosaic.runlog.RunLogSnapshot`, which documents them. The rest are
     derived from the same run-log.
 
@@ -160,6 +160,10 @@ class RunStatusWire(GraphModel):
     entries_columns_dropped: int
     cache_hit: bool
     tracks_variant: str
+    boot_id: str
+    pid_ns: str
+    liveness_interval: float
+    phase: str
     outcome: AttemptOutcome
     terminal: bool
     progress_fraction: float | None

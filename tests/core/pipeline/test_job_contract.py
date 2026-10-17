@@ -15,6 +15,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import mosaic.runlog as runlog
 from mosaic.core.pipeline._utils import hash_params, new_execution_id
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.job import (
@@ -23,6 +24,7 @@ from mosaic.core.pipeline.job import (
     cancel_check,
     job_context,
 )
+from mosaic.core.pipeline.markers import current_boot_id, current_pid_namespace
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.run_log import (
@@ -696,3 +698,59 @@ def test_the_job_context_records_dropped_columns_without_failing_the_entry(
     assert snap["entries_failed"] == 0
     assert ctx.failed_keys == []
     assert snap["status"] == "finished"
+
+
+# --- liveness and phases ------------------------------------------------------
+
+
+class _Fitting(_Stateless):
+    name = "test-jc-fit"
+
+    def load_state(
+        self, run_root: Path, artifact_paths: object, dependency_lookups: object
+    ) -> bool:
+        return False
+
+
+def test_a_job_declares_its_liveness_interval_and_boot(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path)
+    with job_context(ds, kind="feature", target="t") as ctx:
+        pass
+
+    snap = read_run(run_log_dir(ds.base_dir), ctx.execution_id)
+    assert snap is not None
+    assert snap["liveness_interval"] == runlog.LIVENESS_INTERVAL_SECONDS
+    assert snap["boot_id"] == current_boot_id()
+    assert snap["pid_ns"] == current_pid_namespace()
+
+
+def test_a_feature_fit_records_its_fit_and_apply_phases(tmp_path: Path) -> None:
+    ds = MockDataset(tmp_path)
+    add_track_sequences(ds, ("g", "s1"), ("g", "s2"))
+
+    result = run_feature(ds, _Fitting())
+
+    assert result.execution_id is not None
+    phases = [
+        event["message"]
+        for event in read_run_progress(_run_dir(ds), result.execution_id)
+        if event["step_type"] == "phase"
+    ]
+    assert phases == ["fit: 2 entries", "apply: "]
+    snap = read_run(_run_dir(ds), result.execution_id)
+    assert snap is not None
+    assert snap["phase"] == "apply"
+
+
+def test_an_interrupted_job_records_itself_cancelled(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path)
+
+    execution_id = new_execution_id()
+
+    with pytest.raises(KeyboardInterrupt):
+        with job_context(ds, kind="feature", target="t", execution_id=execution_id):
+            raise KeyboardInterrupt
+
+    snap = read_run(run_log_dir(ds.base_dir), execution_id)
+    assert snap is not None
+    assert snap["status"] == "cancelled"

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,7 @@ from mosaic.runlog import (
     run_log_dir,
     run_log_path,
 )
+from tests.helpers import wait_for
 
 
 def _log(base: Path, execution_id: str) -> JsonlRunLog:
@@ -288,3 +291,155 @@ def test_runs_of_an_absent_directory_are_empty(tmp_path: Path) -> None:
 def test_a_run_limit_below_one_is_refused(runs: Path) -> None:
     with pytest.raises(ValueError, match="at least 1"):
         list_runs(runs, limit=0)
+
+
+def _events(base: Path, execution_id: str) -> list[str]:
+    path = run_log_path(base, execution_id)
+    return [json.loads(line)["ev"] for line in path.read_text().splitlines()]
+
+
+def _write_lines(base: Path, execution_id: str, *records: dict[str, object]) -> Path:
+    path = run_log_path(base, execution_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    return path
+
+
+def test_a_silent_attempt_appends_an_alive_event_each_interval(
+    tmp_path: Path,
+) -> None:
+    log = _log(tmp_path, "E1")
+    try:
+        log.started(kind="feature", target="t", liveness_interval=0.05)
+        log.start_liveness(0.05)
+        wait_for(
+            lambda: _events(tmp_path, "E1").count("alive") >= 2,
+            5.0,
+            "the liveness thread wrote fewer than two alive events",
+        )
+    finally:
+        log.close()
+
+
+def test_an_attempt_that_writes_events_appends_no_alive_event(tmp_path: Path) -> None:
+    log = _log(tmp_path, "E1")
+    try:
+        log.started(kind="feature", target="t")
+        log.start_liveness(30.0)
+        for done in range(5):
+            log.heartbeat(done, 5)
+        log.finished()
+    finally:
+        log.close()
+
+    assert "alive" not in _events(tmp_path, "E1")
+
+
+def test_no_alive_event_follows_the_terminal_event(tmp_path: Path) -> None:
+    log = _log(tmp_path, "E1")
+    try:
+        log.started(kind="feature", target="t")
+        log.start_liveness(0.01)
+        wait_for(lambda: "alive" in _events(tmp_path, "E1"), 5.0)
+        log.finished()
+        time.sleep(0.1)
+        assert _events(tmp_path, "E1")[-1] == "finished"
+    finally:
+        log.close()
+
+
+def test_closing_the_log_stops_its_liveness_thread(tmp_path: Path) -> None:
+    log = _log(tmp_path, "E1")
+    log.started(kind="feature", target="t")
+    log.start_liveness(0.01)
+
+    log.close()
+
+    assert not any(thread.name == "runlog-alive-E1" for thread in threading.enumerate())
+    written = _events(tmp_path, "E1")
+    time.sleep(0.05)
+    assert _events(tmp_path, "E1") == written
+
+
+def test_an_alive_event_only_advances_heartbeat_at(tmp_path: Path) -> None:
+    path = _write_lines(
+        tmp_path,
+        "E1",
+        {"t": "2026-01-01T00:00:00+00:00", "ev": "started", "kind": "feature"},
+        {"t": "2026-01-01T00:00:01+00:00", "ev": "heartbeat", "done": 2, "total": 4},
+        {"t": "2026-01-01T00:01:01+00:00", "ev": "alive"},
+    )
+
+    snap = runlog.reduce_run_log(path)
+
+    assert snap is not None
+    assert snap["heartbeat_at"] == "2026-01-01T00:01:01+00:00"
+    assert (snap["status"], snap["progress_done"], snap["progress_total"]) == (
+        "running",
+        2,
+        4,
+    )
+
+
+def test_the_started_event_records_boot_namespace_and_interval(
+    tmp_path: Path,
+) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(
+            kind="feature",
+            target="t",
+            boot_id="linux:abc",
+            pid_ns="pid:[4026531836]",
+            liveness_interval=60.0,
+        )
+
+    snap = runlog.read_run(run_log_dir(tmp_path), "E1")
+
+    assert snap is not None
+    assert (snap["boot_id"], snap["pid_ns"], snap["liveness_interval"]) == (
+        "linux:abc",
+        "pid:[4026531836]",
+        60.0,
+    )
+
+
+def test_a_later_started_without_liveness_clears_it(tmp_path: Path) -> None:
+    path = _write_lines(
+        tmp_path,
+        "E1",
+        {
+            "t": "2026-01-01T00:00:00+00:00",
+            "ev": "started",
+            "boot_id": "linux:abc",
+            "pid_ns": "pid:[1]",
+            "liveness_interval": 60.0,
+        },
+        {"t": "2026-01-01T00:05:00+00:00", "ev": "started", "host": "h"},
+    )
+
+    snap = runlog.reduce_run_log(path)
+
+    assert snap is not None
+    assert (snap["boot_id"], snap["pid_ns"], snap["liveness_interval"]) == (
+        "",
+        "",
+        0.0,
+    )
+
+
+def test_phase_is_the_last_declared_phase_since_started(tmp_path: Path) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+        log.on_phase("fit", "3 entries")
+        log.on_phase("apply", "")
+    resumed = run_log_path(tmp_path, "E1")
+
+    snap = runlog.reduce_run_log(resumed)
+    assert snap is not None
+    assert snap["phase"] == "apply"
+
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+    snap = runlog.reduce_run_log(resumed)
+    assert snap is not None
+    assert snap["phase"] == ""

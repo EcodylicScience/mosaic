@@ -62,6 +62,7 @@ it reuses the :data:`PhaseName` vocabulary the on-disk markers already own.
 from __future__ import annotations
 
 import datetime
+import functools
 import os
 import secrets
 from pathlib import Path
@@ -72,6 +73,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from mosaic.runlog import TERMINAL_STATUSES, now_iso, read_run, run_log_dir
 
 __all__ = [
+    "BOOT_TIME_TOLERANCE_SECONDS",
     "INFLIGHT_GRACE_SECONDS",
     "INFLIGHT_MARKER_NAME",
     "INFLIGHT_MIN_TTL_SECONDS",
@@ -82,10 +84,13 @@ __all__ = [
     "Phase",
     "PhaseMarker",
     "PhaseName",
+    "boots_differ",
     "clear_inflight",
     "clear_phase_marker",
     "clear_phase_markers",
     "create_exclusive",
+    "current_boot_id",
+    "current_pid_namespace",
     "inflight_expiry",
     "inflight_marker_path",
     "inflight_state",
@@ -205,6 +210,14 @@ PROCESS_START_SLACK_SECONDS: Final = 2.0
 
 A process's start time is read from the kernel's clock, which on Linux is the
 boot time plus clock ticks and drifts from the wall clock by up to a second.
+"""
+
+
+BOOT_TIME_TOLERANCE_SECONDS: Final = 120
+"""How far two readings of one boot's start time may differ.
+
+Off Linux a boot is named by its start time, which the system derives from the
+wall clock and uptime, so a clock adjustment moves it.
 """
 
 
@@ -626,3 +639,69 @@ def process_running_since(pid: int, started_by: str) -> bool:
     except psutil.Error:
         return True
     return began <= deadline.timestamp() + PROCESS_START_SLACK_SECONDS
+
+
+@functools.cache
+def current_boot_id() -> str:
+    """Return a name for this host's current boot, ``""`` when none can be read.
+
+    On Linux it is the kernel's random boot id, ``linux:<uuid>``. Elsewhere it is
+    the boot's start time to the second, ``boot:<epoch seconds>``, which
+    :func:`boots_differ` compares with :data:`BOOT_TIME_TOLERANCE_SECONDS`. A
+    process records it in its run-log, so a reader on the same host can tell that
+    the host rebooted since, and that the process is gone.
+    """
+    try:
+        text = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii")
+    except OSError:
+        pass
+    else:
+        if text.strip():
+            return f"linux:{text.strip()}"
+    try:
+        import psutil
+
+        return f"boot:{int(psutil.boot_time())}"
+    except Exception:
+        return ""
+
+
+def current_pid_namespace() -> str:
+    """Return this process's pid namespace, ``""`` off Linux or when unreadable.
+
+    Two containers can share a host name and a boot, and a pid recorded in one
+    names nothing in the other, so a reader checks a pid only within its own
+    namespace.
+    """
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return ""
+
+
+def boots_differ(recorded: str, current: str) -> bool:
+    """Return whether two boot names (:func:`current_boot_id`) prove a reboot.
+
+    Args:
+        recorded: The boot that a run-log recorded.
+        current: The boot of the host reading it.
+
+    Returns:
+        ``False`` when either name is empty or the two are of different kinds,
+        because neither proves anything then. Two ``boot:`` names differ when
+        their start times are more than :data:`BOOT_TIME_TOLERANCE_SECONDS`
+        apart, and two other names when they are unequal.
+    """
+    if not recorded or not current:
+        return False
+    kind, _, value = recorded.partition(":")
+    current_kind, _, current_value = current.partition(":")
+    if kind != current_kind:
+        return False
+    if kind != "boot":
+        return value != current_value
+    try:
+        gap = abs(int(value) - int(current_value))
+    except ValueError:
+        return False
+    return gap > BOOT_TIME_TOLERANCE_SECONDS

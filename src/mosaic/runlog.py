@@ -24,13 +24,25 @@ Design properties:
 * **NFS-safe** -- one writer, append-only, flush-per-line, so a remote reader only ever sees
   a partial *last* line (skipped by the reducer). Exactly where SQLite/WAL failed.
 * **Bounded + ephemeral** -- finite entries*2 (per-entry) or epochs*1 (per-epoch) lines
-  (KB-MB), and it stops growing at a terminal event. The durable truth lives elsewhere
+  (KB-MB), plus at most one ``alive`` line per :data:`LIVENESS_INTERVAL_SECONDS` of
+  silence, and it stops growing at a terminal event. The durable truth lives elsewhere
   (``index.csv`` + parquet for results); the JSONL is scratch.
 
 Two event shapes ride the same sink: **per-entry** (features / tracking -- a count, since
 several entries can be in flight) and **per-epoch** (training -- a monotonic cursor). Bracketing
-lifecycle events (``started`` / ``run_id`` / ``total`` / ``heartbeat`` / ``finished`` /
-``failed`` / ``cancelled``) carry the attempt status the old ``runs`` table held.
+lifecycle events (``started`` / ``run_id`` / ``total`` / ``heartbeat`` / ``alive`` /
+``finished`` / ``failed`` / ``cancelled``) carry the attempt status the old ``runs`` table
+held.
+
+**Liveness.** A job's ``started`` event records the host's boot (``boot_id``), its pid
+namespace (``pid_ns``) and the ``liveness_interval`` it promises. While the attempt runs,
+a thread (:meth:`JsonlRunLog.start_liveness`) appends an ``alive`` event after each
+interval in which nothing else was written, so a reader on any host can tell a silent
+attempt from a dead one. ``alive`` is an event and not a status. A consumer judging an
+attempt by its silence uses a time-to-live of at least twice
+:data:`LIVENESS_INTERVAL_SECONDS`; mosaic's own rule
+(``mosaic.core.pipeline.graph.liveness``) waits :data:`LIVENESS_STALE_INTERVALS`
+intervals.
 
 The reader helpers reduce a log back to the same dict shape the SQLite ``runs`` row exposed,
 so the ``mosaic status`` / ``runs`` / ``cancel`` CLI contract is unchanged.
@@ -48,7 +60,11 @@ from pathlib import Path
 from typing import Any, Final, Literal, TypedDict, cast
 
 __all__ = [
+    "ALIVE_EVENT",
     "ERROR_MESSAGE_LIMIT",
+    "LIVENESS_INTERVAL_SECONDS",
+    "LIVENESS_STALE_INTERVALS",
+    "AttemptLiveness",
     "AttemptOutcome",
     "EntryErrorPage",
     "EntryErrorRecord",
@@ -135,6 +151,12 @@ class RunLogSnapshot(TypedDict):
     and ``tracks_variant`` then report the events after the last ``started``, and
     the entries that the dead process lost are not counted twice.
 
+    ``boot_id``, ``pid_ns`` and ``liveness_interval`` are what the last
+    ``started`` event recorded of the process's host: its boot, its pid namespace
+    and the seconds between the ``alive`` events it promises (0 for a writer that
+    promises none, as every writer before them). ``phase`` is the last phase the
+    attempt declared since that ``started``, ``""`` before one.
+
     The run-log is the only report a queued attempt makes, because a queue starts
     ``mosaic run`` with its standard output and standard error discarded. A writer
     emits these events before the terminal event. mosaic-api's sweeper stops
@@ -164,6 +186,10 @@ class RunLogSnapshot(TypedDict):
     entries_columns_dropped: int
     cache_hit: bool
     tracks_variant: str
+    boot_id: str
+    pid_ns: str
+    liveness_interval: float
+    phase: str
 
 
 ERROR_MESSAGE_LIMIT: Final = 2000
@@ -250,6 +276,32 @@ class RunLogPage(TypedDict):
 
     items: list[RunLogSnapshot]
     next_after: str | None
+
+
+LIVENESS_INTERVAL_SECONDS: Final = 60.0
+"""The most seconds a running job leaves its run-log without a line.
+
+A job's liveness thread appends an ``alive`` event after this long without any
+other write, so a job that writes events often writes no ``alive`` at all.
+"""
+
+LIVENESS_STALE_INTERVALS: Final = 10
+"""How many declared intervals of silence prove that an attempt's process is gone."""
+
+ALIVE_EVENT: Final = "alive"
+"""The event that a job's liveness thread appends after an interval of silence."""
+
+
+type AttemptLiveness = Literal["alive", "unknown", "dead", "ended"]
+"""Whether an attempt's process may still be running, as a reader can tell.
+
+``ended`` is an attempt with a terminal event. ``dead`` is one whose process is
+provably gone: its pid exited, its host rebooted, or it declared a liveness
+interval and fell silent for :data:`LIVENESS_STALE_INTERVALS` of them. ``alive``
+is one whose process is provably running, or whose run-log is current. ``unknown``
+is one that this reader cannot check, as a process on another host whose run-log
+declares no interval. The rule is ``mosaic.core.pipeline.graph.liveness``.
+"""
 
 
 type AttemptOutcome = Literal[
@@ -350,6 +402,10 @@ class JsonlRunLog:
     ``heartbeat`` / ``finished`` / ``failed`` / ``cancelled``). One file, one writer, flush
     after every line so a concurrent reader only ever sees a partial last line.
 
+    :meth:`start_liveness` adds a daemon thread that appends ``alive`` after each
+    interval of silence. Writes from it and from the job go through one lock, and
+    nothing is written after a terminal event or after :meth:`close`.
+
     Parameters
     ----------
     path : Path
@@ -365,17 +421,86 @@ class JsonlRunLog:
         # Text append mode; each ``_emit`` writes one full line and flushes.
         self._file: Any = open(self.path, "a", encoding="utf-8")
         self._lock = threading.Lock()
+        self._last_write: float = time.monotonic()
+        self._ended: bool = False
+        self._stop_liveness = threading.Event()
+        self._liveness: threading.Thread | None = None
 
     def _emit(self, event: str, **fields: Any) -> None:
+        _ = self._write(event, fields)
+
+    def _write(self, event: str, fields: dict[str, Any], *, end: bool = False) -> bool:
+        """Append one event line, returning ``False`` when the log is closed.
+
+        Args:
+            event: The event kind.
+            fields: The event's fields.
+            end: Whether the event is terminal. No ``alive`` line follows one.
+        """
         if self._file is None:
-            return
+            return False
         record = {"t": now_iso(), "ev": event, **fields}
         line = json.dumps(record, default=str) + "\n"
         with self._lock:
             if self._file is None:
-                return
+                return False
             self._file.write(line)
             self._file.flush()
+            self._last_write = time.monotonic()
+            if end:
+                self._ended = True
+        return True
+
+    def _write_alive(self) -> bool:
+        """Append an ``alive`` event, returning ``False`` once the attempt has ended."""
+        line = json.dumps({"t": now_iso(), "ev": ALIVE_EVENT}) + "\n"
+        with self._lock:
+            if self._file is None or self._ended:
+                return False
+            self._file.write(line)
+            self._file.flush()
+            self._last_write = time.monotonic()
+        return True
+
+    def start_liveness(self, interval: float) -> None:
+        """Append ``alive`` after each *interval* seconds without another write.
+
+        A daemon thread waits out the time left of the interval since the last
+        line, so two lines are never further apart than *interval* while the job
+        runs. It stops at the terminal event, at :meth:`close`, and at its own
+        first error, which it swallows: liveness is a report, and a failed
+        report must not fail the job. A second call, or an *interval* of 0 or
+        below, starts nothing.
+
+        Args:
+            interval: The seconds of silence after which ``alive`` is written,
+                normally :data:`LIVENESS_INTERVAL_SECONDS`, the value the
+                ``started`` event declares.
+        """
+        if interval <= 0 or self._liveness is not None:
+            return
+        self._liveness = threading.Thread(
+            target=self._keep_alive,
+            args=(interval,),
+            name=f"runlog-alive-{self.execution_id}",
+            daemon=True,
+        )
+        self._liveness.start()
+
+    def _keep_alive(self, interval: float) -> None:
+        """Write ``alive`` whenever *interval* seconds pass without a line."""
+        try:
+            wait = interval
+            while not self._stop_liveness.wait(wait):
+                silent = time.monotonic() - self._last_write
+                if silent < interval:
+                    wait = interval - silent
+                    continue
+                if not self._write_alive():
+                    return
+                wait = interval
+        except Exception:
+            return
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -388,8 +513,24 @@ class JsonlRunLog:
         host: str = "",
         pid: int = 0,
         created_at: str | None = None,
+        boot_id: str = "",
+        pid_ns: str = "",
+        liveness_interval: float = 0.0,
     ) -> None:
-        """Bracket the start of the attempt (kind/target/owner/host/pid)."""
+        """Bracket the start of the attempt (kind/target/owner/host/pid).
+
+        *boot_id*, *pid_ns* and *liveness_interval* describe the process for a
+        reader judging whether it still runs. Each is written only when set, so
+        a record of a process that runs nothing (a refusal, a cache hit) reads as
+        before.
+        """
+        liveness: dict[str, Any] = {}
+        if boot_id:
+            liveness["boot_id"] = boot_id
+        if pid_ns:
+            liveness["pid_ns"] = pid_ns
+        if liveness_interval > 0:
+            liveness["liveness_interval"] = liveness_interval
         self._emit(
             "started",
             kind=kind,
@@ -398,6 +539,7 @@ class JsonlRunLog:
             host=host,
             pid=pid,
             created_at=created_at or now_iso(),
+            **liveness,
         )
 
     def set_run_id(self, run_id: str) -> None:
@@ -414,15 +556,15 @@ class JsonlRunLog:
 
     def finished(self) -> None:
         """Terminal: the attempt completed successfully."""
-        self._emit("finished")
+        _ = self._write("finished", {}, end=True)
 
     def failed(self, error_json: str = "") -> None:
         """Terminal: the attempt raised (``error_json`` is a captured-error blob)."""
-        self._emit("failed", error=error_json)
+        _ = self._write("failed", {"error": error_json}, end=True)
 
     def cancelled(self) -> None:
         """Terminal: the attempt was cooperatively cancelled."""
-        self._emit("cancelled")
+        _ = self._write("cancelled", {}, end=True)
 
     def entry_failed(self, key: str, error_json: str = "") -> None:
         """One entity failed; the attempt continues.
@@ -580,6 +722,18 @@ class JsonlRunLog:
     # -- lifecycle (resource) -----------------------------------------------
 
     def close(self) -> None:
+        """Stop the liveness thread, and close the file.
+
+        Writes after this are dropped.
+        """
+        self._stop_liveness.set()
+        thread = self._liveness
+        if (
+            thread is not None
+            and thread is not threading.current_thread()
+            and thread.is_alive()
+        ):
+            thread.join()
         with self._lock:
             if self._file is not None:
                 try:
@@ -682,6 +836,10 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         "entries_columns_dropped": 0,
         "cache_hit": False,
         "tracks_variant": "",
+        "boot_id": "",
+        "pid_ns": "",
+        "liveness_interval": 0.0,
+        "phase": "",
     }
     records = _iter_records(path)
     if not records:
@@ -700,6 +858,13 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
             snap["pid"] = rec.get("pid", 0)
             snap["created_at"] = rec.get("created_at", ts)
             snap["started_at"] = rec.get("created_at", ts)
+            # Set from every ``started``, so a later one written without them
+            # (a resume by an older mosaic) clears what an earlier one declared.
+            snap["boot_id"] = _record_text(rec, "boot_id")
+            snap["pid_ns"] = _record_text(rec, "pid_ns")
+            snap["liveness_interval"] = _record_seconds(rec, "liveness_interval")
+        elif ev == "phase":
+            snap["phase"] = _record_text(rec, "phase")
         elif ev == "run_id":
             snap["run_id"] = rec.get("run_id", "")
         elif ev == "total":
@@ -748,6 +913,7 @@ def _reset_for_start(snap: RunLogSnapshot) -> None:
     snap["entries_columns_dropped"] = 0
     snap["cache_hit"] = False
     snap["tracks_variant"] = ""
+    snap["phase"] = ""
 
 
 def read_run(run_dir: Path | str, execution_id: str) -> RunLogSnapshot | None:
@@ -999,6 +1165,14 @@ def _record_count(rec: dict[str, Any], key: str) -> int:
     """An integer field of a run-log record, 0 when absent or not an integer."""
     value = rec.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _record_seconds(rec: dict[str, Any], key: str) -> float:
+    """A non-negative number field of a run-log record, 0.0 when absent or not one."""
+    value = rec.get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0.0
+    return max(float(value), 0.0)
 
 
 def _record_text(rec: dict[str, Any], key: str) -> str:

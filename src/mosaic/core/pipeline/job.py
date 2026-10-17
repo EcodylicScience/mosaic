@@ -38,7 +38,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeAlias
 
+from mosaic import runlog
+
 from ._utils import new_execution_id
+from .markers import current_boot_id, current_pid_namespace
 from .progress import NullProgressCallback, ProgressCallback
 from .refusal import Refusal
 from .run_log import JsonlRunLog, run_log_path
@@ -286,6 +289,17 @@ class JobContext:
         if variants and self.run_log is not None:
             self.run_log.tracks_variant(variants)
 
+    def phase(self, name: str, message: str = "") -> None:
+        """Declare the phase the attempt has entered, such as ``fit`` or ``apply``.
+
+        The run-log folds the last one into the snapshot's ``phase``, and a status
+        report shows it. An injected progress callback receives it too.
+        """
+        if self.run_log is not None:
+            self.run_log.on_phase(name, message)
+        if self.progress is not self.run_log:
+            self.progress.on_phase(name, message)
+
     def check_cancel(self) -> None:
         """Raise :class:`Cancelled` if a cancel has been requested."""
         self.cancel_token.raise_if_cancelled()
@@ -328,6 +342,13 @@ def job_context(
     step_id:
         The pipeline step this attempt runs, or ``""`` outside a pipeline. A
         refusal recorded for the attempt names it.
+
+    The ``started`` event records the host's boot, the pid namespace and
+    :data:`~mosaic.runlog.LIVENESS_INTERVAL_SECONDS`, and a thread appends
+    ``alive`` after each interval of silence until the attempt ends. A
+    ``KeyboardInterrupt`` is recorded ``cancelled``: the interrupted process is
+    often a notebook kernel that lives on, so no liveness rule could ever read
+    the attempt as over.
     """
     execution_id = execution_id or new_execution_id()
 
@@ -366,13 +387,25 @@ def job_context(
     )
 
     if run_log is not None:
-        run_log.started(kind=kind, target=target, owner=owner, host=host, pid=pid)
+        # Read through the module, so a test can shorten the interval.
+        interval = runlog.LIVENESS_INTERVAL_SECONDS
+        run_log.started(
+            kind=kind,
+            target=target,
+            owner=owner,
+            host=host,
+            pid=pid,
+            boot_id=current_boot_id(),
+            pid_ns=current_pid_namespace(),
+            liveness_interval=interval,
+        )
         if total:
             run_log.set_total(total)
+        run_log.start_liveness(interval)
 
     try:
         yield ctx
-    except Cancelled:
+    except (Cancelled, KeyboardInterrupt):
         if run_log is not None:
             run_log.cancelled()
         raise

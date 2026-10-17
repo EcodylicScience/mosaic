@@ -1355,6 +1355,7 @@ def _run_feature_impl(
                 )
                 yield entry_key, frame
 
+        ctx.phase("fit", f"{len(manifest)} entries")
         feature.fit(InputStream(input_factory, n_entries=len(manifest)))
         feature.save_state(run_root)
         # Item 5.3, and the placement is the item. Written here rather than
@@ -1364,6 +1365,7 @@ def _run_feature_impl(
         # fitter -- scope-free, so every apply scope shares one run root -- those
         # two are different answers, and this is the one that stays true.
         write_fit_scope(run_root, resolved, scope_dependent=feature.scope_dependent)
+        ctx.phase("apply")
 
     # Apply phase — index rows are flushed periodically for interrupt recovery
     _pending_idx_rows: list[FeatureIndexRow] = []
