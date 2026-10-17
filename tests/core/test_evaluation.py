@@ -27,6 +27,7 @@ from tests.helpers import (
     PairClusterFeature,
     add_labels,
     add_track_sequences,
+    add_tracks_variant,
     make_dataset,
 )
 
@@ -110,3 +111,28 @@ def test_a_perspective_filter_counts_only_its_rows(tmp_path: Path) -> None:
     assert aligned.n_rows == 6
     assert aligned.n_unlabeled == 6
     assert aligned.frame.empty
+
+
+def test_a_reconverted_dataset_scores_the_tracks_variant_the_run_read(
+    tmp_path: Path,
+) -> None:
+    """Two tracks variants of one entry make reading its rows ambiguous.
+
+    The run being scored chose one when it ran, so the alignment reads that one
+    rather than refusing, with no keyword the caller could answer it by.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    first, second = "convert-a.0.1-aaaaaaaaaa", "convert-b.0.1-bbbbbbbbbb"
+    add_tracks_variant(ds, first, "s", n_rows=3)
+    add_tracks_variant(ds, second, "s", n_rows=3)
+    _ = add_labels(ds, "", "s", [(f, 0, 1, 1) for f in range(3)])
+    run_id = ds.run_feature(PairClusterFeature(), tracks_run_id=first).run_id
+    column = ResultColumn(
+        feature="prov-pair-cluster__from__tracks", run_id=run_id, column="cluster"
+    )
+
+    inferred = align_predictions_to_labels(ds, column, perspective=0)
+    named = align_predictions_to_labels(ds, column, perspective=0, tracks_run_id=first)
+
+    assert inferred.frame[LABEL_COLUMN].tolist() == [1, 1, 1]
+    assert inferred.frame.equals(named.frame)

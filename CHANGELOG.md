@@ -216,7 +216,9 @@ alignment and the scorers, and `mosaic.core.analysis` calls it.
 - `align_predictions_to_labels(ds, ResultColumn(...))` pairs each output row of a run
   with the label of that row through `load_values`, in one labels variant
   (`labels_run_id=`), filters a `perspective`, and drops and counts unlabeled rows and
-  rows with no prediction (`AlignedLabels`).
+  rows with no prediction (`AlignedLabels`). It reads the tracks variant the scored
+  run read, so a dataset holding two variants of an entry after a reconversion is not
+  refused; `tracks_run_id=` names another.
 - `cluster_label_scores` (which `cluster_gt_agreement` now calls) drops rows labeled
   `-1` and reports `n_unlabeled`. It adds `majority_accuracy` (equal to `purity`),
   `majority_mapping` (cluster to class) and `hungarian_one_to_one`. With more clusters
@@ -224,8 +226,8 @@ alignment and the scorers, and `mosaic.core.analysis` calls it.
   beyond it as wrong. `majority_mapping` and `perspective_consistency` are also
   public.
 - `compute_cluster_label_agreement` takes `perspective=` (an int, or `"each"` for
-  `metrics_by_perspective`), `scope=` and `labels_run_id=`. It reports
-  `n_unlabeled_dropped`, `n_missing_prediction` and, for a pair run,
+  `metrics_by_perspective`), `scope=`, `labels_run_id=` and `tracks_run_id=`. It
+  reports `n_unlabeled_dropped`, `n_missing_prediction` and, for a pair run,
   `perspective_consistency`, `n_perspective_pairs` and `n_perspectives`. `max_frames`
   subsamples after the perspective filter. Rows of `aligned_sequences` and
   `per_sequence` carry `group`, `sequence`, `sequence_safe` and `entry_key`, and no

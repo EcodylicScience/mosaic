@@ -61,6 +61,7 @@ def compute_cluster_label_agreement(
     perspective: int | Literal["each"] | None = None,
     scope: Scope | None = None,
     labels_run_id: str | None = None,
+    tracks_run_id: str | None = None,
 ) -> dict[str, object]:
     """Score a per-frame clustering run against ground-truth labels.
 
@@ -107,6 +108,9 @@ def compute_cluster_label_agreement(
         The entries to read. ``None`` reads every entry of the run.
     labels_run_id : str, optional
         The labels variant, when the kind has more than one.
+    tracks_run_id : str, optional
+        The tracks variant, when an entry has more than one. Unset, the one the
+        clustering run read is used.
 
     Returns
     -------
@@ -140,6 +144,7 @@ def compute_cluster_label_agreement(
         label_kind=label_kind,
         scope=scope,
         labels_run_id=labels_run_id,
+        tracks_run_id=tracks_run_id,
         drop_unlabeled=False,
     )
     frame = aligned.frame

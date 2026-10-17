@@ -273,6 +273,7 @@ def align_predictions_to_labels(
     label_kind: str = "behavior",
     scope: Scope | None = None,
     labels_run_id: str | None = None,
+    tracks_run_id: str | None = None,
     pair_filter: NNResult | None = None,
     perspective: int | None = None,
     drop_unlabeled: bool = True,
@@ -291,6 +292,10 @@ def align_predictions_to_labels(
         label_kind: The labels kind, ``behavior`` by default.
         scope: The entries to read. ``None`` reads every entry of the run.
         labels_run_id: The labels variant, when the kind has more than one.
+        tracks_run_id: The tracks variant the entries resolve to, when an entry
+            has more than one. ``None`` takes the one variant the run read,
+            directly or through its upstreams, when its lineage names exactly
+            one.
         pair_filter: Keep only the pair rows this nearest-neighbor run selects.
         perspective: Keep only the rows of this ``perspective``, when the run
             writes one. ``None`` keeps both.
@@ -311,10 +316,13 @@ def align_predictions_to_labels(
         if label_kind == "behavior"
         else LabelsSource(kind=label_kind)
     )
+    if tracks_run_id is None:
+        tracks_run_id = _tracks_variant_read(ds, prediction)
     values = load_values(
         ds,
         [prediction, labels],
         scope=scope,
+        tracks_run_id=tracks_run_id,
         pair_filter=pair_filter,
         labels_run_id=labels_run_id,
     )
@@ -339,3 +347,22 @@ def align_predictions_to_labels(
         n_unlabeled=int(unlabeled.sum()),
         n_missing_prediction=int(missing.sum()),
     )
+
+
+def _tracks_variant_read(ds: Dataset, prediction: ResultColumn) -> str | None:
+    """The one tracks variant *prediction*'s run read, or ``None``.
+
+    Reading a run's rows builds a manifest, which resolves each entry to one
+    tracks variant. A dataset holding two variants of an entry -- after a
+    reconversion -- refuses to choose, though the run being scored already chose
+    when it ran. ``None`` when the run is unpinned, its lineage is unknown, or it
+    names no variant or several.
+    """
+    from .pipeline.inventory.params import run_tracks_variants
+
+    if prediction.run_id is None:
+        return None
+    variants = run_tracks_variants(ds, prediction.feature, prediction.run_id)
+    if variants is None or len(variants) != 1:
+        return None
+    return next(iter(variants))
