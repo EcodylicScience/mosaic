@@ -253,8 +253,8 @@ def _plan(plan: PlanWire) -> str:
     cleanup = (
         f" {plan.cleanup.removable_runs} superseded run(s) "
         f"({plan.cleanup.removable_bytes / 1e9:.1f} GB) are removable and "
-        f"{plan.cleanup.kept_runs} kept; each step lists its storage's under "
-        f"superseded."
+        f"{plan.cleanup.kept_runs} kept; each step lists a sample of its storage's "
+        f"under superseded."
         if plan.cleanup is not None
         else ""
     )
