@@ -76,6 +76,7 @@ __all__ = [
     "MAX_STEP_TYPE_DETAIL_CHARS",
     "MERGED_TOOLS",
     "PLAN_MISSING_SAMPLE",
+    "PLAN_SUPERSEDED_SAMPLE",
     "PREVIEW_DEFAULT_ROWS",
     "PREVIEW_MAX_COLUMNS",
     "RECIPE_EXAMPLE",
@@ -166,6 +167,14 @@ that narrow it. A tool that changes a dataset is never refused after the fact.
 
 PLAN_MISSING_SAMPLE: Final = 3
 """The missing entries that ``plan_recipe`` names per step."""
+
+PLAN_SUPERSEDED_SAMPLE: Final = 5
+"""The superseded runs that ``plan_recipe`` lists per step, removable ones first.
+
+Each takes about 400 characters, and a session that tunes a chain leaves dozens
+in every storage of it, so the core default of 50 would put a plan over
+:data:`MAX_RESULT_CHARS`, which no argument narrows. The totals count them all.
+"""
 
 LISTING_MISSING_SAMPLE: Final = 5
 """The missing keys that a ``get_inventory`` listing names per artifact."""

@@ -56,6 +56,7 @@ def plan_wire(
     *,
     missing_sample: int = MISSING_SAMPLE_WIRE,
     open_requests: tuple[RequestSummaryWire, ...] = (),
+    superseded_sample: int = SUPERSEDED_SAMPLE,
 ) -> PlanWire:
     """Serialize *plan* with a structured reason and a bounded coverage summary.
 
@@ -65,7 +66,7 @@ def plan_wire(
     :class:`~.plan.RecipeRefused` contains has them. So are its cautions: a
     plan over the whole dataset, and each step asked for more than
     :data:`LARGE_SCOPE_ENTRIES` entries. The fingerprint depends on neither
-    the cautions nor *missing_sample*.
+    the cautions nor *missing_sample*, nor on *superseded_sample*.
 
     Args:
         plan: The plan.
@@ -73,10 +74,18 @@ def plan_wire(
         open_requests: The requests of the recipe that have not ended, as
             :func:`~.store.requests_matching` reads them. They are reported as
             given and do not enter the fingerprint.
+        superseded_sample: How many superseded runs each step lists at most,
+            when the plan was asked for a cleanup.
     """
     superseded = _superseded_by_step(plan.cleanup)
     steps = tuple(
-        _step_wire(planned, plan, missing_sample, superseded.get(planned.step_id, ()))
+        _step_wire(
+            planned,
+            plan,
+            missing_sample,
+            superseded.get(planned.step_id, ()),
+            superseded_sample,
+        )
         for planned in plan.steps
     )
     return PlanWire(
@@ -241,6 +250,7 @@ def _step_wire(
     plan: Plan,
     missing_sample: int,
     superseded: tuple[SupersededRun, ...] = (),
+    superseded_sample: int = SUPERSEDED_SAMPLE,
 ) -> PlannedStepWire:
     return PlannedStepWire(
         step=planned.step_id,
@@ -261,9 +271,9 @@ def _step_wire(
         labels_variant=planned.labels_variant,
         step_scope=plan.step_scopes.get(planned.step_id),
         superseded=tuple(
-            _superseded_wire(run) for run in superseded[:SUPERSEDED_SAMPLE]
+            _superseded_wire(run) for run in superseded[:superseded_sample]
         ),
-        superseded_omitted=max(len(superseded) - SUPERSEDED_SAMPLE, 0),
+        superseded_omitted=max(len(superseded) - superseded_sample, 0),
     )
 
 

@@ -304,9 +304,7 @@ def test_a_request_without_cleanup_rolls_up_as_before(dataset: Dataset) -> None:
 # --- what appears while the cleanup runs ---------------------------------------------
 
 
-def _during_cleanup(
-    monkeypatch: pytest.MonkeyPatch, act: Callable[[], None]
-) -> None:
+def _during_cleanup(monkeypatch: pytest.MonkeyPatch, act: Callable[[], None]) -> None:
     """Call *act* once the cleanup has judged its runs, before it removes any."""
     module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
     judge = module.plan_cleanup

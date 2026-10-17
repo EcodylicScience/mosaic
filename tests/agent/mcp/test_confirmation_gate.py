@@ -15,6 +15,7 @@ import pytest
 from mosaic.agent.mcp.local import LocalBackend
 from mosaic.agent.mcp.spec import (
     ConfirmationCondition,
+    PLAN_SUPERSEDED_SAMPLE,
     DatasetList,
     SubmittedPipeline,
     call_tool,
@@ -560,3 +561,17 @@ def test_the_policy_comes_from_the_server_not_the_call(
     assert plan.cleanup.policy == LOOSE
     assert isinstance(refused, ErrorEnvelope)
     assert refused.reason == "invalid_arguments"
+
+
+def test_plan_recipe_lists_a_bounded_sample_of_superseded_runs(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    """A sample per step, so a tuned chain's plan stays inside the result budget."""
+    old = [run_speed(dataset, size) for size in (1, 3, 4, 5, 6, 7, 8)]
+
+    plan = _cleanup_plan(_cleaning(dataset, starter, allowed=False), dataset)
+
+    assert plan.cleanup is not None
+    assert plan.cleanup.removable_runs == len(old)
+    assert len(plan.steps[0].superseded) == PLAN_SUPERSEDED_SAMPLE
+    assert plan.steps[0].superseded_omitted == len(old) - PLAN_SUPERSEDED_SAMPLE

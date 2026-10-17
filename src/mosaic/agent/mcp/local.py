@@ -37,6 +37,7 @@ from .spec import (
     LISTED_STATUS_NOT,
     LISTING_MISSING_SAMPLE,
     PLAN_MISSING_SAMPLE,
+    PLAN_SUPERSEDED_SAMPLE,
     ActivityPage,
     AttemptDiagnosis,
     CancelRequestInput,
@@ -639,7 +640,10 @@ class LocalBackend:
             Scope() if scope is None else scope,
         )
         return plan_wire(
-            plan, missing_sample=PLAN_MISSING_SAMPLE, open_requests=unended
+            plan,
+            missing_sample=PLAN_MISSING_SAMPLE,
+            open_requests=unended,
+            superseded_sample=PLAN_SUPERSEDED_SAMPLE,
         )
 
     def _submit_pipeline(self, args: SubmitPipelineInput) -> SubmittedPipeline:
