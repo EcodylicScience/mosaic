@@ -123,6 +123,10 @@ datasets:              # manifests, or the directories that contain them
 discover:              # directories searched for datasets, three levels deep
   - ~/data/projects
 allow_managed_writes: false
+allow_cleanup: []      # [feature-runs] lets submit_pipeline remove superseded runs
+cleanup:               # which superseded runs a cleanup keeps
+  keep_newest: 1
+  min_age_hours: 24
 ```
 
 The tools name a dataset by the `uuid` in its manifest, which `list_datasets` reports.
@@ -138,8 +142,8 @@ that does not read, is left out and reported on the server's standard error.
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, found by words, and the ones named with their params as a table |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
-| `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint |
-| `submit_pipeline` | Submits a planned recipe and starts it in the background |
+| `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. With `cleanup: superseded`, the superseded runs of its storages |
+| `submit_pipeline` | Submits a planned recipe and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards |
 | `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts |
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
@@ -224,7 +228,7 @@ Restart it after installing an extra or building a tool's environment.
 - a request of the same recipe over overlapping entries has not ended
   (`open_duplicate`);
 - the submission removes superseded runs of its steps' storage after its steps finish
-  (`cleanup`).
+  (`cleanup`). The question names how many runs, their size and their storages.
 
 `cancel_request` asks to confirm when a running step loses its work (`hard_cancel`): a
 keypoint-MoSeq or VAME fit stops at once, and training loses the epoch in progress.
@@ -315,7 +319,9 @@ The server does not expose them as tools. When one is needed, the agent proposes
 `mosaic` command or the library call, and you run it:
 
 - overwriting a computed run (`overwrite`);
-- deleting tables, entries or runs;
+- deleting tables, entries or runs, except superseded feature runs, which
+  `submit_pipeline` removes with `cleanup: superseded` when the server runs with
+  `--allow-cleanup feature-runs` (see below);
 - `--apply` on `sweep-tracking`, `prune-media`, `prune-joined`, `reconcile` and
   `upgrade-tracks`;
 - `reindex` and `release`;
@@ -324,6 +330,38 @@ The server does not expose them as tools. When one is needed, the agent proposes
 - any change to the manifest: `init`, `sources`, `tags`, `notes`, `libraries`;
 - `extract-frames`, whose frames annotation tools refer to by path;
 - accepting the keypoint-MoSeq license (`MOSAIC_KPMS_LICENSE_ACCEPTED`).
+
+### Reclaiming superseded runs
+
+A recipe whose params changed leaves its earlier runs in the same storages. The agent
+can remove them only on a server started with `--allow-cleanup feature-runs`, or with
+`allow_cleanup: [feature-runs]` in its configuration. `plan_recipe` with
+`cleanup: superseded` lists them on any server, because it only reads:
+
+- each step lists the other runs of its storage under `superseded`, each removable or
+  kept with its reason, and `cleanup` totals them;
+- `submit_pipeline` with `cleanup: superseded` and that plan's fingerprint asks you to
+  confirm (`cleanup`), then removes the removable runs once every step has finished.
+
+The policy is yours, in the configuration's `cleanup`, and no tool call changes it. The
+defaults keep the newest superseded run of each storage and every run younger than
+24 hours. A sandbox that reclaims space within one session might use:
+
+```yaml
+allow_cleanup: [feature-runs]
+cleanup:
+  keep_newest: 0
+  min_age_hours: 1
+```
+
+A run is always kept when its feature is costly to fit again, when its `params.json`
+is missing, when a running or recent request holds it (for at least an hour), when an
+attempt that may still run names it or reads it, when it covers entries or a fit its
+replacement does not, or when a kept run reads it. Only the feature storages the recipe
+names are touched. Each removed run's `params.json` is kept in the cleanup's run-log,
+so the run can be computed again, and `get_request_status` reports what was removed
+and kept. A managed dataset refuses a cleanup, and a queue that runs the steps itself
+does not run one.
 
 ### Data sent to the model provider
 

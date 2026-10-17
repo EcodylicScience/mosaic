@@ -105,6 +105,14 @@ dataset needs a host name of its own. A Docker container gets a new host name ea
 time it starts. Give it a stable one with `docker run --hostname <name>`, and run one
 container with that name at a time.
 
+A request submitted with `--cleanup superseded` removes its approved superseded runs
+after every step has finished, and stays `running` until that is done.
+`mosaic pipeline status` prints the cleanup below the steps: its status, how many runs
+it removed of those approved, and each run it kept with the reason. `skipped` means a
+step did not finish, so nothing was removed. A cleanup that fails or is cancelled leaves
+the request's verdict to its steps. A queue that runs the steps itself runs no cleanup;
+`mosaic pipeline run --request` does.
+
 **A run reports what it lost.** A failure on one entry is recorded and surfaced as a
 `partial` status with the failed entries named. It is not silently dropped, and it is
 not promoted to a total failure. Losing *every* entry does raise.

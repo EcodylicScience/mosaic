@@ -68,10 +68,39 @@ inventory_wire(ds, found, status_not=["complete"], limit=20)
 | `mosaic prune-media` | Delete transcode derivatives no forward link reaches |
 | `mosaic prune-joined` | Delete joined exports an earlier `export-joined` version made |
 | `mosaic upgrade-tracks` | Rescale centimeter-era TRex tables to pixels |
+| `mosaic pipeline plan --cleanup superseded` | List the feature runs a recipe's new params superseded, and which may go |
 
 `sweep-tracking` is the one that matters for disk: raw tracker output under
 `_tracking/<tool>/<run_id>/` is often far larger than the parquet it produced, and it
 is only needed until the bridge has run.
+
+### Superseded feature runs
+
+Changing a step's params gives it a new run in the same storage, and the old run stays
+on disk. Plan the recipe with `--cleanup superseded` to list those other runs, each
+removable or kept with its reason, and submit with the same flags and the plan's
+fingerprint to remove the removable ones after every step has finished:
+
+```bash
+mosaic pipeline plan   -m dataset.yaml --recipe @recipe.json --cleanup superseded
+mosaic pipeline submit -m dataset.yaml --recipe @recipe.json --cleanup superseded \
+    --expect-plan <fingerprint>
+mosaic pipeline run    -m dataset.yaml --request <request id>
+```
+
+`mosaic pipeline run --recipe` takes the same flags. Planning writes nothing. A run is
+kept when its feature is costly to fit again (a GPU model, kpms, VAME, an overlay), when
+its `params.json` is missing, when an attempt that may still run names it or reads it,
+when another request holds it, when it covers entries or a fit its replacement does
+not, when it is younger than `--min-age-hours` (24 by default) or among the
+`--keep-newest` newest (1 by default), and when a kept run reads it. Only the storages
+the recipe names are touched, never tracks, models or media. A dataset that a service
+manages refuses a cleanup.
+
+Each removed run's `params.json` is recorded in the cleanup's run-log, which
+`mosaic status --execution-id <cleanup id>` reads, so the run can be computed again.
+Removing the newest run of a storage changes what a reference that names no run id
+reads, which `--keep-newest 1` avoids.
 
 `upgrade-tracks` **refuses** a table that does not record its conversion factor,
 rather than guessing one. Nothing can divide back out a number nobody wrote down.

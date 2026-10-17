@@ -156,7 +156,9 @@ A dataset is a directory with `dataset.yaml` and named roots
   then, and leave the version as it is.
 - Derived and temporary folders cost only time to delete. Reclaim space with `mosaic
   sweep-tracking`, `prune-media` and `prune-joined`. `mosaic reindex` drops index rows
-  whose files are gone. All four are dry runs until given `--apply`.
+  whose files are gone. All four are dry runs until given `--apply`. For superseded
+  feature runs, plan with `mosaic pipeline plan --cleanup superseded`, which lists
+  them, and submit with `--cleanup superseded --expect-plan <fingerprint>`.
 
 ## Bringing data in
 
@@ -323,8 +325,10 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   checked. Ask the user whether its process still runs. Once they confirm it has
   exited, propose `mosaic cancel --manifest <manifest> --request <id>
   --assume-exited`, then submit the recipe again.
-- The tools do not overwrite, delete, sweep, prune, reindex or change the manifest.
-  Propose the `mosaic` command and let the user run it.
+- The tools delete nothing except superseded feature runs, through `cleanup` on
+  `submit_pipeline`, which the operator must allow and the user confirms. They do not
+  overwrite, sweep, prune, reindex or change the manifest. Propose the `mosaic`
+  command and let the user run it.
 
 ## Pitfalls
 

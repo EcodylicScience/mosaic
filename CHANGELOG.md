@@ -332,6 +332,51 @@ and score on the test groups.
   `select_scored_rows`, `EvaluationReport` and `ClassScore`.
 - No existing run id, op id, recipe digest or fingerprint moves.
 
+**A pipeline removes the feature runs its new params superseded, when asked.** Changing
+a step's params leaves the earlier runs of its storage on disk, and no verb reclaimed
+them. `mosaic pipeline plan --cleanup superseded` and `plan_recipe` with
+`cleanup: "superseded"` list every other run of the recipe's feature storages, each
+removable or kept with its reason (`costly_fit`, `params_unknown`, `attempt_open`,
+`held_by_request`, `wider_coverage`, `other_fit_scope`, `young`, `newest`, `read_by`
+and others). Planning writes nothing. `mosaic pipeline submit` and `run --recipe` with
+`--cleanup superseded --expect-plan <fingerprint>`, and `submit_pipeline` with
+`cleanup: "superseded"`, remove the removable ones after every step has finished. Each
+removal records the run's `params.json` in the cleanup's run-log before the index rows
+and then the directory go, so the run can be computed again.
+
+- The policy is `CleanupPolicy(keep_newest=1, min_age_hours=24)`, set by the CLI's
+  `--keep-newest` and `--min-age-hours` or by the MCP server's configuration
+  (`cleanup:`), never by a tool call. A request that ended holds its runs for at least
+  an hour.
+- The MCP server refuses `submit_pipeline` with a cleanup (`cleanup_not_allowed`)
+  unless started with `--allow-cleanup feature-runs` or `allow_cleanup:
+  [feature-runs]`, and then asks to confirm the `cleanup` condition. `submit_pipeline`
+  is now annotated destructive. A managed dataset refuses a cleanup
+  (`CleanupOnManagedDataset`), and a cleanup without a reviewed fingerprint is refused
+  (`CleanupNeedsPlan`).
+- A request with a cleanup reads `running` until the cleanup's run-log ends, and a
+  failed or cancelled cleanup leaves the verdict to the steps. `request_verdict` is
+  unchanged. A killed driver leaves the request `orphaned`, and
+  `mosaic pipeline run --request` finishes the cleanup. A queue that dispatches the
+  steps itself runs no cleanup.
+- Every `global` and `media` feature declares `costly_fit`.
+- New fields, all defaulted: `PlanWire.cleanup`, `PlannedStepWire.superseded` and
+  `superseded_omitted`, `RequestStatusWire.cleanup`, `RequestRollup.cleanup`,
+  `Request.cleanup`, `Plan.cleanup`, `Declaration.costly_fit`,
+  `SubmittedPipeline.cleanup_runs` and `cleanup_bytes`, `PlanRecipeInput.cleanup`,
+  `SubmitPipelineInput.cleanup`, `ServerConfig.allow_cleanup` and `cleanup`,
+  `RequestRun.cleanup_status` and `PipelineRun.cleanup_status`. New run-log events
+  `run_removing`, `run_removed` and `run_kept`, read by
+  `mosaic.runlog.read_removal_records`; `TERMINAL_STATUSES` is unchanged.
+- New library: `mosaic.core.pipeline.feature_run_removal` (`remove_feature_run`,
+  `run_bytes`) and, in `mosaic.core.pipeline.graph`, `plan_with_cleanup`,
+  `plan_cleanup`, `run_cleanup`, `CleanupPolicy`, `CleanupPlan`, `SupersededRun`,
+  `CleanupOutcome` and `CleanupStatusWire`.
+- No identifier moves, and a plan not asked for a cleanup fingerprints as before.
+- An older mosaic cannot read a request file that carries a cleanup, so it cannot list
+  the requests of a dataset that holds one. A request without one is written as
+  before.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

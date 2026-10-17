@@ -62,7 +62,14 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   `read_run_report`.
 - `docs/agents.md` lists the operations the server leaves to the user, such as
   deletion, `--apply` on a sweep or prune verb, and manifest writes. Do not add a tool
-  for one.
+  for one. The one deletion the tools make is removing superseded feature runs: the
+  `cleanup` argument of `submit_pipeline`, refused (`cleanup_not_allowed`) unless the
+  server runs with `--allow-cleanup feature-runs`, and asked about through the
+  `cleanup` condition. The policy comes from the server's configuration, never from a
+  call (`test_confirmation_gate.py`). `plan_recipe` takes `cleanup` as a read.
+- An accepted confirmation confirms only the conditions it named. `_binding.py` runs
+  the call again without `confirm` first and asks again when it meets another
+  (`test_mcp_server.py`).
 
 ## Standard output
 
