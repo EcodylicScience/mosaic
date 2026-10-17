@@ -13,13 +13,17 @@ from mosaic.core.pipeline import _utils as pipeline_utils
 from mosaic.core.pipeline.error_envelope import error_envelope
 from mosaic.core.pipeline.graph import (
     DRIVER_LEASE_GRACE_SECONDS,
+    STALE_STEP_SECONDS,
     DriverRunning,
     LeaseKeeper,
     LeaseLost,
     LeaseNotRefreshed,
+    RequestRollup,
+    StepAttempt,
     driver_alive,
     driver_lease_path,
     lease_is_live,
+    live_step_process,
     read_driver_lease,
     release_driver_lease,
     take_driver_lease,
@@ -253,3 +257,36 @@ def test_a_stalled_driver_does_not_overwrite_the_lease_that_replaced_its_own(
     keeper.record_step("speed", 4242)
 
     assert read_driver_lease(tmp_path, "R1") == taken
+
+
+def test_a_stale_other_host_lease_naming_an_unstarted_step_is_dead_after_the_window(
+    tmp_path: Path,
+) -> None:
+    """A step on another host that has not written its run-log yet."""
+    lease = write_driver_lease(
+        tmp_path,
+        "R1",
+        stale=True,
+        host="another-host.invalid",
+        step_id="speed",
+        step_pid=7,
+    )
+    refreshed = parse_instant(lease.refreshed_at)
+    assert refreshed is not None
+    rollup = RequestRollup(
+        request_id="R1",
+        status="running",
+        steps=(StepAttempt(step_id="speed", execution_id="E1"),),
+    )
+    within = refreshed + datetime.timedelta(seconds=STALE_STEP_SECONDS - 1)
+    after = refreshed + datetime.timedelta(seconds=STALE_STEP_SECONDS + 1)
+
+    running = live_step_process(rollup, lease, now=within)
+
+    assert running is not None
+    assert (running.step_id, running.pid, running.liveness) == (
+        "speed",
+        7,
+        "unknown",
+    )
+    assert live_step_process(rollup, lease, now=after) is None

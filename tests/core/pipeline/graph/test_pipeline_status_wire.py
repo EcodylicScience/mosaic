@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import socket
+from collections.abc import Mapping
 from pathlib import Path
 
 from mosaic.core.pipeline.graph import (
     FAILED_ENTRY_SAMPLE,
+    POLL_AFTER_MAX_SECONDS,
+    POLL_AFTER_MIN_SECONDS,
     Request,
+    RequestRollup,
+    RequestStatus,
     RunStatusWire,
+    StepAttempt,
+    poll_after_seconds,
     recorded_error,
     request_status_wire,
     request_summary,
@@ -18,7 +26,11 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.runlog import JsonlRunLog, RunLogSnapshot, run_log_path
-from tests.helpers import write_driver_lease
+from tests.helpers import exited_pid, write_driver_lease
+
+OTHER_HOST = "another-host.invalid"
+
+NOW = datetime.datetime(2026, 10, 17, 12, 0, tzinfo=datetime.UTC)
 
 
 def _log(base: Path, execution_id: str) -> JsonlRunLog:
@@ -225,3 +237,148 @@ def test_a_terminal_request_is_not_orphaned(tmp_path: Path) -> None:
     report = request_status_wire(tmp_path, _request(speed="E1"))
 
     assert report.verdict == "cancelled"
+
+
+def _write_log(base: Path, execution_id: str, *records: Mapping[str, object]) -> None:
+    """Write a run-log whose lines carry the times the records give."""
+    path = run_log_path(base, execution_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_text("".join(json.dumps(record) + "\n" for record in records))
+
+
+def _ago(seconds: float) -> str:
+    return (NOW - datetime.timedelta(seconds=seconds)).isoformat()
+
+
+def test_a_request_without_a_lease_whose_started_step_is_dead_is_orphaned(
+    tmp_path: Path,
+) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(
+            kind="feature", target="speed", host=socket.gethostname(), pid=exited_pid()
+        )
+
+    report = request_status_wire(tmp_path, _request(speed="E1", templates="E2"))
+
+    assert (report.status, report.verdict) == ("running", "orphaned")
+    assert report.steps[0].liveness == "dead"
+    assert report.poll_after_seconds is None
+
+
+def test_a_request_without_a_lease_between_queue_steps_is_running(
+    tmp_path: Path,
+) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="speed", pid=exited_pid())
+        log.finished()
+
+    report = request_status_wire(tmp_path, _request(speed="E1", templates="E2"))
+
+    assert (report.status, report.verdict) == ("running", "running")
+    assert report.poll_after_seconds == POLL_AFTER_MIN_SECONDS
+
+
+def test_a_request_without_a_lease_whose_step_is_unknown_stays_running(
+    tmp_path: Path,
+) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="speed", host=OTHER_HOST, pid=4242)
+
+    report = request_status_wire(tmp_path, _request(speed="E1"))
+
+    assert (report.verdict, report.steps[0].liveness) == ("running", "unknown")
+
+
+def test_a_request_whose_step_went_silent_in_another_container_is_orphaned(
+    tmp_path: Path,
+) -> None:
+    """A Docker container with a new host name for every run, as the CalMS21 one."""
+    started = {
+        "t": _ago(3600),
+        "ev": "started",
+        "kind": "feature",
+        "target": "speed",
+        "host": "3f9a2c1d7e4b",
+        "pid": 7,
+        "created_at": _ago(3600),
+        "liveness_interval": 60.0,
+    }
+    _write_log(tmp_path, "E1", started, {"t": _ago(1200), "ev": "alive"})
+
+    report = request_status_wire(tmp_path, _request(speed="E1"), now=NOW)
+
+    assert (report.status, report.verdict) == ("running", "orphaned")
+    assert request_summary(tmp_path, _request(speed="E1")).verdict == "orphaned"
+
+
+def test_each_step_reports_its_start_heartbeat_phase_and_liveness(
+    tmp_path: Path,
+) -> None:
+    started = {
+        "t": _ago(300),
+        "ev": "started",
+        "kind": "feature",
+        "target": "speed",
+        "host": OTHER_HOST,
+        "pid": 7,
+        "created_at": _ago(300),
+        "liveness_interval": 60.0,
+    }
+    _write_log(
+        tmp_path,
+        "E1",
+        started,
+        {"t": _ago(200), "ev": "phase", "phase": "fit", "message": "2 entries"},
+        {"t": _ago(30), "ev": "alive"},
+    )
+
+    report = request_status_wire(
+        tmp_path, _request(speed="E1", templates="E2"), now=NOW
+    )
+
+    speed, templates = report.steps
+    assert (
+        speed.host,
+        speed.started_at,
+        speed.heartbeat_at,
+        speed.phase,
+        speed.liveness,
+    ) == (OTHER_HOST, _ago(300), _ago(30), "fit", "alive")
+    assert (templates.liveness, templates.host) == (None, "")
+    run = run_status_wire(tmp_path, "E1", now=NOW)
+    assert run is not None
+    assert (run.liveness, run.phase) == ("alive", "fit")
+
+
+def _rollup(*steps: StepAttempt, status: RequestStatus = "running") -> RequestRollup:
+    return RequestRollup(request_id="R1", status=status, steps=steps)
+
+
+def _running(started_ago: float, done: int = 0, total: int = 0) -> StepAttempt:
+    return StepAttempt(
+        step_id="speed",
+        execution_id="E1",
+        status="running",
+        started_at=_ago(started_ago),
+        progress_done=done,
+        progress_total=total,
+    )
+
+
+def test_poll_after_scales_with_elapsed_time_and_progress() -> None:
+    def wait(*steps: StepAttempt) -> int | None:
+        return poll_after_seconds(_rollup(*steps), "running", now=NOW)
+
+    assert wait(StepAttempt(step_id="speed", execution_id="E1")) == 10
+    assert wait(_running(30)) == POLL_AFTER_MIN_SECONDS
+    assert wait(_running(1000)) == 100
+    assert wait(_running(100, done=1, total=4)) == 150
+    assert wait(_running(36000)) == POLL_AFTER_MAX_SECONDS
+    assert wait(_running(36000), _running(1000)) == 100
+
+
+def test_a_terminal_or_orphaned_request_has_no_poll_after() -> None:
+    finished = StepAttempt(step_id="speed", execution_id="E1", status="finished")
+
+    assert poll_after_seconds(_rollup(finished, status="finished"), "finished") is None
+    assert poll_after_seconds(_rollup(_running(60)), "orphaned", now=NOW) is None

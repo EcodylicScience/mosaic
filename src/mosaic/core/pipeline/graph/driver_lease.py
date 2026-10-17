@@ -32,7 +32,12 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from mosaic.runlog import now_iso
+from mosaic.runlog import (
+    LIVENESS_INTERVAL_SECONDS,
+    LIVENESS_STALE_INTERVALS,
+    AttemptLiveness,
+    now_iso,
+)
 
 from ..error_kind import ClassifiedError, ErrorKind
 from ..index_lock import index_lock
@@ -42,6 +47,7 @@ from ..markers import (
     process_running,
     process_running_since,
 )
+from .liveness import may_still_run, step_liveness
 
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
@@ -53,6 +59,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DRIVER_LEASE_GRACE_SECONDS",
     "DRIVER_LEASE_REFRESH_SECONDS",
+    "STALE_STEP_SECONDS",
     "DriverLease",
     "DriverRunning",
     "LeaseKeeper",
@@ -64,6 +71,7 @@ __all__ = [
     "driver_log_path",
     "drivers_root",
     "lease_is_live",
+    "lease_step_may_run",
     "live_step_process",
     "read_driver_lease",
     "refuse_live_driver",
@@ -87,6 +95,14 @@ DRIVER_LEASE_UNREFRESHED_LIMIT_SECONDS: Final = DRIVER_LEASE_GRACE_SECONDS / 2
 
 Half the grace, so a driver stops before another can read its lease stale, and a
 step that it starts has the other half to record its process in its run-log.
+"""
+
+STALE_STEP_SECONDS: Final = LIVENESS_STALE_INTERVALS * LIVENESS_INTERVAL_SECONDS
+"""How long after its last refresh a stale lease of another host names a live step.
+
+A step on another host that a stale lease names has not written its run-log, so
+nothing else tells whether it runs. It is given as long as a run-log's silence is
+(:mod:`~.liveness`).
 """
 
 
@@ -225,12 +241,15 @@ class StepProcess:
         execution_id: Its attempt.
         host: The host that its run-log, or its driver's lease, names.
         pid: The process.
+        liveness: How its run-log reads (:mod:`~.liveness`). ``unknown`` for a
+            step on another host that only a stale lease names.
     """
 
     step_id: str
     execution_id: str
     host: str
     pid: int
+    liveness: AttemptLiveness = "alive"
 
 
 def drivers_root(base_dir: Path | str) -> Path:
@@ -298,21 +317,29 @@ def driver_alive(base_dir: Path | str, request_id: str) -> bool | None:
 
 
 def live_step_process(
-    rollup: RequestRollup, lease: DriverLease | None
+    rollup: RequestRollup,
+    lease: DriverLease | None,
+    *,
+    now: datetime.datetime | None = None,
 ) -> StepProcess | None:
     """Return a process of one of the request's steps that may still be running.
 
-    A step whose run-log is not terminal is checked by the host and pid that its
-    run-log records. A step without a run-log is checked by the step process that
-    *lease* names, because a process spawned moments before its driver was killed
-    has not written its run-log yet. A process on another host cannot be checked
-    from here, and counts as running. A pid reused by a process that began after
-    the attempt's recorded start does not
+    A step whose run-log is not terminal is judged by its run-log
+    (:func:`~.liveness.may_still_run`): its pid on this host, its ``alive`` events
+    on another, and a process on another host whose run-log declares no liveness
+    interval counts as running. A pid reused by a process that began after the
+    attempt's recorded start does not
     (:func:`~mosaic.core.pipeline.markers.process_running_since`).
+
+    A step without a run-log is checked by the step process that *lease* names,
+    because a process spawned moments before its driver was killed has not
+    written its run-log yet. On this host its pid decides. On another host it
+    counts as running until the lease is :data:`STALE_STEP_SECONDS` old.
 
     Args:
         rollup: The request's rollup.
         lease: The request's driver lease, or ``None`` without one.
+        now: The current instant. ``None`` reads the clock.
 
     Returns:
         The first such process in the request's step order, or ``None``.
@@ -321,19 +348,43 @@ def live_step_process(
         if attempt.terminal:
             continue
         if attempt.started:
-            host, pid, since = attempt.host, attempt.pid, attempt.started_at
+            if may_still_run(attempt, now=now):
+                return StepProcess(
+                    step_id=attempt.step_id,
+                    execution_id=attempt.execution_id,
+                    host=attempt.host,
+                    pid=attempt.pid,
+                    liveness=step_liveness(attempt, now=now),
+                )
         elif lease is not None and lease.step_id == attempt.step_id:
-            host, pid, since = lease.host, lease.step_pid, lease.refreshed_at
-        else:
-            continue
-        if (host and host != socket.gethostname()) or process_running_since(pid, since):
-            return StepProcess(
-                step_id=attempt.step_id,
-                execution_id=attempt.execution_id,
-                host=host,
-                pid=pid,
-            )
+            if lease_step_may_run(lease, now=now):
+                local = lease.host in ("", socket.gethostname())
+                return StepProcess(
+                    step_id=attempt.step_id,
+                    execution_id=attempt.execution_id,
+                    host=lease.host,
+                    pid=lease.step_pid,
+                    liveness="alive" if local else "unknown",
+                )
     return None
+
+
+def lease_step_may_run(
+    lease: DriverLease, *, now: datetime.datetime | None = None
+) -> bool:
+    """Return whether the step process that *lease* names may still be running.
+
+    On this host the pid decides, counted only when its process began by the
+    lease's last refresh. On another host the process counts as running until
+    the lease is :data:`STALE_STEP_SECONDS` old.
+    """
+    if lease.host in ("", socket.gethostname()):
+        return process_running_since(lease.step_pid, lease.refreshed_at)
+    refreshed = parse_instant(lease.refreshed_at)
+    if refreshed is None:
+        return False
+    moment = now or datetime.datetime.now(datetime.UTC)
+    return (moment - refreshed).total_seconds() <= STALE_STEP_SECONDS
 
 
 def refuse_live_driver(base_dir: Path | str, request_id: str) -> None:

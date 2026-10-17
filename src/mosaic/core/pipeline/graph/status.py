@@ -5,13 +5,15 @@ request and :class:`RequestPageWire` a page of a dataset's requests. ``mosaic st
 --json``, ``mosaic pipeline status --json`` and ``mosaic pipeline list --json`` print
 these models dumped, and other programmatic callers return the same models.
 
-Each report reads run-logs alone, through the readers of :mod:`mosaic.runlog`. A
-poll costs a few small files. The module and its imports leave the feature library,
+Each report reads run-logs alone, through the readers of :mod:`mosaic.runlog`, and
+judges whether each attempt's process may still run by :mod:`~.liveness`. A poll
+costs a few small files. The module and its imports leave the feature library,
 pandas, cv2 and av unloaded (``tests/meta/test_status_imports.py``).
 """
 
 from __future__ import annotations
 
+import datetime
 from typing import TYPE_CHECKING, Final, Literal, TypeGuard, get_args
 
 from pydantic import TypeAdapter, ValidationError
@@ -20,6 +22,7 @@ from mosaic.core.json_value import JsonValue
 from mosaic.runlog import (
     ERROR_MESSAGE_LIMIT,
     TERMINAL_STATUSES,
+    AttemptLiveness,
     AttemptOutcome,
     EntryErrorRecord,
     ErrorSummary,
@@ -34,7 +37,9 @@ from mosaic.runlog import (
 
 from ..error_envelope import ErrorEnvelope, error_envelope
 from ..refusal import Refusal, RefusalReason
+from ..markers import parse_instant
 from .driver_lease import lease_is_live, live_step_process, read_driver_lease
+from .liveness import snapshot_liveness, step_liveness
 from .model import GraphModel
 from .rollup import RequestStatus, request_rollup
 
@@ -47,6 +52,8 @@ if TYPE_CHECKING:
 __all__ = [
     "FAILED_ENTRY_SAMPLE",
     "JSON_OBJECT",
+    "POLL_AFTER_MAX_SECONDS",
+    "POLL_AFTER_MIN_SECONDS",
     "FailedEntryWire",
     "RecordedErrorWire",
     "RequestPageWire",
@@ -55,6 +62,7 @@ __all__ = [
     "RequestVerdict",
     "RunStatusWire",
     "StepStatusWire",
+    "poll_after_seconds",
     "recorded_error",
     "request_status_wire",
     "request_summary",
@@ -66,15 +74,22 @@ __all__ = [
 FAILED_ENTRY_SAMPLE: Final = 20
 """The most failed entries that one attempt's report lists."""
 
+POLL_AFTER_MIN_SECONDS: Final = 10
+"""The fewest seconds a request report asks a poller to wait."""
+
+POLL_AFTER_MAX_SECONDS: Final = 300
+"""The most seconds a request report asks a poller to wait."""
+
 type RequestVerdict = Literal[
     "running", "finished", "partial", "failed", "cancelled", "orphaned"
 ]
 """How a request stands, as a report names it.
 
 The rollup's status, with two derived words. ``partial`` is a finished request
-with lost entries. ``orphaned`` is a running request whose driving process let its
-lease go stale (:mod:`~.driver_lease`) and none of whose step processes may still
-run. Neither is a run-log status.
+with lost entries. ``orphaned`` is a running request that nothing drives any more:
+its driving process let its lease go stale (:mod:`~.driver_lease`) and none of its
+step processes may still run, or it has no lease and every step that started and
+has not ended is provably dead (:mod:`~.liveness`). Neither is a run-log status.
 """
 
 _REFUSAL_REASONS: Final[frozenset[str]] = frozenset(get_args(RefusalReason.__value__))
@@ -136,6 +151,7 @@ class RunStatusWire(GraphModel):
             lists. ``entries_failed`` counts them all.
         progress: Its progress events (:class:`~mosaic.runlog.ProgressEventRecord`),
             ``None`` unless asked for.
+        liveness: Whether its process may still be running (:mod:`~.liveness`).
     """
 
     execution_id: str
@@ -171,6 +187,7 @@ class RunStatusWire(GraphModel):
     failed_entries: tuple[FailedEntryWire, ...]
     failed_entries_has_more: bool
     progress: tuple[ProgressEventRecord, ...] | None = None
+    liveness: AttemptLiveness | None = None
 
 
 class StepStatusWire(GraphModel):
@@ -196,6 +213,12 @@ class StepStatusWire(GraphModel):
             :data:`FAILED_ENTRY_SAMPLE`.
         failed_entries_has_more: Whether it lost more than ``failed_entries``
             lists.
+        host: The host its process recorded, ``""`` before it starts.
+        started_at: When that process started, ``""`` before.
+        heartbeat_at: When the attempt last wrote a line, ``""`` before.
+        phase: The last phase it declared, such as ``fit`` or ``apply``.
+        liveness: Whether its process may still be running (:mod:`~.liveness`),
+            ``None`` before it writes a run-log.
     """
 
     step: str
@@ -213,6 +236,11 @@ class StepStatusWire(GraphModel):
     error: RecordedErrorWire | None
     failed_entries: tuple[FailedEntryWire, ...]
     failed_entries_has_more: bool
+    host: str = ""
+    started_at: str = ""
+    heartbeat_at: str = ""
+    phase: str = ""
+    liveness: AttemptLiveness | None = None
 
 
 class RequestStatusWire(GraphModel):
@@ -224,6 +252,9 @@ class RequestStatusWire(GraphModel):
         terminal: Whether that status is final.
         verdict: ``status`` with the derived words of :data:`RequestVerdict`.
         steps: One report per step, in the request's order.
+        poll_after_seconds: How long a poller should wait before reading the
+            request again (:func:`poll_after_seconds`), ``None`` once nothing
+            will change it by itself.
     """
 
     request_id: str
@@ -231,6 +262,7 @@ class RequestStatusWire(GraphModel):
     terminal: bool
     verdict: RequestVerdict
     steps: tuple[StepStatusWire, ...]
+    poll_after_seconds: int | None = None
 
 
 class RequestSummaryWire(GraphModel):
@@ -288,7 +320,11 @@ def recorded_error(error_json: str) -> RecordedErrorWire | None:
 
 
 def run_status_wire(
-    base_dir: Path | str, execution_id: str, *, progress: bool = False
+    base_dir: Path | str,
+    execution_id: str,
+    *,
+    progress: bool = False,
+    now: datetime.datetime | None = None,
 ) -> RunStatusWire | None:
     """Report one attempt from its run-log.
 
@@ -296,6 +332,8 @@ def run_status_wire(
         base_dir: The dataset root containing ``.mosaic/runs``.
         execution_id: The attempt.
         progress: Whether to list its progress events.
+        now: The current instant that liveness is judged at. ``None`` reads the
+            clock.
 
     Returns:
         The report, or ``None`` when the attempt's run-log is absent or
@@ -318,10 +356,16 @@ def run_status_wire(
         failed_entries=failed,
         failed_entries_has_more=has_more,
         progress=events,
+        liveness=snapshot_liveness(snapshot, now=now),
     )
 
 
-def request_status_wire(base_dir: Path | str, request: Request) -> RequestStatusWire:
+def request_status_wire(
+    base_dir: Path | str,
+    request: Request,
+    *,
+    now: datetime.datetime | None = None,
+) -> RequestStatusWire:
     """Report one request from the run-logs of the attempts it assigned.
 
     The verdict also reads the request's driver lease (:func:`request_verdict_of`).
@@ -329,18 +373,23 @@ def request_status_wire(base_dir: Path | str, request: Request) -> RequestStatus
     Args:
         base_dir: The dataset root containing ``.mosaic/runs``.
         request: The submission to report on.
+        now: The current instant that liveness and the poll interval are judged
+            at. ``None`` reads the clock.
 
     Returns:
-        The request's status, its verdict and one report per step.
+        The request's status, its verdict, one report per step and when to poll
+        again.
     """
     logs = run_log_dir(base_dir)
     rollup = request_rollup(base_dir, request)
+    verdict = request_verdict_of(base_dir, rollup, now=now)
     return RequestStatusWire(
         request_id=rollup.request_id,
         status=rollup.status,
         terminal=rollup.is_terminal,
-        verdict=request_verdict_of(base_dir, rollup),
-        steps=tuple(_step_status(logs, attempt) for attempt in rollup.steps),
+        verdict=verdict,
+        steps=tuple(_step_status(logs, attempt, now=now) for attempt in rollup.steps),
+        poll_after_seconds=poll_after_seconds(rollup, verdict, now=now),
     )
 
 
@@ -368,7 +417,12 @@ def request_summary(base_dir: Path | str, request: Request) -> RequestSummaryWir
     )
 
 
-def request_verdict_of(base_dir: Path | str, rollup: RequestRollup) -> RequestVerdict:
+def request_verdict_of(
+    base_dir: Path | str,
+    rollup: RequestRollup,
+    *,
+    now: datetime.datetime | None = None,
+) -> RequestVerdict:
     """Return the verdict of *rollup*, with the request's driver lease read from disk.
 
     A running request with a stale lease reads ``orphaned`` only when none of its
@@ -376,17 +430,76 @@ def request_verdict_of(base_dir: Path | str, rollup: RequestRollup) -> RequestVe
     killed driver leaves its step running in a session of its own, and that step
     still computes the request's work.
 
+    A running request without a lease, as a queue or a shell loop runs one, reads
+    ``orphaned`` only on positive evidence: at least one step has started and not
+    ended, and every such step is ``dead`` (:func:`~.liveness.step_liveness`). A
+    step of ``unknown`` liveness keeps it ``running``, and so does a request
+    between two steps.
+
     Args:
         base_dir: The dataset root containing ``.mosaic/drivers``.
         rollup: The request's rollup.
+        now: The current instant. ``None`` reads the clock.
     """
     if rollup.is_terminal:
         return rollup_verdict(rollup)
     lease = read_driver_lease(base_dir, rollup.request_id)
     if lease is None:
+        unended = [
+            attempt
+            for attempt in rollup.steps
+            if attempt.started and not attempt.terminal
+        ]
+        if unended and all(
+            step_liveness(attempt, now=now) == "dead" for attempt in unended
+        ):
+            return rollup_verdict(rollup, driver_alive=False)
         return rollup_verdict(rollup)
-    alive = lease_is_live(lease) or live_step_process(rollup, lease) is not None
+    alive = (
+        lease_is_live(lease, now=now)
+        or live_step_process(rollup, lease, now=now) is not None
+    )
     return rollup_verdict(rollup, driver_alive=alive)
+
+
+def poll_after_seconds(
+    rollup: RequestRollup,
+    verdict: RequestVerdict,
+    *,
+    now: datetime.datetime | None = None,
+) -> int | None:
+    """Return how many seconds a poller should wait before reading a request again.
+
+    A request that is over, or ``orphaned``, changes only when someone acts, and
+    has no interval. Before any step runs the interval is the shortest. While a
+    step runs it is half the time that step's progress says is left, or a tenth of
+    the time it has run when it reports no progress, between
+    :data:`POLL_AFTER_MIN_SECONDS` and :data:`POLL_AFTER_MAX_SECONDS`. Of several
+    running steps the shortest interval wins.
+
+    Args:
+        rollup: The request's rollup.
+        verdict: Its verdict (:func:`request_verdict_of`).
+        now: The current instant. ``None`` reads the clock.
+    """
+    if rollup.is_terminal or verdict == "orphaned":
+        return None
+    moment = now or datetime.datetime.now(datetime.UTC)
+    waits: list[float] = []
+    for attempt in rollup.steps:
+        if not attempt.started or attempt.terminal:
+            continue
+        began = parse_instant(attempt.started_at)
+        if began is None:
+            continue
+        elapsed = max((moment - began).total_seconds(), 0.0)
+        done, total = attempt.progress_done, attempt.progress_total
+        if 0 < done < total:
+            waits.append(elapsed * (total - done) / done / 2)
+        else:
+            waits.append(elapsed / 10)
+    wait = min(waits, default=float(POLL_AFTER_MIN_SECONDS))
+    return int(min(max(wait, POLL_AFTER_MIN_SECONDS), POLL_AFTER_MAX_SECONDS))
 
 
 def rollup_verdict(
@@ -410,7 +523,9 @@ def rollup_verdict(
     return rollup.status
 
 
-def _step_status(logs: Path, attempt: StepAttempt) -> StepStatusWire:
+def _step_status(
+    logs: Path, attempt: StepAttempt, *, now: datetime.datetime | None = None
+) -> StepStatusWire:
     """One step's report, from its attempt's rollup record."""
     failed, has_more = _failed_entries(
         logs, attempt.execution_id, attempt.entries_failed
@@ -431,6 +546,11 @@ def _step_status(logs: Path, attempt: StepAttempt) -> StepStatusWire:
         error=recorded_error(attempt.error_json),
         failed_entries=failed,
         failed_entries_has_more=has_more,
+        host=attempt.host,
+        started_at=attempt.started_at,
+        heartbeat_at=attempt.heartbeat_at,
+        phase=attempt.phase,
+        liveness=step_liveness(attempt, now=now) if attempt.started else None,
     )
 
 

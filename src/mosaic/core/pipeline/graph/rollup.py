@@ -67,6 +67,13 @@ class StepAttempt:
         pid: That process, 0 before it started or for an attempt recorded by
             another process.
         started_at: When that process started, ISO-8601 UTC.
+        heartbeat_at: When the attempt last wrote a line, ISO-8601 UTC.
+        boot_id: The boot of the host its process recorded, ``""`` when
+            unrecorded.
+        pid_ns: The pid namespace of that process, ``""`` when unrecorded.
+        liveness_interval: The seconds between the ``alive`` events that the
+            process promised, 0 for none.
+        phase: The last phase the attempt declared, ``""`` before one.
     """
 
     step_id: str
@@ -82,6 +89,11 @@ class StepAttempt:
     host: str = ""
     pid: int = 0
     started_at: str = ""
+    heartbeat_at: str = ""
+    boot_id: str = ""
+    pid_ns: str = ""
+    liveness_interval: float = 0.0
+    phase: str = ""
 
     @property
     def started(self) -> bool:
@@ -153,6 +165,11 @@ def _attempt(logs: Path, step_id: str, execution_id: str) -> StepAttempt:
         host=snapshot["host"],
         pid=snapshot["pid"],
         started_at=snapshot["started_at"],
+        heartbeat_at=snapshot["heartbeat_at"],
+        boot_id=snapshot["boot_id"],
+        pid_ns=snapshot["pid_ns"],
+        liveness_interval=snapshot["liveness_interval"],
+        phase=snapshot["phase"],
     )
 
 
