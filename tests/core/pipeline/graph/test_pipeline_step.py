@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 from typer.testing import CliRunner
@@ -28,6 +29,7 @@ from mosaic.core.pipeline.graph import (
     Plan,
     PlannedStep,
     Recipe,
+    Request,
     StepAttempt,
     StepRefused,
     StepSpec,
@@ -41,13 +43,20 @@ from mosaic.core.pipeline.graph import (
     save_recipe,
     submit_request,
 )
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph.claims import FileFailureStore
 from mosaic.core.pipeline.graph.digest import document_digest, recipe_digest
 from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from mosaic.core.scope import Scope
 from mosaic.runlog import read_run, run_log_dir
-from tests.helpers import FakeTrainer, add_tracks_variant, make_dataset, write_data_yaml
+from tests.helpers import (
+    FakeTrainer,
+    add_tracks_variant,
+    make_dataset,
+    write_data_yaml,
+    recipe_saved_by_0_17,
+)
 
 runner = CliRunner()
 
@@ -306,7 +315,7 @@ def test_a_recipe_file_is_accepted_when_its_bytes_are_what_its_name_digests(
     holds digests differently from its name, while the bytes match the name.
     """
     request = submit_request(tracked, Recipe.model_validate(_chain())).request
-    raw = _chain()
+    raw = cast("dict[str, JsonValue]", _chain())
     name = document_digest(raw)
     _ = recipe_path(tracked.base_dir, name).write_text(json.dumps(raw))
     legacy = request.model_copy(update={"recipe_digest": name})
@@ -315,6 +324,60 @@ def test_a_recipe_file_is_accepted_when_its_bytes_are_what_its_name_digests(
 
     assert recipe == Recipe.model_validate(raw)
     assert recipe_digest(recipe) != name
+
+
+def _legacy_request(dataset: Dataset, document: dict[str, JsonValue]) -> Request:
+    """A request naming *document*, saved as an earlier mosaic wrote it.
+
+    The file holds the document as written and is named by its own digest, which
+    is what 0.17's ``save_recipe`` did for whole-number floats in params.
+    """
+    request = submit_request(dataset, Recipe.model_validate(_chain())).request
+    name = document_digest(document)
+    _ = recipe_path(dataset.base_dir, name).write_text(json.dumps(document))
+    return request.model_copy(update={"recipe_digest": name})
+
+
+def test_a_request_saved_before_numbers_were_normalized_still_loads(
+    tracked: Dataset,
+) -> None:
+    legacy = recipe_saved_by_0_17()
+    request = _legacy_request(tracked, legacy)
+    assert request.recipe_digest == "a382f3f695561521"
+
+    recipe = load_recipe_for_request(tracked.base_dir, request)
+
+    assert recipe_digest(recipe) == "51f069d7b95bc6a4"
+
+
+def test_a_legacy_recipe_edited_underneath_its_request_still_refuses(
+    tracked: Dataset,
+) -> None:
+    request = _legacy_request(tracked, recipe_saved_by_0_17())
+    path = recipe_path(tracked.base_dir, request.recipe_digest)
+    document = json.loads(path.read_text())
+    document["name"] = "something else entirely"
+    _ = path.write_text(json.dumps(document))
+
+    with pytest.raises(StepRefused) as raised:
+        _ = load_recipe_for_request(tracked.base_dir, request)
+
+    assert raised.value.reason == "digest_mismatch"
+    assert "saved" in raised.value.detail
+
+
+def test_a_legacy_request_runs_its_step(tracked: Dataset) -> None:
+    """A whole-number float written by an earlier mosaic runs as its integer."""
+    document = cast("dict[str, JsonValue]", _chain())
+    steps = cast("list[dict[str, JsonValue]]", document["steps"])
+    steps[0]["params"] = {"step_size": 1.0}
+    request = _legacy_request(tracked, document)
+
+    outcome = execute_step(tracked, request, "speed")
+
+    assert outcome.run_id
+    logged = read_run(run_log_dir(tracked.base_dir), request.execution_of("speed"))
+    assert logged is not None and logged["status"] == "finished"
 
 
 def test_a_producer_version_that_moved_refuses_rather_than_re_planning(

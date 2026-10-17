@@ -18,6 +18,7 @@ names things.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -179,3 +180,20 @@ def test_the_plan_is_the_same_on_a_second_call(worked_dataset: Dataset) -> None:
     unordered term yields a different name per process rather than per call.
     """
     assert _resolved(worked_dataset) == _resolved(worked_dataset)
+
+
+def test_a_tracker_setting_written_as_an_integral_float_names_the_run_of_its_integer(
+    worked_dataset: Dataset,
+) -> None:
+    """A passthrough setting is free JSON, so only the recipe can make 15.0 be 15."""
+
+    def trex_of(threshold: float) -> tuple[str, str]:
+        document = json.loads(json.dumps(WORKED_RECIPE))
+        document["steps"][1]["params"]["track_extra_settings"] = {
+            "track_threshold": threshold
+        }
+        plan = plan_pipeline(worked_dataset, Recipe.model_validate(document))
+        trex = next(step for step in plan.steps if step.step_id == "trex")
+        return trex.run_id or "", trex.tracks_variant
+
+    assert trex_of(15.0) == trex_of(15)

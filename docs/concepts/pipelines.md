@@ -41,6 +41,9 @@ than a shell script wrapping a notebook.
 
 **The dataset records what was applied to it.** On first use the recipe is copied to
 `<dataset>/.mosaic/pipelines/<digest>.json`.
+The digest is taken over the recipe's canonical form: keys sorted, defaults filled,
+and a whole number in a step's `params` written as an integer, so `5` and `5.0`
+name one recipe.
 
 ## One place per fact
 

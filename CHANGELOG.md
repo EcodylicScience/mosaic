@@ -10,6 +10,29 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**A whole number in a recipe's `params` is an integer, so `5` and `5.0` name one
+recipe.** A step's `params` are free JSON. A hand-written recipe file kept `5.0` while
+an MCP client sent `5`, so one recipe had two digests: a CLI request and an MCP plan of
+the same recipe did not see each other as duplicates, and a request's digest differed
+from the plan's. Parsing now writes a finite whole-number float below 2**53 as an
+integer (the RFC 8785 number rule), and `save_recipe` writes that form.
+
+- Recipes with whole-number floats in `params` get a new digest. The next submission
+  writes a second `pipelines/<digest>.json`, and the old file stays. Old requests keep
+  their digest and still load, resume and cancel, because a request also accepts the
+  digest of its saved file as written. The status wires and the `recipes/{digest}`
+  resource show the old digest.
+- A plan fingerprint taken by 0.17 for such a recipe is refused with `PlanChanged`;
+  plan again.
+- Run ids move only for whole-number floats that a recipe writes inside a free
+  settings map: trex `convert_extra_settings` and `track_extra_settings`, sleap
+  `sleap_extra_settings`, litpose and train-litpose `litpose_overrides`, train-pose and
+  train-points `augmentation` and `train_overrides`, train-sleap `sleap_overrides`,
+  overlay `draw_options` and nn-delta-bins `category_specs`. Recipes sent through MCP
+  already carried integers. A direct `run_op`, `run_feature`, `Pipeline` or
+  `mosaic track --set` call keeps the float, so for those settings it no longer shares
+  a run with the same value written in a recipe.
+
 **mosaic needs mosaic-media 0.3.5, which accepts PyAV 19.** mosaic-media 0.3.4
 required `av>=18,<19`, and conda-forge now ships `av` 19, so the documented conda
 recipe followed by pip replaced conda's `av` with the PyPI wheel. That wheel bundles

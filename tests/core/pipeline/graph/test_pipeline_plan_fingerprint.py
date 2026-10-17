@@ -18,6 +18,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
 from mosaic.core.pipeline.graph import (
     PlanChanged,
+    Recipe,
     plan_fingerprint,
     plan_pipeline,
     plan_wire,
@@ -192,3 +193,14 @@ def test_submit_with_the_current_expected_plan_reports_it(
     )
 
     assert payload["plan_fingerprint"] == fingerprint
+
+
+def test_an_integral_float_and_its_integer_plan_one_fingerprint(
+    tracked: Dataset,
+) -> None:
+    def fingerprint(step_size: object) -> str:
+        document = json.loads(json.dumps(SPEED_RECIPE))
+        document["steps"][0]["params"] = {"step_size": step_size}
+        return plan_fingerprint(plan_pipeline(tracked, Recipe.model_validate(document)))
+
+    assert fingerprint(1.0) == fingerprint(1)

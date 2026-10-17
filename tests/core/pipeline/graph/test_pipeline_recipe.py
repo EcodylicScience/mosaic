@@ -10,6 +10,7 @@ than of its formatting, and the order is deterministic.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import cast
 
@@ -37,7 +38,11 @@ from mosaic.core.pipeline.graph import (
     storage_name_of,
     topological_order,
 )
+from mosaic.core.json_value import JsonValue
+from mosaic.core.pipeline.graph.digest import document_digest
+from mosaic.core.pipeline.graph.model import canonical_params
 from mosaic.core.scope import Scope
+from tests.helpers import recipe_saved_by_0_17
 
 type Document = dict[str, object]
 
@@ -342,6 +347,113 @@ def test_the_digest_moves_when_a_param_moves(worked: Recipe) -> None:
     params = cast("Document", _steps(doc)[-1]["params"])
     params["perplexity"] = 30
     assert recipe_digest(Recipe.model_validate(doc)) != recipe_digest(worked)
+
+
+PINNED_DOCUMENT: Document = {
+    "name": "p3",
+    "steps": [
+        {
+            "id": "trex",
+            "type": "op",
+            "kind": "trex",
+            "params": {"track_threshold": 15.0, "cm_per_pixel": 0.05},
+        },
+        {
+            "id": "speed",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "tracks": {"step": "trex"},
+            "params": {
+                "f_max": 5.0,
+                "log_floor": -3.0,
+                "zero": -0.0,
+                "flag": True,
+                "sampling": {"fps_default": 30.0},
+            },
+            "run": {"filter_start_time": 5.0},
+        },
+    ],
+}
+"""A recipe with whole-number floats in params and in a typed field."""
+
+
+def test_an_integral_float_and_its_integer_are_one_recipe() -> None:
+    """A hand-written ``5.0`` and a JavaScript client's ``5`` name one recipe."""
+    as_floats: Document = {
+        "name": "n",
+        "steps": [
+            {
+                "id": "speed",
+                "type": "feature",
+                "feature": "speed-angvel",
+                "params": {"fps": 30.0, "nested": {"floor": -3.0, "each": [1.0]}},
+            }
+        ],
+    }
+    as_ints: Document = {
+        "name": "n",
+        "steps": [
+            {
+                "id": "speed",
+                "type": "feature",
+                "feature": "speed-angvel",
+                "params": {"fps": 30, "nested": {"floor": -3, "each": [1]}},
+            }
+        ],
+    }
+    assert recipe_digest(Recipe.model_validate(as_floats)) == recipe_digest(
+        Recipe.model_validate(as_ints)
+    )
+
+
+def test_a_whole_number_in_params_parses_as_an_integer() -> None:
+    params: dict[str, JsonValue] = {
+        "whole": 5.0,
+        "negative_zero": -0.0,
+        "flag": True,
+        "half": 0.5,
+        "nan": float("nan"),
+        "inf": float("inf"),
+        "huge": 2.0**53,
+        "nested": [{"x": 2.0}, [3.0]],
+    }
+    found = canonical_params(params)
+    assert found["whole"] == 5 and type(found["whole"]) is int
+    assert found["negative_zero"] == 0 and type(found["negative_zero"]) is int
+    assert found["flag"] is True
+    assert found["half"] == 0.5
+    assert math.isnan(cast("float", found["nan"]))
+    assert found["inf"] == float("inf")
+    assert type(found["huge"]) is float
+    assert found["nested"] == [{"x": 2}, [3]]
+    assert type(cast("list[dict[str, int]]", found["nested"])[0]["x"]) is int
+
+
+def test_a_typed_float_field_digests_alike_however_written() -> None:
+    written_int = json.loads(json.dumps(PINNED_DOCUMENT))
+    _steps(written_int)[1]["run"] = {"filter_start_time": 5}
+    assert recipe_digest(Recipe.model_validate(written_int)) == recipe_digest(
+        Recipe.model_validate(PINNED_DOCUMENT)
+    )
+
+
+def test_the_digest_of_integral_floats_is_pinned() -> None:
+    """Never regenerate these: a recipe's name must not move by accident.
+
+    ``a382f3f695561521`` is what mosaic 0.17 named this recipe, before whole
+    numbers in params were normalized; ``tests/data/recipe_saved_by_0_17.json``
+    is the file it saved.
+    """
+    assert recipe_digest(Recipe.model_validate(PINNED_DOCUMENT)) == "51f069d7b95bc6a4"
+    assert document_digest(recipe_saved_by_0_17()) == "a382f3f695561521"
+
+
+def test_saving_writes_the_document_its_digest_names(tmp_path: Path) -> None:
+    recipe = Recipe.model_validate(PINNED_DOCUMENT)
+    path = save_recipe(tmp_path, recipe)
+    text = path.read_text()
+    assert document_digest(json.loads(text)) == recipe_digest(recipe)
+    assert '"fps_default": 30' in text and "30.0" not in text
 
 
 def test_the_canonical_form_is_compact_and_sorted(worked: Recipe) -> None:

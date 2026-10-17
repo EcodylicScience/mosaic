@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ..error_kind import ClassifiedError, ErrorKind
 from ..index_lock import index_lock
-from .digest import recipe_digest
+from .digest import canonical_recipe, recipe_digest
 from .model import Recipe, Request
 from .rollup import request_rollup
 from .status import JSON_OBJECT, RequestPageWire, request_summary, request_verdict_of
@@ -110,7 +110,7 @@ def save_recipe(base_dir: Path | str, recipe: Recipe) -> Path:
     """
     digest = recipe_digest(recipe)
     path = recipe_path(base_dir, digest)
-    _write_json(path, recipe.model_dump(mode="json"))
+    _write_json(path, canonical_recipe(recipe))
     return path
 
 

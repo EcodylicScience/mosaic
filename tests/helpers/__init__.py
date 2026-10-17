@@ -172,9 +172,11 @@ from tests.helpers.processes import (
 from tests.helpers.recipes import (
     CHAIN_RECIPE,
     GUPPIES_RECIPE,
+    RECIPE_SAVED_BY_0_17,
     SPEED_RECIPE,
     chain_recipe,
     guppies_recipe,
+    recipe_saved_by_0_17,
     speed_recipe,
 )
 from tests.helpers.models import register_trained_model
@@ -446,4 +448,6 @@ __all__ = [
     "write_templates",
     "write_trex_npz",
     "write_ultralytics_predictions",
+    "RECIPE_SAVED_BY_0_17",
+    "recipe_saved_by_0_17",
 ]

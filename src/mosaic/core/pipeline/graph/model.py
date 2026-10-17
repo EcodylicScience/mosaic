@@ -29,10 +29,11 @@ beside the loaders.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Annotated, ClassVar, Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.scope import Scope
@@ -49,6 +50,8 @@ __all__ = [
     "StepRef",
     "StepRun",
     "TRACKS_INPUT",
+    "canonical_number",
+    "canonical_params",
     "params_step_refs",
     "references_of",
 ]
@@ -66,6 +69,56 @@ TRACKS_INPUT: Final = "tracks"
 Deliberately not a ``StepRef``: ``tracks`` is a dataset root rather than a step,
 and a graph may read it without any step having produced it.
 """
+
+
+_EXACT_INTEGER_BOUND: Final = 2**53
+"""Below this magnitude every integer is exactly a float, and back.
+
+RFC 8785 writes a number by its value, so ``5.0`` and ``5`` are one number. A
+float at or past the bound may not name the integer it prints as, so it is left
+a float rather than turned into a different number.
+"""
+
+
+def canonical_number(value: JsonValue) -> JsonValue:
+    """*value* with every whole-number float written as an integer.
+
+    A step's ``params`` are free JSON, so ``5.0`` and ``5`` would otherwise stay
+    two values and name two recipes. Which one a recipe holds depends on who
+    wrote it: a hand-written file keeps ``5.0``, and a client that serializes
+    through JavaScript sends ``5``. This follows the number rule of RFC 8785:
+    a finite float with an integral value below 2**53 becomes that integer, and
+    ``-0.0`` becomes ``0``. A ``bool`` is left as it is, NaN and the
+    infinities are left as they are, and lists and mappings are walked.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if (
+            math.isfinite(value)
+            and value.is_integer()
+            and abs(value) < _EXACT_INTEGER_BOUND
+        ):
+            return int(value)
+        return value
+    if isinstance(value, list):
+        return [canonical_number(item) for item in value]
+    if isinstance(value, dict):
+        return {key: canonical_number(item) for key, item in value.items()}
+    return value
+
+
+def canonical_params(params: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """A step's *params* with every whole-number float written as an integer.
+
+    Applied when a recipe is parsed, so the plan, the saved file, the digest and
+    the step that runs all see one value (:func:`canonical_number`).
+    """
+    return {key: canonical_number(value) for key, value in params.items()}
+
+
+type StepParams = Annotated[dict[str, JsonValue], AfterValidator(canonical_params)]
+"""A step's params, normalized as they are parsed."""
 
 
 class GraphModel(BaseModel):
@@ -171,7 +224,7 @@ class FeatureStepSpec(_StepBase):
     run id; they coincide today only because the tracker variant payload is an
     unwrapped passthrough of the settings.
     """
-    params: dict[str, JsonValue] = Field(default_factory=dict)
+    params: StepParams = Field(default_factory=dict)
     run: StepRun = Field(default_factory=StepRun)
 
 
@@ -185,7 +238,7 @@ class OpStepSpec(_StepBase):
 
     type: Literal["op"] = "op"
     kind: str
-    params: dict[str, JsonValue] = Field(default_factory=dict)
+    params: StepParams = Field(default_factory=dict)
 
 
 type Step = Annotated[FeatureStepSpec | OpStepSpec, Field(discriminator="type")]

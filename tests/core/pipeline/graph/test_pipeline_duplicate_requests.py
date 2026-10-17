@@ -247,6 +247,23 @@ def test_an_invalid_request_of_the_recipe_is_skipped(tracked: Dataset) -> None:
 # --- the CLI ---------------------------------------------------------------------
 
 
+def _speed_with(step_size: object) -> dict[str, object]:
+    """The speed recipe with *step_size* written as given."""
+    document = json.loads(json.dumps(SPEED_RECIPE))
+    document["steps"][0]["params"] = {"step_size": step_size}
+    return document
+
+
+def test_a_float_and_an_integer_submission_are_duplicates(tracked: Dataset) -> None:
+    """A hand-written ``1.0`` and a client's ``1`` are one recipe, so one request."""
+    first = submit_request(tracked, Recipe.model_validate(_speed_with(1.0)))
+
+    second = submit_request(tracked, Recipe.model_validate(_speed_with(1)))
+
+    assert second.request.recipe_digest == first.request.recipe_digest
+    assert second.duplicates == (first.request.request_id,)
+
+
 def _submit_args(dataset: Dataset, tmp_path: Path, *extra: str) -> list[str]:
     path = tmp_path / "speed.recipe.json"
     _ = path.write_text(json.dumps(SPEED_RECIPE))
@@ -300,3 +317,27 @@ def test_pipeline_run_warns_of_an_open_request(
     assert result.exit_code == 0
     assert "warning:" in result.stderr
     assert str(first["request_id"]) in result.stderr
+
+
+def test_pipeline_run_with_a_float_file_warns_of_an_integer_request(
+    tracked: Dataset, tmp_path: Path
+) -> None:
+    first = submit_request(tracked, Recipe.model_validate(_speed_with(1)))
+    path = tmp_path / "speed.float.recipe.json"
+    _ = path.write_text(json.dumps(_speed_with(1.0)))
+
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "run",
+            "--recipe",
+            f"@{path}",
+            "--manifest",
+            str(tracked.manifest_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert first.request.request_id in result.stderr

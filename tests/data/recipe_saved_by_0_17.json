@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "name": "p3",
+  "steps": [
+    {
+      "id": "trex",
+      "after": [],
+      "type": "op",
+      "kind": "trex",
+      "params": {
+        "track_threshold": 15.0,
+        "cm_per_pixel": 0.05
+      }
+    },
+    {
+      "id": "speed",
+      "after": [],
+      "type": "feature",
+      "feature": "speed-angvel",
+      "inputs": [
+        "tracks"
+      ],
+      "tracks": {
+        "step": "trex",
+        "pattern": ""
+      },
+      "params": {
+        "f_max": 5.0,
+        "log_floor": -3.0,
+        "zero": -0.0,
+        "flag": true,
+        "sampling": {
+          "fps_default": 30.0
+        }
+      },
+      "run": {
+        "filter_start_frame": null,
+        "filter_end_frame": null,
+        "filter_start_time": 5.0,
+        "filter_end_time": null,
+        "overlap_frames": 0
+      }
+    }
+  ]
+}

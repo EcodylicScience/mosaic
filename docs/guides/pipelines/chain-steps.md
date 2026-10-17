@@ -66,7 +66,8 @@ transcode, with no `transcode` step of `"target": "analysis"` above it. That pro
 is reported at the step's `after`, and its message names the entries and the
 transcode step to add. `submit` and `run` refuse the same recipe. On first use the
 recipe is copied to `<dataset>/.mosaic/pipelines/<digest>.json`. The dataset then
-records which pipelines were applied to it.
+records which pipelines were applied to it. A whole number in `params` is read as an
+integer, so a recipe that writes `5.0` and one that writes `5` are one recipe.
 
 ### The four ways a step references another
 

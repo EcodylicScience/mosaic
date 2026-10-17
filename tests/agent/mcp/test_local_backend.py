@@ -6,6 +6,7 @@ process of its own, and polls the request as a client would.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -30,13 +31,16 @@ from mosaic.core.pipeline.graph import (
     FileFailureStore,
     PlanWire,
     RequestStatusWire,
+    Recipe,
     ValidationReport,
+    open_requests_matching,
     request_path,
     submit_request,
 )
 from mosaic.core.pipeline.inventory import InventoryWire
 from mosaic.core.pipeline.markers import process_running
 from mosaic.core.pipeline.preview import ArtifactPreview
+from mosaic.core.scope import Scope
 from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
     CHAIN_RECIPE,
@@ -253,6 +257,27 @@ def test_a_recipe_is_validated_and_a_broken_one_reported(backend: LocalBackend) 
     assert valid.valid
     assert not broken.valid
     assert broken.problems
+
+
+def test_validate_plan_and_a_cli_file_name_one_digest(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    """A client sends ``1`` where a hand-written file says ``1.0``: one recipe."""
+    as_sent = json.loads(json.dumps(SPEED_RECIPE))
+    as_sent["steps"][0]["params"] = {"step_size": 1}
+    as_written = json.loads(json.dumps(SPEED_RECIPE))
+    as_written["steps"][0]["params"] = {"step_size": 1.0}
+    submitted = submit_request(dataset, Recipe.model_validate(as_written))
+
+    valid = _call(backend, "validate_recipe", ValidationReport, recipe=as_sent)
+    plan = _call(
+        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=as_sent
+    )
+
+    assert valid.digest == plan.recipe_digest == submitted.request.recipe_digest
+    assert open_requests_matching(dataset.base_dir, plan.recipe_digest, Scope()) == (
+        submitted.request.request_id,
+    )
 
 
 def test_suggestions_list_the_allowed_choices_and_count_the_refused(

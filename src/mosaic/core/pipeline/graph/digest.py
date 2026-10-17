@@ -4,7 +4,9 @@ A digest over the JSON as written moves with key order, whitespace and omitted
 defaults, so two semantically identical graphs become two pipelines and the
 dataset records the same analysis twice. So the document is canonicalized first
 -- defaults filled by pydantic, keys sorted, separators pinned -- and the digest
-is taken over that.
+is taken over that. A whole number in a step's ``params`` is written as an
+integer (:func:`~.model.canonical_params`, the number rule of RFC 8785), so
+``5.0`` and ``5`` name one recipe.
 
 **What the digest identifies is the recipe, not what ran.** The same digest
 resolves to different ``run_id``s once a mosaic upgrade bumps a feature's
@@ -23,7 +25,7 @@ import json
 
 from mosaic.core.json_value import JsonValue
 
-from .model import Recipe
+from .model import Recipe, canonical_params
 
 __all__ = [
     "DIGEST_LENGTH",
@@ -50,9 +52,18 @@ def canonical_recipe(recipe: Recipe) -> dict[str, JsonValue]:
     ``mode="json"`` so every value is already JSON-representable and no encoder
     hook decides anything; defaults are filled by pydantic, which is what makes
     an omitted field and an explicitly-written default one recipe rather than
-    two.
+    two. Parsing already normalizes each step's ``params``; doing it again here
+    keeps the digest right for a recipe built without validation.
     """
-    return recipe.model_dump(mode="json")
+    document: dict[str, JsonValue] = recipe.model_dump(mode="json")
+    steps = document.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if isinstance(step, dict):
+                params = step.get("params")
+                if isinstance(params, dict):
+                    step["params"] = canonical_params(params)
+    return document
 
 
 def canonical_text(document: JsonValue) -> str:

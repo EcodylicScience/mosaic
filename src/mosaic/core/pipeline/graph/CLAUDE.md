@@ -31,6 +31,13 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   (`test_pipeline_duplicate_requests.py`). The check runs again with the write under
   `submission_lock`. A request file that cannot be read is skipped with a warning, so
   one damaged file leaves submission available.
+- A step's `params` are normalized at parse (`canonical_params`, the RFC 8785 number
+  rule), and `save_recipe` writes `canonical_recipe`, so the bytes on disk are what the
+  name digests. `load_recipe_for_request` also accepts the digest of the saved document
+  as written, so a request whose file an earlier canonical form wrote still loads. A
+  defaulted field added to a recipe model moves every digest; old requests load through
+  that rule. Do not delete a `pipelines/<digest>.json` that a request names
+  (`test_pipeline_recipe.py`, `test_pipeline_step.py`).
 - A cross-step reference is written at the site it substitutes. Do not add a stored
   `edges` array. `edges()` in `topo.py` derives one, and `after` is the one explicit list,
   for ordering only (`test_edges_are_derived_from_the_bodies_with_their_sites`).
