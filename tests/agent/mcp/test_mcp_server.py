@@ -7,9 +7,10 @@ submission starts a recording stand-in for the detached driver, so nothing runs.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 import pytest
 
@@ -22,7 +23,7 @@ from mcp.client.session import ClientSession, ElicitationFnT
 from mcp.shared.exceptions import MCPError
 
 from mosaic.agent.mcp.local import LocalBackend
-from mosaic.agent.mcp.prompts import PROMPTS
+from mosaic.agent.mcp.prompts import PROMPTS, render_prompt
 from mosaic.agent.mcp.server import build_server
 from mosaic.agent.mcp import spec
 from mosaic.agent.mcp._binding import ALWAYS_LOAD_META, INSTRUCTIONS
@@ -278,6 +279,40 @@ def test_the_instructions_stay_short_and_name_the_workflow(
     assert places == sorted(places)
     assert "result_too_large" in INSTRUCTIONS
     assert "search_step_types" not in INSTRUCTIONS
+
+
+NAMED_OUTSIDE_THE_TOOLS: Final = frozenset(
+    {"poll_after_seconds", "frame_axis_mismatch", "frame_tail_short"}
+)
+"""The snake_case words the instructions and prompts may name besides a tool's.
+
+An output field and two inventory note codes.
+"""
+
+
+def test_the_instructions_and_prompts_fit_and_name_only_shared_tools() -> None:
+    """A renamed tool, argument or reason leaves no stale name in the text."""
+    texts = [INSTRUCTIONS] + [
+        render_prompt(prompt, {argument.name: "x" for argument in prompt.arguments})
+        for prompt in PROMPTS
+    ]
+    known = (
+        {tool.name for tool in TOOLS}
+        | {field for tool in TOOLS for field in tool.input_model.model_fields}
+        | {
+            spec.CONFIRMATION_DECLINED,
+            spec.CONFIRMATION_REQUIRED,
+            spec.CONFIRMATION_UNANSWERED,
+            spec.RESULT_TOO_LARGE,
+        }
+        | NAMED_OUTSIDE_THE_TOOLS
+    )
+
+    named = {word for text in texts for word in re.findall(r"[a-z]+(?:_[a-z]+)+", text)}
+
+    assert len(INSTRUCTIONS) < 2048
+    assert named - known == set()
+    assert {"confirmation_declined", "confirmation_unanswered"} <= named
 
 
 def test_an_oversized_result_is_an_error_naming_its_narrowing(

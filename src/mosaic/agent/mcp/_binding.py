@@ -89,13 +89,17 @@ SERVER_NAME: Final = "mosaic"
 """The name the server reports to a client."""
 
 _CONFIRMATION_RULES: Final = (
-    "Never set confirm without the user's agreement, and propose the mosaic CLI "
-    "command for anything these tools do not offer."
+    "Show the plan's cautions with it. submit_pipeline and cancel_request ask "
+    "the user themselves when the work is costly; set confirm only when the "
+    "user agreed in this conversation. After confirmation_declined or "
+    "confirmation_unanswered, stop and report: do not run the same work another "
+    "way, such as through the mosaic CLI. For what these tools do not offer, "
+    "propose the mosaic CLI command to the user."
 )
-"""The instructions' rules on confirmation, one sentence of their own.
+"""The instructions' rules on confirmation, after the workflow.
 
-The confirmation gate's wording replaces this sentence alone, and leaves the
-workflow before it as it is.
+Show the cautions with the plan, confirm only on the user's word, and stop
+after a confirmation that was declined or that nobody answered.
 """
 
 INSTRUCTIONS: Final = (

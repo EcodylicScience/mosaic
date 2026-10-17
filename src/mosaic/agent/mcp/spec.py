@@ -1128,9 +1128,11 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "Submit a planned recipe and start running it in the background. "
             "Requires the fingerprint of a current plan_recipe result. Returns the "
             "request id and how long to wait before polling get_request_status. "
-            "Refused with reason confirmation_required when the work is costly or "
-            "a choice is the user's. Ask the user, then call again with confirm "
-            "true. Do not set confirm without the user's agreement."
+            "When the work is costly or a choice is the user's, a client that can "
+            "ask the user asks. Otherwise the call is refused with reason "
+            "confirmation_required: ask the user, then call again with confirm "
+            "true. Do not set confirm without the user's agreement. After "
+            "confirmation_unanswered or confirmation_declined, stop and report."
         ),
         input_model=SubmitPipelineInput,
         output=SubmittedPipeline,
@@ -1171,9 +1173,11 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         title="Cancel a request",
         description=(
             "Cancel a request that has not ended. Its running step is stopped and "
-            "its unstarted steps are recorded cancelled. Refused with reason "
-            "confirmation_required when a running step loses its work. Ask the "
-            "user, then call again with confirm true."
+            "its unstarted steps are recorded cancelled. When a running step "
+            "loses its work, a client that can ask the user asks. Otherwise the "
+            "call is refused with reason confirmation_required: ask the user, "
+            "then call again with confirm true. After confirmation_unanswered or "
+            "confirmation_declined, stop and report."
         ),
         input_model=CancelRequestInput,
         output=RequestCancel,
