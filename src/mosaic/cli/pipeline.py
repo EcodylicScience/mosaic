@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, NoReturn
+from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
 
 import typer
 
@@ -53,6 +53,8 @@ from mosaic.cli.features.describe import DetailOption
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.graph import (
+        CleanupPolicy,
+        CleanupStatusWire,
         Plan,
         PlannedStep,
         Recipe,
@@ -84,6 +86,36 @@ ManifestOption = Annotated[
 ]
 JsonOption = Annotated[bool, typer.Option("--json", help="Emit as a JSON object.")]
 
+CleanupChoice = Literal["none", "superseded"]
+
+CleanupOption = Annotated[
+    CleanupChoice,
+    typer.Option(
+        "--cleanup",
+        help=(
+            "'superseded' reports the other runs of the recipe's feature storages, "
+            "each removable or kept with its reason; on submit and run they are "
+            "removed after every step finished. Needs --expect-plan there."
+        ),
+    ),
+]
+KeepNewestOption = Annotated[
+    int,
+    typer.Option(
+        "--keep-newest",
+        min=0,
+        help="With --cleanup, keep this many superseded runs per storage, newest first.",
+    ),
+]
+MinAgeOption = Annotated[
+    float,
+    typer.Option(
+        "--min-age-hours",
+        min=0,
+        help="With --cleanup, keep every run younger than this many hours.",
+    ),
+]
+
 SCOPE_FLAGS_REMEDY = (
     "--entry group:sequence (repeatable). Omit it to cover the whole dataset."
 )
@@ -102,6 +134,17 @@ def _recipe(argument: str, *, as_json: bool) -> "Recipe":
         return read_recipe(load_json_arg(argument))
     except RecipeInvalid as exc:
         fail_classified(exc, as_json=as_json)
+
+
+def _cleanup_policy(
+    cleanup: CleanupChoice, keep_newest: int, min_age_hours: float
+) -> CleanupPolicy | None:
+    """The policy that ``--cleanup`` and its flags name, ``None`` for no cleanup."""
+    from mosaic.core.pipeline.graph import CleanupPolicy
+
+    if cleanup == "none":
+        return None
+    return CleanupPolicy(keep_newest=keep_newest, min_age_hours=min_age_hours)
 
 
 def _fail_unrunnable(
@@ -205,6 +248,9 @@ def plan_command(
     entry: EntriesOption = None,
     group: GroupOption = None,
     step_scope: StepScopeOption = None,
+    cleanup: CleanupOption = "none",
+    keep_newest: KeepNewestOption = 1,
+    min_age_hours: MinAgeOption = 24.0,
     as_json: JsonOption = False,
 ) -> None:
     """Resolve a recipe against a dataset: identities, coverage, what is left.
@@ -214,11 +260,14 @@ def plan_command(
     scope that have not ended, running or orphaned, are listed with it.
     ``--step-scope`` narrows one step, as a train/test split narrows the fit
     to the training groups and the scoring to the test groups.
+    ``--cleanup superseded`` also reports the superseded runs of the recipe's
+    feature storages, and the fingerprint then covers the ones removable. It
+    writes nothing.
     """
     from mosaic.core.pipeline.graph import (
         RecipeRefused,
-        plan_pipeline,
         plan_wire,
+        plan_with_cleanup,
         requests_matching,
     )
     from mosaic.core.scope import Scope
@@ -229,7 +278,13 @@ def plan_command(
     step_scopes = parse_step_scopes(step_scope)
     try:
         with stdout_to_stderr():
-            plan = plan_pipeline(ds, parsed, scope=scope, step_scopes=step_scopes)
+            plan = plan_with_cleanup(
+                ds,
+                parsed,
+                cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
+                scope=scope,
+                step_scopes=step_scopes,
+            )
     except RecipeRefused as refusal:
         if as_json:
             emit_json(plan_wire(refusal.plan).model_dump(mode="json"))
@@ -378,6 +433,20 @@ def run_command(
     owner: Annotated[
         str, typer.Option("--owner", help="Recorded on each attempt.")
     ] = "",
+    cleanup: CleanupOption = "none",
+    keep_newest: KeepNewestOption = 1,
+    min_age_hours: MinAgeOption = 24.0,
+    expect_plan: Annotated[
+        str | None,
+        typer.Option(
+            "--expect-plan",
+            help=(
+                "With --recipe, the fingerprint that 'mosaic pipeline plan' "
+                "printed. Refuses the run, writing nothing, when the plan has "
+                "changed since. Required with --cleanup."
+            ),
+        ),
+    ] = None,
     as_json: JsonOption = False,
 ) -> None:
     """Run every step of a recipe here, in order, skipping what is already done.
@@ -386,6 +455,11 @@ def run_command(
     stderr. With ``--request`` the steps of a submitted request run instead, and
     the command exits 1 when the request failed. Either way it exits 130 when the
     run was cancelled, by SIGTERM, SIGINT or ``mosaic cancel``.
+
+    With ``--cleanup superseded --expect-plan`` the runs that plan found
+    removable are removed once every step has finished, and the command exits 1
+    when that cleanup failed. ``--request`` runs the cleanup its request
+    recorded.
     """
     from mosaic.core.pipeline.graph import (
         request_status_wire,
@@ -397,10 +471,19 @@ def run_command(
     if request_id is not None:
         if recipe is not None:
             fail("Provide exactly one of --recipe or --request.")
-        if entry or group or step_scope or allow_partial or owner:
+        if (
+            entry
+            or group
+            or step_scope
+            or allow_partial
+            or owner
+            or cleanup != "none"
+            or expect_plan is not None
+        ):
             fail(
-                "--entry, --group, --step-scope, --allow-partial and --owner are "
-                "recorded on a request at submit, and are not used with --request."
+                "--entry, --group, --step-scope, --allow-partial, --owner, "
+                "--cleanup and --expect-plan are recorded on a request at submit, "
+                "and are not used with --request."
             )
         _run_request(manifest, request_id, detach=detach, as_json=as_json)
         return
@@ -426,6 +509,8 @@ def run_command(
                 allow_partial=allow_partial,
                 owner=owner,
                 step_scopes=step_scopes,
+                expect_plan=expect_plan,
+                cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
             )
             submitted = recorded.request
             _warn_duplicates(recorded.duplicates)
@@ -458,10 +543,16 @@ def run_command(
         }
         for outcome in done.outcomes
     ]
+    removal = (
+        request_status_wire(ds.base_dir, submitted).cleanup
+        if submitted.cleanup is not None
+        else None
+    )
     if as_json:
         emit_json(
             {
                 "request_id": done.request_id,
+                "cleanup": None if removal is None else removal.model_dump(mode="json"),
                 "recipe_digest": done.recipe_digest,
                 "scope": sorted(list(pair) for pair in done.scope),
                 "steps": [
@@ -476,8 +567,11 @@ def run_command(
                 ],
             }
         )
+        _exit_on_failed_cleanup(done.cleanup_status)
         return
     render_table(rows, ["step", "type", "run_id", "state"])
+    if removal is not None:
+        _render_cleanup_status(removal)
     for outcome in done.outcomes:
         if outcome.diverged:
             # Worth saying out loud: the plan is a preview, and a step that
@@ -487,6 +581,13 @@ def run_command(
                 f"note: step {outcome.step_id!r} recorded {outcome.run_id}, "
                 f"where the plan resolved {outcome.planned_run_id}"
             )
+    _exit_on_failed_cleanup(done.cleanup_status)
+
+
+def _exit_on_failed_cleanup(status: str) -> None:
+    """Exit 1 when the request's cleanup failed, after its report was printed."""
+    if status == "failed":
+        raise typer.Exit(code=1)
 
 
 def _run_request(
@@ -547,12 +648,15 @@ def _run_request(
                 "skipped": list(done.skipped),
                 "cancelled": list(done.cancelled),
                 "log_path": str(done.log_path),
+                "cleanup": None
+                if report.cleanup is None
+                else report.cleanup.model_dump(mode="json"),
             }
         )
     else:
         _render_request_status(report)
         log(f"note: the steps' output is in {done.log_path}")
-    if done.status == "failed":
+    if done.status == "failed" or done.cleanup_status == "failed":
         raise typer.Exit(code=1)
     if done.status == "cancelled":
         raise typer.Exit(code=130)
@@ -602,6 +706,9 @@ def submit_command(
             ),
         ),
     ] = False,
+    cleanup: CleanupOption = "none",
+    keep_newest: KeepNewestOption = 1,
+    min_age_hours: MinAgeOption = 24.0,
     as_json: JsonOption = False,
 ) -> None:
     """Record a submission of a recipe, and print the command for every step.
@@ -614,6 +721,11 @@ def submit_command(
     An open request of the same recipe over an overlapping scope is reported on
     stderr and under ``duplicates``, or refuses the submission with
     ``--refuse-duplicates``.
+
+    ``--cleanup superseded`` records the runs that the plan reviewed under
+    ``--expect-plan`` found removable, and whatever runs the request removes
+    them after every step has finished. A queue that dispatches the steps
+    itself runs no cleanup: ``pipeline run --request`` does.
     """
     from mosaic.core.pipeline.graph import plan_fingerprint, step_argv, submit_request
 
@@ -633,6 +745,7 @@ def submit_command(
                 expect_plan=expect_plan,
                 refuse_duplicates=refuse_duplicates,
                 step_scopes=step_scopes,
+                cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
             )
     except ClassifiedError as error:
         _fail_unrunnable(error, as_json=as_json)
@@ -670,6 +783,9 @@ def submit_command(
                 },
                 "steps": steps,
                 "duplicates": list(submitted.duplicates),
+                "cleanup": None
+                if request.cleanup is None
+                else request.cleanup.model_dump(mode="json"),
             }
         )
         return
@@ -691,6 +807,12 @@ def submit_command(
         argv = row["argv"]
         assert isinstance(argv, list)
         typer.echo(" ".join(shlex.quote(str(word)) for word in argv))
+    if request.cleanup is not None:
+        log(
+            f"note: {len(request.cleanup.approved)} superseded run(s) are removed "
+            f"once every step has finished, by 'mosaic pipeline run --request "
+            f"{request.request_id}'"
+        )
 
 
 def status_command(
@@ -755,8 +877,43 @@ def _render_request_status(report: RequestStatusWire) -> None:
             "liveness",
         ],
     )
+    if report.cleanup is not None:
+        _render_cleanup_status(report.cleanup)
     if report.poll_after_seconds is not None:
         log(f"note: poll again in {report.poll_after_seconds} s")
+
+
+def _render_cleanup_status(cleanup: CleanupStatusWire) -> None:
+    """Print a request's cleanup: its status, its totals and the runs it kept."""
+    typer.echo(
+        f"cleanup {cleanup.execution_id}: {cleanup.status}, removed "
+        f"{cleanup.removed_runs} of {cleanup.approved_runs} approved run(s) "
+        f"({_size(cleanup.removed_bytes)}), kept {cleanup.kept_runs}, failed "
+        f"{cleanup.failed_runs}, interrupted {cleanup.interrupted_runs}"
+    )
+    if cleanup.kept:
+        render_table(
+            [
+                {
+                    "storage": run.storage,
+                    "run_id": run.run_id,
+                    "reason": run.reason,
+                    "detail": run.detail,
+                }
+                for run in cleanup.kept
+            ],
+            ["storage", "run_id", "reason", "detail"],
+        )
+
+
+def _size(size: int) -> str:
+    """*size* bytes in the largest unit that keeps it at least 1."""
+    amount = float(size)
+    for unit in ("B", "KB", "MB", "GB"):
+        if amount < 1024 or unit == "GB":
+            return f"{amount:.0f} {unit}" if unit == "B" else f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{amount:.1f} GB"
 
 
 def list_command(
@@ -855,6 +1012,31 @@ def _emit_plan(
                 f"note: step {planned.step_id!r} is narrowed to {selector}, "
                 f"{len(planned.coverage.target)} of {len(plan.scope)} entries"
             )
+    if wire.cleanup is not None:
+        superseded = [run for step in wire.steps for run in step.superseded]
+        if superseded:
+            typer.echo("superseded runs")
+            render_table(
+                [
+                    {
+                        "step": step.step,
+                        "run_id": run.run_id,
+                        "removable": "yes" if run.removable else "kept",
+                        "reason": run.reason,
+                        "size": _size(run.bytes),
+                    }
+                    for step in wire.steps
+                    for run in step.superseded
+                ],
+                ["step", "run_id", "removable", "reason", "size"],
+            )
+        omitted = sum(step.superseded_omitted for step in wire.steps)
+        log(
+            f"cleanup: {wire.cleanup.removable_runs} superseded run(s) removable "
+            f"({_size(wire.cleanup.removable_bytes)}), {wire.cleanup.kept_runs} "
+            f"kept ({_size(wire.cleanup.kept_bytes)})"
+            + (f"; {omitted} not listed" if omitted else "")
+        )
     for summary in open_requests:
         log(
             f"note: request {summary.request_id} of this recipe is "

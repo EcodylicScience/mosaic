@@ -25,11 +25,13 @@ from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_discovery import discover_datasets
 from mosaic.core.dataset_summary import dataset_summary
 from mosaic.core.pipeline.graph import (
+    CleanupPolicy,
     FileFailureStore,
     entry_errors_wire,
     list_requests,
     load_request,
     plan_pipeline,
+    plan_with_cleanup,
     request_rollup,
     request_status_wire,
     run_pipeline,
@@ -178,6 +180,18 @@ CLI_READS: dict[str, CliArguments] = {
         f"@{f.recipe_path}",
         "--step-scope",
         'speed={"entries": [["", "seq_a"]]}',
+    ],
+    "pipeline plan --cleanup superseded": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{f.recipe_path}",
+        "--cleanup",
+        "superseded",
+        "--min-age-hours",
+        "0",
+        "--keep-newest",
+        "0",
     ],
     "pipeline status": lambda f: ["pipeline", "status", "--request", f.request_id],
     "preview": lambda _: ["preview", f"tracks-variant/{VARIANT}", "--entry", "seq_a"],
@@ -350,6 +364,9 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "load_tracks": lambda f: f.reopened().load_tracks("", "seq_a", auto_convert=False),
     "open_dataset": ReadDataset.reopened,
     "plan_pipeline": lambda f: plan_pipeline(f.reopened(), speed_recipe()),
+    "plan_with_cleanup": lambda f: plan_with_cleanup(
+        f.reopened(), speed_recipe(), cleanup=CleanupPolicy(min_age_hours=0)
+    ),
     "preview_artifact": lambda f: preview_artifact(
         f.reopened(), FeatureRunRef(SPEED_STORAGE, f.feature_run_id), ("", "seq_a")
     ),
