@@ -10,12 +10,14 @@ from mosaic.tracking import register_ops
 register_ops()
 
 _MINIMAL: dict[str, dict[str, object]] = {
+    "convert-labels": {"source_format": "calms21_npy"},
     "convert-points": {
         "cvat_xml": "labels_raw/cvat/annotations.xml",
         "images_dir": "labels_raw/cvat/images",
         "class_names": ["individual"],
         "radii": {"individual": 4.0},
     },
+    "convert-tracks": {"source_format": "calms21_npy"},
     "export-joined": {},
     "export-store": {},
     "extract-frames": {"n_frames": 1},

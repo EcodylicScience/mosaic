@@ -77,11 +77,14 @@ class OpIdentity:
         model_run_id: What names the model a training op produces, or ``""``.
             Separate because a downstream inference step references the *model*,
             and a training run and its model need not always be one name.
+        labels_variant: What names the ``labels/<kind>/`` variant a label
+            conversion produces, or ``""`` for an op that writes no labels.
     """
 
     run_id: str
     tracks_variant: str = ""
     model_run_id: str = ""
+    labels_variant: str = ""
 
 
 class IdentityDeferred(Exception):
@@ -312,6 +315,9 @@ class Op(Generic[P]):
     # table and writes another. ``None`` keeps the old inference, so no existing
     # op declares anything and none of their declarations move.
     writes_tracks: ClassVar[bool | None] = None
+    writes_labels: ClassVar[bool] = False
+    """Whether this op writes a ``labels/<kind>/`` variant, which is what lets a
+    downstream feature's labels field reference it."""
     scope_takes: ClassVar[ScopeTakes]
     """How much scope this op accepts. See :data:`ScopeTakes`.
 
@@ -489,6 +495,7 @@ def register_op(cls: type[Op[Any]]) -> type[Op[Any]]:
 
 
 CORE_OP_MODULES: Final[tuple[str, ...]] = (
+    "mosaic.core.pipeline.convert_ops",
     "mosaic.core.pipeline.joined_export",
     "mosaic.core.pipeline.preprocess",
     "mosaic.core.pipeline.store_export",
@@ -500,8 +507,8 @@ CORE_OP_MODULES: Final[tuple[str, ...]] = (
 def ensure_core_ops_registered() -> None:
     """Import every module of :data:`CORE_OP_MODULES`, registering its op.
 
-    The imports are deferred to the call because those modules import this one
-    and load cv2 and av. ``mosaic.tracking.register_ops`` calls this too, and one
+    The imports are deferred to the call because those modules import this one,
+    and the media ops load cv2 and av. ``mosaic.tracking.register_ops`` calls this too, and one
     call there registers every built-in op.
     """
     for module in CORE_OP_MODULES:

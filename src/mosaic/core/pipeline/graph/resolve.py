@@ -514,6 +514,7 @@ def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
             if declared_tracks is None
             else bool(declared_tracks),
             writes_media=str(getattr(op_cls, "domain", "")) == "media",
+            writes_labels=bool(getattr(op_cls, "writes_labels", False)),
         ),
         consumes=ConsumerDecl(
             name=kind,

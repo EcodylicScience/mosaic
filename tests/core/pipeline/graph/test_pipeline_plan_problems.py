@@ -36,7 +36,12 @@ from mosaic.core.pipeline.graph import (
 from mosaic.core.pipeline.graph.columns import measured_columns
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from mosaic.runlog import read_run, run_log_dir
-from tests.helpers import add_tracks_variant, guppies_recipe, make_dataset
+from tests.helpers import (
+    add_tracks_variant,
+    calms21_dataset,
+    guppies_recipe,
+    make_dataset,
+)
 
 runner = CliRunner()
 
@@ -339,3 +344,37 @@ def test_the_cli_exits_with_the_refused_code_for_a_refused_step(
     assert result.exit_code == REFUSED_EXIT_CODE, result.output
     payload = json.loads(result.stdout)
     assert (payload["status"], payload["reason"]) == ("refused", "recipe_refused")
+
+
+@pytest.mark.parametrize("kind", ["convert-tracks", "convert-labels"])
+def test_a_convert_step_with_no_raw_rows_of_its_format_is_a_problem(
+    tmp_path: Path, kind: str
+) -> None:
+    """A dataset whose sources were never scanned for the format is refused."""
+    dataset = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}}, scan=False)
+    recipe = read_recipe(
+        {
+            "schema_version": 1,
+            "name": "convert",
+            "steps": [
+                {
+                    "id": "convert",
+                    "type": "op",
+                    "kind": kind,
+                    "params": {"source_format": "calms21_npy"},
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(RecipeRefused) as refused:
+        _ = plan_pipeline(dataset, recipe)
+
+    (problem,) = refused.value.problems
+    assert (problem.step, problem.where) == ("convert", "params.source_format")
+    assert "scan the dataset's sources first" in problem.message
+
+    dataset.scan_tracks()
+    dataset.scan_labels()
+    plan = plan_pipeline(dataset, recipe)
+    assert plan.step("convert").run_id

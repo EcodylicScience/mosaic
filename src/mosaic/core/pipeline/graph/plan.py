@@ -46,6 +46,8 @@ each such problem at the place in the recipe that would change, and
   analysis derivative, at ``after``, unless a ``transcode`` step of target
   ``analysis`` is upstream of the step. The plan routes the step's entries as
   the op does, and the message names the transcode step to add.
+- A ``convert-tracks`` or ``convert-labels`` step whose source format has no row
+  in the raw index it reads, at ``params.source_format``.
 """
 
 from __future__ import annotations
@@ -65,6 +67,7 @@ from ..inventory.model import (
     Coverage,
     Entry,
     FeatureRunRef,
+    LabelsVariantRef,
     MediaDerivativeRef,
     MediaVariantRef,
     TracksVariantRef,
@@ -587,6 +590,7 @@ def plan_pipeline(
                 # does not name a variant, and its tables cannot be read.
                 findings.read_tracks(ds, step.id, step_plan.spec.tracks_run_id, target)
         else:
+            findings.problems.extend(_conversion_source_problems(ds, step))
             findings.problems.extend(
                 _untranscoded_media_problems(
                     ds, recipe, step, step_plan, catalog=catalog, planned=planned
@@ -990,6 +994,14 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
         return TracksVariantRef(run_id=identity.tracks_variant)
     if identity.model_run_id:
         return TrainedModelRef(op_kind=kind, run_id=identity.model_run_id)
+    if identity.labels_variant:
+        # Looked up whole rather than by entry: a labels variant covers the
+        # annotated entries, which need not be the plan's target, and a partly
+        # labelled dataset would otherwise never read as converted.
+        return LabelsVariantRef(
+            label_kind=str(getattr(params, "kind", "behavior")),
+            run_id=identity.labels_variant,
+        )
     if kind == "transcode":
         wanted = getattr(params, "target", "analysis")
         return MediaDerivativeRef(
@@ -998,6 +1010,50 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
     if kind == PREPROCESS_KIND:
         return MediaVariantRef(run_id=identity.run_id)
     return None
+
+
+_CONVERSION_ROOTS: Final[dict[str, str]] = {
+    "convert-tracks": "tracks_raw",
+    "convert-labels": "labels_raw",
+}
+"""The raw root each conversion op reads its format's rows from."""
+
+
+def _conversion_source_problems(ds: Dataset, step: OpStepSpec) -> list[Problem]:
+    """A problem at a conversion step whose format has no raw row to convert.
+
+    A conversion reads the rows a scan recorded, and an unscanned dataset would
+    plan cleanly and fail when the step runs. Reads the raw index and writes
+    nothing.
+    """
+    root = _CONVERSION_ROOTS.get(step.kind)
+    if root is None:
+        return []
+    source_format = step.params.get("source_format")
+    if not isinstance(source_format, str) or not source_format:
+        return []
+    if source_format in _raw_formats(ds, root):
+        return []
+    message = (
+        f"{root}/index.csv has no row of source format {source_format!r}; scan "
+        f"the dataset's sources first (mosaic scan), or name the format the "
+        f"scan recorded"
+    )
+    return [Problem(step.id, "params.source_format", message)]
+
+
+def _raw_formats(ds: Dataset, root: str) -> set[str]:
+    """The ``src_format`` values that a raw index records, empty when it is absent."""
+    import csv
+
+    try:
+        path = ds.get_root(root) / "index.csv"
+    except KeyError:
+        return set()
+    if not path.is_file():
+        return set()
+    with path.open(newline="") as handle:
+        return {(row.get("src_format") or "").strip() for row in csv.DictReader(handle)}
 
 
 _ANALYSIS_DERIVATIVES: Final = MediaDerivativeRef(target="analysis")

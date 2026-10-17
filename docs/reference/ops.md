@@ -3,7 +3,7 @@
 
 # Ops
 
-20 ops are registered. An op is the unit `mosaic run --kind <kind>`
+22 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
@@ -23,6 +23,18 @@ factory rather than being a literal, so there is no value to print.
 
 ### convert
 
+#### `convert-labels`
+
+Version `0.1` &middot; `mosaic.core.pipeline.convert_ops.ConvertLabelsOp`
+
+Convert one format's raw labels into a labels variant of one kind.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `kind` | `string` | `"behavior"` |  | The label kind to convert into, such as 'behavior'. |
+| `source_format` | `string` | _required_ |  | The registered converter's src_format, such as 'calms21_npy'. One step converts one format and names one variant. |
+| `params` | `object` | `{}` |  | The label converter's own params, such as fps or group_from. A key the converter does not declare is refused. |
+
 #### `convert-points`
 
 Version `0.2` &middot; `mosaic.tracking.ops.convert.ConvertPointsOp`
@@ -41,6 +53,19 @@ Convert CVAT point annotations into a POLO point-detection dataset + ``data.yaml
 | `split_by` | `string` | `"group"` |  | How images are grouped before the split is drawn. group keeps frames from the same video together in one split. |
 | `seed` | `integer` | `42` |  | Random seed for the train, validation and test split assignment. |
 | `symlink_images` | `boolean` | `true` |  | Symlink source images into the dataset instead of copying them. |
+
+#### `convert-tracks`
+
+Version `0.1` &middot; `mosaic.core.pipeline.convert_ops.ConvertTracksOp`
+
+Convert one format's raw tracks into a tracks variant.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `source_format` | `string` | _required_ |  | The registered converter's src_format, such as 'calms21_npy'. One step converts one format and names one variant. |
+| `params` | `object` | `{}` |  | The converter's own params, such as fps. A key the converter does not declare is refused. |
+| `merge_per_sequence` | `boolean` \| `None` | `null` |  | Merge a sequence's several files into one table. Unset asks the converter. |
+| `group_from` | `"filename"` \| `"infile"` \| `"both"` \| `None` | `null` |  | Which group a converted entry is filed under: 'filename' (the scan's file-level group, the default), 'infile' or 'both'. |
 
 #### `litpose`
 

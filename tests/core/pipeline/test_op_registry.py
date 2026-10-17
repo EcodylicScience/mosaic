@@ -72,7 +72,8 @@ def test_register_ops_populates_registry_in_a_fresh_interpreter():
 
     script = (
         "from mosaic.core.pipeline.ops import list_ops\n"
-        "assert not list_ops(domain='tracking'), 'tracking ops registered too early'\n"
+        "early = {e['kind'] for e in list_ops(domain='tracking')}\n"
+        f"assert early == set({CORE_CONVERT_OPS!r}), sorted(early)\n"
         "from mosaic.tracking import register_ops\n"
         "register_ops()\n"
         "kinds = {e['kind'] for e in list_ops(domain='tracking')}\n"
@@ -85,7 +86,13 @@ def test_register_ops_populates_registry_in_a_fresh_interpreter():
 
 
 CORE_MEDIA_OPS = ("export-joined", "export-store", "preprocess", "transcode")
-"""The ops that register from modules under ``mosaic.core.pipeline``."""
+"""The media ops that register from modules under ``mosaic.core.pipeline``."""
+
+CORE_CONVERT_OPS = ("convert-labels", "convert-tracks")
+"""The conversion ops under ``mosaic.core.pipeline``, whose domain is tracking."""
+
+CORE_OPS = (*CORE_CONVERT_OPS, *CORE_MEDIA_OPS)
+"""Every op that registers from a module under ``mosaic.core.pipeline``."""
 
 
 def test_registered_op_registers_the_core_ops_in_a_fresh_interpreter():
@@ -95,7 +102,7 @@ def test_registered_op_registers_the_core_ops_in_a_fresh_interpreter():
 
     script = (
         "from mosaic.core.pipeline.ops import registered_op\n"
-        f"for kind in {CORE_MEDIA_OPS!r}:\n"
+        f"for kind in {CORE_OPS!r}:\n"
         "    assert registered_op(kind).kind == kind, kind\n"
     )
     result = subprocess.run(
@@ -112,7 +119,7 @@ def test_register_ops_registers_the_core_ops_in_a_fresh_interpreter():
         "from mosaic.core.pipeline.ops import OPS\n"
         "from mosaic.tracking import register_ops\n"
         "register_ops()\n"
-        f"missing = [k for k in {CORE_MEDIA_OPS!r} if k not in OPS]\n"
+        f"missing = [k for k in {CORE_OPS!r} if k not in OPS]\n"
         "assert not missing, missing\n"
     )
     result = subprocess.run(
@@ -130,7 +137,7 @@ def test_list_ops_and_op_resource_class_register_the_core_ops_in_a_fresh_interpr
         "from mosaic.core.pipeline.ops import list_ops, op_resource_class\n"
         "assert op_resource_class('preprocess') == 'heavy'\n"
         "kinds = {e['kind'] for e in list_ops()}\n"
-        f"missing = [k for k in {CORE_MEDIA_OPS!r} if k not in kinds]\n"
+        f"missing = [k for k in {CORE_OPS!r} if k not in kinds]\n"
         "assert not missing, missing\n"
     )
     result = subprocess.run(

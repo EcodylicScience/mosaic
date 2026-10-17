@@ -321,6 +321,24 @@ def test_declarations_are_read_off_what_a_class_declares() -> None:
     assert not trainer.consumes.reads_media
 
 
+def test_convert_labels_declares_writes_labels() -> None:
+    """The one op a labels field may reference, and it writes no tracks."""
+    catalog = declaration_catalog()
+
+    writers = {
+        name
+        for name, declared in catalog.entries.items()
+        if declared.produces.writes_labels
+    }
+
+    assert writers == {"convert-labels"}
+    assert not catalog.entries["convert-labels"].produces.writes_tracks
+    converter = catalog.entries["convert-tracks"]
+    assert converter.produces.writes_tracks
+    assert not converter.consumes.reads_media
+    assert converter.scope_takes == "none"
+
+
 def test_the_media_domain_ops_are_the_ones_that_write_media() -> None:
     """The answer is read off each op's declared domain, without a name list.
 

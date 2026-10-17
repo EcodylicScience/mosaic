@@ -105,7 +105,9 @@ class TestTheDeclarationsAreWhatWeIntend:
     def test_the_scope_free_ops(self) -> None:
         free = {kind for kind, op in OPS.items() if op.scope_takes == "none"}
         assert free == {
+            "convert-labels",
             "convert-points",
+            "convert-tracks",
             "prepare-training-data",
             "train-pose",
             "train-points",
@@ -207,7 +209,9 @@ store dataset instead, by
 
 GATED_OPS = frozenset(
     [
+        "convert-labels",
         "convert-points",
+        "convert-tracks",
         "export-joined",
         "extract-frames",
         "infer-localizer",
@@ -231,7 +235,7 @@ GATED_OPS = frozenset(
 
 Every op declaring independence, less the one
 :data:`OPS_THE_FIXTURE_CANNOT_FEED` names. The payload gate runs over all
-twenty and needs no population.
+twenty-two and needs no population.
 """
 
 
@@ -300,9 +304,9 @@ regression names which one came back.
 class TestNoScopeReachesTheHashedPayload:
     """What a run covers and whether it recomputes never name the run.
 
-    The direct leak, over **every** registered op rather than the eighteen the
+    The direct leak, over **every** registered op rather than the twenty the
     dataset gate below covers. Every op now takes both as arguments and declares no
-    such field, and that is why this passes for all twenty. It
+    such field, and that is why this passes for all twenty-two. It
     stays as the gate an op reintroducing one meets. The field would be
     ``HASH_EXCLUDE`` or the payload would name it, and a payload naming either
     gives one computation two names as soon as a caller narrows it.
@@ -326,10 +330,11 @@ class TestADeclaredIndependenceHoldsAgainstTheDataset:
     has that shape. Its scope filters the tracks index and the surviving variant
     enters every identifier, while its params payload holds no scope at all.
 
-    Partial today, and prospective rather than additive. Nineteen ops declare
-    independence, eighteen of them are gated here, and this dataset lets five
-    answer: ``extract-frames``, ``trex`` and ``export-joined``, pure functions of
-    their params, and ``transcode`` and ``preprocess``, whose identity is their
+    Partial today, and prospective rather than additive. Twenty-one ops declare
+    independence, twenty of them are gated here, and this dataset lets seven
+    answer: ``extract-frames``, ``trex``, ``export-joined``, ``convert-tracks``
+    and ``convert-labels``, pure functions of their params, and ``transcode``
+    and ``preprocess``, whose identity is their
     recipe and which read the dataset only for refusals that answer the same way
     for every entry set. The other thirteen defer, each deferral recorded as a
     skip stating the reason the op gave: a training op has no data.yaml here, an
@@ -471,7 +476,7 @@ class TestPublished:
         """A client draws its controls from these fields, and a coverage is not one.
 
         Which entries a run covers is an argument to the run. No op params
-        model declares a coverage under any spelling the twenty have used,
+        model declares a coverage under any spelling the twenty-two have used,
         and the published schema is generated from these fields.
         """
         declaring = {
@@ -485,7 +490,7 @@ class TestPublished:
         Two attempts differing only in whether they redo the work are one
         recipe. Every op takes the decision as the ``overwrite`` argument
         :meth:`~mosaic.core.pipeline.ops.Op.run` receives, whose name and
-        position :class:`TestOpInterface` pins for all twenty.
+        position :class:`TestOpInterface` pins for all twenty-two.
 
         That a body reads it is measured per op, in both directions, wherever
         an op has a reuse gate: the five training ops and ``convert-points`` in

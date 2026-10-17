@@ -114,6 +114,8 @@ class ProducerDecl:
             level to offer.
         writes_tracks: Whether it produces a ``tracks/`` variant, which is what
             a step-level ``tracks`` reference may point at.
+        writes_labels: Whether it produces a ``labels/<kind>/`` variant, which
+            is what a feature's labels field may reference.
         writes_media: Whether it writes or relinks media other steps read. What
             makes an ordering-only edge from it meaningful, and what
             ``validate`` pairs against ``reads_media``.
@@ -130,6 +132,7 @@ class ProducerDecl:
     writes_tracks: bool = False
     writes_media: bool = False
     keeps_track_frame: bool | None = None
+    writes_labels: bool = False
 
 
 @dataclass(frozen=True, slots=True)
