@@ -297,7 +297,10 @@ def test_a_failure_is_an_error_result_carrying_its_envelope(
 def _plan_then_submit(
     dataset: Dataset, **extra: JsonValue
 ) -> Callable[[Client], Awaitable[types.CallToolResult]]:
-    """A session body that plans the speed recipe and submits it over every entry."""
+    """A session body that plans the speed recipe and submits it over every entry.
+
+    The submission sets ``allow_partial``, a condition that asks to confirm.
+    """
 
     async def body(client: Client) -> types.CallToolResult:
         uuid = _uuid(dataset)
@@ -311,6 +314,7 @@ def _plan_then_submit(
                 "dataset": uuid,
                 "recipe": recipe,
                 "plan_fingerprint": _structured(plan)["fingerprint"],
+                "allow_partial": True,
                 **extra,
             },
         )
@@ -436,6 +440,7 @@ def test_a_confirmation_answers_only_the_call_it_was_asked_for(
             "dataset": uuid,
             "recipe": recipe,
             "plan_fingerprint": _structured(plan)["fingerprint"],
+            "allow_partial": True,
         }
         asked = await client.session.call_tool(
             "submit_pipeline", shown, allow_input_required=True

@@ -218,6 +218,12 @@ def _plan(plan: PlanWire) -> str:
         else ""
     )
     done = " Every step is already complete." if plan.complete else ""
+    cautions = (
+        f" {len(plan.cautions)} caution(s) to show the user: "
+        f"{_names([str(caution) for caution in plan.cautions])}."
+        if plan.cautions
+        else ""
+    )
     orphaned = sum(1 for item in plan.open_requests if item.verdict == "orphaned")
     unended = (
         f" {len(plan.open_requests)} request(s) of this recipe have not ended, "
@@ -228,10 +234,9 @@ def _plan(plan: PlanWire) -> str:
     )
     return (
         f"The plan covers {plan.scope_size} entries in {len(plan.steps)} step(s): "
-        f"{_names(steps)}.{done}{problems}{unended} Its fingerprint is "
-        f"{plan.fingerprint}, "
-        "which submit_pipeline requires. Show the user the plan before "
-        f"submitting. {_STRUCTURED}"
+        f"{_names(steps)}.{done}{problems}{cautions}{unended} Its fingerprint "
+        f"is {plan.fingerprint}, which submit_pipeline requires. Show the user "
+        f"the plan and its cautions before submitting. {_STRUCTURED}"
     )
 
 

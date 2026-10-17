@@ -60,7 +60,6 @@ __all__ = [
     "DEFAULT_PAGE_SIZE",
     "INVALID_ARGUMENTS",
     "INVALID_CURSOR",
-    "LARGE_SCOPE_ENTRIES",
     "LISTED_STATUS_NOT",
     "LISTING_MISSING_SAMPLE",
     "MAX_DESCRIBED_STEP_TYPES",
@@ -170,9 +169,6 @@ Not enforced per call. A test measures every step type of the catalog, and the
 largest, ``vame``, takes about 15,700.
 """
 
-LARGE_SCOPE_ENTRIES: Final = 100
-"""The most entries a step may be asked for before a submission asks to confirm."""
-
 LISTED_STATUS_NOT: Final[tuple[ArtifactStatus, ...]] = ("complete",)
 """The statuses that an inventory listing leaves out when its call names none."""
 
@@ -230,9 +226,8 @@ type ConfirmationCondition = Literal[
     "tracking_op",
     "allow_partial",
     "bind",
-    "large_scope",
-    "whole_dataset",
     "open_duplicate",
+    "cleanup",
     "hard_cancel",
 ]
 """A condition under which a tool refuses until the user confirms the call."""
@@ -246,11 +241,13 @@ CONFIRMATION_CONDITIONS: Final[Mapping[ConfirmationCondition, str]] = {
     ),
     "allow_partial": "allow_partial lets a step run over fewer entries than planned",
     "bind": "bind pins artifacts that the recipe did not produce",
-    "large_scope": (f"a step is asked for more than {LARGE_SCOPE_ENTRIES} entries"),
-    "whole_dataset": "the submission covers the whole dataset",
     "open_duplicate": (
         "a request of this recipe over an overlapping scope has not ended, and "
         "both compute the same runs"
+    ),
+    "cleanup": (
+        "the submission deletes superseded runs of its steps' storage after its "
+        "steps finish"
     ),
     "hard_cancel": (
         "a running step loses its work when cancelled. A keypoint-MoSeq or VAME "
@@ -1087,8 +1084,9 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         description=(
             "Resolve a recipe against a dataset without running it: each step's "
             "run id, status, coverage, entries asked, lane and why it waits, the "
-            "problems that refuse it, and the plan fingerprint that submit_pipeline "
-            "requires. Show the user the plan before submitting."
+            "problems that refuse it, the cautions to show the user, and the plan "
+            "fingerprint that submit_pipeline requires. Show the user the plan "
+            "and its cautions before submitting."
         ),
         input_model=PlanRecipeInput,
         output=ModelRef("mosaic.core.pipeline.graph", "PlanWire"),
@@ -1118,9 +1116,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "tracking_op",
             "allow_partial",
             "bind",
-            "large_scope",
-            "whole_dataset",
             "open_duplicate",
+            "cleanup",
         ),
         always_load=True,
     ),

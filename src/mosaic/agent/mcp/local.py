@@ -34,7 +34,6 @@ from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
 from mosaic.core.pipeline.error_kind import ClassifiedError
 
 from .spec import (
-    LARGE_SCOPE_ENTRIES,
     LISTED_STATUS_NOT,
     LISTING_MISSING_SAMPLE,
     PLAN_MISSING_SAMPLE,
@@ -1081,7 +1080,6 @@ def _submission_findings(
     from mosaic.core.pipeline.graph import (
         GPU_INFER_LANE,
         GPU_TRAIN_LANE,
-        asked_of,
         open_requests_matching,
         recipe_digest,
     )
@@ -1112,30 +1110,19 @@ def _submission_findings(
                         f"step {planned.step_id!r} runs {planned.runs}",
                     )
                 )
-        asked = len(asked_of(planned, plan))
-        if asked > LARGE_SCOPE_ENTRIES:
-            findings.append(
-                ConfirmationFinding(
-                    "large_scope",
-                    f"step {planned.step_id!r} is asked for {asked} entries",
-                )
-            )
     if args.allow_partial:
         findings.append(
             ConfirmationFinding("allow_partial", "the submission sets allow_partial")
         )
     if args.bind:
-        pinned = ", ".join(sorted(args.bind))
+        # A step id is any string, and the binds are checked only after this:
+        # each is quoted, so none can add a line to the confirmation question.
+        pinned = ", ".join(repr(step_id) for step_id in sorted(args.bind))
         findings.append(
             ConfirmationFinding("bind", f"the submission pins steps {pinned}")
         )
-    if args.entries is None:
-        findings.append(
-            ConfirmationFinding(
-                "whole_dataset",
-                f"the submission covers all {len(plan.scope)} entries of the dataset",
-            )
-        )
+    # The cleanup finding joins here, once a submission can remove the
+    # superseded runs of its steps' storage.
     duplicates = open_requests_matching(
         dataset.base_dir,
         recipe_digest(recipe),

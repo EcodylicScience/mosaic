@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from mosaic.agent.mcp.local import LocalBackend
 from mosaic.agent.mcp.spec import (
+    CONFIRMATION_CONDITIONS,
     MAX_PREVIEW_ROWS,
     MAX_RESULT_CHARS,
     RECIPE_EXAMPLE,
@@ -94,6 +95,32 @@ def test_only_submission_and_cancel_change_a_dataset_and_both_ask_to_confirm() -
     cancel = tool_spec("cancel_request")
     assert cancel is not None
     assert cancel.annotations.destructive
+
+
+def test_submission_asks_only_for_gpu_training_tracking_partial_bind_duplicate_and_cleanup() -> (
+    None
+):
+    submit = tool_spec("submit_pipeline")
+    cancel = tool_spec("cancel_request")
+
+    assert submit is not None
+    assert cancel is not None
+    assert submit.confirm_when == (
+        "gpu_lane",
+        "training_op",
+        "tracking_op",
+        "allow_partial",
+        "bind",
+        "open_duplicate",
+        "cleanup",
+    )
+    assert cancel.confirm_when == ("hard_cancel",)
+
+
+def test_every_confirmation_condition_belongs_to_a_tool() -> None:
+    asked = {condition for spec in TOOLS for condition in spec.confirm_when}
+
+    assert asked == set(CONFIRMATION_CONDITIONS)
 
 
 def test_the_preview_bound_is_the_one_the_preview_reader_enforces() -> None:

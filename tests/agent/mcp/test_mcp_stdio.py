@@ -295,6 +295,8 @@ def test_a_client_plans_submits_polls_and_previews_over_clean_stdout(
         "dataset": uuid,
         "recipe": recipe,
         "plan_fingerprint": plan["fingerprint"],
+        # Asks to confirm, and changes nothing over a plan that covers its scope.
+        "allow_partial": True,
     }
     refused = _envelope(session.call("submit_pipeline", **submission))
     submitted = _structured(session.call("submit_pipeline", **submission, confirm=True))
