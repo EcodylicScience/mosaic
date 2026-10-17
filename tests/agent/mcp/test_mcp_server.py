@@ -42,6 +42,7 @@ from tests.helpers import (
     SPEED_RECIPE,
     RecordingStarter,
     add_tracks_variant,
+    calms21_dataset,
     make_dataset,
     run_fresh,
     speed_recipe,
@@ -713,7 +714,11 @@ def test_the_resources_and_templates_are_listed_and_read(
     listed, templates, read = _session(backend, body)
 
     assert listed == ["mosaic://guide", "mosaic://catalog"]
-    assert len(templates) == 8
+    assert len(templates) == 9
+    assert (
+        f"{base.replace(uuid, '{id}')}/artifacts/feature/{{name}}/{{run_id}}/report"
+        in templates
+    )
     assert read["mosaic://guide"].startswith("---")
     assert json.loads(read[f"{base}/manifest"])["uuid"] == uuid
     request_read = json.loads(read[f"{base}/requests/{request.request_id}"])
@@ -721,6 +726,80 @@ def test_the_resources_and_templates_are_listed_and_read(
     assert len(read[f"{base}/runs/{execution_id}/log?tail=1"].splitlines()) == 1
     params = json.loads(read[f"{base}/{PARAMS}"])
     assert params["state"] == "absent"
+
+
+def test_report_resource_returns_the_evaluation_metrics(tmp_path: Path) -> None:
+    """A run's report is a resource: read, not computed, and no tool slot."""
+    from mosaic.core.pipeline.graph import Recipe
+
+    scored = calms21_dataset(
+        tmp_path / "scored",
+        {"train": {"a": {"s1": 40, "s2": 40}}},
+        seed=6,
+        n_classes=3,
+    )
+    _ = scored.convert_all_tracks()
+    _ = scored.convert_all_labels(kind="behavior", source_format="calms21_npy")
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "score clusters",
+            "steps": [
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": ["tracks"],
+                },
+                {
+                    "id": "templates",
+                    "type": "feature",
+                    "feature": "extract-templates",
+                    "inputs": [{"step": "speed"}],
+                    "params": {"n_templates": 20},
+                },
+                {
+                    "id": "kmeans",
+                    "type": "feature",
+                    "feature": "global-kmeans",
+                    "inputs": [{"step": "speed"}],
+                    "params": {"templates": {"step": "templates"}, "k": 3},
+                },
+                {
+                    "id": "score",
+                    "type": "feature",
+                    "feature": "evaluate-labels",
+                    "inputs": [{"step": "kmeans"}],
+                    "params": {
+                        "mode": "clusters",
+                        "prediction_column": "cluster",
+                        "perspective": "pooled",
+                    },
+                },
+            ],
+        }
+    )
+    run = run_pipeline(scored, recipe)
+    score = next(outcome for outcome in run.outcomes if outcome.step_id == "score")
+    storage = "evaluate-labels__from__global-kmeans__from__speed-angvel__from__tracks"
+    uri = (
+        f"mosaic://dataset/{_uuid(scored)}/artifacts/feature/{storage}/"
+        f"{score.run_id}/report"
+    )
+    backend = LocalBackend([scored.manifest_path], warm=False)
+
+    async def body(client: Client) -> str:
+        (contents,) = (await client.read_resource(uri)).contents
+        assert isinstance(contents, types.TextResourceContents)
+        return contents.text
+
+    read = json.loads(_session(backend, body))
+
+    assert read["file"] == "metrics.json"
+    report = read["report"]
+    assert report["mode"] == "clusters"
+    assert report["n_entries"] == 2
+    assert report["accuracy"] == pytest.approx(report["clusters"]["purity"])
 
 
 def test_the_inventory_resource_keeps_the_params_a_tool_listing_leaves_out(

@@ -78,7 +78,9 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     "approach-avoidance": {"orientation_gate_cos": None},
     "arhmm": {"n_states": 2, "n_iter": 5},
     "egocentric-crop": {"transform_keypoints": True},
+    "evaluate-labels": {"mode": "clusters", "prediction_column": "cluster"},
     "extract-labeled-templates": {"labels": {"kind": "behavior"}, "n_total": 40},
+    "fit-label-map": {"prediction_column": "cluster"},
     "extract-templates": {"n_templates": 50},
     "frame-aggregate": {"column": "X"},
     "global-kmeans": {"templates": {"step": "extract-templates"}, "k": 2, "n_init": 1},
@@ -302,7 +304,9 @@ def _behavior_labels(directory: Path) -> Path:
 
 
 LABELS: dict[str, Callable[[Path], Path]] = {
-    "extract-labeled-templates": _behavior_labels
+    "evaluate-labels": _behavior_labels,
+    "extract-labeled-templates": _behavior_labels,
+    "fit-label-map": _behavior_labels,
 }
 """The labels file that a feature reads, where it is not the ``id_tags`` one."""
 

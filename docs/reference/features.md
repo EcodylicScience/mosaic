@@ -3,7 +3,7 @@
 
 # Features
 
-46 features are registered. Each one runs as
+48 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -507,6 +507,72 @@ Per-frame group-level collective-motion metrics (Tunstrom et al. 2013).
 | `filter_expr` | `string` \| `None` | `null` |  | A DataFrame.query expression applied first, before every other computation. The way to drop event == -1, the pooled non-event pseudo-group from ffgroups: that sentinel is an integer, which exclude_cols cannot express. |
 | `exclude_cols` | list of `string` | _constructed_ |  | Boolean columns whose truthy rows are dropped after filter_expr and before every other computation. One bad position moves the centroid, and with it every radial vector, the covariance and the hull. A name absent from the input is skipped rather than raising. |
 
+### `evaluate-labels`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.evaluate_labels.EvaluateLabels`
+
+Score a run's predictions or clusters against ground-truth labels.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `labels` | `GroundTruthLabelsSource` | _constructed_ |  | The ground-truth labels to score against, resolved from labels/<kind>/index.csv. A {step: <id>} reference names a convert-labels step and pins the variant it writes. |
+| `mode` | `"classifier"` \| `"clusters"` | `"classifier"` |  | classifier scores predicted classes. clusters scores a clustering, mapped to classes through label_map, or through the majority class of each cluster among the scored rows when label_map is unset. |
+| `prediction_column` | `string` | `"predicted_label"` |  | The column holding each row's prediction: a class in classifier mode, a cluster in clusters mode. |
+| `probability_prefix` | `string` | `"prob_"` |  | The prefix of the per-class probability columns that perspective 'mean_probabilities' averages, as prob_<class>. |
+| `perspective` | `integer` \| `"pooled"` \| `"mean_probabilities"` \| `None` | `null` |  | Which rows of a pair output to score: the rows of one perspective, 'pooled' for both, or 'mean_probabilities' to average a pair's two rows. Unset scores the rows as they are, and refuses rows of more than one perspective. |
+| `missing_label` | `"drop"` \| `"error"` | `"drop"` |  | What an entry with no label file does: drop leaves it out of the score, error fails the run. |
+| `classes` | list of `integer` \| `None` | `null` |  | The classes to report, in order. Unset reports every class a row holds or is predicted as. |
+| `average_over` | list of `integer` \| `None` | `null` |  | The classes macro_f1 averages over, such as every behavior but other. Unset averages over every class a scored row holds. |
+| `label_map` | `LabelMapRef` \| `None` | `null` |  | In clusters mode, a cluster to class map fitted on other entries by fit-label-map, as {step: <id>}. |
+
+??? note "`GroundTruthLabelsSource`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"behavior"` | `"behavior"` |  | Fixed to behavior. Ground-truth labels always resolve to labels/behavior/. |
+    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
+    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
+    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+
+??? note "`JoblibLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
+
+??? note "`LabelMapRef`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  | Feature name whose output to consume. |
+    | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
+    | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
+    | `pattern` | `string` | `"label_map.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
+
+??? note "`NpzLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
+
+??? note "`ParquetLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+
 ### `ffgroups-metrics`
 
 Version `0.1` &middot; `mosaic.behavior.feature_library.ffgroups_metrics.FFGroupsMetrics`
@@ -762,6 +828,53 @@ FERAL vision-transformer behavior classifier as a pipeline feature.
     | `part_sample` | `number` | `1.0` | > `0`, <= `1` | The fraction of the training partition included when building the training dataset. |
     | `multilabel_threshold` | `number` | `0.85` | >= `0`, <= `1` | The probability threshold used when computing F1 metrics, applied only when the label JSON is multilabel. |
     | `wandb_project` | `string` \| `None` | `null` |  | The Weights & Biases project name recorded in the saved training config. **Unwired:** Stored in the saved config; nothing in this file starts a Weights & Biases run with it.. |
+
+### `fit-label-map`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.fit_label_map.FitLabelMap`
+
+Map each cluster to the behavior class most of its labeled rows hold.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `labels` | `GroundTruthLabelsSource` | _constructed_ |  | The ground-truth labels the map is fitted on, resolved from labels/<kind>/index.csv. A {step: <id>} reference names a convert-labels step and pins the variant it writes. |
+| `prediction_column` | `string` | `"cluster"` |  | The column holding each row's cluster. |
+| `perspective` | `integer` \| `"pooled"` \| `None` | `null` |  | Which rows of a pair output to fit on: the rows of one perspective, or 'pooled' for both. Unset fits on the rows as they are, and refuses rows of more than one perspective. |
+
+??? note "`GroundTruthLabelsSource`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"behavior"` | `"behavior"` |  | Fixed to behavior. Ground-truth labels always resolve to labels/behavior/. |
+    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
+    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
+    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+
+??? note "`JoblibLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
+
+??? note "`NpzLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
+
+??? note "`ParquetLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ### `global-identity-dinov2-temporal`
 

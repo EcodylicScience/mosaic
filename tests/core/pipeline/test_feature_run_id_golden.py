@@ -380,6 +380,41 @@ CASES: tuple[Case, ...] = (
         inputs=[{"feature": "global-scaler"}],
         params={"templates": _TEMPLATES_REF, "default_class": 0},
     ),
+    # --- scoring against labels ---
+    #
+    # Both are scope-dependent: the entries scored, or the entries a label map
+    # is fitted on, name the run. Each reads one labels variant.
+    Case(
+        case_id="evaluate-labels/classifier",
+        feature="evaluate-labels",
+        inputs=[{"feature": "xgboost"}],
+        params={"perspective": 0, "average_over": [0, 1, 2]},
+        scope=(("test", "s3"),),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
+        case_id="evaluate-labels/clusters-label-map",
+        feature="evaluate-labels",
+        inputs=[{"feature": "global-kmeans"}],
+        params={
+            "mode": "clusters",
+            "prediction_column": "cluster",
+            "label_map": {
+                "feature": "fit-label-map",
+                "pattern": "label_map.parquet",
+                "load": {"kind": "parquet"},
+            },
+        },
+        scope=(("test", "s3"),),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
+        case_id="fit-label-map/train",
+        feature="fit-label-map",
+        inputs=[{"feature": "global-kmeans"}],
+        scope=(("train", "s1"), ("train", "s2")),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
     # --- the resolved tracks variant (item 3.3) ---
     #
     # ``speed-angvel/default`` above is the same feature with no variants

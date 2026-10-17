@@ -59,13 +59,16 @@ from .scan import (
 )
 from .params import (
     LABELS_EDGE,
+    REPORT_MAX_CHARS,
     TRACKS_EDGE,
     ParamsState,
+    ReportTooLarge,
     ResolvedRef,
     RunParams,
     RunParamsRead,
     ScopeBlock,
     read_run_params,
+    read_run_report,
     run_tracks_variants,
 )
 from .wire import (
@@ -114,6 +117,8 @@ __all__ = [
     "MediaVariantRef",
     "PreparedDatasetRef",
     "ParamsState",
+    "REPORT_MAX_CHARS",
+    "ReportTooLarge",
     "ResolvedRef",
     "RunParams",
     "RunParamsRead",
@@ -138,6 +143,7 @@ __all__ = [
     "narrow_target",
     "RevalidationReport",
     "read_run_params",
+    "read_run_report",
     "register_inventory_contributor",
     "registered_inventory_kinds",
     "reportable_universe",

@@ -57,8 +57,11 @@ __all__ = [
     "RunParams",
     "RunParamsRead",
     "ScopeBlock",
+    "REPORT_MAX_CHARS",
+    "ReportTooLarge",
     "TracksVariantWalk",
     "read_run_params",
+    "read_run_report",
     "run_tracks_variants",
 ]
 
@@ -310,6 +313,53 @@ def _without_unreadable(
         current, changed = _without(current, entry["loc"])
         dropped = dropped or changed
     return current, dropped
+
+
+REPORT_MAX_CHARS: Final = 200_000
+"""The longest report :func:`read_run_report` returns, in characters."""
+
+
+class ReportTooLarge(ValueError):
+    """A run's report is longer than :data:`REPORT_MAX_CHARS`."""
+
+    def __init__(self, path: Path, size: int) -> None:
+        self.path: Path = path
+        self.size: int = size
+        super().__init__(
+            f"the report at {path} holds {size} characters, more than the "
+            f"{REPORT_MAX_CHARS} a reader returns"
+        )
+
+
+def read_run_report(run_root: Path, file_name: str) -> JsonValue | None:
+    """Read the JSON report a feature run saved as *file_name*, or ``None``.
+
+    A feature that writes a report names its file in a ``report_file`` class
+    attribute, as ``evaluate-labels`` names ``metrics.json``. Reads only.
+
+    Args:
+        run_root: A run directory, which need not exist.
+        file_name: The report's file name inside it, one path component.
+
+    Returns:
+        The report, or ``None`` when the run has none.
+
+    Raises:
+        ValueError: *file_name* is not one path component, or the file is not
+            JSON.
+        ReportTooLarge: The file is longer than :data:`REPORT_MAX_CHARS`.
+    """
+    if not file_name or Path(file_name).name != file_name:
+        raise ValueError(f"a report file is one path component, not {file_name!r}")
+    path = run_root / file_name
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return None
+    if size > REPORT_MAX_CHARS:
+        raise ReportTooLarge(path, size)
+    report: JsonValue = _DOCUMENT.validate_json(path.read_text())
+    return report
 
 
 def read_run_params(run_root: Path) -> RunParamsRead:

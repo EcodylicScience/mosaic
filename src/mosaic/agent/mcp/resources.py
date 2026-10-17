@@ -341,6 +341,43 @@ def _read_params(backend: LocalBackend, variables: UriVariables) -> ResourceText
     )
 
 
+def _read_report(backend: LocalBackend, variables: UriVariables) -> ResourceText:
+    from mosaic.core.pipeline.graph.resolve import feature_class_for_slug
+    from mosaic.core.pipeline.index import feature_run_root
+    from mosaic.core.pipeline.inventory import ReportTooLarge, read_run_report
+
+    dataset = backend.dataset(_variable(variables, "id"))
+    name = _variable(variables, "name")
+    run_id = _variable(variables, "run_id")
+    # A storage name is the feature's slug, then ``__from__`` and its inputs.
+    slug = name.partition("__from__")[0]
+    cls = feature_class_for_slug(slug)
+    report_file: object = getattr(cls, "report_file", None)
+    if not isinstance(report_file, str):
+        raise _not_found(
+            f"a report of feature {slug!r}", {"name": name, "feature": slug}
+        )
+    try:
+        report = read_run_report(feature_run_root(dataset, name, run_id), report_file)
+    except ReportTooLarge as error:
+        raise ToolFailure(
+            ErrorEnvelope(
+                kind="invalid",
+                reason="result_too_large",
+                message=str(error),
+                detail={"name": name, "run_id": run_id, "size": error.size},
+            )
+        ) from error
+    if report is None:
+        raise _not_found(
+            f"the report of run {run_id} of {name}",
+            {"name": name, "run_id": run_id, "file": report_file},
+        )
+    return _json(
+        {"name": name, "run_id": run_id, "file": report_file, "report": report}
+    )
+
+
 _DATASET_URI: Final = "mosaic://dataset/{id}"
 
 RESOURCES: Final[tuple[ResourceSpec, ...]] = (
@@ -428,6 +465,16 @@ RESOURCES: Final[tuple[ResourceSpec, ...]] = (
         ),
         mime_type="application/json",
         read=_read_params,
+    ),
+    ResourceSpec(
+        uri=f"{_DATASET_URI}/artifacts/feature/{{name}}/{{run_id}}/report",
+        name="report",
+        description=(
+            "The report a feature run saved, such as evaluate-labels' "
+            "metrics.json, by its storage name and its run id."
+        ),
+        mime_type="application/json",
+        read=_read_report,
     ),
 )
 """The resources and resource templates, in the order a server lists them."""

@@ -91,10 +91,12 @@ from .heading import HeadingFeature
 from .collective_math import STATE_HIGH, STATE_LOW, classify_state
 from .collective_motion_metrics import CollectiveMotionMetrics
 from .dinov2_temporal_identity_model import GlobalIdentityDinoV2Temporal
+from .evaluate_labels import EvaluateLabels
 from .extract_labeled_templates import ExtractLabeledTemplates
 from .extract_templates import ExtractTemplates
 from .ffgroups import FFGroups
 from .ffgroups_metrics import FFGroupsMetrics
+from .fit_label_map import FitLabelMap, LabelMapRef
 from .frame_aggregate import FrameAggregate
 from .global_kmeans import GlobalKMeansClustering
 from .global_scaler import GlobalScaler
@@ -171,10 +173,12 @@ __all__ = [
     "BodyScaleFeature",
     "HeadingFeature",
     "CollectiveMotionMetrics",
+    "EvaluateLabels",
     "ExtractLabeledTemplates",
     "ExtractTemplates",
     "FFGroups",
     "FFGroupsMetrics",
+    "FitLabelMap",
     "FrameAggregate",
     "GlobalIdentityDinoV2Temporal",
     "GlobalIdentityEmbedding",
@@ -186,6 +190,7 @@ __all__ = [
     "GlobalWardClustering",
     "IdTagColumns",
     "KpmsFeature",
+    "LabelMapRef",
     "LocalOrderMetrics",
     "NearestNeighbor",
     "NearestNeighborDelta",
