@@ -25,7 +25,9 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   (`test_pipeline_plan_fingerprint.py`).
 - `open_requests_matching` (`store.py`) returns the requests of one recipe digest whose
   scope overlaps (`Scope.overlaps`) and whose rollup verdict is `running`. A verdict
-  of `orphaned` is not open, read from the driver lease as the status wires read it.
+  of `orphaned` is not open, read as the status wires read it.
+  `requests_matching` summarizes the `running` and `orphaned` ones, which
+  `PlanWire.open_requests` lists outside the fingerprint (`test_pipeline_plan.py`).
   A request whose digest differs is matched by what its saved recipe digests to now, so
   a request saved under an earlier canonical form is still found.
   `submit_request` reports them in `duplicates` and, given `refuse_duplicates`,
@@ -89,10 +91,17 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
 - `status.py` builds `RunStatusWire` and `RequestStatusWire` from run-logs alone. Their
   `partial`, `pending` and `orphaned` are derived words, and none joins
   `runlog.TERMINAL_STATUSES`. `orphaned` is a running request whose driver lease is
-  stale and none of whose step processes may still run (`request_verdict_of`,
+  stale and none of whose step processes may still run, or that has no lease and
+  every one of whose started, unended steps is `dead` (`request_verdict_of`,
   `live_step_process`, `test_pipeline_status_wire.py`). A same-host pid counts only
   when its process began by the attempt's recorded start, which rules out a pid
   reused after a reboot.
+- `liveness.py` is the one rule for whether an attempt's process may still run
+  (`alive`, `unknown`, `dead`, `ended`): an earlier boot of this host, then a local
+  pid, then ten declared intervals of silence. A job's `started` event declares the
+  interval, and a thread in `JsonlRunLog` writes `alive` after each silent one.
+  `may_still_run` keeps the pre-liveness answers for a run-log without an interval:
+  `unknown` on another host may run, here it may not (`test_pipeline_liveness.py`).
 - `run_request` (`run.py`) runs each unfinished step's `step_argv` as a process of its
   own session, with output to the driver log and never to inherited streams, and
   submits nothing. It skips a finished step, which makes running a request again a
@@ -105,15 +114,23 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   written a run-log. A lease refresh that raises is reported and retried, and the
   driver stops with `LeaseNotRefreshed` before a step once its lease has gone
   unrefreshed for half the grace.
+- `run_pipeline` (`run.py`) holds an `in_process` lease that names its own pid as the
+  running step's, deletes it when the request ends, and keeps it after a shortfall.
+  It stops before a step that a cancel recorded `cancelled`, and records its unended
+  steps `cancelled` on `Cancelled` or `KeyboardInterrupt` (`test_pipeline_run.py`).
 - `cancel_attempt` and `cancel_request` (`core/pipeline/cancel.py`) send SIGTERM to
   the pid that a run-log or a driver lease records. They record an attempt
-  `cancelled` only when its process has exited, or when its step has not started
-  and the request's driver has exited. A request with a live driver is
-  cancelled through the driver alone. A process on another host is not signalled,
-  and its request is left as it is (`tests/core/pipeline/test_cancel.py`). A pid
-  held by a process that began after the attempt's `started` record is reused and
-  is not signalled. A queue that dispatches a request's steps holds no lease, so
-  a step it starts after the cancel records its own ending after `cancelled`.
+  `cancelled` only when its process has exited or is provably `dead`, or when its
+  step has not started and the request's driver has exited. A request with a live
+  driver is cancelled through the driver alone, and an `in_process` one step by
+  step. A process on another host is not signalled, and its request is left as it
+  is unless liveness proves it gone or the caller passes `assume_exited`
+  (`mosaic cancel --assume-exited`, CLI only), which is refused for a current
+  heartbeat (`tests/core/pipeline/test_cancel.py`). Only a lease of this host names a
+  pid to check here. A pid held by a process that began after the attempt's
+  `started` record is reused and is not signalled. A queue that dispatches a
+  request's steps holds no lease, so a step it starts after the cancel records its
+  own ending after `cancelled`.
 - `entry_errors_wire` (`entry_errors.py`) joins an attempt's `entry_error` events with
   the failure records keyed by its `target` and `run_id`. `held_back_by_quarantine`
   is true when any entity that the attempt lost is quarantined, listed or not. Every
@@ -123,9 +140,10 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   are ULIDs, newest first, and read only the page that they return
   (`test_pipeline_request_listing.py`, `tests/core/test_runlog_readers.py`).
 - `__init__.py` binds every public name on access, and `status.py`, `store.py`,
-  `claims.py`, `entry_errors.py` and `driver_lease.py` import nothing that loads
-  pandas, cv2, av or the feature library (`tests/meta/test_status_imports.py`). The
-  editor wires in `wire.py` import the op registry and the inventory, which do.
+  `claims.py`, `entry_errors.py`, `driver_lease.py` and `liveness.py` import nothing
+  that loads pandas, cv2, av or the feature library
+  (`tests/meta/test_status_imports.py`). The editor wires in `wire.py` import the op
+  registry and the inventory, which do.
 
 ## Declarations and the registries
 

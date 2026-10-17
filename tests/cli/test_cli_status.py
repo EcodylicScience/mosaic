@@ -110,6 +110,31 @@ def test_pipeline_status_prints_a_request_status_report(
     assert after.steps[0].entries_written == 2
 
 
+def test_pipeline_status_prints_phase_and_liveness(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, ds = dataset
+    request = submit_request(ds, Recipe.model_validate(RECIPE)).request
+    execution_id = request.execution_of("speed")
+    with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as log:
+        log.started(
+            kind="feature",
+            target="speed",
+            host="another-host.invalid",
+            pid=7,
+            liveness_interval=60.0,
+        )
+        log.on_phase("fit", "2 entries")
+
+    result = invoke_ok(
+        ["pipeline", "status", "-m", str(manifest), "--request", request.request_id]
+    )
+
+    (row,) = [line for line in result.stdout.splitlines() if line.startswith("speed")]
+    assert row.split()[-2:] == ["fit", "alive"]
+    assert "note: poll again in 10 s" in result.stderr
+
+
 def test_plain_status_prints_the_error_and_each_failed_entry_as_text(
     dataset: tuple[Path, Dataset],
 ) -> None:

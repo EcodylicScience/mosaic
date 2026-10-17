@@ -85,6 +85,43 @@ schema`. `mosaic pipeline catalog NAME` prints the same for any step type, ops a
 defaults are today's output, so `CatalogEntry`, `EditorCatalog`, `PlanWire` and the
 plan fingerprint are unchanged for mosaic-api. Nothing on disk moves.
 
+**A request whose step died reads `orphaned`, even with no driver lease or on another
+host.** A request run by `mosaic pipeline run --recipe` took no driver lease, so its
+crash left it `running` for good, and a step on another host, such as a Docker
+container that got a new host name, counted as running forever. Each job now
+declares its liveness, and one rule (`mosaic.core.pipeline.graph.liveness`) reads
+every attempt as `alive`, `unknown`, `dead` or `ended`.
+
+- Run-log, additive. `started` records `boot_id`, `pid_ns` and `liveness_interval`
+  (60 s). A thread appends an `alive` event after each interval without another line,
+  and never after the terminal event. A fitted feature writes `phase` events (`fit`,
+  then `apply`). `RunLogSnapshot` and `RunStatusWire` gain `boot_id`, `pid_ns`,
+  `liveness_interval` and `phase`. A reader that judges an attempt by its silence
+  needs a time-to-live of at least 120 s. `TERMINAL_STATUSES` is unchanged.
+- A `KeyboardInterrupt` inside `job_context` records the attempt `cancelled`.
+- An attempt is `dead` when this host rebooted since it started, its local pid exited,
+  or it declared an interval and wrote nothing for ten of them. A request without a
+  lease reads `orphaned` when every started, unended step is `dead`. A stale lease of
+  another host names a live unstarted step for ten minutes, not forever. A run-log
+  written by 0.17 or earlier on another host is `unknown` and keeps its request
+  `running`, as before.
+- `run_pipeline` takes an `in_process` driver lease (a new `DriverLease` key that
+  older readers drop) and a `cancel_token`, and records its unended steps `cancelled`
+  on a cancel. `mosaic cancel --request` cancels such a request step by step, and
+  `mosaic pipeline run --recipe` exits 130 on SIGTERM or SIGINT.
+- `mosaic cancel` records a `dead` attempt `cancelled`, also on another host.
+  `--assume-exited` records an `unknown` one on the user's word, and is refused for a
+  current heartbeat. A cancel no longer checks another host's lease step pid on this
+  host. The MCP `cancel_request` takes no new argument.
+- Wires, additive. `StepAttempt` gains `heartbeat_at`, `boot_id`, `pid_ns`,
+  `liveness_interval` and `phase`. `StepStatusWire` gains `host`, `started_at`,
+  `heartbeat_at`, `phase` and `liveness`, `RequestStatusWire` gains
+  `poll_after_seconds` (10 to 300 s), and `PlanWire` gains `open_requests`, the
+  recipe's `running` and `orphaned` requests (`requests_matching`), which the
+  fingerprint leaves out. The MCP `RunSummary` gains `host`, `heartbeat_at`, `phase`
+  and `liveness`.
+- No identifier moves.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

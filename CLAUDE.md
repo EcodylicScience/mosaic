@@ -208,8 +208,9 @@ every registered step (`tests/core/media/preprocess/test_media_steps.py`).
   `entries_written`, `cache_hit` and `tracks_variant`. Emit them before the terminal
   event (`tests/core/pipeline/test_job_contract.py`).
 - **`runlog.TERMINAL_STATUSES` is `finished`, `failed`, `cancelled`.** Do not add
-  `partial` or a refusal. Three repositories read the set, and mosaic-api's sweeper
-  reaps it (`tests/core/pipeline/graph/test_pipeline_partial_failure.py`).
+  `partial`, a refusal or `orphaned`. `alive` and `phase` are events, not statuses.
+  Three repositories read the set, and mosaic-api's sweeper reaps it
+  (`tests/core/pipeline/graph/test_pipeline_partial_failure.py`).
 - **`track_universe.current_run_id` is the one rule for an unpinned `Result`**
   (`tests/core/pipeline/test_unpinned_result_rule.py`).
 - **A lock the filesystem refuses raises `IndexLockUnsupported`**

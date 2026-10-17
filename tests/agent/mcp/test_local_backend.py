@@ -7,13 +7,14 @@ process of its own, and polls the request as a client would.
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from mosaic.agent.mcp.local import LocalBackend
+from mosaic.agent.mcp.local import POLL_AFTER_MIN_SECONDS, LocalBackend
 from mosaic.agent.mcp.outputs import StepSuggestions, StepTypes
 from mosaic.agent.mcp.spec import (
     LISTING_MISSING_SAMPLE,
@@ -31,6 +32,9 @@ from mosaic.agent.mcp.spec import (
 from mosaic.core.dataset import Dataset
 from mosaic.core.dataset_summary import DatasetSummary
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
+from mosaic.core.pipeline.graph import (
+    POLL_AFTER_MIN_SECONDS as GRAPH_POLL_AFTER_MIN_SECONDS,
+)
 from mosaic.core.pipeline.graph import (
     QUARANTINE_AFTER,
     CoverageShortfall,
@@ -56,6 +60,7 @@ from tests.helpers import (
     add_tracks_table,
     add_tracks_variant,
     chain_recipe,
+    exited_pid,
     make_dataset,
     speed_recipe,
     track_table,
@@ -562,6 +567,81 @@ def test_a_diagnosis_says_where_allow_partial_answers_a_failure(
     assert refused.error is not None
     assert refused.error.refusal is not None
     assert one.attempts == (lost.model_copy(update={"step": ""}),)
+
+
+def _dead_step(dataset: Dataset, execution_id: str) -> None:
+    """A step that started on this host as a process that has exited."""
+    with JsonlRunLog(run_log_path(dataset.base_dir, execution_id), execution_id) as log:
+        log.started(
+            kind="feature", target=STORAGE, host=socket.gethostname(), pid=exited_pid()
+        )
+        log.on_phase("fit", "2 entries")
+
+
+def test_the_runs_view_reports_each_attempts_liveness(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    request = submit_request(dataset, chain_recipe()).request
+    speed, templates = request.execution_of("speed"), request.execution_of("templates")
+    _dead_step(dataset, speed)
+    with JsonlRunLog(run_log_path(dataset.base_dir, templates), templates) as log:
+        log.started(kind="feature", target="extract-templates__from__speed")
+        log.finished()
+
+    page = _call(
+        backend, "list_activity", ActivityPage, dataset=_uuid(dataset), view="runs"
+    )
+
+    liveness = {run.execution_id: (run.liveness, run.phase) for run in page.runs}
+    assert liveness == {speed: ("dead", "fit"), templates: ("ended", "")}
+    assert all(run.host for run in page.runs if run.execution_id == speed)
+
+
+def test_a_dead_request_reads_alike_in_status_activity_and_plan(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    """No driver lease, as for a request run by 'mosaic pipeline run --recipe'."""
+    request = submit_request(dataset, speed_recipe()).request
+    _dead_step(dataset, request.execution_of("speed"))
+
+    status = _call(
+        backend,
+        "get_request_status",
+        RequestStatusWire,
+        dataset=_uuid(dataset),
+        request_id=request.request_id,
+    )
+    activity = _call(
+        backend, "list_activity", ActivityPage, dataset=_uuid(dataset), view="requests"
+    )
+    plan = _call(
+        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+    )
+
+    assert status.verdict == "orphaned"
+    assert [(item.request_id, item.verdict) for item in activity.requests] == [
+        (request.request_id, "orphaned")
+    ]
+    assert [(item.request_id, item.verdict) for item in plan.open_requests] == [
+        (request.request_id, "orphaned")
+    ]
+
+
+def test_request_status_reports_poll_after_seconds(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    request = submit_request(dataset, chain_recipe()).request
+
+    status = _call(
+        backend,
+        "get_request_status",
+        RequestStatusWire,
+        dataset=_uuid(dataset),
+        request_id=request.request_id,
+    )
+
+    assert status.poll_after_seconds == POLL_AFTER_MIN_SECONDS
+    assert POLL_AFTER_MIN_SECONDS == GRAPH_POLL_AFTER_MIN_SECONDS
 
 
 def test_a_diagnosis_names_one_request_or_one_attempt(

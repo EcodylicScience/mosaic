@@ -1029,7 +1029,8 @@ $ mosaic pipeline validate [OPTIONS]
 Resolve a recipe against a dataset: identities, coverage, what is left.
 
 Exits 1 when the dataset refuses the recipe. Under ``--json`` the plan is
-printed with its problems.
+printed with its problems. The requests of the recipe over an overlapping
+scope that have not ended, running or orphaned, are listed with it.
 
 **Usage**:
 
@@ -1127,10 +1128,15 @@ Say how far one submission got, from its steps' own attempt logs.
 Deliberately not a coverage report: whether every step's *work* is done is a
 question about artifacts, which ``plan`` answers. This one is about attempts,
 so it stays cheap enough to poll. Each step reports its outcome, progress,
-recorded error and first 20 failed entries, and the request a ``verdict``
-that names a finished request with lost entries ``partial``. A running
-request whose driver lease is stale and none of whose step processes runs
-reads ``orphaned``, and ``pipeline run --request`` resumes it.
+recorded error and first 20 failed entries, its phase and its liveness, and
+the request a ``verdict`` that names a finished request with lost entries
+``partial``. A running request reads ``orphaned`` when nothing drives it:
+its driver lease is stale and none of its step processes may still run, or
+it has no lease and each of its running steps is provably dead (its pid
+exited, its host rebooted, or it wrote nothing for ten heartbeat intervals).
+``pipeline run --request`` resumes it. A step of ``unknown`` liveness runs on
+another host whose run-log declares no heartbeat, and ``mosaic cancel
+--assume-exited`` records it once its process is known to have exited.
 
 **Usage**:
 

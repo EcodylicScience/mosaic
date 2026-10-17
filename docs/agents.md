@@ -153,6 +153,17 @@ with `mosaic pipeline status`, cancel it with `cancel_request` or
 `mosaic cancel --request`, and resume a request that reads `orphaned` with
 `mosaic pipeline run --manifest dataset.yaml --request <id>`.
 
+`get_request_status` reports `poll_after_seconds`, how long the agent waits before it
+polls again, and each step's phase and liveness. A request reads `orphaned` when its
+driver stopped or its step's process is provably gone: the process exited, its machine
+rebooted, or it wrote nothing for ten minutes. `plan_recipe` lists the requests of the
+same recipe that are still running or orphaned. A step on another machine whose
+liveness reads `unknown` was started by mosaic 0.17 or earlier and cannot be checked.
+Once you know its process has exited, record it with
+`mosaic cancel --manifest dataset.yaml --request <id> --assume-exited`, then submit
+the recipe again. The server offers no tool for this
+([When a process is gone](guides/pipelines/run-and-see-what-ran.md#when-a-process-is-gone)).
+
 The server also offers resources (the agent guide, the step-type catalog, and per
 dataset its manifest, inventory, recipes, requests, run-logs and recorded params) and
 prompts for building a pipeline, diagnosing a dataset, explaining a request, comparing
@@ -224,6 +235,8 @@ The server does not expose them as tools. When one is needed, the agent proposes
 - `--apply` on `sweep-tracking`, `prune-media`, `prune-joined`, `reconcile` and
   `upgrade-tracks`;
 - `reindex` and `release`;
+- `mosaic cancel --assume-exited`, which records as cancelled an attempt that no
+  machine can check, on your word that its process has exited;
 - any change to the manifest: `init`, `sources`, `tags`, `notes`, `libraries`;
 - `extract-frames`, whose frames annotation tools refer to by path;
 - accepting the keypoint-MoSeq license (`MOSAIC_KPMS_LICENSE_ACCEPTED`).

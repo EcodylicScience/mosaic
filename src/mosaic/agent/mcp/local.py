@@ -98,6 +98,7 @@ if TYPE_CHECKING:
     from .outputs import StepSuggestions, StepTypes
 
 __all__ = [
+    "POLL_AFTER_MIN_SECONDS",
     "POLL_AFTER_SECONDS",
     "POLL_AFTER_TRAINING_SECONDS",
     "DriverStarter",
@@ -109,8 +110,15 @@ __all__ = [
 
 _LOG = logging.getLogger(__name__)
 
-POLL_AFTER_SECONDS: Final = 10
-"""How long a client waits before polling a submitted request."""
+POLL_AFTER_MIN_SECONDS: Final = 10
+"""How long a client waits before polling a submitted request.
+
+The shortest wait a request status reports
+(``mosaic.core.pipeline.graph.POLL_AFTER_MIN_SECONDS``), which a test keeps equal.
+"""
+
+POLL_AFTER_SECONDS: Final = POLL_AFTER_MIN_SECONDS
+"""The earlier name of :data:`POLL_AFTER_MIN_SECONDS`."""
 
 POLL_AFTER_TRAINING_SECONDS: Final = 60
 """How long a client waits before polling a request that trains on a GPU."""
@@ -683,7 +691,7 @@ class LocalBackend:
             driver_log=str(driver.log_path),
             poll_after_seconds=POLL_AFTER_TRAINING_SECONDS
             if GPU_TRAIN_LANE in lanes
-            else POLL_AFTER_SECONDS,
+            else POLL_AFTER_MIN_SECONDS,
         )
 
     # ------------------------------------------------------------- requests
@@ -868,12 +876,17 @@ class LocalBackend:
             feature_class_for_slug,
             load_recipe_for_request,
             request_rollup,
+            step_liveness,
         )
 
+        # A step whose process is provably gone loses nothing more to a cancel,
+        # which only records it.
         running = {
             attempt.step_id
             for attempt in request_rollup(dataset.base_dir, request).steps
-            if attempt.started and not attempt.terminal
+            if attempt.started
+            and not attempt.terminal
+            and step_liveness(attempt) != "dead"
         }
         if not running:
             return []
@@ -1166,8 +1179,8 @@ def _diagnosis(
 
 
 def _run_summary(snapshot: RunLogSnapshot) -> RunSummary:
-    """Summarize one attempt's run-log snapshot for a listing."""
-    from mosaic.core.pipeline.graph import recorded_error
+    """Summarize one attempt's run-log snapshot for a listing, with its liveness."""
+    from mosaic.core.pipeline.graph import recorded_error, snapshot_liveness
     from mosaic.runlog import attempt_outcome
 
     return RunSummary(
@@ -1185,4 +1198,8 @@ def _run_summary(snapshot: RunLogSnapshot) -> RunSummary:
         entries_written=snapshot["entries_written"],
         cache_hit=snapshot["cache_hit"],
         error=recorded_error(snapshot["error_json"]),
+        host=snapshot["host"],
+        heartbeat_at=snapshot["heartbeat_at"],
+        phase=snapshot["phase"],
+        liveness=snapshot_liveness(snapshot),
     )

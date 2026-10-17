@@ -93,7 +93,10 @@ Diagnose dataset {arguments["dataset"]}. Change nothing.
    damaged or drifted one in depth with its ref. Note frame_axis_mismatch and
    frame_tail_short in an artifact's notes.
 2. Call list_activity for the requests, and diagnose_failures for each one that
-   failed, is partial or reads orphaned.
+   failed, is partial or reads orphaned. A request reads orphaned when nothing
+   drives it any more: its driver stopped, or its step's process is provably
+   gone. A step whose liveness reads unknown runs on another host that wrote no
+   heartbeat; ask the user whether that process still runs.
 3. Report each finding with the remedy you propose, such as a mosaic CLI
    command for the user to run (mosaic measure-tracks, mosaic reconcile, a
    re-run of a pipeline request, mosaic reindex). Apply none of them."""
@@ -108,8 +111,12 @@ Explain request {arguments["rid"]} of dataset {arguments["dataset"]}.
 3. Tell the user what each step did, why a refused or failed step stopped, and
    what answers it: allow_partial for a coverage shortfall or a quarantined
    entry, a changed recipe for a problem in it, or a CLI command for the user to
-   run. A request reading orphaned is resumed with mosaic pipeline run
-   --manifest <manifest> --request <request id>."""
+   run. A request reading orphaned, because its driver stopped or its step's
+   process is provably gone, is resumed with mosaic pipeline run --manifest
+   <manifest> --request <request id>. A step whose liveness reads unknown runs on
+   another host that wrote no heartbeat: if the user confirms that its process
+   has exited, they record it with mosaic cancel --manifest <manifest> --request
+   <request id> --assume-exited and then submit the recipe again."""
 
 
 def _compare_runs(arguments: Mapping[str, str]) -> str:

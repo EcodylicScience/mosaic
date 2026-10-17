@@ -42,7 +42,7 @@ from mosaic.core.pipeline.graph import (
     strip_schema_keywords,
 )
 from mosaic.core.strict_model import StrictModel
-from mosaic.runlog import AttemptOutcome
+from mosaic.runlog import AttemptLiveness, AttemptOutcome
 
 if TYPE_CHECKING:
     from mosaic.core.dataset_summary import DatasetSummary
@@ -778,6 +778,12 @@ class RunSummary(StrictModel):
         entries_written: How many entries hold its output.
         cache_hit: Whether it found its work already done.
         error: The failure it recorded, ``None`` when none.
+        host: The host its process recorded, ``""`` when unrecorded.
+        heartbeat_at: When it last wrote its run-log.
+        phase: The last phase it declared, such as ``fit``, ``""`` before one.
+        liveness: Whether its process may still be running: ``alive``,
+            ``dead``, ``ended``, or ``unknown`` for a process on another host
+            whose run-log declares no heartbeat.
     """
 
     execution_id: str
@@ -794,6 +800,10 @@ class RunSummary(StrictModel):
     entries_written: int
     cache_hit: bool
     error: RecordedErrorWire | None
+    host: str = ""
+    heartbeat_at: str = ""
+    phase: str = ""
+    liveness: AttemptLiveness | None = None
 
 
 class ActivityPage(StrictModel):
@@ -1118,11 +1128,14 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         name="get_request_status",
         title="Get a request's status",
         description=(
-            "Report how far a submitted request got: its verdict, and per step the "
-            "outcome, progress, recorded error and a sample of lost entries. A "
-            "request reads 'orphaned' when its driver stopped. The user resumes it "
-            "with mosaic pipeline run --manifest <manifest> --request "
-            "<request_id>, where <manifest> is the path describe_dataset reports."
+            "Report how far a submitted request got: its verdict, poll_after_seconds "
+            "(wait that long before polling again), and per step the outcome, "
+            "progress, phase, liveness, recorded error and a sample of lost "
+            "entries. A request reads 'orphaned' when its driver stopped or its "
+            "step's process is provably gone (pid exited, host rebooted, or no "
+            "heartbeat for 10 minutes). The user resumes it with mosaic pipeline "
+            "run --manifest <manifest> --request <request_id>, where <manifest> "
+            "is the path describe_dataset reports."
         ),
         input_model=GetRequestStatusInput,
         output=RequestStatusWire,

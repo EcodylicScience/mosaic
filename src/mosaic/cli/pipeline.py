@@ -682,10 +682,15 @@ def status_command(
     Deliberately not a coverage report: whether every step's *work* is done is a
     question about artifacts, which ``plan`` answers. This one is about attempts,
     so it stays cheap enough to poll. Each step reports its outcome, progress,
-    recorded error and first 20 failed entries, and the request a ``verdict``
-    that names a finished request with lost entries ``partial``. A running
-    request whose driver lease is stale and none of whose step processes runs
-    reads ``orphaned``, and ``pipeline run --request`` resumes it.
+    recorded error and first 20 failed entries, its phase and its liveness, and
+    the request a ``verdict`` that names a finished request with lost entries
+    ``partial``. A running request reads ``orphaned`` when nothing drives it:
+    its driver lease is stale and none of its step processes may still run, or
+    it has no lease and each of its running steps is provably dead (its pid
+    exited, its host rebooted, or it wrote nothing for ten heartbeat intervals).
+    ``pipeline run --request`` resumes it. A step of ``unknown`` liveness runs on
+    another host whose run-log declares no heartbeat, and ``mosaic cancel
+    --assume-exited`` records it once its process is known to have exited.
     """
     from mosaic.core.pipeline.graph import load_request, request_status_wire
 
@@ -712,11 +717,23 @@ def _render_request_status(report: RequestStatusWire) -> None:
                 "status": step.outcome,
                 "run_id": step.run_id or "-",
                 "entries_failed": step.entries_failed,
+                "phase": step.phase or "-",
+                "liveness": step.liveness or "-",
             }
             for step in report.steps
         ],
-        ["step", "execution_id", "status", "run_id", "entries_failed"],
+        [
+            "step",
+            "execution_id",
+            "status",
+            "run_id",
+            "entries_failed",
+            "phase",
+            "liveness",
+        ],
     )
+    if report.poll_after_seconds is not None:
+        log(f"note: poll again in {report.poll_after_seconds} s")
 
 
 def list_command(

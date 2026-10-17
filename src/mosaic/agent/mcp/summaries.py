@@ -218,9 +218,18 @@ def _plan(plan: PlanWire) -> str:
         else ""
     )
     done = " Every step is already complete." if plan.complete else ""
+    orphaned = sum(1 for item in plan.open_requests if item.verdict == "orphaned")
+    unended = (
+        f" {len(plan.open_requests)} request(s) of this recipe have not ended, "
+        f"{orphaned} of them orphaned: "
+        f"{_names([f'{item.request_id} {item.verdict}' for item in plan.open_requests])}."
+        if plan.open_requests
+        else ""
+    )
     return (
         f"The plan covers {plan.scope_size} entries in {len(plan.steps)} step(s): "
-        f"{_names(steps)}.{done}{problems} Its fingerprint is {plan.fingerprint}, "
+        f"{_names(steps)}.{done}{problems}{unended} Its fingerprint is "
+        f"{plan.fingerprint}, "
         "which submit_pipeline requires. Show the user the plan before "
         f"submitting. {_STRUCTURED}"
     )
@@ -241,8 +250,16 @@ def _submitted(submitted: SubmittedPipeline) -> str:
 
 
 def _request_status(status: RequestStatusWire) -> str:
-    steps = [f"{step.step} {step.outcome}" for step in status.steps]
-    poll = "" if status.terminal else "; poll again later"
+    steps = [
+        f"{step.step} {step.outcome}"
+        + (f" ({step.liveness})" if step.liveness in ("dead", "unknown") else "")
+        for step in status.steps
+    ]
+    poll = (
+        f"; poll again in {status.poll_after_seconds} s"
+        if status.poll_after_seconds is not None
+        else ""
+    )
     return (
         f"Request {status.request_id} is {status.verdict}{poll}. "
         f"Steps: {_names(steps)}. {_STRUCTURED}"
@@ -261,7 +278,11 @@ def _activity(page: ActivityPage) -> str:
     if page.view == "requests":
         listed = [f"{item.request_id} {item.verdict}" for item in page.requests]
     else:
-        listed = [f"{run.execution_id} {run.outcome}" for run in page.runs]
+        listed = [
+            f"{run.execution_id} {run.outcome}"
+            + (f" ({run.liveness})" if run.liveness and run.liveness != "ended" else "")
+            for run in page.runs
+        ]
     more = (
         " Pass next_cursor as cursor for older ones."
         if page.next_cursor is not None

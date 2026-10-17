@@ -264,6 +264,13 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - This guide is also the `mosaic://guide` resource. Read it once.
 - Set `confirm` only after the user agrees in the conversation to the conditions
   that the refusal lists.
+- Poll `get_request_status` after the `poll_after_seconds` it reports. For a
+  request that reads `orphaned`, propose
+  `mosaic pipeline run --manifest <manifest> --request <id>`, which resumes it.
+- A step whose `liveness` reads `unknown` runs on another machine that cannot be
+  checked. Ask the user whether its process still runs. Once they confirm it has
+  exited, propose `mosaic cancel --manifest <manifest> --request <id>
+  --assume-exited`, then submit the recipe again.
 - The tools do not overwrite, delete, sweep, prune, reindex or change the manifest.
   Propose the `mosaic` command and let the user run it.
 

@@ -72,6 +72,39 @@ request's driver, which stops the running step and records the others `cancelled
 A request without a running driver has its running steps signalled and its other
 steps recorded `cancelled`. A process on another machine is not signalled.
 
+### When a process is gone
+
+Each attempt reports a **liveness**: `alive`, `dead`, `ended`, or `unknown`.
+`mosaic pipeline status` shows it beside each step's phase, and the agent tools report
+it too.
+
+- A process on this machine is `alive` while its pid runs and `dead` once it has
+  exited. A machine that rebooted since the attempt started also makes it `dead`.
+- A process on another machine writes a line to its run-log at least once a minute.
+  It is `dead` after ten minutes without one.
+- A run-log written by mosaic 0.17 or earlier on another machine declares no
+  heartbeat, so this machine cannot tell. Such an attempt is `unknown`.
+
+A request reads `orphaned` when nothing drives it any more: its driver stopped and no
+step process may still run, or every step that started is `dead`. Resume it with
+`mosaic pipeline run -m dataset.yaml --request <request id>`. Its finished steps are
+skipped. `mosaic cancel` records a `dead` attempt `cancelled` without signalling
+anything.
+
+For an `unknown` attempt, first make sure its process has exited. Then record it and
+submit the recipe again, and the steps that finished are cache hits:
+
+```bash
+mosaic cancel -m dataset.yaml --request <request id> --assume-exited
+```
+
+`--assume-exited` is refused for an attempt whose heartbeat is current.
+
+A process is matched to its machine by host name, so every machine that shares a
+dataset needs a host name of its own. A Docker container gets a new host name each
+time it starts. Give it a stable one with `docker run --hostname <name>`, and run one
+container with that name at a time.
+
 **A run reports what it lost.** A failure on one entry is recorded and surfaced as a
 `partial` status with the failed entries named. It is not silently dropped, and it is
 not promoted to a total failure. Losing *every* entry does raise.
@@ -98,9 +131,12 @@ list_feature_runs(dataset, "speed-angvel__from__tracks")
 
 **Attempts** live in one append-only JSONL run-log per attempt, under
 `<dataset_root>/.mosaic/runs/<execution_id>.jsonl`. Each records its lifecycle
-(`started` → `finished` / `failed` / `cancelled`), a liveness heartbeat, and coarse
-per-entry progress. One writer, append-only, so it is NFS-safe. These files are
-ephemeral: bounded by the work and safe to age out.
+(`started` → `finished` / `failed` / `cancelled`), a liveness heartbeat, the phase
+the attempt is in (`fit`, then `apply`, for a fitted feature), and coarse per-entry
+progress. While an attempt runs, an `alive` line is added after each minute in which
+nothing else was written. One writer, append-only, so it is NFS-safe. These files are
+ephemeral: bounded by the work, at most one `alive` line a minute, and safe to age
+out.
 
 ```python
 from mosaic.runlog import read_runs, read_run, run_log_dir
