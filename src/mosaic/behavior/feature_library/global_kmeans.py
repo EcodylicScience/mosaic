@@ -158,6 +158,7 @@ class GlobalKMeansClustering:
     """
 
     category = "global"
+    costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
     name: str = "global-kmeans"
     version: str = "0.4"
     parallelizable = False

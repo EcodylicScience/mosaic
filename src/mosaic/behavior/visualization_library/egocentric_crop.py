@@ -137,6 +137,7 @@ class EgocentricCrop:
     """
 
     category = "media"
+    costly_fit = True  # a superseded-run cleanup keeps its runs
     name = "egocentric-crop"
     version = "0.3"
     parallelizable = False  # Video I/O is sequential

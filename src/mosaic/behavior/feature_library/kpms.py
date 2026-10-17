@@ -435,6 +435,7 @@ class KpmsFeature:
     """
 
     category = "global"
+    costly_fit = True  # a superseded-run cleanup keeps its runs
     # keypoint-MoSeq fits in JAX, and is built for a GPU; on CPU a fit takes days.
     resource_class = "gpu"
     name = "kpms"

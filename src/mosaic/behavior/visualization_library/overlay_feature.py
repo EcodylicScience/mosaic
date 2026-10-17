@@ -133,6 +133,7 @@ class Overlay:
     """
 
     category = "media"
+    costly_fit = True  # a superseded-run cleanup keeps its runs
     name = "overlay"
     version = "0.1"
     parallelizable = False  # Video I/O is sequential.

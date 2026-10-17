@@ -92,6 +92,7 @@ class GlobalScaler:
     """
 
     category = "global"
+    costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
     name = "global-scaler"
     # 0.2: the output keeps the identity and bookkeeping columns and the fitted
     # columns, and drops every other payload column.

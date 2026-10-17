@@ -111,6 +111,7 @@ class FitLabelMap:
     """
 
     category = "global"
+    costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
     name = "fit-label-map"
     version = "0.1"
     parallelizable = False

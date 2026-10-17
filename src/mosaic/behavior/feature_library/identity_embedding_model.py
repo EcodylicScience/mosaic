@@ -155,6 +155,7 @@ class GlobalIdentityEmbedding:
     """
 
     category = "global"
+    costly_fit = True  # a superseded-run cleanup keeps its runs
     # The backbone runs on the best device under `device="auto"`, CUDA first.
     resource_class = "gpu"
     name: str = "global-identity-embedding"

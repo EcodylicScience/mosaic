@@ -109,6 +109,7 @@ class ExtractTemplates:
     """
 
     category = "global"
+    costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
     name = "extract-templates"
     # 0.3: ``nn_id`` and ``attention_target_id``, track ids, are no longer
     # template columns (``BOOKKEEPING_COLS``).

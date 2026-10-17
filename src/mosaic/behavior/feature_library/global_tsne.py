@@ -281,6 +281,7 @@ class GlobalTSNE:
     """
 
     category = "global"
+    costly_fit = True  # a superseded-run cleanup keeps its runs
     name: str = "global-tsne"
     version: str = "0.4"
     parallelizable = False

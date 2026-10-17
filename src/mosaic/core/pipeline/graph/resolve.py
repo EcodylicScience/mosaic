@@ -477,6 +477,7 @@ def _feature_declaration(cls: type) -> Declaration:
         requires=requires,
         provides=provides,
         param_defaults=_param_defaults(cls, contract_fields(requires, provides)),
+        costly_fit=getattr(cls, "costly_fit", False) is True,
         unavailable=unmet(_prerequisites_of(cls)),
     )
 

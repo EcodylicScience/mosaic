@@ -513,6 +513,7 @@ class FeralFeature:
     # category groups it in the pipeline diagram and `mosaic features list`. A GPU
     # feature of category global is also offered to the queue's gpu-train lane.
     category = "global"
+    costly_fit = True  # a superseded-run cleanup keeps its runs
     # V-JEPA on CUDA by default (`device="cuda"`), so a run holds a GPU.
     resource_class = "gpu"
     name = "feral"

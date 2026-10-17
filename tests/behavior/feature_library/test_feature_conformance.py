@@ -47,6 +47,26 @@ def test_every_feature_declares_accepts_overlap(cls: type) -> None:
     assert isinstance(cls.accepts_overlap, bool)
 
 
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_every_global_and_media_feature_declares_costly_fit(cls: type) -> None:
+    """Whether a superseded run may be removed is not a default for a fit.
+
+    A superseded-run cleanup keeps every run of a feature that declares
+    ``costly_fit``: a model that took a GPU or hours to fit is not removed to
+    reclaim disk. A global or media feature that declared nothing would be read
+    as cheap, which is the wrong direction for one copied from a cheap neighbour.
+    """
+    category: object = getattr(cls, "category", "")
+    if category not in ("global", "media"):
+        pytest.skip("not a global or media feature")
+    assert "costly_fit" in vars(cls), (
+        f"{cls.__name__} is a {category} feature and declares no "
+        f"'costly_fit'. Declare it: True when fitting it again costs a GPU or "
+        f"hours, False otherwise."
+    )
+    assert isinstance(vars(cls)["costly_fit"], bool)
+
+
 def _reads_row_zero_of(node: ast.AST, frame_name: str) -> list[str]:
     """Identity columns read as ``<frame_name>[...].iloc[0]`` under *node*.
 

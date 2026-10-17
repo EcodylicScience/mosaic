@@ -126,6 +126,7 @@ class ExtractLabeledTemplates:
     """
 
     category = "global"
+    costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
     name = "extract-labeled-templates"
     # 0.2: farthest_first compares rows over their finite columns, draws its
     # first row from those with a finite value, and selects each row once. A

@@ -68,6 +68,9 @@ class MyGlobalFeature:
     category = (
         "global"  # diagram color: "per-frame" / "summary" / "tag" / "global" / custom
     )
+    # True when a refit is costly (a GPU, hours): a superseded-run cleanup then
+    # keeps every run of it. Every global and media feature declares it.
+    costly_fit = False
     name = "my-global-feature"
     version = "0.1"
     parallelizable = False

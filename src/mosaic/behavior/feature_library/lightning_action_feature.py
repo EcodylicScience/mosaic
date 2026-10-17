@@ -179,6 +179,7 @@ class LightningActionFeature:
     """
 
     category = "global"
+    costly_fit = True  # a superseded-run cleanup keeps its runs
     name = "lightning-action"
     # 0.3: ``nn_id`` and ``attention_target_id``, track ids, are no longer
     # fitted, from templates written before ``extract-labeled-templates``

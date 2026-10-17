@@ -97,6 +97,7 @@ class GlobalWardClustering:
     """
 
     category = "global"
+    costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
     name = "global-ward"
     version = "0.3"
     parallelizable = False

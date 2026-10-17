@@ -45,6 +45,10 @@ own environments.
 - **It also places a run.** A feature with `resource_class = "gpu"` and category
   `global` is offered to the GPU training lane (`lane_for` in
   `core/pipeline/graph/lanes.py`). A GPU feature that fits a model declares `global`.
+- **Every `global` and `media` feature declares `costly_fit`**, a bool outside the
+  protocol (`test_every_global_and_media_feature_declares_costly_fit`). `True` when a
+  refit costs a GPU or hours. The superseded-run cleanup keeps every run of such a
+  feature, and the catalog's `Declaration.costly_fit` carries it.
 - **A rendered artifact is `media`.** `overlay`, `egocentric-crop` and
   `interaction-crop-pipeline` live in `visualization_library/` and use the feature
   protocol and its caching. Their videos and crops are addressed by run id. mosaic has

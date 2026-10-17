@@ -556,6 +556,7 @@ class VameFeature:
     """
 
     category = "global"
+    costly_fit = True  # a superseded-run cleanup keeps its runs
     # VAME trains a recurrent network, and is built for a GPU.
     resource_class = "gpu"
     name = "vame"

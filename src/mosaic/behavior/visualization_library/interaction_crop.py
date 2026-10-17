@@ -144,6 +144,7 @@ class InteractionCropPipeline:
     """
 
     category = "media"
+    costly_fit = True  # a superseded-run cleanup keeps its runs
     name = "interaction-crop-pipeline"
     version = "0.3"
     parallelizable = True

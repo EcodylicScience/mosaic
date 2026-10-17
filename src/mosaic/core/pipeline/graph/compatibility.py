@@ -227,6 +227,13 @@ class Declaration:
     read off the params model when the catalog is built, and a reader of the
     declaration resolves a reference without the registry.
     """
+    costly_fit: bool = False
+    """Whether a run of this feature is costly to fit again: a GPU, or hours.
+
+    Read off the feature's optional ``costly_fit`` class attribute, which every
+    ``global`` and ``media`` feature declares. A superseded-run cleanup keeps
+    every run of such a feature (:mod:`~.cleanup`). ``False`` for an op.
+    """
     unavailable: str | None = None
     """What this installation lacks to run the step, ``None`` when it lacks nothing.
 

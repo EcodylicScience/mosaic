@@ -106,6 +106,23 @@ def test_a_described_step_type_round_trips_through_json() -> None:
     assert entry.provides is not None
 
 
+@pytest.mark.parametrize(
+    ("name", "costly"),
+    [
+        ("kpms", True),
+        ("overlay", True),
+        ("global-kmeans", False),
+        ("speed-angvel", False),
+    ],
+)
+def test_the_declaration_carries_costly_fit(name: str, costly: bool) -> None:
+    entry = describe_step_type(name)
+    served = CatalogEntry.model_validate_json(entry.model_dump_json())
+
+    assert entry.declaration.costly_fit is costly
+    assert served.declaration.costly_fit is costly
+
+
 @pytest.mark.parametrize("name", ["no-such-step", *sorted(EXCLUDED_KINDS)])
 def test_a_name_outside_the_catalog_is_not_found(name: str) -> None:
     with pytest.raises(StepTypeNotFound) as raised:

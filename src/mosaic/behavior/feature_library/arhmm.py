@@ -164,6 +164,7 @@ class ArHmmFeature:
     """
 
     category = "global"
+    costly_fit = True  # a superseded-run cleanup keeps its runs
     name = "arhmm"
     # NOTE: bump only when the *model math* changes, not for a backend swap.
     # Backends are numerically-equivalent implementations of the same algorithm,
