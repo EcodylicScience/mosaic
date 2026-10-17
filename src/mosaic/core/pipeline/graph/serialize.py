@@ -5,7 +5,7 @@ The models it fills are defined in :mod:`.wire`, apart from the planning modules
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from .digest import document_digest
 from .plan import (
@@ -28,6 +28,7 @@ from .wire import (
     IdentityUnresolvedWire,
     PlannedStepWire,
     PlanWire,
+    Problem,
     ReasonWire,
     StalledWire,
     WaitingOnResourceWire,
@@ -38,7 +39,10 @@ if TYPE_CHECKING:
 
     from .status import RequestSummaryWire
 
-__all__ = ["plan_fingerprint", "plan_wire"]
+__all__ = ["LARGE_SCOPE_ENTRIES", "plan_fingerprint", "plan_wire"]
+
+LARGE_SCOPE_ENTRIES: Final = 100
+"""The most entries a step may be asked for before its plan cautions it."""
 
 
 def plan_wire(
@@ -52,8 +56,10 @@ def plan_wire(
     Full entry lists are left out. A step reports how many entries it holds and
     would be asked for, plus a sample of at most *missing_sample* of what is
     missing. The plan's problems are included. A plan that
-    :class:`~.plan.RecipeRefused` contains has them. The fingerprint does not
-    depend on *missing_sample*.
+    :class:`~.plan.RecipeRefused` contains has them. So are its cautions: a
+    plan over the whole dataset, and each step asked for more than
+    :data:`LARGE_SCOPE_ENTRIES` entries. The fingerprint depends on neither
+    the cautions nor *missing_sample*.
 
     Args:
         plan: The plan.
@@ -71,8 +77,38 @@ def plan_wire(
             _step_wire(planned, plan, missing_sample) for planned in plan.steps
         ),
         problems=plan.problems,
+        cautions=_plan_cautions(plan),
         open_requests=open_requests,
     )
+
+
+def _plan_cautions(plan: Plan) -> tuple[Problem, ...]:
+    """What the person submitting *plan* should know first. None refuses it.
+
+    A plan asked for no narrowing covers the whole dataset. A step is
+    cautioned on the entries it is asked for (:func:`~.plan.asked_of`), its own
+    and not the plan's scope.
+    """
+    cautions: list[Problem] = []
+    if plan.covers_dataset:
+        cautions.append(
+            Problem(
+                "",
+                "scope",
+                f"the plan covers all {len(plan.scope)} entries of the dataset",
+            )
+        )
+    for planned in plan.steps:
+        asked = len(asked_of(planned, plan))
+        if asked > LARGE_SCOPE_ENTRIES:
+            cautions.append(
+                Problem(
+                    planned.step_id,
+                    "scope",
+                    f"asked for {asked} entries, more than {LARGE_SCOPE_ENTRIES}",
+                )
+            )
+    return tuple(cautions)
 
 
 def plan_fingerprint(plan: Plan) -> str:
@@ -83,8 +119,8 @@ def plan_fingerprint(plan: Plan) -> str:
     and the entries it would be asked for. A new feature run or a new tracks
     entry therefore changes it. A step's ``reason`` is left out, because a
     resource's occupancy changes from one second to the next. The plan's
-    problems are left out too. A plan with problems is refused at submit
-    whatever its fingerprint.
+    problems and cautions are left out too. A plan with problems is refused at
+    submit whatever its fingerprint, and a caution refuses nothing.
 
     The document is canonical JSON, with steps sorted by id and entries sorted,
     so one plan has one fingerprint in every process.

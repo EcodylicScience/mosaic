@@ -635,6 +635,9 @@ class PlanWire(GraphModel):
             ``run.filter_start_time`` or ``run.filter_end_time``, and a column
             that the tracks tables lack, at ``inputs``. Empty when the plan
             may run.
+        cautions: What the person submitting should know first: a plan over
+            the whole dataset, or a step asked for more than
+            ``LARGE_SCOPE_ENTRIES`` entries. A caution never refuses.
         open_requests: The requests of this recipe over an overlapping scope
             that have not ended, ``running`` or ``orphaned``
             (:func:`~.store.requests_matching`). Empty unless the caller looked
@@ -647,4 +650,5 @@ class PlanWire(GraphModel):
     complete: bool
     steps: tuple[PlannedStepWire, ...]
     problems: tuple[Problem, ...]
+    cautions: tuple[Problem, ...] = ()
     open_requests: tuple[RequestSummaryWire, ...] = ()

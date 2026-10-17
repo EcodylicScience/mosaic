@@ -36,6 +36,7 @@ from mosaic.core.pipeline.graph import (
     CoverageShort,
     DepsIncomplete,
     DepsIncompleteWire,
+    LARGE_SCOPE_ENTRIES,
     IdentityUnresolved,
     Plan,
     PlanWire,
@@ -706,6 +707,64 @@ def test_plan_wire_bounds_the_missing_sample(tracked: Dataset) -> None:
     assert speed.coverage.has_more
     assert speed.coverage.target == 2
     assert bounded.fingerprint == plan_wire(plan).fingerprint
+
+
+# --- cautions ------------------------------------------------------------------
+
+
+def test_a_plan_over_the_whole_dataset_is_cautioned(tracked: Dataset) -> None:
+    plan = plan_pipeline(tracked, speed_recipe())
+
+    wire = plan_wire(plan)
+
+    assert plan.covers_dataset
+    assert [(caution.step, caution.where) for caution in wire.cautions] == [
+        ("", "scope")
+    ]
+    assert "all 2 entries" in wire.cautions[0].message
+    assert wire.problems == ()
+
+
+def test_a_plan_over_named_entries_is_not_cautioned(tracked: Dataset) -> None:
+    plan = plan_pipeline(
+        tracked, speed_recipe(), scope=Scope(entries=[("", "seq_a"), ("", "seq_b")])
+    )
+
+    assert not plan.covers_dataset
+    assert plan_wire(plan).cautions == ()
+
+
+def test_a_step_asked_for_more_than_large_scope_entries_is_cautioned(
+    tmp_path: Path,
+) -> None:
+    sequences = [f"seq_{index:03d}" for index in range(LARGE_SCOPE_ENTRIES + 1)]
+    large = make_dataset(tmp_path / "large")
+    add_tracks_variant(large, VARIANT, *sequences, n_rows=2, std_format="mosaic_v1")
+
+    plan = plan_pipeline(
+        large,
+        speed_recipe(),
+        scope=Scope(entries=[("", sequence) for sequence in sequences]),
+    )
+
+    assert [str(caution) for caution in plan_wire(plan).cautions] == [
+        f"step 'speed' scope: asked for {LARGE_SCOPE_ENTRIES + 1} entries, more "
+        f"than {LARGE_SCOPE_ENTRIES}"
+    ]
+
+
+def test_the_cli_plan_notes_each_caution_below_its_table(
+    tracked: Dataset, tmp_path: Path
+) -> None:
+    recipe = tmp_path / "speed.json"
+    _ = recipe.write_text(json.dumps(SPEED_RECIPE))
+
+    result = CliRunner().invoke(
+        app, ["pipeline", "plan", "-m", str(tracked.manifest_path), "-r", f"@{recipe}"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "caution: scope: the plan covers all 2 entries" in result.stderr
 
 
 # --- an identity nothing can resolve yet ----------------------------------------

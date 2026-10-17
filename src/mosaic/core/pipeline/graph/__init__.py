@@ -216,6 +216,7 @@ if TYPE_CHECKING:
         media_universe as media_universe,
     )
     from .serialize import (
+        LARGE_SCOPE_ENTRIES as LARGE_SCOPE_ENTRIES,
         plan_fingerprint as plan_fingerprint,
         plan_wire as plan_wire,
     )
@@ -464,6 +465,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "graph_writes_tracks": ".scope",
     "intended_scope": ".scope",
     "media_universe": ".scope",
+    "LARGE_SCOPE_ENTRIES": ".serialize",
     "plan_fingerprint": ".serialize",
     "plan_wire": ".serialize",
     "FAILED_ENTRY_SAMPLE": ".status",
@@ -572,6 +574,7 @@ __all__ = [
     "FAILED_ENTRY_SAMPLE",
     "GPU_INFER_LANE",
     "GPU_TRAIN_LANE",
+    "LARGE_SCOPE_ENTRIES",
     "MISSING_SAMPLE",
     "MOSAIC_COMMAND",
     "OVERWRITE_PARAM",

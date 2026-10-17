@@ -340,6 +340,9 @@ class Plan:
             instead.
         dataset_uuid: The ``uuid`` of the planned dataset's manifest, empty
             when the manifest records none.
+        covers_dataset: Whether the plan was asked for no narrowing, so that it
+            covers every entry the dataset can process. A plan naming each of
+            those entries does not set it.
     """
 
     recipe_digest: str
@@ -347,6 +350,7 @@ class Plan:
     steps: tuple[PlannedStep, ...] = ()
     problems: tuple[Problem, ...] = ()
     dataset_uuid: str = ""
+    covers_dataset: bool = False
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
@@ -608,6 +612,7 @@ def plan_pipeline(
         steps=tuple(steps),
         problems=tuple(sorted(problems, key=lambda found: order.get(found.step, -1))),
         dataset_uuid=ds.uuid or "",
+        covers_dataset=intended.selector.is_unset,
     )
     if refuse and plan.problems:
         raise RecipeRefused(plan)

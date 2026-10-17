@@ -125,6 +125,19 @@ def test_the_fingerprint_ignores_open_requests(tracked: Dataset) -> None:
     assert wire.fingerprint == plan_fingerprint(plan) == before
 
 
+def test_cautions_and_whole_dataset_leave_the_fingerprint_unchanged(
+    tracked: Dataset,
+) -> None:
+    """A plan over the whole dataset and one naming its every entry share one."""
+    whole = plan_pipeline(tracked, speed_recipe(), scope=Scope())
+    named = plan_pipeline(
+        tracked, speed_recipe(), scope=Scope(entries=[("", "seq_a"), ("", "seq_b")])
+    )
+
+    assert plan_wire(whole).cautions != plan_wire(named).cautions == ()
+    assert plan_fingerprint(whole) == plan_fingerprint(named)
+
+
 def test_a_current_fingerprint_submits(tracked: Dataset) -> None:
     fingerprint = _fingerprint(tracked)
 

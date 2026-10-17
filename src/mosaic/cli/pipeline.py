@@ -797,14 +797,15 @@ def _emit_plan(
 ) -> None:
     """Render a plan as its fingerprint and a table, or as the JSON an API serves.
 
-    Each of *open_requests* is noted below the table.
+    Each of the plan's cautions and of *open_requests* is noted below the table.
     """
-    from mosaic.core.pipeline.graph import plan_fingerprint, plan_wire
+    from mosaic.core.pipeline.graph import plan_wire
 
+    wire = plan_wire(plan, open_requests=open_requests)
     if as_json:
-        emit_json(plan_wire(plan, open_requests=open_requests).model_dump(mode="json"))
+        emit_json(wire.model_dump(mode="json"))
         return
-    typer.echo(f"plan {plan_fingerprint(plan)}")
+    typer.echo(f"plan {wire.fingerprint}")
     rows = [
         {
             "step": planned.step_id,
@@ -821,6 +822,8 @@ def _emit_plan(
     render_table(
         rows, ["step", "type", "runs", "run_id", "status", "coverage", "lane", "reason"]
     )
+    for caution in wire.cautions:
+        log(f"caution: {caution}")
     for summary in open_requests:
         log(
             f"note: request {summary.request_id} of this recipe is "
