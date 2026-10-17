@@ -8,6 +8,7 @@ tracks entry has appeared in between.
 from __future__ import annotations
 
 import json
+import datetime
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -295,3 +296,22 @@ def test_the_cleanup_policy_enters_the_fingerprint(tracked: Dataset) -> None:
 
     assert plan_fingerprint(loose) != plan_fingerprint(strict)
     assert plan_wire(loose).fingerprint == plan_fingerprint(loose)
+
+
+def test_a_cleanup_fingerprint_holds_no_time_or_size(tracked: Dataset) -> None:
+    """Ages and sizes move between plan and submit; only the set removed counts."""
+    old = run_speed(tracked, 1)
+    recipe = speed_recipe_stepping(2)
+    now = datetime.datetime.now(datetime.UTC)
+    first = plan_with_cleanup(tracked, recipe, cleanup=LOOSE, now=now)
+    run_root = tracked.get_root("features") / "speed-angvel__from__tracks" / old
+    _ = (run_root / "grown.bin").write_bytes(b"x" * 4096)
+
+    later = plan_with_cleanup(
+        tracked, recipe, cleanup=LOOSE, now=now + datetime.timedelta(days=3)
+    )
+
+    assert first.cleanup is not None
+    assert later.cleanup is not None
+    assert later.cleanup.removable_bytes > first.cleanup.removable_bytes
+    assert plan_fingerprint(later) == plan_fingerprint(first)
