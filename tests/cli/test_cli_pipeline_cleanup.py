@@ -161,3 +161,19 @@ def test_run_refuses_cleanup_flags_with_a_request(dataset: Dataset) -> None:
 
     assert result.exit_code != 0
     assert "--cleanup" in result.output
+
+
+def test_run_cleanup_without_expect_plan_fails_and_removes_nothing(
+    dataset: Dataset, recipe: str
+) -> None:
+    old = run_speed(dataset, 1)
+
+    result = runner.invoke(
+        app,
+        ["pipeline", "run", "--recipe", recipe, *_manifest(dataset), *LOOSE, "--json"],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["reason"] == "cleanup_needs_plan"
+    assert feature_run_root(dataset, STORAGE, old).is_dir()
+    assert not (dataset.base_dir / ".mosaic" / "pipelines" / "requests").exists()
