@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import builtins
+import errno
 import json
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -359,6 +362,89 @@ def test_closing_the_log_stops_its_liveness_thread(tmp_path: Path) -> None:
     written = _events(tmp_path, "E1")
     time.sleep(0.05)
     assert _events(tmp_path, "E1") == written
+
+
+class _TearsOneLine:
+    """A run-log file whose first write of one event lands half a line and raises."""
+
+    def __init__(self, file: Any, event: str) -> None:
+        self._file = file
+        self._event = f'"ev": "{event}"'
+        self.tears = 0
+
+    def write(self, text: str) -> int:
+        if self.tears == 0 and self._event in text:
+            self.tears += 1
+            _ = self._file.write(text[: len(text) // 2])
+            self._file.flush()
+            raise OSError(errno.ESTALE, "Stale file handle")
+        return self._file.write(text)
+
+    def flush(self) -> None:
+        self._file.flush()
+
+    def close(self) -> None:
+        self._file.close()
+
+
+def _tearing_log(
+    base: Path, monkeypatch: pytest.MonkeyPatch, event: str
+) -> tuple[JsonlRunLog, _TearsOneLine]:
+    files: list[_TearsOneLine] = []
+
+    def tearing_open(*args: Any, **kwargs: Any) -> _TearsOneLine:
+        files.append(_TearsOneLine(builtins.open(*args, **kwargs), event))
+        return files[-1]
+
+    monkeypatch.setattr(runlog, "open", tearing_open, raising=False)
+    return _log(base, "E1"), files[0]
+
+
+def _decoded_events(base: Path, execution_id: str) -> list[str]:
+    events: list[str] = []
+    for line in run_log_path(base, execution_id).read_text().splitlines():
+        try:
+            events.append(json.loads(line)["ev"])
+        except json.JSONDecodeError:
+            continue
+    return events
+
+
+def test_a_failed_alive_write_is_retried_after_the_next_interval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log, file = _tearing_log(tmp_path, monkeypatch, "alive")
+    try:
+        log.started(kind="feature", target="t", liveness_interval=0.02)
+        log.start_liveness(0.02)
+        wait_for(
+            lambda: "alive" in _decoded_events(tmp_path, "E1"),
+            5.0,
+            "the liveness thread wrote no alive event after a failed write",
+        )
+    finally:
+        log.close()
+
+    assert file.tears == 1
+
+
+def test_the_line_after_a_partial_line_still_reduces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log, file = _tearing_log(tmp_path, monkeypatch, "heartbeat")
+    try:
+        log.started(kind="feature", target="t")
+        with pytest.raises(OSError, match="Stale file handle"):
+            log.heartbeat(1, 2)
+        log.finished()
+    finally:
+        log.close()
+
+    snap = runlog.reduce_run_log(run_log_path(tmp_path, "E1"))
+    assert file.tears == 1
+    assert _decoded_events(tmp_path, "E1") == ["started", "finished"]
+    assert snap is not None
+    assert snap["status"] == "finished"
 
 
 def test_an_alive_event_only_advances_heartbeat_at(tmp_path: Path) -> None:

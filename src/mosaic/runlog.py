@@ -21,8 +21,9 @@ Design properties:
 * **Job-kind-agnostic** -- the job's ``kind`` is a *field* in the log, never part of the
   path; the filename is the ``execution_id`` alone. A new payload kind plugs in with zero
   change here.
-* **NFS-safe** -- one writer, append-only, flush-per-line, so a remote reader only ever sees
-  a partial *last* line (skipped by the reducer). Exactly where SQLite/WAL failed.
+* **NFS-safe** -- one writer, append-only, flush-per-line, so a remote reader sees a
+  partial line only at the end of the file or where a write failed, and the reducer skips
+  it. Exactly where SQLite/WAL failed.
 * **Bounded + ephemeral** -- finite entries*2 (per-entry) or epochs*1 (per-epoch) lines
   (KB-MB), plus at most one ``alive`` line per :data:`LIVENESS_INTERVAL_SECONDS` of
   silence, and it stops growing at a terminal event. The durable truth lives elsewhere
@@ -404,7 +405,9 @@ class JsonlRunLog:
     (``on_entry_*`` / ``on_epoch_end`` / ``on_class_start`` / ``on_phase``) **and** carries
     the attempt-lifecycle methods (``started`` / ``set_run_id`` / ``set_total`` /
     ``heartbeat`` / ``finished`` / ``failed`` / ``cancelled``). One file, one writer, flush
-    after every line so a concurrent reader only ever sees a partial last line.
+    after every line so a concurrent reader only ever sees a partial last line. A line
+    written after a failed write begins with a newline, so a partial line the failure
+    left ends there and the lines after it decode.
 
     :meth:`start_liveness` adds a daemon thread that appends ``alive`` after each
     interval of silence. Writes from it and from the job go through one lock, and
@@ -427,6 +430,8 @@ class JsonlRunLog:
         self._lock = threading.Lock()
         self._last_write: float = time.monotonic()
         self._ended: bool = False
+        # Whether the last write raised, possibly leaving a partial line.
+        self._torn: bool = False
         self._stop_liveness = threading.Event()
         self._liveness: threading.Thread | None = None
 
@@ -448,9 +453,7 @@ class JsonlRunLog:
         with self._lock:
             if self._file is None:
                 return False
-            self._file.write(line)
-            self._file.flush()
-            self._last_write = time.monotonic()
+            self._append(line)
             if end:
                 self._ended = True
         return True
@@ -461,20 +464,34 @@ class JsonlRunLog:
         with self._lock:
             if self._file is None or self._ended:
                 return False
-            self._file.write(line)
-            self._file.flush()
-            self._last_write = time.monotonic()
+            self._append(line)
         return True
+
+    def _append(self, line: str) -> None:
+        """Write and flush *line*, with the lock held.
+
+        After a write that raised, *line* begins with a newline, which ends any
+        partial line that write left. The reader skips the partial line and the
+        blank one and decodes *line*.
+        """
+        if self._torn:
+            line = "\n" + line
+        self._torn = True
+        self._file.write(line)
+        self._file.flush()
+        self._torn = False
+        self._last_write = time.monotonic()
 
     def start_liveness(self, interval: float) -> None:
         """Append ``alive`` after each *interval* seconds without another write.
 
         A daemon thread waits out the time left of the interval since the last
         line, so two lines are never further apart than *interval* while the job
-        runs. It stops at the terminal event, at :meth:`close`, and at its own
-        first error, which it swallows: liveness is a report, and a failed
-        report must not fail the job. A second call, or an *interval* of 0 or
-        below, starts nothing.
+        runs. It stops at the terminal event and at :meth:`close`. A failed
+        ``alive`` write is swallowed and retried after the next interval:
+        liveness is a report, a failed report must not fail the job, and one
+        transient write error must not make a running job read as dead. A
+        second call, or an *interval* of 0 or below, starts nothing.
 
         Args:
             interval: The seconds of silence after which ``alive`` is written,
@@ -493,18 +510,18 @@ class JsonlRunLog:
 
     def _keep_alive(self, interval: float) -> None:
         """Write ``alive`` whenever *interval* seconds pass without a line."""
-        try:
+        wait = interval
+        while not self._stop_liveness.wait(wait):
+            silent = time.monotonic() - self._last_write
+            if silent < interval:
+                wait = interval - silent
+                continue
             wait = interval
-            while not self._stop_liveness.wait(wait):
-                silent = time.monotonic() - self._last_write
-                if silent < interval:
-                    wait = interval - silent
-                    continue
+            try:
                 if not self._write_alive():
                     return
-                wait = interval
-        except Exception:
-            return
+            except Exception:
+                continue
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -862,11 +879,12 @@ _PROGRESS_EVENTS = {"entry_start", "entry_end", "epoch", "class_start", "phase"}
 
 
 def _iter_records(path: Path) -> list[dict[str, Any]]:
-    """Parse a run-log's JSON lines, tolerating a torn/partial last line.
+    """Parse a run-log's JSON lines, tolerating a torn/partial line.
 
     Returns records in file order. An un-parseable line (a partial append caught
-    mid-write on NFS) is skipped rather than raising -- the append-only invariant
-    guarantees only the *last* line can ever be partial.
+    mid-write on NFS, or the remains of a write that failed) is skipped rather
+    than raising. The writer begins the line after a failed write on a fresh
+    line, so only the torn line itself is lost.
     """
     try:
         text = Path(path).read_text(encoding="utf-8")
