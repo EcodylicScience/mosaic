@@ -26,6 +26,11 @@ Status is **derived at read time, never stored**:
 | `complete-but-drifted` | complete, but a recorded source has moved |
 | `inconsistent` | the index and the files disagree |
 
+A run whose step depends on its scope, such as a template sampler run on the training
+sequences, is measured against the sequences it ran on. It reads `complete` when it
+holds all of them, and `partial` only when it lost some. Running it on more sequences
+makes a different run, so the rest of the dataset is not missing from this one.
+
 Truth is on disk, so a stale view is impossible rather than merely unlikely.
 `inconsistent` is judged only on a *finished* run: outputs are written before their
 index rows, so files ahead of rows is what a run in progress looks like, not damage.

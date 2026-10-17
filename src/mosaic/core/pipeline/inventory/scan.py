@@ -57,7 +57,7 @@ from .model import (
     TracksVariantRef,
     classify,
 )
-from .params import read_run_params
+from .params import RunParams, read_run_params
 
 from collections.abc import Callable
 
@@ -74,6 +74,7 @@ __all__ = [
     "CORE_KINDS",
     "entry_universe",
     "existing_tracks_records",
+    "feature_run_target",
     "inventory",
     "narrow_target",
     "parquet_is_readable",
@@ -331,10 +332,43 @@ def reportable_universe(
         return _entries_of(existing_tracks_records(ds, read_tracks_index(ds)))
 
 
+def feature_run_target(
+    asked: frozenset[Entry], params: RunParams | None
+) -> frozenset[Entry]:
+    """The entries a feature run is measured against, out of the *asked* ones.
+
+    A ``scope_dependent`` run's scope is hashed into its run id, so measuring it
+    against the whole universe asks a question no action can answer: running it
+    over more entries makes a different run. Its target is *asked* narrowed to
+    the scope it declared. An entry that failed is inside that scope and has no
+    file, so the run still reads ``partial`` and its losses are still reported.
+
+    When the two share nothing -- a selector naming entries the run never
+    covered -- the target stays *asked*. An empty target would read as "anything
+    at all" (:attr:`Coverage.is_satisfied`), and the run would read complete over
+    entries it never held.
+
+    A scope-free run keeps *asked*: its recorded scope is "whichever invocation
+    ran last", which says nothing about what it is for. So does a run whose
+    ``params.json`` is missing or predates the ``scope_dependent`` key.
+
+    The one rule for both the scan and the narrowed projection of an unscoped
+    scan (``inventory_wire``), so the two cannot disagree.
+    """
+    if params is None or not params.scope.scope_dependent:
+        return asked
+    within = asked & frozenset(params.entry_scope())
+    return within or asked
+
+
 def _feature_records(
     ds: Dataset, scope: InventoryScope, reader: IndexReader
 ) -> list[ArtifactRecord[Entry]]:
-    """Every feature run under ``features/<name>/<run_id>/``."""
+    """Every feature run under ``features/<name>/<run_id>/``.
+
+    A scope-dependent run is measured over the part of the target inside its
+    declared scope (:func:`feature_run_target`); every other run over the target.
+    """
     universe = reportable_universe(ds, scope.tracks_run_id)
     target = narrow_target(universe, scope.selector)
     records: list[ArtifactRecord[Entry]] = []
@@ -346,12 +380,14 @@ def _feature_records(
         for run_id in run_ids(frame):
             run_root = feature_run_root(ds, name, run_id)
             rows = _rows_of(frame, run_id)
+            read = read_run_params(run_root)
             # The run's own index rows are what make its outputs recognisable
             # when the target cannot name them -- see ``run_covers``.
-            coverage = run_covers(run_root, target, known=rows)
+            coverage = run_covers(
+                run_root, feature_run_target(target, read.params), known=rows
+            )
             files = coverage.present
             started, finished_at, finished = finish_state(frame, run_id)
-            read = read_run_params(run_root)
             drift = drifted_entries(ds, name, run_id)
             records.append(
                 ArtifactRecord[Entry](

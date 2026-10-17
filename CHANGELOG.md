@@ -139,6 +139,15 @@ bound: `xgboost` fits only the `split == "train"` rows of its templates.
 - `write_fit_scope(run_root, scope)` takes a `FitScope`, which the new
   `derive_fit_scope` builds. No run id moves.
 
+**The inventory measures a scope-dependent run over the scope it ran on.** A run whose
+scope is in its run id, such as `extract-labeled-templates` over the training groups,
+read `partial` for ever, because it was measured against every entry in the dataset
+and no action could finish it. It now reads `complete` when it holds every entry of
+its declared scope, and `partial` when it lost some. Its `coverage.target` counts the
+declared entries. A selector that names none of its entries still reads `absent`.
+`mosaic inventory`, `get_inventory` and a narrowed `inventory_wire` apply the same
+rule through `feature_run_target`.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

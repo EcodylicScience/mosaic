@@ -37,6 +37,7 @@ from mosaic.core.pipeline.inventory import (
 from mosaic.core.scope import Scope
 from mosaic.core.pipeline.preprocess_layout import media_variant_path
 from tests.helpers import (
+    ScopedFeature,
     add_media_variant,
     add_track_sequences,
     add_tracks_variant,
@@ -245,6 +246,58 @@ def test_a_narrowed_projection_matches_the_scan_under_the_same_scope(
 
     assert summary(projected) == summary(scanned)
     assert summary(projected)[f"tracks-variant/{VARIANT}"] == ("complete", 2)
+
+
+def _scoped_run(ds: Dataset, sequence: str) -> str:
+    """Run the scope-dependent stand-in over one sequence; its run id."""
+    feature = ScopedFeature()
+    return str(ds.run_feature(feature, scope=Scope(sequences=[sequence])).run_id)
+
+
+def test_a_projection_outside_a_scope_dependent_runs_scope_is_absent(
+    scenario_dataset: Dataset,
+) -> None:
+    """The unscoped scan already cut the run's target to its scope, so narrowing
+    that target again would leave it empty, and an empty target reads complete."""
+    _ = _scoped_run(scenario_dataset, "seq_a")
+    held = inventory(scenario_dataset, kinds=["feature"])
+
+    [whole] = inventory_wire(scenario_dataset, held).artifacts
+    [elsewhere] = inventory_wire(
+        scenario_dataset, held, scope=Scope(sequences=["seq_b"])
+    ).artifacts
+
+    assert (whole.status, whole.coverage.target) == ("complete", 1)
+    assert (elsewhere.status, elsewhere.coverage.target) == ("absent", 1)
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        Scope(sequences=["seq_a"]),
+        Scope(sequences=["seq_b"]),
+        Scope(sequences=["seq_a", "seq_b"]),
+        Scope(groups=["elsewhere"]),
+    ],
+    ids=["inside", "outside", "wider", "no-entries"],
+)
+def test_a_scope_dependent_projection_matches_the_scan(
+    scenario_dataset: Dataset, scope: Scope
+) -> None:
+    _ = _scoped_run(scenario_dataset, "seq_a")
+    kinds: list[ArtifactKind] = ["feature"]
+
+    projected = inventory_wire(
+        scenario_dataset, inventory(scenario_dataset, kinds=kinds), scope=scope
+    )
+    scanned = inventory_wire(
+        scenario_dataset, inventory(scenario_dataset, kinds=kinds, scope=scope)
+    )
+
+    def summary(wire: InventoryWire) -> list[tuple[str, str, int]]:
+        return [(a.ref, a.status, a.coverage.target) for a in wire.artifacts]
+
+    assert summary(projected) == summary(scanned)
 
 
 def test_an_entry_scope_narrows_a_media_variants_orphans_as_the_scan_does(

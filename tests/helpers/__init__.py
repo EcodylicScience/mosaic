@@ -222,7 +222,7 @@ from tests.helpers.source_scan import (
     source_tree,
 )
 from tests.helpers.documents import dotted_values
-from tests.helpers.stand_in_features import CropLike, PlainFeature
+from tests.helpers.stand_in_features import CropLike, PlainFeature, ScopedFeature
 from tests.helpers.training import FakeTrainer, healthy_probe, write_data_yaml
 from tests.helpers.trees import PathState, assert_tree_unchanged, tree_snapshot
 from tests.helpers.tracks import (
@@ -303,6 +303,7 @@ __all__ = [
     "SEPARATED_TOOLS",
     "SOURCE_ROOT",
     "CiJob",
+    "ScopedFeature",
     "SeparatedEnvironment",
     "SeparatedTool",
     "TESTS_ROOT",

@@ -31,9 +31,10 @@ from mosaic.core.pipeline.inventory.scan import (
     run_covers,
 )
 from mosaic.core.scope import Scope
-from tests.helpers import add_tracks_variant, make_dataset
+from tests.helpers import ScopedFeature, add_tracks_variant, make_dataset
 
 STORAGE = "speed-angvel__from__tracks"
+SCOPED = "prov-scoped__from__tracks"
 
 
 def _run(ds: Dataset) -> str:
@@ -179,6 +180,65 @@ def test_a_run_covering_some_of_the_universe_is_partial(
     assert record.coverage.missing == frozenset({("", "seq_b")})
     assert record.orphan_rows == frozenset()
     assert record.orphan_files == frozenset()
+
+
+def _scoped_run(ds: Dataset, *entries: str, fail_on: tuple[str, ...] = ()) -> str:
+    """Run the scope-dependent stand-in over *entries*; its run id."""
+    scope = Scope(entries=[("", sequence) for sequence in entries])
+    return str(ds.run_feature(ScopedFeature(fail_on=fail_on), scope=scope).run_id)
+
+
+def test_a_scope_dependent_run_is_complete_over_its_declared_scope(
+    scenario_dataset: Dataset,
+) -> None:
+    """Its scope is in its run id, so the rest of the dataset is another run.
+
+    Measured against every entry it read ``partial`` for ever, and no action
+    could finish it: running it wider makes a different run.
+    """
+    run_id = _scoped_run(scenario_dataset, "seq_a")
+
+    record = inventory(scenario_dataset, kinds=["feature"]).record(
+        FeatureRunRef(name=SCOPED, run_id=run_id)
+    )
+
+    assert record is not None
+    assert record.status == "complete"
+    assert record.coverage.target == frozenset({("", "seq_a")})
+
+
+def test_a_scope_dependent_run_that_lost_an_entry_is_still_partial(
+    scenario_dataset: Dataset,
+) -> None:
+    """A failed entry is inside the declared scope and has no output."""
+    run_id = _scoped_run(scenario_dataset, "seq_a", "seq_b", fail_on=("seq_b",))
+
+    record = inventory(scenario_dataset, kinds=["feature"]).record(
+        FeatureRunRef(name=SCOPED, run_id=run_id)
+    )
+
+    assert record is not None
+    assert record.status == "partial"
+    assert record.coverage.missing == frozenset({("", "seq_b")})
+
+
+def test_a_selector_outside_a_scope_dependent_runs_scope_reads_absent(
+    scenario_dataset: Dataset,
+) -> None:
+    """Asked about an entry it never covered, the run holds none of it.
+
+    Cut to its scope, the asked target would be empty, and an empty target reads
+    as "anything at all" -- complete over an entry the run never held.
+    """
+    run_id = _scoped_run(scenario_dataset, "seq_a")
+
+    record = inventory(
+        scenario_dataset, kinds=["feature"], scope=Scope(sequences=["seq_b"])
+    ).record(FeatureRunRef(name=SCOPED, run_id=run_id))
+
+    assert record is not None
+    assert record.status == "absent"
+    assert record.coverage.target == frozenset({("", "seq_b")})
 
 
 def test_the_converted_tracks_are_reported(scenario_dataset: Dataset) -> None:

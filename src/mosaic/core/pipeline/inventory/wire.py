@@ -60,7 +60,7 @@ from .params import (
     TracksVariantWalk,
     read_run_params,
 )
-from .scan import narrow_target, reportable_universe
+from .scan import feature_run_target, narrow_target, reportable_universe
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -509,11 +509,18 @@ def inventory_wire(
             if not _read_variant(_variants_of(record, walk), tracks_run_id):
                 continue
         if narrowing and isinstance(record.ref, _ENTRY_KEYED):
-            coverage = (
-                _narrowed(record.coverage, scope, universe)
-                if is_feature
-                else _narrowed_by_entries(record.coverage, scope)
-            )
+            if is_feature and _scope_dependent(record):
+                # Re-measured from the asked entries rather than narrowed from
+                # the scan's target, which was already cut to the run's scope:
+                # narrowing that again can leave it empty, and an empty target
+                # reads as complete. The universe is read once, on first need.
+                if universe is None:
+                    universe = reportable_universe(ds, None)
+                coverage = _declared(record, narrow_target(universe, scope))
+            elif is_feature:
+                coverage = _narrowed(record.coverage, scope, universe)
+            else:
+                coverage = _narrowed_by_entries(record.coverage, scope)
             record = _rows_in_scope(record, scope)
             status = reclassify(record, coverage)
         else:
@@ -589,6 +596,25 @@ def _narrowed(
     if universe is not None:
         entries &= universe
     return _kept(coverage, narrow_target(entries, scope))
+
+
+def _scope_dependent(record: ArtifactRecord[AnyKey]) -> bool:
+    """Return whether *record* is a feature run whose params declare it scope-dependent."""
+    return record.params is not None and record.params.scope.scope_dependent
+
+
+def _declared(
+    record: ArtifactRecord[AnyKey], asked: frozenset[Entry]
+) -> Coverage[AnyKey]:
+    """Return *record*'s coverage of *asked*, cut to its declared scope as the scan cuts it.
+
+    :func:`~.scan.feature_run_target` is the rule, shared with the scan.
+    """
+    return Coverage[AnyKey](
+        target=frozenset[AnyKey](feature_run_target(asked, record.params)),
+        present=record.coverage.present,
+        covers_all=record.coverage.covers_all,
+    )
 
 
 def _narrowed_by_entries(

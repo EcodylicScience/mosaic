@@ -2,7 +2,8 @@
 
 The provenance walk, delete sets, media rearrangement and source staleness are
 all decided by a feature's ``consumed_roots``, so their tests run a feature that
-does nothing but declare one.
+does nothing but declare one. :class:`ScopedFeature` declares ``scope_dependent``
+instead, for the tests of how a run whose scope is in its id is measured.
 """
 
 from __future__ import annotations
@@ -65,3 +66,23 @@ class PlainFeature(CropLike):
 
     name = "prov-plain"
     consumed_roots: tuple[str, ...] = ()
+
+
+class ScopedFeature(PlainFeature):
+    """A per-entry feature whose scope is hashed into its run id.
+
+    Its apply raises for the sequences named in *fail_on*, so a test can make a
+    run lose an entry inside the scope it declared.
+    """
+
+    name = "prov-scoped"
+    scope_dependent = True
+
+    def __init__(self, fail_on: tuple[str, ...] = ()) -> None:
+        super().__init__()
+        self.fail_on = frozenset(fail_on)
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if not df.empty and str(df["sequence"].iloc[0]) in self.fail_on:
+            raise RuntimeError("a lost entry")
+        return df
