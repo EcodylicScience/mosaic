@@ -14,8 +14,10 @@ pipeline graph are in `graph/CLAUDE.md`.
   `InputStream`, `DependencyLookup`, the labels sources).
 - `__init__.py` binds every public name on access through `mosaic.lazy_exports`,
   which imports the standard library only (`tests/meta/test_pipeline_lazy_exports.py`).
-  The media ops register through `ensure_core_ops_registered` (`ops.py`), which every
-  reader of `OPS` in `ops.py` and `mosaic.tracking.register_ops` call.
+  The media ops and the conversion ops (`convert_ops.py`: `convert-tracks` and
+  `convert-labels`, domain `tracking`) register through `ensure_core_ops_registered`
+  (`ops.py`, `CORE_OP_MODULES`), which every reader of `OPS` in `ops.py` and
+  `mosaic.tracking.register_ops` call.
   `reconcilable_index` imports the modules that register the core indexes.
 - `inventory/` imports nothing from `tracking` or `behavior`
   (`tests/core/pipeline/inventory/test_inventory_contributors.py`). Tracking facts
@@ -29,6 +31,9 @@ pipeline graph are in `graph/CLAUDE.md`.
   `_tracks`, `_labels` and `_overlap_frames` only when present. A new term is omitted
   when absent, which leaves existing identifiers unchanged
   (`tests/core/pipeline/test_feature_run_id_golden.py`).
+- `resolve_labels_variants` takes a pinned `labels_run_id` as given, as a pinned
+  `tracks_run_id` is, so a run planned before its labels are converted is named as it
+  executes (`tests/core/pipeline/test_labels_identity.py`).
 - The tracks variants a run read enter `_tracks`, and the storage directory name
   (`derive_storage_name`) leaves them out. `features/<name>__from__tracks/` stays one
   directory and one index whatever the number of variants in a dataset.

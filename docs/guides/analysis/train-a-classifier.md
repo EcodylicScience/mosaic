@@ -59,6 +59,67 @@ frames](import-labels.md#labeled-background-and-unlabeled-frames).
 `strategy="multiclass"` fits one model over all behaviors. `"one_vs_rest"` fits one
 model per behavior, which is what you want when behaviors can co-occur.
 
+## Train and score in one request
+
+A recipe can run the whole route at once, from the raw files to a score on held-out
+groups. Step scopes make the split: each one narrows a single step to part of what the
+request covers, so the fitting steps see the training groups and the scoring step the
+test group.
+
+```json
+{
+  "schema_version": 1,
+  "name": "supervised",
+  "steps": [
+    {"id": "tracks", "type": "op", "kind": "convert-tracks",
+     "params": {"source_format": "calms21_npy"}},
+    {"id": "labels", "type": "op", "kind": "convert-labels",
+     "params": {"source_format": "calms21_npy"}},
+    {"id": "speed", "type": "feature", "feature": "speed-angvel",
+     "inputs": ["tracks"], "tracks": {"step": "tracks"}},
+    {"id": "templates", "type": "feature", "feature": "extract-templates",
+     "inputs": [{"step": "speed"}], "params": {"n_templates": 2000}},
+    {"id": "scaler", "type": "feature", "feature": "global-scaler",
+     "inputs": [{"step": "speed"}], "params": {"templates": {"step": "templates"}}},
+    {"id": "labeled", "type": "feature", "feature": "extract-labeled-templates",
+     "inputs": [{"step": "scaler"}],
+     "params": {"labels": {"step": "labels"}, "n_per_class": 500}},
+    {"id": "classifier", "type": "feature", "feature": "xgboost",
+     "inputs": [{"step": "scaler"}],
+     "params": {"templates": {"step": "labeled"}, "default_class": 3}},
+    {"id": "evaluate", "type": "feature", "feature": "evaluate-labels",
+     "inputs": [{"step": "classifier"}],
+     "params": {"labels": {"step": "labels"}, "perspective": 0,
+                "average_over": [0, 1, 2]}}
+  ]
+}
+```
+
+```bash
+mosaic pipeline run -m dataset.yaml --recipe @supervised.json \
+  --step-scope 'templates={"groups": ["train"]}' \
+  --step-scope 'labeled={"groups": ["train"]}' \
+  --step-scope 'classifier={"groups": ["test"]}' \
+  --step-scope 'evaluate={"groups": ["test"]}'
+```
+
+- `{"step": "labels"}` in a `labels` field reads the labels that step converts, so the
+  scores are against that conversion even when the dataset holds another.
+- A step that reads another through `inputs` or `tracks` must be narrowed to entries
+  the other is asked for, and the plan names the step that is not. A params reference
+  carries no such rule: the classifier reads templates drawn from the training groups
+  and is applied to the test group.
+- Scan the dataset's sources before planning (`mosaic scan`): a conversion step whose
+  format has no scanned file is refused.
+
+`evaluate-labels` writes `metrics.json` in its run directory: accuracy, a macro F1 over
+`average_over` (here every class but `other`), precision, recall and F1 per class, and
+a confusion matrix, which is also `confusion.parquet`. Each of its output rows is one
+entry's own score. A row no label covers is left out and counted in `n_unlabeled`.
+`perspective` chooses which rows of a pair output are scored: one perspective, both
+(`"pooled"`), or the mean of a pair's two probability vectors
+(`"mean_probabilities"`). It refuses pair rows of both perspectives unless it is set.
+
 ## Give each frame its context
 
 A single frame rarely identifies a behavior. `temporal-stack` widens each row into a

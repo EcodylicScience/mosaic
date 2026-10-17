@@ -71,14 +71,19 @@ recipe is copied to `<dataset>/.mosaic/pipelines/<digest>.json`. The dataset the
 records which pipelines were applied to it. A whole number in `params` is read as an
 integer, so a recipe that writes `5.0` and one that writes `5` are one recipe.
 
-### The four ways a step references another
+### The five ways a step references another
 
 | Spelling | Means |
 | --- | --- |
 | `"inputs": [{"step": "speed"}]` | Read that step's feature output |
 | `"tracks": {"step": "trex"}` | Read the tracks variant that op produced |
 | `"params": {"f": {"step": "x"}}` | Take that step's artifact, named by the field |
+| `"params": {"labels": {"step": "labels"}}` | Read the labels variant a `convert-labels` step writes |
 | `"after": ["transcode"]` | Ordering only, no data reference |
+
+A `labels` reference names a `convert-labels` step: the field takes that step's label
+kind, and the run reads the variant it writes, even where the dataset holds another
+conversion of the same labels. A labels reference to any other step is refused.
 
 A reference sits at the exact place it substitutes, so there is no separate edge list
 to drift from the step bodies.
@@ -96,6 +101,35 @@ artifacts — `template_provenance.parquet`, say, rather than `templates.parquet
 `after` is for the case where one step must precede another without reading anything
 from it — transcode before trex is the standard example: the tracker reads the
 derivative from the media index, not from the transcode step's return value.
+
+### Narrow one step: step scopes
+
+A request covers a set of entries, and a step scope narrows one step to part of it.
+A train/test split is step scopes on one request: the fitting steps narrowed to the
+training groups, the scoring step to the test groups.
+
+```bash
+mosaic pipeline run -m dataset.yaml --recipe @recipe.json \
+    --step-scope 'templates={"groups": ["train"]}' \
+    --step-scope 'evaluate={"groups": ["test"]}'
+```
+
+SCOPE is a JSON selector, `{"groups": [...]}` or `{"entries": [[group, sequence],
+...]}`, or `@file.json`. `plan`, `submit` and `run` take it, and so does an MCP client
+as `step_entries`. `--group` narrows the whole request to groups, as `--entry` narrows
+it to entries.
+
+- A step scope is intersected with the request's entries, and a step whose identity
+  covers its entries, such as `extract-templates`, is named by the narrowed set.
+- A step reading another through `inputs` or `tracks` must be narrowed to entries the
+  other is asked for. The plan refuses one that is not, at the field that reads it.
+- A params reference and `after` carry no such rule: a classifier trained on templates
+  drawn from the training groups is applied to the test groups.
+- The plan refuses a step scope naming no step, on an op that takes no scope or a
+  step `bind` pins, or selecting no entry.
+
+A request without step scopes is written as before, and older mosaic reads it. A
+request with them is read by this version and later.
 
 ### `overwrite` is refused
 

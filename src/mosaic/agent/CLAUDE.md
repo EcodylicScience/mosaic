@@ -57,6 +57,9 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   put on one line, and a finding quotes dataset content with `repr`, so nothing in a
   dataset can forge the tag. `confirm_hook` answers a confirmation whose tag it cannot
   read with its fallback, as it answers an unapproved one (`test_confirm_hook.py`).
+- A run's report is a resource, not a tool: a feature declaring `report_file` has it
+  served at `.../artifacts/feature/{name}/{run_id}/report` through
+  `read_run_report`.
 - `docs/agents.md` lists the operations the server leaves to the user, such as
   deletion, `--apply` on a sweep or prune verb, and manifest writes. Do not add a tool
   for one.

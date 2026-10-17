@@ -164,11 +164,22 @@ Once you know its process has exited, record it with
 the recipe again. The server offers no tool for this
 ([When a process is gone](guides/pipelines/run-and-see-what-ran.md#when-a-process-is-gone)).
 
+`plan_recipe`, `submit_pipeline` and `get_inventory` take `entries` as a list of
+`[group, sequence]` pairs or as `{"groups": [...]}`. `plan_recipe` and
+`submit_pipeline` also take `step_entries`, which narrows single steps by step id: a
+classifier fitted on the training groups and scored on the test groups is one request
+([Step scopes](guides/pipelines/chain-steps.md#narrow-one-step-step-scopes)).
+Conversion is a recipe step too: `convert-tracks` and `convert-labels` convert the raw
+files a scan recorded. Declaring sources and scanning stay with you, so the agent
+proposes `mosaic sources add` and `mosaic scan` when a dataset has nothing scanned.
+
 The server also offers resources (the agent guide, the step-type catalog, and per
-dataset its manifest, inventory, recipes, requests, run-logs and recorded params) and
-prompts for building a pipeline, diagnosing a dataset, explaining a request, comparing
-runs and summarizing a dataset. The guide resource is the same text as
-`mosaic agent guide` and the installed `SKILL.md`, so an agent reads it once.
+dataset its manifest, inventory, recipes, requests, run-logs, recorded params and a
+run's report, such as the `metrics.json` that `evaluate-labels` writes) and prompts
+for building a pipeline, diagnosing a dataset, explaining a request, comparing runs
+and summarizing a dataset. A report is read, not computed, so it takes no tool. The
+guide resource is the same text as `mosaic agent guide` and the installed `SKILL.md`,
+so an agent reads it once.
 
 ### Result sizes
 

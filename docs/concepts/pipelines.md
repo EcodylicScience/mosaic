@@ -35,9 +35,9 @@ execution therefore agree on the columns a feature reads. The sharpest refusal i
 multi-input join of mismatched entity granularity. Merging such inputs on the frame
 alone pairs every row of one input with every row of the other in the same frame.
 
-**It can hold an op.** `Pipeline` cannot express a tracker or a transcode; a recipe
-can, which is why a whole workflow from video to embedding is one document rather
-than a shell script wrapping a notebook.
+**It can hold an op.** `Pipeline` cannot express a tracker, a conversion or a
+transcode; a recipe can, which is why a whole workflow from raw files or video to a
+scored classifier is one document rather than a shell script wrapping a notebook.
 
 **The dataset records what was applied to it.** On first use the recipe is copied to
 `<dataset>/.mosaic/pipelines/<digest>.json`.
@@ -65,6 +65,30 @@ has written yet.
 the estimate, the validation and the decision to enqueue. It never skips a step and
 never enters a downstream job's payload — every step resolves its own identity at its
 own start. A submitted identifier is a prediction, not an instruction.
+
+## A graph that converts its own data
+
+A `convert-tracks` or `convert-labels` step names the variant it writes from its
+settings alone, so a step reading it through a `tracks` or `labels` reference is named
+before the conversion runs. Which entries the conversion writes is not known until it
+runs. On a dataset with no tracks yet, a step whose identity covers its entries, and
+an op that is asked for entries, are left unresolved with the conversion as the
+reason, rather than named over no entries. Each is named at its own start, when the
+tracks exist. A conversion takes no scope, and on a dataset that already holds tracks
+the plan covers those.
+
+## A step scope narrows one step
+
+A request names the entries a graph covers. `Request.step_scopes` narrows single steps
+within them, so one request can fit on the training groups and score on the test
+groups. A step's target is the request's entries narrowed by its scope, and its
+identity, its coverage and what it is asked for are measured over that target.
+
+The data a step reads must be there for every entry of its target, so a step reading
+another through `inputs` or `tracks` is refused when the other is narrowed to fewer of
+them. A step reading another through a params reference reads one artifact, fitted on
+whatever that step covered, and no such rule applies. A request that narrows no step is
+written without the field, and planned and fingerprinted as before.
 
 ## A fit is asked for all of its scope
 

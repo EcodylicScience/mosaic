@@ -22,6 +22,33 @@ ds.scan_tracks()
 ds.convert_all_tracks()
 ```
 
+`--source-format` converts the raw files of one format only, and `--json` reports the
+tracks variants the conversion wrote into.
+
+## Convert as a recipe step
+
+The conversion can be the first step of a recipe, so one request converts the tracks
+and computes on them. Scanning stays a separate command: a conversion step whose
+format has no scanned file is refused when the recipe is planned.
+
+```json
+{"id": "tracks", "type": "op", "kind": "convert-tracks",
+ "params": {"source_format": "trex_npz"}},
+{"id": "speed", "type": "feature", "feature": "speed-angvel",
+ "inputs": ["tracks"], "tracks": {"step": "tracks"}}
+```
+
+`params` takes the converter's settings, and refuses one the converter does not
+declare. One step converts one format. The `tracks` reference pins the variant the
+step writes, which the plan names before the conversion runs. It is the variant of the
+uploaded files: a promoted correction converts into a variant of its own, which a
+recipe names by `tracks_run_id` like any other.
+
+On a dataset with no tracks yet, the plan cannot know which entries the conversion
+will write, so a step whose identity covers its entries, such as `extract-templates`,
+shows as unresolved until the conversion has run. Each step names its run when it
+starts.
+
 ## The formats mosaic reads
 
 Eight converters are registered. `--src-format` names one, and the choice also fixes

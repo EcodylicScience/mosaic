@@ -265,6 +265,69 @@ recipe whose only condition was that it covered the dataset.
 - `CONFIRM_FIELD` moved from `mosaic.agent.mcp._binding` to `mosaic.agent.mcp.spec`,
   and `_binding` still exports it.
 
+
+**Conversion, the train/test split and scoring are recipe steps.** One recipe and one
+request can now convert a dataset's raw tracks and labels, fit on the training groups
+and score on the test groups.
+
+- New ops `convert-tracks` and `convert-labels` (category `convert`, domain
+  `tracking`, cpu lane, `scope_takes="none"`) convert one source format. Each names
+  the variant it writes from its params before it runs, through the new pure
+  `Dataset.track_conversion_variant` and `label_conversion_variant`, which write
+  nothing. A file that fails is an `entry_error` and fails the attempt, and a rerun
+  resumes. The plan refuses a conversion whose format has no scanned row. 22 ops
+  are registered; `mosaic tracking list` lists both.
+- Additive on mosaic-api-visible types: `Op.writes_labels`, `OpIdentity.labels_variant`,
+  `ProducerDecl.writes_labels`, `ReferenceKind` gains `"labels"` (so a labels field,
+  such as `extract-labeled-templates`' `labels`, is listed in
+  `CatalogEntry.reference_fields`), `ResolvedStep.labels_variant` and `labels_kind`,
+  `StepSpec.labels_run_id`, `PlannedStep.labels_variant`, `labels_kind` and
+  `params_parents`, `Plan.step_scopes`, and `PlannedStepWire.labels_variant` and
+  `step_scope`.
+- A `labels` field takes `{"step": <convert-labels step>}`: the field gets its label
+  kind, and the run reads the variant that step writes. `resolve_labels_variants`
+  takes a pinned `labels_run_id` as given, without reading the index, which names a
+  run planned before its labels exist as it executes. Where the variant's rows
+  exist, nothing moves.
+- On a dataset with no tracks, a graph that converts its own leaves its
+  scope-dependent steps and scoped ops unresolved, naming the conversion, rather
+  than naming them over no entries. A step whose artifact reads complete after its
+  attempt is no longer reported as stalled, which an op planned over no entries was.
+- `Request.step_scopes` narrows single steps, keyed by step id and intersected with
+  the request's scope. A step's identity, coverage, asked entries, stall and
+  shortfall are measured over its narrowed target. The plan refuses a step scope
+  naming no step, on an op that takes no scope or a bound step, or selecting
+  nothing, and a reader narrowed wider than an `inputs` or `tracks` parent. A params
+  reference carries no entry rule, and a shortfall asks a params parent only to be
+  complete. The request file leaves out `step_scopes` when it is empty, so such a
+  request still reads in 0.17, and the plan fingerprint includes them only when
+  there are any. **A request file with step scopes is unreadable by an older
+  mosaic**: upgrade mosaic-queue workers and mosaic-api together before using them.
+  `submit_request` and `run_pipeline` take `step_scopes=`; mosaic-api's `step_runs`
+  should read `request.step_scope(id) or request.scope` if it ever submits them.
+- CLI: `mosaic pipeline plan`, `run` and `submit` take `--step-scope STEP=SCOPE` and
+  `--group`; `submit --json` reports `step_scopes`. `convert-tracks` takes
+  `--source-format`, and its `--json` adds `variants`. `convert-labels --json`
+  reports `variant`, `written` and `skipped` where it reported only a status.
+- Library: `convert_all_tracks` takes `source_format`, `progress`, `cancel_check` and
+  `on_failure`, and `ConversionOutcome` gains `variants`. `convert_all_labels` takes
+  `progress` and `cancel_check`, returns `LabelConversionOutcome` where it returned
+  `None`, and registers the conversion through `mutate_manifest`.
+- MCP: `entries` takes `{"groups": [...]}` beside a list of entries (on
+  `plan_recipe`, `submit_pipeline` and `get_inventory`), and `plan_recipe` and
+  `submit_pipeline` take `step_entries`. A run's report is the new resource
+  `mosaic://dataset/{id}/artifacts/feature/{name}/{run_id}/report`, read through
+  `mosaic.core.pipeline.inventory.read_run_report`. The tool count is unchanged.
+- New features `evaluate-labels` (summary, scope-dependent) and `fit-label-map`
+  (global, scope-dependent). `evaluate-labels` scores a classifier, or a clustering
+  through a label map, against labels read through the run's dependency lookup,
+  choosing the perspective of pair rows; it writes `metrics.json` (an
+  `EvaluationReport`) and `confusion.parquet`, and one row per entry.
+  `fit-label-map` fits each cluster's majority class on its own entries and writes
+  `label_map.parquet`. `mosaic.core.evaluation` gains `classification_scores`,
+  `select_scored_rows`, `EvaluationReport` and `ClassScore`.
+- No existing run id, op id, recipe digest or fingerprint moves.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

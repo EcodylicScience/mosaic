@@ -44,7 +44,18 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   (`test_pipeline_recipe.py`, `test_pipeline_step.py`).
 - A cross-step reference is written at the site it substitutes. Do not add a stored
   `edges` array. `edges()` in `topo.py` derives one, and `after` is the one explicit list,
-  for ordering only (`test_edges_are_derived_from_the_bodies_with_their_sites`).
+  for ordering only (`test_edges_are_derived_from_the_bodies_with_their_sites`). No
+  rule restricts where an `after` edge goes.
+- A params field typed as a `LabelsSource` is the `labels` reference site
+  (`ReferenceKind`). A `{"step": ...}` there names a step whose declaration
+  `writes_labels` (`convert-labels`): the field gets its label kind and
+  `StepSpec.labels_run_id` pins the variant it writes, through the plan and
+  `run_feature` (`test_pipeline_converting_graph.py`, `test_pipeline_validate.py`).
+- `Request.step_scopes` narrows single steps, and `save_request` leaves the key out
+  when it is empty, so such a request file reads in an older mosaic. A step's target
+  is the plan's entries narrowed by its scope (`step_target`), and its identity,
+  coverage, asked entries, stall and shortfall are measured over it. The fingerprint
+  includes the step scopes only when there are any (`test_pipeline_step_scopes.py`).
 - `reject_unless_valid` (`validate.py`) runs before the dataset is touched and reports
   every problem. It refuses an `overwrite` key in `params` (`OVERWRITE_PARAM`) and the
   `extract-frames` op (`EXCLUDED_KINDS`), as `test_pipeline_validate.py` checks.
@@ -59,6 +70,17 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   "none"` is asked for no entry, and `check_scope_takes` (`core/pipeline/ops.py`) refuses
   a mismatch at plan time. A `scope_dependent` step is asked for all of its scope and a
   scope-free one for the remainder (`_entries_for`, `test_pipeline_plan.py`).
+- `_step_scope_problems` refuses a step scope naming no step, on an op that takes no
+  scope or a bound step, or selecting nothing, and a reader planned over entries its
+  `inputs` or `tracks` parent is not. A params reference and `after` carry no entry
+  rule, so `refuse_shortfall` asks a params parent (`PlannedStep.params_parents`) only
+  to be complete.
+- A writer of tracks that takes no scope (`convert-tracks`) does not make the media
+  universe the target. On a dataset with no tracks, a graph holding one leaves its
+  `scope_dependent` features and its scoped ops unresolved with an
+  `IdentityUnresolved` naming the conversion; scope-free features keep their identity
+  (`test_pipeline_converting_graph.py`). A step whose artifact reads complete after its
+  attempt is not stalled.
 
 ## Running a step
 

@@ -35,6 +35,25 @@ ds.convert_all_labels(kind="behavior")
 That writes `labels/behavior/<group>__<sequence>.npz`, one per entry, with a row per
 frame per individual. Every feature that reads labels reads them from there.
 
+`convert-labels --json` reports the labels variant it wrote into, and how many files
+it wrote and found already present.
+
+## Convert as a recipe step
+
+The conversion can also be the first step of a recipe, so one request converts the
+labels and computes on them. The scan stays a separate command: a conversion step
+whose format has no scanned file is refused when the recipe is planned.
+
+```json
+{"id": "labels", "type": "op", "kind": "convert-labels",
+ "params": {"kind": "behavior", "source_format": "boris_aggregated_csv",
+            "params": {"fps": 30.0}}}
+```
+
+`params` takes the converter's settings below, and refuses one the converter does not
+declare. A feature's `labels` field then takes `{"step": "labels"}`, which reads the
+labels that step writes, even where the dataset holds another conversion of them.
+
 ## The formats mosaic reads
 
 | `--src-format` | Reads |

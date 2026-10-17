@@ -97,7 +97,9 @@ When `mosaic` is not on `PATH`, run `<python> -m mosaic` with the interpreter be
   (`convert_all_tracks`, `convert_all_labels`), run (`run_feature`) and read
   (`load_tracks`).
 - `mosaic.core.manifest`: `MediaScanSource`, `TracksScanSource`, `LabelsScanSource`.
-- `mosaic.core.scope`: `Scope`, which narrows a feature run or a pipeline.
+- `mosaic.core.scope`: `Scope`, which narrows a feature run or a pipeline, to
+  entries (`Scope(entries=[(group, sequence)])`) or to whole groups
+  (`Scope(groups=["train"])`).
 - `mosaic.behavior.feature_library`: the feature classes, such as `SpeedAngvel`,
   `HeadingFeature` and `ScaleToCm`. `Inputs` and `Result` from
   `mosaic.core.pipeline.types` chain one feature onto another.
@@ -105,8 +107,13 @@ When `mosaic` is not on `PATH`, run `<python> -m mosaic` with the interpreter be
   `extract_frames`. Each tracker's parameter model is in `mosaic.tracking.<tool>`.
 - `mosaic.core.pipeline.inventory`: `inventory`. `mosaic.core.pipeline.graph`:
   `load_recipe`, `plan_pipeline`, `run_pipeline`.
+- `mosaic.core.pipeline`: `load_values` reads columns of runs and labels into one
+  frame, aligned row by row. Name a column with `ResultColumn` and labels with
+  `GroundTruthLabelsSource`, both from `mosaic.core.pipeline.types`.
 - `mosaic.core.evaluation`: `align_predictions_to_labels` pairs a run's rows with
-  their labels, and `cluster_label_scores` scores a clustering against them.
+  their labels, `classification_scores` scores predicted classes,
+  `cluster_label_scores` a clustering, and `select_scored_rows` chooses the
+  perspective of pair rows to score.
 
 ## Installation
 
@@ -254,6 +261,31 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   attempts. A run whose scope is part of its id, such as templates drawn from the
   training groups, is measured over that scope, so `complete` means it holds all of
   it.
+- Conversion is a recipe step: `convert-tracks` and `convert-labels` with
+  `source_format`. Scan the sources first. A feature reads the converted tracks
+  through `"tracks": {"step": <id>}` and the converted labels through
+  `"labels": {"step": <id>}`.
+- A train/test split is one request: step scopes narrow single steps
+  (`--step-scope 'fit={"groups": ["train"]}'`). A step reading another through
+  `inputs` or `tracks` must be narrowed to entries the other covers; a params
+  reference such as `templates` or `label_map` need not be.
+
+## Reading results with labels
+
+- A frame or row no annotation covers is unlabeled, `-1`, and not class 0. Scores and
+  templates leave it out and count it. Labels attach to rows: a pair row takes the
+  label of its own direction, so a CalMS21 label labels the resident-focal row only.
+- Score a classifier or a clustering with an `evaluate-labels` step, narrowed to the
+  held-out groups. Set `perspective` on pair output (`0`, `"pooled"` or
+  `"mean_probabilities"`), and `average_over` to leave a catch-all class such as
+  `other` out of the macro F1. It writes `metrics.json` in its run directory
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
+- For a clustering, `fit-label-map` on the training groups fits the cluster to
+  behavior map that `evaluate-labels` applies to the test groups through
+  `label_map`. Without one, its accuracy is the purity of the scored rows.
+- In Python, `load_values(ds, [ResultColumn(...), GroundTruthLabelsSource()])` gives
+  each row its label, and `labels_run_id=` picks a labels variant when the dataset
+  holds two.
 
 ## Mosaic's MCP tools
 
@@ -266,6 +298,11 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   user the plan and its `cautions` (a plan over the whole dataset, a step asked for
   more than 100 entries) and wait for their approval, then pass its fingerprint to
   `submit_pipeline`.
+- `entries` takes `[group, sequence]` pairs or `{"groups": [...]}`, and
+  `step_entries` narrows single steps by step id. Pass the same ones to
+  `plan_recipe` and `submit_pipeline`, or the fingerprint will not match.
+- A run's report, such as `evaluate-labels`' scores, is the resource
+  `mosaic://dataset/{id}/artifacts/feature/{name}/{run_id}/report`.
 - A read returns at most 40,000 characters. A `result_too_large` error names the
   arguments that narrow the call. Narrow a preview with `columns` patterns
   (`W_*_f0`) and `max_columns`. `preview_output` also previews a labels variant

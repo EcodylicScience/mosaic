@@ -273,6 +273,35 @@ of one pair at one frame fall in the same cluster.
 `mosaic.core.evaluation.align_predictions_to_labels` returns the aligned rows
 themselves.
 
+### Score it as a recipe step
+
+`evaluate-labels` in `mode: "clusters"` scores the same numbers as a step of a recipe,
+so a clustering and its score run in one request, and its report is kept beside the
+run as `metrics.json`:
+
+```json
+{"id": "score", "type": "feature", "feature": "evaluate-labels",
+ "inputs": [{"step": "kmeans"}],
+ "params": {"mode": "clusters", "prediction_column": "cluster", "perspective": 0}}
+```
+
+Without a `label_map`, each cluster is mapped to its majority behavior among the rows
+being scored, so the report's `accuracy` is the purity. To ask how well the clusters
+predict behavior on groups they were not mapped on, fit the map on one set of groups
+and score on another, with step scopes narrowing each step:
+
+```json
+{"id": "map", "type": "feature", "feature": "fit-label-map",
+ "inputs": [{"step": "kmeans"}], "params": {"perspective": 0}},
+{"id": "score", "type": "feature", "feature": "evaluate-labels",
+ "inputs": [{"step": "kmeans"}],
+ "params": {"mode": "clusters", "prediction_column": "cluster",
+            "perspective": 0, "label_map": {"step": "map"}}}
+```
+
+Narrow `map` to the training groups and `score` to the test groups (`--step-scope
+'map={"groups": ["train"]}'`). A cluster the map does not name scores as wrong.
+
 That is a check on the clustering, not a classifier. To predict labels, see
 [Train a behavior classifier](train-a-classifier.md).
 
