@@ -146,9 +146,14 @@ def load_recipe(path: Path | str) -> Recipe:
 
 
 def save_request(base_dir: Path | str, request: Request) -> Path:
-    """Write one submission's request file, and return where it landed."""
+    """Write one submission's request file, and return where it landed.
+
+    A request without step scopes is written without the key, so its file is
+    what an older mosaic wrote and reads there.
+    """
     path = request_path(base_dir, request.request_id)
-    _write_json(path, request.model_dump(mode="json"))
+    exclude = None if request.step_scopes else {"step_scopes"}
+    _write_json(path, request.model_dump(mode="json", exclude=exclude))
     return path
 
 

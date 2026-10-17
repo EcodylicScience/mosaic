@@ -74,6 +74,7 @@ from .step_preflight import CoverageShortfall
 from .topo import topological_order
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
     from mosaic.core.dataset import Dataset
@@ -174,6 +175,7 @@ def run_pipeline(
     store: FailureStore | None = None,
     owner: str = "",
     cancel_token: CancelToken | None = None,
+    step_scopes: Mapping[str, Scope] | None = None,
 ) -> PipelineRun:
     """Run every step of *recipe* against *ds*, in order, in this process.
 
@@ -203,6 +205,8 @@ def run_pipeline(
         owner: Recorded on each attempt.
         cancel_token: Fired to stop the run, as ``mosaic pipeline run --recipe``
             does on SIGTERM and SIGINT. Each step's work checks it.
+        step_scopes: Narrow single steps, keyed by step id. Recorded on the
+            request that is submitted, and ignored when *request* is given.
 
     Returns:
         One :class:`~mosaic.core.pipeline.graph.step.StepOutcome` per step, in
@@ -232,6 +236,7 @@ def run_pipeline(
             owner=owner,
             inventory=inventory,
             catalog=catalog,
+            step_scopes=step_scopes,
         ).request
     elif allow_partial and not submitted.allow_partial:
         submitted = submitted.model_copy(update={"allow_partial": True})

@@ -142,6 +142,7 @@ __all__ = [
     "coverage_against",
     "is_stalled",
     "plan_pipeline",
+    "step_target",
 ]
 
 MISSING_SAMPLE: Final = 5
@@ -285,6 +286,9 @@ class PlannedStep:
         spec: Exactly what it takes to run it, entries already narrowed.
         lane: Which queue this work is offered to.
         parents: The steps it references, ``after`` included.
+        params_parents: The parents it reads only through a params reference,
+            such as templates or a label map, which answer for what they were
+            fitted on rather than entry by entry.
         run_id: What the run will be called, or ``None`` when neither it nor
             something above it can say yet.
         storage_name: Where a feature step's outputs live.
@@ -314,6 +318,7 @@ class PlannedStep:
     spec: StepSpec
     lane: str = ""
     parents: tuple[str, ...] = ()
+    params_parents: tuple[str, ...] = ()
     run_id: str | None = None
     storage_name: str = ""
     tracks_variant: str = ""
@@ -352,6 +357,9 @@ class Plan:
         covers_dataset: Whether the plan was asked for no narrowing, so that it
             covers every entry the dataset can process. A plan naming each of
             those entries does not set it.
+        step_scopes: The scopes narrowing single steps, keyed by step id. A
+            step's target is ``scope`` narrowed by its own, and its coverage
+            is measured against that (:func:`step_target`).
     """
 
     recipe_digest: str
@@ -360,6 +368,9 @@ class Plan:
     problems: tuple[Problem, ...] = ()
     dataset_uuid: str = ""
     covers_dataset: bool = False
+    step_scopes: Mapping[str, Scope] = field(
+        default_factory=lambda: cast("dict[str, Scope]", {})
+    )
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
@@ -384,11 +395,23 @@ class Plan:
         return {planned.step_id: planned.run_id for planned in self.steps}
 
 
+def step_target(planned: PlannedStep, plan: Plan) -> frozenset[Entry]:
+    """The entries *planned* is planned over: the plan's, narrowed by its scope.
+
+    The plan's whole scope for a step without a step scope, which is every step
+    of a request that names none.
+    """
+    if planned.step_id in plan.step_scopes:
+        return planned.coverage.target
+    return plan.scope
+
+
 def asked_of(planned: PlannedStep, plan: Plan) -> tuple[Entry, ...]:
     """What this step should be asked to compute.
 
-    The narrowed list where the plan produced one, and the whole scope otherwise.
-    A cold step and an all-or-nothing op step both get the whole scope.
+    The narrowed list where the plan produced one, and the whole scope otherwise:
+    the step's target (:func:`step_target`), which a step scope narrows. A cold
+    step and an all-or-nothing op step both get the whole of it.
 
     :attr:`Scope.is_unset` decides between the two. Every selector instance is
     truthy, and testing the selector itself keeps the whole-scope answer from
@@ -423,7 +446,7 @@ def asked_of(planned: PlannedStep, plan: Plan) -> tuple[Entry, ...]:
             f"plan_pipeline enumerates."
         )
     if entries.is_unset:
-        return tuple(sorted(plan.scope))
+        return tuple(sorted(step_target(planned, plan)))
     return tuple(sorted(entries.entry_pairs or ()))
 
 
@@ -502,6 +525,7 @@ def plan_pipeline(
     catalog: DeclarationCatalog | None = None,
     recorded: Mapping[str, str] | None = None,
     refuse: bool = True,
+    step_scopes: Mapping[str, Scope] | None = None,
 ) -> Plan:
     """Resolve *recipe* against *ds*. Returns what to run; never submits it.
 
@@ -532,6 +556,10 @@ def plan_pipeline(
         refuse: Whether a problem this dataset finds with the recipe raises.
             Unset, the problems are recorded on the returned plan. A step that
             runs plans this way and refuses only the problems at its step.
+        step_scopes: Narrow single steps, keyed by step id. ``None`` falls
+            back to the request's. A step's target is the graph's narrowed by
+            its scope, and a step reading another's entries through ``inputs``
+            or ``tracks`` must be planned over a subset of that step's.
 
     Returns:
         A :class:`Plan`: one :class:`PlannedStep` per step, in topological order.
@@ -572,6 +600,9 @@ def plan_pipeline(
     )
     target = frozenset(intended.entries) - frozenset(quarantined)
     deferred_by = _deferring_converter(ds, recipe, narrowing, unscoped_writers)
+    if step_scopes is None:
+        step_scopes = request.step_scopes if request is not None else {}
+    narrowed = dict(step_scopes)
 
     held = InventoryCache(ds) if inventory is None else inventory
     _ = held.revalidate()
@@ -590,7 +621,7 @@ def plan_pipeline(
             step,
             catalog=catalog,
             inv=inv,
-            target=target,
+            target=_step_target(step.id, target, narrowed),
             bind=bind,
             resolved=resolved,
             planned=planned,
@@ -625,6 +656,11 @@ def plan_pipeline(
         )
 
     problems = list(findings.problems)
+    problems.extend(
+        _step_scope_problems(
+            recipe, planned, narrowed, catalog=catalog, bind=bind, deferred=deferred_by
+        )
+    )
     if findings.tracks:
         problems.extend(check_recipe(recipe, catalog, tracks=findings.tracks))
     order = {planned_step.step_id: index for index, planned_step in enumerate(steps)}
@@ -635,6 +671,7 @@ def plan_pipeline(
         problems=tuple(sorted(problems, key=lambda found: order.get(found.step, -1))),
         dataset_uuid=ds.uuid or "",
         covers_dataset=intended.selector.is_unset,
+        step_scopes=narrowed,
     )
     if refuse and plan.problems:
         raise RecipeRefused(plan)
@@ -715,6 +752,7 @@ def _plan_step(
     return replace(
         base,
         parents=parents,
+        params_parents=_params_parents(step),
         lane=lane_for(declared),
         spec=replace(
             base.spec,
@@ -784,6 +822,100 @@ def _unresolved(
     )
 
 
+def _step_target(
+    step_id: str, target: frozenset[Entry], step_scopes: Mapping[str, Scope]
+) -> frozenset[Entry]:
+    """The entries of *target* that *step_id*'s scope selects, all without one."""
+    narrowed = step_scopes.get(step_id)
+    if narrowed is None:
+        return target
+    return frozenset(entry for entry in target if narrowed.selects(entry))
+
+
+def _step_scope_problems(
+    recipe: Recipe,
+    planned: Mapping[str, PlannedStep],
+    step_scopes: Mapping[str, Scope],
+    *,
+    catalog: DeclarationCatalog,
+    bind: Mapping[str, BoundRef],
+    deferred: str | None,
+) -> list[Problem]:
+    """What is wrong with the step scopes of a plan, at ``step_scopes.<id>``.
+
+    A key naming no step, a scope on a step that takes none (an op declaring
+    ``scope_takes = "none"``, or a step a ``bind`` resolves), and a scope that
+    selects no entry are refused. The last is skipped while a conversion of
+    this graph defers the entries, and the step refuses it when it runs. A
+    step reading another's entries through ``inputs`` or ``tracks`` must be
+    planned over a subset of that step's target, at the place it reads it. A
+    params reference and ``after`` carry no entry rule: a test-scoped step may
+    read a model fitted on the training entries.
+    """
+    if not step_scopes:
+        return []
+    found: list[Problem] = []
+    steps = {step.id: step for step in recipe.steps}
+    for step_id in sorted(step_scopes):
+        where = f"step_scopes.{step_id}"
+        step = steps.get(step_id)
+        if step is None:
+            found.append(Problem("", where, f"no step {step_id!r} in this recipe"))
+            continue
+        if isinstance(step, OpStepSpec) and catalog.entries[step.kind].scope_takes == (
+            "none"
+        ):
+            message = f"{step.kind} takes no entry scope, so it cannot be narrowed"
+            found.append(Problem(step_id, where, message))
+            continue
+        if step_id in bind:
+            message = "the submission binds this step to a run, which takes no scope"
+            found.append(Problem(step_id, where, message))
+            continue
+        if not planned[step_id].coverage.target and deferred is None:
+            message = (
+                "selects no entry of what the submission covers. Name entries "
+                "or groups the dataset holds"
+            )
+            found.append(Problem(step_id, where, message))
+    for step in recipe.steps:
+        found.extend(
+            _input_coverage_problems(step, planned[step.id].coverage.target, planned)
+        )
+    return found
+
+
+def _input_coverage_problems(
+    step: Step, target: frozenset[Entry], planned: Mapping[str, PlannedStep]
+) -> list[Problem]:
+    """A problem at each data input of *step* planned over fewer entries than it."""
+    if not isinstance(step, FeatureStepSpec):
+        return []
+    reads: list[tuple[str, str]] = [
+        (item.step, f"inputs[{index}]")
+        for index, item in enumerate(step.inputs)
+        if isinstance(item, StepRef)
+    ]
+    if step.tracks is not None:
+        reads.append((step.tracks.step, "tracks"))
+    found: list[Problem] = []
+    for parent, where in reads:
+        above = planned.get(parent)
+        if above is None:
+            continue
+        outside = sorted(target - above.coverage.target)
+        if not outside:
+            continue
+        sample = ", ".join(str(entry) for entry in outside[:MISSING_SAMPLE])
+        message = (
+            f"{len(outside)} entries of {step.id!r} are outside what {parent!r} "
+            f"is asked for: {sample}. Narrow {step.id!r} to entries of "
+            f"{parent!r}, or widen {parent!r}"
+        )
+        found.append(Problem(step.id, where, message))
+    return found
+
+
 def _deferring_converter(
     ds: Dataset,
     recipe: Recipe,
@@ -840,6 +972,20 @@ def _inherited_deferral(
             )
             return IdentityUnresolved(step=parent, because=because)
     return None
+
+
+def _params_parents(step: Step) -> tuple[str, ...]:
+    """The steps this one reads only through a params reference."""
+    reads: set[str] = set()
+    if isinstance(step, FeatureStepSpec):
+        reads = {item.step for item in step.inputs if isinstance(item, StepRef)}
+        if step.tracks is not None:
+            reads.add(step.tracks.step)
+    found: list[str] = []
+    for reference in params_step_refs(step.params).values():
+        if reference.step not in reads and reference.step not in found:
+            found.append(reference.step)
+    return tuple(found)
 
 
 def _data_parents(step: Step) -> tuple[str, ...]:

@@ -410,6 +410,26 @@ class Request(GraphModel):
     """Which attempt each step is, assigned before anything runs."""
     step_versions: dict[str, str] = Field(default_factory=dict)
     """The version each step's producer declared when this request was made."""
+    step_scopes: dict[str, Scope] = Field(default_factory=dict)
+    """Narrow one step, keyed by step id; intersected with ``scope``.
+
+    A train/test split is two step scopes over one request: the fitting steps
+    narrowed to the training groups and the scoring step to the test groups.
+    Left out of the request file when empty, so a request without one reads
+    in an older mosaic.
+    """
+
+    @model_validator(mode="after")
+    def _step_scopes_name_steps_by_entry(self) -> Self:
+        for step_id, narrowed in self.step_scopes.items():
+            if not step_id.strip():
+                raise ValueError("step_scopes holds a scope under an empty step id")
+            if narrowed.addresses_cameras:
+                raise ValueError(
+                    f"step_scopes[{step_id!r}] names cameras. A step scope "
+                    f"narrows the (group, sequence) entries a step covers."
+                )
+        return self
 
     @model_validator(mode="after")
     def _bind_targets_are_named(self) -> Self:
@@ -421,6 +441,10 @@ class Request(GraphModel):
                     f"bind[{step_id!r}] names no run_id; a bind exists to pin one"
                 )
         return self
+
+    def step_scope(self, step_id: str) -> Scope | None:
+        """The scope narrowing *step_id*, or ``None`` when only ``scope`` does."""
+        return self.step_scopes.get(step_id)
 
     def execution_of(self, step_id: str) -> str:
         """Which attempt *step_id* is, or ``KeyError``.

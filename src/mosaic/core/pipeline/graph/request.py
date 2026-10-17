@@ -159,6 +159,7 @@ def submit_request(
     catalog: DeclarationCatalog | None = None,
     expect_plan: str | None = None,
     refuse_duplicates: bool = False,
+    step_scopes: Mapping[str, Scope] | None = None,
 ) -> SubmittedRequest:
     """Record one submission of *recipe* against *ds*, and resolve its plan.
 
@@ -188,6 +189,9 @@ def submit_request(
             :func:`~.store.submission_lock` with the write of the request, so two
             submissions on one mount cannot both pass it. A submitted request
             whose steps never run stays open.
+        step_scopes: Narrow single steps, keyed by step id, each intersected
+            with *scope*. Recorded on the request, which every step re-plans
+            from.
 
     Returns:
         The request, the plan, the paths of both documents, and the open
@@ -213,12 +217,14 @@ def submit_request(
     if refuse_duplicates:
         # Refuses before planning, which can take seconds.
         _ = _open_duplicates(ds.base_dir, digest, narrowing, refuse=True)
+    narrowed_steps = dict(step_scopes or {})
     plan = plan_pipeline(
         ds,
         recipe,
         scope=narrowing,
         inventory=inventory,
         catalog=catalog,
+        step_scopes=narrowed_steps,
     )
     if expect_plan is not None:
         found = plan_fingerprint(plan)
@@ -234,6 +240,7 @@ def submit_request(
         bind=dict(bind or {}),
         allow_partial=allow_partial,
         max_concurrent_steps=max_concurrent_steps,
+        step_scopes=narrowed_steps,
         step_executions={step.id: new_execution_id() for step in ordered},
         step_versions={
             step.id: declared_version(

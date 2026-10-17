@@ -29,7 +29,14 @@ from typing import TYPE_CHECKING
 
 from ..manifest import refuse_mixed_track_schemas
 from ..refusal import Refusal, RefusalReason
-from .plan import COMPLETE_STATUSES, MISSING_SAMPLE, Plan, PlannedStep, RecipeRefused
+from .plan import (
+    COMPLETE_STATUSES,
+    MISSING_SAMPLE,
+    Plan,
+    PlannedStep,
+    RecipeRefused,
+    step_target,
+)
 from .resolve import build_step_feature
 
 if TYPE_CHECKING:
@@ -163,15 +170,27 @@ def refuse_shortfall(plan: Plan, planned: PlannedStep) -> None:
     under the identifier they belong to, and the ninetieth arrives later under
     the same one. A scope-dependent step running over 89 produces *one* artifact
     that is not the artifact anyone asked for, under a name saying it is.
+
+    Measured against the step's own target (:func:`~.plan.step_target`). A
+    parent read through ``inputs`` or ``tracks`` must hold every entry of it. A
+    parent read through a params reference -- templates, a label map -- answers
+    for the whole of what it was fitted on, and must only be complete: a
+    test-scoped step reads a model fitted on the training entries.
     """
     if planned.kind != "feature":
         return
     if not build_step_feature(planned.spec).scope_dependent:
         return
+    target = step_target(planned, plan)
+    referenced = frozenset(planned.params_parents)
     short = [
         parent
         for parent in planned.parents
-        if not _covers_scope(plan, parent, plan.scope)
+        if not (
+            _is_complete(plan, parent)
+            if parent in referenced
+            else _covers_scope(plan, parent, target)
+        )
     ]
     if not short:
         return
@@ -184,18 +203,33 @@ def refuse_shortfall(plan: Plan, planned: PlannedStep) -> None:
     raise CoverageShortfall(
         planned.step_id,
         covered,
-        len(plan.scope),
+        len(target),
         "missing " + ", ".join(missing[:MISSING_SAMPLE]),
     )
 
 
-def _covers_scope(plan: Plan, step_id: str, scope: frozenset[Entry]) -> bool:
-    """Does this parent hold everything the graph is being run over?"""
+def _is_complete(plan: Plan, step_id: str) -> bool:
+    """Is this parent complete, whatever it was planned over?"""
     try:
         parent = plan.step(step_id)
     except KeyError:  # pragma: no cover - parents come from the same recipe
         return True
-    return parent.status in COMPLETE_STATUSES or not (scope - parent.coverage.covered)
+    return parent.status in COMPLETE_STATUSES
+
+
+def _covers_scope(plan: Plan, step_id: str, scope: frozenset[Entry]) -> bool:
+    """Does this parent hold every entry of *scope*, the reading step's target?
+
+    A complete parent holds what it was planned over, which a step scope can
+    make fewer entries than its reader's target.
+    """
+    try:
+        parent = plan.step(step_id)
+    except KeyError:  # pragma: no cover - parents come from the same recipe
+        return True
+    if parent.status in COMPLETE_STATUSES and scope <= parent.coverage.target:
+        return True
+    return not (scope - parent.coverage.covered)
 
 
 def _refuse_empty_upstream(plan: Plan, planned: PlannedStep) -> None:

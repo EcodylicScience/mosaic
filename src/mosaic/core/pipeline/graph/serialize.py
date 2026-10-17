@@ -123,7 +123,10 @@ def plan_fingerprint(plan: Plan) -> str:
     submit whatever its fingerprint, and a caution refuses nothing.
 
     The document is canonical JSON, with steps sorted by id and entries sorted,
-    so one plan has one fingerprint in every process.
+    so one plan has one fingerprint in every process. The plan's step scopes
+    enter it only when there are any, which leaves the fingerprint of a plan
+    without them unchanged. They are needed while a conversion defers every
+    step's entries, when the counts above cannot tell two narrowings apart.
     """
     document: dict[str, JsonValue] = {
         "dataset": plan.dataset_uuid,
@@ -133,6 +136,11 @@ def plan_fingerprint(plan: Plan) -> str:
             for planned in sorted(plan.steps, key=lambda planned: planned.step_id)
         ],
     }
+    if plan.step_scopes:
+        document["step_scopes"] = {
+            step_id: narrowed.model_dump(mode="json")
+            for step_id, narrowed in sorted(plan.step_scopes.items())
+        }
     return document_digest(document)
 
 
@@ -171,6 +179,7 @@ def _step_wire(
         model_run_id=planned.model_run_id,
         reason=_reason_wire(planned.reason),
         labels_variant=planned.labels_variant,
+        step_scope=plan.step_scopes.get(planned.step_id),
     )
 
 

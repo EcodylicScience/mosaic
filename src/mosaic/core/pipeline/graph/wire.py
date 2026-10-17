@@ -36,6 +36,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.scope import Scope
 
 from ..inventory.model import ArtifactStatus
 from ..inventory.wire import CoverageWire
@@ -603,6 +604,8 @@ class PlannedStepWire(GraphModel):
         model_run_id: What names a training step's model.
         reason: Why it is not simply running, or ``None``.
         labels_variant: What names a label conversion step's labels variant.
+        step_scope: The scope narrowing this step, or ``None`` when only the
+            request's scope does. ``coverage.target`` counts the entries left.
     """
 
     step: str
@@ -621,6 +624,7 @@ class PlannedStepWire(GraphModel):
     model_run_id: str
     reason: ReasonWire | None
     labels_variant: str = ""
+    step_scope: Scope | None = None
 
 
 class PlanWire(GraphModel):

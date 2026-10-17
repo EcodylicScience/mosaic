@@ -60,6 +60,7 @@ from .plan import (
     asked_of,
     coverage_against,
     is_stalled,
+    step_target,
     plan_pipeline,
 )
 from .step_preflight import (
@@ -347,12 +348,13 @@ def _measured(
     would put the refusal in two places with two different messages.
     """
     _ = inventory.revalidate()
+    target = step_target(planned, plan)
     view = coverage_against(
-        inventory.get(scope=Scope(entries=sorted(plan.scope)) if plan.scope else None),
+        inventory.get(scope=Scope(entries=sorted(target)) if target else None),
         _produced_ref(planned, outcome.run_id),
-        plan.scope,
+        target,
     )
-    measured = replace(outcome, covered=view.held, target=len(plan.scope))
+    measured = replace(outcome, covered=view.held, target=len(target))
     # An artifact that reads complete after the attempt did not stall, whatever
     # the count: a conversion planned before its entries exist is measured
     # against an empty target, where nothing can move.
