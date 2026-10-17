@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 from pydantic import BaseModel
@@ -10,7 +11,16 @@ from pydantic import BaseModel
 from mosaic.agent.mcp.local import LocalBackend
 from mosaic.agent.mcp.spec import (
     MAX_PREVIEW_ROWS,
+    MAX_RESULT_CHARS,
+    RECIPE_EXAMPLE,
+    RESULT_TOO_LARGE,
     TOOLS,
+    DatasetList,
+    DatasetListItem,
+    ListDatasetsInput,
+    SubmitPipelineInput,
+    SubmittedPipeline,
+    SubmittedStep,
     ToolBackend,
     ToolSpec,
     call_tool,
@@ -18,6 +28,7 @@ from mosaic.agent.mcp.spec import (
 )
 from mosaic.core.pipeline import preview
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
+from mosaic.core.pipeline.graph import Recipe
 from tests.helpers import modules_loaded_by
 
 BUDGET_MODULES = (
@@ -139,6 +150,98 @@ def test_names_with_a_filter_or_fields_without_names_are_invalid(
 
     assert isinstance(refused, ErrorEnvelope)
     assert (refused.kind, refused.reason) == ("invalid", "invalid_arguments")
+
+
+class _Oversized:
+    """A backend whose listing and submission each answer with *n* items."""
+
+    def __init__(self, n: int) -> None:
+        self.n: int = n
+
+    def list_datasets(self, args: ListDatasetsInput) -> DatasetList:
+        items = tuple(
+            DatasetListItem(
+                uuid=f"{index:032x}",
+                name=f"dataset {index}",
+                n_sequences=index,
+                api_managed=False,
+            )
+            for index in range(self.n)
+        )
+        return DatasetList(items=items, total=self.n, next_cursor=None)
+
+    def submit_pipeline(self, args: SubmitPipelineInput) -> SubmittedPipeline:
+        steps = tuple(
+            SubmittedStep(
+                step=f"step_{index}",
+                runs="speed-angvel",
+                execution_id=f"{index:026d}",
+                lane="feature-compute",
+                run_id=None,
+                status="absent",
+            )
+            for index in range(self.n)
+        )
+        return SubmittedPipeline(
+            request_id="r",
+            recipe_digest="d",
+            plan_fingerprint=args.plan_fingerprint,
+            steps=steps,
+            duplicates=(),
+            driver_pid=1,
+            driver_log="log",
+            poll_after_seconds=5,
+        )
+
+
+def test_a_result_above_the_budget_is_refused_with_how_to_narrow_it() -> None:
+    backend = cast("ToolBackend", _Oversized(1000))
+
+    refused = call_tool(backend, "list_datasets", {})
+    small = call_tool(cast("ToolBackend", _Oversized(3)), "list_datasets", {})
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert (refused.kind, refused.reason) == ("invalid", RESULT_TOO_LARGE)
+    assert refused.detail is not None
+    assert refused.detail["narrow_with"] == ["limit"]
+    assert refused.detail["budget"] == MAX_RESULT_CHARS
+    chars = refused.detail["chars"]
+    assert isinstance(chars, int) and chars > MAX_RESULT_CHARS
+    assert "limit" in refused.message
+    assert isinstance(small, DatasetList)
+
+
+def test_a_write_tool_result_is_never_replaced_by_the_backstop() -> None:
+    backend = cast("ToolBackend", _Oversized(1000))
+
+    submitted = call_tool(
+        backend,
+        "submit_pipeline",
+        {"dataset": "d", "recipe": RECIPE_EXAMPLE, "plan_fingerprint": "f"},
+    )
+
+    assert isinstance(submitted, SubmittedPipeline)
+    assert len(submitted.model_dump_json()) > MAX_RESULT_CHARS
+
+
+def test_every_tool_with_a_limit_names_it_among_its_narrowing() -> None:
+    for spec in TOOLS:
+        fields = set(spec.input_model.model_fields)
+        assert set(spec.narrowing) <= fields, spec.name
+        if "limit" in fields:
+            assert "limit" in spec.narrowing, spec.name
+
+
+def test_the_recipe_example_is_a_recipe_document() -> None:
+    plan = tool_spec("plan_recipe")
+    assert plan is not None
+    recipe = plan.input_schema()["properties"]
+    assert isinstance(recipe, dict)
+    described = recipe["recipe"]
+    assert isinstance(described, dict)
+
+    assert described["examples"] == [RECIPE_EXAMPLE]
+    assert Recipe.model_validate(RECIPE_EXAMPLE).steps
 
 
 def test_no_tool_takes_an_overwrite_argument() -> None:

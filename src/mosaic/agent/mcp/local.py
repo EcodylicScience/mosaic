@@ -36,6 +36,8 @@ from mosaic.core.pipeline.error_kind import ClassifiedError
 from .spec import (
     LARGE_SCOPE_ENTRIES,
     LISTED_STATUS_NOT,
+    LISTING_MISSING_SAMPLE,
+    PLAN_MISSING_SAMPLE,
     ActivityPage,
     AttemptDiagnosis,
     CancelRequestInput,
@@ -392,7 +394,7 @@ class LocalBackend:
         return SequencePage(items=tuple(page), total=len(rows), next_cursor=next_cursor)
 
     def _get_inventory(self, args: GetInventoryInput) -> InventoryWire:
-        from mosaic.core.pipeline.inventory import inventory_wire
+        from mosaic.core.pipeline.inventory import MISSING_SAMPLE_WIRE, inventory_wire
 
         held = self._dataset(args.dataset)
         with held.lock:
@@ -409,6 +411,10 @@ class LocalBackend:
             limit=args.limit,
             cursor=args.cursor,
             ref=args.ref,
+            with_params=args.ref is not None,
+            missing_sample=MISSING_SAMPLE_WIRE
+            if args.ref is not None
+            else LISTING_MISSING_SAMPLE,
         )
 
     # -------------------------------------------------------------- catalog
@@ -580,7 +586,7 @@ class LocalBackend:
                 catalog=catalog,
                 refuse=False,
             )
-        return plan_wire(plan)
+        return plan_wire(plan, missing_sample=PLAN_MISSING_SAMPLE)
 
     def _submit_pipeline(self, args: SubmitPipelineInput) -> SubmittedPipeline:
         from mosaic.core.pipeline.graph import (
@@ -744,6 +750,8 @@ class LocalBackend:
             (args.group, args.sequence),
             columns=args.columns,
             limit=args.limit,
+            max_columns=args.max_columns,
+            listed=args.listed,
         )
 
     # -------------------------------------------------------------- helpers

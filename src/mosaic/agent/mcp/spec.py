@@ -32,6 +32,7 @@ from mosaic.core.pipeline.artifact_kinds import ArtifactKind, ArtifactStatus
 from mosaic.core.pipeline.cancel import RequestCancel
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
+    SCHEMA_VERSION,
     BoundRef,
     EntryErrorsWire,
     RecordedErrorWire,
@@ -61,12 +62,19 @@ __all__ = [
     "INVALID_CURSOR",
     "LARGE_SCOPE_ENTRIES",
     "LISTED_STATUS_NOT",
+    "LISTING_MISSING_SAMPLE",
     "MAX_DESCRIBED_STEP_TYPES",
     "MAX_PAGE_SIZE",
     "MAX_PREVIEW_ROWS",
+    "MAX_RESULT_CHARS",
     "MAX_SCHEMA_BYTES",
     "MAX_STEP_TYPE_DETAIL_CHARS",
     "MERGED_TOOLS",
+    "PLAN_MISSING_SAMPLE",
+    "PREVIEW_DEFAULT_ROWS",
+    "PREVIEW_MAX_COLUMNS",
+    "RECIPE_EXAMPLE",
+    "RESULT_TOO_LARGE",
     "SHARED_TOOL_LIMIT",
     "TOOLS",
     "UNKNOWN_DATASET",
@@ -112,6 +120,7 @@ __all__ = [
     "confirmation_required",
     "dataset_managed",
     "invalid_cursor",
+    "result_too_large",
     "tool_spec",
     "unknown_dataset",
     "unknown_tool",
@@ -131,6 +140,25 @@ DEFAULT_PAGE_SIZE: Final = 20
 
 MAX_PREVIEW_ROWS: Final = 50
 """The most rows a preview returns, as ``preview_artifact`` allows."""
+
+PREVIEW_DEFAULT_ROWS: Final = 5
+"""The rows a preview returns when its call names no limit."""
+
+PREVIEW_MAX_COLUMNS: Final = 40
+"""The columns a preview reads when its call names no ``max_columns``."""
+
+MAX_RESULT_CHARS: Final = 40_000
+"""The most characters of JSON that a read tool's result takes.
+
+A larger result is refused with :data:`RESULT_TOO_LARGE`, naming the arguments
+that narrow it. A tool that changes a dataset is never refused after the fact.
+"""
+
+PLAN_MISSING_SAMPLE: Final = 3
+"""The missing entries that ``plan_recipe`` names per step."""
+
+LISTING_MISSING_SAMPLE: Final = 5
+"""The missing keys that a ``get_inventory`` listing names per artifact."""
 
 MAX_DESCRIBED_STEP_TYPES: Final = 8
 """The most step types one ``describe_step_types`` call describes by name."""
@@ -168,6 +196,9 @@ INVALID_ARGUMENTS: Final = "invalid_arguments"
 
 INVALID_CURSOR: Final = "invalid_cursor"
 """The ``reason`` of a listing given a cursor that no page of it returned."""
+
+RESULT_TOO_LARGE: Final = "result_too_large"
+"""The ``reason`` of a read whose result is above :data:`MAX_RESULT_CHARS`."""
 
 type ToolName = Literal[
     "list_datasets",
@@ -259,6 +290,38 @@ DatasetId = Annotated[
 ]
 """The ``dataset`` that a dataset tool reads."""
 
+RECIPE_EXAMPLE: Final[dict[str, JsonValue]] = {
+    "schema_version": SCHEMA_VERSION,
+    "name": "speed clusters",
+    "steps": [
+        {
+            "id": "speed",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": ["tracks"],
+        },
+        {
+            "id": "templates",
+            "type": "feature",
+            "feature": "extract-templates",
+            "inputs": [{"step": "speed"}],
+            "params": {"n_templates": 2000},
+        },
+        {
+            "id": "clusters",
+            "type": "feature",
+            "feature": "global-kmeans",
+            "inputs": [{"step": "speed"}],
+            "params": {"templates": {"step": "templates"}, "k": 25},
+        },
+    ],
+}
+"""A recipe that every installation runs: speed, its templates, and k-means on them.
+
+Its step types need nothing beyond the base install, so the example validates
+wherever the server runs.
+"""
+
 RecipeDocument = Annotated[
     dict[str, JsonValue],
     Field(
@@ -266,7 +329,8 @@ RecipeDocument = Annotated[
             "The recipe as a JSON object: schema_version, name and steps. A step "
             "is {id, type: 'feature', feature, inputs, params} or {id, type: 'op', "
             "kind, params}. An input is 'tracks' or {step: <id>}."
-        )
+        ),
+        examples=[RECIPE_EXAMPLE],
     ),
 ]
 """A recipe document, parsed by the backend so that a malformed one is reported."""
@@ -546,17 +610,31 @@ class PreviewOutputInput(ToolInput):
     dataset: DatasetId
     ref: str = Field(
         description=(
-            "'feature/<storage>/<run_id>' or 'tracks-variant/<run_id>', as "
-            "get_inventory names an artifact."
+            "'feature/<storage>/<run_id>', 'tracks-variant/<run_id>' or "
+            "'labels-variant/<kind>/<run_id>', as get_inventory names an artifact."
         )
     )
     group: str = Field(description="The entry's group, '' when it has none.")
     sequence: str = Field(description="The entry's sequence.")
     columns: list[str] | None = Field(
-        default=None, description="The columns to read, or null for every column."
+        default=None,
+        description=(
+            "The columns to read, by name or fnmatch pattern ('W_*_f0'). Null "
+            "reads the identity and bookkeeping columns first."
+        ),
+    )
+    max_columns: int = Field(
+        default=PREVIEW_MAX_COLUMNS,
+        ge=1,
+        le=200,
+        description="The most columns to read. The rest are named as omitted.",
+    )
+    listed: Literal["read", "all"] = Field(
+        default="read",
+        description="List only the columns read, or every column of the table.",
     )
     limit: int = Field(
-        default=DEFAULT_PAGE_SIZE,
+        default=PREVIEW_DEFAULT_ROWS,
         ge=0,
         le=MAX_PREVIEW_ROWS,
         description=f"The rows of the head to return, 0 to {MAX_PREVIEW_ROWS}.",
@@ -831,6 +909,10 @@ class ToolSpec:
         annotations: Its effects, as hints.
         confirm_when: The conditions under which it refuses until called with
             ``confirm: true``. Empty when it never asks.
+        narrowing: The arguments that make its result smaller, which a refusal
+            for a result above :data:`MAX_RESULT_CHARS` names.
+        always_load: Whether a client should load the tool up front rather
+            than on search, for the tools of the pipeline workflow.
     """
 
     name: ToolName
@@ -840,6 +922,8 @@ class ToolSpec:
     output: type[BaseModel] | ModelRef
     annotations: ToolAnnotations
     confirm_when: tuple[ConfirmationCondition, ...] = ()
+    narrowing: tuple[str, ...] = ()
+    always_load: bool = False
 
     @property
     def needs_confirmation(self) -> bool:
@@ -898,6 +982,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         input_model=ListDatasetsInput,
         output=DatasetList,
         annotations=READ,
+        narrowing=("limit",),
     ),
     ToolSpec(
         name="describe_dataset",
@@ -922,6 +1007,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         input_model=ListSequencesInput,
         output=SequencePage,
         annotations=READ,
+        narrowing=("group", "tracks_variant", "limit"),
     ),
     ToolSpec(
         name="get_inventory",
@@ -929,12 +1015,13 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         description=(
             "Report what a dataset holds: each computed artifact with its kind, "
             "status, coverage and recorded params. By default only artifacts that "
-            "are not complete are listed. Pass a listed ref to report one artifact "
-            "in depth." + _PAGING
+            "are not complete are listed, without params. Pass a listed ref to "
+            "report one artifact in depth, with its params." + _PAGING
         ),
         input_model=GetInventoryInput,
         output=ModelRef("mosaic.core.pipeline.inventory", "InventoryWire"),
         annotations=READ,
+        narrowing=("kinds", "entries", "status_not", "ref", "limit"),
     ),
     ToolSpec(
         name="describe_step_types",
@@ -955,6 +1042,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         input_model=DescribeStepTypesInput,
         output=ModelRef("mosaic.agent.mcp.outputs", "StepTypes"),
         annotations=READ,
+        narrowing=("names", "detail", "limit"),
+        always_load=True,
     ),
     ToolSpec(
         name="validate_recipe",
@@ -980,6 +1069,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         input_model=SuggestStepsInput,
         output=ModelRef("mosaic.agent.mcp.outputs", "StepSuggestions"),
         annotations=READ,
+        narrowing=("step", "mode"),
     ),
     ToolSpec(
         name="plan_recipe",
@@ -993,6 +1083,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         input_model=PlanRecipeInput,
         output=ModelRef("mosaic.core.pipeline.graph", "PlanWire"),
         annotations=READ,
+        narrowing=("entries",),
+        always_load=True,
     ),
     ToolSpec(
         name="submit_pipeline",
@@ -1020,6 +1112,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "whole_dataset",
             "open_duplicate",
         ),
+        always_load=True,
     ),
     ToolSpec(
         name="get_request_status",
@@ -1034,6 +1127,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         input_model=GetRequestStatusInput,
         output=RequestStatusWire,
         annotations=READ,
+        always_load=True,
     ),
     ToolSpec(
         name="cancel_request",
@@ -1048,6 +1142,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         output=RequestCancel,
         annotations=ToolAnnotations(read_only=False, destructive=True, idempotent=True),
         confirm_when=("hard_cancel",),
+        always_load=True,
     ),
     ToolSpec(
         name="list_activity",
@@ -1059,6 +1154,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         input_model=ListActivityInput,
         output=ActivityPage,
         annotations=READ,
+        narrowing=("limit",),
     ),
     ToolSpec(
         name="diagnose_failures",
@@ -1072,18 +1168,23 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         input_model=DiagnoseFailuresInput,
         output=FailureDiagnosis,
         annotations=READ,
+        narrowing=("execution_id",),
     ),
     ToolSpec(
         name="preview_output",
         title="Preview an output",
         description=(
-            "Preview one entry's table of a feature run or a tracks variant: its "
-            "columns with per-column statistics, its row count and frame extent, "
-            "the first rows, and the path of the whole file."
+            "Preview one entry's table of a feature run, a tracks variant or a "
+            "labels variant: the columns read with their statistics, its row "
+            "count and frame extent, the first rows, and the path of the whole "
+            "file. A wide table reads its identity and bookkeeping columns first "
+            "and names the rest as omitted. A labels variant also counts each "
+            "class's events and the frames labeled."
         ),
         input_model=PreviewOutputInput,
         output=ModelRef("mosaic.core.pipeline.preview", "ArtifactPreview"),
         annotations=READ,
+        narrowing=("columns", "max_columns", "limit"),
     ),
 )
 """The shared tools, in the order a server lists them."""
@@ -1198,7 +1299,45 @@ def call_tool(
         request = spec.input_model.model_validate(dict(arguments))
     except ValidationError as error:
         return _invalid_arguments(spec.name, error)
-    return _dispatch(backend, request)
+    return _bounded(spec, _dispatch(backend, request))
+
+
+def _bounded(spec: ToolSpec, output: BaseModel) -> BaseModel:
+    """Return *output*, or :func:`result_too_large` for a read above the budget.
+
+    A tool that changes a dataset has done so by the time it returns, so its
+    result is returned whatever its size.
+    """
+    if isinstance(output, ErrorEnvelope) or not spec.annotations.read_only:
+        return output
+    chars = len(output.model_dump_json())
+    if chars <= MAX_RESULT_CHARS:
+        return output
+    return result_too_large(spec, chars)
+
+
+def result_too_large(spec: ToolSpec, chars: int) -> ErrorEnvelope:
+    """Refuse a result of *chars* characters, naming the arguments that narrow it."""
+    narrow_with: list[JsonValue] = list(spec.narrowing)
+    advice = (
+        f"Call again narrowed by {', '.join(spec.narrowing)}."
+        if spec.narrowing
+        else "No argument narrows it. The mosaic CLI prints it whole."
+    )
+    return ErrorEnvelope(
+        kind="invalid",
+        reason=RESULT_TOO_LARGE,
+        message=(
+            f"{spec.name} would return {chars} characters, above the "
+            f"{MAX_RESULT_CHARS} a call returns. {advice}"
+        ),
+        detail={
+            "tool": spec.name,
+            "chars": chars,
+            "budget": MAX_RESULT_CHARS,
+            "narrow_with": narrow_with,
+        },
+    )
 
 
 def _dispatch(backend: ToolBackend, request: ToolInput) -> BaseModel:

@@ -9,12 +9,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
 from mosaic.agent.mcp.outputs import StepSuggestions, StepTypes
 from mosaic.agent.mcp.spec import (
+    LISTING_MISSING_SAMPLE,
     MAX_STEP_TYPE_DETAIL_CHARS,
+    PLAN_MISSING_SAMPLE,
+    PREVIEW_MAX_COLUMNS,
+    RECIPE_EXAMPLE,
     ActivityPage,
     DatasetList,
     FailureDiagnosis,
@@ -35,6 +41,7 @@ from mosaic.core.pipeline.graph import (
     ValidationReport,
     open_requests_matching,
     request_path,
+    run_pipeline,
     submit_request,
 )
 from mosaic.core.pipeline.inventory import InventoryWire
@@ -46,9 +53,12 @@ from tests.helpers import (
     CHAIN_RECIPE,
     SPEED_RECIPE,
     MediaClip,
+    add_tracks_table,
     add_tracks_variant,
     chain_recipe,
     make_dataset,
+    speed_recipe,
+    track_table,
     wait_for,
     write_media_index,
 )
@@ -628,3 +638,79 @@ def test_an_id_that_is_not_one_file_name_stem_is_invalid(
     )
 
     assert (refused.kind, refused.reason) == ("invalid", "invalid_arguments")
+
+
+def test_the_recipe_example_validates(backend: LocalBackend) -> None:
+    report = _call(backend, "validate_recipe", ValidationReport, recipe=RECIPE_EXAMPLE)
+
+    assert report.valid, report.problems
+    assert not report.cautions
+
+
+def test_a_wide_feature_preview_stays_under_fifteen_thousand_characters(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "wide", name="wide")
+    base = track_table("", "seq_a", n_rows=40, n_ids=2)
+    payload = pd.DataFrame(
+        {f"W_{i:03d}_f{i % 3}": np.linspace(0, 1, 40) for i in range(400)}
+    )
+    add_tracks_table(
+        ds, VARIANT, pd.concat([base, payload], axis=1), std_format="mosaic_v1"
+    )
+    backend = LocalBackend([ds.manifest_path], warm=False)
+
+    preview = _call(
+        backend,
+        "preview_output",
+        ArtifactPreview,
+        dataset=_uuid(ds),
+        ref=f"tracks-variant/{VARIANT}",
+        group="",
+        sequence="seq_a",
+    )
+
+    assert len(preview.read_columns) == PREVIEW_MAX_COLUMNS
+    assert {"frame", "id"} <= set(preview.read_columns)
+    assert len(preview.columns) == PREVIEW_MAX_COLUMNS
+    assert preview.columns_omitted_has_more
+    assert len(preview.rows) == 5
+    assert len(preview.model_dump_json()) < 15_000
+
+
+def test_an_inventory_listing_leaves_params_to_the_ref(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    _ = run_pipeline(dataset, speed_recipe())
+    uuid = _uuid(dataset)
+
+    listed = _call(
+        backend,
+        "get_inventory",
+        InventoryWire,
+        dataset=uuid,
+        kinds=["feature"],
+        status_not=[],
+    )
+    [run] = listed.artifacts
+    detailed = _call(backend, "get_inventory", InventoryWire, dataset=uuid, ref=run.ref)
+
+    assert run.params is None
+    assert run.params_state == "present"
+    assert detailed.artifacts[0].params is not None
+
+
+def test_a_plan_names_three_missing_entries_per_step(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "five", name="five")
+    sequences = [f"seq_{index}" for index in range(LISTING_MISSING_SAMPLE + 1)]
+    add_tracks_variant(ds, VARIANT, *sequences, std_format="mosaic_v1")
+    backend = LocalBackend([ds.manifest_path], warm=False)
+
+    plan = _call(
+        backend, "plan_recipe", PlanWire, dataset=_uuid(ds), recipe=SPEED_RECIPE
+    )
+
+    [step] = plan.steps
+    assert step.coverage.target == len(sequences)
+    assert len(step.coverage.missing_sample) == PLAN_MISSING_SAMPLE
+    assert step.coverage.has_more
