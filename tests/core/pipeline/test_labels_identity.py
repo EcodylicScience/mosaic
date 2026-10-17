@@ -130,3 +130,31 @@ def test_label_conversion_variant_matches_the_written_variant_and_writes_nothing
     assert tree_snapshot(ds.base_dir) == before
     outcome = ds.convert_all_labels(kind="behavior", source_format="calms21_npy")
     assert outcome.variant == planned
+
+
+def test_a_pinned_labels_variant_is_taken_as_given_before_conversion(
+    tmp_path: Path,
+) -> None:
+    """A graph pins the variant it will convert, and no row of it exists yet."""
+    from typing import cast
+
+    from mosaic.core.params import Params
+    from mosaic.core.pipeline.run import resolve_labels_variants
+    from mosaic.core.pipeline.types import Feature, GroundTruthLabelsSource
+
+    class LabelsParams(Params):
+        labels: GroundTruthLabelsSource = GroundTruthLabelsSource()
+
+    class Reader:
+        params = LabelsParams()
+
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}})
+    variant = ds.label_conversion_variant("behavior", "calms21_npy")
+    feature = cast("Feature", Reader())
+
+    assert resolve_labels_variants(ds, feature) == ()
+    assert resolve_labels_variants(ds, feature, variant) == (variant,)
+
+    _ = ds.convert_all_labels(kind="behavior", source_format="calms21_npy")
+    assert resolve_labels_variants(ds, feature) == (variant,)
+    assert resolve_labels_variants(ds, feature, variant) == (variant,)

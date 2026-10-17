@@ -642,7 +642,7 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
     reference_fields: dict[str, ReferenceKind] = {}
     for field_name, annotation in _params_field_types(kind, name).items():
         site = _reference_site_of(annotation)
-        if site == "result" or site == "identifier":
+        if site == "result" or site == "identifier" or site == "labels":
             reference_fields[field_name] = site
     return CatalogEntry(
         name=name,
@@ -804,6 +804,9 @@ class ResolvedStep:
         run_id: The identifier, or ``None`` when it could not be resolved.
         tracks_variant: What an op step's tables are named by, empty otherwise.
         model_run_id: What names a training step's model, empty otherwise.
+        labels_variant: What names a label conversion's variant, empty
+            otherwise.
+        labels_kind: The label kind that variant is of, empty otherwise.
     """
 
     step_id: str
@@ -811,6 +814,8 @@ class ResolvedStep:
     run_id: str | None = None
     tracks_variant: str = ""
     model_run_id: str = ""
+    labels_variant: str = ""
+    labels_kind: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -833,6 +838,8 @@ class StepSpec:
         default_factory=lambda: cast("dict[str, JsonValue]", {})
     )
     tracks_run_id: str | None = None
+    labels_run_id: str | None = None
+    """The labels variant a labels reference pins, or ``None`` to resolve one."""
     entries: Scope = field(default_factory=Scope)
     """What this step should compute, already narrowed.
 
@@ -896,17 +903,30 @@ def _is_reference_field(annotation: object) -> bool:
     )
 
 
+def _is_labels_field(annotation: object) -> bool:
+    """Does this declared type hold a labels source, which names a label kind?"""
+    from mosaic.core.pipeline.types.labels import LabelsSource
+
+    candidates = [annotation, *getattr(annotation, "__args__", ())]
+    return any(
+        isinstance(candidate, type) and issubclass(candidate, LabelsSource)
+        for candidate in candidates
+    )
+
+
 def _is_identifier_field(annotation: object) -> bool:
     """Does this declared type hold a bare identifier -- how a model is named?"""
     candidates = [annotation, *getattr(annotation, "__args__", ())]
     return any(candidate is str for candidate in candidates)
 
 
-type ReferenceSite = Literal["result", "identifier", "unsupported", "unknown"]
+type ReferenceSite = Literal["result", "identifier", "labels", "unsupported", "unknown"]
 """What a params field can be substituted with, read off its declared type.
 
 ``result`` takes ``{feature, run_id}`` -- a ``Result`` or an ``ArtifactSpec``.
 ``identifier`` takes the bare upstream identifier, which is how a model is named.
+``labels`` takes a label conversion step: the field gets its label kind, and the
+step's run is pinned to the labels variant it writes.
 ``unsupported`` is a field that holds neither, so a reference landing there would
 be substituted into a number or a boolean and rejected by the model with a
 message about the substituted value rather than about the reference. ``unknown``
@@ -929,6 +949,8 @@ def params_reference_site(kind: str, name: str, field_name: str) -> ReferenceSit
 
 def _reference_site_of(annotation: object) -> ReferenceSite:
     """How a reference would substitute into a field declared as *annotation*."""
+    if _is_labels_field(annotation):
+        return "labels"
     if _is_reference_field(annotation):
         return "result"
     if _is_identifier_field(annotation):
@@ -957,7 +979,10 @@ def resolve_step_spec(
     - a params field declared as a ``Result`` or ``ArtifactSpec`` becomes
       ``{feature, run_id}`` plus the reference's pattern when it gave one;
     - a params field declared as a plain ``str`` becomes the bare identifier,
-      which is how a model is named.
+      which is how a model is named;
+    - a params field declared as a labels source becomes ``{"kind": ...}``
+      naming the upstream's label kind, and the spec's ``labels_run_id`` pins
+      the labels variant the upstream writes.
 
     Only top-level params fields are scanned, matching ``resolve_references`` and
     ``Params.identity_dump()``, neither of which recurses -- so finding a
@@ -1008,9 +1033,14 @@ def resolve_step_spec(
         )
 
     params = dict(step.params)
+    labels_run_id: str | None = None
     for name, reference in params_step_refs(step.params).items():
         upstream = resolved.get(reference.step)
         if upstream is None:
+            continue
+        if _is_labels_field(types.get(name)):
+            params[name] = {"kind": upstream.labels_kind or "behavior"}
+            labels_run_id = upstream.labels_variant or None
             continue
         if _is_reference_field(types.get(name)):
             payload: dict[str, JsonValue] = {
@@ -1047,6 +1077,7 @@ def resolve_step_spec(
         inputs=tuple(inputs),
         params=params,
         tracks_run_id=tracks_run_id,
+        labels_run_id=labels_run_id,
         entries=entries if entries is not None else Scope(),
         filter_start_frame=step.run.filter_start_frame,
         filter_end_frame=step.run.filter_end_frame,

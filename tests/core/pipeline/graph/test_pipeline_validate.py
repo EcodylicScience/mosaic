@@ -629,3 +629,98 @@ def test_a_missing_optional_dependency_is_a_problem_not_a_crash(
 
     assert problem.step == "speed"
     assert "not installed" in problem.message
+
+
+# --- labels references ----------------------------------------------------------
+
+
+def _labels_recipe(*steps: Document) -> Document:
+    """Two label conversions, the speed step, and *steps*."""
+    return {
+        "schema_version": 1,
+        "name": "labels",
+        "steps": [
+            {
+                "id": "labels",
+                "type": "op",
+                "kind": "convert-labels",
+                "params": {"source_format": "calms21_npy"},
+            },
+            {
+                "id": "swapped",
+                "type": "op",
+                "kind": "convert-labels",
+                "params": {
+                    "source_format": "calms21_npy",
+                    "params": {"resident_id": 1, "intruder_id": 0},
+                },
+            },
+            SPEED_STEP,
+            *steps,
+        ],
+    }
+
+
+def _labeled(step_id: str, labels: str) -> Document:
+    return {
+        "id": step_id,
+        "type": "feature",
+        "feature": "extract-labeled-templates",
+        "inputs": [{"step": "speed"}],
+        "params": {"labels": {"step": labels}, "n_total": 10},
+    }
+
+
+def test_a_labels_reference_must_name_a_labels_writer() -> None:
+    problem = _at(_labels_recipe(_labeled("labeled", "speed")), "params.labels")
+
+    assert problem.step == "labeled"
+    assert "writes no labels variant" in problem.message
+
+
+def test_a_labels_reference_to_a_convert_labels_step_validates() -> None:
+    assert _problems(_labels_recipe(_labeled("labeled", "labels"))) == ()
+
+
+def test_one_step_may_reference_one_labels_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run reads one labels variant, so two labels fields must name one step.
+
+    No registered feature declares two labels fields, so the site rule is
+    stood in for: every field of the step reads as a labels site.
+    """
+
+    def every_field_is_a_labels_site(*_: str) -> str:
+        return "labels"
+
+    monkeypatch.setattr(
+        validate_module, "params_reference_site", every_field_is_a_labels_site
+    )
+    step = _labeled("labeled", "labels")
+    params = step["params"]
+    assert isinstance(params, dict)
+    params["other_labels"] = {"step": "swapped"}
+    recipe = Recipe.model_validate(_labels_recipe())
+    walk = validate_module._walked(recipe, None)  # pyright: ignore[reportPrivateUsage]
+    checked = Recipe.model_validate(_labels_recipe(step)).step("labeled")
+
+    found = validate_module._labels_reference_problems(  # pyright: ignore[reportPrivateUsage]
+        checked, "extract-labeled-templates", "feature", walk
+    )
+
+    assert [problem.where for problem in found] == ["params.other_labels"]
+    assert "one run reads one labels variant" in found[0].message
+
+
+def test_two_steps_differing_only_in_their_labels_step_are_two_runs() -> None:
+    recipe = Recipe.model_validate(
+        _labels_recipe(_labeled("first", "labels"), _labeled("second", "swapped"))
+    )
+    walk = validate_module._walked(recipe, None)  # pyright: ignore[reportPrivateUsage]
+
+    assert walk.resolved["labels"].labels_kind == "behavior"
+    assert walk.resolved["labels"].labels_variant != (
+        walk.resolved["swapped"].labels_variant
+    )
+    assert walk.resolved["first"].run_id != walk.resolved["second"].run_id

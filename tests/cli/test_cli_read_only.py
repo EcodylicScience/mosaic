@@ -43,7 +43,11 @@ from mosaic.runlog import JsonlRunLog, list_runs, run_log_path
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
 from tests.helpers import (
+    CONVERT_LABELS_STEP,
+    CONVERT_TRACKS_STEP,
+    SPEED_OF_CONVERTED_STEP,
     SPEED_RECIPE,
+    calms21_dataset,
     speed_recipe,
     add_media_sequence,
     add_tracks_variant,
@@ -243,6 +247,36 @@ def test_a_read_verb_creates_no_root_or_index(
     _invoke_read(unpopulated, verb)
 
     assert_tree_unchanged(unpopulated.root, before)
+
+
+def test_planning_a_converting_recipe_writes_no_variant(tmp_path: Path) -> None:
+    """The plan names the variants it would convert into and writes neither."""
+    dataset = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}})
+    _strip_to_content(dataset.base_dir)
+    recipe = tmp_path / "converting.json"
+    document = {
+        "schema_version": 1,
+        "name": "converting",
+        "steps": [CONVERT_TRACKS_STEP, CONVERT_LABELS_STEP, SPEED_OF_CONVERTED_STEP],
+    }
+    recipe.write_text(json.dumps(document), encoding="utf-8")
+    before = tree_snapshot(dataset.base_dir)
+
+    result = invoke_ok(
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            f"@{recipe}",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--json",
+        ]
+    )
+
+    assert_tree_unchanged(dataset.base_dir, before)
+    steps = json.loads(result.stdout)["steps"]
+    assert [step["run_id"] is not None for step in steps] == [True, True, True]
 
 
 def _inventory(fixture: ReadDataset) -> object:

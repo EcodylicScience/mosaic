@@ -353,7 +353,10 @@ def _measured(
         plan.scope,
     )
     measured = replace(outcome, covered=view.held, target=len(plan.scope))
-    if is_stalled(
+    # An artifact that reads complete after the attempt did not stall, whatever
+    # the count: a conversion planned before its entries exist is measured
+    # against an empty target, where nothing can move.
+    if view.status not in COMPLETE_STATUSES and is_stalled(
         exited_clean=True,
         terminal=True,
         covered_before=len(planned.coverage.covered),
@@ -508,6 +511,7 @@ def _run(
             scope=Scope(entries=sorted(asked)) if asked else None,
             overwrite=overwrite,
             tracks_run_id=spec.tracks_run_id,
+            labels_run_id=spec.labels_run_id,
             overlap_frames=spec.overlap_frames,
             filter_start_frame=spec.filter_start_frame,
             filter_end_frame=spec.filter_end_frame,

@@ -74,6 +74,7 @@ from ..inventory.model import (
     TrainedModelRef,
     reclassify,
 )
+from ..inventory.scan import reportable_universe
 from ..ops import IdentityDeferred, OpIdentity, check_scope_takes
 from ..preprocess_layout import PREPROCESS_KIND
 from ..resolve import resolve_references
@@ -290,6 +291,9 @@ class PlannedStep:
         tracks_variant: What an op step's tables will be named by, empty
             otherwise. **A different identifier from** ``run_id``.
         model_run_id: What names a training step's model, empty otherwise.
+        labels_variant: What names a label conversion step's labels variant,
+            empty otherwise.
+        labels_kind: The label kind that variant is of, empty otherwise.
         artifact: What to look this step's outputs up by, or ``None`` for a kind
             whose coverage nothing reports.
         coverage: Which of the planned entries already exist. ``covers_all`` is
@@ -314,6 +318,8 @@ class PlannedStep:
     storage_name: str = ""
     tracks_variant: str = ""
     model_run_id: str = ""
+    labels_variant: str = ""
+    labels_kind: str = ""
     artifact: ArtifactRef | None = None
     coverage: Coverage[Entry] = field(
         default_factory=lambda: Coverage[Entry](frozenset(), frozenset())
@@ -546,6 +552,14 @@ def plan_pipeline(
     narrowing = scope
     if narrowing is None and request is not None:
         narrowing = request.scope
+    # A converter of raw files takes no scope and writes whatever entries its
+    # files hold, which need not be what there is media for, so it does not
+    # make the media universe the target the way a tracker does.
+    unscoped_writers = frozenset(
+        name
+        for name, declared in catalog.entries.items()
+        if declared.produces.writes_tracks and declared.scope_takes == "none"
+    )
     intended = intended_scope(
         ds,
         recipe,
@@ -553,10 +567,11 @@ def plan_pipeline(
         produces_tracks=[
             name
             for name, declared in catalog.entries.items()
-            if declared.produces.writes_tracks
+            if declared.produces.writes_tracks and name not in unscoped_writers
         ],
     )
     target = frozenset(intended.entries) - frozenset(quarantined)
+    deferred_by = _deferring_converter(ds, recipe, narrowing, unscoped_writers)
 
     held = InventoryCache(ds) if inventory is None else inventory
     _ = held.revalidate()
@@ -580,6 +595,7 @@ def plan_pipeline(
             resolved=resolved,
             planned=planned,
             recorded=recorded or {},
+            deferred_by=deferred_by,
         )
         if isinstance(step, FeatureStepSpec):
             findings.problems.extend(_feature_problems(recipe, step, fps, resolved))
@@ -604,6 +620,8 @@ def plan_pipeline(
             run_id=step_plan.run_id,
             tracks_variant=step_plan.tracks_variant,
             model_run_id=step_plan.model_run_id,
+            labels_variant=step_plan.labels_variant,
+            labels_kind=step_plan.labels_kind,
         )
 
     problems = list(findings.problems)
@@ -635,14 +653,31 @@ def _plan_step(
     resolved: Mapping[str, ResolvedStep],
     planned: Mapping[str, PlannedStep],
     recorded: Mapping[str, str],
+    deferred_by: str | None = None,
 ) -> PlannedStep:
-    """Resolve one step against everything the walk has already established."""
+    """Resolve one step against everything the walk has already established.
+
+    *deferred_by* names the conversion step that writes the dataset's first
+    tracks, when this graph has one. The entries of a step whose identity
+    covers its scope are not known before that step runs, so such a step is
+    left unresolved rather than named over no entries.
+    """
     declared = catalog.entries[
         step.feature if isinstance(step, FeatureStepSpec) else step.kind
     ]
     parents = parents_of(recipe, step.id)
 
     inherited = _inherited_deferral(step, planned)
+    if (
+        inherited is None
+        and deferred_by is not None
+        and isinstance(step, OpStepSpec)
+        and declared.scope_takes != "none"
+    ):
+        # Before the op is asked for an identity: a scoped op over the empty
+        # target is refused by its scope check, or names its run from an index
+        # with no rows yet.
+        inherited = _awaiting_entries(deferred_by)
     if inherited is not None:
         # Short-circuited rather than resolved and then overwritten, and the
         # difference is not tidiness. A step whose input identity is unknown has
@@ -663,6 +698,17 @@ def _plan_step(
             ds, recipe, step, target=target, bind=bind, resolved=resolved
         )
         base = resolution.step
+        if (
+            deferred_by is not None
+            and resolution.scope_dependent
+            and base.run_id is not None
+        ):
+            # Its identity covers entries that only the conversion will name.
+            # A scope-free feature keeps its identity, which the minted tracks
+            # variant decides.
+            base = replace(
+                base, run_id=None, artifact=None, reason=_awaiting_entries(deferred_by)
+            )
         base = _as_recorded(base, recorded.get(step.id, ""))
 
     view = coverage_against(inv, base.artifact, target)
@@ -735,6 +781,42 @@ def _unresolved(
         spec=spec,
         run_id=None,
         storage_name="" if isinstance(step, OpStepSpec) else spec.storage_name,
+    )
+
+
+def _deferring_converter(
+    ds: Dataset,
+    recipe: Recipe,
+    narrowing: Scope | None,
+    unscoped_writers: frozenset[str],
+) -> str | None:
+    """The step that converts this graph's tracks before any exist, or ``None``.
+
+    Set only when the submission names no entries, the dataset holds no tracks
+    and the graph converts raw files into some. The entries the graph covers
+    are then the ones that conversion writes, which nothing can enumerate
+    before it runs.
+    """
+    if narrowing is not None and narrowing.entry_pairs is not None:
+        return None
+    converters = [
+        step.id
+        for step in topological_order(recipe)
+        if isinstance(step, OpStepSpec) and step.kind in unscoped_writers
+    ]
+    if not converters or reportable_universe(ds, None):
+        return None
+    return converters[0]
+
+
+def _awaiting_entries(deferred_by: str) -> IdentityUnresolved:
+    """Why a step's identity waits on the conversion *deferred_by*."""
+    return IdentityUnresolved(
+        step=deferred_by,
+        because=(
+            "the dataset holds no tracks yet, and the entries this step covers "
+            f"are the ones step {deferred_by!r} converts"
+        ),
     )
 
 
@@ -829,6 +911,9 @@ def _resolve_feature_step(
         # off an index with no rows in it yet would hash an empty term where
         # execution hashes a real one.
         tracks_run_id=spec.tracks_run_id,
+        # The minted labels variant where a labels reference names a
+        # conversion step, for the reason the tracks variant is minted.
+        labels_run_id=spec.labels_run_id,
         frame_start=frame_start,
         frame_end=frame_end,
         overlap_frames=spec.overlap_frames,
@@ -971,6 +1056,10 @@ def _resolve_op_step(
             run_id=identity.run_id,
             tracks_variant=identity.tracks_variant,
             model_run_id=identity.model_run_id,
+            labels_variant=identity.labels_variant,
+            labels_kind=str(getattr(params, "kind", ""))
+            if identity.labels_variant
+            else "",
             artifact=_op_artifact(step.kind, identity, params),
         )
     )

@@ -1908,6 +1908,12 @@ def resolve_labels_variants(
     non-empty variant it names is collected. Authored kinds (empty ``run_id``)
     contribute nothing, exactly as unlabelled tracks do, so a dataset with no
     label recipe keeps the identifiers it already has.
+
+    A non-empty *labels_run_id* is taken as given, without reading the index,
+    as a pinned ``tracks_run_id`` is. A graph that converts its labels pins the
+    variant it will write before any row of it exists, and reading the empty
+    index would leave the term out of the planned identifier that the executed
+    one carries. Where the variant's rows exist the two answers are one.
     """
     params = getattr(feature, "params", None)
     if params is None:
@@ -1916,6 +1922,9 @@ def resolve_labels_variants(
     for field_name in type(params).model_fields:
         value = getattr(params, field_name, None)
         if isinstance(value, LabelsSource) and value.kind:
+            if labels_run_id:
+                variants.add(labels_run_id)
+                continue
             resolved = select_label_variant_rows(
                 read_labels_index(ds, value.kind), labels_run_id
             )

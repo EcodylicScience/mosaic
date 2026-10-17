@@ -114,11 +114,19 @@ def test_reference_fields_agree_with_how_validation_substitutes() -> None:
         assert isinstance(properties, dict)
         for field_name in properties:
             site = params_reference_site(entry.type, entry.name, field_name)
-            expected = site if site in ("result", "identifier") else None
+            expected = site if site in ("result", "identifier", "labels") else None
             assert entry.reference_fields.get(field_name) == expected, (
                 entry.name,
                 field_name,
             )
+
+
+def test_labels_fields_are_listed_as_labels_references() -> None:
+    """A labels source takes a convert-labels step, which the catalog states."""
+    entries = {entry.name: entry for entry in editor_catalog().entries}
+
+    assert entries["extract-labeled-templates"].reference_fields["labels"] == "labels"
+    assert entries["id-tag-columns"].reference_fields["labels"] == "labels"
 
 
 def test_a_catalog_entry_carries_its_schema_version_and_summary() -> None:

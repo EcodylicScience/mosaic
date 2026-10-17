@@ -658,6 +658,8 @@ _REGISTERED_OP_KINDS: frozenset[str] = frozenset(
         "resample-tracks",
         "train-sleap",
         "train-litpose",
+        "convert-tracks",
+        "convert-labels",
     }
 )
 

@@ -196,9 +196,9 @@ class _StepBase(GraphModel):
     """Ordering-only edges: this step runs after those, with no data reference.
 
     ``transcode -> trex`` is the case -- the tracker's identity has no term for
-    the media it read, so nothing in the payload records the dependency. They are
-    admissible only where the consumer records and compares what it consumed, and
-    ``validate`` is what enforces that.
+    the media it read, so nothing in the payload records the dependency. No rule
+    restricts where one may go. An edge enters no identity, so a step whose
+    identity should cover what it reads takes a reference instead.
     """
 
     @model_validator(mode="after")

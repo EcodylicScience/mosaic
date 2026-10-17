@@ -201,6 +201,9 @@ def _feature_stand_in(spec: StepSpec, feature: Feature) -> str:
     probe = ResolvedScope(
         entries=set(_PROBE_ENTRIES),
         tracks_variants=() if variant is None else (variant,),
+        # A labels reference pins the variant it reads, so two steps differing
+        # only in the conversion they read are two runs.
+        labels_variants=() if not spec.labels_run_id else (spec.labels_run_id,),
     )
     run_id, _ = compute_run_id(
         feature,
@@ -357,12 +360,16 @@ class _Walk:
         self, step: Step, declared: Declaration, storage_name: str, stand_in: str
     ) -> None:
         """Take down what a step that checked out will offer to the ones below."""
+        writes_labels = declared.produces.writes_labels
+        kind = step.params.get("kind", "behavior") if writes_labels else ""
         self.resolved[step.id] = ResolvedStep(
             step_id=step.id,
             storage_name=storage_name,
             run_id=stand_in,
             tracks_variant=stand_in if declared.produces.writes_tracks else "",
             model_run_id=stand_in if declared.category == "train" else "",
+            labels_variant=stand_in if writes_labels else "",
+            labels_kind=str(kind).lower() if isinstance(kind, str) else "",
         )
 
     def run_of(self, item: str | StepRef) -> _InputRun | None:
@@ -501,6 +508,7 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
     unsubstitutable = _reference_site_problems(step, name, expected_kind)
     problems.extend(unsubstitutable)
     problems.extend(_tracks_reference_problems(step, walk))
+    problems.extend(_labels_reference_problems(step, name, expected_kind, walk))
     problems.extend(_media_reference_problems(step, walk))
 
     if unsubstitutable or any(
@@ -771,8 +779,8 @@ def _reference_site_problems(step: Step, name: str, kind: str) -> list[Problem]:
                     f"{name}'s {field_name!r} holds a plain value rather than a "
                     f"run reference, so a step reference has nothing to "
                     f"substitute into. A reference resolves into a field declared "
-                    f"as a Result or an ArtifactSpec, or as the bare identifier "
-                    f"that names a model",
+                    f"as a Result or an ArtifactSpec, as a labels source, or as "
+                    f"the bare identifier that names a model",
                 )
             )
     return found
@@ -832,6 +840,45 @@ def _tracks_reference_problems(step: Step, walk: _Walk) -> list[Problem]:
             f"no tracks variant, so there is nothing for --tracks-run-id to name",
         )
     ]
+
+
+def _labels_reference_problems(
+    step: Step, name: str, kind: str, walk: _Walk
+) -> list[Problem]:
+    """A labels reference must name one step, and that step must write labels.
+
+    A labels field takes the kind of the conversion it names, and the run is
+    pinned to the labels variant that conversion writes. A step runs over one
+    labels variant, so two labels references must name one step.
+    """
+    found: list[Problem] = []
+    named: dict[str, str] = {}
+    for field_name, reference in params_step_refs(step.params).items():
+        if params_reference_site(kind, name, field_name) != "labels":
+            continue
+        where = f"params.{field_name}"
+        if isinstance(step, OpStepSpec):
+            message = f"{name!r} is an op, and an op takes no labels reference"
+            found.append(Problem(step.id, where, message))
+            continue
+        upstream = walk.declaration_behind(reference.step)
+        if upstream is not None and not upstream.produces.writes_labels:
+            message = (
+                f"{reference.step!r} runs {upstream.produces.name!r}, which writes "
+                f"no labels variant for {field_name!r} to name. A labels "
+                f"reference names a convert-labels step"
+            )
+            found.append(Problem(step.id, where, message))
+            continue
+        named[field_name] = reference.step
+    if len(set(named.values())) > 1:
+        fields = ", ".join(sorted(named))
+        message = (
+            f"{fields} name {len(set(named.values()))} labels steps, and one run "
+            f"reads one labels variant. Name one convert-labels step in each"
+        )
+        found.append(Problem(step.id, f"params.{sorted(named)[-1]}", message))
+    return found
 
 
 MEDIA_FIELD: Final = "media"

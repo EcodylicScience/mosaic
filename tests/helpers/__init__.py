@@ -172,10 +172,14 @@ from tests.helpers.processes import (
 )
 from tests.helpers.recipes import (
     CHAIN_RECIPE,
+    CONVERT_LABELS_STEP,
+    CONVERT_TRACKS_STEP,
     GUPPIES_RECIPE,
     RECIPE_SAVED_BY_0_17,
+    SPEED_OF_CONVERTED_STEP,
     SPEED_RECIPE,
     chain_recipe,
+    converting_recipe,
     guppies_recipe,
     recipe_saved_by_0_17,
     speed_recipe,
@@ -284,6 +288,8 @@ from tests.helpers.variants import (
 
 __all__ = [
     "CHAIN_RECIPE",
+    "CONVERT_LABELS_STEP",
+    "CONVERT_TRACKS_STEP",
     "CI_FERAL_MODULES",
     "CI_IDENTITY_MODULES",
     "CI_MCP_MODULES",
@@ -296,6 +302,7 @@ __all__ = [
     "FFMPEG_TOOLCHAIN",
     "GUPPIES_RECIPE",
     "SLEEPER_COMMAND",
+    "SPEED_OF_CONVERTED_STEP",
     "SPEED_RECIPE",
     "FakeDetections",
     "FakeResult",
@@ -352,6 +359,7 @@ __all__ = [
     "appender_program",
     "calms21_dataset",
     "chain_recipe",
+    "converting_recipe",
     "assert_latents_at_centers",
     "assert_no_literal_tilde",
     "assert_process_exited",

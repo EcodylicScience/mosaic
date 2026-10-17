@@ -55,10 +55,13 @@ from mosaic.core.scope import Scope
 from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
     CHAIN_RECIPE,
+    CONVERT_TRACKS_STEP,
+    SPEED_OF_CONVERTED_STEP,
     SPEED_RECIPE,
     MediaClip,
     add_tracks_table,
     add_tracks_variant,
+    calms21_dataset,
     chain_recipe,
     exited_pid,
     make_dataset,
@@ -509,6 +512,66 @@ def test_a_submitted_request_runs_detached_and_its_output_is_previewed(
         request_id=submitted.request_id,
     )
     assert (diagnosis.verdict, diagnosis.attempts) == ("finished", ())
+
+
+def test_plan_and_submit_a_recipe_whose_first_step_converts(tmp_path: Path) -> None:
+    """Conversion is a step, so one request converts and computes on the result."""
+    converting = calms21_dataset(tmp_path / "calms21", {"train": {"a": {"s1": 20}}})
+    backend = LocalBackend([converting.manifest_path], warm=False)
+    uuid = _uuid(converting)
+    recipe = {
+        "schema_version": 1,
+        "name": "converting",
+        "steps": [CONVERT_TRACKS_STEP, SPEED_OF_CONVERTED_STEP],
+    }
+    entries = [["train", "s1"]]
+    plan = _call(
+        backend, "plan_recipe", PlanWire, dataset=uuid, recipe=recipe, entries=entries
+    )
+    assert [(step.step, step.run_id is not None) for step in plan.steps] == [
+        ("tracks", True),
+        ("speed", True),
+    ]
+
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        dataset=uuid,
+        recipe=recipe,
+        entries=entries,
+        plan_fingerprint=plan.fingerprint,
+    )
+
+    wait_for(
+        lambda: (
+            _call(
+                backend,
+                "get_request_status",
+                RequestStatusWire,
+                dataset=uuid,
+                request_id=submitted.request_id,
+            ).terminal
+        ),
+        REQUEST_SECONDS,
+        "the detached driver never ended the request",
+    )
+    wait_for(
+        lambda: not process_running(submitted.driver_pid),
+        REQUEST_SECONDS,
+        "the detached driver never exited",
+    )
+    status = _call(
+        backend,
+        "get_request_status",
+        RequestStatusWire,
+        dataset=uuid,
+        request_id=submitted.request_id,
+    )
+    assert status.verdict == "finished", status
+    assert [step.run_id for step in status.steps] == [
+        step.run_id for step in plan.steps
+    ]
 
 
 def test_a_diagnosis_says_where_allow_partial_answers_a_failure(

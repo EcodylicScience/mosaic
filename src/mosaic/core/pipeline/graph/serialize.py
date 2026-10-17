@@ -170,6 +170,7 @@ def _step_wire(
         tracks_variant=planned.tracks_variant,
         model_run_id=planned.model_run_id,
         reason=_reason_wire(planned.reason),
+        labels_variant=planned.labels_variant,
     )
 
 

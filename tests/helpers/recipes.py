@@ -5,11 +5,13 @@ collective-behavior analysis, with time filters, tag columns and the
 ``nn-delta-response`` chain that reads ``ANGLE``. The speed recipe is the
 smallest that runs a feature: one ``speed-angvel`` step over the tracks. The chain
 recipe adds a second step that reads the first, for a driver to stop between.
+A converting recipe starts by converting a dataset's CalMS21 tracks and labels.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import Recipe, read_recipe
@@ -85,3 +87,55 @@ def speed_recipe() -> Recipe:
 def chain_recipe() -> Recipe:
     """The chain recipe, parsed."""
     return Recipe.model_validate(CHAIN_RECIPE)
+
+
+CONVERT_TRACKS_STEP: dict[str, JsonValue] = {
+    "id": "tracks",
+    "type": "op",
+    "kind": "convert-tracks",
+    "params": {"source_format": "calms21_npy"},
+}
+"""A step converting a dataset's CalMS21 tracks, with the id ``tracks``."""
+
+CONVERT_LABELS_STEP: dict[str, JsonValue] = {
+    "id": "labels",
+    "type": "op",
+    "kind": "convert-labels",
+    "params": {"source_format": "calms21_npy"},
+}
+"""A step converting a dataset's CalMS21 behavior labels, with the id ``labels``."""
+
+SPEED_OF_CONVERTED_STEP: dict[str, JsonValue] = {
+    "id": "speed",
+    "type": "feature",
+    "feature": "speed-angvel",
+    "inputs": ["tracks"],
+    "tracks": {"step": "tracks"},
+}
+"""``speed-angvel`` over the tracks that the ``tracks`` step converts."""
+
+
+def converting_recipe(
+    *steps: Mapping[str, JsonValue], labels: bool = False, name: str = "converting"
+) -> Recipe:
+    """A recipe whose first step converts CalMS21 tracks, then *steps*.
+
+    Args:
+        steps: The steps after the conversion, as recipe documents.
+        labels: Whether a ``labels`` step converting the behavior labels
+            follows the tracks step.
+        name: The recipe's name.
+
+    Returns:
+        The parsed recipe.
+    """
+    head: list[Mapping[str, JsonValue]] = [CONVERT_TRACKS_STEP]
+    if labels:
+        head.append(CONVERT_LABELS_STEP)
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": name,
+            "steps": [dict(step) for step in (*head, *steps)],
+        }
+    )

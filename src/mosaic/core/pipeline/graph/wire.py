@@ -121,12 +121,14 @@ def render_location(location: Sequence[int | str]) -> str:
     return rendered
 
 
-type ReferenceKind = Literal["result", "identifier"]
+type ReferenceKind = Literal["result", "identifier", "labels"]
 """What a params field accepts in place of a value: a run reference, or a bare id.
 
 ``result`` takes ``{"step": ...}`` substituted as ``{feature, run_id}``;
 ``identifier`` takes one substituted as the upstream's bare identifier, which is
-how a model is named. See ``params_reference_site``.
+how a model is named; ``labels`` takes a ``convert-labels`` step, substituted as
+its label kind and pinning the labels variant it writes. See
+``params_reference_site``.
 """
 
 
@@ -600,6 +602,7 @@ class PlannedStepWire(GraphModel):
         tracks_variant: What an op step's tables will be named by.
         model_run_id: What names a training step's model.
         reason: Why it is not simply running, or ``None``.
+        labels_variant: What names a label conversion step's labels variant.
     """
 
     step: str
@@ -617,6 +620,7 @@ class PlannedStepWire(GraphModel):
     tracks_variant: str
     model_run_id: str
     reason: ReasonWire | None
+    labels_variant: str = ""
 
 
 class PlanWire(GraphModel):
