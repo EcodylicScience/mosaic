@@ -136,7 +136,7 @@ that does not read, is left out and reported on the server's standard error.
 | `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags and counts |
 | `list_sequences` | The entries, with the tracks table each resolves to |
 | `get_inventory` | A dataset's computed artifacts, each with its status, coverage and params |
-| `search_step_types`, `describe_step_type` | The features and ops a recipe may run, and one in full with its params |
+| `describe_step_types` | The features and ops a recipe may run, found by words, and the ones named with their params as a table |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
 | `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, and the plan's fingerprint |
 | `submit_pipeline` | Submits a planned recipe and starts it in the background |

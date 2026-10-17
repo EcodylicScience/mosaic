@@ -12,8 +12,9 @@ from pathlib import Path
 import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
-from mosaic.agent.mcp.outputs import StepSuggestions, StepTypePage
+from mosaic.agent.mcp.outputs import StepSuggestions, StepTypes
 from mosaic.agent.mcp.spec import (
+    MAX_STEP_TYPE_DETAIL_CHARS,
     ActivityPage,
     DatasetList,
     FailureDiagnosis,
@@ -26,7 +27,6 @@ from mosaic.core.dataset_summary import DatasetSummary
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
     QUARANTINE_AFTER,
-    CatalogEntry,
     CoverageShortfall,
     FileFailureStore,
     PlanWire,
@@ -202,10 +202,10 @@ def test_the_inventory_leaves_out_complete_artifacts_unless_asked(
 
 
 def test_step_types_are_searched_by_words_and_paged(backend: LocalBackend) -> None:
-    found = _call(backend, "search_step_types", StepTypePage, query="speed angvel")
-    ops = _call(backend, "search_step_types", StepTypePage, type="op", limit=3)
+    found = _call(backend, "describe_step_types", StepTypes, query="speed angvel")
+    ops = _call(backend, "describe_step_types", StepTypes, type="op", limit=3)
     more = _call(
-        backend, "search_step_types", StepTypePage, type="op", cursor=ops.next_cursor
+        backend, "describe_step_types", StepTypes, type="op", cursor=ops.next_cursor
     )
 
     assert "speed-angvel" in {entry.name for entry in found.entries}
@@ -215,14 +215,14 @@ def test_step_types_are_searched_by_words_and_paged(backend: LocalBackend) -> No
 
 
 def test_step_types_are_ranked_and_paged_in_rank_order(backend: LocalBackend) -> None:
-    whole = _call(backend, "search_step_types", StepTypePage, query="speed", limit=100)
+    whole = _call(backend, "describe_step_types", StepTypes, query="speed", limit=100)
     paged: list[str] = []
     cursor: str | None = None
     while True:
         page = _call(
             backend,
-            "search_step_types",
-            StepTypePage,
+            "describe_step_types",
+            StepTypes,
             query="speed",
             limit=1,
             cursor=cursor,
@@ -237,12 +237,73 @@ def test_step_types_are_ranked_and_paged_in_rank_order(backend: LocalBackend) ->
     assert paged == [entry.name for entry in whole.entries]
 
 
-def test_one_step_type_is_described_whole(backend: LocalBackend) -> None:
-    entry = _call(backend, "describe_step_type", CatalogEntry, name="speed-angvel")
-    missing = _refusal(backend, "describe_step_type", name="no-such-step")
+def test_named_step_types_are_described_as_param_tables(
+    backend: LocalBackend,
+) -> None:
+    found = _call(
+        backend, "describe_step_types", StepTypes, names=["speed-angvel", "trex"]
+    )
+    schema = _call(
+        backend,
+        "describe_step_types",
+        StepTypes,
+        names=["speed-angvel"],
+        detail="schema",
+    )
+    rows = _call(
+        backend, "describe_step_types", StepTypes, names=["trex"], detail="summary"
+    )
+    missing = _refusal(backend, "describe_step_types", names=["no-such-step"])
 
-    assert entry.params_schema is not None
+    assert found.detail == "fields"
+    assert [detail.name for detail in found.details] == ["speed-angvel", "trex"]
+    assert "step_size" in {row.path for row in found.details[0].params}
+    assert found.details[0].params_schema is None
+    assert found.entries == ()
+    assert schema.details[0].params_schema is not None
+    assert [entry.name for entry in rows.entries] == ["trex"]
+    assert rows.details == ()
     assert missing.kind == "not_found"
+    assert missing.detail == {"names": ["no-such-step"]}
+
+
+def test_unknown_names_are_reported_beside_the_known(backend: LocalBackend) -> None:
+    found = _call(
+        backend,
+        "describe_step_types",
+        StepTypes,
+        names=["no-such-step", "speed-angvel"],
+    )
+
+    assert found.unknown == ("no-such-step",)
+    assert [detail.name for detail in found.details] == ["speed-angvel"]
+    assert found.total == 1
+
+
+def test_every_step_type_detail_stays_under_its_budget(backend: LocalBackend) -> None:
+    every = _call(backend, "describe_step_types", StepTypes, limit=100)
+    names = [entry.name for entry in every.entries]
+    while every.next_cursor is not None:
+        every = _call(
+            backend, "describe_step_types", StepTypes, cursor=every.next_cursor
+        )
+        names.extend(entry.name for entry in every.entries)
+
+    over = {
+        name: size
+        for name in names
+        if (
+            size := len(
+                _call(backend, "describe_step_types", StepTypes, names=[name])
+                .details[0]
+                .model_dump_json()
+            )
+        )
+        > MAX_STEP_TYPE_DETAIL_CHARS
+    }
+
+    assert len(names) > 50
+    assert not over, f"step types over {MAX_STEP_TYPE_DETAIL_CHARS} characters: {over}"
 
 
 def test_a_recipe_is_validated_and_a_broken_one_reported(backend: LocalBackend) -> None:

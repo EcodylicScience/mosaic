@@ -43,7 +43,7 @@ from .spec import (
     DatasetList,
     DatasetListItem,
     DescribeDatasetInput,
-    DescribeStepTypeInput,
+    DescribeStepTypesInput,
     DiagnoseFailuresInput,
     FailureDiagnosis,
     GetInventoryInput,
@@ -54,12 +54,12 @@ from .spec import (
     PlanRecipeInput,
     PreviewOutputInput,
     RunSummary,
-    SearchStepTypesInput,
     SequencePage,
     SequenceRow,
     SubmitPipelineInput,
     SubmittedPipeline,
     SubmittedStep,
+    StepTypeDetailLevel,
     SuggestStepsInput,
     ToolName,
     ToolResult,
@@ -93,7 +93,7 @@ if TYPE_CHECKING:
     from mosaic.core.scope import Scope
     from mosaic.runlog import AttemptOutcome, RunLogSnapshot
 
-    from .outputs import StepSuggestions, StepTypePage
+    from .outputs import StepSuggestions, StepTypes
 
 __all__ = [
     "POLL_AFTER_SECONDS",
@@ -259,15 +259,11 @@ class LocalBackend:
         """Answer ``get_inventory``."""
         return answer(lambda: self._get_inventory(args))
 
-    def search_step_types(self, args: SearchStepTypesInput) -> ToolResult[StepTypePage]:
-        """Answer ``search_step_types``."""
-        return answer(lambda: self._search_step_types(args))
-
-    def describe_step_type(
-        self, args: DescribeStepTypeInput
-    ) -> ToolResult[CatalogEntry]:
-        """Answer ``describe_step_type``."""
-        return answer(lambda: self._describe_step_type(args))
+    def describe_step_types(
+        self, args: DescribeStepTypesInput
+    ) -> ToolResult[StepTypes]:
+        """Answer ``describe_step_types``."""
+        return answer(lambda: self._describe_step_types(args))
 
     def validate_recipe(
         self, args: ValidateRecipeInput
@@ -417,12 +413,15 @@ class LocalBackend:
 
     # -------------------------------------------------------------- catalog
 
-    def _search_step_types(self, args: SearchStepTypesInput) -> StepTypePage:
+    def _describe_step_types(self, args: DescribeStepTypesInput) -> StepTypes:
         from mosaic.core.pipeline.graph import search_catalog
 
-        from .outputs import StepTypePage
+        from .outputs import StepTypes
 
         index = self._catalog_index()
+        level = args.level
+        if args.names is not None:
+            return self._named_step_types(args.names, level)
         matched = [
             match
             for match in search_catalog(index.entries, args.query)
@@ -433,19 +432,74 @@ class LocalBackend:
         page, next_cursor = _page(
             matched, lambda match: match.key, args.limit, args.cursor
         )
-        return StepTypePage(
+        return StepTypes(
             schema_version=index.schema_version,
             mosaic_version=index.mosaic_version,
+            detail=level,
             entries=tuple(match.entry for match in page),
             total=len(matched),
             next_cursor=next_cursor,
         )
 
-    def _describe_step_type(self, args: DescribeStepTypeInput) -> CatalogEntry:
-        from mosaic.core.pipeline.graph import describe_step_type
+    def _named_step_types(
+        self, names: list[str], level: StepTypeDetailLevel
+    ) -> StepTypes:
+        """Describe each step type of *names*, listing those no step type has.
+
+        Raises:
+            ToolFailure: No name is a step type's.
+        """
+        from mosaic.core.pipeline.graph import StepTypeNotFound, step_type_detail
+
+        from .outputs import StepTypes
+
+        index = self._catalog_index()
+        self._declarations()
+        rows = {entry.name: entry for entry in index.entries}
+        asked = list(dict.fromkeys(names))
+        known = [name for name in asked if name in rows]
+        unknown = tuple(name for name in asked if name not in rows)
+        if not known:
+            envelope = error_envelope(StepTypeNotFound(unknown[0]))
+            raise ToolFailure(
+                envelope.model_copy(
+                    update={
+                        "message": (
+                            f"no step type named {', '.join(map(repr, unknown))}; "
+                            "describe_step_types with a query finds them"
+                        ),
+                        "detail": {"names": list(unknown)},
+                    }
+                )
+            )
+        return StepTypes(
+            schema_version=index.schema_version,
+            mosaic_version=index.mosaic_version,
+            detail=level,
+            entries=tuple(rows[name] for name in known) if level == "summary" else (),
+            details=()
+            if level == "summary"
+            else tuple(step_type_detail(name, detail=level) for name in known),
+            unknown=unknown,
+            total=len(known),
+            next_cursor=None,
+        )
+
+    def step_type_entry(self, name: str) -> CatalogEntry:
+        """Return the editor-catalog entry of *name*, params schema included.
+
+        Not a tool. The ``mosaic://catalog/{name}`` resource reads it.
+
+        Raises:
+            ToolFailure: The catalog has no step type of that name.
+        """
+        from mosaic.core.pipeline.graph import StepTypeNotFound, describe_step_type
 
         self._declarations()
-        return describe_step_type(args.name)
+        try:
+            return describe_step_type(name)
+        except StepTypeNotFound as error:
+            raise ToolFailure(error_envelope(error)) from error
 
     def _validate_recipe(self, args: ValidateRecipeInput) -> ValidationReport:
         from mosaic.core.pipeline.graph import validation_report

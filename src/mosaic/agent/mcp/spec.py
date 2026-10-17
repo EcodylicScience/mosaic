@@ -23,9 +23,9 @@ from __future__ import annotations
 import importlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.artifact_kinds import ArtifactKind, ArtifactStatus
@@ -45,11 +45,11 @@ from mosaic.runlog import AttemptOutcome
 
 if TYPE_CHECKING:
     from mosaic.core.dataset_summary import DatasetSummary
-    from mosaic.core.pipeline.graph import CatalogEntry, PlanWire, ValidationReport
+    from mosaic.core.pipeline.graph import PlanWire, ValidationReport
     from mosaic.core.pipeline.inventory import InventoryWire
     from mosaic.core.pipeline.preview import ArtifactPreview
 
-    from .outputs import StepSuggestions, StepTypePage
+    from .outputs import StepSuggestions, StepTypes
 
 __all__ = [
     "CONFIRMATION_CONDITIONS",
@@ -61,9 +61,12 @@ __all__ = [
     "INVALID_CURSOR",
     "LARGE_SCOPE_ENTRIES",
     "LISTED_STATUS_NOT",
+    "MAX_DESCRIBED_STEP_TYPES",
     "MAX_PAGE_SIZE",
     "MAX_PREVIEW_ROWS",
     "MAX_SCHEMA_BYTES",
+    "MAX_STEP_TYPE_DETAIL_CHARS",
+    "MERGED_TOOLS",
     "SHARED_TOOL_LIMIT",
     "TOOLS",
     "UNKNOWN_DATASET",
@@ -77,7 +80,7 @@ __all__ = [
     "DatasetList",
     "DatasetListItem",
     "DescribeDatasetInput",
-    "DescribeStepTypeInput",
+    "DescribeStepTypesInput",
     "DiagnoseFailuresInput",
     "FailureDiagnosis",
     "GetInventoryInput",
@@ -89,12 +92,12 @@ __all__ = [
     "PlanRecipeInput",
     "PreviewOutputInput",
     "RunSummary",
-    "SearchStepTypesInput",
     "SequencePage",
     "SequenceRow",
     "SubmitPipelineInput",
     "SubmittedPipeline",
     "SubmittedStep",
+    "StepTypeDetailLevel",
     "SuggestMode",
     "SuggestStepsInput",
     "ToolAnnotations",
@@ -111,6 +114,7 @@ __all__ = [
     "invalid_cursor",
     "tool_spec",
     "unknown_dataset",
+    "unknown_tool",
 ]
 
 SHARED_TOOL_LIMIT: Final = 15
@@ -127,6 +131,16 @@ DEFAULT_PAGE_SIZE: Final = 20
 
 MAX_PREVIEW_ROWS: Final = 50
 """The most rows a preview returns, as ``preview_artifact`` allows."""
+
+MAX_DESCRIBED_STEP_TYPES: Final = 8
+"""The most step types one ``describe_step_types`` call describes by name."""
+
+MAX_STEP_TYPE_DETAIL_CHARS: Final = 16_000
+"""The most characters of JSON that one step type's detail takes.
+
+Not enforced per call. A test measures every step type of the catalog, and the
+largest, ``vame``, takes about 15,700.
+"""
 
 LARGE_SCOPE_ENTRIES: Final = 100
 """The most entries a step may be asked for before a submission asks to confirm."""
@@ -160,8 +174,7 @@ type ToolName = Literal[
     "describe_dataset",
     "list_sequences",
     "get_inventory",
-    "search_step_types",
-    "describe_step_type",
+    "describe_step_types",
     "validate_recipe",
     "suggest_steps",
     "plan_recipe",
@@ -173,6 +186,12 @@ type ToolName = Literal[
     "preview_output",
 ]
 """The name of each shared tool."""
+
+MERGED_TOOLS: Final[Mapping[str, ToolName]] = {
+    "search_step_types": "describe_step_types",
+    "describe_step_type": "describe_step_types",
+}
+"""Each tool name that an earlier release served, by the tool that replaced it."""
 
 type ConfirmationCondition = Literal[
     "gpu_lane",
@@ -328,8 +347,16 @@ class GetInventoryInput(ToolInput):
     cursor: Cursor = None
 
 
-class SearchStepTypesInput(ToolInput):
-    """The arguments of ``search_step_types``."""
+type StepTypeDetailLevel = Literal["summary", "fields", "schema"]
+"""How much ``describe_step_types`` returns of each step type it names."""
+
+
+class DescribeStepTypesInput(ToolInput):
+    """The arguments of ``describe_step_types``: a search, or names to describe.
+
+    ``names`` describes those step types and takes no search argument. A
+    search returns index rows, which ``detail`` cannot deepen.
+    """
 
     query: str = Field(
         default="",
@@ -345,16 +372,53 @@ class SearchStepTypesInput(ToolInput):
         default=False,
         description="Leave out step types this installation cannot run.",
     )
+    names: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_DESCRIBED_STEP_TYPES,
+        description=(
+            "Describe these step types, feature slugs or op kinds, in place of "
+            "a search."
+        ),
+    )
+    detail: StepTypeDetailLevel | None = Field(
+        default=None,
+        description=(
+            "With names: 'summary' gives index rows, 'fields' (the default) "
+            "adds the params table, 'schema' adds the params JSON Schema."
+        ),
+    )
     limit: PageSize = DEFAULT_PAGE_SIZE
     cursor: Cursor = None
 
+    @model_validator(mode="after")
+    def _names_or_a_search(self) -> Self:
+        if self.names is not None:
+            searched = [
+                name
+                for name, given in (
+                    ("query", bool(self.query)),
+                    ("type", self.type is not None),
+                    ("category", self.category is not None),
+                    ("available_only", self.available_only),
+                    ("cursor", self.cursor is not None),
+                )
+                if given
+            ]
+            if searched:
+                msg = f"names describes step types and takes no {', '.join(searched)}"
+                raise ValueError(msg)
+        elif self.detail in ("fields", "schema"):
+            msg = f"detail {self.detail!r} describes the step types names lists"
+            raise ValueError(msg)
+        return self
 
-class DescribeStepTypeInput(ToolInput):
-    """The arguments of ``describe_step_type``."""
-
-    name: str = Field(
-        description="The feature slug or op kind, as search_step_types names it."
-    )
+    @property
+    def level(self) -> StepTypeDetailLevel:
+        """The detail asked for: ``fields`` by default with names, else ``summary``."""
+        if self.detail is not None:
+            return self.detail
+        return "fields" if self.names is not None else "summary"
 
 
 class ValidateRecipeInput(ToolInput):
@@ -873,30 +937,23 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         annotations=READ,
     ),
     ToolSpec(
-        name="search_step_types",
-        title="Search step types",
+        name="describe_step_types",
+        title="Describe step types",
         description=(
-            "Search the features and ops a recipe may run, by words in their name, "
-            "summary or category, best match first: the name, then words of the "
-            "name, then the summary or category. Each result names its lane, the "
-            "columns it reads and writes, what this installation lacks to run it "
-            "and any license restriction. describe_step_type gives one in full."
-            + _PAGING
+            "Find and describe the features and ops a recipe may run. A search "
+            "by words in their name, summary or category returns them best "
+            "match first, each with its lane, the columns it reads and writes, "
+            "what this installation lacks to run it and any license "
+            f"restriction. names (up to {MAX_DESCRIBED_STEP_TYPES}) returns each "
+            "one's params as a flat table: dotted paths for nested fields, "
+            "type, default, constraints and meaning. A field marked reference "
+            '\'result\' takes {"step": "<id>"} naming another step, with an '
+            'optional pattern. Any string field may take {"step": "<id>"}, '
+            "which substitutes that step's run or model id. detail 'schema' "
+            "adds the params JSON Schema." + _PAGING
         ),
-        input_model=SearchStepTypesInput,
-        output=ModelRef("mosaic.agent.mcp.outputs", "StepTypePage"),
-        annotations=READ,
-    ),
-    ToolSpec(
-        name="describe_step_type",
-        title="Describe a step type",
-        description=(
-            "Describe one feature or op in full: its params JSON Schema with each "
-            "field's meaning, the params fields that take a step reference, the "
-            "columns it reads and writes, and what it consumes and produces."
-        ),
-        input_model=DescribeStepTypeInput,
-        output=ModelRef("mosaic.core.pipeline.graph", "CatalogEntry"),
+        input_model=DescribeStepTypesInput,
+        output=ModelRef("mosaic.agent.mcp.outputs", "StepTypes"),
         annotations=READ,
     ),
     ToolSpec(
@@ -1068,14 +1125,10 @@ class ToolBackend(Protocol):
         """Answer ``get_inventory``."""
         ...
 
-    def search_step_types(self, args: SearchStepTypesInput) -> ToolResult[StepTypePage]:
-        """Answer ``search_step_types``."""
-        ...
-
-    def describe_step_type(
-        self, args: DescribeStepTypeInput
-    ) -> ToolResult[CatalogEntry]:
-        """Answer ``describe_step_type``."""
+    def describe_step_types(
+        self, args: DescribeStepTypesInput
+    ) -> ToolResult[StepTypes]:
+        """Answer ``describe_step_types``."""
         ...
 
     def validate_recipe(
@@ -1140,12 +1193,7 @@ def call_tool(
     """
     spec = tool_spec(name)
     if spec is None:
-        return ErrorEnvelope(
-            kind="not_found",
-            reason=UNKNOWN_TOOL,
-            message=f"no tool named {name!r}",
-            detail={"tool": name},
-        )
+        return unknown_tool(name)
     try:
         request = spec.input_model.model_validate(dict(arguments))
     except ValidationError as error:
@@ -1164,10 +1212,8 @@ def _dispatch(backend: ToolBackend, request: ToolInput) -> BaseModel:
             return backend.list_sequences(request)
         case GetInventoryInput():
             return backend.get_inventory(request)
-        case SearchStepTypesInput():
-            return backend.search_step_types(request)
-        case DescribeStepTypeInput():
-            return backend.describe_step_type(request)
+        case DescribeStepTypesInput():
+            return backend.describe_step_types(request)
         case ValidateRecipeInput():
             return backend.validate_recipe(request)
         case SuggestStepsInput():
@@ -1189,6 +1235,24 @@ def _dispatch(backend: ToolBackend, request: ToolInput) -> BaseModel:
         case _:
             msg = f"no tool takes {type(request).__name__}"
             raise TypeError(msg)
+
+
+def unknown_tool(name: str) -> ErrorEnvelope:
+    """Report a call naming no shared tool, and the tool that replaced a merged one."""
+    replacement = MERGED_TOOLS.get(name)
+    if replacement is None:
+        return ErrorEnvelope(
+            kind="not_found",
+            reason=UNKNOWN_TOOL,
+            message=f"no tool named {name!r}",
+            detail={"tool": name},
+        )
+    return ErrorEnvelope(
+        kind="not_found",
+        reason=UNKNOWN_TOOL,
+        message=f"no tool named {name!r}; {replacement} replaced it",
+        detail={"tool": name, "replacement": replacement},
+    )
 
 
 def _invalid_arguments(name: ToolName, error: ValidationError) -> ErrorEnvelope:

@@ -11,31 +11,43 @@ from mosaic.core.pipeline.graph import (
     Attachment,
     CatalogIndexEntry,
     InputCandidate,
+    StepTypeDetail,
     StillNeeded,
 )
 from mosaic.core.strict_model import StrictModel
 
-from .spec import SuggestMode
+from .spec import StepTypeDetailLevel, SuggestMode
 
-__all__ = ["StepSuggestions", "StepTypePage"]
+__all__ = ["StepSuggestions", "StepTypes"]
 
 
-class StepTypePage(StrictModel):
-    """One page of the step types that a search matches, most relevant first.
+class StepTypes(StrictModel):
+    """Step types found by a search, or described by name.
 
-    A search without words lists every step type, ordered by name.
+    A search returns one page of index rows, most relevant first, and a search
+    without words lists every step type by name. Names return one row or one
+    detail per known name, in the order asked.
 
     Attributes:
         schema_version: The recipe format this installation reads.
         mosaic_version: The installed ``mosaic-behavior`` version.
-        entries: The page, each step type without its params schema.
-        total: How many step types the search matches.
-        next_cursor: The cursor of the next page, ``None`` on the last.
+        detail: How much each step type carries: ``summary`` its index row,
+            ``fields`` its params table too, ``schema`` its params JSON Schema
+            too.
+        entries: Under ``summary``, the index rows.
+        details: Under ``fields`` and ``schema``, the step types in detail.
+        unknown: The names asked for that no step type has.
+        total: How many step types the search matches, or the names described.
+        next_cursor: The cursor of the next page, ``None`` on the last and for
+            names.
     """
 
     schema_version: int
     mosaic_version: str
-    entries: tuple[CatalogIndexEntry, ...]
+    detail: StepTypeDetailLevel
+    entries: tuple[CatalogIndexEntry, ...] = ()
+    details: tuple[StepTypeDetail, ...] = ()
+    unknown: tuple[str, ...] = ()
     total: int
     next_cursor: str | None
 

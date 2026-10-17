@@ -34,7 +34,6 @@ from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from .local import LocalBackend, ToolFailure
 from .spec import (
     MAX_PAGE_SIZE,
-    DescribeStepTypeInput,
     GetInventoryInput,
     GetRequestStatusInput,
 )
@@ -172,10 +171,7 @@ def _read_catalog(backend: LocalBackend, _variables: UriVariables) -> ResourceTe
 
 
 def _read_catalog_entry(backend: LocalBackend, variables: UriVariables) -> ResourceText:
-    name = _variable(variables, "name")
-    return _json(
-        _answered(backend.describe_step_type(DescribeStepTypeInput(name=name)))
-    )
+    return _json(backend.step_type_entry(_variable(variables, "name")))
 
 
 def _read_manifest(backend: LocalBackend, variables: UriVariables) -> ResourceText:

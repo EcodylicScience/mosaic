@@ -23,7 +23,7 @@ from mcp.shared.exceptions import MCPError
 from mosaic.agent.mcp.local import LocalBackend
 from mosaic.agent.mcp.prompts import PROMPTS
 from mosaic.agent.mcp.server import build_server
-from mosaic.agent.mcp.spec import MAX_SCHEMA_BYTES, TOOLS
+from mosaic.agent.mcp.spec import MAX_SCHEMA_BYTES, SHARED_TOOL_LIMIT, TOOLS
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import submit_request
@@ -151,7 +151,7 @@ def _resolves(schema: dict[str, JsonValue], ref: str) -> bool:
     return True
 
 
-def test_the_fifteen_tools_are_listed_in_order_with_compact_resolving_schemas(
+def test_the_shared_tools_are_listed_in_order_with_compact_resolving_schemas(
     backend: LocalBackend,
 ) -> None:
     async def body(client: Client) -> list[types.Tool]:
@@ -160,7 +160,7 @@ def test_the_fifteen_tools_are_listed_in_order_with_compact_resolving_schemas(
     tools = _session(backend, body)
 
     assert [tool.name for tool in tools] == [spec.name for spec in TOOLS]
-    assert len(tools) == 15
+    assert len(tools) == len(TOOLS) <= SHARED_TOOL_LIMIT
     for tool in tools:
         assert tool.output_schema is not None
         assert tool.annotations is not None

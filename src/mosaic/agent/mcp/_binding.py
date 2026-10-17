@@ -75,7 +75,7 @@ SERVER_NAME: Final = "mosaic"
 INSTRUCTIONS: Final = (
     "mosaic computes behavioral features from animal tracking data, in datasets "
     "named by uuid (list_datasets). Read mosaic://guide first. To compute "
-    "something: search_step_types and describe_step_type, draft a recipe, "
+    "something: describe_step_types (a query, then names), draft a recipe, "
     "validate_recipe, plan_recipe, show the user the plan and wait for their "
     "approval, then submit_pipeline and poll get_request_status. Previews and "
     "diagnoses change nothing. Never set confirm without the user's agreement, "

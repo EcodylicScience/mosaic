@@ -13,17 +13,15 @@ pandas.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Final
 
 from pydantic import BaseModel
 
 from mosaic.core.dataset_summary import DatasetSummary
-from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.cancel import RequestCancel
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
-    CatalogEntry,
     PlanWire,
     RequestStatusWire,
     ValidationReport,
@@ -31,7 +29,7 @@ from mosaic.core.pipeline.graph import (
 from mosaic.core.pipeline.inventory import InventoryWire
 from mosaic.core.pipeline.preview import ArtifactPreview
 
-from .outputs import StepSuggestions, StepTypePage
+from .outputs import StepSuggestions, StepTypes
 from .spec import (
     ActivityPage,
     DatasetList,
@@ -45,7 +43,7 @@ __all__ = ["summarize"]
 _LISTED: Final = 10
 """The most identifiers one paragraph names before it counts the rest."""
 
-_STRUCTURED: Final = "The structured result has the details."
+_STRUCTURED: Final = "The JSON result has the details."
 
 
 def summarize(output: BaseModel) -> str:
@@ -71,12 +69,8 @@ def summarize(output: BaseModel) -> str:
             return _page(output.total, len(output.items), output.next_cursor, "entry")
         case InventoryWire():
             return _inventory(output)
-        case StepTypePage():
-            return _page(
-                output.total, len(output.entries), output.next_cursor, "step type"
-            )
-        case CatalogEntry():
-            return _step_type(output)
+        case StepTypes():
+            return _step_types(output)
         case ValidationReport():
             return _validation(output)
         case StepSuggestions():
@@ -172,24 +166,23 @@ def _inventory(found: InventoryWire) -> str:
     )
 
 
-def _step_type(entry: CatalogEntry) -> str:
-    state = (
-        " This installation cannot run it."
-        if entry.unavailable
-        else " This installation can run it."
+def _step_types(found: StepTypes) -> str:
+    """Name the step types described, or count the page a search returned."""
+    unknown = (
+        f" No step type is named {_names(list(found.unknown))}."
+        if found.unknown
+        else ""
     )
-    license_note = " Its license restricts some uses." if entry.license_note else ""
-    fields = _field_count(entry.params_schema)
-    return (
-        f"Step type {entry.name} ({entry.type}, version {entry.version or 'none'}) "
-        f"takes {fields} params field(s).{state}{license_note} {_STRUCTURED}"
-    )
-
-
-def _field_count(schema: Mapping[str, object] | None) -> int:
-    """Count the top-level properties of a params schema, 0 without one."""
-    properties = None if schema is None else schema.get("properties")
-    return len(properties) if is_str_mapping(properties) else 0
+    if found.details:
+        described = [
+            f"{detail.name} ({len(detail.params)} params field(s))"
+            for detail in found.details
+        ]
+        return f"Described {_names(described)}.{unknown} {_STRUCTURED}"
+    if found.next_cursor is None and found.unknown:
+        named = [entry.name for entry in found.entries]
+        return f"Listed {_names(named)}.{unknown} {_STRUCTURED}"
+    return _page(found.total, len(found.entries), found.next_cursor, "step type")
 
 
 def _validation(report: ValidationReport) -> str:

@@ -109,6 +109,38 @@ def test_an_unknown_tool_is_not_found() -> None:
     assert (refused.kind, refused.reason) == ("not_found", "unknown_tool")
 
 
+@pytest.mark.parametrize("merged", ["search_step_types", "describe_step_type"])
+def test_a_merged_tool_name_points_at_its_replacement(merged: str) -> None:
+    refused = call_tool(LocalBackend([], warm=False), merged, {"name": "trex"})
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert (refused.kind, refused.reason) == ("not_found", "unknown_tool")
+    assert refused.detail == {"tool": merged, "replacement": "describe_step_types"}
+    assert "describe_step_types" in refused.message
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"names": ["trex"], "query": "track"},
+        {"names": ["trex"], "type": "op"},
+        {"names": ["trex"], "available_only": True},
+        {"names": ["trex"], "cursor": "[]"},
+        {"detail": "fields"},
+        {"query": "track", "detail": "schema"},
+        {"names": []},
+        {"names": [f"step-{index}" for index in range(9)]},
+    ],
+)
+def test_names_with_a_filter_or_fields_without_names_are_invalid(
+    arguments: dict[str, object],
+) -> None:
+    refused = call_tool(LocalBackend([], warm=False), "describe_step_types", arguments)
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert (refused.kind, refused.reason) == ("invalid", "invalid_arguments")
+
+
 def test_no_tool_takes_an_overwrite_argument() -> None:
     offered = {name for spec in TOOLS for name in spec.input_model.model_fields}
 

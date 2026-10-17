@@ -28,6 +28,7 @@ pytest.importorskip("mcp")
 
 import mcp_types as types
 
+from mosaic.agent.mcp.spec import TOOLS
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
 from tests.helpers import CHAIN_RECIPE, add_tracks_variant, make_dataset, wait_for
@@ -327,7 +328,7 @@ def test_a_client_plans_submits_polls_and_previews_over_clean_stdout(
 
     assert initialized["protocolVersion"] == PROTOCOL_VERSION
     tools = listed["tools"]
-    assert isinstance(tools, list) and len(tools) == 15
+    assert isinstance(tools, list) and len(tools) == len(TOOLS)
     assert valid["valid"] is True
     assert (refused["reason"], refused["kind"]) == ("confirmation_required", "invalid")
     assert status["verdict"] == "finished", status
