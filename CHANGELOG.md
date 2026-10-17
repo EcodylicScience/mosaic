@@ -205,6 +205,33 @@ ids of the runs downstream of it when they rerun.
 - `xgboost` and `lightning-action` refuse templates with a negative label, which an
   older templates run can hold.
 
+**Cluster scoring drops unlabeled rows, scores one perspective, and keys entries by
+group and sequence.** `compute_cluster_label_agreement` pooled both perspectives of a
+pair run, read unannotated frames as class 0, matched a run's files to label files by
+sequence name alone (so two groups sharing a sequence name read each other's labels),
+cut a sequence to the shorter of two arrays without saying so, and guessed a frame
+source by a hardcoded feature name. The new module `mosaic.core.evaluation` holds the
+alignment and the scorers, and `mosaic.core.analysis` calls it.
+
+- `align_predictions_to_labels(ds, ResultColumn(...))` pairs each output row of a run
+  with the label of that row through `load_values`, in one labels variant
+  (`labels_run_id=`), filters a `perspective`, and drops and counts unlabeled rows and
+  rows with no prediction (`AlignedLabels`).
+- `cluster_label_scores` (which `cluster_gt_agreement` now calls) drops rows labeled
+  `-1` and reports `n_unlabeled`. It adds `majority_accuracy` (equal to `purity`),
+  `majority_mapping` (cluster to class) and `hungarian_one_to_one`. With more clusters
+  than classes, read `majority_accuracy`: the Hungarian pairing counts every cluster
+  beyond it as wrong. `majority_mapping` and `perspective_consistency` are also
+  public.
+- `compute_cluster_label_agreement` takes `perspective=` (an int, or `"each"` for
+  `metrics_by_perspective`), `scope=` and `labels_run_id=`. It reports
+  `n_unlabeled_dropped`, `n_missing_prediction` and, for a pair run,
+  `perspective_consistency`, `n_perspective_pairs` and `n_perspectives`. `max_frames`
+  subsamples after the perspective filter. Rows of `aligned_sequences` and
+  `per_sequence` carry `group`, `sequence`, `sequence_safe` and `entry_key`, and no
+  longer `cluster_path` or `label_path`. `frame_source_feature` is ignored with a
+  `DeprecationWarning`; a run whose rows have no `frame` column is refused.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

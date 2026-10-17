@@ -23,6 +23,7 @@ What lives where:
 - ``column_contract`` checks a feature's output against the columns that
   validation predicts from its declaration.
 - ``kpms`` contains the params of a kpms feature on three named keypoints.
+- ``labels`` writes converted label files of events, and their index rows.
 - ``stand_in_features`` -- features that do nothing but declare the source
   roots they consume, for the tests of what a source change reaches.
 - ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
@@ -222,7 +223,18 @@ from tests.helpers.source_scan import (
     source_tree,
 )
 from tests.helpers.documents import dotted_values
-from tests.helpers.stand_in_features import CropLike, PlainFeature, ScopedFeature
+from tests.helpers.labels import (
+    CALMS21_NAMES,
+    LABELS_VARIANT,
+    add_labels,
+    write_sparse_labels,
+)
+from tests.helpers.stand_in_features import (
+    CropLike,
+    PairClusterFeature,
+    PlainFeature,
+    ScopedFeature,
+)
 from tests.helpers.training import FakeTrainer, healthy_probe, write_data_yaml
 from tests.helpers.trees import PathState, assert_tree_unchanged, tree_snapshot
 from tests.helpers.tracks import (
@@ -292,8 +304,10 @@ __all__ = [
     "KPMS_PROTOCOL",
     "KPMS_SERVER",
     "KPMS_TOOL",
+    "LABELS_VARIANT",
     "LineChildren",
     "MOUSE",
+    "PairClusterFeature",
     "PlainFeature",
     "REPO_ROOT",
     "RUNNER_LINE_SECONDS",
@@ -302,6 +316,7 @@ __all__ = [
     "SELF_REFERENCE",
     "SEPARATED_TOOLS",
     "SOURCE_ROOT",
+    "CALMS21_NAMES",
     "CiJob",
     "ScopedFeature",
     "SeparatedEnvironment",
@@ -326,6 +341,7 @@ __all__ = [
     "MockDataset",
     "PathState",
     "UPDATE_GOLDEN_ENV",
+    "add_labels",
     "add_media_sequence",
     "add_media_variant",
     "add_track_sequences",
@@ -435,6 +451,7 @@ __all__ = [
     "write_data_yaml",
     "write_calms21_npy",
     "write_dlc_csv",
+    "write_sparse_labels",
     "write_driver_lease",
     "write_fake_runner",
     "write_golden",

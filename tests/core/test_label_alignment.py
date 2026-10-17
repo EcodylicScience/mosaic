@@ -20,33 +20,20 @@ from mosaic.core.helpers import (
     load_labels_auto,
     load_labels_for_feature_frames,
 )
-
-CALMS21_NAMES = ["attack", "investigation", "mount", "other"]
+from tests.helpers import write_sparse_labels
 
 
 def _sparse(
     path: Path,
     events: list[tuple[int, int, int, int]],
     *,
-    names: list[str] = CALMS21_NAMES,
+    names: list[str] | None = None,
     background_id: int | None = None,
 ) -> Path:
-    """Write an ``individual_pair_v1`` file of ``(frame, id1, id2, label)`` events."""
-    payload: dict[str, object] = {
-        "label_format": "individual_pair_v1",
-        "frames": np.array([e[0] for e in events], dtype=np.int64),
-        "individual_ids": np.array(
-            [[e[1], e[2]] for e in events], dtype=np.int64
-        ).reshape(-1, 2),
-        "labels": np.array([e[3] for e in events], dtype=np.int64),
-        "label_ids": np.arange(len(names), dtype=np.int32),
-        "label_names": np.array(names, dtype=object),
-    }
-    if background_id is not None:
-        payload["background_id"] = np.int32(background_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(path, **payload)  # pyright: ignore[reportArgumentType]
-    return path
+    """A label file of ``(frame, id1, id2, label)`` events, legacy unless told."""
+    if names is None:
+        return write_sparse_labels(path, events, background_id=background_id)
+    return write_sparse_labels(path, events, names=names, background_id=background_id)
 
 
 def _rows(*pairs: tuple[int, int]) -> np.ndarray:

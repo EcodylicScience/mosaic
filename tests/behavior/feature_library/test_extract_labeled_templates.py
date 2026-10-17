@@ -23,7 +23,7 @@ from mosaic.core.pipeline.types import (
     ParquetLoadSpec,
     Result,
 )
-from tests.helpers import run_id_digest, track_table
+from tests.helpers import run_id_digest, track_table, write_sparse_labels
 
 
 class TestMetaColumnReservation:
@@ -514,18 +514,7 @@ def _sparse_labels(
     path: Path, events: list[tuple[int, int, int, int]]
 ) -> dict[tuple[str, str], Path]:
     """A CalMS21-shaped file of ``(frame, id1, id2, label)`` events, no background."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        path,
-        label_format="individual_pair_v1",
-        frames=np.array([e[0] for e in events]),
-        individual_ids=np.array([[e[1], e[2]] for e in events]),
-        labels=np.array([e[3] for e in events]),
-        label_ids=np.arange(4),
-        label_names=np.array(["attack", "investigation", "mount", "other"]),
-        background_id=np.int32(-1),
-    )
-    return {("g", "s"): path}
+    return {("g", "s"): write_sparse_labels(path, events)}
 
 
 @pytest.mark.parametrize("allocation", ["reservoir", "exact"])
