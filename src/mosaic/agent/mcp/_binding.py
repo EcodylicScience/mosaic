@@ -18,7 +18,10 @@ model passes is then ignored. A client on the 2026-07-28 protocol is returned
 ``input_required`` with the elicitation and a request state of
 ``<call digest>.<conditions>``, and retries the call with the answer. The answer
 confirms only a retry whose tool and arguments match the digest. A client on an
-earlier protocol is sent an ``elicitation/create`` request during the call. A
+earlier protocol is sent an ``elicitation/create`` request during the call. An
+accepted answer confirms only the conditions the question named: a call that
+meets another condition by the time it runs, such as a request of its recipe
+opened since, is asked about again. A
 client without form elicitation is refused until the call carries
 ``confirm: true``, and the tool's description tells the model to ask the user
 first.
@@ -152,6 +155,9 @@ ALWAYS_LOAD_META: Final = "anthropic/alwaysLoad"
 
 _STATE_SEPARATOR: Final = "."
 """What separates the call digest from the conditions in a request state."""
+
+_MAX_QUESTIONS: Final = 3
+"""The most times one call asks the user, while each answer meets new conditions."""
 
 type _Answer = Literal["accepted", "declined", "unanswered"]
 """What a confirmation question was answered."""
@@ -355,37 +361,72 @@ async def _call_tool(
         else None
     )
     if answered is not None:
+        # The conditions come back from the client and are not trusted: they
+        # only name what was asked in the refusal, and an answer confirms no
+        # more than those.
         if answered != "accepted":
-            # The conditions come back from the client and are not trusted:
-            # they only name what was asked in the refusal. The tool is not run
-            # again to find them, as it would run unasked if they had cleared.
             return _refused(params.name, answered, _known(asked.split(",")))
-        arguments[_CONFIRM_ARGUMENT] = True
-    output = await _run_tool(backend, params.name, arguments)
+        output = await _run_confirmed(
+            backend, params.name, arguments, _known(asked.split(","))
+        )
+    else:
+        output = await _run_tool(backend, params.name, arguments)
     if not (_asks_to_confirm(output) and eliciting):
         return _tool_result(output)
-    assert isinstance(output, ErrorEnvelope)
-    conditions = _conditions_of(output)
-    question = _confirmation_question(params.name, output, conditions)
-    if ctx.protocol_version in MODERN_PROTOCOL_VERSIONS:
-        return types.InputRequiredResult(
-            input_requests={
-                CONFIRM_INPUT: types.ElicitRequest(
-                    params=types.ElicitRequestFormParams(
-                        message=question, requested_schema=_CONFIRM_SCHEMA
+    for _ in range(_MAX_QUESTIONS):
+        assert isinstance(output, ErrorEnvelope)
+        conditions = _conditions_of(output)
+        question = _confirmation_question(params.name, output, conditions)
+        if ctx.protocol_version in MODERN_PROTOCOL_VERSIONS:
+            return types.InputRequiredResult(
+                input_requests={
+                    CONFIRM_INPUT: types.ElicitRequest(
+                        params=types.ElicitRequestFormParams(
+                            message=question, requested_schema=_CONFIRM_SCHEMA
+                        )
                     )
-                )
-            },
-            request_state=f"{call_digest}{_STATE_SEPARATOR}{','.join(conditions)}",
+                },
+                request_state=(
+                    f"{call_digest}{_STATE_SEPARATOR}{','.join(conditions)}"
+                ),
+            )
+        elicited = await ctx.session.elicit_form(
+            question, _CONFIRM_SCHEMA, related_request_id=ctx.request_id
         )
-    elicited = await ctx.session.elicit_form(
-        question, _CONFIRM_SCHEMA, related_request_id=ctx.request_id
-    )
-    answer = _answer(elicited)
-    if answer != "accepted":
-        return _refused(params.name, answer, conditions)
-    arguments[_CONFIRM_ARGUMENT] = True
-    return _tool_result(await _run_tool(backend, params.name, arguments))
+        answer = _answer(elicited)
+        if answer != "accepted":
+            return _refused(params.name, answer, conditions)
+        output = await _run_confirmed(backend, params.name, arguments, conditions)
+        if not _asks_to_confirm(output):
+            break
+    return _tool_result(output)
+
+
+async def _run_confirmed(
+    backend: LocalBackend,
+    name: str,
+    arguments: Mapping[str, object],
+    asked: Sequence[ConfirmationCondition],
+) -> BaseModel:
+    """Run *name* confirmed for the conditions *asked*, and for no others.
+
+    The call is run first without ``confirm``. One that no longer meets a
+    condition runs then, and one that fails for another reason fails. One
+    that meets only conditions of *asked* runs again with ``confirm``. One
+    that meets a condition the user was not asked about, such as a request
+    opened or a run superseded since the question, is returned refused, so
+    the caller asks again naming every condition it meets now.
+
+    A condition that appears between the two runs is still waived by the
+    second. The window is one tool call long.
+    """
+    output = await _run_tool(backend, name, arguments)
+    if not _asks_to_confirm(output):
+        return output
+    assert isinstance(output, ErrorEnvelope)
+    if not set(_conditions_of(output)) <= set(asked):
+        return output
+    return await _run_tool(backend, name, {**arguments, _CONFIRM_ARGUMENT: True})
 
 
 async def _run_tool(

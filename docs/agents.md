@@ -236,7 +236,10 @@ with the plan before it submits.
 A client that supports MCP elicitation shows you a form listing the conditions, and
 only your answer confirms. With any other client, the tool refuses with reason
 `confirmation_required`, the agent asks you in the conversation, and it repeats the
-call with `confirm` set once you agree. The form has two other outcomes:
+call with `confirm` set once you agree. Your answer confirms only the conditions the
+form named. A call that meets another condition by the time it runs, such as a request
+of the same recipe started since, shows the form again. The form has two other
+outcomes:
 
 - `confirmation_declined`: the form was declined, or accepted with its box unticked.
 - `confirmation_unanswered`: the client cancelled the form, as it does when nobody can

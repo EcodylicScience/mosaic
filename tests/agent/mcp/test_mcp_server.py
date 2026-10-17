@@ -675,6 +675,137 @@ def test_a_request_state_without_conditions_reads_as_none_asked(
     assert starter.started == []
 
 
+def test_an_accepted_answer_does_not_confirm_a_condition_met_since_the_question(
+    backend: LocalBackend, dataset: Dataset, starter: RecordingStarter
+) -> None:
+    """A request of the recipe opened after the question is asked about again."""
+    accepted = types.ElicitResult(action="accept", content={"confirm": True})
+
+    async def body(
+        client: Client,
+    ) -> tuple[types.CallToolResult | types.InputRequiredResult, ...]:
+        uuid = _uuid(dataset)
+        recipe: dict[str, JsonValue] = json.loads(json.dumps(SPEED_RECIPE))
+        plan = await client.call_tool(
+            "plan_recipe", {"dataset": uuid, "recipe": recipe}
+        )
+        shown: dict[str, object] = {
+            "dataset": uuid,
+            "recipe": recipe,
+            "plan_fingerprint": _structured(plan)["fingerprint"],
+            "allow_partial": True,
+        }
+        asked = await client.session.call_tool(
+            "submit_pipeline", shown, allow_input_required=True
+        )
+        assert isinstance(asked, types.InputRequiredResult)
+        _ = submit_request(dataset, speed_recipe())
+        asked_again = await client.session.call_tool(
+            "submit_pipeline",
+            shown,
+            input_responses={"confirm": accepted},
+            request_state=asked.request_state,
+            allow_input_required=True,
+        )
+        assert isinstance(asked_again, types.InputRequiredResult)
+        confirmed = await client.session.call_tool(
+            "submit_pipeline",
+            shown,
+            input_responses={"confirm": accepted},
+            request_state=asked_again.request_state,
+            allow_input_required=True,
+        )
+        return asked, asked_again, confirmed
+
+    asked, asked_again, confirmed = _session(
+        backend, body, elicitation=_answering("accept")
+    )
+
+    assert isinstance(asked, types.InputRequiredResult)
+    assert asked.request_state is not None
+    assert asked.request_state.endswith(".allow_partial")
+    assert isinstance(asked_again, types.InputRequiredResult)
+    assert asked_again.request_state is not None
+    assert asked_again.request_state.endswith(".allow_partial,open_duplicate")
+    assert isinstance(confirmed, types.CallToolResult)
+    assert starter.started == [_structured(confirmed)["request_id"]]
+
+
+@pytest.mark.parametrize("second", ["accept", "decline"])
+def test_a_legacy_client_is_asked_again_about_a_condition_met_since(
+    backend: LocalBackend,
+    dataset: Dataset,
+    starter: RecordingStarter,
+    second: Literal["accept", "decline"],
+) -> None:
+    asked: list[str] = []
+
+    async def answer(
+        context: ClientRequestContext, params: types.ElicitRequestParams
+    ) -> types.ElicitResult:
+        asked.append(params.message)
+        if len(asked) == 1:
+            _ = submit_request(dataset, speed_recipe())
+            return types.ElicitResult(action="accept", content={"confirm": True})
+        if second == "accept":
+            return types.ElicitResult(action="accept", content={"confirm": True})
+        return types.ElicitResult(action="decline")
+
+    result = _session(
+        backend, _plan_then_submit(dataset), mode="legacy", elicitation=answer
+    )
+
+    assert [read_confirmation_tag(question) for question in asked] == [
+        ("submit_pipeline", frozenset({"allow_partial"})),
+        ("submit_pipeline", frozenset({"allow_partial", "open_duplicate"})),
+    ]
+    if second == "accept":
+        assert starter.started == [_structured(result)["request_id"]]
+    else:
+        assert _error(result)["detail"] == {
+            "tool": "submit_pipeline",
+            "conditions": ["allow_partial", "open_duplicate"],
+        }
+        assert starter.started == []
+
+
+def test_an_answer_naming_no_conditions_confirms_none(
+    backend: LocalBackend, dataset: Dataset, starter: RecordingStarter
+) -> None:
+    """A state that an earlier server wrote names nothing, and is asked again."""
+    accepted = types.ElicitResult(action="accept", content={"confirm": True})
+
+    async def body(client: Client) -> types.CallToolResult | types.InputRequiredResult:
+        uuid = _uuid(dataset)
+        recipe: dict[str, JsonValue] = json.loads(json.dumps(SPEED_RECIPE))
+        plan = await client.call_tool(
+            "plan_recipe", {"dataset": uuid, "recipe": recipe}
+        )
+        shown: dict[str, object] = {
+            "dataset": uuid,
+            "recipe": recipe,
+            "plan_fingerprint": _structured(plan)["fingerprint"],
+            "allow_partial": True,
+        }
+        asked = await client.session.call_tool(
+            "submit_pipeline", shown, allow_input_required=True
+        )
+        assert isinstance(asked, types.InputRequiredResult)
+        assert asked.request_state is not None
+        return await client.session.call_tool(
+            "submit_pipeline",
+            shown,
+            input_responses={"confirm": accepted},
+            request_state=asked.request_state.partition(".")[0],
+            allow_input_required=True,
+        )
+
+    result = _session(backend, body, elicitation=_answering("accept"))
+
+    assert isinstance(result, types.InputRequiredResult)
+    assert starter.started == []
+
+
 def test_the_resources_and_templates_are_listed_and_read(
     backend: LocalBackend, dataset: Dataset
 ) -> None:

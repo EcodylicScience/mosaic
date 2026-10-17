@@ -255,8 +255,7 @@ recipe whose only condition was that it covered the dataset.
 - The question's last line is `[mosaic-confirm tool=<tool> conditions=<a>,<b>]`,
   which `mosaic.agent.mcp.spec.read_confirmation_tag` reads. A finding is put on one
   line and a `bind` finding quotes each step id, so a step id cannot forge the tag. A
-  2026-07-28 request state is `<call digest>.<conditions>`; a state without the
-  suffix still confirms its call.
+  2026-07-28 request state is `<call digest>.<conditions>`.
 - New `mosaic agent confirm-hook --approve CONDITION --otherwise ask|cancel|decline`
   answers the confirmations of an unattended run from a Claude Code `Elicitation`
   hook (`mosaic.agent.confirm_hook.answer_elicitation`). It defaults to `decline`,
@@ -264,6 +263,11 @@ recipe whose only condition was that it covered the dataset.
   cannot read the same way. The agents page shows the settings.
 - `CONFIRM_FIELD` moved from `mosaic.agent.mcp._binding` to `mosaic.agent.mcp.spec`,
   and `_binding` still exports it.
+- An accepted form confirms only the conditions it named. The call is checked again
+  before it runs, and one that meets another condition by then, such as an
+  `open_duplicate` from a request started meanwhile, is asked about again: a
+  2026-07-28 client gets a new `input_required`, an earlier one a second form. A state
+  without the conditions suffix now confirms nothing and is asked again.
 
 
 **Conversion, the train/test split and scoring are recipe steps.** One recipe and one
