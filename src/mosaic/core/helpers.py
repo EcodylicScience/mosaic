@@ -251,11 +251,14 @@ def _event_ids(npz: "np.lib.npyio.NpzFile") -> np.ndarray:
 def _rows_of_filter(
     individual_filter: "Tuple[int, int] | np.ndarray", n_rows: int
 ) -> np.ndarray:
-    """*individual_filter* as one ``(id1, id2)`` per row, a tuple broadcast."""
-    if isinstance(individual_filter, tuple):
-        pair = np.asarray(individual_filter, dtype=np.int64).reshape(1, 2)
-        return np.repeat(pair, n_rows, axis=0)
+    """*individual_filter* as one ``(id1, id2)`` per row, a single pair broadcast.
+
+    A single pair is any two ids -- a tuple, or the list or array a caller held
+    it in -- which a per-row array, two-dimensional, can never be mistaken for.
+    """
     rows = np.asarray(individual_filter)
+    if rows.shape == (2,):
+        return np.repeat(rows.astype(np.int64).reshape(1, 2), n_rows, axis=0)
     if rows.shape != (n_rows, 2):
         raise ValueError(
             f"individual_filter must be one (id1, id2) per feature frame, shape "

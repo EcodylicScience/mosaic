@@ -160,6 +160,17 @@ def test_a_single_pair_filter_is_directed(tmp_path: Path) -> None:
     assert labels.tolist() == [UNLABELED]
 
 
+def test_a_single_pair_held_in_a_list_is_broadcast(tmp_path: Path) -> None:
+    """The unpacking it replaced took any two ids, not only a tuple."""
+    path = _sparse(tmp_path / "a.npz", [(0, 0, 1, 2)], background_id=UNLABELED)
+
+    labels = load_labels_for_feature_frames(
+        path, np.array([0, 0]), individual_filter=np.array([0, 1])
+    )
+
+    assert labels.tolist() == [2, 2]
+
+
 def test_a_filter_of_the_wrong_shape_is_refused(tmp_path: Path) -> None:
     path = _sparse(tmp_path / "a.npz", [(0, 0, 1, 2)], background_id=UNLABELED)
 
