@@ -148,6 +148,15 @@ declared entries. A selector that names none of its entries still reads `absent`
 `mosaic inventory`, `get_inventory` and a narrowed `inventory_wire` apply the same
 rule through `feature_run_target`.
 
+**CalMS21 tracks no longer carry the ground-truth `label` column (`calms21_npy` and
+`calms21_json` 0.4).** The converter copied each sequence's annotations into the
+tracks, so every feature built on them carried the answer it was later scored on, and
+a fitter that reads numeric columns by wildcard could train on it. Labels now come
+only from `convert-labels`. Converting again writes a new tracks variant beside the
+0.3 one; an existing dataset keeps resolving its 0.3 variant until it is reconverted.
+After reconverting, pass `tracks_run_id=` or remove the old variant, since an entry
+with two variants is refused.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

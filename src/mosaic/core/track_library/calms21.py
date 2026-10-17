@@ -53,11 +53,6 @@ def _calms21_seq_to_trex_df(
     scores = (
         np.asarray(one_seq_dict["scores"]) if "scores" in one_seq_dict else None
     )  # (T, 2, L) or None
-    ann = (
-        np.asarray(one_seq_dict["annotations"])
-        if "annotations" in one_seq_dict
-        else None
-    )
     meta = one_seq_dict.get("metadata", {})
     fps = float(meta.get("fps", meta.get("frame_rate", 30.0)))
 
@@ -91,13 +86,6 @@ def _calms21_seq_to_trex_df(
         for k in range(n_lm):
             data[f"poseX{k}"] = X[:, k]
             data[f"poseY{k}"] = Y[:, k]
-
-        # Optional: label per frame if present (flatten if multi-dim)
-        if ann is not None:
-            lbl = ann
-            if lbl.ndim > 1:
-                lbl = lbl[:, 0]
-            data["label"] = lbl.astype(int, copy=False)
 
         # Optional: keypoint scores columns, if provided
         if scores is not None:
@@ -210,7 +198,9 @@ class Calms21Converter(TrackConverter[Calms21Params]):
     # 0.3: derived columns are gone, and so are the eighteen TRex-shaped
     # placeholders -- fifteen of them all-NaN floats that every template matrix
     # built from CalMS21 was carrying.
-    version = "0.3"
+    # 0.4: the ground-truth `label` column is gone; labels come only from
+    # convert-labels, so a feature never carries the answer it is scored on.
+    version = "0.4"
     enumerable = True
     output_schema = "mosaic_v1"
     Params = Calms21Params

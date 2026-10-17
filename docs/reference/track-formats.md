@@ -16,8 +16,8 @@ by `mosaic convert-tracks`.
 
 | `src_format` | Version | Emits | Enumerable | Merges per sequence | What it reads |
 | --- | --- | --- | --- | --- | --- |
-| `calms21_json` | `0.3` | `mosaic_v1` | yes | no | The same conversion, reading the ``.json`` spelling of a CalMS21 file. |
-| `calms21_npy` | `0.3` | `mosaic_v1` | yes | no | CalMS21 -> a ``mosaic_v1`` table, one ``(group, sequence)`` at a time. |
+| `calms21_json` | `0.4` | `mosaic_v1` | yes | no | The same conversion, reading the ``.json`` spelling of a CalMS21 file. |
+| `calms21_npy` | `0.4` | `mosaic_v1` | yes | no | CalMS21 -> a ``mosaic_v1`` table, one ``(group, sequence)`` at a time. |
 | `deeplabcut` | `0.2` | `mosaic_v1` | no | no | DeepLabCut ``.csv`` / ``.h5`` -> a ``mosaic_v1`` table. |
 | `sleap_analysis_h5` | `0.2` | `mosaic_v1` | no | no | SLEAP analysis ``.h5`` -> a ``mosaic_v1`` table. |
 | `trex_npz` | `0.3` | `trex_v2` | no | yes | Per-id TRex NPZ -> the standard T-Rex-like table. |

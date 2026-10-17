@@ -36,7 +36,7 @@
   "sleap/run-id-settings-media": "sleap.1.6-f2c9ebd760",
   "sleap/single-model": "96419ddf7f",
   "sleap/top-down": "4310d7ce73",
-  "tracks/convert-variant": "convert-calms21_npy.0.3-3d47f5c74c",
+  "tracks/convert-variant": "convert-calms21_npy.0.4-3d47f5c74c",
   "tracks/infer-variant": "infer-points.0.1-d2b63193c4",
   "tracks/infer-variant-media": "infer-points.0.1-8321c22b0b",
   "tracks/litpose-variant": "litpose.2.3-0bef161dde",

@@ -537,15 +537,37 @@ def test_calms21_label_version_says_its_output_identity_moved() -> None:
 
 
 def test_calms21_version_says_its_output_identity_moved() -> None:
-    """A variant identity covers what the recipe emits, and that changed twice.
+    """A variant identity covers what the recipe emits, and that changed three times.
 
     0.2 changed the entry keys. 0.3 changed the columns: the derived ones are
     gone, and so are eighteen TRex-shaped placeholders -- fifteen of them
     all-NaN floats that every template matrix built from CalMS21 was carrying.
+    0.4 dropped the ground-truth ``label`` column.
     """
     from mosaic.core.track_library.calms21 import Calms21Converter
 
-    assert Calms21Converter.version == "0.3"
+    assert Calms21Converter.version == "0.4"
+
+
+def test_calms21_tracks_carry_no_ground_truth_label() -> None:
+    """The answer a classifier is scored on is not a track column.
+
+    A ``label`` column joined every feature built on the tracks, and a scope-free
+    fitter that reads numeric columns by wildcard trained on it. Labels reach a
+    run only through convert-labels.
+    """
+    from mosaic.core.track_library.calms21 import _calms21_seq_to_trex_df
+
+    frame = _calms21_seq_to_trex_df(
+        {
+            "keypoints": np.zeros((4, 2, 2, 7), dtype=float),
+            "annotations": np.array([0, 1, 2, 3]),
+        },
+        "g",
+        "seq",
+    )
+
+    assert "label" not in frame.columns
 
 
 def test_calms21_no_longer_fabricates_trex_shaped_placeholders() -> None:
