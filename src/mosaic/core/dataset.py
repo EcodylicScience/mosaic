@@ -22,6 +22,7 @@ from typing import (
     Mapping,
     Optional,
     Tuple,
+    cast,
     overload,
 )
 
@@ -6871,13 +6872,13 @@ class Dataset:
             if progress is not None:
                 progress(done, total)
 
-        metadata: Mapping[str, Any] = converter.get_metadata()
         registration: dict[str, JsonValue] = {
             "run_id": variant,
             "label_format": converter.label_format,
             "updated_at": _now_iso(),
-            **metadata,
         }
+        # A converter's metadata is JSON by contract, and the manifest writes it.
+        registration.update(cast("dict[str, JsonValue]", converter.get_metadata()))
 
         def register(manifest: DatasetManifest) -> None:
             section = manifest.meta.get("labels")
