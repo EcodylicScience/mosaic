@@ -55,7 +55,8 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   `read_confirmation_tag` and operators' Claude Code hooks (`mosaic agent
   confirm-hook`) parse. Changing its grammar is a contract change. Finding text is
   put on one line, and a finding quotes dataset content with `repr`, so nothing in a
-  dataset can forge the tag.
+  dataset can forge the tag. `confirm_hook` answers a confirmation whose tag it cannot
+  read with its fallback, as it answers an unapproved one (`test_confirm_hook.py`).
 - `docs/agents.md` lists the operations the server leaves to the user, such as
   deletion, `--apply` on a sweep or prune verb, and manifest writes. Do not add a tool
   for one.
