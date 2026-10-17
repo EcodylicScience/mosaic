@@ -289,6 +289,28 @@ def test_cancel_refuses_an_attempt_on_another_host(
     assert "host 'elsewhere'" in result.stderr
 
 
+def test_cancel_assume_exited_records_an_attempt_on_another_host(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    from mosaic.runlog import JsonlRunLog, new_execution_id, read_run, run_log_path
+
+    manifest, ds = dataset
+    execution_id = new_execution_id()
+    with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as log:
+        log.started(kind="op", target="train-sleap", host="elsewhere", pid=424242)
+    argv = ["cancel", "-m", str(manifest), "--execution-id", execution_id]
+
+    refused = runner.invoke(app, argv)
+    res = invoke_json([*argv, "--assume-exited", "--json"])
+
+    assert refused.exit_code == 1
+    assert "--assume-exited" in refused.stderr
+    assert (res["outcome"], res["status"]) == ("recorded", "cancelled")
+    snapshot = read_run(ds.base_dir / ".mosaic" / "runs", execution_id)
+    assert snapshot is not None
+    assert snapshot["status"] == "cancelled"
+
+
 def test_cancel_records_an_unstarted_request_cancelled(
     dataset: tuple[Path, Dataset],
 ) -> None:

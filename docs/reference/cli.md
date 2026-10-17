@@ -109,7 +109,8 @@ $ mosaic status [OPTIONS]
 Request cancellation of a running attempt (SIGTERM to its recorded pid).
 
 With `--request`, cancel a pipeline request instead. A process on another
-host is not signalled, and the command exits 1.
+host is not signalled. It is recorded cancelled when its run-log proves it
+gone, or with `--assume-exited`, and the command otherwise exits 1.
 
 **Usage**:
 
@@ -122,6 +123,7 @@ $ mosaic cancel [OPTIONS]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--execution-id <str>`: Attempt ULID to cancel.
 * `--request <str>`: Pipeline request to cancel: SIGTERM to its driver, or to its running steps without one, and its unstarted steps recorded cancelled. Not for a request whose steps a queue dispatches.
+* `--assume-exited`: Record as cancelled an attempt on another host whose run-log declares no heartbeat, asserting that its process has exited. Refused for one whose heartbeat is current.
 * `--json`: Emit the result as JSON on stdout.
 * `--help`: Show this message and exit.
 
@@ -1097,7 +1099,8 @@ Run every step of a recipe here, in order, skipping what is already done.
 
 An open request of the same recipe over an overlapping scope is reported on
 stderr. With ``--request`` the steps of a submitted request run instead, and
-the command exits 1 when the request failed and 130 when it was cancelled.
+the command exits 1 when the request failed. Either way it exits 130 when the
+run was cancelled, by SIGTERM, SIGINT or ``mosaic cancel``.
 
 **Usage**:
 

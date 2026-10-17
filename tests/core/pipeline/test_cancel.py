@@ -7,6 +7,8 @@ check where SIGTERM is delivered and how each run-log ends.
 
 from __future__ import annotations
 
+import datetime
+import json
 import signal
 import socket
 import subprocess
@@ -17,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline import cancel as cancel_module
 from mosaic.core.pipeline.cancel import (
     AttemptNotFound,
     CannotSignal,
@@ -25,6 +28,7 @@ from mosaic.core.pipeline.cancel import (
     cancel_request,
 )
 from mosaic.core.pipeline.error_envelope import error_envelope
+from mosaic.core.pipeline.graph import liveness as liveness_module
 from mosaic.core.pipeline.graph import (
     Request,
     driver_lease_path,
@@ -418,3 +422,145 @@ def test_an_in_process_request_is_cancelled_step_by_step(
     ]
     assert sleeper.wait(timeout=10) == -signal.SIGTERM
     assert result.status == "cancelled"
+
+
+# --- attempts that liveness proves gone ---------------------------------------
+
+
+def _start_elsewhere(
+    ds: Dataset, execution_id: str, *, silent_for: float, interval: float = 60.0
+) -> None:
+    """A run-log of another host, whose last line is *silent_for* seconds old."""
+    stamp = (
+        datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=silent_for)
+    ).isoformat()
+    started: dict[str, object] = {
+        "t": stamp,
+        "ev": "started",
+        "kind": "feature",
+        "target": "speed",
+        "host": OTHER_HOST,
+        "pid": 7,
+        "created_at": stamp,
+    }
+    if interval:
+        started["liveness_interval"] = interval
+    path = run_log_dir(ds.base_dir) / f"{execution_id}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_text(json.dumps(started) + "\n")
+
+
+def test_an_attempt_silent_on_another_host_is_recorded_cancelled(
+    tracked: Dataset,
+) -> None:
+    execution_id = new_execution_id()
+    _start_elsewhere(tracked, execution_id, silent_for=3600)
+
+    result = cancel_attempt(run_log_dir(tracked.base_dir), execution_id)
+
+    assert (result.outcome, result.status, result.signalled) == (
+        "recorded",
+        "cancelled",
+        False,
+    )
+    assert OTHER_HOST in result.message
+    assert _status(tracked, execution_id) == "cancelled"
+
+
+def test_an_attempt_alive_on_another_host_is_not_signalled(tracked: Dataset) -> None:
+    execution_id = new_execution_id()
+    _start_elsewhere(tracked, execution_id, silent_for=30)
+
+    result = cancel_attempt(run_log_dir(tracked.base_dir), execution_id)
+
+    assert result.outcome == "other_host"
+    assert "--assume-exited" not in result.message
+    assert _status(tracked, execution_id) == "running"
+
+
+def test_an_attempt_of_an_earlier_boot_is_recorded_cancelled(
+    tracked: Dataset,
+    sleeper: subprocess.Popen[bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pid recorded before a reboot may name another process now."""
+    monkeypatch.setattr(liveness_module, "current_boot_id", lambda: "linux:now")
+    monkeypatch.setattr(cancel_module, "current_boot_id", lambda: "linux:now")
+    execution_id = new_execution_id()
+    path = run_log_dir(tracked.base_dir) / f"{execution_id}.jsonl"
+    with JsonlRunLog(path, execution_id) as log:
+        log.started(
+            kind="feature",
+            target="speed",
+            host=socket.gethostname(),
+            pid=sleeper.pid,
+            boot_id="linux:before",
+        )
+
+    result = cancel_attempt(run_log_dir(tracked.base_dir), execution_id)
+
+    assert (result.outcome, result.signalled) == ("recorded", False)
+    assert "rebooted" in result.message
+    assert sleeper.poll() is None, "a process of the new boot was signalled"
+
+
+def test_a_request_whose_step_went_silent_elsewhere_is_cancelled_and_closes(
+    tracked: Dataset, submitted: Request
+) -> None:
+    _start_elsewhere(tracked, submitted.execution_of("speed"), silent_for=3600)
+
+    result = cancel_request(tracked, submitted.request_id)
+
+    assert (result.outcome, result.status) == ("recorded", "cancelled")
+    assert [step.outcome for step in result.steps] == ["recorded", "recorded"]
+    assert request_rollup(tracked.base_dir, submitted).status == "cancelled"
+
+
+def test_assume_exited_records_an_attempt_of_unknown_liveness(
+    tracked: Dataset, submitted: Request
+) -> None:
+    """A run-log written before liveness, as the stuck CalMS21 attempt's was."""
+    speed = submitted.execution_of("speed")
+    _start_elsewhere(tracked, speed, silent_for=3600, interval=0)
+
+    refused = cancel_request(tracked, submitted.request_id)
+    result = cancel_request(tracked, submitted.request_id, assume_exited=True)
+
+    assert refused.outcome == "other_host"
+    assert f"--request {submitted.request_id} --assume-exited" in refused.message
+    assert (result.outcome, result.status) == ("recorded", "cancelled")
+    assert _status(tracked, speed) == "cancelled"
+
+
+def test_assume_exited_refuses_an_attempt_with_a_current_heartbeat(
+    tracked: Dataset, submitted: Request
+) -> None:
+    speed = submitted.execution_of("speed")
+    _start_elsewhere(tracked, speed, silent_for=30)
+
+    with pytest.raises(CannotSignal, match="heartbeat is current"):
+        _ = cancel_attempt(run_log_dir(tracked.base_dir), speed, assume_exited=True)
+    with pytest.raises(CannotSignal, match="heartbeat is current"):
+        _ = cancel_request(tracked, submitted.request_id, assume_exited=True)
+
+    assert _status(tracked, speed) == "running"
+    assert _status(tracked, submitted.execution_of("templates")) == ""
+
+
+def test_a_stale_other_host_lease_step_pid_is_never_signalled_here(
+    tracked: Dataset, submitted: Request, sleeper: subprocess.Popen[bytes]
+) -> None:
+    """The pid of another host's lease names an unrelated process on this one."""
+    _ = write_driver_lease(
+        tracked.base_dir,
+        submitted.request_id,
+        stale=True,
+        host=OTHER_HOST,
+        step_id="speed",
+        step_pid=sleeper.pid,
+    )
+
+    result = cancel_request(tracked, submitted.request_id)
+
+    assert [step.outcome for step in result.steps] == ["recorded", "recorded"]
+    assert sleeper.poll() is None, "a process of this host was signalled"

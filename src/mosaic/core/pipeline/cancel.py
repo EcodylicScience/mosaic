@@ -8,8 +8,14 @@ group and records every step without a terminal record ``cancelled``.
 
 A run-log has one writer. A cancel therefore records an attempt itself only when
 the attempt's process has exited, or when its step has not started and a driver
-will not start it. A process on another host is not signalled, and a request with
-one is left as it is.
+will not start it. A process on another host is not signalled. An attempt there
+is recorded ``cancelled`` once its run-log proves the process gone
+(:mod:`~mosaic.core.pipeline.graph.liveness`): its host rebooted, or it declared a
+liveness interval and fell silent. An attempt whose liveness this host cannot
+judge, as one written before mosaic recorded liveness, is recorded only when the
+caller asserts that its process has exited (``assume_exited``, ``mosaic cancel
+--assume-exited``). Otherwise a request with a process on another host is left as
+it is.
 
 Importing this module leaves pandas, cv2, av and the feature library unloaded
 (``tests/meta/test_status_imports.py``).
@@ -33,14 +39,16 @@ from mosaic.runlog import (
 )
 
 from .error_kind import ClassifiedError, ErrorKind
-from .graph.driver_lease import lease_is_live, read_driver_lease
+from .graph.driver_lease import lease_is_live, lease_step_may_run, read_driver_lease
+from .graph.liveness import is_local, snapshot_liveness, step_liveness
 from .graph.rollup import RequestStatus, request_rollup
 from .graph.store import load_request
-from .markers import process_running_since
+from .markers import boots_differ, current_boot_id, process_running_since
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.json_value import JsonValue
+    from mosaic.runlog import RunLogSnapshot
 
     from .graph.driver_lease import DriverLease
     from .graph.model import Request
@@ -64,8 +72,8 @@ type CancelOutcome = Literal["signalled", "recorded", "ended", "other_host"]
 ``signalled``
     SIGTERM was delivered. The process records how it ended.
 ``recorded``
-    The attempt's process had exited, or its step had not started. The cancel
-    recorded the attempt ``cancelled``.
+    The attempt's process had exited, or was proved or asserted gone, or its step
+    had not started. The cancel recorded the attempt ``cancelled``.
 ``ended``
     The attempt or request was already over. The cancel changed nothing.
 ``other_host``
@@ -187,27 +195,35 @@ class CannotSignal(ClassifiedError):
         return {"execution_id": self.execution_id, "pid": self.pid}
 
 
-def cancel_attempt(run_dir: Path | str, execution_id: str) -> AttemptCancel:
+def cancel_attempt(
+    run_dir: Path | str, execution_id: str, *, assume_exited: bool = False
+) -> AttemptCancel:
     """Cancel one running attempt by sending SIGTERM to the pid its run-log records.
 
-    An attempt whose process has exited is recorded ``cancelled``
-    (:func:`~mosaic.runlog.record_exited_attempt`). So is one whose pid names a
-    process that began after the attempt's ``started`` record, as a pid reused
-    after a reboot does, and that process is not signalled. An attempt whose
-    process received the signal keeps its run-log as it is, because that process
-    records how it ended.
+    An attempt whose process is provably gone is recorded ``cancelled``
+    (:func:`~mosaic.runlog.record_exited_attempt`): its pid exited here, or names
+    a process that began after the attempt's ``started`` record, as a pid reused
+    after a reboot does, or its host rebooted, or it declared a liveness interval
+    and fell silent on another host (:mod:`~mosaic.core.pipeline.graph.liveness`).
+    Such a process is not signalled. An attempt whose process received the signal
+    keeps its run-log as it is, because that process records how it ended.
 
     Args:
         run_dir: The ``.mosaic/runs`` directory.
         execution_id: The attempt.
+        assume_exited: The caller asserts that the attempt's process on another
+            host has exited, though its run-log cannot show it. Such an attempt
+            is recorded ``cancelled``. Ignored for an attempt on this host.
 
     Returns:
-        What the cancel did. An attempt on another host is left as it is.
+        What the cancel did. An attempt on another host whose process may still
+        run is left as it is.
 
     Raises:
         AttemptNotFound: The attempt's run-log is absent.
-        CannotSignal: The run-log records a pid of 0, or this process may not
-            signal the pid.
+        CannotSignal: The run-log records a pid of 0, this process may not
+            signal the pid, or *assume_exited* names an attempt on another host
+            whose run-log is current.
     """
     snapshot = read_run(run_dir, execution_id)
     if snapshot is None:
@@ -222,14 +238,52 @@ def cancel_attempt(run_dir: Path | str, execution_id: str) -> AttemptCancel:
             host=host,
             message=f"run {execution_id} already {status}; nothing to cancel.",
         )
-    if host and host != socket.gethostname():
+    liveness = snapshot_liveness(snapshot)
+    if liveness == "dead":
+        record_exited_attempt(run_dir, execution_id, "cancelled")
+        return _attempt_result(
+            execution_id,
+            "recorded",
+            "cancelled",
+            pid=pid,
+            host=host,
+            message=f"{_gone(snapshot)}; recorded run {execution_id} as cancelled.",
+        )
+    if not is_local(host, snapshot["pid_ns"]):
+        if liveness == "alive":
+            if assume_exited:
+                raise CannotSignal(
+                    f"run {execution_id} on host {host!r} wrote its run-log at "
+                    f"{snapshot['heartbeat_at']}; its heartbeat is current, so its "
+                    "process has not exited.",
+                    execution_id=execution_id,
+                    pid=pid,
+                )
+        elif assume_exited:
+            record_exited_attempt(run_dir, execution_id, "cancelled")
+            return _attempt_result(
+                execution_id,
+                "recorded",
+                "cancelled",
+                pid=pid,
+                host=host,
+                message=(
+                    f"recorded run {execution_id} on host {host!r} as cancelled, "
+                    "as its process was asserted to have exited."
+                ),
+            )
         return _attempt_result(
             execution_id,
             "other_host",
             status,
             pid=pid,
             host=host,
-            message=_other_host_message("Run", host),
+            message=_other_host_message("Run", host)
+            + (
+                ""
+                if liveness == "alive"
+                else _assume_exited_hint(f"--execution-id {execution_id}")
+            ),
         )
     if pid <= 0:
         raise CannotSignal(
@@ -261,7 +315,9 @@ def cancel_attempt(run_dir: Path | str, execution_id: str) -> AttemptCancel:
     )
 
 
-def cancel_request(ds: Dataset, request_id: str) -> RequestCancel:
+def cancel_request(
+    ds: Dataset, request_id: str, *, assume_exited: bool = False
+) -> RequestCancel:
     """Cancel a pipeline request that has not ended.
 
     A request whose driver runs on this host receives SIGTERM through the pid of
@@ -279,7 +335,9 @@ def cancel_request(ds: Dataset, request_id: str) -> RequestCancel:
     request receives SIGTERM like any other process.
 
     A request is left as it is when its live driver runs on another host, or when
-    one of its running step processes does.
+    one of its step processes there may still run. A step on another host whose
+    process is provably gone is recorded ``cancelled`` (:func:`cancel_attempt`),
+    and so is one of unknown liveness given *assume_exited*.
 
     The request is one that a local driver or a person runs step by step. A queue
     that dispatches its steps holds no lease, and a step that the queue starts
@@ -288,6 +346,8 @@ def cancel_request(ds: Dataset, request_id: str) -> RequestCancel:
     Args:
         ds: The dataset the request was submitted against.
         request_id: The request.
+        assume_exited: The caller asserts that the request's processes on
+            another host have exited, though their run-logs cannot show it.
 
     Returns:
         What the cancel did.
@@ -296,9 +356,10 @@ def cancel_request(ds: Dataset, request_id: str) -> RequestCancel:
         RequestNotFound: The request file is absent.
         RequestUnreadable: The request file is not valid JSON or not a valid
             request.
-        CannotSignal: A running step's run-log records a pid of 0, or this
-            process may not signal the driver or a step. A step refused before
-            any is signalled leaves the request as it was.
+        CannotSignal: A running step's run-log records a pid of 0, this
+            process may not signal the driver or a step, or *assume_exited*
+            names a step on another host whose run-log is current. A step
+            refused before any is signalled leaves the request as it was.
     """
     request = read_request(ds.base_dir, request_id)
     rollup = request_rollup(ds.base_dir, request)
@@ -313,7 +374,9 @@ def cancel_request(ds: Dataset, request_id: str) -> RequestCancel:
         )
     here = socket.gethostname()
     lease = read_driver_lease(ds.base_dir, request_id)
-    elsewhere = _other_host(lease, rollup.steps, here)
+    elsewhere = _other_host(
+        request_id, lease, rollup.steps, here, assume_exited=assume_exited
+    )
     if elsewhere:
         return RequestCancel(
             request_id=request_id,
@@ -341,11 +404,15 @@ def cancel_request(ds: Dataset, request_id: str) -> RequestCancel:
             ),
         )
     for attempt in rollup.steps:
-        if attempt.started and not attempt.terminal:
+        if (
+            attempt.started
+            and not attempt.terminal
+            and is_local(attempt.host, attempt.pid_ns)
+        ):
             _check_signallable(attempt)
     logs = run_log_dir(ds.base_dir)
     steps = tuple(
-        cancel_attempt(logs, attempt.execution_id)
+        cancel_attempt(logs, attempt.execution_id, assume_exited=assume_exited)
         if attempt.started
         else _cancel_unstarted(ds, request, attempt, lease)
         for attempt in rollup.steps
@@ -387,34 +454,66 @@ def read_request(base_dir: Path, request_id: str) -> Request:
 
 
 def _other_host(
-    lease: DriverLease | None, steps: tuple[StepAttempt, ...], here: str
+    request_id: str,
+    lease: DriverLease | None,
+    steps: tuple[StepAttempt, ...],
+    here: str,
+    *,
+    assume_exited: bool,
 ) -> str:
     """Return why a process of the request is on another host, ``""`` when none is.
 
     A live lease of another host names a running driver there, and its steps run
-    there too. A stale one names a step process there that may still run, as
-    :func:`~mosaic.core.pipeline.graph.driver_lease.live_step_process` counts it.
+    there too. A stale one names a step process there that may still run, until
+    the lease is :data:`~mosaic.core.pipeline.graph.driver_lease.STALE_STEP_SECONDS`
+    old or *assume_exited* is given. A started step there may still run unless its
+    run-log proves it ``dead``, or it is ``unknown`` and *assume_exited* is given
+    (:mod:`~mosaic.core.pipeline.graph.liveness`).
+
+    Raises:
+        CannotSignal: *assume_exited* names a step on another host whose run-log
+            is current.
     """
+    hint = _assume_exited_hint(f"--request {request_id}")
     if lease is not None and lease.host != here:
         if lease_is_live(lease):
             return _other_host_message(
                 f"Request {lease.request_id} is driven by pid {lease.pid}, which",
                 lease.host,
             )
-        if lease.step_pid > 0 and any(
-            attempt.step_id == lease.step_id and not attempt.started
-            for attempt in steps
+        if (
+            lease.step_pid > 0
+            and not assume_exited
+            and lease_step_may_run(lease)
+            and any(
+                attempt.step_id == lease.step_id and not attempt.started
+                for attempt in steps
+            )
         ):
             return _other_host_message(
                 f"Step {lease.step_id!r} runs as pid {lease.step_pid}, which",
                 lease.host,
             )
     for attempt in steps:
-        if attempt.started and not attempt.terminal and attempt.host not in ("", here):
-            return _other_host_message(
-                f"Step {attempt.step_id!r} runs as pid {attempt.pid}, which",
-                attempt.host,
+        if not attempt.started or attempt.terminal:
+            continue
+        if is_local(attempt.host, attempt.pid_ns):
+            continue
+        liveness = step_liveness(attempt)
+        if liveness == "dead" or (liveness == "unknown" and assume_exited):
+            continue
+        if liveness == "alive" and assume_exited:
+            raise CannotSignal(
+                f"step {attempt.step_id!r} on host {attempt.host!r} wrote its "
+                f"run-log at {attempt.heartbeat_at}; its heartbeat is current, so "
+                "its process has not exited.",
+                execution_id=attempt.execution_id,
+                pid=attempt.pid,
             )
+        return _other_host_message(
+            f"Step {attempt.step_id!r} runs as pid {attempt.pid}, which",
+            attempt.host,
+        ) + ("" if liveness == "alive" else hint)
     return ""
 
 
@@ -453,16 +552,43 @@ def _other_host_message(subject: str, host: str) -> str:
     )
 
 
+def _assume_exited_hint(target: str) -> str:
+    """Return the sentence that names ``--assume-exited`` for *target*."""
+    return (
+        " Its run-log declares no heartbeat, so this host cannot tell whether it "
+        "still runs. If that process has exited, record it with 'mosaic cancel "
+        f"--manifest <dataset.yaml> {target} --assume-exited'."
+    )
+
+
+def _gone(snapshot: RunLogSnapshot) -> str:
+    """Return why the process of an attempt read ``dead`` is gone."""
+    host, pid = snapshot["host"], snapshot["pid"]
+    if host == socket.gethostname() and boots_differ(
+        snapshot["boot_id"], current_boot_id()
+    ):
+        return f"host {host!r} rebooted after run {snapshot['execution_id']} started"
+    if pid > 0 and is_local(host, snapshot["pid_ns"]):
+        return f"pid {pid} for run {snapshot['execution_id']} had already exited"
+    return (
+        f"run {snapshot['execution_id']} on host {host!r} wrote nothing since "
+        f"{snapshot['heartbeat_at']}"
+    )
+
+
 def _cancel_unstarted(
     ds: Dataset, request: Request, attempt: StepAttempt, lease: DriverLease | None
 ) -> AttemptCancel:
     """Cancel a step whose run-log is absent, when the request's driver has exited.
 
     A step process that the stale lease names may not have written its run-log
-    yet, and receives SIGTERM. Any other step is recorded ``cancelled``.
+    yet, and receives SIGTERM. Any other step is recorded ``cancelled``. Only a
+    lease of this host names a process here: a pid of another host's lease is
+    never looked up or signalled on this one.
     """
     if (
         lease is not None
+        and lease.host == socket.gethostname()
         and lease.step_id == attempt.step_id
         and process_running_since(lease.step_pid, lease.refreshed_at)
         and _send_sigterm(lease.step_pid, execution_id=attempt.execution_id)

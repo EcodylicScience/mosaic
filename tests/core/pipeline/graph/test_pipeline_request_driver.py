@@ -373,3 +373,50 @@ def test_the_detach_flag_needs_a_request(tracked: Dataset) -> None:
     assert result.exit_code == 1
     assert result.stdout == ""
     assert "--detach is used with --request" in result.stderr
+
+
+def _started_elsewhere(
+    ds: Dataset, request: Request, step_id: str, *, interval: float
+) -> None:
+    """A run-log of another host whose last line is an hour old."""
+    execution_id = request.execution_of(step_id)
+    stamp = "2026-01-01T00:00:00+00:00"
+    started: dict[str, object] = {
+        "t": stamp,
+        "ev": "started",
+        "kind": "feature",
+        "target": step_id,
+        "host": "another-host.invalid",
+        "pid": 7,
+        "created_at": stamp,
+    }
+    if interval:
+        started["liveness_interval"] = interval
+    path = run_log_path(ds.base_dir, execution_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_text(json.dumps(started) + "\n")
+
+
+def test_a_request_whose_step_went_silent_elsewhere_resumes(
+    tracked: Dataset, submitted: Request
+) -> None:
+    """A container that died with its step, as the CalMS21 one did."""
+    _started_elsewhere(tracked, submitted, "speed", interval=60.0)
+    assert request_status_wire(tracked.base_dir, submitted).verdict == "orphaned"
+
+    resumed = run_request(tracked, submitted)
+
+    assert (resumed.status, resumed.ran) == ("finished", ("speed", "templates"))
+
+
+def test_a_resume_refused_by_a_step_of_unknown_liveness_says_how_to_close_it(
+    tracked: Dataset, submitted: Request
+) -> None:
+    _started_elsewhere(tracked, submitted, "speed", interval=0.0)
+
+    with pytest.raises(StepStillRunning) as raised:
+        _ = run_request(tracked, submitted)
+
+    assert raised.value.liveness == "unknown"
+    assert f"--request {submitted.request_id} --assume-exited" in str(raised.value)
+    assert "submit the recipe again" in str(raised.value)

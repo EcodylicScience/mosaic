@@ -45,7 +45,13 @@ from dataclasses import dataclass
 from typing import IO, TYPE_CHECKING, ClassVar, Final
 
 from mosaic.core.scope import Scope
-from mosaic.runlog import TERMINAL_STATUSES, now_iso, read_run, run_log_dir
+from mosaic.runlog import (
+    TERMINAL_STATUSES,
+    AttemptLiveness,
+    now_iso,
+    read_run,
+    run_log_dir,
+)
 
 from ..error_kind import ClassifiedError, ErrorKind
 from ..job import Cancelled, CancelToken
@@ -285,37 +291,70 @@ class StepStillRunning(ClassifiedError):
     """Refuse to drive a request while a process of one of its steps runs.
 
     A driver that was killed leaves its current step running. Driving the request
-    is refused until that process ends.
+    is refused until that process ends. A step on another host whose run-log
+    declares no heartbeat may have ended without this host being able to tell,
+    and the message then says how to record it and start again.
 
     Attributes:
         step_id: The step.
         execution_id: Its attempt.
         host: The host its run-log, or the stale driver lease, names.
         pid: The process its run-log, or the stale driver lease, names.
+        liveness: How its run-log reads (:mod:`~.liveness`), ``alive`` or
+            ``unknown``.
     """
 
     error_kind: ClassVar[ErrorKind] = "conflict"
 
-    def __init__(self, step_id: str, execution_id: str, *, host: str, pid: int) -> None:
-        message = (
-            f"step {step_id!r} is still running as attempt {execution_id} (pid "
-            f"{pid} on host {host!r}). Run the request again once that attempt "
-            f"has ended, or cancel it with 'mosaic cancel --execution-id "
-            f"{execution_id}'."
-        )
+    def __init__(
+        self,
+        step_id: str,
+        execution_id: str,
+        *,
+        host: str,
+        pid: int,
+        liveness: AttemptLiveness = "alive",
+        request_id: str = "",
+        manifest: str = "",
+    ) -> None:
+        if liveness == "unknown":
+            close = (
+                f"mosaic cancel --manifest {manifest or '<dataset.yaml>'} "
+                f"--request {request_id or '<request>'} --assume-exited"
+            )
+            message = (
+                f"step {step_id!r} may still be running as attempt {execution_id} "
+                f"(pid {pid} on host {host!r}). This host cannot check host "
+                f"{host!r}, whose run-log declares no heartbeat. If that process "
+                f"is gone, run '{close}', then submit the recipe again; its "
+                f"finished steps are cache hits."
+            )
+        else:
+            message = (
+                f"step {step_id!r} is still running as attempt {execution_id} (pid "
+                f"{pid} on host {host!r}). Run the request again once that attempt "
+                f"has ended, or cancel it with 'mosaic cancel --execution-id "
+                f"{execution_id}'."
+            )
         super().__init__(message)
         self.step_id: str = step_id
         self.execution_id: str = execution_id
         self.host: str = host
         self.pid: int = pid
+        self.liveness: AttemptLiveness = liveness
 
     def error_step(self) -> str:
         """Return the running step."""
         return self.step_id
 
     def error_detail(self) -> dict[str, JsonValue]:
-        """Return the attempt, its host and its pid."""
-        return {"execution_id": self.execution_id, "host": self.host, "pid": self.pid}
+        """Return the attempt, its host, its pid and its liveness."""
+        return {
+            "execution_id": self.execution_id,
+            "host": self.host,
+            "pid": self.pid,
+            "liveness": self.liveness,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -515,7 +554,13 @@ def _refuse_running_step(ds: Dataset, request: Request) -> None:
     running = live_step_process(request_rollup(ds.base_dir, request), stale)
     if running is not None:
         raise StepStillRunning(
-            running.step_id, running.execution_id, host=running.host, pid=running.pid
+            running.step_id,
+            running.execution_id,
+            host=running.host,
+            pid=running.pid,
+            liveness=running.liveness,
+            request_id=request.request_id,
+            manifest=str(ds.manifest_path),
         )
 
 

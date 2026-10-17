@@ -2,7 +2,8 @@
 
 The process that receives SIGTERM cancels at its next checkpoint and records its
 own ending. :mod:`mosaic.core.pipeline.cancel` decides what to signal and what to
-record, and refuses a process on another host.
+record, and refuses a process on another host unless its run-log proves it gone.
+``--assume-exited`` records one whose run-log cannot show it, on the user's word.
 """
 
 from __future__ import annotations
@@ -42,6 +43,17 @@ def cancel_command(
             ),
         ),
     ] = None,
+    assume_exited: Annotated[
+        bool,
+        typer.Option(
+            "--assume-exited",
+            help=(
+                "Record as cancelled an attempt on another host whose run-log "
+                "declares no heartbeat, asserting that its process has exited. "
+                "Refused for one whose heartbeat is current."
+            ),
+        ),
+    ] = False,
     as_json: Annotated[
         bool, typer.Option("--json", help="Emit the result as JSON on stdout.")
     ] = False,
@@ -49,12 +61,18 @@ def cancel_command(
     """Request cancellation of a running attempt (SIGTERM to its recorded pid).
 
     With `--request`, cancel a pipeline request instead. A process on another
-    host is not signalled, and the command exits 1.
+    host is not signalled. It is recorded cancelled when its run-log proves it
+    gone, or with `--assume-exited`, and the command otherwise exits 1.
     """
     if request_id is not None:
         if execution_id is not None:
             fail("Provide exactly one of --execution-id or --request.")
-        _cancel_request(load_dataset(manifest), request_id, as_json=as_json)
+        _cancel_request(
+            load_dataset(manifest),
+            request_id,
+            assume_exited=assume_exited,
+            as_json=as_json,
+        )
         return
     if execution_id is None:
         fail("Provide exactly one of --execution-id or --request.")
@@ -64,18 +82,20 @@ def cancel_command(
     if not run_dir.exists():
         fail("No run-logs found (nothing has run yet).")
     try:
-        result = cancel_attempt(run_dir, execution_id)
+        result = cancel_attempt(run_dir, execution_id, assume_exited=assume_exited)
     except ClassifiedError as error:
         fail_classified(error, as_json=as_json)
     _report_attempt(result, as_json=as_json)
 
 
-def _cancel_request(ds: Dataset, request_id: str, *, as_json: bool) -> None:
+def _cancel_request(
+    ds: Dataset, request_id: str, *, assume_exited: bool, as_json: bool
+) -> None:
     """Cancel one pipeline request, and report what was done."""
     from mosaic.core.pipeline.cancel import cancel_request
 
     try:
-        result = cancel_request(ds, request_id)
+        result = cancel_request(ds, request_id, assume_exited=assume_exited)
     except ClassifiedError as error:
         fail_classified(error, as_json=as_json)
     _report_request(result, as_json=as_json)
