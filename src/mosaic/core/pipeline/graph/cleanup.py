@@ -16,22 +16,25 @@ A candidate is kept, by the first rule that matches:
    plan is held: a managed dataset (``managed_dataset``) or a request file that
    does not read (``request_unreadable``).
 2. The request being cleaned up pins it (``bound``).
-3. Its feature declares ``costly_fit`` (``costly_fit``).
+3. Its feature declares ``costly_fit``, or the catalog does not know its
+   feature (``costly_fit``).
 4. Its ``params.json`` is absent or unreadable, so it could not be computed
    again (``params_unknown``).
 5. A run-log that may still run names it (``attempt_open``).
 6. Another request holds it (``held_by_request``): a running or orphaned
-   request whatever its age, a running one for every run of the features its
-   recipe names, and an ended one for :data:`~.model.REQUEST_HOLD_FLOOR_HOURS`
-   or ``min_age_hours``, whichever is longer.
+   request whatever its age, for the runs it recorded, binds or names in its
+   steps' params, a running one also for every run of the features its recipe
+   names, and an ended one for :data:`~.model.REQUEST_HOLD_FLOOR_HOURS` or
+   ``min_age_hours``, whichever is longer.
 7. It holds entries its replacement lacks (``wider_coverage``), or it is a
    scope-dependent fit over entries its replacement does not cover
    (``other_fit_scope``).
 8. It is younger than ``min_age_hours`` (``young``).
 9. It is among the ``keep_newest`` newest superseded runs of its storage
    (``newest``).
-10. A run that is kept reads it, through ``inputs``, a params reference or its
-    fit record, directly or through other runs (``read_by``).
+10. A run that is kept, or a step of the plan, reads it, through ``inputs``, a
+    params reference or its fit record, directly or through other runs
+    (``read_by``).
 
 Planning is a read. It takes no lock and writes nothing, and its module imports
 the standard library and pydantic alone; the inventory, the run-log readers and
@@ -321,7 +324,7 @@ def plan_cleanup(
             global_entry=GLOBAL_ENTRY,
         )
 
-    _keep_what_is_read(ds, records, decided, opened, fits)
+    _keep_what_is_read(ds, records, decided, opened, fits, plan)
 
     runs: list[SupersededRun] = []
     for record in candidates:
@@ -739,11 +742,13 @@ class _Watch:
             rollup = request_rollup(self._base, request)
             if any(attempt.run_id == key[1] for attempt in rollup.steps):
                 return ("held_by_request", f"{label} recorded it")
-            if any(
-                isinstance(step, FeatureStepSpec) and step.feature == slug
-                for step in recipe.steps
-            ):
-                return ("held_by_request", f"{label} runs {slug}")
+            for step in recipe.steps:
+                if not isinstance(step, FeatureStepSpec):
+                    continue
+                if step.feature == slug:
+                    return ("held_by_request", f"{label} runs {slug}")
+                if _literal_reads(step.params).covers(*key):
+                    return ("held_by_request", f"{label} names it")
         return None
 
 
@@ -818,6 +823,7 @@ class _Holds:
     )
     run_ids: dict[str, str] = field(default_factory=dict[str, str])
     slugs: dict[str, str] = field(default_factory=dict[str, str])
+    storages: dict[str, str] = field(default_factory=dict[str, str])
     unreadable: str = ""
 
 
@@ -826,9 +832,9 @@ def _request_holds(
 ) -> _Holds:
     """What the dataset's other requests hold.
 
-    A running or orphaned request holds the run ids its attempts recorded and its
-    binds, whatever its age, and a running one also every run of each feature
-    its recipe names. A request that has ended holds its recorded runs and binds
+    A running or orphaned request holds the run ids its attempts recorded, its
+    binds and the runs its steps' params name outright, whatever its age, and a
+    running one also every run of each feature its recipe names. A request that has ended holds its recorded runs and binds
     for *hold_hours* after its last attempt wrote a line.
     """
     from ..markers import parse_instant
@@ -869,14 +875,22 @@ def _request_holds(
                 _ = holds.run_ids.setdefault(attempt.run_id, label)
         for bound in request.bind.values():
             _ = holds.pairs.setdefault((bound.feature, bound.run_id), label)
-        if verdict == "running":
+        if verdict in ("running", "orphaned"):
             try:
                 recipe = load_recipe_for_request(base_dir, request)
             except StepRefused:
                 continue
             for step in recipe.steps:
-                if isinstance(step, FeatureStepSpec):
+                if not isinstance(step, FeatureStepSpec):
+                    continue
+                if verdict == "running":
                     _ = holds.slugs.setdefault(step.feature, label)
+                # A run its params name outright, which no step of it writes.
+                named = _literal_reads(step.params)
+                for pair in named.pairs:
+                    _ = holds.pairs.setdefault(pair, label)
+                for storage in named.storages:
+                    _ = holds.storages.setdefault(storage, label)
     return holds
 
 
@@ -944,7 +958,13 @@ def _first_reason(
     if key in bound:
         return ("bound", "the request pins it")
     declaration = catalog.get(slug)
-    if declaration is not None and declaration.costly_fit:
+    if declaration is None:
+        return (
+            "costly_fit",
+            f"{slug} is not in the catalog, so whether it is costly to fit again "
+            f"is unknown",
+        )
+    if declaration.costly_fit:
         return ("costly_fit", f"{slug} is costly to fit again")
     if record.params is None or record.params_state != "present":
         return (
@@ -958,6 +978,7 @@ def _first_reason(
         holds.pairs.get(key)
         or holds.run_ids.get(record.run_id)
         or holds.slugs.get(slug)
+        or holds.storages.get(record.name)
     )
     if held:
         return ("held_by_request", f"{held} holds it")
@@ -1067,17 +1088,30 @@ def _keep_what_is_read(
     decided: dict[tuple[str, str], tuple[str, str]],
     opened: Mapping[str, str],
     fits: Mapping[tuple[str, str], FitScope | None],
+    plan: Plan,
 ) -> None:
     """Keep every removable run that a kept run reads, until nothing changes.
 
-    The readers are every feature run of the dataset that is not removable, and
-    the run of every attempt that may still run, found by its ``params.json``,
-    which an attempt writes once it names its run.
+    The readers are every feature run of the dataset that is not removable, the
+    run of every attempt that may still run, found by its ``params.json``,
+    which an attempt writes once it names its run, and every feature step of
+    *plan*, which reads what its resolved inputs and params name.
     """
     from ..fit_scope import read_fit_scope
     from ..inventory.params import read_run_params
 
     readers: dict[tuple[str, str], _Reads] = {}
+    for planned in plan.steps:
+        if planned.kind == "feature":
+            readers[(f"step {planned.step_id!r} of the plan", "")] = _literal_reads(
+                {
+                    **{
+                        f"inputs[{i}]": item
+                        for i, item in enumerate(planned.spec.inputs)
+                    },
+                    **planned.spec.params,
+                }
+            )
     for record in records:
         key = (record.name, record.run_id)
         fit = (
@@ -1108,7 +1142,8 @@ def _keep_what_is_read(
                 continue
             for key in removable:
                 if decided[key][0] == "superseded" and reads.covers(*key):
-                    decided[key] = ("read_by", f"run {reader[0]}/{reader[1]} reads it")
+                    name = f"run {reader[0]}/{reader[1]}" if reader[1] else reader[0]
+                    decided[key] = ("read_by", f"{name} reads it")
                     changed = True
 
 
@@ -1146,14 +1181,33 @@ def _reads_of(storage: str, params: RunParams | None, fit: FitScope | None) -> _
             else:
                 storages.add(ref.feature)
     else:
-        for value in (*params.inputs, *params.params.values()):
-            named = _named_run(value)
-            if named is None:
-                continue
-            if named[1]:
-                pairs.add(named)
-            else:
-                storages.add(named[0])
+        named = _literal_reads(
+            {
+                **{f"inputs[{i}]": item for i, item in enumerate(params.inputs)},
+                **params.params,
+            }
+        )
+        pairs.update(named.pairs)
+        storages.update(named.storages)
+    return _Reads(pairs=frozenset(pairs), storages=frozenset(storages))
+
+
+def _literal_reads(values: Mapping[str, object]) -> _Reads:
+    """What the ``{feature, run_id}`` references among *values* read.
+
+    A reference without a run id reads every run of its storage, as it resolves
+    to whichever run is current when its step runs.
+    """
+    pairs: set[tuple[str, str]] = set()
+    storages: set[str] = set()
+    for value in values.values():
+        named = _named_run(value)
+        if named is None:
+            continue
+        if named[1]:
+            pairs.add(named)
+        else:
+            storages.add(named[0])
     return _Reads(pairs=frozenset(pairs), storages=frozenset(storages))
 
 

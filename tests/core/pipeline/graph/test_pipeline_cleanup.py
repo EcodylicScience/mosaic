@@ -554,3 +554,76 @@ def test_a_step_lists_at_most_the_sample_of_superseded_runs(dataset: Dataset) ->
     assert wire.steps[0].superseded_omitted == 3
     assert wire.cleanup is not None
     assert wire.cleanup.removable_runs == SUPERSEDED_SAMPLE + 3
+
+
+# --- what the plan itself will read ----------------------------------------------------
+
+
+def _pinning_scaler(templates_run: str) -> Recipe:
+    """``_chain(2)`` with a scaler whose params pin *templates_run* by name."""
+    recipe = _chain(2)
+    document = recipe.model_dump(mode="json")
+    document["steps"].append(
+        {
+            "id": "scaler",
+            "type": "feature",
+            "feature": "global-scaler",
+            "inputs": [{"step": "speed"}],
+            "params": {
+                "templates": {
+                    "feature": TEMPLATES,
+                    "run_id": templates_run,
+                    "pattern": "templates.parquet",
+                }
+            },
+        }
+    )
+    return Recipe.model_validate(document)
+
+
+def test_a_run_a_planned_step_pins_by_name_is_kept(dataset: Dataset) -> None:
+    _ = run_pipeline(dataset, _chain(1))
+    first = _run_ids(dataset, _chain(1))
+
+    cleanup = _cleanup(dataset, _pinning_scaler(first["templates"]), now=LATER)
+
+    reasons = _reasons(cleanup)
+    assert (reasons[first["templates"]], reasons[first["speed"]]) == (
+        "read_by",
+        "read_by",
+    )
+    details = {run.run_id: run.detail for run in cleanup.runs}
+    assert "scaler" in details[first["templates"]]
+
+
+def test_a_run_a_running_requests_step_pins_by_name_is_held(dataset: Dataset) -> None:
+    _ = run_pipeline(dataset, _chain(1))
+    first = _run_ids(dataset, _chain(1))
+    pinning = _pinning_scaler(first["templates"]).model_dump(mode="json")
+    pinning["steps"] = [
+        step for step in pinning["steps"] if step["feature"] != "extract-templates"
+    ]
+    _ = submit_request(dataset, Recipe.model_validate(pinning))
+
+    cleanup = _cleanup(dataset, _chain(3), now=LATER)
+
+    assert _reasons(cleanup)[first["templates"]] == "held_by_request"
+
+
+def test_a_feature_the_catalog_does_not_know_is_kept(dataset: Dataset) -> None:
+    old = run_speed(dataset, 1)
+    catalog = declaration_catalog()
+    entries = {
+        name: entry for name, entry in catalog.entries.items() if name != "speed-angvel"
+    }
+    plan = plan_pipeline(dataset, speed_recipe_stepping(2))
+
+    cleanup = plan_cleanup(
+        dataset,
+        plan,
+        policy=LOOSE,
+        inventory=InventoryCache(dataset),
+        catalog=DeclarationCatalog(entries=entries),
+    )
+
+    assert _reasons(cleanup) == {old: "costly_fit"}
