@@ -45,8 +45,9 @@ installation page and the agent guide take `av` from conda-forge without a versi
 `describe_step_types`.** A search by words returns index rows as before. `names` (up
 to 8) returns each step type's params as a flat table, nested fields as dotted paths
 and a run reference typed as a recipe writes it, and `detail: "schema"` adds the JSON
-Schema. The whole catalog entry it returned before took 12,000 to 16,000 characters
-per step type. The server now has 14 tools. A client that allow-lists tools by name
+Schema. The whole catalog entry it returned before ran to 27,600 characters
+(`ultralytics`), and the largest table, `vame`'s, is about 15,700. The server now has 14
+tools. A client that allow-lists tools by name
 must allow `describe_step_types`; a call to an old name is refused with
 `unknown_tool` and names the replacement in `detail.replacement`. An allow-list of the
 whole server (`mcp__mosaic`) is unaffected. The `mosaic://catalog/{name}` resource
