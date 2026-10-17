@@ -901,3 +901,118 @@ def test_a_request_stopped_in_this_process_runs_again_at_once(
 
     assert [outcome.step_id for outcome in done.outcomes] == ["speed", "templates"]
     assert not driver_lease_path(tracked.base_dir, submitted.request_id).exists()
+
+
+# --- the supervised chain, as one request -----------------------------------------
+
+
+def test_the_supervised_chain_runs_as_one_request(tmp_path: Path) -> None:
+    """Convert, fit on the training groups and score on the test group, at once.
+
+    One recipe and one request: the conversions, the features, templates and a
+    scaler fitted on the training groups, labeled templates drawn from them, a
+    classifier applied to the test group and its evaluation there. Step scopes
+    make the split, and the labels reference pins the converted labels.
+    """
+    from mosaic.core.evaluation import EvaluationReport
+    from mosaic.core.pipeline.fit_scope import read_fit_scope
+    from mosaic.core.scope import Scope
+    from tests.helpers import CONVERT_LABELS_STEP, CONVERT_TRACKS_STEP, calms21_dataset
+
+    ds = calms21_dataset(
+        tmp_path / "ds",
+        {
+            "train": {"a": {"s1": 300, "s2": 300, "s4": 300}},
+            "test": {"a": {"s3": 300}},
+        },
+        seed=11,
+        n_classes=3,
+    )
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "supervised",
+            "steps": [
+                CONVERT_TRACKS_STEP,
+                CONVERT_LABELS_STEP,
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": ["tracks"],
+                    "tracks": {"step": "tracks"},
+                },
+                {
+                    "id": "templates",
+                    "type": "feature",
+                    "feature": "extract-templates",
+                    "inputs": [{"step": "speed"}],
+                    "params": {"n_templates": 50},
+                },
+                {
+                    "id": "scaler",
+                    "type": "feature",
+                    "feature": "global-scaler",
+                    "inputs": [{"step": "speed"}],
+                    "params": {"templates": {"step": "templates"}},
+                },
+                {
+                    "id": "labeled",
+                    "type": "feature",
+                    "feature": "extract-labeled-templates",
+                    "inputs": [{"step": "scaler"}],
+                    "params": {"labels": {"step": "labels"}, "n_total": 120},
+                },
+                {
+                    "id": "classifier",
+                    "type": "feature",
+                    "feature": "xgboost",
+                    "inputs": [{"step": "scaler"}],
+                    "params": {
+                        "templates": {"step": "labeled"},
+                        "default_class": 0,
+                        "n_estimators": 5,
+                    },
+                },
+                {
+                    "id": "evaluate",
+                    "type": "feature",
+                    "feature": "evaluate-labels",
+                    "inputs": [{"step": "classifier"}],
+                    "params": {"labels": {"step": "labels"}},
+                },
+            ],
+        }
+    )
+    train, test = Scope(groups=["train"]), Scope(groups=["test"])
+    scopes = {
+        "templates": train,
+        "labeled": train,
+        "classifier": test,
+        "evaluate": test,
+    }
+
+    planned = plan_pipeline(ds, recipe, step_scopes=scopes)
+    run = run_pipeline(ds, recipe, step_scopes=scopes)
+
+    assert planned.step("evaluate").run_id is None
+    outcomes = {outcome.step_id: outcome for outcome in run.outcomes}
+    assert [outcome.state for outcome in run.outcomes] == ["ran"] * 8
+    assert (outcomes["evaluate"].covered, outcomes["evaluate"].target) == (1, 1)
+    after = plan_pipeline(ds, recipe, step_scopes=scopes)
+    assert after.is_complete
+    for step_id in ("tracks", "labels", "speed"):
+        assert outcomes[step_id].run_id == planned.step(step_id).run_id
+    features = ds.get_root("features")
+    classifier = after.step("classifier")
+    fitted = read_fit_scope(features / classifier.storage_name / str(classifier.run_id))
+    assert fitted is not None
+    assert fitted.entries == (("train", "s1"), ("train", "s2"), ("train", "s4"))
+    evaluate = after.step("evaluate")
+    report = EvaluationReport.model_validate_json(
+        (
+            features / evaluate.storage_name / str(evaluate.run_id) / "metrics.json"
+        ).read_text()
+    )
+    assert report.n_entries == 1
+    assert report.n_scored > 0
