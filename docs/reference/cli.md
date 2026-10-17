@@ -1190,6 +1190,7 @@ $ mosaic agent [OPTIONS] COMMAND [ARGS]...
 * `guide`: Print the agent guide for this version,...
 * `install`: Point a project's AI coding agents at...
 * `serve`: Serve mosaic's MCP tools, resources and...
+* `confirm-hook`: Answer a confirmation of mosaic's MCP...
 
 ### `mosaic agent guide`
 
@@ -1251,6 +1252,28 @@ $ mosaic agent serve [OPTIONS]
 * `--dataset <path>`: A dataset to serve: its manifest or its directory. Repeatable.
 * `--config <path>`: A YAML file listing `datasets`, `discover` directories and `allow_managed_writes`. Its relative paths are read from its directory.
 * `--allow-managed-writes`: Let submit_pipeline and cancel_request change a dataset whose manifest names a managing service.
+* `--help`: Show this message and exit.
+
+### `mosaic agent confirm-hook`
+
+Answer a confirmation of mosaic's MCP server as a Claude Code Elicitation hook.
+
+Reads the hook's JSON input on standard input. A confirmation whose
+conditions are all approved is accepted. Any other is answered as
+--otherwise says. Another server's elicitation, or input that is not a
+confirmation, prints nothing and is left to the client's dialog.
+
+**Usage**:
+
+```console
+$ mosaic agent confirm-hook [OPTIONS]
+```
+
+**Options**:
+
+* `--approve <str>`: A confirmation condition to accept, such as gpu_lane, training_op, tracking_op, allow_partial, bind, open_duplicate, cleanup or hard_cancel. Repeatable.
+* `--otherwise <ask|cancel|decline>`: What to answer a confirmation with a condition not approved: decline it, cancel it, or ask (print nothing and leave it to the dialog). decline keeps any other hook from accepting it.  [default: decline]
+* `--server <str>`: The name under which the client lists mosaic's server.  [default: mosaic]
 * `--help`: Show this message and exit.
 
 ## `mosaic sources`

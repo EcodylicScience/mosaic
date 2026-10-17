@@ -63,6 +63,7 @@ from .prompts import PROMPTS, PromptArgumentsMissing, prompt_spec, render_prompt
 from .resources import RESOURCES, ResourceSpec, ResourceText, UriVariables
 from .spec import (
     CONFIRMATION_CONDITIONS,
+    CONFIRM_FIELD,
     CONFIRMATION_REQUIRED,
     TOOLS,
     ConfirmationCondition,
@@ -126,9 +127,6 @@ instructions.
 
 CONFIRM_INPUT: Final = "confirm"
 """The key of the elicitation that an ``input_required`` result asks for."""
-
-CONFIRM_FIELD: Final = "confirm"
-"""The boolean field of the confirmation form."""
 
 _CONFIRM_ARGUMENT: Final = "confirm"
 """The argument of a tool that asks for confirmation, set when the user confirms."""

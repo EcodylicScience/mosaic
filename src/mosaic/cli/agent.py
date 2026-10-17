@@ -4,13 +4,16 @@
 this installation. ``install`` points a project's agents at that command, which
 keeps the guide they read matched to the mosaic they run, and with ``--mcp``
 registers the MCP server in the project's ``.mcp.json``. ``serve`` runs that
-server for one client over standard input and output.
+server for one client over standard input and output. ``confirm-hook`` answers
+the server's confirmations from a Claude Code ``Elicitation`` hook.
 """
 
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 
@@ -27,7 +30,7 @@ from mosaic.agent import (
     guide_text,
     install_agent_files,
 )
-from mosaic.cli._io import fail
+from mosaic.cli._io import emit_json, fail
 from mosaic.user_paths import user_path
 
 agent_app = typer.Typer(
@@ -247,3 +250,68 @@ def serve_command(
         )
     except MissingOptionalDependency as exc:
         fail(str(exc))
+
+
+@agent_app.command("confirm-hook")
+def confirm_hook_command(
+    approve: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--approve",
+            help=(
+                "A confirmation condition to accept, such as gpu_lane, "
+                "training_op, tracking_op, allow_partial, bind, open_duplicate, "
+                "cleanup or hard_cancel. Repeatable."
+            ),
+        ),
+    ] = None,
+    otherwise: Annotated[
+        Literal["ask", "cancel", "decline"],
+        typer.Option(
+            "--otherwise",
+            help=(
+                "What to answer a confirmation with a condition not approved: "
+                "decline it, cancel it, or ask (print nothing and leave it to "
+                "the dialog). decline keeps any other hook from accepting it."
+            ),
+        ),
+    ] = "decline",
+    server: Annotated[
+        str,
+        typer.Option(
+            "--server", help="The name under which the client lists mosaic's server."
+        ),
+    ] = MCP_SERVER_NAME,
+) -> None:
+    """Answer a confirmation of mosaic's MCP server as a Claude Code Elicitation hook.
+
+    Reads the hook's JSON input on standard input. A confirmation whose
+    conditions are all approved is accepted. Any other is answered as
+    --otherwise says. Another server's elicitation, or input that is not a
+    confirmation, prints nothing and is left to the client's dialog.
+    """
+    from mosaic.agent.confirm_hook import answer_elicitation
+    from mosaic.agent.mcp.spec import CONFIRMATION_CONDITIONS
+    from mosaic.core.narrowing import is_str_mapping
+
+    approved = set(approve or [])
+    unknown = sorted(approved - set(CONFIRMATION_CONDITIONS))
+    if unknown:
+        fail(
+            f"Unknown confirmation condition(s): {', '.join(unknown)}. Known: "
+            f"{', '.join(CONFIRMATION_CONDITIONS)}."
+        )
+    try:
+        hook_input: object = json.loads(sys.stdin.read())
+    except ValueError:
+        return
+    if not is_str_mapping(hook_input):
+        return
+    answer = answer_elicitation(
+        hook_input,
+        [condition for condition in CONFIRMATION_CONDITIONS if condition in approved],
+        server=server,
+        otherwise=otherwise,
+    )
+    if answer is not None:
+        emit_json(answer)

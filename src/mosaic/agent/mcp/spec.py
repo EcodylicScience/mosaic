@@ -59,6 +59,7 @@ __all__ = [
     "CONFIRMATION_REQUIRED",
     "CONFIRMATION_TAG",
     "CONFIRMATION_UNANSWERED",
+    "CONFIRM_FIELD",
     "DATASET_MANAGED",
     "DEFAULT_PAGE_SIZE",
     "INVALID_ARGUMENTS",
@@ -199,6 +200,9 @@ naming the tool and its conditions sorted, which a client's hook reads to answer
 by condition (:func:`read_confirmation_tag`). The grammar is a contract with
 those hooks.
 """
+
+CONFIRM_FIELD: Final = "confirm"
+"""The one boolean field of the form that asks to confirm a call."""
 
 _TAG_LINE: Final = re.compile(
     rf"\[{CONFIRMATION_TAG} tool=([a-z_]+) conditions=([a-z_]+(?:,[a-z_]+)*)\]\s*"

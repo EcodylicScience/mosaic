@@ -288,3 +288,67 @@ class TestServe:
         result = runner.invoke(app, ["agent", "serve", "--dataset", str(tmp_path)])
         assert result.exit_code != 0
         assert 'pip install "mosaic-behavior[mcp]"' in result.output
+
+
+CONFIRMATION = {
+    "hook_event_name": "Elicitation",
+    "mcp_server_name": "mosaic",
+    "message": (
+        "mosaic asks you to confirm submit_pipeline: step 'pose' runs on lane "
+        "gpu-infer. Proceed?\n\n"
+        "[mosaic-confirm tool=submit_pipeline conditions=gpu_lane]"
+    ),
+    "mode": "form",
+    "requested_schema": {
+        "type": "object",
+        "properties": {"confirm": {"type": "boolean"}},
+        "required": ["confirm"],
+    },
+}
+"""The input of a Claude Code Elicitation hook for one confirmation."""
+
+
+class TestConfirmHook:
+    def test_it_prints_the_answer_for_its_stdin(self) -> None:
+        stdin = json.dumps(CONFIRMATION)
+
+        accepted = runner.invoke(
+            app, ["agent", "confirm-hook", "--approve", "gpu_lane"], input=stdin
+        )
+        declined = runner.invoke(
+            app, ["agent", "confirm-hook", "--approve", "bind"], input=stdin
+        )
+        asked = runner.invoke(
+            app,
+            ["agent", "confirm-hook", "--approve", "bind", "--otherwise", "ask"],
+            input=stdin,
+        )
+
+        assert accepted.exit_code == declined.exit_code == asked.exit_code == 0
+        assert json.loads(accepted.stdout)["hookSpecificOutput"] == {
+            "hookEventName": "Elicitation",
+            "action": "accept",
+            "content": {"confirm": True},
+        }
+        assert json.loads(declined.stdout)["hookSpecificOutput"]["action"] == "decline"
+        assert asked.stdout == ""
+
+    @pytest.mark.parametrize("stdin", ["", "not json", "[1, 2]"])
+    def test_malformed_stdin_prints_nothing(self, stdin: str) -> None:
+        result = runner.invoke(
+            app, ["agent", "confirm-hook", "--approve", "gpu_lane"], input=stdin
+        )
+
+        assert result.exit_code == 0
+        assert result.stdout == ""
+
+    def test_an_unknown_condition_is_refused(self) -> None:
+        result = runner.invoke(
+            app,
+            ["agent", "confirm-hook", "--approve", "everything"],
+            input=json.dumps(CONFIRMATION),
+        )
+
+        assert result.exit_code != 0
+        assert "Unknown confirmation condition(s): everything" in result.output
+        assert "gpu_lane" in result.output
