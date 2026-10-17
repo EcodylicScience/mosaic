@@ -393,8 +393,21 @@ class LocalBackend:
         )
         return SequencePage(items=tuple(page), total=len(rows), next_cursor=next_cursor)
 
-    def _get_inventory(self, args: GetInventoryInput) -> InventoryWire:
+    def inventory_document(self, args: GetInventoryInput) -> InventoryWire:
+        """Return the inventory that *args* names, each feature run with its params.
+
+        Not a tool. The ``inventory`` resource reads it, and keeps what a tool's
+        listing leaves to a ``ref``: the recorded params and the default sample
+        of missing keys.
+        """
+        return self._get_inventory(args, whole=True)
+
+    def _get_inventory(
+        self, args: GetInventoryInput, *, whole: bool = False
+    ) -> InventoryWire:
         from mosaic.core.pipeline.inventory import MISSING_SAMPLE_WIRE, inventory_wire
+
+        detailed = whole or args.ref is not None
 
         held = self._dataset(args.dataset)
         with held.lock:
@@ -411,10 +424,8 @@ class LocalBackend:
             limit=args.limit,
             cursor=args.cursor,
             ref=args.ref,
-            with_params=args.ref is not None,
-            missing_sample=MISSING_SAMPLE_WIRE
-            if args.ref is not None
-            else LISTING_MISSING_SAMPLE,
+            with_params=detailed,
+            missing_sample=MISSING_SAMPLE_WIRE if detailed else LISTING_MISSING_SAMPLE,
         )
 
     # -------------------------------------------------------------- catalog

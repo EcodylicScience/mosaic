@@ -28,7 +28,7 @@ from mosaic.agent.mcp._binding import ALWAYS_LOAD_META, INSTRUCTIONS
 from mosaic.agent.mcp.spec import MAX_SCHEMA_BYTES, SHARED_TOOL_LIMIT, TOOLS
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
-from mosaic.core.pipeline.graph import submit_request
+from mosaic.core.pipeline.graph import run_pipeline, submit_request
 from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
     SPEED_RECIPE,
@@ -521,6 +521,22 @@ def test_the_resources_and_templates_are_listed_and_read(
     assert len(read[f"{base}/runs/{execution_id}/log?tail=1"].splitlines()) == 1
     params = json.loads(read[f"{base}/{PARAMS}"])
     assert params["state"] == "absent"
+
+
+def test_the_inventory_resource_keeps_the_params_a_tool_listing_leaves_out(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    _ = run_pipeline(dataset, speed_recipe())
+    uri = f"mosaic://dataset/{_uuid(dataset)}/inventory?kind=feature"
+
+    async def body(client: Client) -> str:
+        (contents,) = (await client.read_resource(uri)).contents
+        assert isinstance(contents, types.TextResourceContents)
+        return contents.text
+
+    [run] = json.loads(_session(backend, body))["artifacts"]
+
+    assert run["params"] is not None
 
 
 @pytest.mark.parametrize(

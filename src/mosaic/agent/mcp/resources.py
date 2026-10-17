@@ -209,7 +209,7 @@ def _read_inventory(backend: LocalBackend, variables: UriVariables) -> ResourceT
         status_not=status_not,
         limit=MAX_PAGE_SIZE,
     )
-    return _json(_answered(backend.get_inventory(request)))
+    return _json(backend.inventory_document(request))
 
 
 def _read_recipe(backend: LocalBackend, variables: UriVariables) -> ResourceText:
