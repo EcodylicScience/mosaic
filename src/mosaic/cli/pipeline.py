@@ -44,7 +44,8 @@ from mosaic.cli._io import (
 from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.ops import ScopeRefused
 from mosaic.core.pipeline.refusal import Refusal
-from mosaic.cli._render import render_table
+from mosaic.cli._render import render_step_type_detail, render_table
+from mosaic.cli.features.describe import DetailOption
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.graph import (
@@ -141,10 +142,39 @@ def validate_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
     raise typer.Exit(code=1)
 
 
-def catalog_command(as_json: JsonOption = False) -> None:
-    """List the step types a recipe may run, with their params schemas under --json."""
-    from mosaic.core.pipeline.graph import editor_catalog
+def catalog_command(
+    name: Annotated[
+        str | None,
+        typer.Argument(
+            metavar="NAME",
+            help="A feature slug, an op kind or 'tracks', to describe that one.",
+        ),
+    ] = None,
+    detail: DetailOption = "fields",
+    as_json: JsonOption = False,
+) -> None:
+    """List the step types a recipe may run, or describe the one NAME names.
 
+    Without NAME, ``--json`` prints the whole catalog with its params schemas.
+    With NAME, the step type's facts and a row per params field are printed,
+    and ``--detail schema`` adds its params JSON Schema.
+    """
+    from mosaic.core.pipeline.graph import (
+        StepTypeNotFound,
+        editor_catalog,
+        step_type_detail,
+    )
+
+    if name is not None:
+        try:
+            described = step_type_detail(name, detail=detail)
+        except StepTypeNotFound as error:
+            fail_classified(error, as_json=as_json)
+        if as_json:
+            emit_json(described.model_dump(mode="json"))
+        else:
+            render_step_type_detail(described)
+        return
     catalog = editor_catalog()
     if as_json:
         emit_json(catalog.model_dump(mode="json"))

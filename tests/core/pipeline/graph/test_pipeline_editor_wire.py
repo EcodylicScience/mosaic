@@ -38,6 +38,7 @@ from mosaic.core.pipeline.graph import (
     read_recipe,
     render_location,
     resolved_levels,
+    step_type_detail,
     validation_report,
 )
 
@@ -560,6 +561,37 @@ def test_catalog_json_is_the_editor_catalog() -> None:
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout) == editor_catalog().model_dump(mode="json")
+
+
+def test_catalog_describes_a_named_op_as_its_step_type_detail() -> None:
+    result = runner.invoke(app, ["pipeline", "catalog", "trex", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload == step_type_detail("trex").model_dump(mode="json")
+    assert payload["type"] == "op"
+    assert payload["params"]
+    assert payload["params_schema"] is None
+
+
+def test_catalog_gives_the_schema_of_a_named_step_type_on_request() -> None:
+    result = runner.invoke(
+        app, ["pipeline", "catalog", "tracks", "--detail", "schema", "--json"]
+    )
+    schema = runner.invoke(
+        app, ["pipeline", "catalog", "speed-angvel", "--detail", "schema", "--json"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["params"] == []
+    assert "step_size" in json.loads(schema.stdout)["params_schema"]["properties"]
+
+
+def test_catalog_refuses_a_name_no_step_type_has() -> None:
+    result = runner.invoke(app, ["pipeline", "catalog", "no-such-type", "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["kind"] == "not_found"
 
 
 def test_validate_answers_an_unparseable_recipe_in_json(tmp_path: Path) -> None:

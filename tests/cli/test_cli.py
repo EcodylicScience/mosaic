@@ -493,10 +493,25 @@ def test_features_list_and_describe() -> None:
         runner.invoke(app, ["features", "describe", "speed-angvel", "--json"]).stdout
     )
     assert desc["name"] == "speed-angvel"
-    assert "step_size" in desc["params_schema"]["properties"]
+    assert "step_size" in [row["path"] for row in desc["params"]]
+    assert desc["params_schema"] is None
     assert {"version", "category", "requires", "provides", "unavailable"} <= set(desc)
     assert desc["unavailable"] is None
-    assert desc["provides"]["adds"]
+    assert desc["provides"] and all(
+        isinstance(label, str) for label in desc["provides"]
+    )
+    assert desc["lane"] == "feature-compute"
+
+    schema = json.loads(
+        runner.invoke(
+            app,
+            ["features", "describe", "speed-angvel", "--detail", "schema", "--json"],
+        ).stdout
+    )
+    assert "step_size" in schema["params_schema"]["properties"]
+    plain = runner.invoke(app, ["features", "describe", "speed-angvel"])
+    assert plain.exit_code == 0
+    assert any(line.startswith("step_size\t") for line in plain.stdout.splitlines())
 
     kpms = json.loads(
         runner.invoke(app, ["features", "describe", "kpms", "--json"]).stdout

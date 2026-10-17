@@ -675,7 +675,7 @@ $ mosaic features [OPTIONS] COMMAND [ARGS]...
 **Commands**:
 
 * `list`: List the registered features with their...
-* `describe`: Describe one feature: its params...
+* `describe`: Describe one feature: its params and the...
 
 ### `mosaic features list`
 
@@ -700,10 +700,12 @@ $ mosaic features list [OPTIONS]
 
 ### `mosaic features describe`
 
-Describe one feature: its params JSON-Schema and the columns it reads and writes.
+Describe one feature: its params and the columns it reads and writes.
 
-Also names its version, category and lane, what the installation lacks to
-run it, and any use its license forbids.
+Also names its version, category and lane, what it consumes, whether its
+output depends on its scope, what the installation lacks to run it, and any
+use its license forbids. Each params field is a row, nested ones as dotted
+paths; ``--detail schema`` adds the params JSON Schema.
 
 **Usage**:
 
@@ -717,6 +719,7 @@ $ mosaic features describe [OPTIONS] {slug}
 
 **Options**:
 
+* `--detail <fields|schema>`: 'fields' prints a row per params field, nested ones as dotted paths. 'schema' also prints the params JSON Schema.  [default: fields]
 * `--json`: Emit the description as JSON.
 * `--help`: Show this message and exit.
 
@@ -968,7 +971,7 @@ $ mosaic pipeline [OPTIONS] COMMAND [ARGS]...
 
 **Commands**:
 
-* `catalog`: List the step types a recipe may run, with...
+* `catalog`: List the step types a recipe may run, or...
 * `validate`: Check a recipe against the registries.
 * `plan`: Resolve a recipe against a dataset:...
 * `show`: Print a recipe's steps and the references...
@@ -979,16 +982,25 @@ $ mosaic pipeline [OPTIONS] COMMAND [ARGS]...
 
 ### `mosaic pipeline catalog`
 
-List the step types a recipe may run, with their params schemas under --json.
+List the step types a recipe may run, or describe the one NAME names.
+
+Without NAME, ``--json`` prints the whole catalog with its params schemas.
+With NAME, the step type's facts and a row per params field are printed,
+and ``--detail schema`` adds its params JSON Schema.
 
 **Usage**:
 
 ```console
-$ mosaic pipeline catalog [OPTIONS]
+$ mosaic pipeline catalog [OPTIONS] [NAME]
 ```
+
+**Arguments**:
+
+* `NAME`: A feature slug, an op kind or 'tracks', to describe that one.
 
 **Options**:
 
+* `--detail <fields|schema>`: 'fields' prints a row per params field, nested ones as dotted paths. 'schema' also prints the params JSON Schema.  [default: fields]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 

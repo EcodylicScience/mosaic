@@ -9,7 +9,7 @@ A new read joins ``CLI_READS`` or ``LIBRARY_READS``, and also
 ``CLI_READS_OF_NOTHING`` when it succeeds on a dataset that holds nothing yet.
 ``reprobe-media`` needs indexed videos and has a test of its own. ``features
 list``, ``features describe``, ``pipeline catalog``, ``catalog_index`` and
-``describe_step_type`` take no dataset and are not listed.
+``describe_step_type`` and ``step_type_detail`` take no dataset and are not listed.
 """
 
 from __future__ import annotations
