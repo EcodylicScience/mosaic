@@ -342,6 +342,9 @@ def test_an_address_names_its_ref(
         "tracks-variant",
         "tracks-variant/a/b",
         "trained-model/train-pose/train-pose.0.1-0123456789",
+        "labels-variant/behavior",
+        f"labels-variant/../{LABELS_VARIANT}",
+        f"labels-variant/behavior/a/{LABELS_VARIANT}",
     ],
 )
 def test_another_address_is_invalid(address: str) -> None:
@@ -591,3 +594,36 @@ def test_previewing_labels_writes_nothing_and_unpickles_nothing(
         _ = preview_artifact(ds, LabelsVariantRef("behavior", LABELS_VARIANT), ENTRY)
 
     assert_tree_unchanged(ds.base_dir, before)
+
+
+def test_a_labels_preview_that_succeeds_writes_nothing(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    _ = _add_labels(ds, _pair_events((10, 1, 0, 1), (10, 1, 1, 0)))
+    before = tree_snapshot(ds.base_dir)
+
+    preview = preview_artifact(ds, LabelsVariantRef("behavior", LABELS_VARIANT), ENTRY)
+
+    assert preview.labels is not None
+    assert_tree_unchanged(ds.base_dir, before)
+
+
+def _truncated(path: Path) -> None:
+    _ = path.write_bytes(b"PK\x03\x04 cut short")
+
+
+def _ragged(path: Path) -> None:
+    arrays = _pair_events((10, 1, 0, 1), (11, 1, 0, 1))
+    arrays["labels"] = np.array([1])
+    savez: Callable[..., None] = np.savez_compressed
+    savez(path, **arrays)
+
+
+@pytest.mark.parametrize("damage", [_truncated, _ragged])
+def test_a_damaged_labels_file_is_unreadable(
+    tmp_path: Path, damage: Callable[[Path], None]
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    damage(_add_labels(ds, _pair_events((10, 1, 0, 1))))
+
+    with pytest.raises(PreviewUnreadable):
+        _ = preview_artifact(ds, LabelsVariantRef("behavior", LABELS_VARIANT), ENTRY)

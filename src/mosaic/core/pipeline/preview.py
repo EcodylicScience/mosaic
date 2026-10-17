@@ -30,6 +30,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
+from zipfile import BadZipFile, is_zipfile
 
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.pipeline.index import feature_index, feature_index_path
@@ -249,8 +250,9 @@ class LabelsPreview(StrictModel):
             ``n_frames`` is unrecorded.
         n_pairs: The distinct pairs of ids that the events name, ``None`` for a
             dense table.
-        symmetric_deduplicated: Whether the table stores pair events in both
-            orders, ``[i, j]`` and ``[j, i]``, and each was counted once.
+        symmetric_deduplicated: Whether the table stores some pair events more
+            than once, as ``[i, j]`` and ``[j, i]`` or repeated, and each was
+            counted once.
         classes: Each class that the index names or an event carries, by id.
     """
 
@@ -333,7 +335,8 @@ def preview_ref(address: str) -> PreviewRef:
         return TracksVariantRef(run_id=rest)
     elif kind == LabelsVariantRef.kind:
         label_kind, separator, run_id = rest.partition("/")
-        if separator and label_kind and "/" not in run_id:
+        # The kind names a directory of the labels root, which must not climb out.
+        if separator and label_kind not in ("", ".", "..") and "/" not in run_id:
             return LabelsVariantRef(label_kind=label_kind, run_id=run_id)
     forms = (
         f"'{FeatureRunRef.kind}/<storage>/<run_id>', "
@@ -608,17 +611,31 @@ def _preview_labels(
     )
     row = matched.iloc[0]
     try:
+        # np.load leaves its handle open when the zip directory does not read,
+        # so a file that is no zip archive is refused before numpy opens it.
+        if not is_zipfile(path):
+            msg = "it is not an .npz archive"
+            raise ValueError(msg)
         with np.load(path, allow_pickle=False) as npz:
             label_format = detect_label_format(npz)
         loaded = load_labels_auto(path, return_format="sparse", allow_pickle=False)
-    except (OSError, ValueError, KeyError) as error:
-        message = f"{path} is not a labels file that loads without unpickling: {error}"
+        frames, labels, ids = cast("tuple[NDArray[np.int64], ...]", loaded)
+        table: dict[str, NDArray[np.int64]] = {"frame": frames, "label": labels}
+        if label_format == PAIR_FORMAT:
+            table |= {
+                "id1": ids[:, 0].astype(np.int64),
+                "id2": ids[:, 1].astype(np.int64),
+            }
+        if len({len(column) for column in table.values()}) > 1:
+            msg = "its arrays differ in length"
+            raise ValueError(msg)
+    # A truncated or foreign file fails inside zipfile or numpy's header parser,
+    # which raise these rather than a ValueError.
+    except (OSError, ValueError, KeyError, IndexError, EOFError, BadZipFile) as error:
+        message = (
+            f"{path} is not a labels file mosaic reads without unpickling: {error}"
+        )
         raise PreviewUnreadable(message, ref=address, entry=entry) from error
-    frames, labels, ids = cast("tuple[NDArray[np.int64], ...]", loaded)
-    paired = label_format == PAIR_FORMAT
-    table: dict[str, NDArray[np.int64]] = {"frame": frames, "label": labels}
-    if paired:
-        table |= {"id1": ids[:, 0].astype(np.int64), "id2": ids[:, 1].astype(np.int64)}
     kinds: dict[str, ArrowKind] = dict.fromkeys(table, "integer")
     read_columns, omitted = _read_columns(kinds, request.columns, request.max_columns)
     n_rows = len(labels)
@@ -667,8 +684,9 @@ def _count_labels(
 
     A converter that stores each pair event as ``[i, j]`` and ``[j, i]``
     (BORIS's) would count it twice, so pair events are counted once per
-    frame, label and unordered pair of ids, as ``load_labels_for_feature_frames``
-    reads them.
+    frame, label and unordered pair of ids. ``load_labels_for_feature_frames``
+    keeps only ``id1 <= id2`` instead, which also drops an event stored only as
+    ``[j, i]``; a count shows what the file holds.
     """
     import numpy as np
 
