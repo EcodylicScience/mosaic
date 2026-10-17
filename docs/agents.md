@@ -251,7 +251,9 @@ An agent run without a person, such as `claude -p`, cannot answer a form. An ope
 approves conditions in advance with a Claude Code `Elicitation` hook that runs
 `mosaic agent confirm-hook`. The command accepts a confirmation whose conditions are
 all approved. It answers any other as `--otherwise` says: `decline` (the default),
-`cancel`, or `ask`, which leaves the form to the dialog.
+`cancel`, or `ask`, which leaves the form to the dialog. A confirmation whose last
+line it cannot read, such as one from a mosaic too old to write that line, is answered
+the same way.
 
 ```json
 {
@@ -283,6 +285,11 @@ such guarantee. Keep the operator's file out of the agent's reach:
 - Save it outside the directories the agent can write, mounted read-only in a
   container, and pass it with `claude --settings /path/to/operator-settings.json`.
 - Or install it as managed settings.
+
+The hook answers only the server it is named for, so keep the server's configuration
+out of reach too. Otherwise the agent can list mosaic under another name, which your
+hook does not match. Pass the configuration from the same read-only place with
+`claude --mcp-config /path/to/operator-mcp.json --strict-mcp-config`.
 
 `--bare` skips hooks, so do not use it for such a run. `claude --debug hooks` logs each
 elicitation that a hook resolved.

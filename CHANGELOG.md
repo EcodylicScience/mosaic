@@ -260,7 +260,8 @@ recipe whose only condition was that it covered the dataset.
 - New `mosaic agent confirm-hook --approve CONDITION --otherwise ask|cancel|decline`
   answers the confirmations of an unattended run from a Claude Code `Elicitation`
   hook (`mosaic.agent.confirm_hook.answer_elicitation`). It defaults to `decline`,
-  which no other hook's accept overrides. The agents page shows the settings.
+  which no other hook's accept overrides, and answers a confirmation whose tag it
+  cannot read the same way. The agents page shows the settings.
 - `CONFIRM_FIELD` moved from `mosaic.agent.mcp._binding` to `mosaic.agent.mcp.spec`,
   and `_binding` still exports it.
 

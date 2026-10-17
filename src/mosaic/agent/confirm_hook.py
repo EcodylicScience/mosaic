@@ -49,17 +49,22 @@ def answer_elicitation(
 ) -> dict[str, JsonValue] | None:
     """Return the hook's answer to one elicitation, ``None`` to print nothing.
 
-    Only a confirmation that the server *server* asks for through a form is
-    answered: another server's elicitation, a URL elicitation, a form other
-    than the one-box confirmation or a question without a tag is left to the
-    dialog. An input that names no ``mode`` is a form.
+    Only a form that the server *server* asks for is answered. Another server's
+    elicitation, a URL elicitation, and a form other than the one-box
+    confirmation are left to the dialog. An input that names no ``mode`` is a
+    form, and one that names no ``requested_schema`` is read by its tag alone.
+
+    The server asks for nothing but confirmations, so a confirmation whose last
+    line is no readable tag counts as one whose conditions are not all
+    approved: under ``otherwise="decline"`` nothing from the server is left
+    for another hook to accept.
 
     Args:
         hook_input: The JSON object that Claude Code passes the hook.
         approved: The conditions the operator approves.
         server: The name under which the client lists mosaic's server.
         otherwise: What to answer a confirmation with a condition outside
-            *approved*.
+            *approved*, or without a readable tag.
 
     Returns:
         The hook output accepting the confirmation with its box ticked, or
@@ -69,18 +74,16 @@ def answer_elicitation(
         return None
     if hook_input.get("mcp_server_name") != server:
         return None
-    if hook_input.get("mode", "form") != "form":
+    if hook_input.get("mode") not in (None, "form"):
         return None
     schema = hook_input.get("requested_schema")
-    properties = schema.get("properties") if is_str_mapping(schema) else None
-    if not is_str_mapping(properties) or set(properties) != {CONFIRM_FIELD}:
-        return None
+    if schema is not None:
+        properties = schema.get("properties") if is_str_mapping(schema) else None
+        if not is_str_mapping(properties) or set(properties) != {CONFIRM_FIELD}:
+            return None
     message = hook_input.get("message")
     tagged = read_confirmation_tag(message) if isinstance(message, str) else None
-    if tagged is None:
-        return None
-    _, conditions = tagged
-    if conditions <= set(approved):
+    if tagged is not None and tagged[1] <= set(approved):
         return _output("accept", {CONFIRM_FIELD: True})
     if otherwise == "ask":
         return None

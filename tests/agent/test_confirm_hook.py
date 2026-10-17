@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from mosaic.agent.confirm_hook import HookFallback, answer_elicitation
-from mosaic.agent.mcp.spec import confirmation_tag
+from mosaic.agent.mcp.spec import ConfirmationCondition, confirmation_tag
 from tests.helpers import modules_loaded_by
 
 QUESTION = (
@@ -65,22 +65,11 @@ def test_an_unapproved_condition_falls_back_as_told(otherwise: HookFallback) -> 
         {"mcp_server_name": "other"},
         {"hook_event_name": "ElicitationResult"},
         {"mode": "url", "url": "https://example.org"},
-        {"message": "mosaic asks you to confirm submit_pipeline. Proceed?"},
-        {"message": f"{confirmation_tag('submit_pipeline', ['bind'])}\nProceed?"},
         {"requested_schema": {"type": "object", "properties": {"name": {}}}},
-        {"requested_schema": None},
     ],
-    ids=[
-        "another-server",
-        "another-event",
-        "url",
-        "untagged",
-        "tag-not-last",
-        "another-form",
-        "no-form",
-    ],
+    ids=["another-server", "another-event", "url", "another-form"],
 )
-def test_another_server_a_url_or_an_untagged_form_is_left_to_the_dialog(
+def test_another_server_a_url_or_another_form_is_left_to_the_dialog(
     changed: dict[str, object],
 ) -> None:
     assert (
@@ -91,6 +80,38 @@ def test_another_server_a_url_or_an_untagged_form_is_left_to_the_dialog(
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "mosaic asks you to confirm submit_pipeline. Proceed?",
+        f"{confirmation_tag('submit_pipeline', ['bind'])}\nProceed?",
+        f"Proceed?\n\n{confirmation_tag('submit_pipeline', ['bind'])}\n",
+    ],
+    ids=["untagged", "tag-not-last", "trailing-line"],
+)
+def test_a_confirmation_without_a_readable_tag_falls_back_as_told(
+    message: str,
+) -> None:
+    """No other hook can accept a confirmation this hook could not read."""
+    given = _hook_input(message=message)
+    approved: list[ConfirmationCondition] = ["gpu_lane", "training_op", "bind"]
+
+    declined = answer_elicitation(given, approved, otherwise="decline")
+
+    assert declined == {
+        "hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}
+    }
+    assert answer_elicitation(given, approved, otherwise="ask") is None
+
+
+def test_a_form_without_a_schema_is_read_by_its_tag() -> None:
+    given = _hook_input(requested_schema=None)
+    del given["requested_schema"]
+
+    assert answer_elicitation(given, ["gpu_lane", "training_op"]) is not None
+    assert answer_elicitation(_hook_input(requested_schema=None), ["gpu_lane"]) is None
 
 
 def test_a_form_without_a_mode_is_answered() -> None:

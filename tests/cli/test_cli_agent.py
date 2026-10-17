@@ -352,3 +352,13 @@ class TestConfirmHook:
         assert result.exit_code != 0
         assert "Unknown confirmation condition(s): everything" in result.output
         assert "gpu_lane" in result.output
+
+    def test_the_approve_help_names_every_condition(self) -> None:
+        from mosaic.agent.mcp.spec import CONFIRMATION_CONDITIONS
+
+        result = runner.invoke(app, ["agent", "confirm-hook", "--help"])
+
+        assert result.exit_code == 0, result.output
+        assert [
+            name for name in CONFIRMATION_CONDITIONS if name not in result.output
+        ] == []
