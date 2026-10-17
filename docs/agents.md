@@ -138,7 +138,7 @@ that does not read, is left out and reported on the server's standard error.
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, found by words, and the ones named with their params as a table |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
-| `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, and the plan's fingerprint |
+| `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint |
 | `submit_pipeline` | Submits a planned recipe and starts it in the background |
 | `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts |
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
@@ -205,24 +205,87 @@ Restart it after installing an extra or building a tool's environment.
 
 `submit_pipeline` asks you to confirm a submission when:
 
-- a step runs on a GPU lane, trains a model, or runs a tracker or model inference
-  (TRex requires a paid license for use by a company);
-- `allow_partial` lets a step run over fewer entries than planned, or `bind` pins
-  artifacts that the recipe did not produce;
-- a step is asked for more than 100 entries, or the submission covers the whole
-  dataset;
-- a request of the same recipe over overlapping entries has not ended.
+- a step runs on a GPU lane (`gpu_lane`), trains a model (`training_op`), or runs a
+  tracker or model inference (`tracking_op`; TRex requires a paid license for use by
+  a company);
+- `allow_partial` lets a step run over fewer entries than planned (`allow_partial`),
+  or `bind` pins artifacts that the recipe did not produce (`bind`);
+- a request of the same recipe over overlapping entries has not ended
+  (`open_duplicate`);
+- the submission removes superseded runs of its steps' storage after its steps finish
+  (`cleanup`).
 
-`cancel_request` asks to confirm when a running step loses its work: a keypoint-MoSeq
-or VAME fit stops at once, and training loses the epoch in progress.
+`cancel_request` asks to confirm when a running step loses its work (`hard_cancel`): a
+keypoint-MoSeq or VAME fit stops at once, and training loses the epoch in progress.
+
+A plan over the whole dataset, or a step asked for more than 100 entries, does not
+ask. `plan_recipe` reports each as a caution, and the agent shows you the cautions
+with the plan before it submits.
 
 A client that supports MCP elicitation shows you a form listing the conditions, and
-only your answer confirms. With any other client, the tool refuses, the agent asks you
-in the conversation, and it repeats the call with `confirm` set once you agree.
+only your answer confirms. With any other client, the tool refuses with reason
+`confirmation_required`, the agent asks you in the conversation, and it repeats the
+call with `confirm` set once you agree. The form has two other outcomes:
+
+- `confirmation_declined`: the form was declined, or accepted with its box unticked.
+- `confirmation_unanswered`: the client cancelled the form, as it does when nobody can
+  see it, such as in `claude -p`.
+
+The call did not run in either case. The agent stops and reports. It does not repeat
+the call, or run the same work through the `mosaic` CLI, unless you ask.
+
+The last line of the form's message names the tool and the conditions, sorted, for a
+hook to read:
+
+```text
+[mosaic-confirm tool=submit_pipeline conditions=gpu_lane,training_op]
+```
 
 A dataset whose manifest names a managing service (`managed_by`), such as a mosaic-api
 deployment, refuses both tools unless the server is started with
 `--allow-managed-writes` or `allow_managed_writes: true`. Every read tool still works.
+
+### Unattended runs: approving conditions with a hook
+
+An agent run without a person, such as `claude -p`, cannot answer a form. An operator
+approves conditions in advance with a Claude Code `Elicitation` hook that runs
+`mosaic agent confirm-hook`. The command accepts a confirmation whose conditions are
+all approved. It answers any other as `--otherwise` says: `decline` (the default),
+`cancel`, or `ask`, which leaves the form to the dialog.
+
+```json
+{
+  "hooks": {
+    "Elicitation": [
+      {
+        "matcher": "mosaic",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/env/bin/mosaic agent confirm-hook --approve gpu_lane --approve training_op --otherwise decline"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The matcher is the server's name in `.mcp.json`. Pass `--server` when that name is not
+`mosaic`. `--approve` takes the condition names above, once per condition. An unknown
+name fails when you first run the command.
+
+An agent that can edit its own settings can add a hook that accepts everything. A
+decline from any hook overrides an accept from another, so `--otherwise decline` keeps
+such a hook from approving a condition you did not list. `cancel` and `ask` give no
+such guarantee. Keep the operator's file out of the agent's reach:
+
+- Save it outside the directories the agent can write, mounted read-only in a
+  container, and pass it with `claude --settings /path/to/operator-settings.json`.
+- Or install it as managed settings.
+
+`--bare` skips hooks, so do not use it for such a run. `claude --debug hooks` logs each
+elicitation that a hook resolved.
 
 ### Operations the server leaves to you
 

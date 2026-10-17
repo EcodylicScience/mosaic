@@ -234,6 +234,36 @@ alignment and the scorers, and `mosaic.core.analysis` calls it.
   longer `cluster_path` or `label_path`. `frame_source_feature` is ignored with a
   `DeprecationWarning`; a run whose rows have no `frame` column is refused.
 
+**`submit_pipeline` no longer asks to confirm a large or whole-dataset scope, and
+an unanswered confirmation is not a decline.** A headless `claude -p` run answered
+every confirmation at once, and the server reported "the user declined" for a CPU
+recipe whose only condition was that it covered the dataset.
+
+- The conditions `whole_dataset` and `large_scope` are removed. `plan_recipe` and
+  `mosaic pipeline plan` report both as cautions, which refuse nothing: `PlanWire`
+  gains `cautions` (additive) and `Plan` gains `covers_dataset`. Neither enters the
+  fingerprint. `LARGE_SCOPE_ENTRIES` moved from `mosaic.agent.mcp.spec` to
+  `mosaic.core.pipeline.graph`.
+- The condition `cleanup` is declared for the superseded-run cleanup that
+  `submit_pipeline` gains in this release.
+- A cancelled elicitation, which a client answers when nobody can see the form, is
+  the new reason `confirmation_unanswered`. A declined form, or one accepted with its
+  box unticked, is `confirmation_declined`, whose message no longer says that a
+  person declined. Both carry `detail.conditions`, and both tell the model to stop
+  and report rather than run the same work through the CLI. The server instructions,
+  the tool descriptions and the `build_pipeline` prompt say the same.
+- The question's last line is `[mosaic-confirm tool=<tool> conditions=<a>,<b>]`,
+  which `mosaic.agent.mcp.spec.read_confirmation_tag` reads. A finding is put on one
+  line and a `bind` finding quotes each step id, so a step id cannot forge the tag. A
+  2026-07-28 request state is `<call digest>.<conditions>`; a state without the
+  suffix still confirms its call.
+- New `mosaic agent confirm-hook --approve CONDITION --otherwise ask|cancel|decline`
+  answers the confirmations of an unattended run from a Claude Code `Elicitation`
+  hook (`mosaic.agent.confirm_hook.answer_elicitation`). It defaults to `decline`,
+  which no other hook's accept overrides. The agents page shows the settings.
+- `CONFIRM_FIELD` moved from `mosaic.agent.mcp._binding` to `mosaic.agent.mcp.spec`,
+  and `_binding` still exports it.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

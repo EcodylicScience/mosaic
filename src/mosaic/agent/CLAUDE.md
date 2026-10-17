@@ -46,6 +46,16 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   the catalog, so a new feature or op with a large params model must fit it.
 - `submit_pipeline` and `cancel_request` are the only tools that change a dataset, and
   both declare `confirm_when`. No tool takes `overwrite` (`test_tool_spec.py`).
+- The confirmation conditions are the ones `test_tool_spec.py` pins. A whole-dataset
+  or large plan is a `PlanWire.cautions` entry, not a condition. In `_binding.py` an
+  elicitation's `cancel` is `confirmation_unanswered` and a decline or an unticked
+  accept is `confirmation_declined`.
+- A confirmation question ends in the line
+  `[mosaic-confirm tool=<tool> conditions=<a>,<b>]` (`spec.confirmation_tag`), which
+  `read_confirmation_tag` and operators' Claude Code hooks (`mosaic agent
+  confirm-hook`) parse. Changing its grammar is a contract change. Finding text is
+  put on one line, and a finding quotes dataset content with `repr`, so nothing in a
+  dataset can forge the tag.
 - `docs/agents.md` lists the operations the server leaves to the user, such as
   deletion, `--apply` on a sweep or prune verb, and manifest writes. Do not add a tool
   for one.

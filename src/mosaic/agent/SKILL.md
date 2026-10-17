@@ -263,7 +263,9 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - Find step types with `describe_step_types` and a query, then call it with
   `names=[...]` for the params of the ones you choose.
 - Validate a recipe with `validate_recipe`, then plan it with `plan_recipe`. Show the
-  user the plan, then pass its fingerprint to `submit_pipeline`.
+  user the plan and its `cautions` (a plan over the whole dataset, a step asked for
+  more than 100 entries) and wait for their approval, then pass its fingerprint to
+  `submit_pipeline`.
 - A read returns at most 40,000 characters. A `result_too_large` error names the
   arguments that narrow the call. Narrow a preview with `columns` patterns
   (`W_*_f0`) and `max_columns`. `preview_output` also previews a labels variant
@@ -271,6 +273,12 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - This guide is also the `mosaic://guide` resource. Read it once.
 - Set `confirm` only after the user agrees in the conversation to the conditions
   that the refusal lists.
+- After `confirmation_unanswered` or `confirmation_declined`, the call did not run.
+  Stop and report the plan and the conditions. Do not call it again, or run the same
+  work through the `mosaic` CLI, unless the user asks. An operator who runs you
+  unattended may approve conditions in advance with a hook
+  (`mosaic agent confirm-hook`). A confirmation it does not approve comes back
+  declined or unanswered.
 - Poll `get_request_status` after the `poll_after_seconds` it reports. For a
   request that reads `orphaned`, propose
   `mosaic pipeline run --manifest <manifest> --request <id>`, which resumes it.
