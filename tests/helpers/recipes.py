@@ -12,10 +12,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import Recipe, read_recipe
 from tests.helpers.golden import golden_path, read_golden
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
 
 SPEED_RECIPE: dict[str, object] = {
     "schema_version": 1,
@@ -82,6 +86,40 @@ def guppies_recipe() -> Recipe:
 def speed_recipe() -> Recipe:
     """The speed recipe, parsed."""
     return Recipe.model_validate(SPEED_RECIPE)
+
+
+def speed_recipe_stepping(step_size: int) -> Recipe:
+    """The speed recipe with ``step_size`` set, so each value names its own run."""
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "speed",
+            "steps": [
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": ["tracks"],
+                    "params": {"step_size": step_size},
+                }
+            ],
+        }
+    )
+
+
+def run_speed(dataset: Dataset, step_size: int) -> str:
+    """Run ``speed-angvel`` at *step_size* outside any request, and return its run id.
+
+    Each value is a run of its own in the one storage
+    ``speed-angvel__from__tracks``. No request is recorded, so no request holds
+    the run.
+    """
+    from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
+    from mosaic.core.pipeline.run import run_feature
+
+    run_id = run_feature(dataset, SpeedAngvel(params={"step_size": step_size})).run_id
+    assert run_id is not None
+    return run_id
 
 
 def chain_recipe() -> Recipe:

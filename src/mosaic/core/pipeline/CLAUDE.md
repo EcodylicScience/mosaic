@@ -111,6 +111,10 @@ pipeline graph are in `graph/CLAUDE.md`.
   (`entry_claim.py`) with an exclusive create, and release and refresh check
   ownership (`tests/core/pipeline/test_run_markers.py`). One-shot ops claim their
   run root through `claim_run_root` in `tracking/ops/_common.py`.
+- Outside `Pipeline.clean`, a whole feature run is removed only through
+  `remove_feature_run` (`feature_run_removal.py`): an intent record with the run's
+  `params.json` in the cleanup's run-log, then the index rows, then the directory,
+  then a done record (`tests/core/pipeline/test_feature_run_removal.py`).
 - `run_feature` runs unclaimed. Two concurrent executions of one fitting identity
   both fit and write into one run root. Do not assume a fit is exclusive.
 

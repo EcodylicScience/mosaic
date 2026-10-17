@@ -55,7 +55,7 @@ import json
 import os
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, Literal, TypedDict, cast
 
@@ -71,6 +71,9 @@ __all__ = [
     "ErrorSummary",
     "JsonlRunLog",
     "ProgressEventRecord",
+    "REMOVAL_EVENTS",
+    "RemovalRecord",
+    "RemovalState",
     "RunLogPage",
     "RunLogSnapshot",
     "TERMINAL_STATUSES",
@@ -81,6 +84,7 @@ __all__ = [
     "now_iso",
     "read_entry_error_keys",
     "read_entry_errors",
+    "read_removal_records",
     "read_run",
     "read_run_progress",
     "record_exited_attempt",
@@ -691,6 +695,78 @@ class JsonlRunLog:
             tracks_variant=",".join(sorted({v for v in variants if v})),
         )
 
+    # -- removal of a superseded run -----------------------------------------
+
+    def run_removing(
+        self,
+        *,
+        feature: str,
+        run_id: str,
+        reason: str,
+        superseded_by: str,
+        params: Mapping[str, Any],
+    ) -> None:
+        """Record the intent to remove one feature run, before anything is removed.
+
+        *params* is the run's whole ``params.json`` document, which rebuilds the
+        feature and its run id, so the run can be computed again from this log
+        after its directory is gone. An intent without a :meth:`run_removed`
+        after it reads as interrupted (:func:`read_removal_records`): a removal
+        never happens without its record, and a record can outlive a removal that
+        did not finish.
+
+        An ordinary event kind, for the reason :meth:`entry_failed` gives.
+
+        Args:
+            feature: The run's storage name under ``features/``.
+            run_id: The run.
+            reason: Why it is removed.
+            superseded_by: The run that replaces it.
+            params: Its recorded ``params.json``.
+        """
+        self._emit(
+            "run_removing",
+            feature=feature,
+            run_id=run_id,
+            reason=reason,
+            superseded_by=superseded_by,
+            params=dict(params),
+        )
+
+    def run_removed(
+        self, *, feature: str, run_id: str, bytes: int, files: int, rows: int
+    ) -> None:
+        """Record that one feature run's index rows and files are gone.
+
+        Args:
+            feature: The run's storage name.
+            run_id: The run.
+            bytes: The bytes its directory held.
+            files: The files its directory held.
+            rows: The index rows dropped.
+        """
+        self._emit(
+            "run_removed",
+            feature=feature,
+            run_id=run_id,
+            bytes=bytes,
+            files=files,
+            rows=rows,
+        )
+
+    def run_kept(self, *, feature: str, run_id: str, reason: str, detail: str) -> None:
+        """Record that a run approved for removal was kept when the removal ran.
+
+        Args:
+            feature: The run's storage name.
+            run_id: The run.
+            reason: Why, such as a run read since the plan or one already gone.
+            detail: What made it so, in a sentence.
+        """
+        self._emit(
+            "run_kept", feature=feature, run_id=run_id, reason=reason, detail=detail
+        )
+
     # -- progress protocol --------------------------------------------------
 
     def on_entry_start(self, index: int, total: int, key: str) -> None:
@@ -996,6 +1072,102 @@ def _run_log_names(run_dir: Path) -> list[str]:
 def read_runs_by_run_id(run_dir: Path | str, run_id: str) -> list[RunLogSnapshot]:
     """Read all attempts that produced (or targeted) a given content ``run_id``."""
     return [r for r in read_runs(run_dir) if r["run_id"] == run_id]
+
+
+REMOVAL_EVENTS: Final[frozenset[str]] = frozenset(
+    {"run_removing", "run_removed", "run_kept"}
+)
+"""The events with which a cleanup records each run it removed or kept."""
+
+type RemovalState = Literal["removed", "interrupted", "failed", "kept"]
+"""How one run a cleanup was approved to remove ended.
+
+``interrupted`` is an intent with no outcome after it: the process stopped
+between recording the intent and recording the removal. ``failed`` is an intent
+followed by an ``entry_error`` naming the run.
+"""
+
+
+class RemovalRecord(TypedDict):
+    """One run that a cleanup was approved to remove, as its run-log records it.
+
+    Attributes:
+        feature: The run's storage name under ``features/``.
+        run_id: The run.
+        state: How it ended (:data:`RemovalState`).
+        reason: Why it was removed or kept.
+        detail: For a kept run, what kept it; ``""`` otherwise.
+        superseded_by: The run that replaced it, ``""`` when unrecorded.
+        bytes: The bytes its directory held, 0 unless removed.
+        params: Its recorded ``params.json``, empty for a run never removed.
+    """
+
+    feature: str
+    run_id: str
+    state: RemovalState
+    reason: str
+    detail: str
+    superseded_by: str
+    bytes: int
+    params: dict[str, Any]
+
+
+def read_removal_records(run_dir: Path | str, execution_id: str) -> list[RemovalRecord]:
+    """Fold a cleanup's run-log into one record per run, in the order first named.
+
+    A cleanup that ran again after it was stopped writes a run's events twice,
+    and the last outcome stands, except that a removal is never undone. An
+    ``entry_error`` keyed ``<feature>/<run_id>`` after an intent is a failed
+    removal.
+
+    Args:
+        run_dir: The run-log directory.
+        execution_id: The cleanup's attempt.
+
+    Returns:
+        The records, empty when the log is absent or names no run.
+    """
+    records: dict[tuple[str, str], RemovalRecord] = {}
+    for rec in _iter_records(Path(run_dir) / f"{execution_id}.jsonl"):
+        ev = rec.get("ev", "")
+        if ev == "entry_error":
+            feature, _, run_id = _record_text(rec, "key").partition("/")
+            found = records.get((feature, run_id))
+            if found is not None and found["state"] == "interrupted":
+                found["state"] = "failed"
+            continue
+        if ev not in REMOVAL_EVENTS:
+            continue
+        key = (_record_text(rec, "feature"), _record_text(rec, "run_id"))
+        found = records.get(key)
+        if found is None:
+            found = records[key] = {
+                "feature": key[0],
+                "run_id": key[1],
+                "state": "kept",
+                "reason": "",
+                "detail": "",
+                "superseded_by": "",
+                "bytes": 0,
+                "params": {},
+            }
+        if found["state"] == "removed":
+            continue
+        if ev == "run_removing":
+            found["state"] = "interrupted"
+            found["reason"] = _record_text(rec, "reason")
+            found["superseded_by"] = _record_text(rec, "superseded_by")
+            params = rec.get("params")
+            if isinstance(params, dict):
+                found["params"] = cast("dict[str, Any]", params)
+        elif ev == "run_removed":
+            found["state"] = "removed"
+            found["bytes"] = _record_count(rec, "bytes")
+        else:
+            found["state"] = "kept"
+            found["reason"] = _record_text(rec, "reason")
+            found["detail"] = _record_text(rec, "detail")
+    return list(records.values())
 
 
 def read_entry_errors(

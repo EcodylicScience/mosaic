@@ -443,3 +443,83 @@ def test_phase_is_the_last_declared_phase_since_started(tmp_path: Path) -> None:
     snap = runlog.reduce_run_log(resumed)
     assert snap is not None
     assert snap["phase"] == ""
+
+
+def _removal_log(base: Path) -> JsonlRunLog:
+    log = _log(base, "C1")
+    log.started(kind="feature-cleanup", target="R1")
+    log.set_total(4)
+    log.run_removing(
+        feature="speed",
+        run_id="0.1-a",
+        reason="superseded",
+        superseded_by="0.1-z",
+        params={"_params": {"step_size": 1}},
+    )
+    log.run_removed(feature="speed", run_id="0.1-a", bytes=10, files=2, rows=1)
+    log.run_removing(
+        feature="speed",
+        run_id="0.1-b",
+        reason="superseded",
+        superseded_by="0.1-z",
+        params={"_params": {"step_size": 2}},
+    )
+    log.run_removing(
+        feature="speed",
+        run_id="0.1-c",
+        reason="superseded",
+        superseded_by="0.1-z",
+        params={},
+    )
+    log.entry_failed("speed/0.1-c", '{"type": "OSError", "message": "busy"}')
+    log.run_kept(feature="speed", run_id="0.1-d", reason="read_by", detail="read")
+    return log
+
+
+def test_removal_events_do_not_change_the_status(tmp_path: Path) -> None:
+    with _removal_log(tmp_path) as log:
+        running = runlog.read_run(run_log_dir(tmp_path), "C1")
+        log.finished()
+    finished = runlog.read_run(run_log_dir(tmp_path), "C1")
+
+    assert running is not None
+    assert finished is not None
+    assert running["status"] == "running"
+    assert finished["status"] == "finished"
+    assert finished["entries_failed"] == 1
+    assert "run_removed" not in runlog.TERMINAL_STATUSES
+
+
+def test_an_intent_without_a_done_reads_as_interrupted(tmp_path: Path) -> None:
+    with _removal_log(tmp_path):
+        pass
+
+    records = runlog.read_removal_records(run_log_dir(tmp_path), "C1")
+
+    assert [(record["run_id"], record["state"]) for record in records] == [
+        ("0.1-a", "removed"),
+        ("0.1-b", "interrupted"),
+        ("0.1-c", "failed"),
+        ("0.1-d", "kept"),
+    ]
+    assert records[0]["bytes"] == 10
+    assert records[1]["params"] == {"_params": {"step_size": 2}}
+    assert (records[3]["reason"], records[3]["detail"]) == ("read_by", "read")
+
+
+def test_a_resumed_cleanup_never_undoes_a_removal(tmp_path: Path) -> None:
+    with _removal_log(tmp_path) as log:
+        log.started(kind="feature-cleanup", target="R1")
+        log.run_kept(feature="speed", run_id="0.1-a", reason="absent", detail="")
+        log.run_removed(feature="speed", run_id="0.1-b", bytes=4, files=1, rows=0)
+
+    records = runlog.read_removal_records(run_log_dir(tmp_path), "C1")
+
+    assert [(record["run_id"], record["state"]) for record in records][:2] == [
+        ("0.1-a", "removed"),
+        ("0.1-b", "removed"),
+    ]
+
+
+def test_removal_records_of_an_absent_log_are_empty(tmp_path: Path) -> None:
+    assert runlog.read_removal_records(run_log_dir(tmp_path), "missing") == []

@@ -182,7 +182,9 @@ from tests.helpers.recipes import (
     converting_recipe,
     guppies_recipe,
     recipe_saved_by_0_17,
+    run_speed,
     speed_recipe,
+    speed_recipe_stepping,
 )
 from tests.helpers.models import register_trained_model
 from tests.helpers.ops import minimal_op_params
@@ -440,6 +442,7 @@ __all__ = [
     "revision_file",
     "run_fresh",
     "run_id_digest",
+    "run_speed",
     "runs_in_an_external_environment",
     "sandbox_home",
     "scope_over",
@@ -447,6 +450,7 @@ __all__ = [
     "set_tracks_cell",
     "source_tree",
     "speed_recipe",
+    "speed_recipe_stepping",
     "store_dataset",
     "stub_join",
     "stub_media_dataset",

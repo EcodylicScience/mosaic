@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal
 
+from mosaic.core.pipeline.feature_run_removal import run_bytes
 from mosaic.core.pipeline.markers import (
     MARKER_PREFIX,
     InflightState,
@@ -260,17 +261,6 @@ def declined_sweep(reason: DeclineReason) -> SweepReport:
     return SweepReport(considered=False, declined=reason)
 
 
-def _directory_bytes(path: Path) -> int:
-    total = 0
-    for child in path.rglob("*"):
-        try:
-            if child.is_file():
-                total += child.stat().st_size
-        except OSError:
-            continue
-    return total
-
-
 def _has_marker(path: Path) -> bool:
     """Does anything under *path* carry mosaic's marker prefix?"""
     return any(child.name.startswith(MARKER_PREFIX) for child in path.rglob("*"))
@@ -329,7 +319,7 @@ def classify_entry(
         entry=entry,
         path=path,
         verdict=verdict,
-        bytes_on_disk=_directory_bytes(path),
+        bytes_on_disk=run_bytes(path)[0],
         held_for_age=held,
         detail=detail,
     )
