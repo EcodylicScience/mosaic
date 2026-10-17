@@ -1032,6 +1032,8 @@ Resolve a recipe against a dataset: identities, coverage, what is left.
 Exits 1 when the dataset refuses the recipe. Under ``--json`` the plan is
 printed with its problems. The requests of the recipe over an overlapping
 scope that have not ended, running or orphaned, are listed with it.
+``--step-scope`` narrows one step, as a train/test split narrows the fit
+to the training groups and the scoring to the test groups.
 
 **Usage**:
 
@@ -1044,6 +1046,8 @@ $ mosaic pipeline plan [OPTIONS]
 * `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
+* `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable).
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1087,6 +1091,8 @@ $ mosaic pipeline submit [OPTIONS]
 * `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
+* `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable).
 * `--allow-partial`: Let a step proceed when it would run over less than planned.
 * `--max-concurrent-steps <int>`: How many of this request's steps may run at once. Advisory here.
 * `--owner <str>`: Recorded on the request and its attempts.
@@ -1117,6 +1123,8 @@ $ mosaic pipeline run [OPTIONS]
 * `--request <str>`: Run the unfinished steps of this submitted request, each as its own process, instead of submitting --recipe. Running it again resumes it.
 * `--detach`: With --request, start the driver in a new session, print its pid and return. The driver and its steps append their output to the request's log under .mosaic/drivers/.
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
+* `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable).
 * `--allow-partial`: Proceed when a step would run over less than it was planned for, or when it produces nothing new.
 * `--owner <str>`: Recorded on each attempt.
 * `--json`: Emit as a JSON object.

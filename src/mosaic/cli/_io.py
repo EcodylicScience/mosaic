@@ -32,6 +32,26 @@ EntriesOption = Annotated[
     ),
 ]
 
+GroupOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--group",
+        help="Narrow to every entry of a group (repeatable). Not with --entry.",
+    ),
+]
+
+StepScopeOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--step-scope",
+        help=(
+            "Narrow one step to part of the request's scope, as STEP=SCOPE "
+            'where SCOPE is a JSON selector such as {"groups": ["train"]} or '
+            '{"entries": [["g", "s"]]}, or @file.json (repeatable).'
+        ),
+    ),
+]
+
 
 @contextlib.contextmanager
 def stdout_to_stderr() -> Generator[None]:
@@ -198,9 +218,48 @@ def parse_entries(entries: list[str] | None) -> list[tuple[str, str]]:
     return parse_entry_tokens(entries)
 
 
-def entries_scope(entries: list[str] | None) -> Scope | None:
-    """Return repeated ``--entry`` tokens as a selector, or ``None`` for none."""
+def entries_scope(
+    entries: list[str] | None, groups: list[str] | None = None
+) -> Scope | None:
+    """Return repeated ``--entry`` or ``--group`` tokens as a selector.
+
+    ``None`` when neither is given. The two are refused together, because a
+    selector names entries or groups and not both.
+    """
     from mosaic.core.scope import Scope
 
     pairs = parse_entries(entries)
+    if pairs and groups:
+        fail("Give --entry or --group, not both.")
+    if groups:
+        return Scope(groups=list(groups))
     return Scope(entries=pairs) if pairs else None
+
+
+def parse_step_scopes(values: list[str] | None) -> dict[str, Scope]:
+    """Parse repeated ``--step-scope STEP=SCOPE`` tokens into step scopes.
+
+    SCOPE is a JSON selector, inline or as ``@file.json``. A token without a
+    step, a repeated step, or a value that is not a selector fails, naming
+    the token.
+    """
+    from pydantic import ValidationError
+
+    from mosaic.core.scope import Scope
+
+    found: dict[str, Scope] = {}
+    for token in values or ():
+        step_id, separator, value = token.partition("=")
+        step_id = step_id.strip()
+        if not separator or not step_id or not value:
+            fail(f"--step-scope {token!r} is not STEP=SCOPE.")
+        if step_id in found:
+            fail(f"--step-scope names step {step_id!r} twice.")
+        selector = load_json_arg(value)
+        if not isinstance(selector, dict):
+            fail(f"--step-scope {token!r}: SCOPE must be a JSON object.")
+        try:
+            found[step_id] = Scope.model_validate(selector)
+        except ValidationError as exc:
+            fail(f"--step-scope {token!r} is not a scope: {exc}")
+    return found

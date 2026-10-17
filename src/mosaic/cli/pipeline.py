@@ -22,6 +22,7 @@ JSON option on this CLI takes, so a recipe can be piped in with ``@-``.
 
 from __future__ import annotations
 
+import json
 import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, NoReturn
@@ -31,6 +32,8 @@ import typer
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import (
     EntriesOption,
+    GroupOption,
+    StepScopeOption,
     emit_json,
     entries_scope,
     exit_refused,
@@ -38,6 +41,7 @@ from mosaic.cli._io import (
     fail_classified,
     load_json_arg,
     log,
+    parse_step_scopes,
     stdout_to_stderr,
     with_command_line_scope,
 )
@@ -199,6 +203,8 @@ def plan_command(
     recipe: RecipeOption,
     manifest: ManifestOption,
     entry: EntriesOption = None,
+    group: GroupOption = None,
+    step_scope: StepScopeOption = None,
     as_json: JsonOption = False,
 ) -> None:
     """Resolve a recipe against a dataset: identities, coverage, what is left.
@@ -206,6 +212,8 @@ def plan_command(
     Exits 1 when the dataset refuses the recipe. Under ``--json`` the plan is
     printed with its problems. The requests of the recipe over an overlapping
     scope that have not ended, running or orphaned, are listed with it.
+    ``--step-scope`` narrows one step, as a train/test split narrows the fit
+    to the training groups and the scoring to the test groups.
     """
     from mosaic.core.pipeline.graph import (
         RecipeRefused,
@@ -217,10 +225,11 @@ def plan_command(
 
     ds = load_dataset(manifest, read_only=True)
     parsed = _recipe(recipe, as_json=as_json)
-    scope = entries_scope(entry)
+    scope = entries_scope(entry, group)
+    step_scopes = parse_step_scopes(step_scope)
     try:
         with stdout_to_stderr():
-            plan = plan_pipeline(ds, parsed, scope=scope)
+            plan = plan_pipeline(ds, parsed, scope=scope, step_scopes=step_scopes)
     except RecipeRefused as refusal:
         if as_json:
             emit_json(plan_wire(refusal.plan).model_dump(mode="json"))
@@ -354,6 +363,8 @@ def run_command(
         ),
     ] = False,
     entry: EntriesOption = None,
+    group: GroupOption = None,
+    step_scope: StepScopeOption = None,
     allow_partial: Annotated[
         bool,
         typer.Option(
@@ -386,10 +397,10 @@ def run_command(
     if request_id is not None:
         if recipe is not None:
             fail("Provide exactly one of --recipe or --request.")
-        if entry or allow_partial or owner:
+        if entry or group or step_scope or allow_partial or owner:
             fail(
-                "--entry, --allow-partial and --owner are recorded on a request at "
-                "submit, and are not used with --request."
+                "--entry, --group, --step-scope, --allow-partial and --owner are "
+                "recorded on a request at submit, and are not used with --request."
             )
         _run_request(manifest, request_id, detach=detach, as_json=as_json)
         return
@@ -399,6 +410,8 @@ def run_command(
         fail("--detach is used with --request. Submit the recipe first.")
     ds = load_dataset(manifest)
     parsed = _recipe(recipe, as_json=as_json)
+    scope = entries_scope(entry, group)
+    step_scopes = parse_step_scopes(step_scope)
     submitted: Request | None = None
     token = CancelToken()
     install_signal_handler(token)
@@ -409,9 +422,10 @@ def run_command(
             recorded = submit_request(
                 ds,
                 parsed,
-                scope=entries_scope(entry),
+                scope=scope,
                 allow_partial=allow_partial,
                 owner=owner,
+                step_scopes=step_scopes,
             )
             submitted = recorded.request
             _warn_duplicates(recorded.duplicates)
@@ -548,6 +562,8 @@ def submit_command(
     recipe: RecipeOption,
     manifest: ManifestOption,
     entry: EntriesOption = None,
+    group: GroupOption = None,
+    step_scope: StepScopeOption = None,
     allow_partial: Annotated[
         bool,
         typer.Option(
@@ -603,17 +619,20 @@ def submit_command(
 
     ds = load_dataset(manifest)
     parsed = _recipe(recipe, as_json=as_json)
+    scope = entries_scope(entry, group)
+    step_scopes = parse_step_scopes(step_scope)
     try:
         with stdout_to_stderr():
             submitted = submit_request(
                 ds,
                 parsed,
-                scope=entries_scope(entry),
+                scope=scope,
                 allow_partial=allow_partial,
                 max_concurrent_steps=max_concurrent_steps,
                 owner=owner,
                 expect_plan=expect_plan,
                 refuse_duplicates=refuse_duplicates,
+                step_scopes=step_scopes,
             )
     except ClassifiedError as error:
         _fail_unrunnable(error, as_json=as_json)
@@ -645,6 +664,10 @@ def submit_command(
                 "allow_partial": request.allow_partial,
                 "max_concurrent_steps": request.max_concurrent_steps,
                 "scope": sorted(list(pair) for pair in submitted.plan.scope),
+                "step_scopes": {
+                    step_id: narrowed.model_dump(mode="json")
+                    for step_id, narrowed in sorted(request.step_scopes.items())
+                },
                 "steps": steps,
                 "duplicates": list(submitted.duplicates),
             }
@@ -824,6 +847,14 @@ def _emit_plan(
     )
     for caution in wire.cautions:
         log(f"caution: {caution}")
+    for planned in plan.steps:
+        narrowed = plan.step_scopes.get(planned.step_id)
+        if narrowed is not None:
+            selector = json.dumps(narrowed.model_dump(mode="json", exclude_none=True))
+            log(
+                f"note: step {planned.step_id!r} is narrowed to {selector}, "
+                f"{len(planned.coverage.target)} of {len(plan.scope)} entries"
+            )
     for summary in open_requests:
         log(
             f"note: request {summary.request_id} of this recipe is "
