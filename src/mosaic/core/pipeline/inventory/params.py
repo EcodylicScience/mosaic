@@ -315,8 +315,12 @@ def _without_unreadable(
     return current, dropped
 
 
-REPORT_MAX_CHARS: Final = 200_000
-"""The longest report :func:`read_run_report` returns, in characters."""
+REPORT_MAX_CHARS: Final = 40_000
+"""The longest report :func:`read_run_report` returns, in bytes on disk.
+
+The read budget of the MCP server's results, which serves a report whole and
+could not narrow a longer one.
+"""
 
 
 class ReportTooLarge(ValueError):

@@ -14,10 +14,15 @@ import ast
 import json
 from pathlib import Path
 
+import pytest
+
 from mosaic.core.pipeline.inventory.params import (
+    REPORT_MAX_CHARS,
+    ReportTooLarge,
     RunParams,
     TracksVariantWalk,
     read_run_params,
+    read_run_report,
     run_tracks_variants,
 )
 
@@ -379,3 +384,21 @@ def test_no_module_parses_a_params_document_itself() -> None:
                 offenders.append(f"{relative}:{node.lineno}")
 
     assert offenders == [], f"these parse a params document themselves: {offenders}"
+
+
+def test_a_run_report_is_read_bounded_and_by_one_path_component(
+    tmp_path: Path,
+) -> None:
+    """Absent reads as none, too long is refused, and a path is not a file name."""
+    run_root = tmp_path / "run"
+    assert read_run_report(run_root, "metrics.json") is None
+
+    run_root.mkdir()
+    (run_root / "metrics.json").write_text(json.dumps({"accuracy": 0.5}))
+    assert read_run_report(run_root, "metrics.json") == {"accuracy": 0.5}
+
+    (run_root / "big.json").write_text(json.dumps("x" * REPORT_MAX_CHARS))
+    with pytest.raises(ReportTooLarge):
+        _ = read_run_report(run_root, "big.json")
+    with pytest.raises(ValueError, match="one path component"):
+        _ = read_run_report(run_root, "../metrics.json")
