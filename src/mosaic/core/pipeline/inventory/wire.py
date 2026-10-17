@@ -495,6 +495,11 @@ def inventory_wire(
         reportable_universe(ds, tracks_run_id) if tracks_run_id is not None else None
     )
     narrowing = scope is not None or universe is not None
+    # What a scope-dependent run is re-measured from: *universe* when a tracks
+    # variant names it, else every entry, read once on first need. Held apart
+    # from *universe*, which also says whether a tracks variant narrows the
+    # other records, so a scope-dependent record cannot change how they read.
+    asked_universe = universe
     walk = TracksVariantWalk(ds, _held_params(inventory))
 
     matched: list[_Matched] = []
@@ -513,10 +518,10 @@ def inventory_wire(
                 # Re-measured from the asked entries rather than narrowed from
                 # the scan's target, which was already cut to the run's scope:
                 # narrowing that again can leave it empty, and an empty target
-                # reads as complete. The universe is read once, on first need.
-                if universe is None:
-                    universe = reportable_universe(ds, None)
-                coverage = _declared(record, narrow_target(universe, scope))
+                # reads as complete.
+                if asked_universe is None:
+                    asked_universe = reportable_universe(ds, None)
+                coverage = _declared(record, narrow_target(asked_universe, scope))
             elif is_feature:
                 coverage = _narrowed(record.coverage, scope, universe)
             else:
