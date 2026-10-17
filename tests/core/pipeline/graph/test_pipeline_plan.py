@@ -45,6 +45,10 @@ from mosaic.core.pipeline.graph import (
     build_step_feature,
     plan_pipeline,
     plan_wire,
+    recipe_digest,
+    requests_matching,
+    run_pipeline,
+    submit_request,
 )
 from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.preprocess_layout import media_variants_root
@@ -56,6 +60,7 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from mosaic.tracking.trex.params import TrexParams
 from tests.helpers import (
+    SPEED_RECIPE,
     FakeTrex,
     MediaClip,
     add_media_variant,
@@ -67,7 +72,9 @@ from tests.helpers import (
     install_fake_trex,
     make_dataset,
     scope_over,
+    speed_recipe,
     tree_snapshot,
+    write_driver_lease,
     write_media_index,
     write_sleap_model,
 )
@@ -173,6 +180,45 @@ def test_every_step_resolves_to_the_identifier_execution_records(
 
     assert not any(planned.run_id is None for planned in plan.steps)
     assert execute(tracked, plan) == plan.run_ids
+
+
+def test_the_plan_lists_the_open_and_orphaned_requests_of_its_recipe(
+    tracked: Dataset, tmp_path: Path
+) -> None:
+    running = submit_request(tracked, speed_recipe()).request
+    orphaned = submit_request(tracked, speed_recipe()).request
+    _ = write_driver_lease(tracked.base_dir, orphaned.request_id, stale=True)
+    finished = submit_request(tracked, speed_recipe()).request
+    _ = run_pipeline(tracked, speed_recipe(), request=finished)
+    _ = submit_request(tracked, speed_recipe(), scope=Scope(entries=[("", "seq_b")]))
+    recipe = tmp_path / "speed.json"
+    _ = recipe.write_text(json.dumps(SPEED_RECIPE))
+
+    listed = requests_matching(
+        tracked.base_dir, recipe_digest(speed_recipe()), Scope(entries=[("", "seq_a")])
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "-m",
+            str(tracked.manifest_path),
+            "-r",
+            f"@{recipe}",
+            "--entry",
+            "seq_a",
+            "--json",
+        ],
+    )
+
+    assert [(summary.request_id, summary.verdict) for summary in listed] == [
+        (orphaned.request_id, "orphaned"),
+        (running.request_id, "running"),
+    ]
+    assert result.exit_code == 0, result.output
+    wire = PlanWire.model_validate_json(result.stdout)
+    assert wire.open_requests == listed
 
 
 def test_a_cold_scope_dependent_step_predicts_its_scope(tracked: Dataset) -> None:

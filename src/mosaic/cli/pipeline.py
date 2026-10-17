@@ -54,6 +54,7 @@ if TYPE_CHECKING:
         Recipe,
         Request,
         RequestStatusWire,
+        RequestSummaryWire,
     )
 
 pipeline_app = typer.Typer(
@@ -203,15 +204,23 @@ def plan_command(
     """Resolve a recipe against a dataset: identities, coverage, what is left.
 
     Exits 1 when the dataset refuses the recipe. Under ``--json`` the plan is
-    printed with its problems.
+    printed with its problems. The requests of the recipe over an overlapping
+    scope that have not ended, running or orphaned, are listed with it.
     """
-    from mosaic.core.pipeline.graph import RecipeRefused, plan_pipeline, plan_wire
+    from mosaic.core.pipeline.graph import (
+        RecipeRefused,
+        plan_pipeline,
+        plan_wire,
+        requests_matching,
+    )
+    from mosaic.core.scope import Scope
 
     ds = load_dataset(manifest, read_only=True)
     parsed = _recipe(recipe, as_json=as_json)
+    scope = entries_scope(entry)
     try:
         with stdout_to_stderr():
-            plan = plan_pipeline(ds, parsed, scope=entries_scope(entry))
+            plan = plan_pipeline(ds, parsed, scope=scope)
     except RecipeRefused as refusal:
         if as_json:
             emit_json(plan_wire(refusal.plan).model_dump(mode="json"))
@@ -219,7 +228,10 @@ def plan_command(
         fail(str(refusal))
     except ClassifiedError as error:
         _fail_unrunnable(error, as_json=as_json)
-    _emit_plan(plan, as_json=as_json)
+    unended = requests_matching(
+        ds.base_dir, plan.recipe_digest, Scope() if scope is None else scope
+    )
+    _emit_plan(plan, open_requests=unended, as_json=as_json)
 
 
 def show_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
@@ -760,12 +772,20 @@ def _runs(step: object) -> str:
     return str(getattr(step, "feature", "") or getattr(step, "kind", ""))
 
 
-def _emit_plan(plan: "Plan", *, as_json: bool) -> None:
-    """Render a plan as its fingerprint and a table, or as the JSON an API serves."""
+def _emit_plan(
+    plan: "Plan",
+    *,
+    open_requests: "tuple[RequestSummaryWire, ...]" = (),
+    as_json: bool,
+) -> None:
+    """Render a plan as its fingerprint and a table, or as the JSON an API serves.
+
+    Each of *open_requests* is noted below the table.
+    """
     from mosaic.core.pipeline.graph import plan_fingerprint, plan_wire
 
     if as_json:
-        emit_json(plan_wire(plan).model_dump(mode="json"))
+        emit_json(plan_wire(plan, open_requests=open_requests).model_dump(mode="json"))
         return
     typer.echo(f"plan {plan_fingerprint(plan)}")
     rows = [
@@ -784,6 +804,16 @@ def _emit_plan(plan: "Plan", *, as_json: bool) -> None:
     render_table(
         rows, ["step", "type", "runs", "run_id", "status", "coverage", "lane", "reason"]
     )
+    for summary in open_requests:
+        log(
+            f"note: request {summary.request_id} of this recipe is "
+            f"{summary.verdict}"
+            + (
+                "; 'mosaic pipeline run --request' resumes it"
+                if summary.verdict == "orphaned"
+                else ""
+            )
+        )
 
 
 def _coverage_cell(planned: "PlannedStep") -> str:

@@ -583,21 +583,35 @@ class LocalBackend:
     # ------------------------------------------------------------- planning
 
     def _plan_recipe(self, args: PlanRecipeInput) -> PlanWire:
-        from mosaic.core.pipeline.graph import plan_pipeline, plan_wire
+        from mosaic.core.pipeline.graph import (
+            plan_pipeline,
+            plan_wire,
+            requests_matching,
+        )
+        from mosaic.core.scope import Scope
 
         held = self._dataset(args.dataset)
         recipe = _recipe(args.recipe)
         catalog = self._declarations()
+        scope = _scope(args.entries)
         with held.lock:
             plan = plan_pipeline(
                 held.dataset,
                 recipe,
-                scope=_scope(args.entries),
+                scope=scope,
                 inventory=self._inventory(held),
                 catalog=catalog,
                 refuse=False,
             )
-        return plan_wire(plan, missing_sample=PLAN_MISSING_SAMPLE)
+        # Read outside the lock: it reads request files and run-logs only.
+        unended = requests_matching(
+            held.dataset.base_dir,
+            plan.recipe_digest,
+            Scope() if scope is None else scope,
+        )
+        return plan_wire(
+            plan, missing_sample=PLAN_MISSING_SAMPLE, open_requests=unended
+        )
 
     def _submit_pipeline(self, args: SubmitPipelineInput) -> SubmittedPipeline:
         from mosaic.core.pipeline.graph import (

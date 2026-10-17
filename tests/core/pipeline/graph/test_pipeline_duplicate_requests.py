@@ -42,6 +42,7 @@ from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
     SPEED_RECIPE,
     add_tracks_variant,
+    exited_pid,
     invoke_json,
     make_dataset,
     speed_recipe,
@@ -160,6 +161,25 @@ def test_a_request_with_a_live_driver_lease_is_open(tracked: Dataset) -> None:
     )
 
     assert found == (driven.request_id,)
+
+
+def test_a_request_whose_step_is_dead_is_not_an_open_duplicate(
+    tracked: Dataset,
+) -> None:
+    """No lease, as for a request a queue drives, and the step's process exited."""
+    dead = submit_request(tracked, speed_recipe()).request
+    execution_id = next(iter(dead.step_executions.values()))
+    with JsonlRunLog(run_log_path(tracked.base_dir, execution_id), execution_id) as log:
+        log.started(
+            kind="feature", target="speed", host=socket.gethostname(), pid=exited_pid()
+        )
+
+    found = open_requests_matching(
+        tracked.base_dir, recipe_digest(speed_recipe()), Scope()
+    )
+
+    assert found == ()
+    assert submit_request(tracked, speed_recipe()).duplicates == ()
 
 
 def test_a_dataset_without_requests_has_none_open(tracked: Dataset) -> None:

@@ -23,9 +23,11 @@ from mosaic.core.pipeline.graph import (
     plan_pipeline,
     plan_wire,
     pipelines_root,
+    requests_matching,
     run_pipeline,
     submit_request,
 )
+from mosaic.core.scope import Scope
 from tests.helpers import (
     SPEED_RECIPE,
     add_tracks_variant,
@@ -109,6 +111,18 @@ def test_the_fingerprint_ignores_the_sample_size(tracked: Dataset) -> None:
 
     assert plan_wire(plan, missing_sample=0).fingerprint == plan_fingerprint(plan)
     assert plan_wire(plan, missing_sample=1).fingerprint == plan_fingerprint(plan)
+
+
+def test_the_fingerprint_ignores_open_requests(tracked: Dataset) -> None:
+    before = _fingerprint(tracked)
+    _ = submit_request(tracked, speed_recipe())
+    plan = plan_pipeline(tracked, speed_recipe())
+    unended = requests_matching(tracked.base_dir, plan.recipe_digest, Scope())
+
+    wire = plan_wire(plan, open_requests=unended)
+
+    assert len(wire.open_requests) == 1
+    assert wire.fingerprint == plan_fingerprint(plan) == before
 
 
 def test_a_current_fingerprint_submits(tracked: Dataset) -> None:

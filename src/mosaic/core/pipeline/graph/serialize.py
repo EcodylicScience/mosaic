@@ -36,10 +36,17 @@ from .wire import (
 if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
 
+    from .status import RequestSummaryWire
+
 __all__ = ["plan_fingerprint", "plan_wire"]
 
 
-def plan_wire(plan: Plan, *, missing_sample: int = MISSING_SAMPLE_WIRE) -> PlanWire:
+def plan_wire(
+    plan: Plan,
+    *,
+    missing_sample: int = MISSING_SAMPLE_WIRE,
+    open_requests: tuple[RequestSummaryWire, ...] = (),
+) -> PlanWire:
     """Serialize *plan* with a structured reason and a bounded coverage summary.
 
     Full entry lists are left out. A step reports how many entries it holds and
@@ -47,6 +54,13 @@ def plan_wire(plan: Plan, *, missing_sample: int = MISSING_SAMPLE_WIRE) -> PlanW
     missing. The plan's problems are included. A plan that
     :class:`~.plan.RecipeRefused` contains has them. The fingerprint does not
     depend on *missing_sample*.
+
+    Args:
+        plan: The plan.
+        missing_sample: How many missing entries each step names at most.
+        open_requests: The requests of the recipe that have not ended, as
+            :func:`~.store.requests_matching` reads them. They are reported as
+            given and do not enter the fingerprint.
     """
     return PlanWire(
         recipe_digest=plan.recipe_digest,
@@ -57,6 +71,7 @@ def plan_wire(plan: Plan, *, missing_sample: int = MISSING_SAMPLE_WIRE) -> PlanW
             _step_wire(planned, plan, missing_sample) for planned in plan.steps
         ),
         problems=plan.problems,
+        open_requests=open_requests,
     )
 
 

@@ -43,6 +43,7 @@ from ..ops import ScopeTakes
 from ..types.feature import EmitsLevel
 from .compatibility import Declaration
 from .model import GraphModel
+from .status import RequestSummaryWire
 
 __all__ = [
     "AttachReport",
@@ -634,6 +635,10 @@ class PlanWire(GraphModel):
             ``run.filter_start_time`` or ``run.filter_end_time``, and a column
             that the tracks tables lack, at ``inputs``. Empty when the plan
             may run.
+        open_requests: The requests of this recipe over an overlapping scope
+            that have not ended, ``running`` or ``orphaned``
+            (:func:`~.store.requests_matching`). Empty unless the caller looked
+            them up. The fingerprint leaves them out.
     """
 
     recipe_digest: str
@@ -642,3 +647,4 @@ class PlanWire(GraphModel):
     complete: bool
     steps: tuple[PlannedStepWire, ...]
     problems: tuple[Problem, ...]
+    open_requests: tuple[RequestSummaryWire, ...] = ()

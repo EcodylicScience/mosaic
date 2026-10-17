@@ -29,8 +29,12 @@ from ..error_kind import ClassifiedError, ErrorKind
 from ..index_lock import index_lock
 from .digest import canonical_recipe, recipe_digest
 from .model import Recipe, Request
-from .rollup import request_rollup
-from .status import JSON_OBJECT, RequestPageWire, request_summary, request_verdict_of
+from .status import (
+    JSON_OBJECT,
+    RequestPageWire,
+    RequestSummaryWire,
+    request_summary,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -48,6 +52,7 @@ __all__ = [
     "read_recipe_document",
     "recipe_path",
     "request_path",
+    "requests_matching",
     "requests_root",
     "save_recipe",
     "save_request",
@@ -232,7 +237,35 @@ def open_requests_matching(
         The ids of the open requests, in descending id order. That order is
         creation order for the ids that ``submit_request`` mints.
     """
-    open_ids: list[str] = []
+    return tuple(
+        summary.request_id
+        for summary in requests_matching(base_dir, recipe_digest, scope)
+        if summary.verdict == "running"
+    )
+
+
+def requests_matching(
+    base_dir: Path | str,
+    recipe_digest: str,
+    scope: Scope,
+) -> tuple[RequestSummaryWire, ...]:
+    """Summarize the requests of one recipe over an overlapping scope that have not ended.
+
+    The requests are those :func:`open_requests_matching` reads, with a verdict
+    of ``running`` or ``orphaned``. An ``orphaned`` request is not open, since
+    nothing drives it, but its unfinished work is the plan's to resume or
+    cancel, so a plan lists it beside the open ones.
+
+    Args:
+        base_dir: The dataset root.
+        recipe_digest: The digest of the recipe.
+        scope: The scope to be planned or submitted.
+
+    Returns:
+        One summary per such request (:func:`~.status.request_summary`), in
+        descending id order.
+    """
+    found: list[RequestSummaryWire] = []
     current: dict[str, str | None] = {}
     for name in _request_ids(base_dir):
         request = _request_of_recipe(
@@ -240,9 +273,10 @@ def open_requests_matching(
         )
         if request is None or not request.scope.overlaps(scope):
             continue
-        if request_verdict_of(base_dir, request_rollup(base_dir, request)) == "running":
-            open_ids.append(request.request_id)
-    return tuple(open_ids)
+        summary = request_summary(base_dir, request)
+        if summary.verdict in ("running", "orphaned"):
+            found.append(summary)
+    return tuple(found)
 
 
 def _request_of_recipe(
