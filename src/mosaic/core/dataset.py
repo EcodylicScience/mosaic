@@ -6879,6 +6879,10 @@ class Dataset:
           - For scene-level: [-1, -1]
         - 'label_ids': int32 array, all label IDs (e.g., [0, 1, 2])
         - 'label_names': object array, label names (e.g., ["none", "troph", "other"])
+        - 'background_id': int, the label ID a frame without an event means
+          (e.g., 0 for "none"), or -1 when every label is a behavior and such a
+          frame is unlabeled. A file without it makes every reader guess, and
+          warn (``LegacyLabelFileWarning``).
         - 'fps': float, frames per second
         - (optional) additional metadata
 

@@ -8,6 +8,7 @@ from typing import Annotated
 
 import numpy as np
 
+from mosaic.core.helpers import UNLABELED
 from mosaic.core.label_converter import (
     LabelConvertParams,
     LabelConverter,
@@ -73,7 +74,10 @@ class CalMS21BehaviorConverter(LabelConverter[CalMS21BehaviorParams]):
     # matching what ``Calms21Converter`` has emitted since its own 0.2. The labels
     # are otherwise identical, but a variant's identity covers what it emits, and
     # this changed the entry keys and therefore the filenames.
-    version = "0.2"
+    # 0.3: the file records ``background_id = -1``. Every CalMS21 class is a
+    # behavior, so a row no event matches -- the intruder-focal row of a pair --
+    # is unlabeled rather than class 0.
+    version = "0.3"
     Params = CalMS21BehaviorParams
 
     def convert(
@@ -143,6 +147,7 @@ class CalMS21BehaviorConverter(LabelConverter[CalMS21BehaviorParams]):
                     "individual_ids": individual_ids,
                     "label_ids": label_ids,
                     "label_names": label_names,
+                    "background_id": np.int32(UNLABELED),
                 }
                 if (
                     group_from in {"filename", "both"}

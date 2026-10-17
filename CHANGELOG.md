@@ -180,6 +180,16 @@ file names a background class.
   frame by its `frame` and its own ids (`row_individual_pairs`). Rows whose ids are
   not integers align by frame alone.
 
+**Label converters record their background class (`calms21_npy` labels 0.3,
+`boris_aggregated_csv` and `boris_pandas_pickle` 0.2).** Each file now carries
+`background_id`, the class a frame without an event means. CalMS21 writes `-1`,
+because every CalMS21 class is a behavior. BORIS puts its `background_label` at id 0
+even when the background occurs in the data, where it used to take an alphabetical
+id. A labels variant id moves only when the labels are reconverted. After
+reconverting, the dataset holds two label variants, so pass `labels_run_id=` or
+remove the old one; until then the old files still read correctly, through the
+background the variant recorded. `convert_labels_custom` documents the key.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

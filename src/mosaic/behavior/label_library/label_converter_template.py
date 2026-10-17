@@ -167,6 +167,10 @@ class MyLabelConverter(LabelConverter[MyLabelParams]):
                     "labels": labels,
                     "label_ids": label_ids,
                     "label_names": label_names,
+                    # The class a frame without an event means, or -1 when
+                    # every class is a behavior. A reader that finds no
+                    # background_id has to guess it.
+                    "background_id": np.int32(-1),
                     "fps": float(params.default_fps),
                 }
 

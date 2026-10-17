@@ -170,6 +170,9 @@ class CustomLabelConverter(LabelConverter[CustomLabelParams]):
                 "labels": labels,
                 "label_ids": label_ids,
                 "label_names": label_names,
+                # The class a frame without an event means. A reader that finds
+                # no background_id has to guess it.
+                "background_id": np.int32(label_name_to_id[params.background_label]),
                 "fps": fps,
             }
 
@@ -230,13 +233,16 @@ class CustomLabelConverter(LabelConverter[CustomLabelParams]):
 
         Returns:
             Mapping from ID to behavior name. MUST include
-            ``params.background_label`` (conventionally at ID 0).
+            ``params.background_label``, at ID 0 by convention, whether or not it
+            occurs in the data.
 
         Examples:
             From a DataFrame column::
 
-                behaviors = sorted(data["behavior"].unique())
-                behaviors = [params.background_label] + behaviors
+                background = params.background_label
+                behaviors = [background] + [
+                    b for b in sorted(data["behavior"].unique()) if b != background
+                ]
                 return {i: name for i, name in enumerate(behaviors)}
 
             Hardcoded::
@@ -439,9 +445,10 @@ class ModifiedBorisConverter(CustomLabelConverter):
         self, data: pd.DataFrame, params: ModifiedBorisParams
     ) -> dict[int, str]:
         """Build the label map from the ``Behavior`` column."""
-        behaviors = sorted(data["Behavior"].dropna().unique())
-        if params.background_label not in behaviors:
-            behaviors = [params.background_label] + behaviors
+        background = params.background_label
+        behaviors = [background] + [
+            b for b in sorted(data["Behavior"].dropna().unique()) if b != background
+        ]
         return {i: name for i, name in enumerate(behaviors)}
 
     def _extract_annotations(

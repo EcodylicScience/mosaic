@@ -64,6 +64,7 @@ LabelEntry(
         "frames": [0, 1, 2, ..., 599],  # Frame indices
         "labels": [0, 1, 1, ..., 0],  # Per-frame behavior IDs
         "label_names": ["none", "grooming", "eating", "jump"],
+        "background_id": 0,  # The class a frame without an event means
         "fps": 30.0,
     },
     n_frames=600,
@@ -219,8 +220,10 @@ Map behavior IDs to behavior names.
 ```python
 # From a DataFrame column
 def _build_label_map(self, data, params):
-    behaviors = sorted(data["behavior"].unique())
-    behaviors = [params.background_label] + behaviors
+    background = params.background_label
+    behaviors = [background] + [
+        b for b in sorted(data["behavior"].unique()) if b != background
+    ]
     return {i: name for i, name in enumerate(behaviors)}
 
 
@@ -229,7 +232,8 @@ def _build_label_map(self, data, params):
     return {0: "none", 1: "grooming", 2: "eating", 3: "resting"}
 ```
 
-**Important:** MUST include `params.background_label` (usually at ID 0). Read
+**Important:** MUST include `params.background_label`, at ID 0 whether or not it
+occurs in the data: sorted among the behaviors, it takes an alphabetical ID. Read
 parameters as typed attributes (`params.background_label`), not dict lookups.
 
 #### 3. `_extract_annotations(data, src_path, raw_row, params)` - Extract Events
@@ -702,9 +706,15 @@ Each `LabelEntry.payload` is the `.npz` contents the `Dataset` writes.
     "labels": np.ndarray,  # Per-frame behavior IDs (integers)
     "label_ids": np.ndarray,  # Valid behavior IDs [0, 1, 2, ...]
     "label_names": np.ndarray,  # Behavior names ["none", "groom", ...]
+    "background_id": int,  # The class a frame without an event means; -1 if none
     "fps": float,  # Frames per second
 }
 ```
+
+`background_id` says what a reader returns for a frame no event covers. Write the
+background's ID (usually 0), or `-1` when every class is a behavior and such a frame
+is unlabeled, as in CalMS21. A file without it makes every reader guess, and warn
+with `LegacyLabelFileWarning`.
 
 ### Optional Fields
 

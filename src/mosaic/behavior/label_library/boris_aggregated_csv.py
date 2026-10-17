@@ -150,7 +150,9 @@ class BorisAggregatedCSVConverter(LabelConverter[BorisAggregatedCSVParams]):
     src_format = "boris_aggregated_csv"
     label_kind = "behavior"
     label_format = "individual_pair_v1"
-    version = "0.1"
+    # 0.2: the background is id 0 even when it occurs in the data, and the file
+    # records it as ``background_id``, so a frame without an event reads as it.
+    version = "0.2"
     Params = BorisAggregatedCSVParams
 
     def convert(
@@ -199,10 +201,15 @@ class BorisAggregatedCSVConverter(LabelConverter[BorisAggregatedCSVParams]):
 
         print(f"Using FPS: {fps}")
 
-        # Build label map from unique behaviors
-        unique_behaviors = sorted(df[params.behavior_col].dropna().unique())
-        if params.background_label not in unique_behaviors:
-            unique_behaviors = [params.background_label] + unique_behaviors
+        # Build label map from unique behaviors. The background is always id 0,
+        # whether or not it occurs in the data: sorted among the behaviors it took
+        # an alphabetical id, which a reader assuming 0 read as a behavior.
+        background = params.background_label
+        unique_behaviors = [background] + [
+            b
+            for b in sorted(df[params.behavior_col].dropna().unique())
+            if b != background
+        ]
 
         label_map = {i: name for i, name in enumerate(unique_behaviors)}
         label_name_to_id = {name: i for i, name in label_map.items()}
@@ -246,6 +253,7 @@ class BorisAggregatedCSVConverter(LabelConverter[BorisAggregatedCSVParams]):
                 "individual_ids": individual_ids,
                 "label_ids": label_ids,
                 "label_names": label_names,
+                "background_id": np.int32(label_name_to_id[background]),
                 "source_observation": str(obs_id),
                 "source_subject": str(subject),
                 "fps": float(fps),

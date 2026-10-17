@@ -528,12 +528,15 @@ def test_calms21_labels_and_tracks_agree_on_the_entry_name(tmp_path: Path) -> No
 
 
 def test_calms21_label_version_says_its_output_identity_moved() -> None:
-    """0.2 changed the entry keys, so it changed the filenames labels land in."""
+    """0.2 changed the entry keys, so it changed the filenames labels land in.
+
+    0.3 records ``background_id = -1``, so a row no event matches is unlabeled.
+    """
     from mosaic.behavior.label_library.calms21_behavior import (
         CalMS21BehaviorConverter,
     )
 
-    assert CalMS21BehaviorConverter.version == "0.2"
+    assert CalMS21BehaviorConverter.version == "0.3"
 
 
 def test_calms21_version_says_its_output_identity_moved() -> None:
