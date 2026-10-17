@@ -240,17 +240,23 @@ def run_pipeline(
                 raise Cancelled()
             keeper.ensure_held()
             keeper.record_step(step_id, os.getpid())
-            outcome = execute_step(
-                ds,
-                submitted,
-                step_id,
-                store=store,
-                inventory=inventory,
-                catalog=catalog,
-                owner=owner,
-                cancel_token=token,
-            )
-            keeper.record_step("", 0)
+            try:
+                outcome = execute_step(
+                    ds,
+                    submitted,
+                    step_id,
+                    store=store,
+                    inventory=inventory,
+                    catalog=catalog,
+                    owner=owner,
+                    cancel_token=token,
+                )
+            finally:
+                # Cleared however the step ended. A lease left naming a step
+                # with this pid would read that step as running for as long as
+                # this process lives, as a notebook kernel does after a step
+                # raised before writing its run-log.
+                keeper.record_step("", 0)
             outcomes.append(outcome)
             if outcome.state == "stalled" and not submitted.allow_partial:
                 # Stopped after one stall rather than after K attempts. A feature

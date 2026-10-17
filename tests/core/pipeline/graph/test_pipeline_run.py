@@ -849,3 +849,30 @@ def test_an_in_process_run_stops_before_a_step_a_cancel_recorded(
     ]
     rollup = request_rollup(tracked.base_dir, submitted)
     assert [attempt.status for attempt in rollup.steps] == ["finished", "cancelled"]
+
+
+def test_an_in_process_step_that_raises_unrecorded_leaves_no_step_named(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A step that raises before its run-log exists is not this process's to wait on.
+
+    The process outlives the run, as a notebook kernel does. A lease left naming
+    the step with this pid would read it as running for as long as the kernel
+    lives, and the request would never read ``orphaned``.
+    """
+
+    def raises(ds: Dataset, request: Request, step_id: str, **_: object):
+        raise RuntimeError("raised before the step's attempt began")
+
+    monkeypatch.setattr(run_module, "execute_step", raises)
+    submitted = submit_request(tracked, chain_recipe()).request
+
+    with pytest.raises(RuntimeError, match="before the step's attempt began"):
+        _ = run_pipeline(tracked, chain_recipe(), request=submitted)
+
+    lease = read_driver_lease(tracked.base_dir, submitted.request_id)
+    assert lease is not None
+    assert (lease.step_id, lease.step_pid) == ("", 0)
+    rollup = request_rollup(tracked.base_dir, submitted)
+    later = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+    assert request_verdict_of(tracked.base_dir, rollup, now=later) == "orphaned"
