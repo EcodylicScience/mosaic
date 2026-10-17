@@ -19,7 +19,13 @@ from mosaic.core.pipeline.labels_index import (
     write_labels_row,
 )
 from mosaic.core.pipeline.sequence_index import write_sequence_compositions
-from tests.helpers import functions_named, make_dataset, names_read, source_tree
+from tests.helpers import (
+    calms21_dataset,
+    functions_named,
+    make_dataset,
+    names_read,
+    source_tree,
+)
 
 
 def _frame(rows: list[dict[str, object]]) -> pd.DataFrame:
@@ -355,3 +361,36 @@ def test_the_label_conversion_reads_strict_schema() -> None:
     )
 
     assert "strict_schema" in reads
+
+
+def test_convert_all_labels_reports_written_and_skipped(tmp_path: Path) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4, "s2": 3}}})
+
+    first = ds.convert_all_labels(kind="behavior", source_format="calms21_npy")
+    again = ds.convert_all_labels(kind="behavior", source_format="calms21_npy")
+
+    assert (first.written, first.skipped) == (2, 0)
+    assert (again.written, again.skipped) == (0, 2)
+    assert first.variant == again.variant
+
+
+def test_convert_all_labels_registers_through_mutate_manifest(
+    tmp_path: Path,
+) -> None:
+    """Another writer's manifest change survives the registration."""
+    from mosaic.core.dataset import Dataset
+
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}})
+    other = Dataset(manifest_path=ds.manifest_path).load()
+    other.meta["note"] = "written by another process"
+    other.save()
+
+    outcome = ds.convert_all_labels(kind="behavior", source_format="calms21_npy")
+
+    reread = Dataset(manifest_path=ds.manifest_path).load()
+    assert reread.meta["note"] == "written by another process"
+    labels = reread.meta["labels"]
+    assert isinstance(labels, dict)
+    behavior = labels["behavior"]
+    assert isinstance(behavior, dict)
+    assert behavior["run_id"] == outcome.variant

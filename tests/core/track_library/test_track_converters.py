@@ -41,7 +41,12 @@ from mosaic.core.track_library.sleap import (
 from mosaic.core.dataset import Dataset
 from mosaic.core.track_library.trex import TrexNpzConverter
 
-from tests.helpers import write_sleap_analysis_h5, write_trex_npz
+from tests.helpers import (
+    calms21_dataset,
+    tree_snapshot,
+    write_sleap_analysis_h5,
+    write_trex_npz,
+)
 
 # What entry identity is spelled as. A converter may accept these as hints; none
 # may accept them as parameters.
@@ -837,3 +842,85 @@ def test_a_superseded_spelling_is_reported_with_the_safe_remedy(
     reported = capsys.readouterr().err
     assert "('old', 'spelling')" in reported
     assert 'run_id=""' in reported
+
+
+# --- convert_all_tracks hooks ----------------------------------------------------
+
+
+def test_track_conversion_variant_matches_the_written_variant_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    """The planner's name for a conversion is the one the conversion writes."""
+    dataset = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}})
+    before = tree_snapshot(dataset.base_dir)
+
+    planned = dataset.track_conversion_variant("calms21_npy")
+
+    assert tree_snapshot(dataset.base_dir) == before
+    outcome = dataset.convert_all_tracks(source_format="calms21_npy")
+    assert outcome.variants == (planned,)
+
+
+def test_convert_all_tracks_converts_only_the_named_source_format(
+    tmp_path: Path,
+) -> None:
+    """A second format's raw rows are left for a conversion of their own."""
+    from mosaic.core.manifest import TracksScanSource
+    from mosaic.core.pipeline.tracks_index import read_tracks_index
+
+    dataset = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}}, scan=False)
+    trex_dir = dataset.base_dir / "trex"
+    _write_trex_npz(trex_dir / "vid_id0.npz", ind=0)
+    dataset.add_scan_source(
+        TracksScanSource(
+            id="trex",
+            path=str(trex_dir),
+            patterns=("*.npz",),
+            src_format="trex_npz",
+        )
+    )
+    dataset.scan_tracks()
+    progress: list[tuple[int, int]] = []
+
+    outcome = dataset.convert_all_tracks(
+        source_format="calms21_npy",
+        progress=lambda done, total: progress.append((done, total)),
+    )
+
+    producers = set(read_tracks_index(dataset)["producer"])
+    assert producers == {"convert-calms21_npy"}
+    assert outcome.converted == 1
+    assert progress[-1] == (1, 1)
+
+
+def test_a_source_format_with_no_raw_rows_is_refused(tmp_path: Path) -> None:
+    dataset = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}})
+
+    with pytest.raises(ValueError, match="trex_npz"):
+        _ = dataset.convert_all_tracks(source_format="trex_npz")
+
+
+def test_a_failed_file_reaches_on_failure_inside_its_exception(
+    tmp_path: Path,
+) -> None:
+    """The callback runs while the exception is handled, so it can format it."""
+    import sys
+    import traceback
+
+    dataset = calms21_dataset(
+        tmp_path / "ds",
+        {"good": {"a": {"s1": 4}}, "bad": {"a": {"s2": 4}}},
+        scan=False,
+    )
+    _ = (dataset.base_dir / "raw" / "bad.npy").write_bytes(b"not an npy file")
+    dataset.scan_tracks()
+    heard: list[tuple[str, str, bool]] = []
+
+    def on_failure(path: str, exc: BaseException) -> None:
+        heard.append((Path(path).name, type(exc).__name__, sys.exc_info()[1] is exc))
+        assert "Traceback" in traceback.format_exc()
+
+    outcome = dataset.convert_all_tracks(on_failure=on_failure)
+
+    assert outcome.failed == 1
+    assert [(name, live) for name, _, live in heard] == [("bad.npy", True)]

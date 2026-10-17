@@ -7,6 +7,8 @@ ever reading like a tracks variant of the same registered format.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from mosaic.core.pipeline.composition import (
     SourceMember,
     labels_raw_composition,
@@ -20,6 +22,7 @@ from mosaic.core.pipeline.labels_identity import (
 )
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracks_identity import converter_op
+from tests.helpers import calms21_dataset, tree_snapshot
 
 
 def test_scheme_is_born_marked() -> None:
@@ -114,3 +117,16 @@ def test_labels_raw_composition_unestablishable_when_a_member_has_no_digest() ->
     result = labels_raw_composition(members)
     assert result.digest == ""
     assert result.member_count == 2
+
+
+def test_label_conversion_variant_matches_the_written_variant_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}})
+    before = tree_snapshot(ds.base_dir)
+
+    planned = ds.label_conversion_variant("behavior", "calms21_npy")
+
+    assert tree_snapshot(ds.base_dir) == before
+    outcome = ds.convert_all_labels(kind="behavior", source_format="calms21_npy")
+    assert outcome.variant == planned

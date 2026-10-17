@@ -269,28 +269,111 @@ def write_sleap_analysis_h5(
             handle["track_names"] = np.array([n.encode() for n in track_names], "S")
 
 
-def write_calms21_npy(path: Path, pairs: Mapping[str, Mapping[str, int]]) -> None:
+def write_calms21_npy(
+    path: Path,
+    pairs: Mapping[str, Mapping[str, int]],
+    *,
+    seed: int | None = None,
+    n_classes: int = 1,
+) -> None:
     """Write a CalMS21 ``.npy`` holding several sequences, grouped as it groups them.
 
     Args:
         path: The file to write. Its parent is created.
         pairs: Each in-file group (an annotator in CalMS21), mapped to its
             sequences and their frame counts. Every sequence holds two mice of
-            seven keypoints, all zero, and a behavior annotation per frame,
-            all 0, so the file feeds both the tracks and the labels converter.
+            seven keypoints and a behavior annotation per frame, so the file
+            feeds both the tracks and the labels converter.
+        seed: Unset, every keypoint is zero and every annotation 0. Set, the
+            keypoints walk randomly from this seed and each annotation is drawn
+            from ``range(n_classes)``.
+        n_classes: How many behavior classes a seeded file draws from.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        group: {
-            seq: {
+    rng = None if seed is None else np.random.default_rng(seed)
+
+    def sequence(n: int) -> dict[str, npt.NDArray[np.generic]]:
+        if rng is None:
+            return {
                 "keypoints": np.zeros((n, 2, 2, 7), dtype=float),
                 "annotations": np.zeros(n, dtype=int),
             }
-            for seq, n in sequences.items()
+        steps = rng.normal(0.0, 1.0, size=(n, 2, 2, 7))
+        start = rng.uniform(100.0, 400.0, size=(1, 2, 2, 1))
+        return {
+            "keypoints": start + np.cumsum(steps, axis=0),
+            "annotations": rng.integers(0, n_classes, size=n),
         }
+
+    payload = {
+        group: {seq: sequence(n) for seq, n in sequences.items()}
         for group, sequences in pairs.items()
     }
-    np.save(path, payload, allow_pickle=True)
+    np.save(path, np.array(payload, dtype=object), allow_pickle=True)
+
+
+def calms21_dataset(
+    base: Path,
+    files: Mapping[str, Mapping[str, Mapping[str, int]]],
+    *,
+    seed: int | None = None,
+    n_classes: int = 1,
+    scan: bool = True,
+) -> Dataset:
+    """A dataset reading CalMS21 files as both a tracks and a labels source.
+
+    Each file's stem is the group its sequences are filed under, as a
+    ``group_from="filename"`` source declares, so two files make a train group
+    and a test group.
+
+    Args:
+        base: The dataset directory. Created if absent.
+        files: Each file stem mapped to the ``pairs`` of
+            :func:`write_calms21_npy`.
+        seed: Passed to :func:`write_calms21_npy`, offset per file.
+        n_classes: Passed to :func:`write_calms21_npy`.
+        scan: Whether to scan both sources, which fills ``tracks_raw`` and
+            ``labels_raw`` and converts nothing.
+
+    Returns:
+        The saved dataset.
+    """
+    from mosaic.core.manifest import LabelsScanSource, TracksScanSource
+    from tests.helpers.datasets import make_dataset
+
+    ds = make_dataset(base.resolve())
+    raw = ds.base_dir / "raw"
+    for offset, (stem, pairs) in enumerate(sorted(files.items())):
+        write_calms21_npy(
+            raw / f"{stem}.npy",
+            pairs,
+            seed=None if seed is None else seed + offset,
+            n_classes=n_classes,
+        )
+    ds.add_scan_source(
+        TracksScanSource(
+            id="calms21",
+            path=str(raw),
+            patterns=("*.npy",),
+            src_format="calms21_npy",
+            multi_sequences_per_file=True,
+            group_from="filename",
+        )
+    )
+    ds.add_scan_source(
+        LabelsScanSource(
+            id="calms21-labels",
+            path=str(raw),
+            patterns=("*.npy",),
+            src_format="calms21_npy",
+            multi_sequences_per_file=True,
+            group_from="filename",
+        )
+    )
+    if scan:
+        ds.scan_tracks()
+        ds.scan_labels()
+    return ds
 
 
 def write_dlc_csv(

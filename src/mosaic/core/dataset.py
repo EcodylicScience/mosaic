@@ -366,6 +366,28 @@ def _format_merges_per_sequence(src_format: str) -> bool:
     return converter_cls is not None and converter_cls.merges_per_sequence
 
 
+def _track_variant_id(
+    converter: TrackConverter[TrackConvertParams],
+    params: TrackConvertParams,
+    correction: int,
+) -> str:
+    """The tracks variant one conversion recipe names, computed without I/O."""
+    cls = type(converter)
+    payload = convert_variant_payload(params.identity_dump(), correction)
+    return tracks_run_id(converter_op(cls.src_format), cls.version, payload)
+
+
+def _label_variant_id(
+    converter: LabelConverter[LabelConvertParams],
+    params: LabelConvertParams,
+    label_kind: str,
+) -> str:
+    """The labels variant one label conversion recipe names, computed without I/O."""
+    cls = type(converter)
+    payload = label_convert_variant_payload(label_kind, params.identity_dump())
+    return labels_run_id(label_converter_op(cls.src_format), cls.version, payload)
+
+
 def _stem_as_sequence(stem: str) -> str:
     """One file is one sequence, and the stem names it.
 
@@ -745,11 +767,31 @@ class ConversionOutcome:
 
     converted: int
     failed: int
+    variants: tuple[str, ...] = ()
+    """The tracks variants this call minted, sorted. One per converter and
+    correction revision it reached, whether its tables were written or skipped
+    as current."""
 
     @property
     def ok(self) -> bool:
         """Did every sequence the run attempted convert?"""
         return self.failed == 0
+
+
+@dataclass(frozen=True, slots=True)
+class LabelConversionOutcome:
+    """What one ``convert_all_labels`` call did.
+
+    Attributes:
+        variant: The labels variant the call minted and wrote into.
+        written: Label files written by this call.
+        skipped: Label files already present and kept, because the call did not
+            overwrite.
+    """
+
+    variant: str
+    written: int
+    skipped: int
 
 
 class LibraryMismatchError(ValueError):
@@ -6003,11 +6045,15 @@ class Dataset:
         params: Optional[dict] = None,
         overwrite: bool = False,
         covered: set[tuple[str, str]] | None = None,
+        variants: set[str] | None = None,
     ) -> Path:
         """
         Convert a single raw track file (row from tracks_raw/index.csv) to a
         standardized parquet in whatever schema the converter declares.
         Returns path to standardized file, updates tracks/index.csv.
+
+        *covered* collects the ``(group, sequence)`` entries the file names, and
+        *variants* the tracks variant it was converted under.
         """
         params = params or {}
         src_format = str(raw_row["src_format"])
@@ -6025,6 +6071,8 @@ class Dataset:
         # every row this call writes. Also names the directory the tables live in
         # and described in its params.json, so a variant is explicable from disk.
         variant = self._tracks_variant(converter, conv_params)
+        if variants is not None:
+            variants.add(variant)
         producer = converter_op(src_format)
 
         # Where to place standardized file: one directory per tracks variant,
@@ -6198,23 +6246,52 @@ class Dataset:
         more rows in the uncorrected one.
         """
         cls = type(converter)
-        op = converter_op(cls.src_format)
-        payload = convert_variant_payload(params.identity_dump(), correction)
-        run_id = tracks_run_id(op, cls.version, payload)
+        run_id = _track_variant_id(converter, params, correction)
         _ = write_tracks_variant(
             self.get_root("tracks"),
             run_id,
-            op,
+            converter_op(cls.src_format),
             cls.version,
             params.identity_dump(),
             observed,
         )
         return run_id
 
+    def track_conversion_variant(
+        self,
+        source_format: str,
+        params: Mapping[str, object] | None = None,
+        *,
+        correction: int = 0,
+    ) -> str:
+        """Name the tracks variant a conversion of *source_format* would write.
+
+        The identity :meth:`convert_all_tracks` mints for one format, computed
+        without writing anything, so a planner can name the variant before the
+        conversion runs.
+
+        Args:
+            source_format: The registered track converter's ``src_format``.
+            params: Converter overrides, as :meth:`convert_all_tracks` takes
+                them. ``fps`` falls back to the dataset's ``fps_default``.
+            correction: The promoted correction revision, ``0`` for an upload.
+
+        Returns:
+            The tracks variant identifier.
+
+        Raises:
+            ValueError: *source_format* names no registered converter.
+        """
+        converter = get_track_converter(source_format)
+        conv_params = self._converter_params(
+            converter, dict(params or {}), source_format
+        )
+        return _track_variant_id(converter, conv_params, correction)
+
     def _converter_params(
         self,
         converter: TrackConverter[TrackConvertParams],
-        overrides: Optional[dict],
+        overrides: Optional[Mapping[str, Any]],
         src_format: str = "",
     ) -> TrackConvertParams:
         """Build a converter's typed params from user overrides.
@@ -6270,6 +6347,11 @@ class Dataset:
         group_from: str,
         overwrite: bool,
         failures: list[str] | None = None,
+        *,
+        variants: set[str] | None = None,
+        on_failure: Callable[[str, BaseException], None] | None = None,
+        cancel_check: Callable[[], None] | None = None,
+        advance: Callable[[int], None] | None = None,
     ) -> set[tuple[str, str]]:
         """Convert each raw row into a table of its own, warning per failure.
 
@@ -6284,14 +6366,25 @@ class Dataset:
             than predicted from the raw row, because an enumerable format expands
             one file into many sequences and the row's own ``sequence`` is blank.
             See :meth:`_warn_superseded_entries`.
+
+        The keyword arguments are :meth:`convert_all_tracks`' hooks: *variants*
+        collects the variants minted, *on_failure* hears each failed file from
+        inside its ``except`` block, *cancel_check* runs before each row and
+        *advance* after it.
         """
         covered: set[tuple[str, str]] = set()
         for _, row in rows.iterrows():
+            if cancel_check is not None:
+                cancel_check()
             try:
                 call_params = dict(params) if params else {}
                 call_params["group_from"] = group_from
                 _ = self.convert_one_track(
-                    row, params=call_params, overwrite=overwrite, covered=covered
+                    row,
+                    params=call_params,
+                    overwrite=overwrite,
+                    covered=covered,
+                    variants=variants,
                 )
             except TrackSchemaError:
                 raise
@@ -6302,14 +6395,23 @@ class Dataset:
                 )
                 if failures is not None:
                     failures.append(str(row.get("abs_path")))
+                if on_failure is not None:
+                    on_failure(str(row.get("abs_path")), e)
+            if advance is not None:
+                advance(1)
         return covered
 
     def convert_all_tracks(
         self,
-        params: Optional[dict] = None,
+        params: Optional[dict[str, object]] = None,
         overwrite: bool = False,
         merge_per_sequence: Optional[bool] = None,
         group_from: Optional[str] = None,
+        *,
+        source_format: str | None = None,
+        progress: Callable[[int, int], None] | None = None,
+        cancel_check: Callable[[], None] | None = None,
+        on_failure: Callable[[str, BaseException], None] | None = None,
     ) -> ConversionOutcome:
         """
         Convert all raw track files (from tracks_raw/index.csv) to standard T-Rex-like parquet files.
@@ -6349,6 +6451,18 @@ class Dataset:
                         the 'collection' column).
             If None, defaults to 'filename', as label conversion does, so one
             file feeding both roots names each entry alike.
+        source_format : str | None
+            Convert only the raw rows of this ``src_format``. None converts
+            every row. A format with no row raises ``ValueError``.
+        progress : callable | None
+            Called as ``progress(done, total)`` with the raw rows handled so far.
+        cancel_check : callable | None
+            Called before each raw row or merged sequence. It stops the
+            conversion by raising.
+        on_failure : callable | None
+            Called as ``on_failure(path, exc)`` for each raw file that failed,
+            from inside the ``except`` block that caught it, so a caller can
+            record the traceback.
         """
         raw_idx = self.get_root("tracks_raw") / "index.csv"
         if not raw_idx.exists():
@@ -6366,6 +6480,25 @@ class Dataset:
                 "This usually means index_tracks_raw() found no matching files.\n"
                 "Check your search_dirs and patterns parameters."
             )
+        if source_format is not None:
+            df = df[[text_cell(fmt) == source_format for fmt in df["src_format"]]]
+            if df.empty:
+                msg = (
+                    f"No rows in tracks_raw/index.csv with src_format="
+                    f"{source_format!r}. Scan the dataset's track sources first."
+                )
+                raise ValueError(msg)
+
+        total = int(len(df))
+        handled = 0
+
+        def advance(count: int) -> None:
+            nonlocal handled
+            handled += count
+            if progress is not None:
+                progress(handled, total)
+
+        minted: set[str] = set()
 
         # Which formats merge per (group, sequence), asked of each converter
         # rather than of the index as a whole.
@@ -6411,10 +6544,22 @@ class Dataset:
         if not merging:
             # Nothing in this index merges: one table per raw file.
             covered |= self._convert_rows_individually(
-                df, params, group_from, overwrite, failures=failures
+                df,
+                params,
+                group_from,
+                overwrite,
+                failures=failures,
+                variants=minted,
+                on_failure=on_failure,
+                cancel_check=cancel_check,
+                advance=advance,
             )
             self._warn_superseded_entries(covered)
-            return ConversionOutcome(converted=len(covered), failed=len(failures))
+            return ConversionOutcome(
+                converted=len(covered),
+                failed=len(failures),
+                variants=tuple(sorted(minted)),
+            )
 
         # The schema is *not* read here. This loop groups by ``src_format``, so
         # one call can span converters, and a single value chosen up front would
@@ -6459,9 +6604,19 @@ class Dataset:
             # convert_one_track's expansion rather than this loop's concat.
             if src_format not in merging or not sequence:
                 covered |= self._convert_rows_individually(
-                    group_df, params, group_from, overwrite, failures=failures
+                    group_df,
+                    params,
+                    group_from,
+                    overwrite,
+                    failures=failures,
+                    variants=minted,
+                    on_failure=on_failure,
+                    cancel_check=cancel_check,
+                    advance=advance,
                 )
                 continue
+            if cancel_check is not None:
+                cancel_check()
 
             # Merge this sequence's several files into one table
             first_row = group_df.iloc[0]
@@ -6479,6 +6634,7 @@ class Dataset:
             variant = self._tracks_variant(
                 converter, conv_params, correction=int(correction)
             )
+            minted.add(variant)
 
             raw_group_hint = text_cell(first_row.get("group", ""))
             out_group = group  # default: infile (already what we grouped by)
@@ -6493,6 +6649,7 @@ class Dataset:
                 and not overwrite
                 and self._conversion_is_current(variant, out_group, sequence)
             ):
+                advance(int(len(group_df)))
                 continue
 
             hints = EntryHints(group=group or "", sequence=sequence or "")
@@ -6515,10 +6672,13 @@ class Dataset:
                         file=sys.stderr,
                     )
                     failures.append(str(src_path))
+                    if on_failure is not None:
+                        on_failure(str(src_path), e)
                     _merge_failed = True
                     break
                 dfs.append(df_std)
             if _merge_failed or not dfs:
+                advance(int(len(group_df)))
                 continue
 
             merged_df = merge_on_column_union(dfs)
@@ -6549,9 +6709,14 @@ class Dataset:
                 source_md5=text_cell(first_row.get("md5", "")),
                 consumed_source_roots=("tracks_raw",),
             )
+            advance(int(len(group_df)))
 
         self._warn_superseded_entries(covered)
-        outcome = ConversionOutcome(converted=len(covered), failed=len(failures))
+        outcome = ConversionOutcome(
+            converted=len(covered),
+            failed=len(failures),
+            variants=tuple(sorted(minted)),
+        )
         if failures:
             print(
                 f"[convert-tracks] converted {outcome.converted} sequence(s); "
@@ -6567,10 +6732,13 @@ class Dataset:
         self,
         kind: str = "behavior",
         overwrite: bool = False,
-        params: Optional[dict] = None,
+        params: Optional[dict[str, object]] = None,
         source_format: Optional[str] = None,
-        **kwargs,
-    ) -> None:
+        *,
+        progress: Callable[[int, int], None] | None = None,
+        cancel_check: Callable[[], None] | None = None,
+        **kwargs: object,
+    ) -> LabelConversionOutcome:
         """
         Convert labels from raw files using registered label converters.
 
@@ -6588,15 +6756,25 @@ class Dataset:
         source_format : str, optional
             Source format identifier (e.g., "calms21_npy", "boris_csv")
             Must match a registered converter's src_format
+        progress : callable, optional
+            Called as ``progress(done, total)`` with the raw files handled so far.
+        cancel_check : callable, optional
+            Called before each raw file. It stops the conversion by raising.
         **kwargs : additional keyword arguments
             Passed to converter (e.g., group_from, fps, etc.)
+
+        Returns
+        -------
+        LabelConversionOutcome
+            The variant written into, and how many label files were written and
+            kept.
 
         Raises
         ------
         ValueError
             If no converter is registered for (source_format, kind) combination
         FileNotFoundError
-            If tracks_raw/index.csv is missing
+            If labels_raw/index.csv is missing
 
         Examples
         --------
@@ -6658,7 +6836,11 @@ class Dataset:
         producer = label_converter_op(src_format)
 
         written = 0
-        for _, raw_row in df_raw.iterrows():
+        skipped = 0
+        total = int(len(df_raw))
+        for done, (_, raw_row) in enumerate(df_raw.iterrows(), start=1):
+            if cancel_check is not None:
+                cancel_check()
             src_path = self.resolve_path(raw_row["abs_path"])
             source_md5 = str(raw_row.get("md5", "") or "")
             for entry in converter.convert(src_path, conv_params, raw_row):
@@ -6666,6 +6848,7 @@ class Dataset:
                     variant_root / f"{make_entry_key(entry.group, entry.sequence)}.npz"
                 )
                 if out_path.exists() and not overwrite:
+                    skipped += 1
                     continue
                 atomic_savez(out_path, **dict(entry.payload))
                 write_labels_row(
@@ -6685,21 +6868,31 @@ class Dataset:
                     consumed_source_roots=("labels_raw",),
                 )
                 written += 1
+            if progress is not None:
+                progress(done, total)
 
-        labels_meta = self.meta_section("labels")
-        labels_meta[kind] = {
+        metadata: Mapping[str, Any] = converter.get_metadata()
+        registration: dict[str, JsonValue] = {
             "run_id": variant,
             "label_format": converter.label_format,
             "updated_at": _now_iso(),
-            **converter.get_metadata(),
+            **metadata,
         }
-        # The save IS the registration. These NPZ files have no other record
-        # than ``meta['labels'][kind]``, so a save that quietly did not happen
-        # reports success and leaves a conversion nothing can find. This used to
-        # swallow every exception, defending against ``save()`` destroying the
-        # manifest's other keys -- a hazard the current format removed.
+
+        def register(manifest: DatasetManifest) -> None:
+            section = manifest.meta.get("labels")
+            if not isinstance(section, dict):
+                section = {}
+                manifest.meta["labels"] = section
+            section[kind] = registration
+
+        # The write IS the registration. These NPZ files have no other record
+        # than ``meta['labels'][kind]``, so a write that quietly did not happen
+        # reports success and leaves a conversion nothing can find. It goes
+        # through ``mutate_manifest`` because a pipeline step converting labels
+        # races every other writer of the manifest.
         try:
-            self.save()
+            self.mutate_manifest(register)
         except OSError as exc:
             msg = (
                 f"converted {written} sequences for label kind {kind!r}, but "
@@ -6713,6 +6906,7 @@ class Dataset:
             f"[convert_all_labels] kind={kind} wrote {written} sequences as "
             f"variant {variant} using {src_format} (overwrite={overwrite})."
         )
+        return LabelConversionOutcome(variant=variant, written=written, skipped=skipped)
 
     def _labels_variant(
         self,
@@ -6730,13 +6924,11 @@ class Dataset:
         payload domain-separates two kinds that share a ``src_format``.
         """
         cls = type(converter)
-        op = label_converter_op(cls.src_format)
-        payload = label_convert_variant_payload(label_kind, params.identity_dump())
-        run_id = labels_run_id(op, cls.version, payload)
+        run_id = _label_variant_id(converter, params, label_kind)
         _ = write_labels_variant(
             self.get_root("labels") / label_kind,
             run_id,
-            op,
+            label_converter_op(cls.src_format),
             cls.version,
             label_kind,
             params.identity_dump(),
@@ -6744,10 +6936,40 @@ class Dataset:
         )
         return run_id
 
+    def label_conversion_variant(
+        self,
+        kind: str,
+        source_format: str,
+        params: Mapping[str, object] | None = None,
+    ) -> str:
+        """Name the labels variant a conversion of *source_format* would write.
+
+        The identity :meth:`convert_all_labels` mints, computed without writing
+        anything, so a planner can name the variant before the conversion runs.
+
+        Args:
+            kind: The label kind, such as ``"behavior"``.
+            source_format: The registered label converter's ``src_format``.
+            params: Converter overrides, as :meth:`convert_all_labels` takes
+                them.
+
+        Returns:
+            The labels variant identifier.
+
+        Raises:
+            ValueError: No converter is registered for the pair.
+        """
+        label_kind = str(kind or "").lower()
+        converter = get_label_converter(source_format, label_kind)
+        conv_params = self._label_converter_params(
+            converter, dict(params or {}), src_format=source_format
+        )
+        return _label_variant_id(converter, conv_params, label_kind)
+
     def _label_converter_params(
         self,
         converter: LabelConverter[LabelConvertParams],
-        overrides: Optional[dict],
+        overrides: Optional[Mapping[str, Any]],
         src_format: str = "",
     ) -> LabelConvertParams:
         """Build a label converter's typed params from user overrides.

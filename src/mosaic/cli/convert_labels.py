@@ -48,7 +48,7 @@ def convert_labels_command(
         params_dict = cast("dict[str, object]", params_value)
     try:
         with stdout_to_stderr():
-            ds.convert_all_labels(  # pyright: ignore[reportUnknownMemberType]
+            outcome = ds.convert_all_labels(
                 kind=kind,
                 overwrite=overwrite,
                 params=params_dict,
@@ -57,6 +57,16 @@ def convert_labels_command(
     except Exception as exc:  # noqa: BLE001 - surface conversion errors cleanly
         fail(f"convert-labels failed: {exc}")
     if as_json:
-        emit_json({"status": "ok"})
+        emit_json(
+            {
+                "status": "ok",
+                "variant": outcome.variant,
+                "written": outcome.written,
+                "skipped": outcome.skipped,
+            }
+        )
     else:
-        typer.echo(f"Converted labels (kind={kind}).")
+        typer.echo(
+            f"Converted labels (kind={kind}) into {outcome.variant}: "
+            f"{outcome.written} written, {outcome.skipped} already present."
+        )

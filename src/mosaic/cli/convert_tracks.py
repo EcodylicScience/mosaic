@@ -48,6 +48,13 @@ def convert_tracks_command(
             ),
         ),
     ] = None,
+    source_format: Annotated[
+        str | None,
+        typer.Option(
+            "--source-format",
+            help="Convert only the raw rows of this format (e.g. 'calms21_npy').",
+        ),
+    ] = None,
     strict_schema: Annotated[
         bool,
         typer.Option(
@@ -84,6 +91,7 @@ def convert_tracks_command(
                 overwrite=overwrite,
                 merge_per_sequence=merge_per_sequence,
                 group_from=group_from,
+                source_format=source_format,
             )
     except Exception as exc:  # noqa: BLE001 - surface conversion errors cleanly
         fail(f"convert-tracks failed: {exc}")
@@ -95,6 +103,7 @@ def convert_tracks_command(
                 "status": "ok" if outcome.ok else "partial",
                 "converted": outcome.converted,
                 "failed": outcome.failed,
+                "variants": list(outcome.variants),
             }
         )
     elif outcome.ok:
