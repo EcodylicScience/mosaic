@@ -20,7 +20,7 @@ from .plan import (
     WaitingOnResource,
     asked_of,
 )
-from ..inventory.wire import coverage_wire
+from ..inventory.wire import MISSING_SAMPLE_WIRE, coverage_wire
 from .wire import (
     CoverageShortWire,
     DepsIncompleteWire,
@@ -39,19 +39,23 @@ if TYPE_CHECKING:
 __all__ = ["plan_fingerprint", "plan_wire"]
 
 
-def plan_wire(plan: Plan) -> PlanWire:
+def plan_wire(plan: Plan, *, missing_sample: int = MISSING_SAMPLE_WIRE) -> PlanWire:
     """Serialize *plan* with a structured reason and a bounded coverage summary.
 
     Full entry lists are left out. A step reports how many entries it holds and
-    would be asked for, plus a sample of what is missing. The plan's problems
-    are included. A plan that :class:`~.plan.RecipeRefused` contains has them.
+    would be asked for, plus a sample of at most *missing_sample* of what is
+    missing. The plan's problems are included. A plan that
+    :class:`~.plan.RecipeRefused` contains has them. The fingerprint does not
+    depend on *missing_sample*.
     """
     return PlanWire(
         recipe_digest=plan.recipe_digest,
         fingerprint=plan_fingerprint(plan),
         scope_size=len(plan.scope),
         complete=plan.is_complete,
-        steps=tuple(_step_wire(planned, plan) for planned in plan.steps),
+        steps=tuple(
+            _step_wire(planned, plan, missing_sample) for planned in plan.steps
+        ),
         problems=plan.problems,
     )
 
@@ -96,7 +100,9 @@ def _step_fingerprint(planned: PlannedStep, plan: Plan) -> dict[str, JsonValue]:
     }
 
 
-def _step_wire(planned: PlannedStep, plan: Plan) -> PlannedStepWire:
+def _step_wire(
+    planned: PlannedStep, plan: Plan, missing_sample: int
+) -> PlannedStepWire:
     return PlannedStepWire(
         step=planned.step_id,
         type=planned.kind,
@@ -104,7 +110,7 @@ def _step_wire(planned: PlannedStep, plan: Plan) -> PlannedStepWire:
         run_id=planned.run_id,
         status=planned.status,
         finished=planned.finished,
-        coverage=coverage_wire(planned.coverage),
+        coverage=coverage_wire(planned.coverage, sample=missing_sample),
         asked=len(asked_of(planned, plan)),
         drift=len(planned.drift),
         lane=planned.lane,

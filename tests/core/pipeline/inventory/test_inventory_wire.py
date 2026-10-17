@@ -102,6 +102,20 @@ def test_a_feature_run_crosses_with_its_params_and_tracks_variants(
     assert feature.detail is None
 
 
+def test_a_listing_without_params_leaves_them_out(
+    computed: tuple[Dataset, str],
+) -> None:
+    ds, _ = computed
+    held = inventory(ds)
+
+    [listed] = inventory_wire(ds, held, kinds=["feature"], with_params=False).artifacts
+    [full] = inventory_wire(ds, held, kinds=["feature"]).artifacts
+
+    assert listed.params is None
+    assert listed.params_state == full.params_state == "present"
+    assert listed.model_copy(update={"params": full.params}) == full
+
+
 def test_a_kind_the_inventory_did_not_read_is_unavailable(
     computed: tuple[Dataset, str],
 ) -> None:
@@ -420,6 +434,19 @@ def test_a_sample_lists_twenty_keys_and_says_there_are_more() -> None:
     assert sample.sample[0] == ("", "s00")
     assert len(sample.sample) == 20
     assert sample.has_more
+
+
+def test_the_missing_sample_follows_its_limit() -> None:
+    keys = frozenset(("", f"s{index:02}") for index in range(8))
+    coverage = Coverage(target=keys, present=frozenset[tuple[str, str]]())
+
+    sample = key_sample(keys, limit=3)
+    wire = coverage_wire(coverage, sample=5)
+
+    assert (sample.count, len(sample.sample), sample.has_more) == (8, 3, True)
+    assert wire.missing_sample == tuple(sorted(keys))[:5]
+    assert wire.has_more
+    assert coverage_wire(coverage, sample=8).has_more is False
 
 
 @pytest.mark.parametrize(

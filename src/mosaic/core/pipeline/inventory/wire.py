@@ -245,7 +245,9 @@ class ArtifactWire(StrictModel):
         drift: How many entries' recorded sources have moved.
         params_state: Whether its ``params.json`` was read, never written, or
             unreadable. ``absent`` for a kind that records none.
-        params: A feature run's recorded ``_params``, else ``None``.
+        params: A feature run's recorded ``_params``, else ``None``. ``None``
+            also when a listing left params out, and ``params_state`` then
+            still says whether they were read.
         tracks_variants: The labeled tracks variants a feature run read,
             directly or through its upstreams, sorted. Empty for a run over the
             unlabeled tables alone. ``None`` for another kind, or when a
@@ -303,21 +305,26 @@ class InventoryWire(StrictModel):
     next_cursor: str | None = None
 
 
-def key_sample(keys: Iterable[AnyKey]) -> KeySampleWire:
-    """Return *keys* counted, with a sorted sample of each key's parts."""
+def key_sample(
+    keys: Iterable[AnyKey], *, limit: int = MISSING_SAMPLE_WIRE
+) -> KeySampleWire:
+    """Return *keys* counted, with a sorted sample of at most *limit* keys' parts."""
     ordered = sorted((key,) if isinstance(key, str) else key for key in keys)
     return KeySampleWire(
         count=len(ordered),
-        sample=tuple(ordered[:MISSING_SAMPLE_WIRE]),
-        has_more=len(ordered) > MISSING_SAMPLE_WIRE,
+        sample=tuple(ordered[:limit]),
+        has_more=len(ordered) > limit,
     )
 
 
-def coverage_wire(coverage: Coverage[AnyKey]) -> CoverageWire:
+def coverage_wire(
+    coverage: Coverage[AnyKey], *, sample: int = MISSING_SAMPLE_WIRE
+) -> CoverageWire:
     """Return *coverage* as counts and a sorted sample of what is missing.
 
     A single artifact answering for every key covers its whole target and
-    reports nothing missing.
+    reports nothing missing. *sample* bounds the missing keys listed, and a
+    caller whose reader needs only the counts passes fewer.
     """
     target = len(coverage.target)
     if coverage.covers_all:
@@ -328,7 +335,7 @@ def coverage_wire(coverage: Coverage[AnyKey]) -> CoverageWire:
             missing_sample=(),
             has_more=False,
         )
-    missing = key_sample(coverage.missing)
+    missing = key_sample(coverage.missing, limit=sample)
     return CoverageWire(
         covers_all=False,
         covered=len(coverage.covered),
@@ -379,8 +386,19 @@ class _Matched:
         record = self.record
         return (record.ref.kind, record.name, record.run_id, self.address)
 
-    def wire(self, walk: TracksVariantWalk, *, detailed: bool) -> ArtifactWire:
-        """Return the record as an :class:`ArtifactWire`, with its detail if asked."""
+    def wire(
+        self,
+        walk: TracksVariantWalk,
+        *,
+        detailed: bool,
+        with_params: bool = True,
+        missing_sample: int = MISSING_SAMPLE_WIRE,
+    ) -> ArtifactWire:
+        """Return the record as an :class:`ArtifactWire`, with its detail if asked.
+
+        *with_params* false leaves out the recorded params, and *missing_sample*
+        bounds the missing keys of the coverage.
+        """
         record = self.record
         params = record.params
         variants = _variants_of(record, walk)
@@ -389,10 +407,14 @@ class _Matched:
             name=record.name,
             run_id=record.run_id,
             status=self.status,
-            coverage=coverage_wire(self.coverage),
+            coverage=coverage_wire(self.coverage, sample=missing_sample),
             drift=len(record.drift),
             params_state=record.params_state,
-            params=_PARAMS.validate_python(params.params) if params else None,
+            params=(
+                _PARAMS.validate_python(params.params)
+                if params and with_params
+                else None
+            ),
             tracks_variants=tuple(sorted(variants)) if variants is not None else None,
             upstreams=record.upstreams,
             execution_id=params.execution_id if params else "",
@@ -415,6 +437,8 @@ def inventory_wire(
     limit: int | None = None,
     cursor: str | None = None,
     ref: str | None = None,
+    with_params: bool = True,
+    missing_sample: int = MISSING_SAMPLE_WIRE,
 ) -> InventoryWire:
     """Project *inventory* onto the wire, narrowed and paged as asked.
 
@@ -448,6 +472,9 @@ def inventory_wire(
             neither repeats nor skips an artifact that stays.
         ref: Return only the artifact with this :func:`ref_address`, with its
             detail. The other filters still apply.
+        with_params: Whether each feature run lists its recorded params. A
+            listing that leaves them out keeps ``params_state``.
+        missing_sample: The most missing keys each coverage lists.
 
     Returns:
         One page of the artifacts that match.
@@ -502,7 +529,15 @@ def inventory_wire(
     page = remaining if limit is None else remaining[:limit]
     more = len(page) < len(remaining)
     return InventoryWire(
-        artifacts=tuple(m.wire(walk, detailed=ref is not None) for m in page),
+        artifacts=tuple(
+            m.wire(
+                walk,
+                detailed=ref is not None,
+                with_params=with_params,
+                missing_sample=missing_sample,
+            )
+            for m in page
+        ),
         unavailable_kinds=_unavailable(inventory, wanted),
         errors=inventory.errors,
         total=len(matched),

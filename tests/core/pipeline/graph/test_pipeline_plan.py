@@ -650,6 +650,18 @@ def test_the_plan_round_trips_through_json(tracked: Dataset) -> None:
     assert steps["templates"].reason == DepsIncompleteWire(blocking=("speed",))
 
 
+def test_plan_wire_bounds_the_missing_sample(tracked: Dataset) -> None:
+    plan = plan_pipeline(tracked, Recipe.model_validate(FIVE_STEPS))
+
+    bounded = plan_wire(plan, missing_sample=1)
+
+    speed = {planned.step: planned for planned in bounded.steps}["speed"]
+    assert speed.coverage.missing_sample == (("", "seq_a"),)
+    assert speed.coverage.has_more
+    assert speed.coverage.target == 2
+    assert bounded.fingerprint == plan_wire(plan).fingerprint
+
+
 # --- an identity nothing can resolve yet ----------------------------------------
 
 DEFERRED_TRAINING: Document = {

@@ -104,6 +104,13 @@ def test_the_plan_wire_reports_the_fingerprint(tracked: Dataset) -> None:
     assert plan_wire(plan).fingerprint == plan_fingerprint(plan)
 
 
+def test_the_fingerprint_ignores_the_sample_size(tracked: Dataset) -> None:
+    plan = plan_pipeline(tracked, speed_recipe())
+
+    assert plan_wire(plan, missing_sample=0).fingerprint == plan_fingerprint(plan)
+    assert plan_wire(plan, missing_sample=1).fingerprint == plan_fingerprint(plan)
+
+
 def test_a_current_fingerprint_submits(tracked: Dataset) -> None:
     fingerprint = _fingerprint(tracked)
 
