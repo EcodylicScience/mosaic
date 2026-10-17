@@ -83,6 +83,7 @@ from .wire import (
     CatalogIndexEntry,
     EditorCatalog,
     ReferenceKind,
+    StepTypeDetail,
     render_location,
 )
 
@@ -105,6 +106,7 @@ __all__ = [
     "op_class_for_kind",
     "params_reference_site",
     "resolve_step_spec",
+    "step_type_detail",
     "step_type_lane",
 ]
 
@@ -696,6 +698,55 @@ def catalog_index() -> CatalogIndex:
         schema_version=catalog.schema_version,
         mosaic_version=catalog.mosaic_version,
         entries=tuple(_index_entry(entry) for entry in catalog.entries),
+    )
+
+
+def step_type_detail(
+    name: str, *, detail: Literal["fields", "schema"] = "fields"
+) -> StepTypeDetail:
+    """The step type *name* in detail: its index row, what it reads, its params.
+
+    The params are a flat table (:func:`~.param_table.param_rows`), a few
+    kilobytes where the whole JSON Schema of :func:`describe_step_type` can run
+    to tens. A field that takes a run reference is typed as a recipe writes
+    one.
+
+    Args:
+        name: A feature slug, an op kind, or ``tracks``.
+        detail: ``schema`` also returns the params JSON Schema, without titles
+            or class docstrings.
+
+    Raises:
+        StepTypeNotFound: When the catalog has no step type of that name.
+    """
+    from .param_table import compact_params_schema, param_rows
+
+    entry = describe_step_type(name)
+    declared = entry.declaration
+    consumes = declared.consumes
+    labels = (
+        ("tracks", consumes.accepts_tracks),
+        ("features", consumes.accepts_features),
+        ("media", consumes.reads_media),
+        ("nothing", consumes.takes_no_inputs),
+    )
+    scope_dependent = declared.scope_dependent
+    if entry.type == "feature":
+        # A feature's declaration does not carry it; the planner reads the class.
+        cls = feature_class_for_slug(name)
+        scope_dependent = bool(getattr(cls, "scope_dependent", False))
+    schema = entry.params_schema
+    return StepTypeDetail(
+        **_index_entry(entry).model_dump(),
+        consumes=tuple(label for label, holds in labels if holds),
+        resource_class=declared.resource_class,
+        scope_dependent=scope_dependent,
+        params=() if schema is None else param_rows(schema, entry.reference_fields),
+        params_schema=(
+            compact_params_schema(schema)
+            if detail == "schema" and schema is not None
+            else None
+        ),
     )
 
 

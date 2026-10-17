@@ -148,3 +148,12 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   which the catalog lists whether the prerequisite is met or not. `kpms` declares one.
   `catalog_index` summarizes the editor catalog without params schemas, and
   `describe_step_type` returns one entry whole (`test_pipeline_catalog_index.py`).
+- `step_type_detail` extends an index row with one `ParamRow` per params field,
+  nested models as dotted paths, and gives the compacted schema only under
+  `detail="schema"`. The CLI and the MCP print it, and mosaic-api reads
+  `CatalogEntry` and `EditorCatalog`, which it leaves unchanged
+  (`test_pipeline_step_type_detail.py`).
+- `param_table.py` reads rows off a JSON Schema with the standard library only,
+  because `agent/mcp/spec.py` imports its schema walker. The docs generator
+  renders its parameter tables with the same helpers and Markdown markup, so a
+  change there must keep `scripts/gen_docs_reference.py --check` passing.

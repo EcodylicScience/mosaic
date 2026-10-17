@@ -38,6 +38,7 @@ from mosaic.core.pipeline.graph import (
     RequestStatusWire,
     RequestSummaryWire,
     RequestVerdict,
+    strip_schema_keywords,
 )
 from mosaic.core.strict_model import StrictModel
 from mosaic.runlog import AttemptOutcome
@@ -794,7 +795,7 @@ class ToolSpec:
         model what each argument means.
         """
         schema: dict[str, JsonValue] = self.input_model.model_json_schema()
-        return _without_keywords(schema, _INPUT_DROPPED_KEYWORDS)
+        return strip_schema_keywords(schema, _INPUT_DROPPED_KEYWORDS)
 
     def output_schema(self) -> dict[str, JsonValue]:
         """Return the JSON Schema that the structured result of a call validates against.
@@ -807,7 +808,7 @@ class ToolSpec:
         schema: dict[str, JsonValue] = self.output_model().model_json_schema(
             mode="serialization"
         )
-        return _without_keywords(schema, _OUTPUT_DROPPED_KEYWORDS)
+        return strip_schema_keywords(schema, _OUTPUT_DROPPED_KEYWORDS)
 
 
 _INPUT_DROPPED_KEYWORDS: Final = frozenset({"title"})
@@ -815,42 +816,6 @@ _INPUT_DROPPED_KEYWORDS: Final = frozenset({"title"})
 
 _OUTPUT_DROPPED_KEYWORDS: Final = frozenset({"title", "description", "default"})
 """The schema keywords left out of an output schema."""
-
-_SCHEMA_MAPS: Final = frozenset({"properties", "patternProperties", "$defs"})
-"""The keywords whose value maps names to schemas. The names are not keywords."""
-
-_DATA_KEYWORDS: Final = frozenset({"default", "const", "enum", "examples"})
-"""The keywords whose value is data, which is copied as it is."""
-
-
-def _without_keywords(
-    schema: dict[str, JsonValue], dropped: frozenset[str]
-) -> dict[str, JsonValue]:
-    """Return *schema* without the keywords in *dropped*, in every subschema."""
-    kept: dict[str, JsonValue] = {}
-    for keyword, value in schema.items():
-        if keyword in dropped:
-            continue
-        if keyword in _DATA_KEYWORDS:
-            kept[keyword] = value
-        elif keyword in _SCHEMA_MAPS and isinstance(value, dict):
-            kept[keyword] = {
-                name: _subschema_without(subschema, dropped)
-                for name, subschema in value.items()
-            }
-        else:
-            kept[keyword] = _subschema_without(value, dropped)
-    return kept
-
-
-def _subschema_without(value: JsonValue, dropped: frozenset[str]) -> JsonValue:
-    """Apply :func:`_without_keywords` to each schema that *value* holds."""
-    if isinstance(value, dict):
-        return _without_keywords(value, dropped)
-    if isinstance(value, list):
-        return [_subschema_without(item, dropped) for item in value]
-    return value
-
 
 _PAGING = (
     " Returns one page. Pass next_cursor back as cursor to read the next, until "

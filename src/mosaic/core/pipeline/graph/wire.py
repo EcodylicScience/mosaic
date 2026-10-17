@@ -1,7 +1,8 @@
 """The JSON a pipeline editor reads, as pydantic models.
 
 One model per answer an editor asks for: the step types on offer
-(:class:`EditorCatalog`, and :class:`CatalogIndex` without the params schemas),
+(:class:`EditorCatalog`, :class:`CatalogIndex` without the params schemas, and
+:class:`StepTypeDetail` for one with its params as rows),
 what is wrong with a recipe (:class:`ValidationReport`),
 what may follow a step (:class:`AttachReport`), what may be inserted below a step
 that has children (:class:`InsertReport`), what may be added as an input of a step
@@ -12,6 +13,7 @@ these models dumped, and the two agree on every shape.
 Models only. The functions that fill them live beside what they read:
 :func:`~mosaic.core.pipeline.graph.resolve.editor_catalog`,
 :func:`~mosaic.core.pipeline.graph.resolve.catalog_index`,
+:func:`~mosaic.core.pipeline.graph.resolve.step_type_detail`,
 :func:`~mosaic.core.pipeline.graph.validate.validation_report`,
 :func:`~mosaic.core.pipeline.graph.validate.attach_candidates`,
 :func:`~mosaic.core.pipeline.graph.validate.insert_candidates`,
@@ -60,6 +62,7 @@ __all__ = [
     "InputCandidates",
     "InsertReport",
     "NeedStatus",
+    "ParamRow",
     "PlanWire",
     "PlannedStepWire",
     "Problem",
@@ -67,6 +70,7 @@ __all__ = [
     "ReasonWire",
     "ReferenceKind",
     "StalledWire",
+    "StepTypeDetail",
     "StillNeeded",
     "UnmetStatus",
     "ValidationReport",
@@ -278,6 +282,57 @@ class CatalogIndexEntry(GraphModel):
     payload_families: bool
     unavailable: str | None
     license_note: str | None
+
+
+class ParamRow(GraphModel):
+    """One params field of a step type, as a table row.
+
+    Attributes:
+        path: The field's name, dotted through the models that hold it:
+            ``fit.perplexity``.
+        type: Its type, written out: ``integer | null``, ``list of string``, or
+            the model a list or union of models holds.
+        required: Whether a recipe must set it.
+        constructed: Whether its default is built when the model is, so none
+            can be printed. ``default`` is then ``None``.
+        default: Its default value, ``None`` when required or constructed.
+        constraints: Its bounds, as ``>= 1, < 10``.
+        description: What it means, with its unit and, for a field that
+            nothing reads, why.
+        reference: ``result`` when the field takes a reference to another
+            step's run, which the type shows as a recipe writes it.
+    """
+
+    path: str
+    type: str
+    required: bool
+    constructed: bool = False
+    default: JsonValue = None
+    constraints: str = ""
+    description: str = ""
+    reference: Literal["result"] | None = None
+
+
+class StepTypeDetail(CatalogIndexEntry):
+    """One step type in detail: its index row, what it consumes, and its params.
+
+    Attributes:
+        consumes: What a step of it reads: ``tracks``, ``features``, ``media``,
+            or ``nothing`` for one that must take no input.
+        resource_class: The resource class its work declares, which places it
+            on a lane.
+        scope_dependent: Whether its output depends on which entries it is
+            run over, as a fit across a scope does.
+        params: One row per params field.
+        params_schema: Its params model as JSON Schema without titles or class
+            docstrings, given only when asked for. ``None`` otherwise.
+    """
+
+    consumes: tuple[str, ...]
+    resource_class: str
+    scope_dependent: bool
+    params: tuple[ParamRow, ...] = ()
+    params_schema: dict[str, JsonValue] | None = None
 
 
 class CatalogIndex(GraphModel):

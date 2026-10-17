@@ -49,6 +49,17 @@ from inspect import cleandoc
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+# The parameter-table helpers are shared with the step-type catalog, which
+# prints the same rows without Markdown. The package import is lazy and cheap.
+from mosaic.core.pipeline.graph.param_table import (
+    MARKDOWN,
+    constraints_text,
+    description_text,
+    is_model,
+    model_name,
+    type_text,
+)
+
 if TYPE_CHECKING:
     # Under `from __future__ import annotations` this is never evaluated at
     # runtime, which keeps the script's import as light as the deferred
@@ -98,20 +109,6 @@ DOMAIN_TITLES: Final[tuple[tuple[str, str], ...]] = (
     ("media", "Media"),
 )
 
-# Ordered so a page reads constraint-tightest first, and closed so an unknown
-# keyword is dropped rather than rendered as a bare JSON fragment.
-CONSTRAINT_LABELS: Final[tuple[tuple[str, str], ...]] = (
-    ("minimum", ">="),
-    ("exclusiveMinimum", ">"),
-    ("maximum", "<="),
-    ("exclusiveMaximum", "<"),
-    ("minLength", "min length"),
-    ("maxLength", "max length"),
-    ("minItems", "min items"),
-    ("maxItems", "max items"),
-    ("pattern", "matches"),
-)
-
 
 def summary_line(obj: type) -> str:
     """The first paragraph of a docstring, flattened to one line.
@@ -129,125 +126,6 @@ def summary_line(obj: type) -> str:
 def escape_cell(text: str) -> str:
     """A table cell that cannot break the table it sits in."""
     return text.replace("|", "\\|").replace("\n", " ")
-
-
-def model_name(raw: str) -> str:
-    """A `$defs` key, tidied without being renamed.
-
-    pydantic spells a parameterized generic by flattening its arguments into the
-    key -- `ArtifactSpec_ParquetLoadSpec_DataFrame_` -- and the trailing
-    separator reads as a typo. Only that is trimmed, and the same function is
-    used for the type column and for the collapsed block's heading, so the two
-    always name the same thing.
-    """
-    return raw.rstrip("_")
-
-
-def is_model(spec: Mapping[str, JsonValue]) -> bool:
-    """Return whether a `$defs` entry is a model with fields.
-
-    pydantic also writes a `$defs` entry for a named type alias: a `Literal`
-    alias, a discriminated union of models, or the recursive `JsonValue`. Such
-    an entry does not declare `properties`. It is a type, and the type column writes
-    it out wherever a field uses it.
-    """
-    return isinstance(spec.get("properties"), dict)
-
-
-def type_text(
-    spec: Mapping[str, JsonValue],
-    aliases: Mapping[str, Mapping[str, JsonValue]],
-    expanding: frozenset[str] = frozenset(),
-) -> str:
-    """One JSON-Schema property reduced to a readable type expression.
-
-    `anyOf` is what pydantic emits for `X | None`, which most optional fields
-    are; echoing the full two-branch union would drown the table. `oneOf` is
-    what a tagged union emits, and its branches are the models a client picks
-    between. A `$ref` names a nested model whose own table follows in a
-    collapsed block. A `$ref` to a type alias in *aliases* is replaced by the
-    type that the alias names. *expanding* names the aliases already being written
-    out, and a recursive alias met inside itself is written as its name.
-    """
-    ref = spec.get("$ref")
-    if isinstance(ref, str):
-        name = ref.rsplit("/", 1)[-1]
-        alias = aliases.get(name)
-        if alias is not None and name not in expanding:
-            return type_text(alias, aliases, expanding | {name})
-        return f"`{model_name(name)}`"
-    for key in ("anyOf", "oneOf"):
-        variants = spec.get(key)
-        if isinstance(variants, list):
-            # `dict.fromkeys` rather than `set`, to keep the declared branch
-            # order: a set would reorder `str | None` between runs and flap
-            # `--check`.
-            parts = [
-                type_text(v, aliases, expanding)
-                for v in variants
-                if isinstance(v, dict)
-            ]
-            return " | ".join(dict.fromkeys(parts))
-    if "const" in spec:
-        return f"`{json.dumps(spec['const'])}`"
-    choices = spec.get("enum")
-    if isinstance(choices, list):
-        return " | ".join(f"`{json.dumps(c)}`" for c in choices)
-    fixed = spec.get("prefixItems")
-    if isinstance(fixed, list):
-        inner = ", ".join(
-            type_text(f, aliases, expanding) for f in fixed if isinstance(f, dict)
-        )
-        return f"tuple of ({inner})" if inner else "`tuple`"
-    kind = spec.get("type")
-    if kind == "array":
-        items = spec.get("items")
-        inner = (
-            type_text(items, aliases, expanding) if isinstance(items, dict) else "any"
-        )
-        # `list of A | None` reads as a list or None. A union of item types is
-        # parenthesized, to read as a list of either.
-        if " | " in inner:
-            inner = f"({inner})"
-        return f"list of {inner}"
-    if kind == "object":
-        return "`object`"
-    if kind == "null":
-        return "`None`"
-    if isinstance(kind, str):
-        return f"`{kind}`"
-    return "any"
-
-
-def constraints_text(spec: Mapping[str, JsonValue]) -> str:
-    return ", ".join(
-        f"{label} `{spec[key]}`" for key, label in CONSTRAINT_LABELS if key in spec
-    )
-
-
-def description_text(spec: Mapping[str, JsonValue]) -> str:
-    """A field's declared prose, its unit, and why nothing reads it.
-
-    Every key comes from `Declared`, which is mosaic's own text rather than
-    anything pydantic spells, so none moves when a pydantic release changes
-    how it renders a union. A field declared `NEEDS_DESCRIPTION` renders an empty
-    cell, which is what it has to say.
-
-    `x-mosaic-unwired` is rendered because this table is the page a reader
-    consults before setting a parameter. Printing the prose alone would describe
-    a control that changes nothing and say nothing about it.
-    """
-    description = str(spec.get("description", "") or "").strip()
-    unit = str(spec.get("x-mosaic-unit", "") or "").strip()
-    unwired = str(spec.get("x-mosaic-unwired", "") or "").strip()
-    if description and unit:
-        text = f"{description} [{unit}]"
-    else:
-        text = description or (f"[{unit}]" if unit else "")
-    if not unwired:
-        return text
-    note = f"**Unwired:** {unwired}."
-    return f"{text} {note}" if text else note
 
 
 def params_table(
@@ -298,9 +176,9 @@ def params_table(
             else:
                 default = "_constructed_"
             lines.append(
-                f"| `{name}` | {escape_cell(type_text(spec, aliases))} "
-                f"| {escape_cell(default)} | {escape_cell(constraints_text(spec))} "
-                f"| {escape_cell(description_text(spec))} |"
+                f"| `{name}` | {escape_cell(type_text(spec, aliases, markup=MARKDOWN))} "
+                f"| {escape_cell(default)} | {escape_cell(constraints_text(spec, markup=MARKDOWN))} "
+                f"| {escape_cell(description_text(spec, markup=MARKDOWN))} |"
             )
         lines.append("")
     else:
