@@ -94,8 +94,23 @@ beside.
 """
 
 
+PARAMS_ONLY: dict[str, str] = {
+    "convert-labels": "a labels variant names its recipe, not its source files",
+    "convert-tracks": "a tracks variant names its recipe, not its source files",
+}
+"""One-shot ops whose identity is their params alone, and why.
+
+A conversion fingerprints no data: a changed source file is caught entry by entry,
+by comparing the composition each converted row recorded with the source's own.
+"""
+
+
 def _one_shot_kinds() -> set[str]:
-    return {kind for kind, op in OPS.items() if op.scope_takes == "none"}
+    return {
+        kind
+        for kind, op in OPS.items()
+        if op.scope_takes == "none" and kind not in PARAMS_ONLY
+    }
 
 
 def test_every_one_shot_op_has_a_builder() -> None:
@@ -107,6 +122,7 @@ def test_every_one_shot_op_has_a_builder() -> None:
         f"what sits beside their data"
     )
     assert set(_BUILDERS) <= _one_shot_kinds(), "a builder names no one-shot op"
+    assert set(PARAMS_ONLY) <= set(OPS), "an exclusion names no registered op"
 
 
 def _plan(op: Op[Any], ds: Dataset, params: Params) -> str:
