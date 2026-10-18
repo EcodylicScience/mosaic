@@ -261,6 +261,21 @@ def test_an_apply_is_deferred_with_a_fit_that_waits_for_the_conversion(
         assert executed[step_id] == after.step(step_id).run_id is not None
 
 
+def test_reconcile_recomputes_the_fit_and_the_apply_to_the_names_they_ran_under(
+    split: Dataset,
+) -> None:
+    """The second hash site: a rebuilt feature is scope-free exactly when it had a model."""
+    _ = run_pipeline(split, _recipe(FIT, APPLY), step_scopes={"fit": TRAIN})
+
+    report = split.reconcile(only=("features",))
+
+    assert not report.changed
+    assert [finding.verdict for finding in report.findings] == ["ok", "ok"]
+    assert all(
+        finding.old_address == finding.new_address for finding in report.findings
+    )
+
+
 # --- the plan and validation -----------------------------------------------------
 
 
