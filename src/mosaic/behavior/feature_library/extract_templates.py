@@ -104,6 +104,10 @@ class ExtractTemplates:
     ``speed-angvel`` with ``step_size`` does. The provenance records how many
     rows of each entry were dropped.
 
+    The run writes ``templates.parquet`` and ``template_provenance.parquet``.
+    Each entry's table is empty. A step that consumes the templates reads this
+    step's inputs and names the templates through a params field.
+
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.extract_templates.ExtractTemplates.Params`.
     """
@@ -113,19 +117,21 @@ class ExtractTemplates:
     name = "extract-templates"
     # 0.3: ``nn_id`` and ``attention_target_id``, track ids, are no longer
     # template columns (``BOOKKEEPING_COLS``).
-    version = "0.3"
+    # 0.4: each entry's table is empty, where it copied the entry's input. A
+    # consumer reads this step's inputs, and the templates through a params field.
+    version = "0.4"
     parallelizable = False
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     # Fit reads each entry's sequence and samples its payload columns, every one
-    # or those that ``columns`` names. Apply returns its input unchanged.
-    # ``columns`` is not declared, because a requirement on a list param is met
-    # by any one of its names. The fit refuses each named column that the input
-    # lacks.
+    # or those that ``columns`` names. Apply returns an empty table, because the
+    # sample in ``save_state`` is the output. ``columns`` is not declared, because
+    # a requirement on a list param is met by any one of its names. The fit
+    # refuses each named column that the input lacks.
     requires: ClassVar[tuple[Requirement, ...]] = (Column(C.seq_col), Payload())
-    provides: ClassVar[Provides] = Provides(passthrough=True)
+    provides: ClassVar[Provides] = Provides()
     TemplatesArtifact = TemplatesArtifact
     ProvenanceArtifact = ProvenanceArtifact
 
@@ -441,7 +447,7 @@ class ExtractTemplates:
         return pd.DataFrame(rows)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        return df
+        return pd.DataFrame()
 
     def save_state(self, run_root: Path) -> None:
         if self._templates is None or self._feature_columns is None:

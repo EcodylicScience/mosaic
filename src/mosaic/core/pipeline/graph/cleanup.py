@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING, Final, Literal, cast
 
 from mosaic.core.entry import Entry
 
-from ..storage_names import SHORTENED_MARKER
+from ..storage_names import SHORTENED_MARKER, feature_slug_of
 from .model import REQUEST_HOLD_FLOOR_HOURS, CleanupPolicy, FeatureStepSpec
 
 if TYPE_CHECKING:
@@ -739,7 +739,7 @@ class _Watch:
         from .step_preflight import StepRefused
         from .store import RequestUnreadable, load_request
 
-        slug = key[0].split(_FROM, 1)[0]
+        slug = feature_slug_of(key[0])
         for name in self._request_names():
             if name in self._known_requests or name == self._exclude:
                 continue
@@ -981,7 +981,7 @@ def _first_reason(
 ) -> tuple[str, str]:
     """The first rule that keeps *record*, or ``("superseded", "")``."""
     key = (record.name, record.run_id)
-    slug = record.name.split(_FROM, 1)[0]
+    slug = feature_slug_of(record.name)
     if keeper.unresolved:
         return (
             "keeper_unresolved",

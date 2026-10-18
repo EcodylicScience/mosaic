@@ -15,7 +15,7 @@ from concurrent.futures import (
     wait,
 )
 from pathlib import Path
-from typing import Final, TYPE_CHECKING, Literal
+from typing import ClassVar, Final, TYPE_CHECKING, Literal
 
 import numpy as np
 import pandas as pd
@@ -37,8 +37,13 @@ from ._utils import (
     hash_params,
     json_ready,
 )
-from .storage_names import derive_storage_name
-from .column_contract import MissingInputColumns, check_input_columns
+from .storage_names import derive_storage_name, feature_slug_of
+from .column_contract import (
+    MissingInputColumns,
+    check_input_columns,
+    declared_provides,
+)
+from .error_kind import ClassifiedError, ErrorKind
 from .identity_scheme import (
     FEATURE_IDENTITY_SCHEME,
     write_identity_scheme,
@@ -478,6 +483,49 @@ class AllEntriesFailed(RuntimeError):
     (a narrowed selector, a global feature with no pipeline inputs), and
     ``all([])`` would otherwise turn every one of those into a failure.
     """
+
+
+class InputWritesNoColumns(ClassifiedError, ValueError):
+    """An input of the run names a feature with an empty declared output.
+
+    Such a feature writes only a sample (``Provides.is_empty``), and its table
+    for each entry is empty. The loader drops each empty table, and the run is
+    refused before it fits.
+
+    Attributes:
+        feature: The name of the feature that was to run.
+        storage: The storage name of the input.
+        producer: The slug of the feature behind the input.
+    """
+
+    error_kind: ClassVar[ErrorKind] = "invalid"
+
+    def __init__(self, feature: str, storage: str, producer: str) -> None:
+        self.feature: str = feature
+        self.storage: str = storage
+        self.producer: str = producer
+        message = (
+            f"{feature} cannot read {storage!r} through its inputs. {producer} "
+            "writes only its sample and an empty table for each entry. Read the "
+            f"inputs of that {producer} run, and its sample through a params field"
+        )
+        super().__init__(message)
+
+
+def _refuse_inputs_without_columns(feature: Feature) -> None:
+    """Refuse a run of *feature* when an input names a feature with an empty output.
+
+    Raises:
+        InputWritesNoColumns: An input's producer declares ``Provides.is_empty``.
+    """
+    from .graph.resolve import feature_class_for_slug
+
+    for result in feature.inputs.feature_inputs:
+        producer = feature_slug_of(result.feature)
+        cls = feature_class_for_slug(producer)
+        provides = None if cls is None else declared_provides(cls)
+        if provides is not None and provides.is_empty:
+            raise InputWritesNoColumns(feature.name, result.feature, producer)
 
 
 def encode_consumed_roots(roots: Iterable[str]) -> str:
@@ -1266,6 +1314,8 @@ def _run_feature_impl(
                 f"on a tracks input and as 'nothing' on a feature input. Omit "
                 f"the scope to mean every sequence."
             )
+
+    _refuse_inputs_without_columns(feature)
 
     # Pin every unpinned upstream *before* anything hashes or reads it. An
     # unpinned reference used to be resolved after the digest, into a local that

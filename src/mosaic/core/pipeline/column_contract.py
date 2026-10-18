@@ -305,7 +305,10 @@ class Conditional:
 
 @dataclass(frozen=True, slots=True)
 class Provides:
-    """The columns of a feature's non-empty output.
+    """The columns of a feature's per-entry output.
+
+    An empty declaration (:attr:`is_empty`) means the feature writes only a
+    sample, and its table for each entry is empty.
 
     Attributes:
         passthrough: Whether the output copies every column of its merged input.
@@ -322,6 +325,15 @@ class Provides:
     adds: tuple[ColumnRef, ...] = ()
     conditional: tuple[Conditional, ...] = ()
     payload_families: bool = False
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether the declared output is empty, with no passthrough, column or family.
+
+        A feature that writes only a sample declares this. Its table for each
+        entry is empty, and a step cannot read it through ``inputs``.
+        """
+        return self == Provides()
 
 
 def kept(*names: str) -> tuple[Conditional, ...]:

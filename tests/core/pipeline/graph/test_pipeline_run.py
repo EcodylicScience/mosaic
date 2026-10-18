@@ -43,9 +43,11 @@ from mosaic.core.pipeline.graph import (
     run_pipeline,
     submit_request,
 )
+from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
-from mosaic.core.pipeline.run import run_feature
+from mosaic.core.pipeline.run import InputWritesNoColumns, run_feature
+from mosaic.core.pipeline.types import Result as FeatureResult
 from mosaic.core.pipeline.run_log import (
     JsonlRunLog,
     read_run,
@@ -206,7 +208,7 @@ CLUSTERING: Document = {
             "id": "kmeans",
             "type": "feature",
             "feature": "global-kmeans",
-            "inputs": [{"step": "templates"}],
+            "inputs": [{"step": "groups"}, {"step": "speed"}],
             "params": {"templates": {"step": "templates"}, "k": 1, "n_init": 1},
         },
     ],
@@ -235,6 +237,68 @@ def test_a_global_fit_runs_over_a_feature_with_nan_edges(tracked: Dataset) -> No
     assert (provenance["dropped"] > 0).all()
     templates = _table(tracked, templates_run, "templates.parquet")
     assert templates.notna().all().all()
+
+
+def test_a_template_step_writes_only_its_sample(tracked: Dataset) -> None:
+    """Each entry's table is empty, its index row counts 0 rows, and a rerun is cached.
+
+    The k-means step reads the template step's inputs and fits on its sample.
+    """
+    recipe = Recipe.model_validate(CLUSTERING)
+    done = run_pipeline(tracked, recipe)
+
+    templates_run = done.outcomes[3].run_id
+    kmeans_run = done.outcomes[4].run_id
+    assert templates_run is not None
+    assert kmeans_run is not None
+    (run_root,) = Path(tracked.get_root("features")).glob(f"*/{templates_run}")
+    entries = sorted(run_root.glob("seq_*.parquet"))
+    assert [path.name for path in entries] == ["seq_a.parquet", "seq_b.parquet"]
+    assert all(pd.read_parquet(path).empty for path in entries)
+    rows = feature_index(feature_index_path(tracked, run_root.parent.name)).read(
+        run_id=templates_run
+    )
+    assert sorted(rows["sequence"]) == ["seq_a", "seq_b"]
+    assert (rows["n_rows"] == 0).all()
+    (model,) = Path(tracked.get_root("features")).glob(f"*/{kmeans_run}/model.joblib")
+    fitted = GlobalKMeansClustering.ModelArtifact().from_path(model)
+    assert fitted["feature_columns"] == list(
+        _table(tracked, templates_run, "templates.parquet").columns
+    )
+    assert not _table(tracked, kmeans_run, "seq_a.parquet").empty
+
+    again = run_pipeline(tracked, recipe)
+
+    assert [outcome.state for outcome in again.outcomes] == ["cached"] * 5
+
+
+def test_run_feature_refuses_a_template_run_as_an_input(tracked: Dataset) -> None:
+    """The loader drops each entry's empty table, and the run is refused first.
+
+    The refusal comes before the run writes its run root.
+    """
+    done = run_pipeline(tracked, Recipe.model_validate(CHAIN))
+    templates_run = done.outcomes[1].run_id
+    assert templates_run is not None
+    (run_root,) = Path(tracked.get_root("features")).glob(f"*/{templates_run}")
+    storage = run_root.parent.name
+    kmeans = GlobalKMeansClustering(
+        inputs=GlobalKMeansClustering.Inputs(
+            (FeatureResult(feature=storage, run_id=templates_run),)
+        ),
+        params={
+            "templates": {"feature": storage, "run_id": templates_run},
+            "k": 1,
+            "n_init": 1,
+        },
+    )
+
+    with pytest.raises(
+        InputWritesNoColumns, match="extract-templates writes only its sample"
+    ):
+        _ = run_feature(tracked, kmeans)
+
+    assert not list(Path(tracked.get_root("features")).glob("global-kmeans*"))
 
 
 NAMED_MEASUREMENTS: Document = {

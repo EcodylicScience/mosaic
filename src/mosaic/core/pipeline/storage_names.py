@@ -20,6 +20,7 @@ __all__ = [
     "SHORTENED_NAME_BYTES",
     "abbreviate",
     "derive_storage_name",
+    "feature_slug_of",
     "text_digest",
 ]
 
@@ -101,6 +102,16 @@ def derive_storage_name(feature_name: str, inputs_suffix: str | None) -> str:
         inputs_suffix,
         lambda suffix: _byte_length(prefix + suffix) <= SHORTENED_NAME_BYTES,
     )
+
+
+def feature_slug_of(storage_name: str) -> str:
+    """Return the slug of the feature behind a storage name.
+
+    :func:`derive_storage_name` writes ``<slug>`` or ``<slug>__from__<suffix>``,
+    and a shortened name keeps its slug, so the slug is everything before the
+    first ``__from__``.
+    """
+    return storage_name.split("__from__", 1)[0]
 
 
 def _byte_length(text: str) -> int:

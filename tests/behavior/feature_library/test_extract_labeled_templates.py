@@ -492,22 +492,34 @@ class TestSaveLoadLabeled:
         )
         assert feat.load_state(tmp_path, {}, {}) is False
 
-    def test_apply_adds_label_and_split(self) -> None:
-        df = _make_labeled_df(10)
-        feat = ExtractLabeledTemplates(
-            ExtractLabeledTemplates.Inputs((Result(feature="upstream"),)),
-            params={"labels": {"kind": "behavior"}, "n_per_class": 5},
+    def test_apply_writes_an_empty_table_and_the_sample_is_saved(
+        self, tmp_path: Path
+    ) -> None:
+        labels_lookup = _setup_labels_lookup(
+            tmp_path / "labels", [("g", "s1", np.array([0] * 10 + [1] * 10))]
         )
+        feat = _make_feature_with_labels(
+            labels_lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_per_class": 5,
+                "test_fraction": 0.0,
+            },
+        )
+        df = _make_labeled_df(20, sequence="s1", group="g")
+        feat.fit(_make_factory([("g__s1", df)]))
+        feat.save_state(tmp_path / "run")
+
         result = feat.apply(df)
-        assert "label" in result.columns
-        assert "split" in result.columns
-        # Without labels_lookup, every row is unlabeled (-1), never class 0
-        assert (result["label"] == -1).all()
-        # Without sequence_splits, split defaults to "train"
-        assert (result["split"] == "train").all()
-        # Original columns are preserved
-        for col in df.columns:
-            assert col in result.columns
+        assert result.empty
+        assert result.columns.empty
+        templates = pd.read_parquet(tmp_path / "run" / "templates.parquet")
+        assert sorted(templates["label"]) == [0] * 5 + [1] * 5
+        assert (templates["split"] == "train").all()
+        provenance = pd.read_parquet(tmp_path / "run" / "template_provenance.parquet")
+        assert provenance[["group", "sequence", "split"]].values.tolist() == [
+            ["g", "s1", "train"]
+        ]
 
 
 def _sparse_labels(
@@ -578,7 +590,7 @@ def test_only_the_labeled_perspective_is_sampled(
     templates = pd.read_parquet(tmp_path / "run" / "templates.parquet")
     resident_focal = pairs.loc[pairs["id1"] == 0, "feat_0"]
     assert sorted(templates["feat_0"]) == sorted(resident_focal)
-    assert feat.apply(pairs)["label"].tolist() == [0, -1] * n_frames
+    assert templates["label"].tolist() == [0] * n_frames
 
 
 class TestColumns:

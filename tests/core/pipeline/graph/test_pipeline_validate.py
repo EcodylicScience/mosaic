@@ -682,6 +682,63 @@ def test_a_labels_reference_to_a_convert_labels_step_validates() -> None:
     assert _problems(_labels_recipe(_labeled("labeled", "labels"))) == ()
 
 
+TEMPLATE_STEPS: dict[str, Document] = {
+    "extract-templates": {
+        "id": "templates",
+        "type": "feature",
+        "feature": "extract-templates",
+        "inputs": [{"step": "speed"}],
+        "params": {"n_templates": 8},
+    },
+    "extract-labeled-templates": _labeled("templates", "labels"),
+}
+
+
+@pytest.mark.parametrize("template", sorted(TEMPLATE_STEPS))
+@pytest.mark.parametrize(
+    "inputs",
+    [[{"step": "templates"}], [{"step": "templates"}, {"step": "speed"}]],
+    ids=["alone", "beside-another-input"],
+)
+def test_reading_a_template_step_through_inputs_is_refused(
+    template: str, inputs: list[Document]
+) -> None:
+    """A template step writes only its sample, and its table for each entry is empty.
+
+    The problem names the inputs of the template step, and is raised even when
+    another input meets the reader's requirements. It is the reader's only
+    problem, because the columns that an empty input lacks would restate it.
+    """
+    kmeans: Document = {
+        "id": "kmeans",
+        "type": "feature",
+        "feature": "global-kmeans",
+        "inputs": inputs,
+        "params": {"templates": {"step": "templates"}, "k": 2},
+    }
+    recipe = _labels_recipe(TEMPLATE_STEPS[template], kmeans)
+
+    refused = [problem for problem in _problems(recipe) if problem.step == "kmeans"]
+
+    assert len(refused) == 1
+    assert "writes only its sample" in refused[0].message
+    assert refused[0].where == "inputs"
+    assert f"'templates' runs {template}" in refused[0].message
+    assert "Read its inputs (speed) here" in refused[0].message
+
+
+def test_a_reader_of_the_template_step_s_inputs_validates() -> None:
+    kmeans: Document = {
+        "id": "kmeans",
+        "type": "feature",
+        "feature": "global-kmeans",
+        "inputs": [{"step": "speed"}],
+        "params": {"templates": {"step": "templates"}, "k": 2},
+    }
+
+    assert _problems(_labels_recipe(TEMPLATE_STEPS["extract-templates"], kmeans)) == ()
+
+
 def test_one_step_may_reference_one_labels_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, TypeGuard
 from pydantic import ValidationError
 
 from mosaic.core.pipeline._utils import ResolvedScope, atomic_write
+from mosaic.core.pipeline.storage_names import feature_slug_of
 from mosaic.core.pipeline.dataset_indexes import feature_storages
 from mosaic.core.pipeline.inventory.params import (
     RunParams,
@@ -59,21 +60,8 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.types import Feature
 
 
-_FROM = "__from__"
-
-
 _HASH_LEN = 10
 _HEX = frozenset("0123456789abcdef")
-
-
-def _slug_of(storage_name: str) -> str:
-    """The feature slug behind a storage directory name.
-
-    ``derive_storage_name`` writes ``<slug>`` or ``<slug>__from__<suffix>``, so the
-    slug is everything before the first ``__from__``. Reversed here so the class
-    behind a run can be looked up in the registry.
-    """
-    return storage_name.split(_FROM, 1)[0]
 
 
 def _split_feature_run_id(run_id: str) -> tuple[str, str] | None:
@@ -199,7 +187,7 @@ class FeatureReconciler:
         ds = self._ds
         run_root = feature_run_root(ds, storage_name, run_id)
         index_path = feature_index_path(ds, storage_name)
-        slug = _slug_of(storage_name)
+        slug = feature_slug_of(storage_name)
         scheme = read_identity_scheme(run_root)
 
         read = read_run_params(run_root)

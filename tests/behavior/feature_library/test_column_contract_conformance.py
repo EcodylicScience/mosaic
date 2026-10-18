@@ -543,7 +543,9 @@ def test_a_feature_writes_the_columns_it_declares(slug: str, tmp_path: Path) -> 
     passed: set[str] = (
         {str(column) for column in merged.columns} if provides.passthrough else set()
     )
-    assert_writes_declared_columns(slug, predicted, output, passed)
+    assert_writes_declared_columns(
+        slug, predicted, output, passed, declares_empty=provides.is_empty
+    )
 
 
 @pytest.mark.parametrize("slug", SLUGS)
