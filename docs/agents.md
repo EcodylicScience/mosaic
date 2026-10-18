@@ -142,8 +142,8 @@ that does not read, is left out and reported on the server's standard error.
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, found by words, and the ones named with their params as a table |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
-| `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. With `cleanup: superseded`, the superseded runs of its storages |
-| `submit_pipeline` | Submits a planned recipe and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards |
+| `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from |
+| `submit_pipeline` | Submits a planned recipe and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards, and with `retire` the runs that retired recipes wrote |
 | `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts |
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
@@ -228,7 +228,9 @@ Restart it after installing an extra or building a tool's environment.
 - a request of the same recipe over overlapping entries has not ended
   (`open_duplicate`);
 - the submission removes superseded runs of its steps' storage after its steps finish
-  (`cleanup`). The question names how many runs, their size and their storages.
+  (`cleanup`). The question names how many runs, their size and their storages, and the
+  retired recipes that wrote some of them. A hook that approves `cleanup` approves a
+  retirement too.
 
 `cancel_request` asks to confirm when a running step loses its work (`hard_cancel`): a
 keypoint-MoSeq or VAME fit stops at once, and training loses the epoch in progress.
@@ -319,9 +321,10 @@ The server does not expose them as tools. When one is needed, the agent proposes
 `mosaic` command or the library call, and you run it:
 
 - overwriting a computed run (`overwrite`);
-- deleting tables, entries or runs, except superseded feature runs, which
-  `submit_pipeline` removes with `cleanup: superseded` when the server runs with
-  `--allow-cleanup feature-runs` (see below);
+- deleting tables, entries or runs, except superseded feature runs and the runs of
+  recipes retired with them, which `submit_pipeline` removes with
+  `cleanup: superseded` when the server runs with `--allow-cleanup feature-runs` (see
+  below);
 - `--apply` on `sweep-tracking`, `prune-media`, `prune-joined`, `reconcile` and
   `upgrade-tracks`;
 - `reindex` and `release`;
@@ -361,12 +364,37 @@ names it or may read it, when it covers entries or a fit its replacement does no
 when a kept run or a step of the plan reads it. Recipes with the same non-empty
 `name` are versions of each other, and an unnamed recipe is a version only of itself.
 Name a recipe and keep the name across its versions, so a cleanup can remove the runs
-of its earlier versions. Only the feature storages the recipe names are touched. A
-run in a storage the recipe no longer names is not removed, and a run of a named
-storage that was written outside a request is a candidate whichever recipe it belongs
-to. Each removed run's `params.json` is kept in the cleanup's run-log for computing
-the run again, and `get_request_status` reports what was removed and kept. A managed
-dataset refuses a cleanup, and a queue that runs the steps itself does not run one.
+of its earlier versions. Only the feature storages the recipe names are touched, unless
+the call retires a recipe (below). A run of a named storage that was written outside a
+request is a candidate whichever recipe it belongs to. Each removed run's `params.json`
+is kept in the cleanup's run-log for computing the run again, and `get_request_status`
+reports what was removed and kept. A managed dataset refuses a cleanup, and a queue
+that runs the steps itself does not run one.
+
+#### Retiring an earlier recipe
+
+Rebuilding a recipe so that a step reads something else, or dropping a step, moves its
+storage. The runs left in the old one are outside every later plan, and a recipe with
+another name keeps the runs it recorded. To reclaim them, retire the earlier recipe:
+
+1. `plan_recipe` with `cleanup: superseded` lists the saved recipes whose requests
+   wrote runs under `retirable`: name, digest, request ids and how many runs.
+2. Plan again with `retire: [<digest>]`. The runs that recipe's requests wrote are then
+   candidates in any storage. Those in storages no step of the recipe names are listed
+   under `cleanup.retired_runs`, and the rest on their steps, each with the retired
+   digest.
+3. Show the user the plan, then pass the same `retire` and the plan's fingerprint to
+   `submit_pipeline`. The confirmation names the retired recipes.
+
+A retirement applies to that one plan and submission, and the next plan judges as if
+nothing was retired. It needs `cleanup: superseded`. It reaches only runs a retired
+request wrote. A run that request only found already done, a run it pinned with `bind`,
+and a run that a call outside every request, such as a notebook, also used keep their
+protection. The other rules still apply to a retired run: a request's hold, a costly
+feature, a reader, the policy's age, and `keep_newest` for each storage, so with the
+default policy the newest retired run of each abandoned storage stays. The call is
+refused for a digest that no saved recipe has, for the recipe being planned, and for a
+recipe with a request that has not ended.
 
 ### Data sent to the model provider
 

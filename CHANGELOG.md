@@ -490,11 +490,46 @@ plan used to fail.
 - Name a recipe and keep the name across its versions. An unnamed recipe is a version
   only of itself. A params edit of one keeps the runs that its earlier requests
   recorded.
-- A run in a storage the recipe no longer names is still not a candidate, and a run
-  written outside a request (`run_feature`, `Pipeline`) is judged as before.
+- A run in a storage the recipe no longer names is not a candidate unless the
+  submission retires the recipe that wrote it (the next entry), and a run written
+  outside a request (`run_feature`, `Pipeline`) is judged as before.
 - `plan_cleanup` takes a required `recipe_name`. `KeptReason` gains `recipe_uses`, and
   the wire's `reason` is a string. A fingerprint taken before the change for a plan
   with such a sibling is refused with `PlanChanged`; plan again.
+
+**A submission can retire an earlier recipe, so a cleanup reaches the runs it wrote.**
+A cleanup judged only the storages the planned recipe names. A run left in a storage the
+recipe no longer names, because a step reads something else or was dropped, was outside
+every later plan, and recipes iterated under new names kept each other's runs as
+`recipe_uses`. `plan_recipe` and `submit_pipeline` take `retire`, and `mosaic pipeline
+plan`, `submit` and `run --recipe` take `--retire`: digests of saved recipes. The runs
+those recipes' requests wrote become candidates in any storage, and a request of a
+retired recipe stops keeping them. It still keeps a run it only found already done, a
+run it pinned, and a run that a feature call outside every request also used.
+
+- A retirement belongs to one plan or submission. The request records it in
+  `cleanup.retired`, and a later plan judges as if nothing was retired. It needs a
+  cleanup. A digest that no saved recipe has, the planned recipe's own, and a recipe
+  with a request that has not ended are refused (`retire_unknown_recipe`,
+  `retire_own_recipe`, `retire_open_recipe`, `retire_needs_cleanup`).
+- A plan asked for a cleanup lists the saved recipes whose requests wrote runs under
+  `retirable`, and the digest to pass comes from there. The rest of the cleanup rules
+  apply to a retired run: its hold, a costly feature, a reader, its age, and the
+  `keep_newest` newest of its storage, so the default policy keeps the newest retired
+  run of each abandoned storage. A step with no run id yet and the coverage rules do
+  not apply to a run in a storage no step names.
+- Retiring a recipe also reclaims the template runs that `extract-templates` 0.3 and
+  `extract-labeled-templates` 0.4 wrote, which copied their input per entry.
+- Additive on the wire: `PlanWire.retirable` and `retirable_omitted`,
+  `CleanupPlanWire.retired`, `retired_runs` and `retired_omitted`,
+  `SupersededRunWire.retired`, `CleanupRunWire.retired`, `SupersededRun.retired_by`,
+  `CleanupPlan.retired` and `StepAttempt.target`. Each defaults empty.
+- A request file without `retire` is unchanged byte for byte, and the fingerprint gains
+  `cleanup.retire` only when a plan retires something. A mosaic 0.17 reader refuses a
+  request file that holds `cleanup.retired`.
+- A removed run's digest is recorded on the cleanup run-log's `run_removing` event, not
+  on `run_removed`, which does not repeat the reason. The reason is `retired`, and the
+  line of an ordinary removal is unchanged.
 
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 

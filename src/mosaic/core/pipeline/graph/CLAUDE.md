@@ -67,13 +67,28 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   as `recipe_uses` after that request's hold lapses
   (`test_a_run_another_recipe_recorded_is_kept_after_its_hold`). It does not import
   `FEATURES`; `run_reference_fields` in `resolve.py` answers for it.
+- A submission may **retire** saved recipes by digest (`retire`, `retirement.py`). The
+  runs their requests wrote become candidates in any storage, and a retired request
+  stops keeping them as `recipe_uses`; the runs it only found done or bound, and a run
+  a feature attempt outside every request also names, keep their protection. A run in
+  a storage no step names has no keeper, so `keeper_unresolved` and the coverage rules
+  skip it (`test_pipeline_cleanup.py`, "retiring a recipe"). `_request_holds` detects a
+  retired request before the version rules, so retiring a same-named earlier version
+  works. `plan_with_cleanup` and `submit_request` validate the retirement and
+  `plan_cleanup` never does, because `run_cleanup` calls it again with
+  `CleanupSpec.retired` and a `created_at` cutoff, and a request of the recipe made
+  after the cleaning request is not retired. A written run is one whose attempt names
+  it, is not a full cache hit and ran in a process (`pid`), because a stalled or cached
+  step records the run it found.
 - `plan_fingerprint` covers the cleanup's policy and removable runs only when a plan
   was asked for a cleanup, so every other fingerprint is unchanged
   (`test_pipeline_plan_fingerprint.py`). Given a policy, `submit_request` needs
   `expect_plan` (`CleanupNeedsPlan`), refuses a managed dataset
   (`CleanupOnManagedDataset`), and records `Request.cleanup`: the approved runs less
-  the submission's binds. `save_request` leaves the key out when it is `None`, because
-  an older mosaic cannot read a request file that has it.
+  the submission's binds. `save_request` leaves the key out when it is `None`, and
+  `cleanup.retired` out when it is empty, because an older mosaic cannot read a request
+  file that has either. The fingerprint adds `cleanup.retire` only when something is
+  retired.
 - `reject_unless_valid` (`validate.py`) runs before the dataset is touched and reports
   every problem. It refuses an `overwrite` key in `params` (`OVERWRITE_PARAM`) and the
   `extract-frames` op (`EXCLUDED_KINDS`), as `test_pipeline_validate.py` checks.
@@ -205,8 +220,8 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   are ULIDs, newest first, and read only the page that they return
   (`test_pipeline_request_listing.py`, `tests/core/test_runlog_readers.py`).
 - `__init__.py` binds every public name on access, and `status.py`, `store.py`,
-  `claims.py`, `entry_errors.py`, `driver_lease.py` and `liveness.py` import nothing
-  that loads pandas, cv2, av or the feature library
+  `claims.py`, `entry_errors.py`, `driver_lease.py`, `liveness.py` and `retirement.py`
+  import nothing that loads pandas, cv2, av or the feature library
   (`tests/meta/test_status_imports.py`). The editor wires in `wire.py` import the op
   registry and the inventory, which do.
 
