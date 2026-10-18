@@ -260,9 +260,11 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   https://ecodylicscience.github.io/mosaic/concepts/pipelines/.
 - `mosaic inventory` reports what exists, with coverage and a status such as
   `partial` or `complete-but-drifted`. `mosaic runs` and `mosaic status` report
-  attempts. A run whose scope is part of its id, such as templates drawn from the
-  training groups, is measured over that scope, so `complete` means it holds all of
-  it.
+  attempts. A feature run is measured over the entries it was asked for, and
+  `complete` means it has all of them. A classifier applied through a step scope to
+  the test groups is complete when it has the test groups. A run invoked without a
+  scope was asked for every entry, and reads `partial` once the dataset gains a
+  sequence.
 - Conversion is a recipe step: `convert-tracks` and `convert-labels` with
   `source_format`. Scan the sources first. A feature reads the converted tracks
   through `"tracks": {"step": <id>}` and the converted labels through

@@ -146,9 +146,10 @@ def test_a_scope_narrows_an_entry_keyed_target(computed: tuple[Dataset, str]) ->
 def test_a_narrowed_status_is_rederived_over_the_narrowed_target(
     scenario_dataset: Dataset,
 ) -> None:
-    """A run over one of two entries is partial for the dataset and complete for
-    a scope naming that entry."""
-    _ = _run(scenario_dataset, scope=Scope(entries=[SEQ_A]))
+    """An unscoped run that lacks a sequence added later is partial for the
+    dataset and complete for a scope naming an entry it contains."""
+    _ = _run(scenario_dataset)
+    add_track_sequences(scenario_dataset, "seq_c")
     held = inventory(scenario_dataset, kinds=["feature"])
 
     [whole] = inventory_wire(scenario_dataset, held).artifacts
@@ -297,6 +298,38 @@ def test_a_scope_dependent_projection_matches_the_scan(
     def summary(wire: InventoryWire) -> list[tuple[str, str, int]]:
         return [(a.ref, a.status, a.coverage.target) for a in wire.artifacts]
 
+    assert summary(projected) == summary(scanned)
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        Scope(sequences=["seq_a"]),
+        Scope(sequences=["seq_b"]),
+        Scope(sequences=["seq_a", "seq_b"]),
+        Scope(groups=["elsewhere"]),
+    ],
+    ids=["inside", "outside", "wider", "no-entries"],
+)
+def test_a_scope_free_projection_matches_the_scan(
+    scenario_dataset: Dataset, scope: Scope
+) -> None:
+    """A scope-free run applied to one sequence is measured over that sequence."""
+    _ = _run(scenario_dataset, scope=Scope(sequences=["seq_a"]))
+    kinds: list[ArtifactKind] = ["feature"]
+
+    whole = inventory_wire(scenario_dataset, inventory(scenario_dataset, kinds=kinds))
+    projected = inventory_wire(
+        scenario_dataset, inventory(scenario_dataset, kinds=kinds), scope=scope
+    )
+    scanned = inventory_wire(
+        scenario_dataset, inventory(scenario_dataset, kinds=kinds, scope=scope)
+    )
+
+    def summary(wire: InventoryWire) -> list[tuple[str, str, int]]:
+        return [(a.ref, a.status, a.coverage.target) for a in wire.artifacts]
+
+    assert [(a.status, a.coverage.target) for a in whole.artifacts] == [("complete", 1)]
     assert summary(projected) == summary(scanned)
 
 

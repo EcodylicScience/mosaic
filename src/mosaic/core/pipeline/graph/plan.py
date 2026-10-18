@@ -1425,8 +1425,8 @@ def coverage_against(
 
     The coverage is rebuilt against the *plan's* target rather than reported as
     the inventory measured it, because those are two questions: an inventory
-    measures a run against the dataset's universe, and a plan measures it against
-    the entries this submission asked for.
+    measures a run against the entries that its invocations asked for, and a
+    plan measures it against the entries this submission asks for.
 
     A kind not addressed by entry -- a trained model, a media derivative --
     reports ``covers_all`` instead, which is what a single artifact answering for
@@ -1463,11 +1463,11 @@ def coverage_against(
             target=target, present=frozenset(), covers_all=record.coverage.is_satisfied
         )
     # Re-derived rather than taken from the record, and the two are not the same
-    # answer: the record's status is measured against the *dataset's* universe,
-    # and this one against the entries the submission asked for. A run holding
-    # every entry the dataset can process reads complete to an inventory and is
-    # genuinely short of a scope naming one more -- and taking the record's word
-    # for it would report a step as done while its coverage said two of three.
+    # answer: the record's status is measured against the entries the run was
+    # asked for, and this one against the entries the submission asks for. A run
+    # with every entry it was asked for reads complete to an inventory and is
+    # short of a scope naming one more. The record's status would then report a
+    # step as done while its coverage said two of three.
     return ArtifactView(
         coverage=coverage,
         status=reclassify(record, coverage),

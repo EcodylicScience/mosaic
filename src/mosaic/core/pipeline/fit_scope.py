@@ -10,10 +10,12 @@ sequences without retraining is the intended workflow -- but nothing said so.
 
 **Why ``params.json`` could not already answer this.** It is written
 unconditionally at the top of every run, *before* ``load_state`` and before the
-fit gate, so a second invocation at a wider apply scope overwrites its
-``_scope.entries`` with the wider set. The value is "whichever ran last", which
-that key's own comment concedes; what misleads is its name. This file is written
-only when ``fit()` actually ran, so it stays what it says it is.
+fit gate, and its ``_scope`` is an apply scope. A second invocation at a wider
+apply scope overwrites ``_scope.entries`` with the wider set, so that key is
+"whichever ran last". ``_scope.asked`` accumulates the entries of every
+invocation, which is the apply scope of them all and still not what was fitted.
+This file is written only when ``fit()`` actually ran, so it stays what it says
+it is.
 
 **No index column, deliberately.** A fit-scope cell would hold the same value on
 every row of a run -- a per-run property duplicated per row, which is the shape

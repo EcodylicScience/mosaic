@@ -167,6 +167,19 @@ declared entries. A selector that names none of its entries still reads `absent`
 `mosaic inventory`, `get_inventory` and a narrowed `inventory_wire` apply the same
 rule through `feature_run_target`.
 
+**The inventory measures every feature run over the entries it was asked for.** A
+scope-free run applied to a subset, such as `xgboost` applied to the test groups
+through a step scope, read `partial` against the whole dataset while `plan_recipe`
+read it `complete`. `params.json` now records `_scope.asked`, the entries of every
+invocation of the run, and `_scope.asked_all`, set when an invocation of a scope-free
+run asked for every entry. A run reads `complete` when it has every entry it was asked
+for and `partial` when it lost one, also after a later invocation over other entries. A
+run invoked without a scope, directly or as a recipe step that neither the request nor
+a step scope narrows, still reads `partial` once the dataset gains a sequence.
+`run_feature` takes `asks_every_entry` for a caller that passes the entries it computes
+and asks for every entry. A file written before these keys is measured over its latest
+scope and its index rows. No run id moves.
+
 **CalMS21 tracks no longer carry the ground-truth `label` column (`calms21_npy` and
 `calms21_json` 0.4).** The converter copied each sequence's annotations into the
 tracks, so every feature built on them carried the answer it was later scored on, and

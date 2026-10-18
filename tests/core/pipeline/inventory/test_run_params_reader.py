@@ -174,6 +174,39 @@ def test_a_scope_block_with_one_bad_key_keeps_the_others(tmp_path: Path) -> None
     assert read.params.scope.scope_dependent is True
 
 
+def test_the_asked_scope_is_read_beside_the_latest_invocations_entries(
+    tmp_path: Path,
+) -> None:
+    document: dict[str, object] = {
+        "_scope": {
+            "entries": [["", "seq_b"]],
+            "asked": [["", "seq_a"], ["", "seq_b"]],
+            "asked_all": True,
+        }
+    }
+
+    read = read_run_params(_write(tmp_path / "run", document))
+
+    assert read.params is not None
+    assert read.params.entry_scope() == {("", "seq_b")}
+    assert read.params.asked_scope() == {("", "seq_a"), ("", "seq_b")}
+    assert read.params.scope.asked_all is True
+
+
+def test_a_document_without_the_asked_key_asked_for_its_entries(
+    tmp_path: Path,
+) -> None:
+    """A file written before the key existed records only its latest scope."""
+    document: dict[str, object] = {"_scope": {"entries": [["", "seq_b"]]}}
+
+    read = read_run_params(_write(tmp_path / "run", document))
+
+    assert read.params is not None
+    assert read.params.scope.asked is None
+    assert read.params.asked_scope() == {("", "seq_b")}
+    assert read.params.scope.asked_all is False
+
+
 def test_an_absent_resolved_block_is_not_an_empty_one(tmp_path: Path) -> None:
     """``run_feature`` writes the key unconditionally, empty list included, so an
     absent one dates the file rather than saying the run resolved nothing."""

@@ -46,6 +46,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.params import Params
+from mosaic.core.scope import Scope
 
 from tests.helpers import add_tracks_variant
 
@@ -134,9 +135,9 @@ def _storage(ds: Dataset) -> str:
     return names[0]
 
 
-def _run(ds: Dataset) -> str:
-    """Run the test feature and return its run_id."""
-    return run_feature(ds, _ReconcileFeature()).run_id
+def _run(ds: Dataset, scope: Scope | None = None) -> str:
+    """Run the test feature over *scope* and return its run_id."""
+    return run_feature(ds, _ReconcileFeature(), scope=scope).run_id
 
 
 def _run_root(ds: Dataset, run_id: str) -> Path:
@@ -539,3 +540,25 @@ def test_a_relocated_run_keeps_the_attempt_that_produced_it(
     assert moved["_execution_id"] == produced_by
     assert moved["_mosaic_version"] == under
     assert fake_run_id not in str(true_root)
+
+
+def test_a_relocated_run_keeps_the_entries_every_invocation_asked_for(
+    scenario_dataset: Dataset, registered_feature: type[Feature]
+) -> None:
+    """The restamp rebuilds ``_scope`` from the latest invocation's scope.
+
+    The inventory measures the run against ``asked``, which names the entries
+    of the earlier invocations too.
+    """
+    del registered_feature
+    ds = scenario_dataset
+    _ = _run(ds, Scope(sequences=["seq_a"]))
+    true_run_id = _run(ds, Scope(sequences=["seq_b"]))
+
+    _, true_root = _fabricate_shifted_run(ds, true_run_id, scheme="5")
+    _ = ds.reconcile(apply=True)
+
+    moved = json.loads((true_root / "params.json").read_text())
+    assert moved["_scope"]["entries"] == [["", "seq_b"]]
+    assert moved["_scope"]["asked"] == [["", "seq_a"], ["", "seq_b"]]
+    assert moved["_scope"]["asked_all"] is False

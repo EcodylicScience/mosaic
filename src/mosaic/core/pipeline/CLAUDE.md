@@ -174,8 +174,11 @@ pipeline graph are in `graph/CLAUDE.md`.
 - `read_run_params` is the only reader of a feature run's `params.json`, and tells
   absent from unreadable (`tests/core/pipeline/inventory/test_run_params_reader.py`).
 - A feature run's target comes from `feature_run_target` (`inventory/scan.py`): a
-  scope-dependent run is measured over its declared scope. The scan and the
-  `inventory_wire` projection share it (`test_a_scope_dependent_projection_matches_the_scan`).
+  run is measured over the entries its invocations asked for (`_scope.asked`) and
+  its index rows. A scope-free run asked for every entry (`_scope.asked_all`) is
+  measured over every entry. The scan and the `inventory_wire` projection share it
+  (`test_a_scope_dependent_projection_matches_the_scan`,
+  `test_a_scope_free_projection_matches_the_scan`).
 - `PREPARED_DATA_KINDS` (`models.py`) is the one list of the `models/` kinds that
   contain training data. The trained-model inventory and model deletion both judge a
   kind through `holds_trained_models`.

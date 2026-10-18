@@ -333,31 +333,38 @@ def reportable_universe(
 
 
 def feature_run_target(
-    asked: frozenset[Entry], params: RunParams | None
+    asked: frozenset[Entry], params: RunParams | None, rows: frozenset[Entry]
 ) -> frozenset[Entry]:
     """The entries a feature run is measured against, out of the *asked* ones.
 
-    A ``scope_dependent`` run's scope is hashed into its run id, so measuring it
-    against the whole universe asks a question no action can answer: running it
-    over more entries makes a different run. Its target is *asked* narrowed to
-    the scope it declared. An entry that failed is inside that scope and has no
-    file, so the run still reads ``partial`` and its losses are still reported.
+    A run is measured against the entries its invocations asked for
+    (:meth:`~.params.RunParams.asked_scope`) and the entries its index *rows*
+    name, within *asked*. A request can apply a scope-free classifier to a test
+    group, and the run is then complete when it contains that group. Running a
+    scope-dependent run over more entries makes another run, because its scope
+    is hashed into its run id. An entry that failed was asked for and its file
+    is missing. The run then reads ``partial`` and reports the loss, also after
+    a later invocation over other entries.
 
-    When the two share nothing -- a selector naming entries the run never
-    covered -- the target stays *asked*. An empty target would read as "anything
-    at all" (:attr:`Coverage.is_satisfied`), and the run would read complete over
-    entries it never held.
+    The rows stay in the basis for a file written before ``asked`` existed,
+    whose ``entries`` name only its latest invocation.
 
-    A scope-free run keeps *asked*: its recorded scope is "whichever invocation
-    ran last", which says nothing about what it is for. So does a run whose
-    ``params.json`` is missing or predates the ``scope_dependent`` key.
+    A scope-free run with ``asked_all`` set was asked for every entry, without
+    a selector or as an unnarrowed recipe step. Its target is *asked*, and it
+    reads ``partial`` once the dataset gains a sequence. A run whose
+    ``params.json`` is missing is measured the same way.
+
+    When the basis shares nothing with *asked*, as for a selector naming entries
+    the run did not cover, the target stays *asked*. An empty target reads as
+    "anything at all" (:attr:`Coverage.is_satisfied`), and the run would then
+    read complete over entries it does not contain.
 
     The one rule for both the scan and the narrowed projection of an unscoped
     scan (``inventory_wire``), so the two cannot disagree.
     """
-    if params is None or not params.scope.scope_dependent:
+    if params is None or params.scope.asked_all:
         return asked
-    within = asked & frozenset(params.entry_scope())
+    within = asked & (frozenset(params.asked_scope()) | rows)
     return within or asked
 
 
@@ -366,8 +373,10 @@ def _feature_records(
 ) -> list[ArtifactRecord[Entry]]:
     """Every feature run under ``features/<name>/<run_id>/``.
 
-    A scope-dependent run is measured over the part of the target inside its
-    declared scope (:func:`feature_run_target`); every other run over the target.
+    A run is measured over the part of the target it was asked for
+    (:func:`feature_run_target`). Its files are matched over the whole target.
+    The orphan files and the ``present`` set therefore do not depend on that
+    cut.
     """
     universe = reportable_universe(ds, scope.tracks_run_id)
     target = narrow_target(universe, scope.selector)
@@ -383,10 +392,13 @@ def _feature_records(
             read = read_run_params(run_root)
             # The run's own index rows are what make its outputs recognisable
             # when the target cannot name them -- see ``run_covers``.
-            coverage = run_covers(
-                run_root, feature_run_target(target, read.params), known=rows
+            on_disk = run_covers(run_root, target, known=rows)
+            files = on_disk.present
+            coverage = Coverage[Entry](
+                target=feature_run_target(target, read.params, rows),
+                present=on_disk.present,
+                covers_all=on_disk.covers_all,
             )
-            files = coverage.present
             started, finished_at, finished = finish_state(frame, run_id)
             drift = drifted_entries(ds, name, run_id)
             records.append(

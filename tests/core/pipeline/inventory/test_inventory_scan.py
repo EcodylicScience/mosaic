@@ -17,6 +17,7 @@ import pytest
 
 from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.graph import Recipe, run_pipeline
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory import (
     FeatureRunRef,
@@ -31,10 +32,17 @@ from mosaic.core.pipeline.inventory.scan import (
     run_covers,
 )
 from mosaic.core.scope import Scope
-from tests.helpers import ScopedFeature, add_tracks_variant, make_dataset
+from tests.helpers import (
+    LossyFeature,
+    ScopedFeature,
+    add_track_sequences,
+    add_tracks_variant,
+    make_dataset,
+)
 
 STORAGE = "speed-angvel__from__tracks"
 SCOPED = "prov-scoped__from__tracks"
+LOSSY = "prov-lossy__from__tracks"
 
 
 def _run(ds: Dataset) -> str:
@@ -154,14 +162,13 @@ def test_a_row_naming_a_deleted_output_is_inconsistent(
     assert record.orphan_rows == frozenset({("", "seq_b")})
 
 
-def test_a_run_covering_some_of_the_universe_is_partial(
+def test_a_scope_free_run_is_complete_over_the_entries_it_was_asked_for(
     scenario_dataset: Dataset,
 ) -> None:
-    """The distinction the four-value vocabulary could not make.
+    """A step scope applies a scope-free classifier to the test groups alone.
 
-    Both the index and disk agree this run holds one entry -- nothing is
-    damaged. It is simply not the whole dataset, and reporting that as
-    ``absent`` would say nothing ran when half of it did.
+    The run has every entry it was asked for, and the rest of the dataset is
+    an entry nobody asked it to cover.
     """
     feature = build_feature("speed-angvel", None, None)
     run_id = str(
@@ -175,11 +182,125 @@ def test_a_run_covering_some_of_the_universe_is_partial(
     )
 
     assert record is not None
-    assert record.status == "partial"
-    assert record.coverage.covered == frozenset({("", "seq_a")})
-    assert record.coverage.missing == frozenset({("", "seq_b")})
+    assert record.status == "complete"
+    assert record.coverage.target == frozenset({("", "seq_a")})
     assert record.orphan_rows == frozenset()
     assert record.orphan_files == frozenset()
+
+
+def test_an_unscoped_run_reads_partial_once_the_dataset_gains_a_sequence(
+    scenario_dataset: Dataset,
+) -> None:
+    """An invocation without a selector asked for every entry, later ones too.
+
+    Running it again extends the same run id, so ``partial`` names the action.
+    """
+    run_id = _run(scenario_dataset)
+    add_track_sequences(scenario_dataset, "seq_c")
+
+    record = inventory(scenario_dataset, kinds=["feature"]).record(
+        FeatureRunRef(name=STORAGE, run_id=run_id)
+    )
+
+    assert record is not None
+    assert record.status == "partial"
+    assert record.coverage.missing == frozenset({("", "seq_c")})
+
+
+def test_an_unscoped_recipe_step_reads_partial_once_the_dataset_gains_a_sequence(
+    scenario_dataset: Dataset,
+) -> None:
+    """The step runs over the entries its plan names and still asks for all."""
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": ["tracks"],
+                }
+            ],
+        }
+    )
+    run_id = run_pipeline(scenario_dataset, recipe).outcomes[0].run_id
+    add_track_sequences(scenario_dataset, "seq_c")
+
+    record = inventory(scenario_dataset, kinds=["feature"]).record(
+        FeatureRunRef(name=STORAGE, run_id=run_id)
+    )
+
+    assert record is not None
+    assert record.params is not None
+    assert record.params.scope.asked_all
+    assert record.status == "partial"
+    assert record.coverage.missing == frozenset({("", "seq_c")})
+
+
+def _lossy_run(ds: Dataset, *entries: str, fail_on: tuple[str, ...] = ()) -> str:
+    """Run the scope-free failing stand-in over *entries*; its run id."""
+    scope = Scope(entries=[("", sequence) for sequence in entries])
+    return str(ds.run_feature(LossyFeature(fail_on=fail_on), scope=scope).run_id)
+
+
+def test_a_scope_free_run_that_lost_an_entry_is_partial(
+    scenario_dataset: Dataset,
+) -> None:
+    """A failed entry was asked for and its output is missing."""
+    run_id = _lossy_run(scenario_dataset, "seq_a", "seq_b", fail_on=("seq_b",))
+
+    record = inventory(scenario_dataset, kinds=["feature"]).record(
+        FeatureRunRef(name=LOSSY, run_id=run_id)
+    )
+
+    assert record is not None
+    assert record.status == "partial"
+    assert record.coverage.missing == frozenset({("", "seq_b")})
+
+
+def test_a_lost_entry_stays_partial_after_an_invocation_over_other_entries(
+    scenario_dataset: Dataset,
+) -> None:
+    """The second invocation rewrites ``_scope.entries`` and keeps the first's."""
+    add_track_sequences(scenario_dataset, "seq_c")
+    first = _lossy_run(scenario_dataset, "seq_a", "seq_b", fail_on=("seq_b",))
+    second = _lossy_run(scenario_dataset, "seq_c")
+
+    record = inventory(scenario_dataset, kinds=["feature"]).record(
+        FeatureRunRef(name=LOSSY, run_id=second)
+    )
+
+    assert second == first
+    assert record is not None
+    assert record.status == "partial"
+    assert record.coverage.target == frozenset(
+        {("", "seq_a"), ("", "seq_b"), ("", "seq_c")}
+    )
+    assert record.coverage.missing == frozenset({("", "seq_b")})
+
+
+def test_a_run_recorded_before_the_asked_key_is_measured_by_its_rows_and_entries(
+    scenario_dataset: Dataset,
+) -> None:
+    """Its ``entries`` name the latest invocation, and its rows the earlier ones."""
+    _ = _lossy_run(scenario_dataset, "seq_a")
+    run_id = _lossy_run(scenario_dataset, "seq_b")
+    params_path = feature_run_root(scenario_dataset, LOSSY, run_id) / "params.json"
+    document = json.loads(params_path.read_text())
+    del document["_scope"]["asked"], document["_scope"]["asked_all"]
+    _ = params_path.write_text(json.dumps(document))
+    add_track_sequences(scenario_dataset, "seq_c")
+
+    record = inventory(scenario_dataset, kinds=["feature"]).record(
+        FeatureRunRef(name=LOSSY, run_id=run_id)
+    )
+
+    assert record is not None
+    assert record.params is not None
+    assert record.params.entry_scope() == {("", "seq_b")}
+    assert record.status == "complete"
+    assert record.coverage.target == frozenset({("", "seq_a"), ("", "seq_b")})
 
 
 def _scoped_run(ds: Dataset, *entries: str, fail_on: tuple[str, ...] = ()) -> str:

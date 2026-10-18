@@ -26,10 +26,12 @@ Status is **derived at read time, never stored**:
 | `complete-but-drifted` | complete, but a recorded source has moved |
 | `inconsistent` | the index and the files disagree |
 
-A run whose step depends on its scope, such as a template sampler run on the training
-sequences, is measured against the sequences it ran on. It reads `complete` when it
-holds all of them, and `partial` only when it lost some. Running it on more sequences
-makes a different run, so the rest of the dataset is not missing from this one.
+A run is measured against the sequences it was asked for. A template sampler run on the
+training sequences, or a classifier applied to the test sequences through a step scope,
+reads `complete` when it has all of them, and `partial` only when it lost some. A run
+started without a scope was asked for every sequence. It reads `partial` once the
+dataset gains one, and running it again fills it in. A step that depends on its scope
+makes a different run over more sequences, and its run does not read short of them.
 
 Truth is on disk, so a stale view is impossible rather than merely unlikely.
 `inconsistent` is judged only on a *finished* run: outputs are written before their

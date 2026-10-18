@@ -285,6 +285,7 @@ def _execute(
         ds,
         planned,
         asked,
+        asks_every_entry=_asks_every_entry(planned, plan),
         attempt=attempt,
         overwrite=overwrite,
         store=store,
@@ -463,11 +464,22 @@ def _pinned_parents(
     return pinned
 
 
+def _asks_every_entry(planned: PlannedStep, plan: Plan) -> bool:
+    """Whether *planned* is asked for every entry of the dataset.
+
+    True when neither the request nor a step scope narrows the step. The entry
+    tuple a step runs over can be the remainder of a resumed run or the entries
+    left after a quarantine, and it does not answer this.
+    """
+    return plan.covers_dataset and planned.step_id not in plan.step_scopes
+
+
 def _run(
     ds: Dataset,
     planned: PlannedStep,
     asked: tuple[Entry, ...],
     *,
+    asks_every_entry: bool,
     attempt: str,
     overwrite: bool,
     store: FailureStore,
@@ -511,6 +523,7 @@ def _run(
             ds,
             build_step_feature(spec),
             scope=Scope(entries=sorted(asked)) if asked else None,
+            asks_every_entry=asks_every_entry,
             overwrite=overwrite,
             tracks_run_id=spec.tracks_run_id,
             labels_run_id=spec.labels_run_id,

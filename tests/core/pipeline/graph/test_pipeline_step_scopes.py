@@ -35,6 +35,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.graph.step_preflight import refuse_shortfall
 from mosaic.core.pipeline.index import feature_index_path
+from mosaic.core.pipeline.inventory import FeatureRunRef, inventory
 from mosaic.core.scope import Scope
 from tests.helpers import calms21_dataset
 
@@ -86,6 +87,25 @@ def _where(plan: Plan) -> list[tuple[str, str]]:
 
 
 # --- planning ---------------------------------------------------------------
+
+
+def test_a_scope_free_step_applied_through_a_step_scope_reads_complete(
+    split: Dataset,
+) -> None:
+    """The inventory measures the run over the test group it was asked for."""
+    scopes = {"speed": TEST}
+    storage = plan_pipeline(split, _recipe(SPEED), step_scopes=scopes).step("speed")
+    run = run_pipeline(split, _recipe(SPEED), step_scopes=scopes)
+
+    record = inventory(split, kinds=["feature"]).record(
+        FeatureRunRef(name=storage.storage_name, run_id=run.outcomes[0].run_id)
+    )
+
+    assert record is not None
+    assert record.params is not None
+    assert not record.params.scope.asked_all
+    assert record.status == "complete"
+    assert record.coverage.target == frozenset({("test", "s3")})
 
 
 def test_a_step_scope_narrows_only_its_step(split: Dataset) -> None:
