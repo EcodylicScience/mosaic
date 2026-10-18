@@ -303,7 +303,7 @@ Detect pairwise interaction segments from trajectory data.
 
 ### `pair-posedistance-pca`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.pairposedistancepca.PairPoseDistancePCA`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pairposedistancepca.PairPoseDistancePCA`
 
 Principal components of the pose distances between every pair, per frame.
 
@@ -317,6 +317,7 @@ Principal components of the pose distances between every pair, per frame.
 | `duplicate_perspective` | `boolean` | `true` |  | Emit each pair twice, once with each individual as id1, the focal one. False emits only the row set with the lower-id individual as id1. |
 | `n_components` | `integer` | `6` |  | The number of principal components the PCA retains. |
 | `batch_size` | `integer` | `5000` | > `0` | How many pair-frames are read per batch. duplicate_perspective doubles the rows each IncrementalPCA partial_fit or transform call receives. |
+| `model` | `PairPoseDistancePCAModelArtifact` \| `None` | `null` |  | The model.joblib of a pair-posedistance-pca run to apply, such as a fit step scoped to the training groups. Unset, the feature fits a basis on the entries in its scope. Set, nothing is fitted, the entries in scope leave the run id, and n_components, pose, include_intra_A, include_intra_B and include_inter must equal the fit's. |
 
 ??? note "`InterpolationConfig`"
 
@@ -325,6 +326,26 @@ Principal components of the pose distances between every pair, per frame.
     | `linear_interp_limit` | `integer` | `10` | >= `1` | Maximum run of consecutive missing values filled by linear interpolation. [frames] |
     | `edge_fill_limit` | `integer` | `3` | >= `0` | Maximum run of consecutive missing values forward-filled, then back-filled, after interpolation leaves them unresolved. [frames] |
     | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` | Fraction of missing columns above which a row is dropped entirely. |
+
+??? note "`JoblibLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
+
+??? note "`PairPoseDistancePCAModelArtifact`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"pair-posedistance-pca"` |  | Feature name whose output to consume. |
+    | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
+    | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
+    | `pattern` | `string` | `"model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
 ??? note "`PoseConfig`"
 

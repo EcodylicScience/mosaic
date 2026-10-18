@@ -72,6 +72,27 @@ branches — `pair-posedistance-pca` → `pair-wavelet` for posture, and `pair-e
 its own recent history, which is what makes nearby points in the embedding mean
 similar movement.
 
+**Fit the posture basis on some groups.** `pair-posedistance-pca` fits its components on
+the entries in its scope, so a run over the training groups and a run over every group are
+two fits. To project every group onto a basis fitted on the training groups, add a second
+step that names the first as its `model`, with the same `n_components`, `pose` and
+`include_*` params. The second step fits nothing, and its run id does not depend on the
+entries it covers:
+
+```json
+{"id": "pca-fit", "type": "feature", "feature": "pair-posedistance-pca",
+ "inputs": ["tracks"], "params": {"n_components": 6}},
+{"id": "pca", "type": "feature", "feature": "pair-posedistance-pca",
+ "inputs": ["tracks"],
+ "params": {"n_components": 6,
+            "model": {"step": "pca-fit", "pattern": "model.joblib"}}}
+```
+
+Narrow `pca-fit` to the training groups with a [step
+scope](../pipelines/chain-steps.md#narrow-one-step-step-scopes) and read `pca` downstream.
+From Python, `PairPoseDistancePCA.ModelArtifact().from_result(result)` turns the fit's
+result into `model`. A step whose params differ from the fit's is refused.
+
 **Where this comes from.** The chain follows the approach of Berman et al. (2014),
 MotionMapper ([doi:10.1098/rsif.2014.0672](https://doi.org/10.1098/rsif.2014.0672)),
 which maps the stereotyped behavior of one animal from wavelet spectra of its posture.

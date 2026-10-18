@@ -283,7 +283,10 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 - A train/test split is one request: step scopes narrow single steps
   (`--step-scope 'fit={"groups": ["train"]}'`). A step reading another through
   `inputs` or `tracks` must be narrowed to entries the other covers; a params
-  reference such as `templates` or `label_map` need not be.
+  reference such as `templates`, `label_map` or `model` need not be. To project every
+  group onto a `pair-posedistance-pca` basis fitted on the training groups, add a second
+  step of that feature with `"model": {"step": "<fit step>", "pattern":
+  "model.joblib"}` and the fit's other params.
 
 ## Reading results with labels
 

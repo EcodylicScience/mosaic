@@ -96,7 +96,8 @@ A step whose result depends on which entries were in scope is asked for its *who
 scope, never for the remainder. Its identity **is** its scope, so a fit over what is
 left, recorded under the name of a fit over everything, is exactly the silent wrong
 answer the scheme exists to prevent. A step with no scope dependence gets the
-remainder, as it should.
+remainder, as it should. `pair-posedistance-pca` is the first when it fits and the
+second when it is given a `model`, which applies a basis fitted by another step.
 
 That asymmetry is also why a coverage shortfall is **refused** rather than proceeded
 through, and refused only for a scope-dependent step. A scope-free step over 89 of 90

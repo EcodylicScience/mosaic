@@ -124,6 +124,12 @@ _TEMPLATES_REF: dict[str, object] = {
     "load": {"kind": "parquet"},
 }
 
+_PCA_MODEL_REF: dict[str, object] = {
+    "feature": "pair-posedistance-pca",
+    "run_id": "0.3-0123456789",
+    "pattern": "model.joblib",
+}
+
 _VAME_REFERENCES: dict[str, object] = {
     "centered_reference_keypoint": 0,
     "orientation_reference_keypoint": 1,
@@ -239,6 +245,20 @@ CASES: tuple[Case, ...] = (
     Case(
         case_id="pair-posedistance-pca/scope-ab",
         feature="pair-posedistance-pca",
+        scope=(("", "seq_a"), ("", "seq_b")),
+    ),
+    # A model names a fitted basis, and the scope then reads no fit: the pair must
+    # agree, where the two cases above differ.
+    Case(
+        case_id="pair-posedistance-pca/model-scope-a",
+        feature="pair-posedistance-pca",
+        params={"model": _PCA_MODEL_REF},
+        scope=(("", "seq_a"),),
+    ),
+    Case(
+        case_id="pair-posedistance-pca/model-scope-ab",
+        feature="pair-posedistance-pca",
+        params={"model": _PCA_MODEL_REF},
         scope=(("", "seq_a"), ("", "seq_b")),
     ),
     # The item 4.4 guard, and it is a guard rather than coverage: this feature
@@ -580,6 +600,18 @@ def test_a_wider_context_is_a_different_run() -> None:
     sixty = golden.get("speed-angvel/overlap-60")
     assert None not in (zero, thirty, sixty)
     assert len({zero, thirty, sixty}) == 3
+
+
+def test_a_pca_applying_a_model_has_one_run_for_every_scope() -> None:
+    """The fit it applies is the identity, and the entries it covers are not."""
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    golden = read_string_golden(GOLDEN)
+    one = golden.get("pair-posedistance-pca/model-scope-a")
+    both = golden.get("pair-posedistance-pca/model-scope-ab")
+    assert one is not None
+    assert one == both
+    assert one != golden.get("pair-posedistance-pca/scope-a")
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.case_id)
