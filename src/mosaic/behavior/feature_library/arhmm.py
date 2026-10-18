@@ -26,7 +26,6 @@ import numpy as np
 from pydantic import Field
 from sklearn.decomposition import PCA
 
-from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.column_contract import (
     Column,
     Payload,
@@ -51,7 +50,12 @@ from mosaic.core.params import (
 )
 
 from .arhmm_model import ARHMM, fit_numba, predict_numba
-from .helpers import chosen_payload_columns, label_individuals
+from .helpers import (
+    chosen_payload_columns,
+    iter_series,
+    label_series,
+    refuse_repeated_series_rows,
+)
 from .registry import register_feature
 from .types import PAYLOAD_COLUMNS_DESCRIPTION, PayloadColumnNames
 
@@ -157,7 +161,10 @@ class ArHmmFeature:
     """AR-HMM behavioral syllable discovery as a pipeline feature.
 
     Fits an autoregressive Hidden Markov Model across all input sequences
-    and assigns per-frame syllable labels via Viterbi decoding.
+    and assigns per-frame syllable labels via Viterbi decoding. A sequence is
+    one individual's rows, or for a pair table the rows of one ordered pair
+    and perspective, so the model never reads one animal's frame after
+    another's. The output carries the columns that identify its rows.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.arhmm.ArHmmFeature.Params`.
@@ -172,22 +179,29 @@ class ArHmmFeature:
     # entry (run_id = f"{version}-{params_hash}", and `backend` is HASH_EXCLUDE).
     # 0.2: ``nn_id`` and ``attention_target_id``, track ids, are no longer
     # fitted (``BOOKKEEPING_COLS``).
-    version = "0.2"
+    # 0.3: a pair table is read as one series per ``(id1, id2, perspective)``
+    # and the output carries those columns. Under 0.2 its two perspectives were
+    # one sequence of interleaved rows.
+    version = "0.3"
     parallelizable = False
     scope_dependent = True
     accepts_overlap = (
         False  # decodes a whole sequence at once, so context is not a window
     )
     consumed_roots: tuple[str, ...] = ()
-    emits: EmitsLevel = "individual"
-    # Apply decodes each individual's payload columns in frame order, every one
-    # or those that ``columns`` names. Its code names the frame and id columns
-    # literally, and so does this declaration. ``columns`` is not declared,
-    # because a requirement on a list param is met by any one of its names. The
-    # fit refuses each named column that the input lacks.
+    # The output is keyed as the input is: by id for individuals, by the ordered
+    # pair for a pair table.
+    emits: EmitsLevel = "as-input"
+    # Apply decodes each series' payload columns in frame order, every one or
+    # those that ``columns`` names. A series is an individual or an ordered
+    # pair. Its code names the frame column literally, and so does this
+    # declaration. ``columns`` is not declared, because a requirement on a list
+    # param is met by any one of its names. The fit refuses each named column
+    # that the input lacks.
     requires: ClassVar[tuple[Requirement, ...]] = (Column("frame"), Payload())
     provides: ClassVar[Provides] = Provides(
-        adds=(Column("frame"), Column("syllable")), conditional=kept("id")
+        adds=(Column("frame"), Column("syllable")),
+        conditional=kept("id", "id1", "id2", "perspective"),
     )
     ModelArtifact = ArHmmModelArtifact
 
@@ -285,7 +299,8 @@ class ArHmmFeature:
                     raise RuntimeError(msg)
 
             cols = self._feature_columns
-            for _, rows in iter_individuals(df):
+            refuse_repeated_series_rows(df, self.name)
+            for _, rows in iter_series(df):
                 arr = self._df_to_array(rows, cols)
                 if arr is not None:
                     sequences.append(arr)
@@ -365,7 +380,8 @@ class ArHmmFeature:
             raise RuntimeError(msg)
 
         cols = self._feature_columns
-        return label_individuals(df, lambda _, rows: self._apply_one(rows, cols))
+        refuse_repeated_series_rows(df, self.name)
+        return label_series(df, lambda _, rows: self._apply_one(rows, cols))
 
     def save_state(self, run_root: Path) -> None:
         if self._model is None or self._feature_columns is None:

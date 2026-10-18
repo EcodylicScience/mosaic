@@ -9,7 +9,14 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.arhmm import ArHmmFeature
-from mosaic.core.pipeline.types import Result
+from mosaic.core.pipeline.graph import (
+    Recipe,
+    declaration_catalog,
+    resolved_columns,
+    resolved_levels,
+)
+from mosaic.core.pipeline.loading import load_entry_data
+from mosaic.core.pipeline.types import ParquetLoadSpec, Result
 from tests.helpers import run_id_digest
 
 _INPUTS = ArHmmFeature.Inputs((Result(feature="speed-angvel"),))
@@ -37,6 +44,31 @@ def _make_sequence_df(
     for i in range(n_features):
         data[f"f{i}"] = X[:, i]
     return pd.DataFrame(data)
+
+
+def _make_pair_df(
+    sequence: str = "s1", n: int = 400, seed: int = 0, n_features: int = 3
+) -> pd.DataFrame:
+    """One pair's rows, the two perspectives interleaved frame by frame.
+
+    Each perspective is its own two-regime walk, and perspective 1 sits 20 above
+    perspective 0, so a model that reads a row after the other animal's decodes
+    something other than either walk.
+    """
+    blocks: list[pd.DataFrame] = []
+    for perspective in (0, 1):
+        walk = _make_sequence_df(
+            sequence, n=n, seed=seed + 10 * perspective, n_features=n_features
+        ).drop(columns="id")
+        for i in range(n_features):
+            walk[f"f{i}"] += 20.0 * perspective
+        blocks.append(
+            walk.assign(id1=perspective, id2=1 - perspective, perspective=perspective)
+        )
+    rows = pd.concat(blocks, ignore_index=True)
+    return rows.sort_values(["frame", "perspective"], kind="stable").reset_index(
+        drop=True
+    )
 
 
 def _make_feature(backend: str = "auto", **params: object) -> ArHmmFeature:
@@ -200,6 +232,161 @@ class TestColumns:
 
         assert digest(["f2", "f0", "f2"]) == digest(["f0", "f2"])
         assert digest(["f0"]) != digest(["f0", "f2"])
+
+
+class TestPairTable:
+    """A pair table is read as one series per ``(id1, id2, perspective)``."""
+
+    _KEY = ["frame", "id1", "id2", "perspective"]
+
+    def test_the_output_carries_the_pair_key(self) -> None:
+        df = _make_pair_df()
+        feat = _fit(_make_feature("numba"), [df])
+
+        result = feat.apply(df)
+
+        assert list(result.columns) == ["frame", "syllable", *self._KEY[1:]]
+        assert len(result) == len(df)
+        assert not result.duplicated(self._KEY).any()
+        joined = df[self._KEY].merge(
+            result, on=self._KEY, how="left", validate="one_to_one"
+        )
+        assert joined["syllable"].notna().all()
+
+    def test_the_states_merge_one_to_one_with_the_features_they_came_from(
+        self, tmp_path: Path
+    ) -> None:
+        """A step that reads both gets each state on the row it describes."""
+        df = _make_pair_df()
+        states = _fit(_make_feature("numba"), [df]).apply(df)
+        df.to_parquet(tmp_path / "features.parquet")
+        states.to_parquet(tmp_path / "states.parquet")
+
+        merged = load_entry_data(
+            [
+                (tmp_path / "features.parquet", ParquetLoadSpec()),
+                (tmp_path / "states.parquet", ParquetLoadSpec()),
+            ]
+        )
+
+        assert merged is not None
+        assert len(merged) == len(df)
+        assert merged["syllable"].notna().all()
+
+    def test_each_perspective_decodes_as_its_own_series(self) -> None:
+        """A perspective's states do not depend on the rows of the other."""
+        df = _make_pair_df()
+        feat = _fit(_make_feature("numba"), [df])
+
+        both = feat.apply(df)
+
+        for perspective in (0, 1):
+            alone = feat.apply(df[df["perspective"] == perspective])
+            decoded = both[both["perspective"] == perspective].reset_index(drop=True)
+            pd.testing.assert_frame_equal(decoded, alone.reset_index(drop=True))
+
+    def test_a_series_decodes_as_an_individual_does(self) -> None:
+        """The same rows without the pair columns, as one individual, decode alike."""
+        df = _make_pair_df()
+        feat = _fit(_make_feature("numba"), [df])
+        first = df[df["perspective"] == 0]
+        as_individual = first.drop(columns=["id1", "id2", "perspective"]).assign(id=0)
+
+        decoded = feat.apply(df).query("perspective == 0")["syllable"]
+
+        np.testing.assert_array_equal(
+            decoded.to_numpy(), feat.apply(as_individual)["syllable"].to_numpy()
+        )
+
+    def test_the_order_of_the_rows_changes_neither_the_fit_nor_the_output(self) -> None:
+        df = _make_pair_df()
+        shuffled = df.sample(frac=1.0, random_state=3).reset_index(drop=True)
+
+        reference = _fit(_make_feature("numba"), [df]).apply(df)
+        result = _fit(_make_feature("numba"), [shuffled]).apply(shuffled)
+
+        pd.testing.assert_frame_equal(result, reference)
+
+    def test_an_even_downsample_keeps_both_perspectives(self, tmp_path: Path) -> None:
+        """Rows alternate perspectives, so an even stride over the table keeps one."""
+        df = _make_pair_df()
+        feat = _fit(_make_feature("numba", downsample_rate=2), [df])
+        feat.save_state(tmp_path)
+
+        bundle = ArHmmFeature.ModelArtifact().from_path(tmp_path / "arhmm_model.joblib")
+        result = feat.apply(df)
+
+        # Perspective 1 is 20 above perspective 0, whose walks stay below 6.
+        scaler_mean = bundle["scaler_mean"]
+        assert scaler_mean is not None
+        assert (scaler_mean > 10).all()
+        assert len(result) == len(df)
+        assert result.groupby("perspective").size().tolist() == [400, 400]
+
+
+class TestRepeatedRows:
+    """A series that repeats a frame is refused, as ``vame`` refuses it."""
+
+    def test_a_pair_series_repeating_a_frame_is_refused_in_fit(self) -> None:
+        df = _make_pair_df()
+        repeated = pd.concat([df, df.iloc[[5]]], ignore_index=True)
+
+        with pytest.raises(
+            ValueError,
+            match=r"^arhmm: frame 2 of id1 1, id2 0, perspective 1 appears in more",
+        ):
+            _fit(_make_feature("numba"), [repeated])
+
+    def test_an_individual_repeating_a_frame_is_refused_in_apply(self) -> None:
+        df = _make_sequence_df()
+        feat = _fit(_make_feature("numba"), [df])
+        repeated = pd.concat([df, df.iloc[[7]]], ignore_index=True)
+
+        with pytest.raises(
+            ValueError, match=r"^arhmm: frame 7 of id 0 appears in more than one row$"
+        ):
+            feat.apply(repeated)
+
+
+class TestDeclaration:
+    """The catalog predicts what a step writes, from the level of its input."""
+
+    @staticmethod
+    def _recipe(*steps: tuple[str, str, list[object]]) -> Recipe:
+        return Recipe.model_validate(
+            {
+                "steps": [
+                    {"id": name, "type": "feature", "feature": feature, "inputs": reads}
+                    for name, feature, reads in steps
+                ]
+            }
+        )
+
+    def test_a_pair_input_gives_a_pair_output(self) -> None:
+        recipe = self._recipe(
+            ("pca", "pair-posedistance-pca", ["tracks"]),
+            ("wave", "pair-wavelet", [{"step": "pca"}]),
+            ("hmm", "arhmm", [{"step": "wave"}]),
+        )
+
+        assert resolved_levels(recipe, declaration_catalog())["hmm"] == "pair"
+        written = resolved_columns(recipe)["hmm"]
+        assert written.guaranteed == {
+            "frame",
+            "syllable",
+            "id1",
+            "id2",
+            "perspective",
+        }
+
+    def test_an_individual_input_gives_an_individual_output(self) -> None:
+        recipe = self._recipe(
+            ("speed", "speed-angvel", ["tracks"]),
+            ("hmm", "arhmm", [{"step": "speed"}]),
+        )
+
+        assert resolved_levels(recipe, declaration_catalog())["hmm"] == "individual"
+        assert resolved_columns(recipe)["hmm"].guaranteed == {"frame", "syllable", "id"}
 
 
 class TestCacheKey:

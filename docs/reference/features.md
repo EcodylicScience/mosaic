@@ -643,7 +643,7 @@ Per-fish summary of social-interaction and locomotor-style metrics.
 
 ### `arhmm`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.arhmm.ArHmmFeature`
+Version `0.3` &middot; `mosaic.behavior.feature_library.arhmm.ArHmmFeature`
 
 AR-HMM behavioral syllable discovery as a pipeline feature.
 
