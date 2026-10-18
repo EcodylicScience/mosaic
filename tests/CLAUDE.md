@@ -73,3 +73,5 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
 - `test_agent_layering.py`: a module under `core`, `behavior` or `tracking` that
   imports `mosaic.agent`.
 - `test_shared_tool_cap.py`: more than 15 tools in `mosaic.agent.mcp.spec.TOOLS`.
+- `test_storage_name_marker.py`: a feature slug or a literal input name that contains
+  `~`, the shortened storage-name marker.

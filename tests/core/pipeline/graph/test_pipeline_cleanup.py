@@ -31,8 +31,10 @@ from mosaic.core.pipeline.graph import (
     plan_with_cleanup,
     recipe_path,
     run_pipeline,
+    storage_name_of,
     submit_request,
 )
+from mosaic.core.pipeline.storage_names import SHORTENED_MARKER
 from mosaic.core.pipeline.cancel import cancel_request
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory import InventoryCache
@@ -643,6 +645,36 @@ def test_a_run_an_attempt_that_has_not_named_its_run_may_read_is_kept(
 
     assert _reasons(cleanup) == {old: "read_by"}
     assert execution_id in cleanup.runs[0].detail
+
+
+@pytest.mark.parametrize("unknown", ["unnamed", "unreadable"])
+def test_an_abbreviated_reader_of_unknown_params_keeps_its_upstream_runs(
+    dataset: Dataset, unknown: str
+) -> None:
+    """An abbreviated storage name does not list its inputs and reads every run.
+
+    The reader's name is cut before ``speed-angvel__from__tracks``. The storage
+    names that its name contains omit the run it reads. Its feature takes a run
+    through none of its params fields, because such a field reads every run
+    by itself.
+    """
+    old = run_speed(dataset, 1)
+    stacked = storage_name_of("temporal-stack", ["tracks"] * 30)
+    reader = storage_name_of("speed-angvel", [stacked, STORAGE])
+    assert SHORTENED_MARKER in reader
+    assert STORAGE not in reader
+    if unknown == "unnamed":
+        _ = record_open_attempt(dataset, "", target=reader)
+    else:
+        write_reader_params(dataset, reader, "0.1-reader0000", (STORAGE, old))
+        _ = (
+            feature_run_root(dataset, reader, "0.1-reader0000") / "params.json"
+        ).write_text("[")
+        _ = record_open_attempt(dataset, "0.1-reader0000")
+
+    cleanup = _cleanup(dataset, speed_recipe_stepping(2))
+
+    assert _reasons(cleanup) == {old: "read_by"}
 
 
 def test_a_running_request_whose_recipe_does_not_read_removes_nothing(

@@ -37,6 +37,15 @@ pipeline graph are in `graph/CLAUDE.md`.
 - The tracks variants a run read enter `_tracks`, and the storage directory name
   (`derive_storage_name`) leaves them out. `features/<name>__from__tracks/` stays one
   directory and one index whatever the number of variants in a dataset.
+- A storage name over 255 UTF-8 bytes becomes `<slug>__from__<head>~<10 hex>` within
+  160 bytes (`derive_storage_name`). Names that fit are unchanged. No slug or literal
+  input name contains `~` (`tests/meta/test_storage_name_marker.py`). An encoded claims
+  component over 255 bytes becomes a head and a `~` digest of the whole storage name
+  (`graph/claims.py`). Cleanup treats a `~` storage of unknown params as reading every
+  run (`tests/core/pipeline/graph/test_pipeline_recipe.py`,
+  `tests/core/pipeline/graph/test_pipeline_cleanup.py`). The rule lives in
+  `storage_names.py`, which imports only the standard library, because the status reads
+  reach it through the claims store (`tests/meta/test_status_imports.py`).
 - Tracking ops and tracks variants are `<kind>.<version>-<10 hex>` (`op_identity.py`).
   The version is a visible segment and is not hashed. `extract-frames` is carved out
   and frozen, because mosaic-api stores its identifier in annotation paths. Transcode

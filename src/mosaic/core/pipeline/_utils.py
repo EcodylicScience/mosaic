@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import json
 import os
 import tempfile
@@ -15,6 +14,7 @@ from pydantic import BaseModel
 from mosaic.core import scope as scope_module
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.storage_names import text_digest
 
 # ``now_iso`` / ``new_execution_id`` now live in the dependency-light leaf
 # ``mosaic.runlog`` (so external readers can import them without the heavy pipeline).
@@ -247,8 +247,7 @@ def hash_params(d: object) -> str:
     fallback would silently stringify whatever ``identity_ready`` was meant to
     reject, making the raise unreachable.
     """
-    s = json.dumps(identity_ready(d), sort_keys=True)
-    return hashlib.sha1(s.encode("utf-8")).hexdigest()[:10]
+    return text_digest(json.dumps(identity_ready(d), sort_keys=True))
 
 
 # Process umask, read once at import (single-threaded startup). Used to restore
@@ -304,14 +303,3 @@ def coerce_np(obj: object) -> object:
     if isinstance(obj, np.generic):
         return obj.item()
     return obj
-
-
-def derive_storage_name(feature_name: str, inputs_suffix: str | None) -> str:
-    """Compute on-disk directory name for a feature run.
-
-    If the feature reads from upstream features, the directory includes
-    a ``__from__`` suffix (e.g. ``speed__from__tracks``).
-    """
-    if inputs_suffix is not None:
-        return f"{feature_name}__from__{inputs_suffix}"
-    return feature_name

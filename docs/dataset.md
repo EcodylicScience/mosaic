@@ -39,7 +39,9 @@ features/
 Each `index.csv` carries one row per computed entry — `run_id`, `group`, `sequence`,
 `abs_path`, `n_rows` and what the run consumed — so what exists can be read without
 opening a parquet. `params.json` means a directory name you cannot decode by eye is
-still explainable from its contents.
+still explainable from its contents. A lineage too long for a directory name is
+abbreviated to its start and a `~` digest, and `_inputs` in `params.json` lists the
+full one.
 
 The structure enables efficient organization and running:
 

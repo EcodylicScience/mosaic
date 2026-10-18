@@ -41,9 +41,12 @@ from mosaic.core.pipeline.graph import (
     request_rollup,
     request_verdict,
     save_recipe,
+    storage_name_of,
     submit_request,
 )
+from mosaic.core.entry import to_safe_name
 from mosaic.core.json_value import JsonValue
+from mosaic.core.pipeline.storage_names import NAME_MAX_BYTES, SHORTENED_MARKER
 from mosaic.core.pipeline.graph.claims import FileFailureStore
 from mosaic.core.pipeline.graph.digest import document_digest, recipe_digest
 from mosaic.core.pipeline.job import Cancelled
@@ -918,3 +921,116 @@ def test_a_scoped_op_step_is_still_asked_for_the_whole_plan_scope() -> None:
     )
 
     assert asked_of(resample, plan) == (("", "seq_a"), ("", "seq_b"))
+
+
+# --- storage names too long for a directory ----------------------------------
+
+
+def _long_lineage() -> Document:
+    """A step over two multi-input parents, whose full storage name is 281 bytes.
+
+    Each parent stacks four ``speed-angvel`` runs, so ``combined`` would store
+    under ``temporal-stack__from__`` and both parents' four-input lineages.
+    """
+    speeds: list[JsonValue] = [{"step": f"speed{size}"} for size in range(1, 5)]
+    return {
+        "schema_version": 1,
+        "name": "a lineage too long for a directory",
+        "steps": [
+            *(
+                {
+                    "id": f"speed{size}",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": ["tracks"],
+                    "params": {"step_size": size},
+                }
+                for size in range(1, 5)
+            ),
+            {
+                "id": "narrow",
+                "type": "feature",
+                "feature": "temporal-stack",
+                "inputs": speeds,
+                "params": {"half": 2},
+            },
+            {
+                "id": "wide",
+                "type": "feature",
+                "feature": "temporal-stack",
+                "inputs": speeds,
+                "params": {"half": 3},
+            },
+            {
+                "id": "combined",
+                "type": "feature",
+                "feature": "temporal-stack",
+                "inputs": [{"step": "narrow"}, {"step": "wide"}],
+                "params": {"half": 1},
+            },
+        ],
+    }
+
+
+def _run_parents_of_combined(dataset: Dataset, request: Request) -> None:
+    for step_id in ("speed1", "speed2", "speed3", "speed4", "narrow", "wide"):
+        assert execute_step(dataset, request, step_id).state == "ran"
+
+
+def test_a_step_whose_full_storage_name_exceeds_a_filename_runs(
+    tracked: Dataset,
+) -> None:
+    recipe = Recipe.model_validate(_long_lineage())
+    planned = plan_pipeline(tracked, recipe).step("combined")
+    request = submit_request(tracked, recipe).request
+    _run_parents_of_combined(tracked, request)
+
+    combined = execute_step(tracked, request, "combined")
+
+    assert combined.state == "ran"
+    assert SHORTENED_MARKER in planned.storage_name
+    run_root = Path(tracked.get_root("features")) / planned.storage_name
+    assert (run_root / combined.run_id / "params.json").is_file()
+
+
+def test_a_failed_step_with_an_abbreviated_name_records_its_failure(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure record is written, and the attempt counts toward backoff."""
+    recipe = Recipe.model_validate(_long_lineage())
+    request = submit_request(tracked, recipe).request
+    _run_parents_of_combined(tracked, request)
+    planned = plan_pipeline(tracked, recipe).step("combined")
+
+    def run_feature(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("the feature failed")
+
+    monkeypatch.setattr(step_module, "run_feature", run_feature)
+
+    with pytest.raises(RuntimeError, match="the feature failed"):
+        _ = execute_step(tracked, request, "combined")
+
+    key = (planned.storage_name, planned.run_id or "")
+    assert FileFailureStore(tracked.base_dir).step_record(key).attempts == 1
+
+
+def test_a_name_that_fits_until_encoded_records_and_clears_claims(
+    tracked: Dataset,
+) -> None:
+    """Percent-encoding lengthens each ``+`` by 2 bytes, past one path component."""
+    storage = storage_name_of("temporal-stack", ["tracks"] * 33)
+    assert len(storage.encode("utf-8")) <= NAME_MAX_BYTES
+    assert len(to_safe_name(storage)) > NAME_MAX_BYTES
+    store = FileFailureStore(tracked.base_dir)
+    step_key = (storage, "0.5-0000000000")
+    entry_key = (storage, "0.5-0000000000", "", "seq_a")
+
+    _ = store.note_step_failure(step_key, error="the step failed")
+    _ = store.note_entry_failure(entry_key, error="the entry failed")
+
+    assert store.step_record(step_key).attempts == 1
+    assert store.entry_record(entry_key).attempts == 1
+    store.clear_step(step_key)
+    store.clear_entry(entry_key)
+    assert store.step_record(step_key).attempts == 0
+    assert store.entry_record(entry_key).attempts == 0

@@ -24,7 +24,7 @@ import pandas as pd
 from mosaic.core.helpers import resolve_frame_range
 from mosaic.core.scope import Scope
 
-from ._utils import derive_storage_name
+from .storage_names import derive_storage_name
 from .inventory.scan import entry_universe, narrow_target, run_covers
 from .index import (
     drifted_entries,
@@ -135,10 +135,10 @@ def _newest_mtime(run_root: "Path") -> str | None:
 
 
 def storage_name(feature: object) -> str:
-    """Compute on-disk storage name, mirroring ``run_feature`` logic.
+    """Return the storage name that ``run_feature`` writes *feature* under.
 
-    If the feature reads from upstream features, the directory includes
-    a ``__from__`` suffix (e.g. ``speed__from__tracks``).
+    The rule is :func:`~mosaic.core.pipeline.storage_names.derive_storage_name`'s,
+    including the abbreviation of a name too long for one path component.
     """
     return derive_storage_name(feature.name, feature.inputs.storage_suffix())  # type: ignore[union-attr]
 
