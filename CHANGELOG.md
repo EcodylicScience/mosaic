@@ -30,6 +30,15 @@ per second) and now takes 0.06 s (700,000).
   `body-scale` lookup in `load_state`, so a process worker needs nothing shared. A run
   still computes entries in turn until the operator raises `max_workers`.
 
+**The agent guide and the `parallel_mode` tool text agree on when to use `process`.**
+`SKILL.md` said to use `process` only for small, fast steps, and the `submit_pipeline`
+argument said it is faster for work that holds the interpreter lock. The second is what
+happens. On 8 entries and 10 cores, a Python loop took 17.9 s in turn, 26.2 s in four threads and
+4.8 s in four processes, and a vectorised numpy step took 2.0 s in turn, 1.1 s in four
+threads and 2.1 s in four processes. Both texts now say to start with `thread` and to
+use `process` for a step that stays slow in threads because its Python code holds the
+interpreter lock, when the host's memory allows. Nothing recomputes.
+
 **A step can compute several entries at once, and reports the memory it used.**
 `mosaic run` and `mosaic pipeline run` take `--workers`, `--parallel-mode` and
 `--min-free-memory-fraction`, and `submit_pipeline` takes `workers` and `parallel_mode`

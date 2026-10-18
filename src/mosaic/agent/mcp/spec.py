@@ -688,10 +688,11 @@ class SubmitPipelineInput(ToolInput):
     parallel_mode: ParallelMode | None = Field(
         default=None,
         description=(
-            "'thread' (default) shares one copy of the feature. 'process' is "
-            "faster for work that holds the interpreter lock and uses far more "
-            "memory, since each worker is an interpreter with a copy of every "
-            "entry's table. The server must allow it."
+            "'thread' (default) shares one copy of the feature and speeds up "
+            "numpy and pandas work. 'process' speeds up only work that holds the "
+            "interpreter lock, such as a Python loop, and uses far more memory, "
+            "since each worker is an interpreter with a copy of every entry's "
+            "table. The server must allow it."
         ),
     )
     confirm: bool = Field(
