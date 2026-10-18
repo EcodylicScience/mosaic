@@ -283,12 +283,10 @@ def test_the_instructions_stay_short_and_name_the_workflow(
     assert "search_step_types" not in INSTRUCTIONS
 
 
-NAMED_OUTSIDE_THE_TOOLS: Final = frozenset(
-    {"poll_after_seconds", "frame_axis_mismatch", "frame_tail_short"}
-)
+NAMED_OUTSIDE_THE_TOOLS: Final = frozenset({"frame_axis_mismatch", "frame_tail_short"})
 """The snake_case words the instructions and prompts may name besides a tool's.
 
-An output field and two inventory note codes.
+Two inventory note codes.
 """
 
 
