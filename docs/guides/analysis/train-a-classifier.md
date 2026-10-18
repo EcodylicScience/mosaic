@@ -164,8 +164,10 @@ rows.columns   # ("prob_0", "prob_1", ...)
 keeps one ordering of a pair, and `dtype=` replaces `float32`. Rows come in order of
 group and sequence. The call refuses a run that is not finished, a scope that names an
 entry the run lacks, and a read that does not fit in the available memory, and the
-message says how to narrow the read. `allow_partial=True` reads what the run holds and
-lists the entries it lacks in `rows.missing`. For the label of each row, use
+message says how to narrow the read. `allow_partial=True` reads what the run holds:
+`rows.entries` is what was read, `rows.finished` is `False` for a run that lost an entry
+or is still going, and `rows.missing` lists the entries of the scope that have no file.
+For the label of each row, use
 [`align_predictions_to_labels`](discover-behaviors.md#score-the-result).
 
 Draw them onto the video to see what the model learned:

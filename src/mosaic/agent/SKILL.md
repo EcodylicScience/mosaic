@@ -308,9 +308,10 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   one row per row of the index) and `.columns`, in order of group and sequence. It
   refuses a run that is not finished, an entry of the scope the run lacks, and a read
   too large for the memory, and the message says how to narrow it. Pass
-  `allow_partial=True` only once the user accepts results over fewer entries;
-  `.missing` lists the entries left out. It carries no labels, so take those from
-  `align_predictions_to_labels`.
+  `allow_partial=True` only once the user accepts results over fewer entries, and
+  report `.entries` as what was read: `.finished` is then False for a run that lost
+  entries, and `.missing` lists only the scope's entries that have no file. It
+  carries no labels, so take those from `align_predictions_to_labels`.
 
 ## Mosaic's MCP tools
 
