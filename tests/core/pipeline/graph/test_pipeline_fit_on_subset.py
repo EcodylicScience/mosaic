@@ -26,6 +26,7 @@ from mosaic.core.pipeline.graph import (
     run_pipeline,
 )
 from mosaic.core.pipeline.index import feature_index, feature_index_path
+from mosaic.core.pipeline.types import Result
 from mosaic.core.scope import Scope
 from tests.helpers import calms21_dataset
 
@@ -140,6 +141,51 @@ def test_the_test_group_is_projected_onto_the_basis_of_the_train_groups(
     # And the basis saw the train groups alone: both perspectives of s1 and s2.
     basis = joblib.load(_bases(split)[0])["ipca"]
     assert basis.n_samples_seen_ == 2 * (40 + 30)
+
+
+def test_an_apply_whose_basis_has_gone_is_refused_rather_than_refitted(
+    split: Dataset,
+) -> None:
+    """A missing model must not become a fit over the scope the apply was asked for."""
+    _ = run_pipeline(split, _recipe(FIT), step_scopes={"fit": TRAIN})
+    for basis in _bases(split):
+        basis.unlink()
+
+    with pytest.raises(FileNotFoundError, match="holds no"):
+        _ = run_pipeline(split, _recipe(FIT, APPLY), step_scopes={"fit": TRAIN})
+
+    assert _bases(split) == []
+
+
+def test_process_workers_apply_the_basis_of_the_fit_step(split: Dataset) -> None:
+    """A worker rebuilds the feature from its dumped params, ``model`` among them."""
+    run = run_pipeline(split, _recipe(FIT), step_scopes={"fit": TRAIN})
+    fit = run.outcomes[0]
+    assert fit.run_id is not None
+    # One perspective only, which a step may choose differently from the fit's.
+    applying = PairPoseDistancePCA(
+        params={
+            "n_components": 3,
+            "duplicate_perspective": False,
+            "model": PairPoseDistancePCA.ModelArtifact().from_result(
+                Result(feature=STORAGE, run_id=fit.run_id)
+            ),
+        }
+    )
+
+    result = split.run_feature(applying, parallel_workers=2, parallel_mode="process")
+
+    projector = PairPoseDistancePCA(
+        params={"n_components": 3, "duplicate_perspective": False}
+    )
+    assert projector.load_state(_bases(split)[0].parent, {}, {})
+    expected = projector.apply(split.load_tracks("test", "s3"))
+    written = _outputs(split, result.run_id)
+    assert set(written) == {("train", "s1"), ("train", "s2"), ("test", "s3")}
+    components = ["PC0", "PC1", "PC2"]
+    assert set(written[("test", "s3")]["perspective"]) == {0}
+    assert np.allclose(written[("test", "s3")][components], expected[components])
+    assert len(_bases(split)) == 1
 
 
 # --- the apply step's identity --------------------------------------------------

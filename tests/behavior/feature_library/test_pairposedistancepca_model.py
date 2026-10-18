@@ -139,6 +139,19 @@ def test_an_apply_of_a_model_projects_onto_the_fitted_basis(tmp_path: Path) -> N
     assert np.allclose(scores[components], fitting.apply(other)[components])
 
 
+def test_a_basis_fitted_before_the_model_param_is_a_model(tmp_path: Path) -> None:
+    """A fit of version 0.2 wrote the same bundle, so an existing dataset can use it."""
+    path = _fitted(tmp_path)
+    bundle = joblib.load(path)
+    bundle["version"] = "0.2"
+    joblib.dump(bundle, path)
+
+    scores = _applying(tmp_path, path).apply(_tracks("other"))
+
+    assert list(scores.columns[:2]) == ["PC0", "PC1"]
+    assert len(scores) == 2 * N_FRAMES
+
+
 def test_a_named_model_that_was_not_found_is_refused_rather_than_refitted(
     tmp_path: Path,
 ) -> None:
