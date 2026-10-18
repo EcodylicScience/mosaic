@@ -7,6 +7,7 @@ Extracted from features.py as part of feature_library modularization.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 from typing import Annotated, ClassVar, final
 
@@ -200,7 +201,13 @@ class OrientationRelativeFeature:
         group, sequence = entry_identity(df)
         global_scale = self._scale_for(group, sequence)
 
-        rows = one_row_per_frame_and_id(df)
+        read = [
+            C.frame_col,
+            C.id_col,
+            C.orientation_col,
+            *chain.from_iterable(pose_pairs),
+        ]
+        rows = one_row_per_frame_and_id(df[read])
         x, y = finite_keypoints(rows, pose_pairs)
         measurable = np.isfinite(x).sum(axis=1) >= 2
         rows, x, y = rows[measurable], x[measurable], y[measurable]

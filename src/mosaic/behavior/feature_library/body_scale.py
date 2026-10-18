@@ -6,6 +6,7 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
+from itertools import chain
 from pathlib import Path
 from typing import ClassVar, final
 
@@ -128,7 +129,8 @@ class BodyScaleFeature:
         group = _expect_single(df, C.group_col)
         sequence = _expect_single(df, C.seq_col)
         # trex_v1 guarantees one row per (frame, id); a repeat is ignored
-        individuals = one_row_per_frame_and_id(df)
+        read = [C.frame_col, C.id_col, *chain.from_iterable(pose_pairs)]
+        individuals = one_row_per_frame_and_id(df[read])
         x, y = finite_keypoints(individuals, pose_pairs)
         measurable = np.isfinite(x).sum(axis=1) >= 2
         if not measurable.any():
