@@ -83,8 +83,9 @@ Build a mosaic pipeline on dataset {arguments["dataset"]} for this goal:
    confirmation_required refusal lists. After confirmation_unanswered or
    confirmation_declined, stop and report the plan and its conditions; do not
    run the same work through the mosaic CLI.
-6. After submitting, poll get_request_status as poll_after_seconds says, and
-   preview the outputs with preview_output when the request has finished."""
+6. After submitting, wait with get_request_status and wait_seconds, which
+   returns when a step or the request ends. Do not watch the driver's process.
+   Preview the outputs with preview_output when the request has finished."""
 
 
 def _diagnose_dataset(arguments: Mapping[str, str]) -> str:

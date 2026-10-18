@@ -31,7 +31,15 @@ import mcp_types as types
 from mosaic.agent.mcp.spec import TOOLS
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
-from tests.helpers import CHAIN_RECIPE, add_tracks_variant, make_dataset, wait_for
+from mosaic.core.pipeline.graph import submit_request
+from mosaic.runlog import JsonlRunLog, run_log_path
+from tests.helpers import (
+    CHAIN_RECIPE,
+    add_tracks_variant,
+    chain_recipe,
+    make_dataset,
+    wait_for,
+)
 
 VARIANT = "convert-trex.0.2-1111111111"
 
@@ -146,6 +154,7 @@ class StdioSession:
         self._next_id: int = 0
         self.lines: list[str] = []
         self._messages: queue.Queue[dict[str, JsonValue]] = queue.Queue()
+        self._answered: dict[int, dict[str, JsonValue]] = {}
         self._reader: threading.Thread = threading.Thread(
             target=self._read, args=(process.stdout,), daemon=True
         )
@@ -167,24 +176,38 @@ class StdioSession:
             message["params"] = params
         self._send(message)
 
+    def begin(self, method: str, params: dict[str, JsonValue]) -> int:
+        """Send one request without waiting, and return the id to ``finish`` it by."""
+        self._next_id += 1
+        sent = self._next_id
+        self._send({"jsonrpc": "2.0", "id": sent, "method": method, "params": params})
+        return sent
+
+    def finish(self, sent: int) -> dict[str, JsonValue]:
+        """Return the result of request *sent*, failing on an error response.
+
+        A response to another request that arrives first is kept for its own
+        ``finish``.
+        """
+        deadline = time.monotonic() + RESPONSE_SECONDS
+        while sent not in self._answered:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, f"no response to {sent} within {RESPONSE_SECONDS} s"
+            message = self._messages.get(timeout=remaining)
+            answered = message.get("id")
+            if isinstance(answered, int):
+                self._answered[answered] = message
+        message = self._answered.pop(sent)
+        assert "error" not in message, message
+        result = message["result"]
+        assert isinstance(result, dict)
+        return result
+
     def request(
         self, method: str, params: dict[str, JsonValue]
     ) -> dict[str, JsonValue]:
         """Send one request and return its result, failing on an error response."""
-        self._next_id += 1
-        sent = self._next_id
-        self._send({"jsonrpc": "2.0", "id": sent, "method": method, "params": params})
-        deadline = time.monotonic() + RESPONSE_SECONDS
-        while True:
-            remaining = deadline - time.monotonic()
-            assert remaining > 0, f"no response to {method} within {RESPONSE_SECONDS} s"
-            message = self._messages.get(timeout=remaining)
-            if message.get("id") != sent:
-                continue
-            assert "error" not in message, message
-            result = message["result"]
-            assert isinstance(result, dict)
-            return result
+        return self.finish(self.begin(method, params))
 
     def call(self, tool: str, **arguments: JsonValue) -> dict[str, JsonValue]:
         """Call *tool* and return the whole result."""
@@ -342,3 +365,60 @@ def test_a_client_plans_submits_polls_and_previews_over_clean_stdout(
     errors = (tmp_path / "server.stderr").read_text(encoding="utf-8")
     assert LIBRARY_PRINT in errors
     assert CHILD_PRINT in errors
+
+
+WAIT_SECONDS: Final = 60
+"""The wait the stdio test asks for, ended long before by the step that ends."""
+
+
+def test_a_wait_over_stdio_returns_when_a_step_ends_and_leaves_the_server_answering(
+    session: StdioSession, dataset: Dataset
+) -> None:
+    _ = session.request("initialize", INITIALIZE)
+    session.notify("notifications/initialized")
+    uuid = dataset.manifest.uuid
+    assert uuid is not None
+    request = submit_request(dataset, chain_recipe()).request
+    execution_id = request.execution_of("speed")
+    path = run_log_path(dataset.base_dir, execution_id)
+    with JsonlRunLog(path, execution_id) as log:
+        log.started(kind="feature", target=STORAGE)
+    # The first status read imports what a status read needs.
+    _ = _structured(
+        session.call("get_request_status", dataset=uuid, request_id=request.request_id)
+    )
+
+    began = time.monotonic()
+    waiting = session.begin(
+        "tools/call",
+        {
+            "name": "get_request_status",
+            "arguments": {
+                "dataset": uuid,
+                "request_id": request.request_id,
+                "wait_seconds": WAIT_SECONDS,
+                "brief": True,
+            },
+        },
+    )
+    # Answered while the wait is pending, so the wait is not on the server's loop.
+    listed = _structured(session.call("list_datasets"))
+    time.sleep(0.5)
+    with JsonlRunLog(path, execution_id) as log:
+        log.finished()
+    waited = _structured(session.finish(waiting))
+    elapsed = time.monotonic() - began
+    code = session.close()
+
+    assert listed["total"] == 1
+    assert elapsed < WAIT_SECONDS / 2
+    steps = waited["steps"]
+    assert isinstance(steps, list)
+    ended = steps[0]
+    assert isinstance(ended, dict)
+    assert (ended["step"], ended["outcome"]) == ("speed", "finished")
+    assert (waited["omitted_finished"], waited["omitted_pending"]) == (0, 1)
+    assert waited["verdict"] == "running"
+    assert code == 0
+    for line in session.lines:
+        _ = types.jsonrpc_message_adapter.validate_json(line)

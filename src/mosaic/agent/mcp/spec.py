@@ -33,6 +33,7 @@ from mosaic.core.pipeline.artifact_kinds import ArtifactKind, ArtifactStatus
 from mosaic.core.pipeline.cancel import RequestCancel
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
+    MAX_WAIT_SECONDS,
     SCHEMA_VERSION,
     BoundRef,
     CleanupMode,
@@ -77,6 +78,7 @@ __all__ = [
     "MAX_RETIRED_RECIPES",
     "MAX_SCHEMA_BYTES",
     "MAX_STEP_TYPE_DETAIL_CHARS",
+    "MAX_WAIT_SECONDS",
     "MERGED_TOOLS",
     "PLAN_MISSING_SAMPLE",
     "PLAN_RETIRABLE_SAMPLE",
@@ -710,6 +712,25 @@ class GetRequestStatusInput(ToolInput):
     request_id: _RecordId = Field(
         description="The request, as submit_pipeline named it."
     )
+    wait_seconds: int = Field(
+        default=0,
+        ge=0,
+        le=MAX_WAIT_SECONDS,
+        description=(
+            f"Wait up to this many seconds (at most {MAX_WAIT_SECONDS}) and return "
+            "as soon as a step of the request ends, or the request does. 0 returns "
+            "at once. Wait with this instead of watching the driver's process."
+        ),
+    )
+    brief: bool = Field(
+        default=False,
+        description=(
+            "List only the steps that are running, failed, cancelled or partial, "
+            "and those that ended during the wait. Steps that finished cleanly "
+            "and steps not started are counted in omitted_finished and "
+            "omitted_pending."
+        ),
+    )
 
 
 class CancelRequestInput(ToolInput):
@@ -893,9 +914,12 @@ class SubmittedPipeline(StrictModel):
         steps: Each step, in topological order.
         duplicates: The open requests of the same recipe over an overlapping
             scope.
-        driver_pid: The process driving the request.
-        driver_log: The log that the driver and its steps append to.
-        poll_after_seconds: How long to wait before polling the status.
+        driver_pid: The process driving the request, for the user. A caller waits
+            with ``get_request_status`` and ``wait_seconds``, never on this pid.
+        driver_log: The log that the driver and its steps append to: their
+            output, which explains a failure and does not report progress.
+        poll_after_seconds: How long to wait before polling the status, for a
+            caller that does not pass ``wait_seconds``.
         cleanup_runs: How many superseded runs the request removes after its
             steps, 0 without a cleanup.
         cleanup_bytes: The bytes they hold.
@@ -1263,8 +1287,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         description=(
             "Submit a planned recipe and start running it in the background. "
             "Requires the fingerprint of a current plan_recipe result, planned "
-            "with the same cleanup and retire. Returns the "
-            "request id and how long to wait before polling get_request_status. "
+            "with the same cleanup and retire. Returns the request id. Wait for "
+            "the request with get_request_status and wait_seconds. "
             "When the work is costly or a choice is the user's, a client that can "
             "ask the user asks. Otherwise the call is refused with reason "
             "confirmation_required: ask the user, then call again with confirm "
@@ -1292,11 +1316,14 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         name="get_request_status",
         title="Get a request's status",
         description=(
-            "Report how far a submitted request got: its verdict, poll_after_seconds "
-            "(wait that long before polling again), and per step the outcome, "
-            "progress, phase, liveness, recorded error and a sample of lost "
-            "entries. A request reads 'orphaned' when its driver stopped or its "
-            "step's process is provably gone (pid exited, host rebooted, or no "
+            "Report how far a submitted request got: its verdict, and per step the "
+            "outcome, progress, phase, liveness, recorded error and a sample of "
+            "lost entries. To wait for it, pass wait_seconds: the call returns as "
+            "soon as a step ends or the request does, or after that many seconds. "
+            "Do not poll the driver's process. brief lists only the steps that "
+            "need attention. Without wait_seconds, wait poll_after_seconds before "
+            "reading again. A request reads 'orphaned' when its driver stopped or "
+            "its step's process is provably gone (pid exited, host rebooted, or no "
             "heartbeat for 10 minutes). The user resumes it with mosaic pipeline "
             "run --manifest <manifest> --request <request_id>, where <manifest> "
             "is the path describe_dataset reports."
@@ -1304,6 +1331,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         input_model=GetRequestStatusInput,
         output=RequestStatusWire,
         annotations=READ,
+        narrowing=("brief",),
         always_load=True,
     ),
     ToolSpec(

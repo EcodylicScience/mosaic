@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Final, Literal
@@ -513,6 +514,17 @@ def test_a_cpu_recipe_over_the_whole_dataset_is_submitted_without_asking(
     assert starter.started == [_structured(result)["request_id"]]
 
 
+def test_a_submission_tells_the_model_to_wait_and_keeps_the_pid_in_the_result(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    result = _session(backend, _plan_then_submit(dataset, allow_partial=False))
+
+    summary = _text(result)
+    assert "get_request_status and wait_seconds" in summary
+    assert "4242" not in summary
+    assert _structured(result)["driver_pid"] == 4242
+
+
 @pytest.mark.parametrize("mode", ["auto", "legacy"])
 def test_an_eliciting_client_is_asked_even_when_the_model_confirms(
     backend: LocalBackend, dataset: Dataset, starter: RecordingStarter, mode: str
@@ -804,6 +816,59 @@ def test_an_answer_naming_no_conditions_confirms_none(
 
     assert isinstance(result, types.InputRequiredResult)
     assert starter.started == []
+
+
+def test_a_pending_wait_leaves_the_server_answering_and_ends_when_a_step_does(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    uuid = _uuid(dataset)
+    request = submit_request(dataset, speed_recipe()).request
+    execution_id = request.execution_of("speed")
+    path = run_log_path(dataset.base_dir, execution_id)
+    with JsonlRunLog(path, execution_id) as log:
+        log.started(kind="feature", target=STORAGE)
+
+    def end_the_step() -> None:
+        with JsonlRunLog(path, execution_id) as log:
+            log.finished()
+
+    async def body(
+        client: Client,
+    ) -> tuple[list[int], list[types.CallToolResult], float]:
+        waited: list[types.CallToolResult] = []
+        listings: list[types.CallToolResult] = []
+        answered_by_then: list[int] = []
+        began = time.monotonic()
+
+        async def wait_for_the_step() -> None:
+            waited.append(
+                await client.call_tool(
+                    "get_request_status",
+                    {
+                        "dataset": uuid,
+                        "request_id": request.request_id,
+                        "wait_seconds": 30,
+                    },
+                )
+            )
+
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(wait_for_the_step)
+            await anyio.sleep(0.3)
+            # A wait that held the event loop would leave this call unanswered
+            # until the wait ran out, and the step could not end meanwhile.
+            listings.append(await client.call_tool("list_datasets", {}))
+            answered_by_then.append(len(waited))
+            end_the_step()
+        return answered_by_then, [*listings, *waited], time.monotonic() - began
+
+    answered, (listed, status), elapsed = _session(backend, body)
+
+    assert answered == [0]
+    assert _structured(listed)["total"] == 1
+    assert elapsed < 20
+    content = _structured(status)
+    assert (content["verdict"], content["terminal"]) == ("finished", True)
 
 
 def test_the_resources_and_templates_are_listed_and_read(

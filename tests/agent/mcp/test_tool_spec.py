@@ -13,6 +13,7 @@ from mosaic.agent.mcp.spec import (
     CONFIRMATION_CONDITIONS,
     MAX_PREVIEW_ROWS,
     MAX_RESULT_CHARS,
+    MAX_WAIT_SECONDS,
     RECIPE_EXAMPLE,
     RESULT_TOO_LARGE,
     TOOLS,
@@ -201,6 +202,37 @@ def test_a_page_larger_than_one_hundred_is_refused_before_the_backend() -> None:
     assert refused.detail["errors"] == [
         {"field": "limit", "message": "Input should be less than or equal to 100"}
     ]
+
+
+def test_a_wait_longer_than_the_cap_is_refused_before_the_backend() -> None:
+    backend = LocalBackend([], warm=False)
+
+    refused = call_tool(
+        backend,
+        "get_request_status",
+        {"dataset": "d", "request_id": "R0", "wait_seconds": MAX_WAIT_SECONDS + 1},
+    )
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert (refused.kind, refused.reason) == ("invalid", "invalid_arguments")
+    assert refused.detail is not None
+    assert refused.detail["errors"] == [
+        {
+            "field": "wait_seconds",
+            "message": f"Input should be less than or equal to {MAX_WAIT_SECONDS}",
+        }
+    ]
+
+
+def test_a_status_read_waits_and_shrinks_only_when_asked() -> None:
+    spec = tool_spec("get_request_status")
+    assert spec is not None
+    fields = spec.input_model.model_fields
+
+    assert (fields["wait_seconds"].default, fields["brief"].default) == (0, False)
+    # Only brief shrinks a result, so only it is offered when one is too large.
+    assert spec.narrowing == ("brief",)
+    assert "wait_seconds" in spec.description
 
 
 def test_an_unknown_tool_is_not_found() -> None:

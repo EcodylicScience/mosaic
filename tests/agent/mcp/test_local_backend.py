@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import socket
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -890,6 +892,42 @@ def test_request_status_reports_poll_after_seconds(
 
     assert status.poll_after_seconds == POLL_AFTER_MIN_SECONDS
     assert POLL_AFTER_MIN_SECONDS == GRAPH_POLL_AFTER_MIN_SECONDS
+
+
+def test_a_status_call_waits_for_a_step_to_end_and_lists_only_what_changed(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    request = submit_request(dataset, chain_recipe()).request
+    execution_id = request.execution_of("speed")
+
+    def run_the_step() -> None:
+        path = run_log_path(dataset.base_dir, execution_id)
+        with JsonlRunLog(path, execution_id) as log:
+            log.started(kind="feature", target=STORAGE)
+            log.finished()
+
+    ender = threading.Timer(0.3, run_the_step)
+    ender.start()
+    began = time.monotonic()
+    try:
+        status = _call(
+            backend,
+            "get_request_status",
+            RequestStatusWire,
+            dataset=_uuid(dataset),
+            request_id=request.request_id,
+            wait_seconds=30,
+            brief=True,
+        )
+    finally:
+        ender.join()
+
+    assert time.monotonic() - began < 20
+    assert (status.verdict, status.terminal) == ("running", False)
+    assert [(step.step, step.outcome) for step in status.steps] == [
+        ("speed", "finished")
+    ]
+    assert (status.omitted_finished, status.omitted_pending) == (0, 1)
 
 
 def test_a_diagnosis_names_one_request_or_one_attempt(

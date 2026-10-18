@@ -292,9 +292,10 @@ def _submitted(submitted: SubmittedPipeline) -> str:
     )
     return (
         f"Submitted request {submitted.request_id} with "
-        f"{len(submitted.steps)} step(s), driven by process "
-        f"{submitted.driver_pid}.{duplicates}{cleanup} Poll get_request_status after "
-        f"{submitted.poll_after_seconds} seconds."
+        f"{len(submitted.steps)} step(s), running in the background.{duplicates}"
+        f"{cleanup} Wait for it with get_request_status and wait_seconds, which "
+        "returns when a step or the request ends. Do not watch the driver's "
+        "process. Its log, driver_log, explains a failure."
     )
 
 
@@ -309,6 +310,15 @@ def _request_status(status: RequestStatusWire) -> str:
         if status.poll_after_seconds is not None
         else ""
     )
+    left_out = [
+        f"{count} {kind}"
+        for count, kind in (
+            (status.omitted_finished, "finished"),
+            (status.omitted_pending, "not started"),
+        )
+        if count
+    ]
+    omitted = f" Not listed: {_names(left_out)}." if left_out else ""
     removal = status.cleanup
     cleanup = (
         f" Cleanup {removal.status}: removed {removal.removed_runs} of "
@@ -319,7 +329,7 @@ def _request_status(status: RequestStatusWire) -> str:
     )
     return (
         f"Request {status.request_id} is {status.verdict}{poll}. "
-        f"Steps: {_names(steps)}.{cleanup} {_STRUCTURED}"
+        f"Steps: {_names(steps) or 'none listed'}.{omitted}{cleanup} {_STRUCTURED}"
     )
 
 

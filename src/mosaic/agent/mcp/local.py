@@ -785,7 +785,14 @@ class LocalBackend:
 
         held = self._dataset(args.dataset)
         request = read_request(held.dataset.base_dir, args.request_id)
-        return request_status_wire(held.dataset.base_dir, request)
+        # The wait runs on the worker thread that answers the call, and holds no
+        # lock of the dataset.
+        return request_status_wire(
+            held.dataset.base_dir,
+            request,
+            brief=args.brief,
+            wait_seconds=args.wait_seconds,
+        )
 
     def _cancel_request(self, args: CancelRequestInput) -> RequestCancel:
         from mosaic.core.pipeline.cancel import cancel_request, read_request
