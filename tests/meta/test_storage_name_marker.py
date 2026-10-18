@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import get_args
 
 from mosaic.behavior.feature_library.registry import FEATURES
-from mosaic.core.pipeline._utils import SHORTENED_MARKER
+from mosaic.core.pipeline.storage_names import SHORTENED_MARKER
 from mosaic.core.pipeline.types import TrackInput
 
 

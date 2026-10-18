@@ -34,10 +34,10 @@ from ._utils import (
     FeatureMeta,
     ResolvedScope,
     atomic_write,
-    derive_storage_name,
     hash_params,
     json_ready,
 )
+from .storage_names import derive_storage_name
 from .column_contract import MissingInputColumns, check_input_columns
 from .identity_scheme import (
     FEATURE_IDENTITY_SCHEME,

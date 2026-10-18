@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from .._utils import derive_storage_name
+from ..storage_names import derive_storage_name
 
 __all__ = ["storage_name_of"]
 
@@ -39,7 +39,7 @@ def storage_name_of(feature_slug: str, inputs: Sequence[str]) -> str:
 
     Returns:
         The storage name, e.g. ``speed-angvel__from__tracks``, abbreviated as
-        :func:`~mosaic.core.pipeline._utils.derive_storage_name` describes when
+        :func:`~mosaic.core.pipeline.storage_names.derive_storage_name` describes when
         it exceeds 255 UTF-8 bytes.
     """
     suffix = "+".join(inputs) if inputs else None

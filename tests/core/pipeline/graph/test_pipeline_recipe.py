@@ -39,15 +39,15 @@ from mosaic.core.pipeline.graph import (
     topological_order,
 )
 from mosaic.core.json_value import JsonValue
-from mosaic.core.pipeline._utils import (
+from mosaic.core.pipeline._utils import hash_params
+from mosaic.core.pipeline.graph.digest import document_digest
+from mosaic.core.pipeline.graph.model import canonical_params
+from mosaic.core.pipeline.storage_names import (
     NAME_MAX_BYTES,
     SHORTENED_MARKER,
     SHORTENED_NAME_BYTES,
     derive_storage_name,
-    hash_params,
 )
-from mosaic.core.pipeline.graph.digest import document_digest
-from mosaic.core.pipeline.graph.model import canonical_params
 from mosaic.core.scope import Scope
 from tests.helpers import recipe_saved_by_0_17
 

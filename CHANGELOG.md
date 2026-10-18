@@ -45,9 +45,10 @@ input suffix. `run_feature`, `Pipeline`, the planner and the plan wire all deriv
 - Names of 255 bytes or fewer, which covers every name on disk, are unchanged. No
   directory, index row or run id moves. Only names that could not be created gain the
   `~` tail.
-- The failure records under `.mosaic/claims` abbreviate the same way when the
-  percent-encoded storage name passes 255 bytes. A step whose name fit on disk and
-  overflowed once encoded failed when it cleared its records, and now finishes.
+- A failure record under `.mosaic/claims` is filed under the percent-encoded storage
+  name. When that passes 255 bytes, the directory is a head and a `~` digest of the
+  full storage name instead. A step whose name fit on disk and overflowed once encoded
+  failed when it cleared its records, and now finishes.
 - Cleanup treats a run of a `~` storage whose params are unknown, including an attempt
   that has not named its run, as reading every run.
 

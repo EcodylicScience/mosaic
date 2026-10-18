@@ -46,7 +46,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.entry import to_safe_name
 from mosaic.core.json_value import JsonValue
-from mosaic.core.pipeline._utils import NAME_MAX_BYTES, SHORTENED_MARKER
+from mosaic.core.pipeline.storage_names import NAME_MAX_BYTES, SHORTENED_MARKER
 from mosaic.core.pipeline.graph.claims import FileFailureStore
 from mosaic.core.pipeline.graph.digest import document_digest, recipe_digest
 from mosaic.core.pipeline.job import Cancelled

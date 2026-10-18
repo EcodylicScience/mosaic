@@ -34,7 +34,7 @@ from mosaic.core.pipeline.graph import (
     storage_name_of,
     submit_request,
 )
-from mosaic.core.pipeline._utils import SHORTENED_MARKER
+from mosaic.core.pipeline.storage_names import SHORTENED_MARKER
 from mosaic.core.pipeline.cancel import cancel_request
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory import InventoryCache

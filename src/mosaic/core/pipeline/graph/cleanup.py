@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING, Final, Literal, cast
 
 from mosaic.core.entry import Entry
 
+from ..storage_names import SHORTENED_MARKER
 from .model import REQUEST_HOLD_FLOOR_HOURS, CleanupPolicy, FeatureStepSpec
 
 if TYPE_CHECKING:
@@ -1194,13 +1195,12 @@ def _reads_of(storage: str, params: RunParams | None, fit: FitScope | None) -> _
     its storage. A run whose params are unknown reads every storage its own
     storage name was derived from. It reads everything when its feature takes a
     run through a params field, or when its storage name contains
-    :data:`~mosaic.core.pipeline._utils.SHORTENED_MARKER`, because an abbreviated
+    :data:`~mosaic.core.pipeline.storage_names.SHORTENED_MARKER`, because an abbreviated
     name does not list its inputs. The marker also appears in a name that reads
     a shortened storage, and such a run is treated the same way. An attempt
     that has not named its run is read by this rule as well. A cleanup during
     an attempt on a shortened storage keeps every superseded run.
     """
-    from .._utils import SHORTENED_MARKER
     from ..inventory.params import LABELS_EDGE, TRACKS_EDGE
     from .resolve import run_reference_fields
 

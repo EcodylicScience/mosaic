@@ -38,7 +38,7 @@ from pydantic import BaseModel, ValidationError
 from mosaic.core.entry import make_entry_key, to_safe_name
 from mosaic.runlog import ERROR_MESSAGE_LIMIT
 
-from .._utils import NAME_MAX_BYTES, abbreviate
+from ..storage_names import NAME_MAX_BYTES, abbreviate
 from .failures import (
     QUARANTINE_AFTER,
     EntryFailureKey,
