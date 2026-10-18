@@ -524,7 +524,8 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
     edge = _edge_problem(step, declared, walk)
     if edge is not None:
         problems.append(edge)
-    problems.extend(_empty_input_problems(step, recipe, walk))
+    empty_inputs = _empty_input_problems(step, recipe, walk)
+    problems.extend(empty_inputs)
 
     one_run = one_run_problems(step, walk.resolved, walk.runs, alike=_SAME_TERMS)
     if one_run:
@@ -586,11 +587,10 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
 
     problems.extend(_glob_reference_problems(step, name, built))
     if isinstance(step, FeatureStepSpec):
-        # An edge refusal already says why these inputs cannot feed this step,
-        # so the columns they lack would restate it.
-        problems.extend(
-            _column_problems(step, declared, built, walk, checked=edge is None)
-        )
+        # An edge refusal or an empty input already says why these inputs
+        # cannot feed this step. The columns they lack would restate it.
+        checked = edge is None and not empty_inputs
+        problems.extend(_column_problems(step, declared, built, walk, checked=checked))
 
     walk.record(
         step,

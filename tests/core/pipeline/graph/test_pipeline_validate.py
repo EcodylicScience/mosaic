@@ -706,7 +706,8 @@ def test_reading_a_template_step_through_inputs_is_refused(
     """A template step writes only its sample, and its table for each entry is empty.
 
     The problem names the inputs of the template step, and is raised even when
-    another input meets the reader's requirements.
+    another input meets the reader's requirements. It is the reader's only
+    problem, because the columns that an empty input lacks would restate it.
     """
     kmeans: Document = {
         "id": "kmeans",
@@ -717,13 +718,10 @@ def test_reading_a_template_step_through_inputs_is_refused(
     }
     recipe = _labels_recipe(TEMPLATE_STEPS[template], kmeans)
 
-    refused = [
-        problem
-        for problem in _problems(recipe)
-        if problem.step == "kmeans" and "writes only its sample" in problem.message
-    ]
+    refused = [problem for problem in _problems(recipe) if problem.step == "kmeans"]
 
     assert len(refused) == 1
+    assert "writes only its sample" in refused[0].message
     assert refused[0].where == "inputs"
     assert f"'templates' runs {template}" in refused[0].message
     assert "Read its inputs (speed) here" in refused[0].message

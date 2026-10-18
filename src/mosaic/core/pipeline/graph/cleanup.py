@@ -733,12 +733,13 @@ class _Watch:
         return None
 
     def _request_holding(self, key: tuple[str, str]) -> tuple[str, str] | None:
+        from .._utils import feature_slug_of
         from .request import load_recipe_for_request
         from .rollup import request_rollup
         from .step_preflight import StepRefused
         from .store import RequestUnreadable, load_request
 
-        slug = key[0].split(_FROM, 1)[0]
+        slug = feature_slug_of(key[0])
         for name in self._request_names():
             if name in self._known_requests or name == self._exclude:
                 continue
@@ -979,8 +980,10 @@ def _first_reason(
     global_entry: Entry,
 ) -> tuple[str, str]:
     """The first rule that keeps *record*, or ``("superseded", "")``."""
+    from .._utils import feature_slug_of
+
     key = (record.name, record.run_id)
-    slug = record.name.split(_FROM, 1)[0]
+    slug = feature_slug_of(record.name)
     if keeper.unresolved:
         return (
             "keeper_unresolved",

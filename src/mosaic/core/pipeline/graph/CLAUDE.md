@@ -206,7 +206,11 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   `core/pipeline/column_contract.py`. Validation checks them with no dataset
   (`columns.py`), the plan against the tracks parquet footers, and `run_feature` per
   entry (`MissingInputColumns`). Each registered feature declares both
-  (`tests/behavior/feature_library/test_column_contract_conformance.py`).
+  (`tests/behavior/feature_library/test_column_contract_conformance.py`). An empty
+  `Provides()` (`Provides.is_empty`) declares a feature that writes only a sample, and
+  its table for each entry is empty. Validation refuses it as an input
+  (`_empty_input_problems`, `test_pipeline_validate.py`), and so does `run_feature`
+  before the fit (`InputWritesNoColumns`, `test_pipeline_run.py`).
 - A feature's `prerequisites` (`mosaic/optional_dependency.py`) are evaluated once per
   process, without importing, into `Declaration.unavailable`. Validation, the plan and
   `attach_candidates` refuse with that sentence (`test_pipeline_availability.py`).

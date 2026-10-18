@@ -104,6 +104,10 @@ class ExtractTemplates:
     ``speed-angvel`` with ``step_size`` does. The provenance records how many
     rows of each entry were dropped.
 
+    The run writes ``templates.parquet`` and ``template_provenance.parquet``.
+    Each entry's table is empty. A step that consumes the templates reads this
+    step's inputs and names the templates through a params field.
+
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.extract_templates.ExtractTemplates.Params`.
     """

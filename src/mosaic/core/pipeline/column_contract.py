@@ -305,7 +305,10 @@ class Conditional:
 
 @dataclass(frozen=True, slots=True)
 class Provides:
-    """The columns of a feature's non-empty output.
+    """The columns of a feature's per-entry output.
+
+    An empty declaration (:attr:`is_empty`) means the feature writes only a
+    sample, and its table for each entry is empty.
 
     Attributes:
         passthrough: Whether the output copies every column of its merged input.

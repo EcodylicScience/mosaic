@@ -121,6 +121,11 @@ class ExtractLabeledTemplates:
     class. Produces a templates parquet with feature columns + label
     (int) + split (str).
 
+    The run writes ``templates.parquet`` and ``template_provenance.parquet``.
+    The provenance records each entry's split. Each entry's table is empty. A
+    step that consumes the templates reads this step's inputs and names the
+    templates through a params field.
+
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates.Params`.
     """
@@ -242,10 +247,6 @@ class ExtractLabeledTemplates:
             provenance_path = run_root / "template_provenance.parquet"
             if provenance_path.exists():
                 self._provenance = pd.read_parquet(provenance_path)
-                for _, row in self._provenance.iterrows():
-                    self._sequence_splits[(row["group"], row["sequence"])] = row[
-                        "split"
-                    ]
 
             return True
         return False

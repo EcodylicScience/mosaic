@@ -511,7 +511,7 @@ class InputWritesNoColumns(ClassifiedError, ValueError):
         super().__init__(message)
 
 
-def refuse_inputs_without_columns(feature: Feature) -> None:
+def _refuse_inputs_without_columns(feature: Feature) -> None:
     """Refuse a run of *feature* when an input names a feature with an empty output.
 
     Raises:
@@ -1261,7 +1261,7 @@ def _run_feature_impl(
                 f"the scope to mean every sequence."
             )
 
-    refuse_inputs_without_columns(feature)
+    _refuse_inputs_without_columns(feature)
 
     # Pin every unpinned upstream *before* anything hashes or reads it. An
     # unpinned reference used to be resolved after the digest, into a local that
