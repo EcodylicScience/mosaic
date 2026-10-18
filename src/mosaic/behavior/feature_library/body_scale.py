@@ -6,12 +6,12 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
+from itertools import chain
 from pathlib import Path
 from typing import ClassVar, final
 
 import numpy as np
 import pandas as pd
-from scipy.spatial.distance import pdist
 
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.column_contract import (
@@ -30,7 +30,12 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Params
 
-from .helpers import ensure_columns
+from .helpers import (
+    ensure_columns,
+    finite_keypoints,
+    one_row_per_frame_and_id,
+    pairwise_median_distance,
+)
 from .registry import register_feature
 
 
@@ -123,27 +128,17 @@ class BodyScaleFeature:
             )
         group = _expect_single(df, C.group_col)
         sequence = _expect_single(df, C.seq_col)
-        rows: list[dict[str, int | str | float]] = []
-        x_cols = [x for x, _ in pose_pairs]
-        y_cols = [y for _, y in pose_pairs]
-        # trex_v1 guarantees one row per (frame, id); groupby is defensive
-        for _, sub in df.groupby([C.frame_col, C.id_col], sort=True):
-            row = sub.iloc[0]
-            xs = row[x_cols].to_numpy(dtype=float)
-            ys = row[y_cols].to_numpy(dtype=float)
-            valid = np.isfinite(xs) & np.isfinite(ys)
-            if valid.sum() < 2:
-                continue
-            pts = np.column_stack((xs[valid], ys[valid]))
-            # pdist returns only upper-triangle pairwise distances (no full NxN matrix)
-            dists = pdist(pts)
-            rows.append(
-                {
-                    C.frame_col: row[C.frame_col],
-                    C.id_col: row[C.id_col],
-                    "scale": float(np.median(dists)),
-                    C.seq_col: sequence,
-                    C.group_col: group,
-                }
-            )
-        return pd.DataFrame(rows)
+        # trex_v1 guarantees one row per (frame, id); a repeat is ignored
+        read = [C.frame_col, C.id_col, *chain.from_iterable(pose_pairs)]
+        individuals = one_row_per_frame_and_id(df[read])
+        x, y = finite_keypoints(individuals, pose_pairs)
+        measurable = np.isfinite(x).sum(axis=1) >= 2
+        if not measurable.any():
+            return pd.DataFrame()
+        result = individuals.loc[measurable, [C.frame_col, C.id_col]].reset_index(
+            drop=True
+        )
+        result["scale"] = pairwise_median_distance(x, y)[measurable]
+        result[C.seq_col] = sequence
+        result[C.group_col] = group
+        return result

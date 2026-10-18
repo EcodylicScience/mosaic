@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "apply_exclude_cols",
+    "block_rows",
     "chosen_payload_columns",
     "clean_animal_track",
     "clean_tracks_grouped",
@@ -32,15 +33,22 @@ __all__ = [
     "entry_identity",
     "farthest_first",
     "feature_columns",
+    "finite_keypoints",
     "finite_rows",
     "iter_series",
     "label_individuals",
     "label_series",
     "meta_columns",
+    "one_row_per_frame_and_id",
+    "pairwise_median_distance",
     "refuse_pair_rows",
     "refuse_repeated_series_rows",
+    "row_max",
+    "row_median",
+    "row_quantile",
     "series_columns",
     "smooth_1d",
+    "sort_nan_last",
     "unwrap_diff",
     "wrap_angle",
 ]
@@ -510,3 +518,119 @@ def ego_rotate(
     dx_ego = dx * ct + dy * st
     dy_ego = -dx * st + dy * ct
     return dx_ego, dy_ego
+
+
+# --- Row-wise statistics over an individual's keypoints ---
+#
+# A feature that measures each (frame, id) by its keypoints computes every row at
+# once on ``(n_rows, n_keypoints)`` arrays. A keypoint that is missing is NaN in
+# both coordinates, so the statistics below read a sorted row, NaN last, and the
+# count of entries before the NaN.
+
+# Floats held in one block of rows, so that the temporaries of a block (a few arrays
+# of that size) stay in the tens of megabytes however long the entry is.
+_BLOCK_CELLS = 1 << 20
+
+
+def block_rows(width: int) -> int:
+    """Return how many rows of *width* floats to compute at once."""
+    return max(1, _BLOCK_CELLS // max(width, 1))
+
+
+def one_row_per_frame_and_id(df: pd.DataFrame) -> pd.DataFrame:
+    """Return the first row of each ``(frame, id)`` of *df*, ordered by frame, then id.
+
+    A feature that measures an individual in a frame reads one row of it. The
+    tracks guarantee one, and a repeat is ignored rather than averaged. A row
+    with no frame or no id belongs to no individual and is left out.
+    """
+    keys = df[[COLUMNS.frame_col, COLUMNS.id_col]]
+    first = ~keys.duplicated() & keys.notna().all(axis=1)
+    return df[first].sort_values([COLUMNS.frame_col, COLUMNS.id_col], kind="stable")
+
+
+def finite_keypoints(
+    rows: pd.DataFrame, pose_pairs: Sequence[tuple[str, str]]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the x and y of every keypoint of *rows*, NaN in both where either is not finite.
+
+    Args:
+        rows: A table with the pose columns.
+        pose_pairs: The ``(x_column, y_column)`` pairs, in keypoint order, as
+            ``pose_column_pairs`` returns them.
+
+    Returns:
+        Two ``(len(rows), len(pose_pairs))`` float64 arrays. A keypoint with one
+        coordinate missing is missing as a whole.
+    """
+    x = rows[[x_col for x_col, _ in pose_pairs]].to_numpy(dtype=float)
+    y = rows[[y_col for _, y_col in pose_pairs]].to_numpy(dtype=float)
+    missing = ~(np.isfinite(x) & np.isfinite(y))
+    return np.where(missing, np.nan, x), np.where(missing, np.nan, y)
+
+
+def sort_nan_last(values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Sort each row of *values* ascending, NaN last, and count the entries that are not NaN."""
+    ordered = np.sort(values, axis=1)
+    return ordered, np.count_nonzero(~np.isnan(ordered), axis=1)
+
+
+def _row_entry(ordered: np.ndarray, index: np.ndarray) -> np.ndarray:
+    return np.take_along_axis(ordered, index[:, None], axis=1)[:, 0]
+
+
+def row_max(ordered: np.ndarray, count: np.ndarray) -> np.ndarray:
+    """Return the largest of the first *count* entries of each sorted row, NaN for none."""
+    return _row_entry(ordered, np.maximum(count - 1, 0))
+
+
+def row_median(ordered: np.ndarray, count: np.ndarray) -> np.ndarray:
+    """Return the median of the first *count* entries of each sorted row, NaN for none."""
+    last = np.maximum(count - 1, 0)
+    middle = (_row_entry(ordered, last // 2) + _row_entry(ordered, (last + 1) // 2)) / 2
+    return np.where(count > 0, middle, np.nan)
+
+
+def row_quantile(ordered: np.ndarray, count: np.ndarray, q: float) -> np.ndarray:
+    """Return the *q* quantile of the first *count* entries of each sorted row, NaN for none.
+
+    Interpolates linearly between neighbours, as ``np.quantile`` does.
+
+    Raises:
+        ValueError: *q* is outside ``[0, 1]``.
+    """
+    if not 0.0 <= q <= 1.0:
+        raise ValueError("Quantiles must be in the range [0, 1]")
+    last = np.maximum(count - 1, 0)
+    position = last * q
+    below = np.floor(position).astype(np.intp)
+    low = _row_entry(ordered, below)
+    high = _row_entry(ordered, np.minimum(below + 1, last))
+    gap = position - below
+    step = high - low
+    value = np.where(gap >= 0.5, high - step * (1 - gap), low + step * gap)
+    return np.where(count > 0, value, np.nan)
+
+
+def pairwise_median_distance(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Return, for each row, the median distance between its keypoints.
+
+    Args:
+        x: ``(n_rows, n_keypoints)`` x coordinates, NaN where a keypoint is
+            missing, as :func:`finite_keypoints` returns them.
+        y: The same for y.
+
+    Returns:
+        The ``(n_rows,)`` medians over the keypoints present, NaN for a row with
+        fewer than two.
+    """
+    n_rows, n_keypoints = x.shape
+    median = np.full(n_rows, np.nan)
+    first, second = np.triu_indices(n_keypoints, k=1)
+    step = block_rows(first.size)
+    for lo in range(0, n_rows if first.size else 0, step):
+        dx = x[lo : lo + step, first] - x[lo : lo + step, second]
+        dy = y[lo : lo + step, first] - y[lo : lo + step, second]
+        ordered, count = sort_nan_last(np.sqrt(dx * dx + dy * dy))
+        median[lo : lo + step] = row_median(ordered, count)
+    return median

@@ -358,9 +358,10 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   `plan_recipe` reports the operator's limits, the host's processors and memory, and
   each step's `workers`. `submit_pipeline` takes `workers` and `parallel_mode`, never
   above those limits, and a request over one is refused with `parallel_limit`. Start
-  with `thread`. Use `process` only for small, fast steps, after checking that the
-  host's available memory holds one interpreter and several copies of an entry's table
-  per worker.
+  with `thread`, which speeds up numpy and pandas work. Use `process` only for a step
+  that stays slow in threads because it runs Python code that holds the interpreter
+  lock, after checking that the host's available memory holds one interpreter and
+  several copies of an entry's table per worker.
 - Watch memory while a step runs: `get_request_status` reports each step's
   `peak_rss_bytes` and `min_available_bytes`. When a step ends with `WorkerProcessDied`
   or a memory-floor failure, or its peak nears the host's memory, halve `workers` or

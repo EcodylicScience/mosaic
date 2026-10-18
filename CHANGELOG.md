@@ -55,6 +55,35 @@ fails at its first entry, after its fit. Individual-level input is unchanged, an
 `lightning-action` stays at 0.3. A pair-level run already on disk keeps its run id and
 is still read.
 
+**`body-scale` and `orientation-rel` compute an entry at once, and a run of them takes
+seconds.** Both looped in Python over each `(frame, id)`, and `orientation-rel` also
+rebuilt the ids of a frame from every pose it had cached, once per frame. On a table of
+20,000 frames, two individuals and 7 keypoints, `body-scale` took 15.6 s (2,600 rows per
+second) and now takes 0.02 s (1.6 million), and `orientation-rel` took 32.0 s (1,250 rows
+per second) and now takes 0.06 s (700,000).
+
+- No run id moves. Neither feature's `version` or params changed, and the outputs agree
+  with the loops' to float rounding: the largest difference is 1.1e-14 on 40,000 pair
+  rows, and the frame, the ids, `perspective`, the column order and the dtypes are
+  identical. A cached run stays a hit.
+- `body-scale` keeps the dtype of the input's `frame` and `id`. A table with no
+  `group` or `sequence` column came out with float keys, because the loop read a row as
+  one numeric Series. `mosaic_v1` requires both columns, so no stored run changes.
+- A row with a missing heading is NaN in the `orientation-rel` columns as before, and
+  no longer emits an "All-NaN slice" `RuntimeWarning` for each pair.
+- Both features stay `parallelizable`, and `orientation-rel` still receives the
+  `body-scale` lookup in `load_state`, so a process worker needs nothing shared. A run
+  still computes entries in turn until the operator raises `max_workers`.
+
+**The agent guide and the `parallel_mode` tool text agree on when to use `process`.**
+`SKILL.md` said to use `process` only for small, fast steps, and the `submit_pipeline`
+argument said it is faster for work that holds the interpreter lock. The second is what
+happens. On 8 entries and 10 cores, a Python loop took 17.9 s in turn, 26.2 s in four threads and
+4.8 s in four processes, and a vectorised numpy step took 2.0 s in turn, 1.1 s in four
+threads and 2.1 s in four processes. Both texts now say to start with `thread` and to
+use `process` for a step that stays slow in threads because its Python code holds the
+interpreter lock, when the host's memory allows. Nothing recomputes.
+
 **A step can compute several entries at once, and reports the memory it used.**
 `mosaic run` and `mosaic pipeline run` take `--workers`, `--parallel-mode` and
 `--min-free-memory-fraction`, and `submit_pipeline` takes `workers` and `parallel_mode`
