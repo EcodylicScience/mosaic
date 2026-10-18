@@ -25,6 +25,7 @@ from mosaic.core.pipeline.cancel import RequestCancel, cancel_request
 from mosaic.core.pipeline.graph import run as run_module
 from mosaic.core.pipeline.graph import validate as validate_module
 from mosaic.core.pipeline.graph import (
+    PARENT_FAILED_TYPE,
     CoverageShortfall,
     DriverLease,
     DriverRunning,
@@ -38,6 +39,7 @@ from mosaic.core.pipeline.graph import (
     plan_wire,
     read_driver_lease,
     recipe_digest,
+    record_step_ended,
     request_rollup,
     request_verdict_of,
     run_pipeline,
@@ -57,6 +59,7 @@ from tests.helpers import (
     add_tracks_variant,
     catalog_without_contract,
     chain_recipe,
+    chain_with_sibling_recipe,
     make_dataset,
     write_driver_lease,
 )
@@ -873,6 +876,72 @@ def test_an_in_process_step_that_raises_unrecorded_leaves_no_step_named(
     lease = read_driver_lease(tracked.base_dir, submitted.request_id)
     assert lease is not None
     assert (lease.step_id, lease.step_pid) == ("", 0)
+    rollup = request_rollup(tracked.base_dir, submitted)
+    later = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+    assert request_verdict_of(tracked.base_dir, rollup, now=later) == "orphaned"
+
+
+def test_an_in_process_failure_ends_its_branch_and_raises_after_the_sibling(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[str] = []
+
+    def speed_fails(ds: Dataset, request: Request, step_id: str, **_: object):
+        ran.append(step_id)
+        if step_id == "speed":
+            record_step_ended(
+                ds,
+                request.execution_of(step_id),
+                step_id=step_id,
+                owner="",
+                status="failed",
+                error_json=json.dumps({"type": "RuntimeError", "message": "broke"}),
+            )
+            raise RuntimeError("speed broke")
+        return _finish_step(ds, request, step_id)
+
+    monkeypatch.setattr(run_module, "execute_step", speed_fails)
+    submitted = submit_request(tracked, chain_with_sibling_recipe()).request
+
+    with pytest.raises(RuntimeError, match="speed broke"):
+        _ = run_pipeline(tracked, chain_with_sibling_recipe(), request=submitted)
+
+    assert ran == ["speed", "sibling"]
+    steps = {
+        attempt.step_id: attempt
+        for attempt in request_rollup(tracked.base_dir, submitted).steps
+    }
+    assert steps["sibling"].status == "finished"
+    assert steps["templates"].status == "failed"
+    error = json.loads(steps["templates"].error_json)
+    assert (error["type"], error["parent"]) == (PARENT_FAILED_TYPE, "speed")
+    assert not driver_lease_path(tracked.base_dir, submitted.request_id).exists()
+
+
+def test_an_in_process_stall_leaves_its_branch_unrecorded_and_runs_the_sibling(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The request stays open, and a run with ``allow_partial`` resumes the branch."""
+    ran: list[str] = []
+
+    def speed_stalls(ds: Dataset, request: Request, step_id: str, **_: object):
+        ran.append(step_id)
+        state = "stalled" if step_id == "speed" else "ran"
+        return _finish_step(ds, request, step_id, state=state)
+
+    monkeypatch.setattr(run_module, "execute_step", speed_stalls)
+    submitted = submit_request(tracked, chain_with_sibling_recipe()).request
+
+    with pytest.raises(CoverageShortfall) as raised:
+        _ = run_pipeline(tracked, chain_with_sibling_recipe(), request=submitted)
+
+    assert raised.value.step_id == "speed"
+    assert ran == ["speed", "sibling"]
+    statuses = {
+        attempt.step_id: attempt.status
+        for attempt in request_rollup(tracked.base_dir, submitted).steps
+    }
+    assert statuses == {"speed": "finished", "sibling": "finished", "templates": ""}
     rollup = request_rollup(tracked.base_dir, submitted)
     later = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
     assert request_verdict_of(tracked.base_dir, rollup, now=later) == "orphaned"

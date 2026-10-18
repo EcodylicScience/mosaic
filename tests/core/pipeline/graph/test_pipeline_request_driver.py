@@ -14,7 +14,9 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -25,6 +27,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import error_envelope
 from mosaic.core.pipeline.graph import (
     MOSAIC_COMMAND,
+    PARENT_FAILED_TYPE,
     STEP_CANCEL_GRACE_SECONDS,
     DriverRunning,
     Request,
@@ -37,6 +40,7 @@ from mosaic.core.pipeline.graph import (
     run_request,
     save_request,
     start_detached_driver,
+    step_argv,
     submit_request,
 )
 from mosaic.core.pipeline.graph import run as graph_run
@@ -49,6 +53,7 @@ from tests.helpers import (
     add_tracks_variant,
     cancel_when,
     chain_recipe,
+    chain_with_sibling_recipe,
     exited_pid,
     make_dataset,
     wait_for,
@@ -195,6 +200,54 @@ def test_a_refused_step_fails_the_request_with_its_refusal_parsed(
     assert speed.error is not None
     assert speed.error.refusal is not None
     assert speed.error.refusal.reason == "version_moved"
+
+
+def test_a_failed_step_ends_its_branch_and_the_driver_runs_its_sibling(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``speed`` exits 1, so ``templates`` is not run, and ``sibling`` still is."""
+
+    def speed_exits(
+        manifest_path: Path | str,
+        request: Request,
+        step_id: str,
+        *,
+        program: str | Sequence[str],
+    ) -> list[str]:
+        if step_id == "speed":
+            return [sys.executable, "-c", "raise SystemExit(1)"]
+        return step_argv(manifest_path, request, step_id, program=program)
+
+    monkeypatch.setattr(graph_run, "step_argv", speed_exits)
+    request = submit_request(tracked, chain_with_sibling_recipe()).request
+
+    done = run_request(tracked, request)
+
+    assert (done.status, done.ran, done.blocked) == (
+        "failed",
+        ("speed", "sibling"),
+        ("templates",),
+    )
+    assert _status(tracked, request, "sibling") == "finished"
+    templates = read_run(
+        run_log_dir(tracked.base_dir), request.execution_of("templates")
+    )
+    assert templates is not None
+    assert templates["status"] == "failed"
+    error = json.loads(templates["error_json"])
+    assert (error["type"], error["reason"], error["parent"]) == (
+        PARENT_FAILED_TYPE,
+        "parent_failed",
+        "speed",
+    )
+    assert error["parent_execution_id"] == request.execution_of("speed")
+    assert not driver_lease_path(tracked.base_dir, request.request_id).exists()
+    assert request_status_wire(tracked.base_dir, request).verdict == "failed"
+
+    again = run_request(tracked, request)
+
+    assert (again.status, again.ran, again.blocked) == ("failed", (), ())
+    assert again.skipped == ("sibling",)
 
 
 def test_a_driver_refuses_while_a_step_process_runs(

@@ -4,7 +4,9 @@ The guppies recipe is the largest one the suite holds: twenty steps of the
 collective-behavior analysis, with time filters, tag columns and the
 ``nn-delta-response`` chain that reads ``ANGLE``. The speed recipe is the
 smallest that runs a feature: one ``speed-angvel`` step over the tracks. The chain
-recipe adds a second step that reads the first, for a driver to stop between.
+recipe adds a second step that reads the first, for a driver to stop between, and
+the chain with a sibling adds a step that reads only the tracks, for a failure of
+the chain to leave running.
 A converting recipe starts by converting a dataset's CalMS21 tracks and labels.
 """
 
@@ -125,6 +127,24 @@ def run_speed(dataset: Dataset, step_size: int) -> str:
 def chain_recipe() -> Recipe:
     """The chain recipe, parsed."""
     return Recipe.model_validate(CHAIN_RECIPE)
+
+
+def chain_with_sibling_recipe() -> Recipe:
+    """The chain recipe and a ``sibling`` step over the tracks that nothing reads.
+
+    ``sibling`` runs ``speed-angvel`` at step size 2, a run apart from ``speed``.
+    It comes after ``speed`` and before ``templates`` in topological order.
+    """
+    sibling: dict[str, JsonValue] = {
+        "id": "sibling",
+        "type": "feature",
+        "feature": "speed-angvel",
+        "inputs": ["tracks"],
+        "params": {"step_size": 2},
+    }
+    return Recipe.model_validate(
+        {**CHAIN_RECIPE, "steps": [*chain_recipe().model_dump()["steps"], sibling]}
+    )
 
 
 CONVERT_TRACKS_STEP: dict[str, JsonValue] = {

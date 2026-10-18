@@ -34,6 +34,7 @@ from mosaic.core.pipeline.graph import (
     driver_lease_path,
     driver_log_path,
     read_driver_lease,
+    record_step_ended,
     request_rollup,
     submit_request,
     take_driver_lease,
@@ -354,6 +355,28 @@ def test_a_finished_request_is_left_as_it_is(
     result = cancel_request(tracked, submitted.request_id)
 
     assert (result.outcome, result.status, result.steps) == ("ended", "finished", ())
+
+
+def test_a_failed_request_whose_driver_runs_is_cancelled_through_its_driver(
+    tracked: Dataset, submitted: Request, sleeper: subprocess.Popen[bytes]
+) -> None:
+    """The driver of a request with a failed step still starts the steps beside it."""
+    record_step_ended(
+        tracked,
+        submitted.execution_of("speed"),
+        step_id="speed",
+        owner="",
+        status="failed",
+        error_json=json.dumps({"type": "RuntimeError", "message": "speed broke"}),
+    )
+    _ = write_driver_lease(
+        tracked.base_dir, submitted.request_id, stale=False, pid=sleeper.pid
+    )
+
+    result = cancel_request(tracked, submitted.request_id)
+
+    assert (result.outcome, result.driver_pid) == ("signalled", sleeper.pid)
+    assert sleeper.wait(timeout=10) == -signal.SIGTERM
 
 
 def test_a_request_driven_on_another_host_is_left_as_it_is(

@@ -218,6 +218,7 @@ if TYPE_CHECKING:
     )
     from .run import (
         MOSAIC_COMMAND as MOSAIC_COMMAND,
+        PARENT_FAILED_TYPE as PARENT_FAILED_TYPE,
         STEP_CANCEL_GRACE_SECONDS as STEP_CANCEL_GRACE_SECONDS,
         DetachedDriver as DetachedDriver,
         PipelineRun as PipelineRun,
@@ -478,6 +479,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "request_rollup": ".rollup",
     "request_verdict": ".rollup",
     "MOSAIC_COMMAND": ".run",
+    "PARENT_FAILED_TYPE": ".run",
     "STEP_CANCEL_GRACE_SECONDS": ".run",
     "DetachedDriver": ".run",
     "PipelineRun": ".run",
@@ -626,6 +628,7 @@ __all__ = [
     "MISSING_SAMPLE",
     "MOSAIC_COMMAND",
     "OVERWRITE_PARAM",
+    "PARENT_FAILED_TYPE",
     "POLL_AFTER_MAX_SECONDS",
     "POLL_AFTER_MIN_SECONDS",
     "QUARANTINE_AFTER",

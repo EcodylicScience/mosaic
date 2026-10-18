@@ -38,8 +38,10 @@ from mosaic.core.pipeline.graph import (
     plan_pipeline,
     load_recipe_for_request,
     recipe_path,
+    record_step_ended,
     request_rollup,
     request_verdict,
+    request_verdict_of,
     save_recipe,
     submit_request,
 )
@@ -55,6 +57,7 @@ from tests.helpers import (
     add_tracks_variant,
     make_dataset,
     write_data_yaml,
+    write_driver_lease,
     recipe_saved_by_0_17,
 )
 
@@ -734,6 +737,31 @@ def test_a_refused_step_closes_its_request_as_failed(tracked: Dataset) -> None:
         _ = execute_step(tracked, request, "templates")
 
     assert request_rollup(tracked.base_dir, request).status == "failed"
+
+
+def test_a_failed_request_reads_running_while_its_driver_lease_exists(
+    tracked: Dataset,
+) -> None:
+    """Its driver still starts the steps that do not descend from the failure."""
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    record_step_ended(
+        tracked,
+        request.execution_of("speed"),
+        step_id="speed",
+        owner="",
+        status="failed",
+        error_json=json.dumps({"type": "RuntimeError", "message": "speed broke"}),
+    )
+    assert request_rollup(tracked.base_dir, request).status == "failed"
+
+    _ = write_driver_lease(tracked.base_dir, request.request_id, stale=True)
+
+    rollup = request_rollup(tracked.base_dir, request)
+    assert rollup.status == "running"
+    assert request_verdict(rollup.steps) == "failed"
+    assert request_verdict_of(tracked.base_dir, rollup) == "orphaned"
+    unread = request_rollup(tracked.base_dir, request, read_lease=False)
+    assert unread.status == "failed"
 
 
 def test_a_status_recorded_outside_the_run_logs_closes_the_request() -> None:

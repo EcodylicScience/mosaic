@@ -11,12 +11,16 @@ somebody deleted to free space.
 **A branch that failed while a sibling is still running is not terminal yet.**
 That is the whole subtlety here. Reporting the request failed the moment one step
 did would close it while work is in flight, and whatever that work produces would
-land under a request nothing is watching.
+land under a request nothing is watching. A local driver runs the steps that do
+not descend from a failure. A failed request with an unstarted step therefore
+reads ``running`` while its driver lease exists, and a stale lease then reads
+``orphaned`` (:func:`~.status.request_verdict_of`).
 
 **This reads attempts, not artifacts.** Whether every step's *work* is done is a
 different question, answered by planning the recipe against the dataset -- which
 costs the feature registry and is what ``mosaic pipeline plan`` is for. This one
-costs a directory of small JSON files, so whatever polls it can poll it often.
+costs a directory of small JSON files and, for a failed request, its driver
+lease. Whatever polls it can poll it often.
 """
 
 from __future__ import annotations
@@ -25,6 +29,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from mosaic.runlog import TERMINAL_STATUSES, read_run, run_log_dir
+
+from .driver_lease import read_driver_lease
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -129,7 +135,9 @@ class RequestRollup:
         return self.status != "running"
 
 
-def request_rollup(base_dir: Path | str, request: Request) -> RequestRollup:
+def request_rollup(
+    base_dir: Path | str, request: Request, *, read_lease: bool = True
+) -> RequestRollup:
     """How *request* stands, from the run-logs of the attempts it assigned.
 
     A request with a cleanup whose steps all finished stays ``running`` until
@@ -137,9 +145,15 @@ def request_rollup(base_dir: Path | str, request: Request) -> RequestRollup:
     leaves the verdict to the steps, and :func:`request_verdict` itself reads
     the steps alone.
 
+    A failed request with a step that has not started stays ``running`` while
+    the request's driver lease file exists, because its driver still starts
+    the steps that do not descend from the failure. The lease need not be live.
+
     Args:
         base_dir: The dataset root holding ``.mosaic/runs``.
         request: The submission to report on.
+        read_lease: ``False`` leaves the driver lease unread. A driver that has
+            ended its steps passes it to decide whether to release the lease.
 
     Returns:
         The verdict and the per-step attempts behind it.
@@ -156,6 +170,13 @@ def request_rollup(base_dir: Path | str, request: Request) -> RequestRollup:
         else _attempt(logs, "", request.cleanup.execution_id)
     )
     if status == "finished" and cleanup is not None and not cleanup.terminal:
+        status = "running"
+    if (
+        status == "failed"
+        and read_lease
+        and any(not attempt.started for attempt in steps)
+        and read_driver_lease(base_dir, request.request_id) is not None
+    ):
         status = "running"
     return RequestRollup(
         request_id=request.request_id, status=status, steps=steps, cleanup=cleanup
