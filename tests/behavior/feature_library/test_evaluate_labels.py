@@ -543,6 +543,47 @@ def test_runs_over_disjoint_entries_pool_to_the_run_over_all_of_them(
     assert (pooled.n_entries, pooled.n_scored) == (whole.n_entries, whole.n_scored)
 
 
+def test_runs_that_miss_a_cluster_of_the_map_pool_with_those_rows_as_wrong(
+    tmp_path: Path,
+) -> None:
+    """Cluster 9 is outside the map in both folds: pooled, 10 of 20 rows are missed."""
+    label_map = tmp_path / "label_map.parquet"
+    pd.DataFrame({"cluster": [7], "label": [0], "n_rows": [5]}).to_parquet(label_map)
+    entries = {
+        ("g", name): _rows("g", name, [7] * 5 + [9] * 5).rename(
+            columns={"predicted_label": "cluster"}
+        )
+        for name in "ab"
+    }
+    lookup = {key: _labels(tmp_path / f"{key[1]}.npz") for key in entries}
+    params = _cluster_params(label_map={"feature": "fit-label-map"})
+
+    for name in "ab":
+        _ = _run(
+            _feature(params),
+            {("g", name): entries[("g", name)]},
+            lookup,
+            tmp_path / f"fold-{name}",
+            artifacts={"label_map": label_map},
+        )
+    _ = _run(
+        _feature(params),
+        entries,
+        lookup,
+        tmp_path / "all",
+        artifacts={"label_map": label_map},
+    )
+
+    pooled = pool_reports([_report_of(tmp_path / f"fold-{name}") for name in "ab"])
+    whole = _report_of(tmp_path / "all")
+    assert pooled.accuracy == whole.accuracy == 0.5
+    assert pooled.macro_f1 == whole.macro_f1
+    assert pooled.confusion == whole.confusion == [[10, 0], [0, 0]]
+    assert pooled.per_class == whole.per_class
+    assert (pooled.n_scored, pooled.label_map_source) == (20, "fit-label-map")
+    assert pooled.label_map == whole.label_map == {7: 0}
+
+
 # --- what the map was fitted over ------------------------------------------------
 
 
