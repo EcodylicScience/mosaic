@@ -34,6 +34,7 @@ from mosaic.core.pipeline.graph import (
     plan_wire,
     plan_with_cleanup,
     recipe_path,
+    retirable_recipes,
     run_pipeline,
     save_request,
     storage_name_of,
@@ -1145,3 +1146,68 @@ def test_only_an_attempt_that_ran_in_a_process_wrote_the_run_it_names(
     cleanup = _cleanup(dataset, _new(), now=LATER, retire=[request.recipe_digest])
 
     assert (outside in _by_run(cleanup)) is candidate
+
+
+def test_the_wire_lists_a_retired_run_beside_the_steps(dataset: Dataset) -> None:
+    ran = run_pipeline(dataset, _old())
+    plan = plan_with_cleanup(
+        dataset, _new(), cleanup=LOOSE, now=LATER, retire=[ran.recipe_digest]
+    )
+
+    wire = plan_wire(plan)
+
+    assert wire.cleanup is not None
+    assert wire.cleanup.retired == (ran.recipe_digest,)
+    [retired] = wire.cleanup.retired_runs
+    assert (retired.storage, retired.removable, retired.superseded_by) == (
+        HEADING,
+        True,
+        "",
+    )
+    assert retired.retired == ran.recipe_digest
+    [on_the_step] = wire.steps[0].superseded
+    assert (on_the_step.storage, on_the_step.retired) == (STORAGE, ran.recipe_digest)
+    assert wire.cleanup.removable_runs == 2
+    assert wire.cleanup.retired_omitted == 0
+    assert PlanWire.model_validate_json(wire.model_dump_json()) == wire
+
+
+def test_the_retired_runs_of_a_wire_are_bounded(dataset: Dataset) -> None:
+    ran = run_pipeline(dataset, _old())
+    plan = plan_with_cleanup(
+        dataset, _new(), cleanup=LOOSE, now=LATER, retire=[ran.recipe_digest]
+    )
+
+    wire = plan_wire(plan, retired_sample=0)
+
+    assert wire.cleanup is not None
+    assert (wire.cleanup.retired_runs, wire.cleanup.retired_omitted) == ((), 1)
+    assert wire.cleanup.removable_runs == 2
+
+
+def test_a_plan_wire_without_a_retirement_is_what_it_was(dataset: Dataset) -> None:
+    _ = run_speed(dataset, 1)
+
+    wire = plan_wire(
+        plan_with_cleanup(dataset, speed_recipe_stepping(2), cleanup=LOOSE)
+    )
+
+    assert wire.cleanup is not None
+    assert (wire.cleanup.retired, wire.cleanup.retired_runs) == ((), ())
+    assert (wire.retirable, wire.retirable_omitted) == ((), 0)
+    assert {run.retired for run in wire.steps[0].superseded} == {""}
+
+
+def test_the_retirable_recipes_ride_the_plan_wire_outside_the_fingerprint(
+    dataset: Dataset,
+) -> None:
+    ran = run_pipeline(dataset, _old())
+    plan = plan_with_cleanup(dataset, _new(), cleanup=LOOSE)
+    listed, omitted = retirable_recipes(dataset.base_dir)
+
+    plain = plan_wire(plan)
+    informed = plan_wire(plan, retirable=listed, retirable_omitted=omitted)
+
+    assert [row.digest for row in informed.retirable] == [ran.recipe_digest]
+    assert informed.fingerprint == plain.fingerprint
+    assert PlanWire.model_validate_json(informed.model_dump_json()) == informed
