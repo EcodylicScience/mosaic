@@ -149,6 +149,30 @@ projects every group onto the training basis.
   pass, such as `pose_indices` that select other keypoints of the same number. It never
   refits on the scope.
 
+**`load_run_matrix` reads a finished run as a row index and an array.**
+`mosaic.core.pipeline` gains `load_run_matrix(ds, result, scope=, perspective=,
+columns=, dtype=, allow_partial=)` and its result `RunMatrix`, which holds `index`
+(`group`, `sequence`, and the run's `frame`, `id` or `id1`, `id2` and `perspective`),
+`values` (float32 unless `dtype` says otherwise), `columns`, `entries`, `missing` and
+`finished`. `load_values` takes one `ResultColumn` per column, has no perspective
+filter and returns one float64 frame of every entry. This reads the run's parquet
+files into one array, a batch of rows at a time, with the perspective filter applied
+per entry and the array sized from the footers. A file too long to decode all its
+columns at once is read a block of columns at a time, because pyarrow decodes a whole
+row group whatever the batch size. No run id, feature version or wire model moves.
+
+- An unpinned `Result` reads the run `current_run_id` names, as every unpinned
+  reference does. Rows come in order of `(group, sequence)` whatever order the index
+  lists them in.
+- It refuses, with a message that says how to narrow the read, a read larger than the
+  available memory (`MemoryError`), a run not marked finished, an output that the index
+  lists and disk lacks, and a scope that names an entry the run lacks. `allow_partial`
+  reads what the run holds instead. `finished` reports a run that lost entries or is
+  still going, and `missing` the scope's entries that have no file. `load_values` skips
+  an output that disk lacks and prints a note.
+- It writes nothing.
+- `mosaic.core.pipeline.parquet_reader` gains `iter_column_batches`.
+
 **A step can compute several entries at once, and reports the memory it used.**
 `mosaic run` and `mosaic pipeline run` take `--workers`, `--parallel-mode` and
 `--min-free-memory-fraction`, and `submit_pipeline` takes `workers` and `parallel_mode`

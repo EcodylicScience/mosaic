@@ -127,6 +127,24 @@ pipeline graph are in `graph/CLAUDE.md`.
 - `run_feature` runs unclaimed. Two concurrent executions of one fitting identity
   both fit and write into one run root. Do not assume a fit is exclusive.
 
+## Reading a run
+
+- `load_run_matrix` (`run_matrix.py`) reads one run's parquet files into an array and
+  writes nothing. It takes the files from the feature index and never builds a path
+  from an entry name, resolves an unpinned `Result` through `current_run_id`, and
+  orders entries by `(group, sequence)`.
+- It refuses an unfinished run, an output the index lists and disk lacks, and a scope
+  naming an entry the run lacks, unless `allow_partial` is set. `load_values` skips a
+  missing output with a note.
+- The array is sized from the footers (and from the `perspective` column, so the count
+  is of the rows returned), checked against available memory, and filled in place a
+  batch at a time. A step that concatenates per-entry arrays doubles the peak.
+- A batch size does not bound what pyarrow holds: it decodes a whole row group of the
+  columns it is asked for, about twice their float64 size, and a feature output is one
+  row group up to a million rows. A file that would take more than `BLOCK_BYTES` is read
+  a block of columns at a time, and the memory check counts the largest block
+  (`tests/core/pipeline/test_run_matrix.py`).
+
 ## Media variants
 
 - `write_media_variant_row` is the one writer of `media/preprocess/index.csv` and

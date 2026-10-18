@@ -25,8 +25,11 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Sequence
     from pathlib import Path
+    from typing import Any
+
+    import numpy.typing as npt
 
 __all__ = [
     "ArrowKind",
@@ -34,6 +37,7 @@ __all__ = [
     "NumericSummary",
     "ParquetFooter",
     "ParquetUnreadable",
+    "iter_column_batches",
     "output_n_rows",
     "read_footer",
     "read_head",
@@ -179,6 +183,30 @@ def read_head(path: Path, names: list[str], limit: int) -> list[tuple[object, ..
             if count >= limit:
                 break
     return list(zip(*columns, strict=True))
+
+
+def iter_column_batches(
+    path: Path, names: Sequence[str], batch_size: int
+) -> Generator[dict[str, npt.NDArray[Any]]]:
+    """Yield the named columns of *path* as numpy arrays, *batch_size* rows at a time.
+
+    Only the named columns are read, and a batch holds at most *batch_size* rows
+    of them. The batch size does not bound the memory of the read: pyarrow decodes
+    a whole row group of the named columns, about twice their float64 size, so a
+    caller that reads a long file names few columns at a time. A column that
+    holds a null arrives as floating point with NaN for it, and a boolean column
+    as ``bool``. The batches follow the file's row order. *names* must not repeat
+    a column.
+    """
+    if not names:
+        return
+    with _reading(path):
+        parquet = pq.ParquetFile(path)
+        for batch in parquet.iter_batches(batch_size=batch_size, columns=list(names)):
+            yield {
+                name: batch.column(name).to_numpy(zero_copy_only=False)
+                for name in names
+            }
 
 
 def _summarize(parquet: pq.ParquetFile, name: str) -> NumericSummary:
