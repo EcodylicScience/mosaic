@@ -2,8 +2,9 @@
 
 The provenance walk, delete sets, media rearrangement and source staleness are
 all decided by a feature's ``consumed_roots``, so their tests run a feature that
-does nothing but declare one. :class:`ScopedFeature` declares ``scope_dependent``
-instead, for the tests of how a run whose scope is in its id is measured, and
+does nothing but declare one. :class:`LossyFeature` loses the entries it is told
+to and :class:`ScopedFeature` also declares ``scope_dependent``, for the tests of
+how a run is measured against the entries it was asked for.
 :class:`PairClusterFeature` writes pair rows for the tests of scoring them.
 """
 
@@ -70,15 +71,14 @@ class PlainFeature(CropLike):
     consumed_roots: tuple[str, ...] = ()
 
 
-class ScopedFeature(PlainFeature):
-    """A per-entry feature whose scope is hashed into its run id.
+class LossyFeature(PlainFeature):
+    """A scope-free per-entry feature that fails on the sequences it is told to.
 
     Its apply raises for the sequences named in *fail_on*, so a test can make a
-    run lose an entry inside the scope it declared.
+    run lose an entry inside the scope it was asked for.
     """
 
-    name = "prov-scoped"
-    scope_dependent = True
+    name = "prov-lossy"
 
     def __init__(self, fail_on: tuple[str, ...] = ()) -> None:
         super().__init__()
@@ -88,6 +88,13 @@ class ScopedFeature(PlainFeature):
         if not df.empty and str(df["sequence"].iloc[0]) in self.fail_on:
             raise RuntimeError("a lost entry")
         return df
+
+
+class ScopedFeature(LossyFeature):
+    """A :class:`LossyFeature` whose scope is hashed into its run id."""
+
+    name = "prov-scoped"
+    scope_dependent = True
 
 
 class PairClusterFeature(PlainFeature):

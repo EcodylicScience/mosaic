@@ -153,6 +153,10 @@ class _RunRead:
     frame_end: int | None
     overlap_frames: int
     entries: set[tuple[str, str]]
+    # Written back by the restamp. The inventory measures the run against the
+    # entries every invocation asked for.
+    asked: set[tuple[str, str]]
+    asked_all: bool
     compositions: dict[tuple[str, str], dict[str, str]]
     tracks_old: tuple[str, ...]
     labels_old: tuple[str, ...]
@@ -221,6 +225,8 @@ class FeatureReconciler:
             frame_end=frame_end,
             overlap_frames=overlap_frames,
             entries=entries,
+            asked=params.asked_scope() if params else set(),
+            asked_all=params.scope.asked_all if params else False,
             compositions=compositions,
             tracks_old=tracks_old,
             labels_old=labels_old,
@@ -564,6 +570,8 @@ class FeatureReconciler:
             # run claim it was computed by whichever mosaic last reconciled.
             execution_id=read.execution_id,
             mosaic_version=read.mosaic_version,
+            asked=read.asked,
+            asked_all=read.asked_all,
         )
         atomic_write(
             new_run_root / "params.json",

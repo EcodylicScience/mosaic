@@ -243,6 +243,7 @@ from tests.helpers.labels import (
 )
 from tests.helpers.stand_in_features import (
     CropLike,
+    LossyFeature,
     PairClusterFeature,
     PlainFeature,
     ScopedFeature,
@@ -322,6 +323,7 @@ __all__ = [
     "KPMS_TOOL",
     "LABELS_VARIANT",
     "LineChildren",
+    "LossyFeature",
     "MOUSE",
     "PairClusterFeature",
     "PlainFeature",

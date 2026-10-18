@@ -161,6 +161,11 @@ class InventoryCache:
         budget on the first large dataset -- so a pass that rewrites provenance
         under an unchanged index goes unnoticed. ``mosaic reconcile`` is that
         pass, and it builds its own inventory rather than sharing a holder.
+
+        A feature run's status reads the entries its ``params.json`` records as
+        asked for. An invocation that changes them without writing an index
+        row, such as one whose every entry failed, leaves the cached view stale
+        until this is called.
         """
         self._held = None
         self._stamps = {}

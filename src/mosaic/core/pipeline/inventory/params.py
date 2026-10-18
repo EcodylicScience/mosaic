@@ -91,14 +91,29 @@ class ResolvedRef(BaseModel):
 
 
 class ScopeBlock(BaseModel):
-    """The ``_scope`` block: the invocation's resolved scope and compositions."""
+    """The ``_scope`` block: the invocation's resolved scope and compositions.
+
+    ``entries`` is the scope of the latest invocation. ``asked`` is the union of
+    the resolved entries of every invocation of the run, and ``None`` in a file
+    written before the key existed. ``asked_all`` records that an invocation of
+    a scope-free run asked for every entry of the dataset, including entries
+    added later. An invocation without a selector asks for every entry, and so
+    does a recipe step that neither its request nor a step scope narrows.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
     scope_dependent: bool = False
     consumed_roots: list[str] = Field(default_factory=list)
     entries: list[list[str]] = Field(default_factory=list)
+    asked: list[list[str]] | None = None
+    asked_all: bool = False
     compositions: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+
+def _pairs(entries: list[list[str]]) -> set[tuple[str, str]]:
+    """Return the ``(group, sequence)`` pairs of *entries*, skipping malformed ones."""
+    return {(pair[0], pair[1]) for pair in entries if len(pair) == 2}
 
 
 class RunParams(BaseModel):
@@ -152,7 +167,17 @@ class RunParams(BaseModel):
 
     def entry_scope(self) -> set[tuple[str, str]]:
         """The ``(group, sequence)`` pairs this invocation's scope covered."""
-        return {(pair[0], pair[1]) for pair in self.scope.entries if len(pair) == 2}
+        return _pairs(self.scope.entries)
+
+    def asked_scope(self) -> set[tuple[str, str]]:
+        """The ``(group, sequence)`` pairs every invocation of this run asked for.
+
+        A file written before ``asked`` existed returns :meth:`entry_scope`, the
+        latest invocation's scope.
+        """
+        if self.scope.asked is None:
+            return self.entry_scope()
+        return _pairs(self.scope.asked)
 
     def entry_compositions(
         self, entries: set[tuple[str, str]]

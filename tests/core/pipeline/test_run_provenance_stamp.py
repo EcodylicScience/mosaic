@@ -17,8 +17,11 @@ from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.inventory.params import RunParams, ScopeBlock
 from mosaic.core.pipeline.run import build_run_params_payload
+from mosaic.core.scope import Scope
 from mosaic.version import DISTRIBUTION_NAME, installed_version
+from tests.helpers import ScopedFeature
 
 
 def _saved(ds: Dataset, storage: str, run_id: str) -> dict[str, object]:
@@ -109,3 +112,77 @@ def test_the_version_is_looked_up_under_the_distribution_name() -> None:
     """
     assert DISTRIBUTION_NAME == "mosaic-behavior"
     assert installed_version() == "" or installed_version()[0].isdigit()
+
+
+def _scope_block(payload: dict[str, object]) -> ScopeBlock:
+    return RunParams.model_validate(payload).scope
+
+
+def test_the_payload_records_the_asked_scope_it_is_given() -> None:
+    feature = build_feature("speed-angvel", None, None)
+    scope = ResolvedScope(entries={("", "seq_b")})
+
+    payload = build_run_params_payload(
+        feature, None, None, scope, [], asked={("", "seq_b"), ("", "seq_a")}
+    )
+
+    block = _scope_block(payload)
+    assert block.entries == [["", "seq_b"]]
+    assert block.asked == [["", "seq_a"], ["", "seq_b"]]
+    assert block.asked_all is False
+
+
+def test_an_unspecified_asked_scope_is_this_invocations_entries() -> None:
+    feature = build_feature("speed-angvel", None, None)
+    scope = ResolvedScope(entries={("", "seq_a")})
+
+    block = _scope_block(build_run_params_payload(feature, None, None, scope, []))
+
+    assert block.asked == [["", "seq_a"]]
+    assert block.asked_all is False
+
+
+def test_each_invocation_adds_its_entries_to_the_asked_scope(
+    scenario_dataset: Dataset,
+) -> None:
+    """``_scope.entries`` names the latest invocation, and ``asked`` all of them."""
+    storage = "speed-angvel__from__tracks"
+    first = scenario_dataset.run_feature(
+        build_feature("speed-angvel", None, None), scope=Scope(sequences=["seq_a"])
+    )
+    second = scenario_dataset.run_feature(
+        build_feature("speed-angvel", None, None), scope=Scope(sequences=["seq_b"])
+    )
+
+    block = _scope_block(_saved(scenario_dataset, storage, str(second.run_id)))
+    assert second.run_id == first.run_id
+    assert block.entries == [["", "seq_b"]]
+    assert block.asked == [["", "seq_a"], ["", "seq_b"]]
+    assert block.asked_all is False
+
+
+def test_an_unscoped_invocation_asks_for_every_entry(
+    scenario_dataset: Dataset,
+) -> None:
+    """Later invocations over a subset keep it."""
+    storage = "speed-angvel__from__tracks"
+    _ = scenario_dataset.run_feature(build_feature("speed-angvel", None, None))
+    result = scenario_dataset.run_feature(
+        build_feature("speed-angvel", None, None), scope=Scope(sequences=["seq_a"])
+    )
+
+    block = _scope_block(_saved(scenario_dataset, storage, str(result.run_id)))
+    assert block.asked_all is True
+
+
+def test_an_unscoped_scope_dependent_run_asks_for_its_own_entries(
+    scenario_dataset: Dataset,
+) -> None:
+    """Its scope is hashed into its id. More entries make another run."""
+    result = scenario_dataset.run_feature(ScopedFeature())
+
+    block = _scope_block(
+        _saved(scenario_dataset, "prov-scoped__from__tracks", str(result.run_id))
+    )
+    assert block.asked == [["", "seq_a"], ["", "seq_b"]]
+    assert block.asked_all is False

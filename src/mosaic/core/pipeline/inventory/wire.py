@@ -495,10 +495,10 @@ def inventory_wire(
         reportable_universe(ds, tracks_run_id) if tracks_run_id is not None else None
     )
     narrowing = scope is not None or universe is not None
-    # What a scope-dependent run is re-measured from: *universe* when a tracks
-    # variant names it, else every entry, read once on first need. Held apart
-    # from *universe*, which also says whether a tracks variant narrows the
-    # other records, so a scope-dependent record cannot change how they read.
+    # What a feature run is re-measured from: *universe* when a tracks variant
+    # names it, else every entry, read once on first need. Kept apart from
+    # *universe*, which also says whether a tracks variant narrows the other
+    # records. A feature record then cannot change how they read.
     asked_universe = universe
     walk = TracksVariantWalk(ds, _held_params(inventory))
 
@@ -514,16 +514,14 @@ def inventory_wire(
             if not _read_variant(_variants_of(record, walk), tracks_run_id):
                 continue
         if narrowing and isinstance(record.ref, _ENTRY_KEYED):
-            if is_feature and _scope_dependent(record):
+            if is_feature:
                 # Re-measured from the asked entries rather than narrowed from
-                # the scan's target, which was already cut to the run's scope:
-                # narrowing that again can leave it empty, and an empty target
-                # reads as complete.
+                # the scan's target, which was already cut to the entries the
+                # run was asked for: narrowing that again can leave it empty,
+                # and an empty target reads as complete.
                 if asked_universe is None:
                     asked_universe = reportable_universe(ds, None)
                 coverage = _declared(record, narrow_target(asked_universe, scope))
-            elif is_feature:
-                coverage = _narrowed(record.coverage, scope, universe)
             else:
                 coverage = _narrowed_by_entries(record.coverage, scope)
             record = _rows_in_scope(record, scope)
@@ -586,37 +584,21 @@ def _read_variant(variants: frozenset[str] | None, tracks_run_id: str) -> bool:
     return tracks_run_id in variants or (tracks_run_id == "" and not variants)
 
 
-def _target_entries(coverage: Coverage[AnyKey]) -> frozenset[Entry]:
-    """Return the entries that begin *coverage*'s target keys."""
-    return frozenset(
-        (key[0], key[1]) for key in coverage.target if not isinstance(key, str)
-    )
-
-
-def _narrowed(
-    coverage: Coverage[AnyKey], scope: Scope | None, universe: frozenset[Entry] | None
-) -> Coverage[AnyKey]:
-    """Return *coverage* over the target keys whose entry *scope* and *universe* keep."""
-    entries = _target_entries(coverage)
-    if universe is not None:
-        entries &= universe
-    return _kept(coverage, narrow_target(entries, scope))
-
-
-def _scope_dependent(record: ArtifactRecord[AnyKey]) -> bool:
-    """Return whether *record* is a feature run whose params declare it scope-dependent."""
-    return record.params is not None and record.params.scope.scope_dependent
+def _entries_of(keys: frozenset[AnyKey]) -> frozenset[Entry]:
+    """Return the entries that begin *keys*."""
+    return frozenset((key[0], key[1]) for key in keys if not isinstance(key, str))
 
 
 def _declared(
     record: ArtifactRecord[AnyKey], asked: frozenset[Entry]
 ) -> Coverage[AnyKey]:
-    """Return *record*'s coverage of *asked*, cut to its declared scope as the scan cuts it.
+    """Return *record*'s coverage of *asked*, cut as the scan cuts it.
 
     :func:`~.scan.feature_run_target` is the rule, shared with the scan.
     """
+    target = feature_run_target(asked, record.params, _entries_of(record.rows))
     return Coverage[AnyKey](
-        target=frozenset[AnyKey](feature_run_target(asked, record.params)),
+        target=frozenset[AnyKey](target),
         present=record.coverage.present,
         covers_all=record.coverage.covers_all,
     )
@@ -631,7 +613,7 @@ def _narrowed_by_entries(
     matches it.
     """
     pairs = scope.entry_pairs if scope is not None else None
-    entries = _target_entries(coverage)
+    entries = _entries_of(coverage.target)
     return _kept(coverage, entries if pairs is None else entries & pairs)
 
 

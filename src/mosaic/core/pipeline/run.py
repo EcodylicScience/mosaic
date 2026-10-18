@@ -52,6 +52,8 @@ from .index import (
     recorded_consumption,
     recorded_tracks_composition,
 )
+from .index_lock import index_lock
+from .inventory.params import RunParams, read_run_params
 from .loading import (
     CROSS_JOIN_FEATURES,
     build_nn_lookup,
@@ -918,6 +920,8 @@ def build_run_params_payload(
     overlap_frames: int = 0,
     execution_id: str = "",
     mosaic_version: str = "",
+    asked: Iterable[tuple[str, str]] | None = None,
+    asked_all: bool = False,
 ) -> dict[str, object]:
     """The ``params.json`` save payload -- provenance, deliberately not the digest.
 
@@ -927,15 +931,21 @@ def build_run_params_payload(
     with the upstream ids it now resolves to. Deliberately ``json_ready``, not
     ``identity_dump`` -- it keeps HASH_EXCLUDE fields and is never hashed.
 
-    ``_scope`` is the scope of *this invocation*, not the fit scope (item 5.3):
-    written unconditionally, so for a scope-free feature it is "whichever ran
-    last"; ``fit_scope.json`` answers "what was this state trained on", and for a
-    scope-free fitter it takes that from the fit records of its pinned artifacts
-    rather than from any invocation's scope. The values
-    are load-bearing, not garnish -- two runs both marked one scheme can differ
-    because one ran before a ``sequences.csv`` existed and one after, honest only
-    if the values are written down. Compositions are recorded for *every* root, so
-    a drift check and a blast walk can explain a run without re-deriving it.
+    ``_scope`` is an apply scope, not the fit scope (item 5.3), and it is written
+    unconditionally. Its ``entries`` and ``compositions`` are this invocation's,
+    so for a scope-free feature they are "whichever ran last". Its ``asked`` and
+    ``asked_all`` accumulate across invocations: ``asked`` is the union of every
+    invocation's entries, *asked*, or this invocation's entries when *asked* is
+    ``None``, and ``asked_all`` records that an invocation of a scope-free run
+    asked for every entry. The inventory measures a feature run against these
+    two keys (``feature_run_target``). ``fit_scope.json`` answers "what was this
+    state trained on", and for a scope-free fitter it takes that from the fit
+    records of its pinned artifacts rather than from any invocation's scope. The
+    values are load-bearing, not garnish -- two runs both marked one scheme can
+    differ because one ran before a ``sequences.csv`` existed and one after,
+    honest only if the values are written down. Compositions are recorded for
+    *every* root, so a drift check and a blast walk can explain a run without
+    re-deriving it.
 
     ``_resolved`` is which concrete upstream each reference pinned to. The digest
     already covers these (they were pinned before it was computed), so this is the
@@ -983,6 +993,11 @@ def build_run_params_payload(
             "scope_dependent": feature.scope_dependent,
             "consumed_roots": sorted({r for r in feature.consumed_roots if r}),
             "entries": [list(entry) for entry in sorted(scope.entries)],
+            "asked": [
+                list(entry)
+                for entry in sorted(scope.entries if asked is None else set(asked))
+            ],
+            "asked_all": asked_all,
             "compositions": {
                 make_entry_key(group, sequence): dict(sorted(per_root.items()))
                 for (group, sequence), per_root in sorted(scope.compositions.items())
@@ -998,6 +1013,35 @@ def build_run_params_payload(
             for variant in scope.labels_variants
         ],
     }
+
+
+def _asked_by_now(
+    previous: RunParams | None,
+    feature: Feature,
+    scope: ResolvedScope,
+    *,
+    asks_every_entry: bool,
+) -> tuple[set[tuple[str, str]], bool]:
+    """Return the ``(asked, asked_all)`` pair to record after this invocation.
+
+    *asked* adds this invocation's entries to the ones the previous document
+    recorded. ``asked_all`` is set once any invocation of a scope-free run asks
+    for every entry. A scope-dependent run does not set it. Its scope is hashed
+    into its id, and an unscoped invocation over more entries makes another run.
+
+    Args:
+        previous: The run's recorded ``params.json``, ``None`` before the first
+            invocation or when it could not be read.
+        feature: The feature being run.
+        scope: This invocation's resolved scope.
+        asks_every_entry: Whether this invocation asks for every entry.
+    """
+    asked = set(scope.entries)
+    asked_all = asks_every_entry
+    if previous is not None:
+        asked |= previous.asked_scope()
+        asked_all = asked_all or previous.scope.asked_all
+    return asked, asked_all and not feature.scope_dependent
 
 
 def run_feature(
@@ -1021,6 +1065,7 @@ def run_feature(
     track: bool = True,
     progress_callback: ProgressCallback | None = None,
     cancel_token: CancelToken | None = None,
+    asks_every_entry: bool | None = None,
 ) -> Result:
     """Apply a Feature over a chosen scope (default: whole dataset).
 
@@ -1106,6 +1151,14 @@ def run_feature(
     cancel_token : CancelToken | None
         Cooperative cancellation, polled between entries. The default token is
         inert.
+    asks_every_entry : bool | None
+        Whether this invocation asks for every entry of the dataset, whatever
+        *scope* names. A scope-free run asked once for every entry reads
+        ``partial`` in the inventory when the dataset gains an entry it lacks.
+        ``None``, the default, reads the answer from *scope*: an unset selector
+        asks for every entry. A recipe step passes the entries it computes as
+        *scope* and passes ``True`` here when neither its request nor its step
+        scope narrowed it.
 
     Returns
     -------
@@ -1145,6 +1198,7 @@ def run_feature(
                 filter_start_time=filter_start_time,
                 filter_end_time=filter_end_time,
                 check_output=check_output,
+                asks_every_entry=asks_every_entry,
             )
         finally:
             _close_feature(feature)
@@ -1168,6 +1222,7 @@ def _run_feature_impl(
     filter_start_time: float | None = None,
     filter_end_time: float | None = None,
     check_output: bool = False,
+    asks_every_entry: bool | None = None,
 ) -> Result:
     """Body of :func:`run_feature`, executed inside a :func:`job_context`.
 
@@ -1263,22 +1318,40 @@ def _run_feature_impl(
 
     params_path = run_root / "params.json"
     try:
-        # Built by the one payload site (build_run_params_payload) so no caller
-        # reconstructs the document -- the same single-site rule the identity
-        # payload follows. Deliberately provenance, not the hash payload.
-        save_payload = build_run_params_payload(
-            feature,
-            frame_start,
-            frame_end,
-            resolved,
-            resolution_payload(resolutions),
-            overlap_frames=overlap_frames,
-            execution_id=ctx.execution_id,
-            mosaic_version=installed_version(),
-        )
-        atomic_write(
-            params_path, lambda p: p.write_text(json.dumps(save_payload, indent=2))
-        )
+        # The feature's index lock serializes the invocations of one run, each of
+        # which merges its asked scope with the previous document. A lock on
+        # params.json itself would create it empty before the write. The index
+        # is created below in any case.
+        with index_lock(feature_index_path(ds, storage_feature_name)):
+            asked, asked_all = _asked_by_now(
+                read_run_params(run_root).params,
+                feature,
+                resolved,
+                asks_every_entry=(
+                    resolved.selector.is_unset
+                    if asks_every_entry is None
+                    else asks_every_entry
+                ),
+            )
+            # Built by the one payload site (build_run_params_payload). The
+            # identity payload follows the same single-site rule. The document is
+            # provenance and is not hashed.
+            save_payload = build_run_params_payload(
+                feature,
+                frame_start,
+                frame_end,
+                resolved,
+                resolution_payload(resolutions),
+                overlap_frames=overlap_frames,
+                execution_id=ctx.execution_id,
+                mosaic_version=installed_version(),
+                asked=asked,
+                asked_all=asked_all,
+            )
+            atomic_write(
+                params_path,
+                lambda p: p.write_text(json.dumps(save_payload, indent=2)),
+            )
     except Exception as exc:
         print(
             f"[feature:{feature.name}] failed to save params.json: {exc}",
