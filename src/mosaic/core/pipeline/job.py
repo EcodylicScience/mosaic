@@ -154,6 +154,8 @@ class JobContext:
     _done: int = 0
     _hb_count: int = 0
     _hb_last: float = field(default=0.0, repr=False)
+    # ``run_log.progress_writes`` when a heartbeat throttled its count, or None.
+    _pending: int | None = field(default=None, repr=False)
 
     @property
     def total(self) -> int:
@@ -178,7 +180,11 @@ class JobContext:
             self.run_log.set_total(total)
 
     def heartbeat(self, done: int | None = None) -> None:
-        """Refresh liveness (throttled) and, optionally, the completed count."""
+        """Refresh liveness (throttled) and, optionally, the completed count.
+
+        A count that the throttle keeps off the log is written by
+        :meth:`flush_progress` when the attempt ends.
+        """
         if done is not None:
             self._done = done
         if self.run_log is None:
@@ -191,6 +197,27 @@ class JobContext:
         ):
             self.run_log.heartbeat(self._done, self._total)
             self._hb_last = now
+            self._pending = None
+        elif done is not None:
+            self._pending = self.run_log.progress_writes
+
+    def flush_progress(self) -> None:
+        """Write the count of the last throttled heartbeat.
+
+        It writes one ``heartbeat`` unless the run-log wrote a ``heartbeat``,
+        ``entry_end`` or ``epoch`` event after the throttled call, or its last
+        such event already records the count. An event after the call records a
+        count at least as recent, and a ``heartbeat`` written after it could move
+        the count backward.
+        """
+        pending, self._pending = self._pending, None
+        if (
+            self.run_log is not None
+            and pending is not None
+            and pending == self.run_log.progress_writes
+            and self.run_log.last_progress != (self._done, self._total)
+        ):
+            self.run_log.heartbeat(self._done, self._total)
 
     def entry_failed(self, key: str, exc: BaseException) -> None:
         """Record that one entity failed while the attempt carries on.
@@ -305,6 +332,17 @@ class JobContext:
         self.cancel_token.raise_if_cancelled()
 
 
+def _flush_progress(ctx: JobContext) -> None:
+    """Call :meth:`JobContext.flush_progress`, ignoring its error.
+
+    The terminal record that follows is written even when the flush fails.
+    """
+    try:
+        ctx.flush_progress()
+    except Exception:
+        pass
+
+
 @contextmanager
 def job_context(
     ds: "Dataset",
@@ -407,14 +445,17 @@ def job_context(
         yield ctx
     except (Cancelled, KeyboardInterrupt):
         if run_log is not None:
+            _flush_progress(ctx)
             run_log.cancelled()
         raise
     except Exception as exc:
         if run_log is not None:
+            _flush_progress(ctx)
             run_log.failed(_capture_error(exc, step_id))
         raise
     else:
         if run_log is not None:
+            _flush_progress(ctx)
             run_log.finished()
     finally:
         if run_log is not None:

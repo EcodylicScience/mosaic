@@ -435,17 +435,44 @@ class JsonlRunLog:
         self._torn: bool = _ends_mid_line(self.path)
         self._stop_liveness = threading.Event()
         self._liveness: threading.Thread | None = None
+        self._progress_writes: int = 0
+        self._last_progress: tuple[int, int] | None = None
+
+    @property
+    def progress_writes(self) -> int:
+        """Count the ``heartbeat``, ``entry_end`` and ``epoch`` lines written so far.
+
+        Each of these events sets the progress count that :func:`reduce_run_log`
+        folds. A caller compares two readings to learn whether a count was written
+        between them.
+        """
+        return self._progress_writes
+
+    @property
+    def last_progress(self) -> tuple[int, int] | None:
+        """The ``(done, total)`` that the last progress line folds to, or None."""
+        return self._last_progress
 
     def _emit(self, event: str, **fields: Any) -> None:
         _ = self._write(event, fields)
 
-    def _write(self, event: str, fields: dict[str, Any], *, end: bool = False) -> bool:
+    def _write(
+        self,
+        event: str,
+        fields: dict[str, Any],
+        *,
+        end: bool = False,
+        progress: tuple[int, int] | None = None,
+    ) -> bool:
         """Append one event line, returning ``False`` when the log is closed.
 
         Args:
             event: The event kind.
             fields: The event's fields.
             end: Whether the event is terminal. No ``alive`` line follows one.
+            progress: The ``(done, total)`` that the event folds to, for an
+                event that sets the progress count. A written one increments
+                :attr:`progress_writes` and becomes :attr:`last_progress`.
         """
         if self._file is None:
             return False
@@ -457,6 +484,9 @@ class JsonlRunLog:
             self._append(line)
             if end:
                 self._ended = True
+            if progress is not None:
+                self._progress_writes += 1
+                self._last_progress = progress
         return True
 
     def _write_alive(self) -> bool:
@@ -574,7 +604,9 @@ class JsonlRunLog:
 
     def heartbeat(self, done: int, total: int) -> None:
         """Refresh liveness and the coarse completed count."""
-        self._emit("heartbeat", done=done, total=total)
+        _ = self._write(
+            "heartbeat", {"done": done, "total": total}, progress=(done, total)
+        )
 
     def finished(self) -> None:
         """Terminal: the attempt completed successfully."""
@@ -791,13 +823,19 @@ class JsonlRunLog:
         self._emit("entry_start", index=index, total=total, key=key)
 
     def on_entry_end(self, index: int, total: int, key: str) -> None:
-        self._emit("entry_end", index=index, total=total, key=key)
+        _ = self._write(
+            "entry_end",
+            {"index": index, "total": total, "key": key},
+            progress=(index, total),
+        )
 
     def on_epoch_end(
         self, epoch: int, total_epochs: int, metrics: dict[str, float]
     ) -> None:
-        self._emit(
-            "epoch", epoch=epoch, total_epochs=total_epochs, metrics=dict(metrics)
+        _ = self._write(
+            "epoch",
+            {"epoch": epoch, "total_epochs": total_epochs, "metrics": dict(metrics)},
+            progress=(epoch + 1, total_epochs),
         )
 
     def on_class_start(

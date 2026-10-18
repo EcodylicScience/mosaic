@@ -22,6 +22,7 @@ from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.job import (
     CancelToken,
     Cancelled,
+    JobContext,
     cancel_check,
     job_context,
 )
@@ -756,3 +757,146 @@ def test_an_interrupted_job_records_itself_cancelled(tmp_path: Path) -> None:
     snap = read_run(run_log_dir(ds.base_dir), execution_id)
     assert snap is not None
     assert snap["status"] == "cancelled"
+
+
+# --- the count of a throttled heartbeat ---------------------------------------
+#
+# The first heartbeat of an attempt is written, and the next nine within 15
+# seconds are throttled. Each case below runs in well under a second.
+
+
+def _heartbeats(base_dir: Path, execution_id: str) -> list[tuple[int, int]]:
+    """The ``(done, total)`` of each ``heartbeat`` line of one attempt's run-log."""
+    path = run_log_path(base_dir, execution_id)
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    return [
+        (record["done"], record["total"])
+        for record in records
+        if record["ev"] == "heartbeat"
+    ]
+
+
+def _progress(base_dir: Path, execution_id: str) -> tuple[str, int, int]:
+    """The status, ``progress_done`` and ``progress_total`` of one attempt."""
+    snap = read_run(run_log_dir(base_dir), execution_id)
+    assert snap is not None
+    return snap["status"], snap["progress_done"], snap["progress_total"]
+
+
+def test_a_finished_attempt_records_its_last_throttled_count(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path)
+    with job_context(ds, kind="convert-tracks", target="t") as ctx:
+        ctx.set_total(3)
+        for done in (1, 2, 3):
+            ctx.heartbeat(done)
+
+    assert _progress(ds.base_dir, ctx.execution_id) == ("finished", 3, 3)
+    assert _heartbeats(ds.base_dir, ctx.execution_id) == [(1, 3), (3, 3)]
+
+
+def test_a_failed_attempt_records_the_count_it_reached(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path)
+    execution_id = new_execution_id()
+    with pytest.raises(RuntimeError, match="kaboom"):
+        with job_context(
+            ds, kind="convert-tracks", target="t", execution_id=execution_id
+        ) as ctx:
+            ctx.set_total(3)
+            ctx.heartbeat(1)
+            ctx.heartbeat(2)
+            raise RuntimeError("kaboom")
+
+    assert _progress(ds.base_dir, execution_id) == ("failed", 2, 3)
+
+
+def test_a_cancelled_attempt_records_the_count_it_reached(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path)
+    execution_id = new_execution_id()
+    with pytest.raises(Cancelled):
+        with job_context(
+            ds, kind="convert-tracks", target="t", execution_id=execution_id
+        ) as ctx:
+            ctx.set_total(3)
+            ctx.heartbeat(1)
+            ctx.heartbeat(2)
+            raise Cancelled()
+
+    assert _progress(ds.base_dir, execution_id) == ("cancelled", 2, 3)
+
+
+def test_a_count_already_written_is_not_written_again(tmp_path: Path) -> None:
+    """The tenth heartbeat is written, and the end of the attempt adds none."""
+    ds = make_dataset(tmp_path)
+    with job_context(ds, kind="convert-tracks", target="t") as ctx:
+        ctx.set_total(10)
+        for done in range(1, 11):
+            ctx.heartbeat(done)
+
+    assert _heartbeats(ds.base_dir, ctx.execution_id) == [(1, 10), (10, 10)]
+    assert _progress(ds.base_dir, ctx.execution_id) == ("finished", 10, 10)
+
+
+def test_a_later_entry_end_keeps_its_count(tmp_path: Path) -> None:
+    """An entry that ends without a heartbeat is not overwritten by the one before it."""
+    ds = make_dataset(tmp_path)
+    with job_context(ds, kind="trex", target="t") as ctx:
+        ctx.set_total(3)
+        ctx.heartbeat(1)
+        ctx.heartbeat(2)
+        ctx.progress.on_entry_end(3, 3, "c")
+
+    assert _heartbeats(ds.base_dir, ctx.execution_id) == [(1, 3)]
+    assert _progress(ds.base_dir, ctx.execution_id) == ("finished", 3, 3)
+
+
+def test_a_heartbeat_after_its_entry_end_is_not_written_again(
+    tmp_path: Path,
+) -> None:
+    """Each entry ends before its heartbeat, so the last entry_end holds the count."""
+    ds = make_dataset(tmp_path)
+    with job_context(ds, kind="trex", target="t") as ctx:
+        ctx.set_total(3)
+        for done, key in ((1, "a"), (2, "b"), (3, "c")):
+            ctx.progress.on_entry_end(done, 3, key)
+            ctx.heartbeat(done)
+
+    assert _heartbeats(ds.base_dir, ctx.execution_id) == [(1, 3)]
+    assert _progress(ds.base_dir, ctx.execution_id) == ("finished", 3, 3)
+
+
+def test_a_heartbeat_without_a_count_is_not_flushed(tmp_path: Path) -> None:
+    """A throttled heartbeat without a count does not write the context's stale count."""
+    ds = make_dataset(tmp_path)
+    with job_context(ds, kind="trex", target="t") as ctx:
+        ctx.set_total(2)
+        ctx.heartbeat(1)
+        ctx.progress.on_entry_end(2, 2, "b")
+        ctx.heartbeat()
+
+    assert _heartbeats(ds.base_dir, ctx.execution_id) == [(1, 2)]
+    assert _progress(ds.base_dir, ctx.execution_id) == ("finished", 2, 2)
+
+
+def test_a_failed_flush_leaves_the_terminal_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(self: JobContext) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(JobContext, "flush_progress", refuse)
+    ds = make_dataset(tmp_path)
+    execution_id = new_execution_id()
+    with pytest.raises(RuntimeError, match="kaboom"):
+        with job_context(
+            ds, kind="convert-tracks", target="t", execution_id=execution_id
+        ) as ctx:
+            ctx.set_total(3)
+            ctx.heartbeat(1)
+            ctx.heartbeat(2)
+            raise RuntimeError("kaboom")
+
+    snap = read_run(run_log_dir(ds.base_dir), execution_id)
+    assert snap is not None
+    assert snap["status"] == "failed"
+    assert json.loads(snap["error_json"])["type"] == "RuntimeError"
+    assert snap["progress_done"] == 1

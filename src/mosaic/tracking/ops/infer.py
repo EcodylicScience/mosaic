@@ -861,6 +861,7 @@ def _run_inference_op(
             )
             if opened is None:
                 ctx.progress.on_entry_end(i + 1, len(work), key)
+                ctx.heartbeat(i + 1)
                 continue
             seq_dir, held = opened
             attempted.add(key)

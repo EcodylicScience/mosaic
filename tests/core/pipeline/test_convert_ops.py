@@ -117,7 +117,12 @@ def test_convert_ops_refuse_a_scope(tmp_path: Path, kind: str) -> None:
 
 
 def test_run_log_records_entries_written_and_variant(tmp_path: Path) -> None:
-    """The run id is the variant written. ``tracks_variant`` records reads, so none."""
+    """The run id is the variant written, and ``tracks_variant`` is empty.
+
+    ``tracks_variant`` records the tracks variants that a run reads.
+
+    Progress counts the two raw files, which convert into three entries.
+    """
     ds = _dataset(tmp_path)
 
     run_id = run_op(ds, "convert-tracks", {"source_format": "calms21_npy"})
@@ -127,6 +132,21 @@ def test_run_log_records_entries_written_and_variant(tmp_path: Path) -> None:
     assert snapshot["run_id"] == run_id
     assert snapshot["entries_written"] == 3
     assert snapshot["tracks_variant"] == ""
+    assert snapshot["progress_done"] == snapshot["progress_total"] == 2
+
+
+def test_convert_labels_run_log_counts_its_raw_files(tmp_path: Path) -> None:
+    """Progress counts the two raw files, which convert into three entries."""
+    ds = _dataset(tmp_path)
+    params: dict[str, object] = {"kind": "Behavior", "source_format": "calms21_npy"}
+
+    run_id = run_op(ds, "convert-labels", params)
+
+    snapshot = latest_snapshot(ds)
+    assert snapshot["status"] == "finished"
+    assert snapshot["run_id"] == run_id
+    assert snapshot["entries_written"] == 3
+    assert snapshot["progress_done"] == snapshot["progress_total"] == 2
 
 
 @pytest.mark.parametrize(
