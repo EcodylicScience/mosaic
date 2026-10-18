@@ -79,6 +79,9 @@ $ mosaic run [OPTIONS]
 * `--republish`: With --kind: rebuild the op's published outputs from its finished work without redoing it. Ops without a republish path refuse it.
 * `--owner <str>`: Free-form attribution recorded on the attempt.
 * `--execution-id <str>`: Reuse an externally minted ULID (executor unit-of-work).
+* `--workers <int range>`: Compute this many entries of a parallelizable feature at once. The default computes them in turn. More workers use more memory.  [1<=x<=32]
+* `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
+* `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the host's memory that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
 * `--json`: Emit one JSON object on stdout; logs go to stderr.
 * `--help`: Show this message and exit.
 
@@ -1136,6 +1139,12 @@ when that cleanup failed. ``--retire <digest>`` adds the runs that a saved
 recipe's requests wrote, in any storage, to what that plan reviewed.
 ``--request`` runs the cleanup its request recorded.
 
+``--workers`` computes several entries of each parallelizable feature at once.
+It belongs to the machine and changes neither a run's identity nor its
+outputs, so ``--request`` accepts it where it rejects the options above.
+Memory grows with the worker count, most steeply with ``--parallel-mode
+process``.
+
 **Usage**:
 
 ```console
@@ -1158,6 +1167,9 @@ $ mosaic pipeline run [OPTIONS]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
 * `--retire <str>`: With --cleanup superseded, also judge the runs that this saved recipe's requests wrote, in any storage (repeatable; a recipe digest, which 'pipeline plan --cleanup superseded' lists). It applies to this plan or submission only: give it to the plan and again to the submission.
 * `--expect-plan <str>`: With --recipe, the fingerprint that 'mosaic pipeline plan' printed. Refuses the run, writing nothing, when the plan has changed since. Required with --cleanup.
+* `--workers <int range>`: Compute this many entries of a parallelizable feature at once. The default computes them in turn. More workers use more memory.  [1<=x<=32]
+* `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
+* `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the host's memory that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1290,7 +1302,7 @@ $ mosaic agent serve [OPTIONS]
 **Options**:
 
 * `--dataset <path>`: A dataset to serve: its manifest or its directory. Repeatable.
-* `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup` and the `cleanup` policy. Its relative paths are read from its directory.
+* `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, and the parallelism limits `max_workers`, `allow_process_mode` and `min_free_memory_fraction`. Its relative paths are read from its directory.
 * `--allow-managed-writes`: Let submit_pipeline and cancel_request change a dataset whose manifest names a managing service.
 * `--allow-cleanup <str>`: Let submit_pipeline remove superseded feature runs with cleanup 'superseded', and with retire the runs that a retired recipe wrote, after the user confirms. Repeatable; the one class is feature-runs. The policy is the config file's cleanup.
 * `--help`: Show this message and exit.

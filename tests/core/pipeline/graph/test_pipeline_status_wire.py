@@ -162,6 +162,42 @@ def test_a_request_reports_each_step_with_its_outcome(tmp_path: Path) -> None:
     )
 
 
+def test_a_step_reports_its_workers_and_the_memory_it_has_used(tmp_path: Path) -> None:
+    gib = 1024**3
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="speed")
+        log.resources(
+            workers=4,
+            parallel_mode="process",
+            peak_rss_bytes=10 * gib,
+            min_available_bytes=20 * gib,
+            total_memory_bytes=64 * gib,
+        )
+        log.resources(
+            workers=4,
+            parallel_mode="process",
+            peak_rss_bytes=12 * gib,
+            min_available_bytes=18 * gib,
+            total_memory_bytes=64 * gib,
+        )
+
+    report = request_status_wire(tmp_path, _request(speed="E1", templates="E2"))
+    attempt = run_status_wire(tmp_path, "E1")
+
+    speed, templates = report.steps
+    assert (speed.workers, speed.parallel_mode) == (4, "process")
+    assert (speed.peak_rss_bytes, speed.min_available_bytes) == (12 * gib, 18 * gib)
+    assert speed.total_memory_bytes == 64 * gib
+    assert attempt is not None
+    assert attempt.peak_rss_bytes == 12 * gib
+    # A step that has not started reports no workers and no memory.
+    assert (templates.workers, templates.parallel_mode, templates.peak_rss_bytes) == (
+        0,
+        "",
+        0,
+    )
+
+
 def test_a_finished_request_with_lost_entries_is_partial(tmp_path: Path) -> None:
     with _log(tmp_path, "E1") as log:
         log.started(kind="feature", target="speed")

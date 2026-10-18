@@ -22,6 +22,13 @@ from .plan import (
     asked_of,
 )
 from ..inventory.wire import MISSING_SAMPLE_WIRE, coverage_wire
+from ..memory_watch import host_memory_bytes
+from ..parallelism import (
+    ParallelLimits,
+    ParallelSettings,
+    effective_parallel,
+    host_cpus,
+)
 from .wire import (
     RETIRED_SAMPLE,
     SUPERSEDED_SAMPLE,
@@ -30,6 +37,7 @@ from .wire import (
     DepsIncompleteWire,
     HeldOnParentsWire,
     IdentityUnresolvedWire,
+    ParallelWire,
     PlannedStepWire,
     PlanWire,
     Problem,
@@ -61,6 +69,7 @@ def plan_wire(
     retired_sample: int = RETIRED_SAMPLE,
     retirable: tuple[RetirableRecipeWire, ...] = (),
     retirable_omitted: int = 0,
+    parallel: ParallelLimits | None = None,
 ) -> PlanWire:
     """Serialize *plan* with a structured reason and a bounded coverage summary.
 
@@ -86,8 +95,13 @@ def plan_wire(
             (:func:`~.retirement.retirable_recipes`), reported as given. They do
             not enter the fingerprint.
         retirable_omitted: How many more recipes there were than *retirable*.
+        parallel: What a submission may ask for in parallelism. Each parallelizable
+            step then reports the workers a submission that names no count
+            receives, and the plan reports the limits and the host's memory. The
+            fingerprint depends on neither.
     """
     superseded = _superseded_by_step(plan.cleanup)
+    default = None if parallel is None else parallel.settings_for()
     steps = tuple(
         _step_wire(
             planned,
@@ -95,6 +109,7 @@ def plan_wire(
             missing_sample,
             superseded.get(planned.step_id, ()),
             superseded_sample,
+            default,
         )
         for planned in plan.steps
     )
@@ -110,6 +125,21 @@ def plan_wire(
         cleanup=_cleanup_wire(plan.cleanup, retired_sample),
         retirable=retirable,
         retirable_omitted=retirable_omitted,
+        parallel=None if parallel is None else _parallel_wire(parallel),
+    )
+
+
+def _parallel_wire(limits: ParallelLimits) -> ParallelWire:
+    """The limits a submission is held to, with the machine's processors and memory."""
+    total, available = host_memory_bytes()
+    return ParallelWire(
+        default_workers=limits.settings_for().workers,
+        max_workers=limits.max_workers,
+        allow_process_mode=limits.allow_process_mode,
+        min_free_memory_fraction=limits.min_free_memory_fraction,
+        cpus=host_cpus(),
+        memory_total_bytes=total,
+        memory_available_bytes=available,
     )
 
 
@@ -288,6 +318,7 @@ def _step_wire(
     missing_sample: int,
     superseded: tuple[SupersededRun, ...] = (),
     superseded_sample: int = SUPERSEDED_SAMPLE,
+    default_parallel: ParallelSettings | None = None,
 ) -> PlannedStepWire:
     return PlannedStepWire(
         step=planned.step_id,
@@ -311,6 +342,10 @@ def _step_wire(
             _superseded_wire(run) for run in superseded[:superseded_sample]
         ),
         superseded_omitted=max(len(superseded) - superseded_sample, 0),
+        parallelizable=planned.parallelizable,
+        workers=effective_parallel(
+            default_parallel, parallelizable=planned.parallelizable
+        ).workers,
     )
 
 

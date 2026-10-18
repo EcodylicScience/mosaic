@@ -48,6 +48,7 @@ _STEP_TYPE_HEADER = (
     "consumes",
     "resource_class",
     "scope_dependent",
+    "parallelizable",
     "requires",
     "provides",
     "passthrough",

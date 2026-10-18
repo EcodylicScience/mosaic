@@ -13,6 +13,7 @@ from mosaic.agent.mcp.config import (
     served_manifests,
 )
 from mosaic.core.pipeline.graph import CleanupPolicy
+from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelLimits
 from tests.helpers import make_dataset
 
 
@@ -86,6 +87,49 @@ def test_allow_cleanup_and_policy_read_from_the_file(tmp_path: Path) -> None:
     ids=["unknown-class", "negative", "unknown-key"],
 )
 def test_a_cleanup_setting_that_does_not_fit_is_invalid(
+    tmp_path: Path, text: str
+) -> None:
+    config = tmp_path / "server.yaml"
+    _ = config.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ServerConfigInvalid):
+        _ = read_server_config(config)
+
+
+def test_the_parallelism_limits_read_from_the_file(tmp_path: Path) -> None:
+    config = tmp_path / "server.yaml"
+    _ = config.write_text(
+        "max_workers: 6\nallow_process_mode: true\nmin_free_memory_fraction: 0.2\n",
+        encoding="utf-8",
+    )
+
+    read = read_server_config(config)
+
+    assert read.parallel_limits == ParallelLimits(
+        max_workers=6, allow_process_mode=True, min_free_memory_fraction=0.2
+    )
+
+
+def test_the_default_limits_are_one_worker_in_threads_with_a_memory_floor() -> None:
+    limits = ServerConfig().parallel_limits
+
+    assert limits.max_workers == 1
+    assert not limits.allow_process_mode
+    assert limits.min_free_memory_fraction == 0.10
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "max_workers: 0\n",
+        f"max_workers: {MAX_WORKERS_CEILING + 1}\n",
+        "min_free_memory_fraction: 1.0\n",
+        "min_free_memory_fraction: -0.1\n",
+        "allow_process_mode: maybe\n",
+    ],
+    ids=["zero", "above-ceiling", "floor-one", "floor-negative", "not-a-bool"],
+)
+def test_a_parallelism_limit_that_does_not_fit_is_invalid(
     tmp_path: Path, text: str
 ) -> None:
     config = tmp_path / "server.yaml"

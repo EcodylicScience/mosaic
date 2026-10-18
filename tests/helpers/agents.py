@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline.graph import DetachedDriver, Request
+    from mosaic.core.pipeline.parallelism import ParallelSettings
 
 __all__ = ["RecordingStarter"]
 
@@ -23,14 +24,19 @@ class RecordingStarter:
 
     Attributes:
         started: The ids of the requests given, in order.
+        parallel: The parallelism given with each request, in order.
     """
 
     started: list[str] = field(default_factory=list)
+    parallel: list[ParallelSettings] = field(default_factory=list)
 
-    def __call__(self, dataset: Dataset, request: Request) -> DetachedDriver:
+    def __call__(
+        self, dataset: Dataset, request: Request, parallel: ParallelSettings
+    ) -> DetachedDriver:
         from mosaic.core.pipeline.graph import DetachedDriver
 
         self.started.append(request.request_id)
+        self.parallel.append(parallel)
         return DetachedDriver(
             request_id=request.request_id,
             pid=4242,

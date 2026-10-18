@@ -82,6 +82,14 @@ class StepAttempt:
         phase: The last phase the attempt declared, ``""`` before one.
         target: What the run-log names as its target: the storage name under
             ``features/`` for a feature step, ``""`` before it started.
+        workers: How many entries it computed at once, 0 before it reports.
+        parallel_mode: How it computed them, ``""`` for one at a time or before it
+            reports.
+        peak_rss_bytes: The largest resident memory of its process tree that it
+            measured, 0 before it reports.
+        min_available_bytes: The least memory the host had available when it
+            measured, 0 before it reports.
+        total_memory_bytes: The host's physical memory, 0 before it reports.
     """
 
     step_id: str
@@ -103,6 +111,11 @@ class StepAttempt:
     liveness_interval: float = 0.0
     phase: str = ""
     target: str = ""
+    workers: int = 0
+    parallel_mode: str = ""
+    peak_rss_bytes: int = 0
+    min_available_bytes: int = 0
+    total_memory_bytes: int = 0
 
     @property
     def started(self) -> bool:
@@ -211,6 +224,11 @@ def _attempt(logs: Path, step_id: str, execution_id: str) -> StepAttempt:
         liveness_interval=snapshot["liveness_interval"],
         phase=snapshot["phase"],
         target=snapshot["target"],
+        workers=snapshot["workers"],
+        parallel_mode=snapshot["parallel_mode"],
+        peak_rss_bytes=snapshot["peak_rss_bytes"],
+        min_available_bytes=snapshot["min_available_bytes"],
+        total_memory_bytes=snapshot["total_memory_bytes"],
     )
 
 

@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
-from mosaic.agent.mcp.summaries import summarize
 from mosaic.agent.mcp.spec import (
     MAX_RESULT_CHARS,
     PLAN_RETIRABLE_SAMPLE,
@@ -25,6 +24,7 @@ from mosaic.agent.mcp.spec import (
     SubmittedPipeline,
     call_tool,
 )
+from mosaic.agent.mcp.summaries import summarize
 from mosaic.core.dataset import Dataset
 from mosaic.core.dataset_summary import DatasetSummary
 from mosaic.core.json_value import JsonValue
@@ -43,6 +43,11 @@ from mosaic.core.pipeline.graph import (
     save_request,
 )
 from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.parallelism import (
+    ParallelLimits,
+    ParallelSettings,
+    host_cpus,
+)
 from mosaic.runlog import JsonlRunLog, new_execution_id, run_log_path
 from tests.helpers import (
     SPEED_RECIPE,
@@ -584,6 +589,149 @@ def test_plan_recipe_lists_a_bounded_sample_of_superseded_runs(
     assert plan.cleanup.removable_runs == len(old)
     assert len(plan.steps[0].superseded) == PLAN_SUPERSEDED_SAMPLE
     assert plan.steps[0].superseded_omitted == len(old) - PLAN_SUPERSEDED_SAMPLE
+
+
+# --- parallelism ---------------------------------------------------------------
+
+
+def _parallel(
+    dataset: Dataset, starter: RecordingStarter, **limits: object
+) -> LocalBackend:
+    """A backend whose operator allows *limits*."""
+    return LocalBackend(
+        [dataset.manifest_path],
+        warm=False,
+        start_driver=starter,
+        parallel_limits=ParallelLimits.model_validate(limits),
+    )
+
+
+def test_a_submission_naming_no_workers_receives_the_servers_default(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    backend = _parallel(
+        dataset,
+        starter,
+        max_workers=4,
+        allow_process_mode=True,
+        min_free_memory_fraction=0.1,
+    )
+
+    submitted = _submit(backend, dataset, SPEED_RECIPE, entries=ENTRIES)
+
+    assert isinstance(submitted, SubmittedPipeline), submitted
+    assert (submitted.workers, submitted.parallel_mode) == (4, "thread")
+    assert starter.parallel == [
+        ParallelSettings(workers=4, mode="thread", min_free_memory_fraction=0.1)
+    ]
+
+
+def test_a_submission_may_ask_for_fewer_workers_and_for_process_mode(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    backend = _parallel(dataset, starter, max_workers=4, allow_process_mode=True)
+
+    submitted = _submit(
+        backend,
+        dataset,
+        SPEED_RECIPE,
+        entries=ENTRIES,
+        workers=2,
+        parallel_mode="process",
+    )
+
+    assert isinstance(submitted, SubmittedPipeline), submitted
+    assert (submitted.workers, submitted.parallel_mode) == (2, "process")
+    assert [(given.workers, given.mode) for given in starter.parallel] == [
+        (2, "process")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("limits", "asked", "limit"),
+    [
+        ({"max_workers": 4}, {"workers": 5}, "max_workers"),
+        ({"max_workers": 4}, {"parallel_mode": "process"}, "allow_process_mode"),
+        ({}, {"workers": 2}, "max_workers"),
+    ],
+    ids=["too-many", "process-not-allowed", "default-server"],
+)
+def test_a_submission_over_a_limit_is_refused_before_anything_is_recorded(
+    dataset: Dataset,
+    starter: RecordingStarter,
+    limits: dict[str, object],
+    asked: dict[str, object],
+    limit: str,
+) -> None:
+    backend = _parallel(dataset, starter, **limits)
+
+    refused = _submit(backend, dataset, SPEED_RECIPE, entries=ENTRIES, **asked)
+
+    assert isinstance(refused, ErrorEnvelope), refused
+    assert (refused.kind, refused.reason) == ("unavailable", "parallel_limit")
+    assert refused.detail == {"limit": limit}
+    assert (starter.started, _requests(dataset)) == ([], [])
+
+
+def test_the_limits_are_not_arguments_of_plan_recipe(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    backend = _parallel(dataset, starter, max_workers=4)
+
+    refused = call_tool(
+        backend,
+        "plan_recipe",
+        {"dataset": _uuid(dataset), "recipe": SPEED_RECIPE, "workers": 2},
+    )
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert refused.reason == "invalid_arguments"
+
+
+def test_the_plan_reports_the_limits_the_machine_and_the_workers_of_a_step(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    backend = _parallel(
+        dataset,
+        starter,
+        max_workers=4,
+        allow_process_mode=True,
+        min_free_memory_fraction=0.1,
+    )
+
+    plan = _call(
+        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+    )
+
+    assert plan.parallel is not None
+    assert (plan.parallel.max_workers, plan.parallel.allow_process_mode) == (4, True)
+    assert plan.parallel.min_free_memory_fraction == 0.1
+    assert plan.parallel.cpus == host_cpus()
+    assert plan.parallel.memory_total_bytes >= plan.parallel.memory_available_bytes > 0
+    (speed,) = plan.steps
+    assert speed.parallelizable
+    assert speed.workers == min(4, host_cpus())
+
+
+def test_the_plan_fingerprint_does_not_depend_on_the_limits(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    plain = _call(
+        LocalBackend([dataset.manifest_path], warm=False),
+        "plan_recipe",
+        PlanWire,
+        dataset=_uuid(dataset),
+        recipe=SPEED_RECIPE,
+    )
+    limited = _call(
+        _parallel(dataset, starter, max_workers=4),
+        "plan_recipe",
+        PlanWire,
+        dataset=_uuid(dataset),
+        recipe=SPEED_RECIPE,
+    )
+
+    assert limited.fingerprint == plain.fingerprint
 
 
 # --- retiring a recipe ----------------------------------------------------------------

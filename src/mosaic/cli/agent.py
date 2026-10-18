@@ -199,7 +199,9 @@ def serve_command(
             "--config",
             help=(
                 "A YAML file listing `datasets`, `discover` directories, "
-                "`allow_managed_writes`, `allow_cleanup` and the `cleanup` policy. "
+                "`allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, "
+                "and the parallelism limits `max_workers`, `allow_process_mode` "
+                "and `min_free_memory_fraction`. "
                 "Its relative paths are read from its directory."
             ),
         ),
@@ -270,6 +272,7 @@ def serve_command(
                 ]
             ),
             cleanup_policy=settings.cleanup,
+            parallel_limits=settings.parallel_limits,
         )
     except MissingOptionalDependency as exc:
         fail(str(exc))

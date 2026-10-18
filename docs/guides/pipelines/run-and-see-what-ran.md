@@ -120,6 +120,25 @@ retired names that recipe (`removed[].retired` under `--json`). A cleanup that f
 is cancelled leaves the request's verdict to its steps. A queue that runs the steps
 itself runs no cleanup; `mosaic pipeline run --request` does.
 
+**Compute several entries at once.** A feature that computes each entry on its own
+(`parallelizable` in `mosaic pipeline catalog <name>`) can use `--workers`:
+
+```bash
+mosaic pipeline run -m dataset.yaml --recipe @recipe.json --workers 4
+mosaic pipeline run -m dataset.yaml --request <request id> --workers 4
+```
+
+The count changes neither a run's identity nor its outputs, so a run with four workers
+is a cache hit for one with one, and a recipe never carries it. `--parallel-mode thread`
+is the default. `process` uses every core, but each worker is a separate interpreter
+that imports the feature libraries and receives a pickled copy of each entry's table,
+so it uses much more memory. A worker that the host stops ends the step with
+`WorkerProcessDied`. Run the request again with fewer workers or in thread mode. The
+entries already written are kept. `--min-free-memory-fraction 0.1` makes a run wait for
+its entries in flight while less than that share of the host's memory is available, and
+fail in a resumable state when it stays lower. The commands that take the options are
+`mosaic run --feature`, `mosaic run --graph-request` and `mosaic pipeline run`.
+
 **A run reports what it lost.** A failure on one entry is recorded and surfaced as a
 `partial` status with the failed entries named. It is not silently dropped, and it is
 not promoted to a total failure. Losing *every* entry does raise.

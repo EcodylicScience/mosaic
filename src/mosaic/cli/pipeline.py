@@ -33,7 +33,11 @@ from mosaic.cli._context import load_dataset
 from mosaic.cli._io import (
     EntriesOption,
     GroupOption,
+    MinFreeMemoryOption,
+    ParallelModeOption,
     StepScopeOption,
+    WorkersOption,
+    parallel_settings,
     emit_json,
     entries_scope,
     exit_refused,
@@ -52,6 +56,7 @@ from mosaic.cli._render import render_step_type_detail, render_table
 from mosaic.cli.features.describe import DetailOption
 
 if TYPE_CHECKING:
+    from mosaic.core.pipeline.parallelism import ParallelSettings
     from mosaic.core.pipeline.graph import (
         CleanupPolicy,
         CleanupStatusWire,
@@ -491,6 +496,9 @@ def run_command(
             ),
         ),
     ] = None,
+    workers: WorkersOption = None,
+    parallel_mode: ParallelModeOption = None,
+    min_free_memory_fraction: MinFreeMemoryOption = 0.0,
     as_json: JsonOption = False,
 ) -> None:
     """Run every step of a recipe here, in order, skipping what is already done.
@@ -505,6 +513,12 @@ def run_command(
     when that cleanup failed. ``--retire <digest>`` adds the runs that a saved
     recipe's requests wrote, in any storage, to what that plan reviewed.
     ``--request`` runs the cleanup its request recorded.
+
+    ``--workers`` computes several entries of each parallelizable feature at once.
+    It belongs to the machine and changes neither a run's identity nor its
+    outputs, so ``--request`` accepts it where it rejects the options above.
+    Memory grows with the worker count, most steeply with ``--parallel-mode
+    process``.
     """
     from mosaic.core.pipeline.graph import (
         request_status_wire,
@@ -513,6 +527,7 @@ def run_command(
     )
     from mosaic.core.pipeline.job import Cancelled, CancelToken, install_signal_handler
 
+    parallel = parallel_settings(workers, parallel_mode, min_free_memory_fraction)
     if request_id is not None:
         if recipe is not None:
             fail("Provide exactly one of --recipe or --request.")
@@ -531,7 +546,9 @@ def run_command(
                 "--cleanup, --retire and --expect-plan are recorded on a request "
                 "at submit, and are not used with --request."
             )
-        _run_request(manifest, request_id, detach=detach, as_json=as_json)
+        _run_request(
+            manifest, request_id, detach=detach, as_json=as_json, parallel=parallel
+        )
         return
     if recipe is None:
         fail("Provide exactly one of --recipe or --request.")
@@ -562,7 +579,12 @@ def run_command(
             submitted = recorded.request
             _warn_duplicates(recorded.duplicates)
             done = run_pipeline(
-                ds, parsed, request=submitted, owner=owner, cancel_token=token
+                ds,
+                parsed,
+                request=submitted,
+                owner=owner,
+                cancel_token=token,
+                parallel=parallel,
             )
     except Cancelled:
         if submitted is not None:
@@ -639,7 +661,12 @@ def _exit_on_failed_cleanup(status: str) -> None:
 
 
 def _run_request(
-    manifest: Path, request_id: str, *, detach: bool, as_json: bool
+    manifest: Path,
+    request_id: str,
+    *,
+    detach: bool,
+    as_json: bool,
+    parallel: ParallelSettings | None,
 ) -> None:
     """Drive one submitted request here, or start its driver in a new session."""
     from mosaic.core.pipeline.graph import (
@@ -657,7 +684,7 @@ def _run_request(
         fail(str(exc))
     if detach:
         try:
-            driver = start_detached_driver(ds, request)
+            driver = start_detached_driver(ds, request, parallel=parallel)
         except Refusal as refusal:
             exit_refused("", refusal, as_json=as_json)
         except ClassifiedError as error:
@@ -680,7 +707,7 @@ def _run_request(
     install_signal_handler(token)
     try:
         with stdout_to_stderr():
-            done = run_request(ds, request, cancel_token=token)
+            done = run_request(ds, request, cancel_token=token, parallel=parallel)
     except Refusal as refusal:
         exit_refused("", refusal, as_json=as_json)
     except ClassifiedError as error:

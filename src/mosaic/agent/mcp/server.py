@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from mcp.server import Server
 
     from mosaic.core.pipeline.graph.model import CleanupPolicy
+    from mosaic.core.pipeline.parallelism import ParallelLimits
 
     from .config import CleanupClass
 
@@ -64,6 +65,7 @@ def serve(
     allow_managed: bool = False,
     allow_cleanup: frozenset[CleanupClass] = frozenset(),
     cleanup_policy: CleanupPolicy | None = None,
+    parallel_limits: ParallelLimits | None = None,
 ) -> None:
     """Serve the datasets of *manifests* to one client over standard input and output.
 
@@ -81,6 +83,8 @@ def serve(
             ``retire`` the runs of retired recipes.
         cleanup_policy: Which superseded runs a cleanup keeps, the default
             policy when ``None``.
+        parallel_limits: The parallelism a submission may ask for. One worker, in
+            threads, when ``None``.
 
     Raises:
         MissingOptionalDependency: The ``mcp`` extra is not installed.
@@ -95,6 +99,7 @@ def serve(
             allow_managed=allow_managed,
             allow_cleanup=allow_cleanup,
             cleanup_policy=cleanup_policy,
+            parallel_limits=parallel_limits,
         )
     )
 
@@ -105,6 +110,7 @@ async def _serve(
     allow_managed: bool,
     allow_cleanup: frozenset[CleanupClass],
     cleanup_policy: CleanupPolicy | None,
+    parallel_limits: ParallelLimits | None,
 ) -> None:
     from mcp.server.stdio import stdio_server
 
@@ -117,6 +123,7 @@ async def _serve(
             allow_managed=allow_managed,
             allow_cleanup=allow_cleanup,
             cleanup_policy=cleanup_policy,
+            parallel_limits=parallel_limits,
         )
         server = bind_server(backend)
         _LOG.info("serving %d dataset manifest(s) over stdio", len(manifests))

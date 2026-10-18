@@ -6,10 +6,15 @@ does nothing but declare one. :class:`LossyFeature` loses the entries it is told
 to and :class:`ScopedFeature` also declares ``scope_dependent``, for the tests of
 how a run is measured against the entries it was asked for.
 :class:`PairClusterFeature` writes pair rows for the tests of scoring them.
+:class:`ParallelFeature` declares ``parallelizable``, and a subclass that sets
+``kill_on`` ends the process computing those sequences, for the tests of a run
+that computes several entries at once.
 """
 
 from __future__ import annotations
 
+import os
+import signal
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +22,7 @@ import pandas as pd
 
 from mosaic.core.params import Params
 from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream
+from mosaic.core.pipeline.types.feature import EmitsLevel
 
 
 class _P(Params):
@@ -95,6 +101,27 @@ class ScopedFeature(LossyFeature):
 
     name = "prov-scoped"
     scope_dependent = True
+
+
+class ParallelFeature(PlainFeature):
+    """A per-entry feature that may compute several entries at once.
+
+    A subclass that names sequences in ``kill_on`` ends the process computing one
+    of them with SIGKILL, as a host does a process it runs out of memory for. The
+    names are a class attribute because a process worker rebuilds the feature from
+    its class and parameters, and an instance attribute would not reach it.
+    """
+
+    name = "prov-parallel"
+    parallelizable = True
+    accepts_overlap = False
+    emits: EmitsLevel = "as-input"
+    kill_on: tuple[str, ...] = ()
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        if not df.empty and str(df["sequence"].iloc[0]) in self.kill_on:
+            os.kill(os.getpid(), signal.SIGKILL)
+        return df
 
 
 class PairClusterFeature(PlainFeature):

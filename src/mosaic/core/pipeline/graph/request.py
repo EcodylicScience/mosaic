@@ -29,6 +29,7 @@ from mosaic.runlog import new_execution_id, now_iso
 from mosaic.core.scope import Scope
 
 from ..error_kind import ClassifiedError, ErrorKind
+from ..parallelism import ParallelSettings, parallel_flags
 from .digest import document_digest, recipe_digest
 from .cleanup import plan_cleanup
 from .model import (
@@ -457,6 +458,7 @@ def step_argv(
     *,
     overwrite: bool = False,
     program: str | Sequence[str] = "mosaic",
+    parallel: ParallelSettings | None = None,
 ) -> list[str]:
     """The command that runs one step of one request.
 
@@ -479,6 +481,9 @@ def step_argv(
         program: The command that runs mosaic: argv[0], or the words that the
             argv starts with, as ``[sys.executable, "-m", "mosaic"]``. A driver
             that knows where mosaic lives substitutes it.
+        parallel: How many entries a feature step computes at once, and how. A
+            flag rather than a recipe field, because the count belongs to the
+            machine that runs the step. Nothing is added for one worker.
 
     Returns:
         The argv, ready to run.
@@ -500,4 +505,5 @@ def step_argv(
         argv += ["--owner", request.owner]
     if overwrite:
         argv += ["--overwrite"]
+    argv += parallel_flags(parallel)
     return argv

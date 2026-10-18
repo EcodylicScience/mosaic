@@ -10,6 +10,25 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**A step can compute several entries at once, and reports the memory it used.**
+`mosaic run` and `mosaic pipeline run` take `--workers`, `--parallel-mode` and
+`--min-free-memory-fraction`, and `submit_pipeline` takes `workers` and `parallel_mode`
+within the limits `max_workers`, `allow_process_mode` and `min_free_memory_fraction` in the
+server's configuration. The count is not part of a recipe or a run id, and nothing
+recomputes. A run with several workers whose process worker is stopped raises
+`WorkerProcessDied`, and the entries it wrote are kept.
+
+- The run-log gains a `resources` event. `RunLogSnapshot`, `RunStatusWire` and
+  `StepStatusWire` gain `workers`, `parallel_mode`, `peak_rss_bytes`,
+  `min_available_bytes` and `total_memory_bytes`, which read 0 or `""` for a log
+  without the event.
+- `CatalogIndexEntry` and `StepTypeDetail` gain `parallelizable`. `PlannedStepWire`
+  gains `parallelizable` and `workers`, and `PlanWire` gains `parallel`. All default, and
+  `plan_fingerprint` leaves them out. `CatalogEntry` is unchanged.
+- `start_detached_driver` and the `LocalBackend` `start_driver` seam take the
+  parallelism as a last argument. mosaic-queue builds its own commands and does not pass
+  the flags, so steps it dispatches run in turn.
+
 **A template step writes only its sample.** `extract-templates` (0.3 to 0.4) and
 `extract-labeled-templates` (0.4 to 0.5) wrote a copy of each entry's input as that
 entry's table, beside the `templates.parquet` sample, and the labeled one added `split`

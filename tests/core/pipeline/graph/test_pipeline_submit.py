@@ -42,6 +42,7 @@ from mosaic.core.pipeline.graph import (
     step_argv,
     submit_request,
 )
+from mosaic.core.pipeline.parallelism import ParallelSettings
 from tests.helpers import (
     add_tracks_variant,
     make_dataset,
@@ -203,6 +204,41 @@ def test_the_submitted_argv_is_what_mosaic_run_accepts(tracked: Dataset) -> None
     assert payload["step"] == "speed"
     assert payload["request_id"] == submitted.request.request_id
     assert payload["run_id"]
+
+
+def test_the_argv_of_a_step_carries_workers_only_above_one(tracked: Dataset) -> None:
+    request = submit_request(tracked, Recipe.model_validate(CHAIN)).request
+
+    assert "--workers" not in step_argv(tracked.manifest_path, request, "speed")
+    assert "--workers" not in step_argv(
+        tracked.manifest_path, request, "speed", parallel=ParallelSettings(workers=1)
+    )
+    argv = step_argv(
+        tracked.manifest_path,
+        request,
+        "speed",
+        parallel=ParallelSettings(
+            workers=3, mode="process", min_free_memory_fraction=0.1
+        ),
+    )
+    assert argv[argv.index("--workers") + 1] == "3"
+    assert argv[argv.index("--parallel-mode") + 1] == "process"
+    assert argv[argv.index("--min-free-memory-fraction") + 1] == "0.1"
+
+
+def test_the_argv_with_workers_is_what_mosaic_run_accepts(tracked: Dataset) -> None:
+    submitted = submit_request(tracked, Recipe.model_validate(CHAIN))
+    argv = step_argv(
+        tracked.manifest_path,
+        submitted.request,
+        "speed",
+        parallel=ParallelSettings(workers=2, min_free_memory_fraction=0.05),
+    )
+
+    result = runner.invoke(app, argv[1:])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["step"] == "speed"
 
 
 # --- the CLI ---------------------------------------------------------------------

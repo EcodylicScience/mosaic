@@ -44,6 +44,7 @@ from mosaic.core.pipeline.graph import (
     strip_schema_keywords,
 )
 from mosaic.core.pipeline.graph.digest import DIGEST_LENGTH
+from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelMode
 from mosaic.core.strict_model import StrictModel
 from mosaic.runlog import AttemptLiveness, AttemptOutcome
 
@@ -672,6 +673,27 @@ class SubmitPipelineInput(ToolInput):
         ),
     )
     retire: RetireDigests = Field(default_factory=list)
+    workers: int | None = Field(
+        default=None,
+        ge=1,
+        le=MAX_WORKERS_CEILING,
+        description=(
+            "How many entries a parallelizable feature step computes at once. "
+            "Omitted: the server's default, which plan_recipe reports in its "
+            "parallel block. More than the server's max_workers is refused. Memory "
+            "grows with the count, so lower it when a step ends with a dead "
+            "worker, a memory floor, or a peak_rss_bytes near the host's memory."
+        ),
+    )
+    parallel_mode: ParallelMode | None = Field(
+        default=None,
+        description=(
+            "'thread' (default) shares one copy of the feature. 'process' is "
+            "faster for work that holds the interpreter lock and uses far more "
+            "memory, since each worker is an interpreter with a copy of every "
+            "entry's table. The server must allow it."
+        ),
+    )
     confirm: bool = Field(
         default=False,
         description=(
@@ -877,6 +899,9 @@ class SubmittedPipeline(StrictModel):
         cleanup_runs: How many superseded runs the request removes after its
             steps, 0 without a cleanup.
         cleanup_bytes: The bytes they hold.
+        workers: How many entries a parallelizable step computes at once.
+        parallel_mode: How it computes them. A feature that defines
+            ``set_scope`` runs in threads whatever this is.
     """
 
     request_id: str
@@ -889,6 +914,8 @@ class SubmittedPipeline(StrictModel):
     poll_after_seconds: int
     cleanup_runs: int = 0
     cleanup_bytes: int = 0
+    workers: int = 1
+    parallel_mode: ParallelMode = "thread"
 
 
 class RunSummary(StrictModel):
