@@ -57,6 +57,7 @@ __all__ = [
     "JSON_OBJECT",
     "POLL_AFTER_MAX_SECONDS",
     "POLL_AFTER_MIN_SECONDS",
+    "RETIRABLE_REQUEST_IDS",
     "CleanupRunWire",
     "CleanupStatusWire",
     "FailedEntryWire",
@@ -65,6 +66,7 @@ __all__ = [
     "RequestStatusWire",
     "RequestSummaryWire",
     "RequestVerdict",
+    "RetirableRecipeWire",
     "RunStatusWire",
     "StepStatusWire",
     "cleanup_status_wire",
@@ -82,6 +84,9 @@ FAILED_ENTRY_SAMPLE: Final = 20
 
 CLEANUP_RUN_SAMPLE: Final = 20
 """The most removed runs, and the most kept runs, that a cleanup's report lists."""
+
+RETIRABLE_REQUEST_IDS: Final = 5
+"""The most request ids that one retirable recipe lists."""
 
 POLL_AFTER_MIN_SECONDS: Final = 10
 """The fewest seconds a request report asks a poller to wait."""
@@ -371,6 +376,29 @@ class RequestPageWire(GraphModel):
 
     items: tuple[RequestSummaryWire, ...]
     next_after: str | None
+
+
+class RetirableRecipeWire(GraphModel):
+    """A saved recipe whose requests wrote runs, which a cleanup may retire.
+
+    Attributes:
+        digest: The recipe's digest in the current canonical form, which
+            ``retire`` takes.
+        name: The recipe's ``name``, ``""`` for an unnamed one.
+        requests: How many requests of the recipe the dataset holds.
+        request_ids: The newest of those requests, at most
+            :data:`RETIRABLE_REQUEST_IDS`.
+        runs: How many feature runs those requests wrote.
+        open: Whether one of its requests is running or orphaned, so the recipe
+            cannot be retired until that request ends or is cancelled.
+    """
+
+    digest: str
+    name: str
+    requests: int
+    request_ids: tuple[str, ...]
+    runs: int
+    open: bool
 
 
 def recorded_error(error_json: str) -> RecordedErrorWire | None:
