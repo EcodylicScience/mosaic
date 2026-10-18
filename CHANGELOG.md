@@ -136,9 +136,9 @@ request closed `failed`. A mosaic-queue gate already ran them.
 
 - Both drivers record each step below a failed one `failed`, with `error_json`
   `{"type": "ParentFailed", "message", "reason": "parent_failed", "parent",
-  "parent_execution_id"}`, and run the steps that do not descend from it. A
-  `version_moved`, `recipe_missing` or `digest_mismatch` refusal, which every step
-  meets, and a cancel still end the run.
+  "parent_execution_id"}`, and run the steps that do not descend from it. A refusal
+  of the request or its recipe (`version_moved`, `recipe_missing`, `digest_mismatch`
+  or `recipe_refused`) and a cancel still end the run.
 - `request_rollup` reads a failed request with an unstarted step `running` while its
   driver lease file exists. A poll, `open_requests_matching` and `mosaic cancel` then
   see the driver at work. A stale lease reads `orphaned`, and a resume runs the rest.

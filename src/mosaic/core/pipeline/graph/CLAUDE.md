@@ -151,10 +151,10 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   resume. A failed step ends the branch below it: its descendants are recorded `failed`
   with the error type `ParentFailed` (`PARENT_FAILED_TYPE`, reason `parent_failed`,
   as the mosaic-queue gate records it) and listed in `RequestRun.blocked`, and the
-  other steps run. A `version_moved`, `recipe_missing` or `digest_mismatch` refusal,
-  which every step would meet, ends the run. A cancel forwards SIGTERM to the running
-  step's group and records every step without a terminal record `cancelled`
-  (`record_step_ended`). The rollup then closes.
+  other steps run. A refusal of the request or its recipe (`version_moved`,
+  `recipe_missing`, `digest_mismatch`, `recipe_refused`) ends the run. A cancel
+  forwards SIGTERM to the running step's group and records every step without a
+  terminal record `cancelled` (`record_step_ended`). The rollup then closes.
   The driver deletes its lease when the request ends and keeps it when it raises
   (`test_pipeline_request_driver.py`, `test_pipeline_driver_lease.py`). The lease
   names the running step's process, which a killed driver leaves running in its own
