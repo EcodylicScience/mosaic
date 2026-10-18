@@ -6,7 +6,7 @@ import json
 from typing import cast
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from mosaic.agent.mcp.local import LocalBackend
 from mosaic.agent.mcp.spec import (
@@ -109,6 +109,34 @@ def test_submission_is_destructive() -> None:
     assert submit.annotations.destructive
     assert "cleanup" in submit.confirm_when
     assert "cleanup" in submit.input_model.model_fields
+
+
+@pytest.mark.parametrize("name", ["plan_recipe", "submit_pipeline"])
+def test_retire_sits_beside_cleanup_and_takes_only_digests(name: str) -> None:
+    spec = tool_spec(name)
+
+    assert spec is not None
+    fields = spec.input_model.model_fields
+    assert {"cleanup", "retire"} <= set(fields)
+    assert fields["retire"].default_factory is list
+    assert "this call only" in (fields["retire"].description or "")
+    model = spec.input_model
+    assert model.model_validate(_arguments(name, retire=["0123456789abcdef"]))
+    for bad in (
+        ["short"],
+        ["0123456789ABCDEF"],
+        ["../escape"],
+        ["0123456789abcdef"] * 9,
+    ):
+        with pytest.raises(ValidationError):
+            _ = model.model_validate(_arguments(name, retire=bad))
+
+
+def _arguments(name: str, **extra: object) -> dict[str, object]:
+    base: dict[str, object] = {"dataset": "uuid", "recipe": {}}
+    if name == "submit_pipeline":
+        base["plan_fingerprint"] = "x"
+    return {**base, **extra}
 
 
 def test_submission_asks_only_for_gpu_training_tracking_partial_bind_duplicate_and_cleanup() -> (

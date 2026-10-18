@@ -44,6 +44,8 @@ STATUS_IMPORTS = (
     "import mosaic.core.pipeline.graph.driver_lease",
     "from mosaic.core.pipeline.graph import driver_alive, read_driver_lease",
     "import mosaic.core.pipeline.graph.liveness",
+    "import mosaic.core.pipeline.graph.retirement",
+    "from mosaic.core.pipeline.graph import retirable_recipes, RetirableRecipeWire",
     "from mosaic.core.pipeline.cancel import cancel_attempt, cancel_request",
 )
 """Each spelling that a status reader, or a cancel, is imported by."""

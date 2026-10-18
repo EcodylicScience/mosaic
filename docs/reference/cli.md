@@ -1039,7 +1039,9 @@ scope that have not ended, running or orphaned, are listed with it.
 to the training groups and the scoring to the test groups.
 ``--cleanup superseded`` also reports the superseded runs of the recipe's
 feature storages, and the fingerprint then covers the ones removable. It
-writes nothing.
+also lists the saved recipes whose requests wrote runs, and ``--retire
+<digest>`` judges the runs of one of them too, in any storage. It writes
+nothing.
 
 **Usage**:
 
@@ -1057,6 +1059,7 @@ $ mosaic pipeline plan [OPTIONS]
 * `--cleanup <none|superseded>`: 'superseded' reports the other runs of the recipe's feature storages, each removable or kept with its reason; on submit and run they are removed after every step finished. Needs --expect-plan there.  [default: none]
 * `--keep-newest <int range>`: With --cleanup, keep this many superseded runs per storage, newest first.  [default: 1; x>=0]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
+* `--retire <str>`: With --cleanup superseded, also judge the runs that this saved recipe's requests wrote, in any storage (repeatable; a recipe digest, which 'pipeline plan --cleanup superseded' lists). It applies to this plan or submission only: give it to the plan and again to the submission.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1091,7 +1094,9 @@ stderr and under ``duplicates``, or refuses the submission with
 
 ``--cleanup superseded`` records the runs that the plan reviewed under
 ``--expect-plan`` found removable, and whatever runs the request removes
-them after every step has finished. A queue that dispatches the steps
+them after every step has finished. ``--retire <digest>`` adds the runs that
+a saved recipe's requests wrote, in any storage, and the plan reviewed must
+have been planned with the same digests. A queue that dispatches the steps
 itself runs no cleanup: ``pipeline run --request`` does.
 
 **Usage**:
@@ -1115,6 +1120,7 @@ $ mosaic pipeline submit [OPTIONS]
 * `--cleanup <none|superseded>`: 'superseded' reports the other runs of the recipe's feature storages, each removable or kept with its reason; on submit and run they are removed after every step finished. Needs --expect-plan there.  [default: none]
 * `--keep-newest <int range>`: With --cleanup, keep this many superseded runs per storage, newest first.  [default: 1; x>=0]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
+* `--retire <str>`: With --cleanup superseded, also judge the runs that this saved recipe's requests wrote, in any storage (repeatable; a recipe digest, which 'pipeline plan --cleanup superseded' lists). It applies to this plan or submission only: give it to the plan and again to the submission.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1129,8 +1135,9 @@ run was cancelled, by SIGTERM, SIGINT or ``mosaic cancel``.
 
 With ``--cleanup superseded --expect-plan`` the runs that plan found
 removable are removed once every step has finished, and the command exits 1
-when that cleanup failed. ``--request`` runs the cleanup its request
-recorded.
+when that cleanup failed. ``--retire <digest>`` adds the runs that a saved
+recipe's requests wrote, in any storage, to what that plan reviewed.
+``--request`` runs the cleanup its request recorded.
 
 ``--workers`` computes several entries of each parallelizable feature at once.
 It belongs to the machine and changes neither a run's identity nor its
@@ -1158,6 +1165,7 @@ $ mosaic pipeline run [OPTIONS]
 * `--cleanup <none|superseded>`: 'superseded' reports the other runs of the recipe's feature storages, each removable or kept with its reason; on submit and run they are removed after every step finished. Needs --expect-plan there.  [default: none]
 * `--keep-newest <int range>`: With --cleanup, keep this many superseded runs per storage, newest first.  [default: 1; x>=0]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
+* `--retire <str>`: With --cleanup superseded, also judge the runs that this saved recipe's requests wrote, in any storage (repeatable; a recipe digest, which 'pipeline plan --cleanup superseded' lists). It applies to this plan or submission only: give it to the plan and again to the submission.
 * `--expect-plan <str>`: With --recipe, the fingerprint that 'mosaic pipeline plan' printed. Refuses the run, writing nothing, when the plan has changed since. Required with --cleanup.
 * `--workers <int range>`: Compute this many entries of a parallelizable feature at once. The default computes them in turn. More workers use more memory.  [1<=x<=32]
 * `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
@@ -1296,7 +1304,7 @@ $ mosaic agent serve [OPTIONS]
 * `--dataset <path>`: A dataset to serve: its manifest or its directory. Repeatable.
 * `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, and the parallelism limits `max_workers`, `allow_process_mode` and `min_free_memory_fraction`. Its relative paths are read from its directory.
 * `--allow-managed-writes`: Let submit_pipeline and cancel_request change a dataset whose manifest names a managing service.
-* `--allow-cleanup <str>`: Let submit_pipeline remove superseded feature runs with cleanup 'superseded', after the user confirms. Repeatable; the one class is feature-runs. The policy is the config file's cleanup.
+* `--allow-cleanup <str>`: Let submit_pipeline remove superseded feature runs with cleanup 'superseded', and with retire the runs that a retired recipe wrote, after the user confirms. Repeatable; the one class is feature-runs. The policy is the config file's cleanup.
 * `--help`: Show this message and exit.
 
 ### `mosaic agent confirm-hook`

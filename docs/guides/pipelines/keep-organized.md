@@ -96,8 +96,29 @@ its `params.json` is missing, when an attempt that may still run names it or rea
 when another request holds it, when it covers entries or a fit its replacement does
 not, when it is younger than `--min-age-hours` (24 by default) or among the
 `--keep-newest` newest (1 by default), and when a kept run reads it. Only the storages
-the recipe names are touched, never tracks, models or media. A dataset that a service
-manages refuses a cleanup.
+the recipe names are touched, never tracks, models or media, unless you retire an
+earlier recipe (below). A dataset that a service manages refuses a cleanup.
+
+#### Runs in a storage the recipe no longer names
+
+Rebuilding a recipe so that a step reads something else, or dropping a step, moves its
+storage, and the old storage is outside every later plan. `--cleanup superseded` lists
+the saved recipes whose requests wrote runs. Pass one's digest to `--retire` on the plan
+and again on the submission, and the runs its requests wrote become candidates in any
+storage:
+
+```bash
+mosaic pipeline plan -m dataset.yaml --recipe @new.json --cleanup superseded \
+    --retire <digest of the old recipe>
+mosaic pipeline run  -m dataset.yaml --recipe @new.json --cleanup superseded \
+    --retire <digest of the old recipe> --expect-plan <fingerprint>
+```
+
+A retirement lasts for that one plan or submission. It reaches only runs the retired
+recipe's requests wrote, not a run they found already done or pinned, nor a run a
+notebook also used, and the rules above still apply to each, so the newest retired run
+of an abandoned storage stays unless you pass `--keep-newest 0`. A recipe with a request
+that has not ended, and the recipe being planned, cannot be retired.
 
 Each removed run's `params.json` is recorded in the cleanup's run-log, which
 `mosaic status --execution-id <cleanup id>` reads, so the run can be computed again.

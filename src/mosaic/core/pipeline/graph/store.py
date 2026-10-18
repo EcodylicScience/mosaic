@@ -44,6 +44,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "RequestUnreadable",
+    "current_digest",
     "list_requests",
     "load_recipe",
     "load_request",
@@ -51,6 +52,7 @@ __all__ = [
     "pipelines_root",
     "read_recipe_document",
     "recipe_path",
+    "request_ids",
     "request_path",
     "requests_matching",
     "requests_root",
@@ -148,15 +150,18 @@ def load_recipe(path: Path | str) -> Recipe:
 def save_request(base_dir: Path | str, request: Request) -> Path:
     """Write one submission's request file, and return where it landed.
 
-    A request without step scopes or a cleanup is written without those keys,
-    so its file is what an older mosaic wrote and reads there.
+    A request without step scopes, a cleanup, or a cleanup that retires no
+    recipe is written without those keys, so its file is what an older mosaic
+    wrote and reads there.
     """
     path = request_path(base_dir, request.request_id)
-    exclude: set[str] = set()
+    exclude: dict[str, bool | dict[str, bool]] = {}
     if not request.step_scopes:
-        exclude.add("step_scopes")
+        exclude["step_scopes"] = True
     if request.cleanup is None:
-        exclude.add("cleanup")
+        exclude["cleanup"] = True
+    elif not request.cleanup.retired:
+        exclude["cleanup"] = {"retired": True}
     _write_json(path, request.model_dump(mode="json", exclude=exclude or None))
     return path
 
@@ -202,7 +207,7 @@ def list_requests(
     """
     if limit is not None and limit < 1:
         raise ValueError(f"limit must be at least 1, got {limit}")
-    names = _request_ids(base_dir)
+    names = request_ids(base_dir)
     if after is not None:
         names = [name for name in names if name < after]
     page = names if limit is None else names[:limit]
@@ -276,7 +281,7 @@ def requests_matching(
     """
     found: list[RequestSummaryWire] = []
     current: dict[str, str | None] = {}
-    for name in _request_ids(base_dir):
+    for name in request_ids(base_dir):
         request = _request_of_recipe(
             base_dir, request_path(base_dir, name), recipe_digest, current
         )
@@ -311,7 +316,7 @@ def _request_of_recipe(
         if not isinstance(named, str):
             return None
         if named != recipe_digest and (
-            _current_digest(base_dir, named, current) != recipe_digest
+            current_digest(base_dir, named, current) != recipe_digest
         ):
             return None
         return Request.model_validate(document)
@@ -322,7 +327,7 @@ def _request_of_recipe(
         return None
 
 
-def _current_digest(
+def current_digest(
     base_dir: Path | str, named: str, current: dict[str, str | None]
 ) -> str | None:
     """What the recipe saved under *named* digests to now, or ``None`` if unreadable."""
@@ -350,7 +355,7 @@ def submission_lock(base_dir: Path | str) -> Generator[None]:
         yield
 
 
-def _request_ids(base_dir: Path | str) -> list[str]:
+def request_ids(base_dir: Path | str) -> list[str]:
     """Return the ids of a dataset's request files in descending order.
 
     A request id minted by ``submit_request`` is a ULID, so that order is creation

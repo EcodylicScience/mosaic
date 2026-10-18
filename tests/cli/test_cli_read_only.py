@@ -51,6 +51,7 @@ from tests.helpers import (
     SPEED_RECIPE,
     calms21_dataset,
     speed_recipe,
+    speed_recipe_stepping,
     add_media_sequence,
     add_tracks_variant,
     assert_tree_unchanged,
@@ -160,6 +161,13 @@ def unpopulated(tmp_path: Path) -> ReadDataset:
     return ReadDataset(dataset=dataset, recipe_path=_recipe_file(tmp_path))
 
 
+def _other_recipe_file(fixture: ReadDataset) -> Path:
+    """A recipe other than the one the fixture ran, which can retire it."""
+    path = fixture.recipe_path.parent / "other.recipe.json"
+    _ = path.write_text(speed_recipe_stepping(9).model_dump_json(), encoding="utf-8")
+    return path
+
+
 type CliArguments = Callable[[ReadDataset], list[str]]
 
 CLI_READS: dict[str, CliArguments] = {
@@ -192,6 +200,20 @@ CLI_READS: dict[str, CliArguments] = {
         "0",
         "--keep-newest",
         "0",
+    ],
+    "pipeline plan --retire": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{_other_recipe_file(f)}",
+        "--cleanup",
+        "superseded",
+        "--min-age-hours",
+        "0",
+        "--keep-newest",
+        "0",
+        "--retire",
+        load_request(f.root, f.request_id).recipe_digest,
     ],
     "pipeline status": lambda f: ["pipeline", "status", "--request", f.request_id],
     "preview": lambda _: ["preview", f"tracks-variant/{VARIANT}", "--entry", "seq_a"],

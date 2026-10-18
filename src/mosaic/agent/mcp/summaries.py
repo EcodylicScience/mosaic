@@ -258,6 +258,17 @@ def _plan(plan: PlanWire) -> str:
         if plan.cleanup is not None
         else ""
     )
+    if plan.cleanup is not None and plan.cleanup.retired:
+        unplaced = len(plan.cleanup.retired_runs) + plan.cleanup.retired_omitted
+        cleanup += (
+            f" It retires {len(plan.cleanup.retired)} recipe(s); {unplaced} of "
+            f"their runs sit in storages no step names, under cleanup.retired_runs."
+        )
+    elif plan.cleanup is not None and plan.retirable:
+        cleanup += (
+            f" {len(plan.retirable) + plan.retirable_omitted} saved recipe(s) wrote "
+            f"runs that retire can reclaim, under retirable."
+        )
     return (
         f"The plan covers {plan.scope_size} entries in {len(plan.steps)} step(s): "
         f"{_names(steps)}.{done}{narrowing}{deferred}{problems}{cautions}{unended}"

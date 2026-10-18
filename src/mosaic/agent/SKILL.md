@@ -158,10 +158,14 @@ A dataset is a directory with `dataset.yaml` and named roots
   sweep-tracking`, `prune-media` and `prune-joined`. `mosaic reindex` drops index rows
   whose files are gone. All four are dry runs until given `--apply`. For superseded
   feature runs, plan with `mosaic pipeline plan --cleanup superseded`, which lists
-  them, and submit with `--cleanup superseded --expect-plan <fingerprint>`.
+  them, and submit with `--cleanup superseded --expect-plan <fingerprint>`. The plan
+  also lists the saved recipes whose requests wrote runs. Give a digest to `--retire`
+  on the plan and again on the submission to reclaim the runs that recipe wrote in
+  storages the new recipe no longer names.
 - Give a recipe a `name` and keep it across the recipe's versions. A cleanup can then
   remove the runs of its earlier versions, and it keeps every run that a request of
-  another recipe recorded. An unnamed recipe is a version only of itself.
+  another recipe recorded, unless you retire that recipe. An unnamed recipe is a version
+  only of itself.
 
 ## Bringing data in
 
@@ -312,6 +316,14 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - `entries` takes `[group, sequence]` pairs or `{"groups": [...]}`, and
   `step_entries` narrows single steps by step id. Pass the same ones to
   `plan_recipe` and `submit_pipeline`, or the fingerprint will not match.
+- To reclaim the runs of an earlier recipe that wrote to storages this one no longer
+  names, call `plan_recipe` with `cleanup: "superseded"` and read `retirable`: name,
+  digest, request ids and run count; `retirable` lists the eight newest, and
+  `list_activity` shows the `recipe_digest` of any other request. Plan again with
+  `retire: [digest]`, show the user `cleanup.retired_runs` and every entry of a step's
+  `superseded` whose `retired` is set, and pass the same `retire` and the new
+  fingerprint to `submit_pipeline`. A retirement lasts for that call, so repeat it each
+  time.
 - A run's report, such as `evaluate-labels`' scores, is the resource
   `mosaic://dataset/{id}/artifacts/feature/{name}/{run_id}/report`.
 - A read returns at most 40,000 characters. A `result_too_large` error names the
@@ -351,8 +363,9 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   or a memory-floor failure, or its peak nears the host's memory, halve `workers` or
   use `thread`, then submit the recipe again. Written entries are kept, because the
   worker count is not part of a run's identity. Do not retry at the same setting.
-- The tools delete nothing except superseded feature runs, through `cleanup` on
-  `submit_pipeline`, which the operator must allow and the user confirms. They do not
+- The tools delete nothing except superseded feature runs, and with `retire` the
+  runs of recipes retired in that call, through `cleanup` on `submit_pipeline`, which
+  the operator must allow and the user confirms. They do not
   overwrite, sweep, prune, reindex or change the manifest. Propose the `mosaic`
   command and let the user run it.
 

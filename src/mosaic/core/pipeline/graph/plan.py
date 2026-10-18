@@ -366,8 +366,9 @@ class Plan:
         step_scopes: The scopes narrowing single steps, keyed by step id. A
             step's target is ``scope`` narrowed by its own, and its coverage
             is measured against that (:func:`step_target`).
-        cleanup: The superseded runs of the plan's feature storages, each
-            removable or kept with its reason, when the plan was asked for them
+        cleanup: The superseded runs of the plan's feature storages, and the
+            runs of the recipes it retires, each removable or kept with its
+            reason, when the plan was asked for them
             (:func:`~.cleanup.plan_with_cleanup`). ``None`` otherwise.
     """
 

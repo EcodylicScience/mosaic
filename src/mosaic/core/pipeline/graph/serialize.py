@@ -30,6 +30,7 @@ from ..parallelism import (
     host_cpus,
 )
 from .wire import (
+    RETIRED_SAMPLE,
     SUPERSEDED_SAMPLE,
     CleanupPlanWire,
     CoverageShortWire,
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
     from mosaic.core.scope import Scope
 
     from .cleanup import CleanupPlan, SupersededRun
-    from .status import RequestSummaryWire
+    from .status import RequestSummaryWire, RetirableRecipeWire
 
 __all__ = ["LARGE_SCOPE_ENTRIES", "plan_fingerprint", "plan_wire"]
 
@@ -65,6 +66,9 @@ def plan_wire(
     missing_sample: int = MISSING_SAMPLE_WIRE,
     open_requests: tuple[RequestSummaryWire, ...] = (),
     superseded_sample: int = SUPERSEDED_SAMPLE,
+    retired_sample: int = RETIRED_SAMPLE,
+    retirable: tuple[RetirableRecipeWire, ...] = (),
+    retirable_omitted: int = 0,
     parallel: ParallelLimits | None = None,
 ) -> PlanWire:
     """Serialize *plan* with a structured reason and a bounded coverage summary.
@@ -85,6 +89,12 @@ def plan_wire(
             given and do not enter the fingerprint.
         superseded_sample: How many superseded runs each step lists at most,
             when the plan was asked for a cleanup.
+        retired_sample: How many retired runs of storages no step names the
+            plan lists at most.
+        retirable: The saved recipes whose requests wrote runs
+            (:func:`~.retirement.retirable_recipes`), reported as given. They do
+            not enter the fingerprint.
+        retirable_omitted: How many more recipes there were than *retirable*.
         parallel: What a submission may ask for in parallelism. Each parallelizable
             step then reports the workers a submission that names no count
             receives, and the plan reports the limits and the host's memory. The
@@ -112,7 +122,9 @@ def plan_wire(
         problems=plan.problems,
         cautions=_plan_cautions(plan, steps),
         open_requests=open_requests,
-        cleanup=_cleanup_wire(plan.cleanup),
+        cleanup=_cleanup_wire(plan.cleanup, retired_sample),
+        retirable=retirable,
+        retirable_omitted=retirable_omitted,
         parallel=None if parallel is None else _parallel_wire(parallel),
     )
 
@@ -134,23 +146,42 @@ def _parallel_wire(limits: ParallelLimits) -> ParallelWire:
 def _superseded_by_step(
     cleanup: CleanupPlan | None,
 ) -> dict[str, tuple[SupersededRun, ...]]:
-    """The superseded runs of *cleanup*, grouped on the step that lists them."""
+    """The superseded runs of *cleanup*, grouped on the step that lists them.
+
+    A retired run in a storage no step names has no step and is listed by
+    :func:`_cleanup_wire`.
+    """
     grouped: dict[str, list[SupersededRun]] = {}
     for run in cleanup.runs if cleanup is not None else ():
-        grouped.setdefault(run.step_id, []).append(run)
+        if run.step_id:
+            grouped.setdefault(run.step_id, []).append(run)
     return {step_id: tuple(runs) for step_id, runs in grouped.items()}
 
 
-def _cleanup_wire(cleanup: CleanupPlan | None) -> CleanupPlanWire | None:
-    """The totals of *cleanup*, ``None`` for a plan not asked for one."""
+def _cleanup_wire(
+    cleanup: CleanupPlan | None, retired_sample: int
+) -> CleanupPlanWire | None:
+    """The totals of *cleanup*, ``None`` for a plan not asked for one.
+
+    The retired runs of storages no step names are listed here, removable ones
+    first and otherwise in the order *cleanup* reports them, at most
+    *retired_sample* of them, so a sample never hides a run the cleanup would remove.
+    """
     if cleanup is None:
         return None
+    unplaced = sorted(
+        (run for run in cleanup.runs if not run.step_id),
+        key=lambda run: not run.removable,
+    )
     return CleanupPlanWire(
         policy=cleanup.policy,
         removable_runs=len(cleanup.removable),
         removable_bytes=cleanup.removable_bytes,
         kept_runs=len(cleanup.kept),
         kept_bytes=cleanup.kept_bytes,
+        retired=cleanup.retired,
+        retired_runs=tuple(_superseded_wire(run) for run in unplaced[:retired_sample]),
+        retired_omitted=max(len(unplaced) - retired_sample, 0),
     )
 
 
@@ -165,6 +196,7 @@ def _superseded_wire(run: SupersededRun) -> SupersededRunWire:
         entries=run.entries,
         finished_at=run.finished_at,
         superseded_by=run.superseded_by,
+        retired=run.retired_by,
     )
 
 
@@ -217,8 +249,10 @@ def plan_fingerprint(plan: Plan) -> str:
 
     A plan asked for a cleanup (:func:`~.cleanup.plan_with_cleanup`) adds the
     policy and the runs it may remove, so a submission removes only the runs
-    its caller reviewed. Their sizes and the runs kept are left out. A plan not
-    asked for one fingerprints as before.
+    its caller reviewed. Their sizes and the runs kept are left out. The
+    recipes it retires are added only when there are any, so a submission that
+    retires nothing fingerprints as it did before retirement existed. A plan not
+    asked for a cleanup fingerprints as before.
     """
     document: dict[str, JsonValue] = {
         "dataset": plan.dataset_uuid,
@@ -237,13 +271,16 @@ def plan_fingerprint(plan: Plan) -> str:
         policy = plan.cleanup.policy
         removable = sorted((run.storage, run.run_id) for run in plan.cleanup.removable)
         remove: list[JsonValue] = [[storage, run_id] for storage, run_id in removable]
-        document["cleanup"] = {
+        cleanup_document: dict[str, JsonValue] = {
             "policy": {
                 "keep_newest": policy.keep_newest,
                 "min_age_hours": policy.min_age_hours,
             },
             "remove": remove,
         }
+        if plan.cleanup.retired:
+            cleanup_document["retire"] = list(plan.cleanup.retired)
+        document["cleanup"] = cleanup_document
     return document_digest(document)
 
 

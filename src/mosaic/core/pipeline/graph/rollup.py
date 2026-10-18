@@ -80,6 +80,8 @@ class StepAttempt:
         liveness_interval: The seconds between the ``alive`` events that the
             process promised, 0 for none.
         phase: The last phase the attempt declared, ``""`` before one.
+        target: What the run-log names as its target: the storage name under
+            ``features/`` for a feature step, ``""`` before it started.
         workers: How many entries it computed at once, 0 before it reports.
         parallel_mode: How it computed them, ``""`` for one at a time or before it
             reports.
@@ -108,6 +110,7 @@ class StepAttempt:
     pid_ns: str = ""
     liveness_interval: float = 0.0
     phase: str = ""
+    target: str = ""
     workers: int = 0
     parallel_mode: str = ""
     peak_rss_bytes: int = 0
@@ -220,6 +223,7 @@ def _attempt(logs: Path, step_id: str, execution_id: str) -> StepAttempt:
         pid_ns=snapshot["pid_ns"],
         liveness_interval=snapshot["liveness_interval"],
         phase=snapshot["phase"],
+        target=snapshot["target"],
         workers=snapshot["workers"],
         parallel_mode=snapshot["parallel_mode"],
         peak_rss_bytes=snapshot["peak_rss_bytes"],

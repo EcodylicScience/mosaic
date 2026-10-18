@@ -22,9 +22,13 @@ from mosaic.core.pipeline.graph import (
     CleanupNeedsPlan,
     CleanupOnManagedDataset,
     CleanupPolicy,
+    CleanupSpec,
     CleanupTarget,
     PlanChanged,
     Recipe,
+    Request,
+    RetireNeedsCleanup,
+    RetireUnknownRecipe,
     declared_version,
     load_request,
     plan_fingerprint,
@@ -33,6 +37,8 @@ from mosaic.core.pipeline.graph import (
     recipe_digest,
     recipe_path,
     request_path,
+    run_pipeline,
+    save_request,
     step_argv,
     submit_request,
 )
@@ -41,6 +47,7 @@ from tests.helpers import (
     add_tracks_variant,
     make_dataset,
     run_speed,
+    speed_heading_recipe,
     speed_recipe_stepping,
 )
 
@@ -366,6 +373,11 @@ def test_the_request_records_the_approved_set_and_policy(tracked: Dataset) -> No
         fingerprint,
     )
     assert spec.approved == [CleanupTarget(storage=SPEED_STORAGE, run_id=old)]
+    assert spec.retired == []
+    saved = json.loads(
+        request_path(tracked.base_dir, submitted.request.request_id).read_text()
+    )
+    assert "retired" not in saved["cleanup"]
     assert spec.execution_id not in submitted.request.step_executions.values()
     assert submitted.plan.cleanup is not None
 
@@ -404,3 +416,152 @@ def test_a_fingerprint_without_cleanup_does_not_submit_a_cleanup(
         request_path(tracked.base_dir, submitted.request.request_id).read_text()
     )
     assert "cleanup" not in saved
+
+
+# --- the request file an older mosaic reads --------------------------------------------
+
+_FILE_HEAD = """{
+  "request_id": "%s",
+  "recipe_digest": "0123456789abcdef",
+  "owner": "",
+  "created_at": "2026-10-18T00:00:00Z",
+  "scope": {
+    "entries": null,
+    "groups": null,
+    "sequences": null
+  },
+  "bind": {},
+  "allow_partial": false,
+  "max_concurrent_steps": null,
+  "step_executions": {
+    "speed": "E1"
+  },
+  "step_versions": {
+    "speed": "0.2"
+  }"""
+
+_CLEANUP_BODY = """,
+  "cleanup": {
+    "mode": "superseded",
+    "policy": {
+      "keep_newest": 1,
+      "min_age_hours": 24.0
+    },
+    "execution_id": "E2",
+    "approved": [
+      {
+        "storage": "s",
+        "run_id": "0.2-aaaaaaaaaa"
+      }
+    ],
+    "fingerprint": "f"%s
+  }
+}"""
+
+
+def _request(*, retired: list[str] | None = None, cleanup: bool = True) -> Request:
+    spec = (
+        CleanupSpec(
+            execution_id="E2",
+            approved=[CleanupTarget(storage="s", run_id="0.2-aaaaaaaaaa")],
+            fingerprint="f",
+            retired=retired or [],
+        )
+        if cleanup
+        else None
+    )
+    return Request(
+        request_id="R1" if cleanup else "R2",
+        recipe_digest="0123456789abcdef",
+        created_at="2026-10-18T00:00:00Z",
+        step_executions={"speed": "E1"},
+        step_versions={"speed": "0.2"},
+        cleanup=spec,
+    )
+
+
+def test_a_request_without_a_retirement_is_written_as_an_older_mosaic_wrote_it(
+    tmp_path: Path,
+) -> None:
+    """Pinned to the bytes written before ``retired`` existed."""
+    plain = save_request(tmp_path, _request(cleanup=False))
+    cleaning = save_request(tmp_path, _request())
+
+    assert plain.read_text() == (_FILE_HEAD % "R2") + "\n}"
+    assert cleaning.read_text() == (_FILE_HEAD % "R1") + (_CLEANUP_BODY % "")
+
+
+def test_a_retirement_is_written_and_read_back(tmp_path: Path) -> None:
+    request = _request(retired=["51b2573baa1b4a84"])
+
+    path = save_request(tmp_path, request)
+
+    assert path.read_text() == (_FILE_HEAD % "R1") + (
+        _CLEANUP_BODY % ',\n    "retired": [\n      "51b2573baa1b4a84"\n    ]'
+    )
+    loaded = load_request(tmp_path, "R1")
+    assert loaded.cleanup is not None
+    assert loaded.cleanup.retired == ["51b2573baa1b4a84"]
+    assert loaded == request
+
+
+def test_the_request_records_the_recipes_it_retires(
+    tracked: Dataset, lapsed_request_holds: None
+) -> None:
+    ran = run_pipeline(tracked, speed_heading_recipe())
+    recipe = speed_recipe_stepping(2)
+    fingerprint = plan_fingerprint(
+        plan_with_cleanup(tracked, recipe, cleanup=LOOSE, retire=[ran.recipe_digest])
+    )
+
+    submitted = submit_request(
+        tracked,
+        recipe,
+        cleanup=LOOSE,
+        expect_plan=fingerprint,
+        retire=[ran.recipe_digest, ran.recipe_digest],
+    )
+
+    spec = load_request(tracked.base_dir, submitted.request.request_id).cleanup
+    assert spec is not None
+    assert spec.retired == [ran.recipe_digest]
+    assert {target.storage for target in spec.approved} == {
+        SPEED_STORAGE,
+        "heading__from__tracks",
+    }
+    assert submitted.plan.cleanup is not None
+    assert submitted.plan.cleanup.retired == (ran.recipe_digest,)
+
+
+def test_a_submission_that_retires_without_a_cleanup_is_refused(
+    tracked: Dataset,
+) -> None:
+    ran = run_pipeline(tracked, speed_heading_recipe())
+
+    with pytest.raises(RetireNeedsCleanup):
+        _ = submit_request(
+            tracked, speed_recipe_stepping(2), retire=[ran.recipe_digest]
+        )
+
+    assert list(request_path(tracked.base_dir, "x").parent.glob("*.json")) == [
+        request_path(tracked.base_dir, ran.request_id)
+    ]
+
+
+def test_a_submission_that_retires_an_unknown_recipe_writes_nothing(
+    tracked: Dataset,
+) -> None:
+    recipe = speed_recipe_stepping(2)
+    fingerprint = _cleanup_fingerprint(tracked, recipe)
+
+    with pytest.raises(RetireUnknownRecipe):
+        _ = submit_request(
+            tracked,
+            recipe,
+            cleanup=LOOSE,
+            expect_plan=fingerprint,
+            retire=["0123456789abcdef"],
+        )
+
+    assert not request_path(tracked.base_dir, "x").parent.exists()
+    assert not recipe_path(tracked.base_dir, recipe_digest(recipe)).exists()

@@ -66,7 +66,10 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   `cleanup` argument of `submit_pipeline`, refused (`cleanup_not_allowed`) unless the
   server runs with `--allow-cleanup feature-runs`, and asked about through the
   `cleanup` condition. The policy comes from the server's configuration, never from a
-  call (`test_confirmation_gate.py`). `plan_recipe` takes `cleanup` as a read.
+  call (`test_confirmation_gate.py`). `plan_recipe` takes `cleanup` as a read. `retire`
+  widens the same deletion to the runs of retired recipes in any storage. It needs
+  `cleanup`, applies to one call, and shares the flag and the condition, so its
+  finding names the retired recipes.
 - Parallelism limits (`max_workers`, `allow_process_mode`, `min_free_memory_fraction`)
   are the operator's. `submit_pipeline` takes `workers` and `parallel_mode` within them
   and `ParallelLimits.settings_for` refuses a request over a limit

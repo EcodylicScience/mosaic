@@ -57,6 +57,7 @@ __all__ = [
     "JSON_OBJECT",
     "POLL_AFTER_MAX_SECONDS",
     "POLL_AFTER_MIN_SECONDS",
+    "RETIRABLE_REQUEST_IDS",
     "CleanupRunWire",
     "CleanupStatusWire",
     "FailedEntryWire",
@@ -65,6 +66,7 @@ __all__ = [
     "RequestStatusWire",
     "RequestSummaryWire",
     "RequestVerdict",
+    "RetirableRecipeWire",
     "RunStatusWire",
     "StepStatusWire",
     "cleanup_status_wire",
@@ -82,6 +84,9 @@ FAILED_ENTRY_SAMPLE: Final = 20
 
 CLEANUP_RUN_SAMPLE: Final = 20
 """The most removed runs, and the most kept runs, that a cleanup's report lists."""
+
+RETIRABLE_REQUEST_IDS: Final = 5
+"""The most request ids that one retirable recipe lists."""
 
 POLL_AFTER_MIN_SECONDS: Final = 10
 """The fewest seconds a request report asks a poller to wait."""
@@ -279,6 +284,8 @@ class CleanupRunWire(GraphModel):
         reason: Why it was kept, ``""`` for a run removed.
         detail: What kept it, ``""`` for a run removed.
         bytes: The bytes its directory held, 0 for a run kept.
+        retired: For a run removed, the digest of the retired recipe whose
+            request wrote it; ``""`` for a superseded run and for a run kept.
     """
 
     storage: str
@@ -286,6 +293,7 @@ class CleanupRunWire(GraphModel):
     reason: str = ""
     detail: str = ""
     bytes: int = 0
+    retired: str = ""
 
 
 class CleanupStatusWire(GraphModel):
@@ -386,6 +394,29 @@ class RequestPageWire(GraphModel):
 
     items: tuple[RequestSummaryWire, ...]
     next_after: str | None
+
+
+class RetirableRecipeWire(GraphModel):
+    """A saved recipe whose requests wrote runs, which a cleanup may retire.
+
+    Attributes:
+        digest: The recipe's digest in the current canonical form, which
+            ``retire`` takes.
+        name: The recipe's ``name``, ``""`` for an unnamed one.
+        requests: How many requests of the recipe the dataset holds.
+        request_ids: The newest of those requests, at most
+            :data:`RETIRABLE_REQUEST_IDS`.
+        runs: How many feature runs those requests wrote.
+        open: Whether one of its requests is running or orphaned, so the recipe
+            cannot be retired until that request ends or is cancelled.
+    """
+
+    digest: str
+    name: str
+    requests: int
+    request_ids: tuple[str, ...]
+    runs: int
+    open: bool
 
 
 def recorded_error(error_json: str) -> RecordedErrorWire | None:
@@ -520,6 +551,7 @@ def cleanup_status_wire(
                 storage=record["feature"],
                 run_id=record["run_id"],
                 bytes=record["bytes"],
+                retired=record["retired"],
             )
             for record in removed[:CLEANUP_RUN_SAMPLE]
         ),

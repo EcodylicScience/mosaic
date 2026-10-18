@@ -66,6 +66,7 @@ if TYPE_CHECKING:
         Request,
         RequestStatusWire,
         RequestSummaryWire,
+        RetirableRecipeWire,
     )
 
 pipeline_app = typer.Typer(
@@ -118,6 +119,20 @@ MinAgeOption = Annotated[
         "--min-age-hours",
         min=0,
         help="With --cleanup, keep every run younger than this many hours.",
+    ),
+]
+
+RetireOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--retire",
+        help=(
+            "With --cleanup superseded, also judge the runs that this saved "
+            "recipe's requests wrote, in any storage (repeatable; a recipe "
+            "digest, which 'pipeline plan --cleanup superseded' lists). It "
+            "applies to this plan or submission only: give it to the plan and "
+            "again to the submission."
+        ),
     ),
 ]
 
@@ -256,6 +271,7 @@ def plan_command(
     cleanup: CleanupOption = "none",
     keep_newest: KeepNewestOption = 1,
     min_age_hours: MinAgeOption = 24.0,
+    retire: RetireOption = None,
     as_json: JsonOption = False,
 ) -> None:
     """Resolve a recipe against a dataset: identities, coverage, what is left.
@@ -267,14 +283,18 @@ def plan_command(
     to the training groups and the scoring to the test groups.
     ``--cleanup superseded`` also reports the superseded runs of the recipe's
     feature storages, and the fingerprint then covers the ones removable. It
-    writes nothing.
+    also lists the saved recipes whose requests wrote runs, and ``--retire
+    <digest>`` judges the runs of one of them too, in any storage. It writes
+    nothing.
     """
     from mosaic.core.pipeline.graph import (
         RecipeRefused,
         plan_wire,
         plan_with_cleanup,
         requests_matching,
+        retirable_recipes,
     )
+    from mosaic.core.pipeline.index import feature_run_root
     from mosaic.core.scope import Scope
 
     ds = load_dataset(manifest, read_only=True)
@@ -289,6 +309,7 @@ def plan_command(
                 cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
                 scope=scope,
                 step_scopes=step_scopes,
+                retire=retire or (),
             )
     except RecipeRefused as refusal:
         if as_json:
@@ -300,7 +321,24 @@ def plan_command(
     unended = requests_matching(
         ds.base_dir, plan.recipe_digest, Scope() if scope is None else scope
     )
-    _emit_plan(plan, open_requests=unended, as_json=as_json)
+    retirable, omitted = (
+        retirable_recipes(
+            ds.base_dir,
+            exclude_digest=plan.recipe_digest,
+            present=lambda storage, run_id: feature_run_root(
+                ds, storage, run_id
+            ).is_dir(),
+        )
+        if plan.cleanup is not None
+        else ((), 0)
+    )
+    _emit_plan(
+        plan,
+        open_requests=unended,
+        retirable=retirable,
+        retirable_omitted=omitted,
+        as_json=as_json,
+    )
 
 
 def show_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
@@ -446,6 +484,7 @@ def run_command(
     cleanup: CleanupOption = "none",
     keep_newest: KeepNewestOption = 1,
     min_age_hours: MinAgeOption = 24.0,
+    retire: RetireOption = None,
     expect_plan: Annotated[
         str | None,
         typer.Option(
@@ -471,8 +510,9 @@ def run_command(
 
     With ``--cleanup superseded --expect-plan`` the runs that plan found
     removable are removed once every step has finished, and the command exits 1
-    when that cleanup failed. ``--request`` runs the cleanup its request
-    recorded.
+    when that cleanup failed. ``--retire <digest>`` adds the runs that a saved
+    recipe's requests wrote, in any storage, to what that plan reviewed.
+    ``--request`` runs the cleanup its request recorded.
 
     ``--workers`` computes several entries of each parallelizable feature at once.
     It belongs to the machine and changes neither a run's identity nor its
@@ -498,12 +538,13 @@ def run_command(
             or allow_partial
             or owner
             or cleanup != "none"
+            or retire
             or expect_plan is not None
         ):
             fail(
                 "--entry, --group, --step-scope, --allow-partial, --owner, "
-                "--cleanup and --expect-plan are recorded on a request at submit, "
-                "and are not used with --request."
+                "--cleanup, --retire and --expect-plan are recorded on a request "
+                "at submit, and are not used with --request."
             )
         _run_request(
             manifest, request_id, detach=detach, as_json=as_json, parallel=parallel
@@ -533,6 +574,7 @@ def run_command(
                 step_scopes=step_scopes,
                 expect_plan=expect_plan,
                 cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
+                retire=retire or (),
             )
             submitted = recorded.request
             _warn_duplicates(recorded.duplicates)
@@ -743,6 +785,7 @@ def submit_command(
     cleanup: CleanupOption = "none",
     keep_newest: KeepNewestOption = 1,
     min_age_hours: MinAgeOption = 24.0,
+    retire: RetireOption = None,
     as_json: JsonOption = False,
 ) -> None:
     """Record a submission of a recipe, and print the command for every step.
@@ -758,7 +801,9 @@ def submit_command(
 
     ``--cleanup superseded`` records the runs that the plan reviewed under
     ``--expect-plan`` found removable, and whatever runs the request removes
-    them after every step has finished. A queue that dispatches the steps
+    them after every step has finished. ``--retire <digest>`` adds the runs that
+    a saved recipe's requests wrote, in any storage, and the plan reviewed must
+    have been planned with the same digests. A queue that dispatches the steps
     itself runs no cleanup: ``pipeline run --request`` does.
     """
     from mosaic.core.pipeline.graph import plan_fingerprint, step_argv, submit_request
@@ -780,6 +825,7 @@ def submit_command(
                 refuse_duplicates=refuse_duplicates,
                 step_scopes=step_scopes,
                 cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
+                retire=retire or (),
             )
     except ClassifiedError as error:
         _fail_unrunnable(error, as_json=as_json)
@@ -842,10 +888,15 @@ def submit_command(
         assert isinstance(argv, list)
         typer.echo(" ".join(shlex.quote(str(word)) for word in argv))
     if request.cleanup is not None:
+        retiring = (
+            f", {len(request.cleanup.retired)} recipe(s) retired"
+            if request.cleanup.retired
+            else ""
+        )
         log(
-            f"note: {len(request.cleanup.approved)} superseded run(s) are removed "
-            f"once every step has finished, by 'mosaic pipeline run --request "
-            f"{request.request_id}'"
+            f"note: {len(request.cleanup.approved)} superseded run(s){retiring} are "
+            f"removed once every step has finished, by 'mosaic pipeline run "
+            f"--request {request.request_id}'"
         )
 
 
@@ -1007,15 +1058,23 @@ def _emit_plan(
     plan: "Plan",
     *,
     open_requests: "tuple[RequestSummaryWire, ...]" = (),
+    retirable: "tuple[RetirableRecipeWire, ...]" = (),
+    retirable_omitted: int = 0,
     as_json: bool,
 ) -> None:
     """Render a plan as its fingerprint and a table, or as the JSON an API serves.
 
-    Each of the plan's cautions and of *open_requests* is noted below the table.
+    Each of the plan's cautions and of *open_requests* is noted below the table,
+    followed by the *retirable* recipes of a plan asked for a cleanup.
     """
     from mosaic.core.pipeline.graph import plan_wire
 
-    wire = plan_wire(plan, open_requests=open_requests)
+    wire = plan_wire(
+        plan,
+        open_requests=open_requests,
+        retirable=retirable,
+        retirable_omitted=retirable_omitted,
+    )
     if as_json:
         emit_json(wire.model_dump(mode="json"))
         return
@@ -1050,6 +1109,7 @@ def _emit_plan(
         superseded = [run for step in wire.steps for run in step.superseded]
         if superseded:
             typer.echo("superseded runs")
+            retiring = any(run.retired for run in superseded)
             render_table(
                 [
                     {
@@ -1058,19 +1118,57 @@ def _emit_plan(
                         "removable": "yes" if run.removable else "kept",
                         "reason": run.reason,
                         "size": _size(run.bytes),
+                        "recipe": run.retired or "-",
                     }
                     for step in wire.steps
                     for run in step.superseded
                 ],
-                ["step", "run_id", "removable", "reason", "size"],
+                ["step", "run_id", "removable", "reason", "size"]
+                + (["recipe"] if retiring else []),
             )
-        omitted = sum(step.superseded_omitted for step in wire.steps)
+        if wire.cleanup.retired_runs:
+            typer.echo("retired runs")
+            render_table(
+                [
+                    {
+                        "recipe": run.retired,
+                        "storage": run.storage,
+                        "run_id": run.run_id,
+                        "removable": "yes" if run.removable else "kept",
+                        "reason": run.reason,
+                        "size": _size(run.bytes),
+                    }
+                    for run in wire.cleanup.retired_runs
+                ],
+                ["recipe", "storage", "run_id", "removable", "reason", "size"],
+            )
+        omitted = (
+            sum(step.superseded_omitted for step in wire.steps)
+            + wire.cleanup.retired_omitted
+        )
         log(
             f"cleanup: {wire.cleanup.removable_runs} superseded run(s) removable "
             f"({_size(wire.cleanup.removable_bytes)}), {wire.cleanup.kept_runs} "
             f"kept ({_size(wire.cleanup.kept_bytes)})"
             + (f"; {omitted} not listed" if omitted else "")
         )
+        if wire.retirable:
+            typer.echo("retirable recipes (pass a digest to --retire)")
+            render_table(
+                [
+                    {
+                        "recipe": row.digest,
+                        "name": row.name or "-",
+                        "requests": row.requests,
+                        "runs": row.runs,
+                        "open": "yes" if row.open else "no",
+                    }
+                    for row in wire.retirable
+                ],
+                ["recipe", "name", "requests", "runs", "open"],
+            )
+            if wire.retirable_omitted:
+                log(f"note: {wire.retirable_omitted} more recipe(s) not listed")
     for summary in open_requests:
         log(
             f"note: request {summary.request_id} of this recipe is "

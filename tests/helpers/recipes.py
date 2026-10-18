@@ -22,6 +22,7 @@ from tests.helpers.golden import golden_path, read_golden
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.graph import PipelineRun
 
 SPEED_RECIPE: dict[str, object] = {
     "schema_version": 1,
@@ -104,6 +105,48 @@ def speed_recipe_stepping(step_size: int) -> Recipe:
                     "inputs": ["tracks"],
                     "params": {"step_size": step_size},
                 }
+            ],
+        }
+    )
+
+
+def named_recipe(recipe: Recipe, name: str) -> Recipe:
+    """*recipe* under *name*, which makes it a different recipe with its own digest."""
+    return Recipe.model_validate({**recipe.model_dump(mode="json"), "name": name})
+
+
+def run_id_of(done: PipelineRun, step_id: str) -> str:
+    """The run that step *step_id* of a finished recipe run named."""
+    [found] = [o.run_id for o in done.outcomes if o.step_id == step_id and o.run_id]
+    return found
+
+
+def speed_heading_recipe(name: str = "old") -> Recipe:
+    """``speed-angvel`` and ``heading`` over the tracks, each a storage of its own.
+
+    A cleanup that plans ``speed_recipe_stepping`` names only the speed storage,
+    which leaves ``heading__from__tracks`` as a storage the planned recipe does not
+    name.
+    """
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": name,
+            "steps": [
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": ["tracks"],
+                    "params": {"step_size": 1},
+                },
+                {
+                    "id": "heading",
+                    "type": "feature",
+                    "feature": "heading",
+                    "inputs": ["tracks"],
+                    "params": {},
+                },
             ],
         }
     )

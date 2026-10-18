@@ -115,9 +115,10 @@ A request submitted with `--cleanup superseded` removes its approved superseded 
 after every step has finished, and stays `running` until that is done.
 `mosaic pipeline status` prints the cleanup below the steps: its status, how many runs
 it removed of those approved, and each run it kept with the reason. `skipped` means a
-step did not finish, so nothing was removed. A cleanup that fails or is cancelled leaves
-the request's verdict to its steps. A queue that runs the steps itself runs no cleanup;
-`mosaic pipeline run --request` does.
+step did not finish, so nothing was removed. A run removed because its recipe was
+retired names that recipe (`removed[].retired` under `--json`). A cleanup that fails or
+is cancelled leaves the request's verdict to its steps. A queue that runs the steps
+itself runs no cleanup; `mosaic pipeline run --request` does.
 
 **Compute several entries at once.** A feature that computes each entry on its own
 (`parallelizable` in `mosaic pipeline catalog <name>`) can use `--workers`:

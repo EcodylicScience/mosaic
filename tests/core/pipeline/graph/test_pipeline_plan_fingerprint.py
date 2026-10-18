@@ -7,8 +7,8 @@ tracks entry has appeared in between.
 
 from __future__ import annotations
 
-import json
 import datetime
+import json
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -41,6 +41,7 @@ from tests.helpers import (
     make_dataset,
     run_fresh,
     run_speed,
+    speed_heading_recipe,
     speed_recipe,
     speed_recipe_stepping,
 )
@@ -315,3 +316,66 @@ def test_a_cleanup_fingerprint_holds_no_time_or_size(tracked: Dataset) -> None:
     assert later.cleanup is not None
     assert later.cleanup.removable_bytes > first.cleanup.removable_bytes
     assert plan_fingerprint(later) == plan_fingerprint(first)
+
+
+def test_a_retirement_enters_the_fingerprint_only_when_given(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran = run_pipeline(tracked, speed_heading_recipe())
+    recipe = speed_recipe_stepping(2)
+    later = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=30)
+    digested: list[dict[str, JsonValue]] = []
+    digest = serialize_module.document_digest
+
+    def capture(document: dict[str, JsonValue]) -> str:
+        digested.append(document)
+        return digest(document)
+
+    monkeypatch.setattr(serialize_module, "document_digest", capture)
+    plain = plan_with_cleanup(tracked, recipe, cleanup=LOOSE, now=later)
+    retiring = plan_with_cleanup(
+        tracked, recipe, cleanup=LOOSE, now=later, retire=[ran.recipe_digest]
+    )
+    _ = plan_fingerprint(plain)
+    _ = plan_fingerprint(retiring)
+
+    plain_cleanup, retiring_cleanup = digested[-2]["cleanup"], digested[-1]["cleanup"]
+    assert isinstance(plain_cleanup, dict)
+    assert isinstance(retiring_cleanup, dict)
+    assert set(plain_cleanup) == {"policy", "remove"}
+    assert retiring_cleanup["retire"] == [ran.recipe_digest]
+    assert plan_fingerprint(plain) != plan_fingerprint(retiring)
+    assert plan_wire(retiring).fingerprint == plan_fingerprint(retiring)
+
+
+@pytest.mark.parametrize("reviewed_with", [True, False])
+def test_a_retirement_must_be_the_one_the_plan_was_reviewed_with(
+    tracked: Dataset, lapsed_request_holds: None, reviewed_with: bool
+) -> None:
+    ran = run_pipeline(tracked, speed_heading_recipe())
+    recipe = speed_recipe_stepping(2)
+    retire = [ran.recipe_digest]
+    reviewed = plan_fingerprint(
+        plan_with_cleanup(
+            tracked, recipe, cleanup=LOOSE, retire=retire if reviewed_with else []
+        )
+    )
+
+    with pytest.raises(PlanChanged):
+        _ = submit_request(
+            tracked,
+            recipe,
+            cleanup=LOOSE,
+            expect_plan=reviewed,
+            retire=[] if reviewed_with else retire,
+        )
+    submitted = submit_request(
+        tracked,
+        recipe,
+        cleanup=LOOSE,
+        expect_plan=reviewed,
+        retire=retire if reviewed_with else [],
+    )
+
+    assert submitted.request.cleanup is not None
+    assert submitted.request.cleanup.retired == (retire if reviewed_with else [])

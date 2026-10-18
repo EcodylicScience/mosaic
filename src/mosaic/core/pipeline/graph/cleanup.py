@@ -11,15 +11,21 @@ a request of another recipe recorded or binds stays kept after that request's ho
 lapses (``recipe_uses``). A candidate recorded by no request, such as a run written by
 ``run_feature``, is judged by the other rules alone.
 
-Only feature runs of the storages the recipe names are ever candidates. Tracks,
-models, media and the storages of other recipes are not, and a run directory with
-no index rows is not in the inventory and is left to ``mosaic reindex``.
+Only feature runs of the storages the recipe names are candidates, with one
+addition. A submission may **retire** saved recipes by digest
+(:mod:`~.retirement`): the runs their requests wrote are candidates wherever they
+sit, including storages the recipe no longer names, and a request of a retired
+recipe no longer keeps those runs as ``recipe_uses``. A retirement belongs to the
+one submission and to its plan. Tracks, models, media and the storages of other
+recipes are never candidates otherwise, and a run directory with no index rows is
+not in the inventory and is left to ``mosaic reindex``.
 
 A candidate is kept, by the first rule that matches:
 
 1. Its storage's step has no run id yet (``keeper_unresolved``), or the whole
    plan is held: a managed dataset (``managed_dataset``) or a request file that
-   does not read (``request_unreadable``).
+   does not read (``request_unreadable``). A retired run in a storage the recipe
+   does not name has no step, and this rule does not apply to it.
 2. The request being cleaned up pins it (``bound``).
 3. Its feature declares ``costly_fit``, or the catalog does not know its
    feature (``costly_fit``).
@@ -33,10 +39,12 @@ A candidate is kept, by the first rule that matches:
    ``min_age_hours``, whichever is longer.
 7. A request of a recipe that is not a version of the planned one recorded or
    binds it, at any age (``recipe_uses``). A request whose recipe file does not
-   read keeps the runs it recorded the same way.
+   read keeps the runs it recorded the same way. A request of a retired recipe
+   keeps only the runs it did not write, and the runs it bound.
 8. It holds entries its replacement lacks (``wider_coverage``), or it is a
    scope-dependent fit over entries its replacement does not cover
-   (``other_fit_scope``).
+   (``other_fit_scope``). A retired run in a storage the recipe does not name has
+   no replacement, and this rule does not apply to it.
 9. It is younger than ``min_age_hours`` (``young``).
 10. It is among the ``keep_newest`` newest superseded runs of its storage
     (``newest``).
@@ -54,8 +62,9 @@ from __future__ import annotations
 
 import datetime
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field, replace
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
@@ -139,6 +148,10 @@ class SupersededRun:
         entries: How many entries its index rows name.
         finished_at: When it finished, ``""`` for a run that did not.
         superseded_by: The run or runs the plan expects in its storage.
+        retired_by: The digest of the retired recipe whose request wrote it,
+            ``""`` for a run no retirement reached. A retired run in a storage
+            the recipe does not name has an empty ``step_id`` and
+            ``superseded_by``.
     """
 
     step_id: str
@@ -151,6 +164,7 @@ class SupersededRun:
     entries: int
     finished_at: str
     superseded_by: str
+    retired_by: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,10 +175,12 @@ class CleanupPlan:
         policy: The age and recency the runs were judged under.
         runs: One record per superseded run, removable ones first in each
             storage, then the newest.
+        retired: The digests of the recipes the plan retired, sorted.
     """
 
     policy: CleanupPolicy
     runs: tuple[SupersededRun, ...] = ()
+    retired: tuple[str, ...] = ()
 
     @property
     def removable(self) -> tuple[SupersededRun, ...]:
@@ -199,6 +215,7 @@ def plan_with_cleanup(
     refuse: bool = True,
     step_scopes: Mapping[str, Scope] | None = None,
     now: datetime.datetime | None = None,
+    retire: Iterable[str] = (),
 ) -> Plan:
     """Plan *recipe*, and report its superseded runs when *cleanup* is given.
 
@@ -220,14 +237,29 @@ def plan_with_cleanup(
         refuse: As for :func:`~.plan.plan_pipeline`.
         step_scopes: As for :func:`~.plan.plan_pipeline`.
         now: The instant ages are judged at. ``None`` reads the clock.
+        retire: The digests of saved recipes to retire: the runs their requests
+            wrote are judged wherever they sit
+            (:func:`~.retirement.validate_retirement` lists what is refused).
+            It needs *cleanup*, and it belongs to this plan alone.
 
     Returns:
         The plan, with ``cleanup`` set when *cleanup* was given.
+
+    Raises:
+        RetireNeedsCleanup: *retire* is given without *cleanup*.
+        RetireUnknownRecipe: A digest is not that of a saved recipe that reads.
+        RetireOwnRecipe: A digest is *recipe*'s own.
+        RetireOpenRecipe: A retired recipe has a request that has not ended.
     """
     from ..inventory.cache import InventoryCache
+    from .digest import recipe_digest
     from .plan import plan_pipeline
     from .resolve import declaration_catalog
+    from .retirement import validate_retirement
 
+    retired = validate_retirement(
+        ds.base_dir, recipe_digest(recipe), retire, cleanup=cleanup is not None
+    )
     held = InventoryCache(ds) if inventory is None else inventory
     declarations = declaration_catalog() if catalog is None else catalog
     plan = plan_pipeline(
@@ -251,6 +283,8 @@ def plan_with_cleanup(
         recipe_name=recipe.name,
         own_request=request,
         now=now,
+        retire=retired,
+        retired_before=request.created_at if request is not None else "",
     )
     return replace(plan, cleanup=found)
 
@@ -267,11 +301,15 @@ def plan_cleanup(
     recorded: Mapping[str, str] | None = None,
     now: datetime.datetime | None = None,
     short_storages: Iterable[str] = (),
+    retire: Collection[str] = (),
+    retired_before: str = "",
 ) -> CleanupPlan:
     """Judge every superseded run of *plan*'s feature storages. Writes nothing.
 
-    The rules are listed in the module docstring, and the first that matches is
-    the reason a run is kept. Every kept run is reported with it.
+    With *retire*, the runs that the retired recipes' requests wrote are judged
+    too, wherever they sit. The rules are listed in the module docstring, and the
+    first that matches is the reason a run is kept. Every kept run is reported
+    with it.
 
     Args:
         ds: The planned dataset.
@@ -289,6 +327,13 @@ def plan_cleanup(
         now: The instant ages are judged at. ``None`` reads the clock.
         short_storages: Storages whose run in this request lost entries. Each
             of their candidates is kept as ``wider_coverage``.
+        retire: The recipes retired, as their current digests
+            (:func:`~.retirement.validate_retirement` returns them). The runs
+            their requests wrote are candidates too, wherever they sit. Nothing
+            is validated here, because a cleanup that judges again must keep a
+            run, not fail, when a retired recipe has a request open by then.
+        retired_before: The ``created_at`` of *own_request*. A request of a
+            retired recipe created at or after it is not retired. ``""`` for none.
 
     Returns:
         The superseded runs, removable or kept.
@@ -304,26 +349,41 @@ def plan_cleanup(
         keeper = keepers.get(record.name)
         if keeper is not None and record.run_id in keeper.run_ids:
             keeper.entries.update(_entries_of(record) - {GLOBAL_ENTRY})
+    base = ds.base_dir
+    own_id = own_request.request_id if own_request is not None else ""
+    retiring = frozenset(retire)
+    request_holds = partial(
+        _request_holds,
+        base,
+        now=moment,
+        hold_hours=max(policy.min_age_hours, REQUEST_HOLD_FLOOR_HOURS),
+        exclude=own_id,
+        planned_digest=plan.recipe_digest,
+        planned_name=recipe_name,
+        retire=retiring,
+        retired_before=retired_before,
+    )
+    # A retirement needs the requests read before the candidates are known. A plain
+    # plan with nothing to judge reads none.
+    holds = request_holds() if retiring else None
     candidates = [
         record
         for record in records
         if record.name in keepers and record.run_id not in keepers[record.name].run_ids
     ]
+    if holds is not None:
+        candidates.extend(
+            record
+            for record in records
+            if record.name not in keepers
+            and (record.name, record.run_id) in holds.retired
+        )
     if not candidates:
-        return CleanupPlan(policy=policy)
+        return CleanupPlan(policy=policy, retired=tuple(sorted(retiring)))
 
-    base = ds.base_dir
-    own_id = own_request.request_id if own_request is not None else ""
     bound = _bound_pairs(own_request)
-    hold_hours = max(policy.min_age_hours, REQUEST_HOLD_FLOOR_HOURS)
-    holds = _request_holds(
-        base,
-        now=moment,
-        hold_hours=hold_hours,
-        exclude=own_id,
-        planned_digest=plan.recipe_digest,
-        planned_name=recipe_name,
-    )
+    if holds is None:
+        holds = request_holds()
     whole = _whole_plan_hold(ds, holds)
     opened, unnamed = _open_attempts(base, now=moment)
     short = frozenset(short_storages)
@@ -333,7 +393,7 @@ def plan_cleanup(
     decided: dict[tuple[str, str], tuple[str, str]] = {}
     for record in candidates:
         key = (record.name, record.run_id)
-        keeper = keepers[record.name]
+        keeper = keepers.get(record.name)
         fit = read_fit_scope(record.run_root) if record.run_root is not None else None
         fits[key] = fit
         decided[key] = whole or _first_reason(
@@ -357,11 +417,11 @@ def plan_cleanup(
     for record in candidates:
         key = (record.name, record.run_id)
         reason, detail = decided[key]
-        keeper = keepers[record.name]
+        keeper = keepers.get(record.name)
         size = run_bytes(record.run_root)[0] if record.run_root is not None else 0
         runs.append(
             SupersededRun(
-                step_id=keeper.step_id,
+                step_id=keeper.step_id if keeper is not None else "",
                 storage=record.name,
                 run_id=record.run_id,
                 removable=reason == "superseded",
@@ -370,7 +430,10 @@ def plan_cleanup(
                 bytes=size,
                 entries=len(_entries_of(record) - {GLOBAL_ENTRY}),
                 finished_at=record.finished_at,
-                superseded_by=", ".join(sorted(keeper.run_ids)),
+                superseded_by=(
+                    ", ".join(sorted(keeper.run_ids)) if keeper is not None else ""
+                ),
+                retired_by=holds.retired.get(key, ""),
             )
         )
     runs.sort(
@@ -381,7 +444,7 @@ def plan_cleanup(
             run.run_id,
         )
     )
-    return CleanupPlan(policy=policy, runs=tuple(runs))
+    return CleanupPlan(policy=policy, runs=tuple(runs), retired=tuple(sorted(retiring)))
 
 
 # --- running a cleanup ---------------------------------------------------------------
@@ -574,6 +637,8 @@ def _remove_approved(
         recorded=recorded,
         now=now,
         short_storages=short,
+        retire=spec.retired,
+        retired_before=request.created_at,
     )
     judged = {(run.storage, run.run_id): run for run in found.runs}
     keepers = _keepers(plan, recorded)
@@ -638,8 +703,9 @@ def _remove_approved(
                             target.run_id,
                             params=params,
                             log=log,
-                            reason="superseded",
+                            reason="retired" if judged_run.retired_by else "superseded",
                             superseded_by=judged_run.superseded_by,
+                            retired=judged_run.retired_by,
                         )
                     )
                 except (OSError, RuntimeError) as error:
@@ -860,13 +926,29 @@ class _RunLabels:
     )
     run_ids: dict[str, str] = field(default_factory=dict[str, str])
 
-    def record(self, request: Request, rollup: RequestRollup, label: str) -> None:
-        """Record the runs that *request*'s attempts recorded and its binds."""
+    def record(
+        self,
+        request: Request,
+        rollup: RequestRollup,
+        label: str,
+        *,
+        skip: Collection[tuple[str, str]] = (),
+    ) -> None:
+        """Record the runs that *request*'s attempts recorded and its binds.
+
+        Args:
+            request: The request.
+            rollup: Its attempts.
+            label: What names the request in a kept run's detail.
+            skip: The ``(storage, run_id)`` pairs left out, the runs a retired
+                request wrote.
+        """
         for attempt in rollup.steps:
-            if attempt.run_id:
+            if attempt.run_id and (attempt.target, attempt.run_id) not in skip:
                 _ = self.run_ids.setdefault(attempt.run_id, label)
         for bound in request.bind.values():
-            _ = self.pairs.setdefault((bound.feature, bound.run_id), label)
+            if (bound.feature, bound.run_id) not in skip:
+                _ = self.pairs.setdefault((bound.feature, bound.run_id), label)
 
     def get(self, key: tuple[str, str]) -> str:
         """The label of run *key*, or ``""``."""
@@ -878,13 +960,17 @@ class _Holds:
     """What other requests hold, and the first request file that does not read.
 
     ``uses`` contains the runs of the ended requests of other recipes after their
-    hold lapsed.
+    hold lapsed, less the runs a retired recipe's requests wrote. ``retired``
+    holds those, by ``(storage, run_id)`` with the digest of the retired recipe.
     """
 
     runs: _RunLabels = field(default_factory=_RunLabels)
     slugs: dict[str, str] = field(default_factory=dict[str, str])
     storages: dict[str, str] = field(default_factory=dict[str, str])
     uses: _RunLabels = field(default_factory=_RunLabels)
+    retired: dict[tuple[str, str], str] = field(
+        default_factory=dict[tuple[str, str], str]
+    )
     unreadable: str = ""
 
 
@@ -896,6 +982,8 @@ def _request_holds(
     exclude: str,
     planned_digest: str,
     planned_name: str,
+    retire: Collection[str] = (),
+    retired_before: str = "",
 ) -> _Holds:
     """What the dataset's other requests hold.
 
@@ -908,10 +996,18 @@ def _request_holds(
     *planned_name*), or when its recipe does not read. A saved recipe that digests
     to *planned_digest* only under the current canonical form is the planned one.
     Each saved recipe is read once.
+
+    A request of a recipe in *retire* (:func:`~.retirement.retired_digest_of`)
+    also records the runs it wrote in ``retired``, once whichever way it is held,
+    and before the rules that make a request a version of the planned recipe
+    skip it. Once its hold lapsed it leaves ``uses`` without those runs, and keeps
+    the runs it found already done and the runs it bound there. A written run
+    that a feature attempt outside every request also names is not retired.
     """
     from ..markers import parse_instant
     from .digest import recipe_digest
     from .request import load_recipe_for_request
+    from .retirement import exclusively_written, retired_digest_of, written_runs
     from .rollup import request_rollup
     from .status import request_verdict_of
     from .step_preflight import StepRefused
@@ -920,17 +1016,29 @@ def _request_holds(
     holds = _Holds()
     # Each saved recipe's name and current digest, or None when it does not read.
     saved_recipes: dict[str, tuple[str, str] | None] = {}
+    current_digests: dict[str, str | None] = {}
+    written: dict[tuple[str, str], str] = {}
+    executions: set[str] = set()
+    retired_uses: list[tuple[Request, RequestRollup, str]] = []
     root = requests_root(base_dir)
     names = sorted(path.stem for path in root.glob("*.json")) if root.is_dir() else []
     for name in names:
-        if name == exclude:
-            continue
         try:
             request = load_request(base_dir, name)
         except (RequestUnreadable, OSError) as error:
-            holds.unreadable = holds.unreadable or str(error)
+            if name != exclude:
+                holds.unreadable = holds.unreadable or str(error)
+            continue
+        executions.update(request.step_executions.values())
+        if name == exclude:
             continue
         rollup = request_rollup(base_dir, request)
+        retired_digest = retired_digest_of(
+            base_dir, request, retire, current_digests, before=retired_before
+        )
+        if retired_digest:
+            for pair in written_runs(rollup):
+                _ = written.setdefault(pair, retired_digest)
         verdict = request_verdict_of(base_dir, rollup, now=now)
         if verdict not in ("running", "orphaned"):
             instants = [
@@ -963,7 +1071,10 @@ def _request_holds(
                     ):
                         continue
                     label = f"recipe {other_name or digest} (request {name})"
-                holds.uses.record(request, rollup, label)
+                if retired_digest:
+                    retired_uses.append((request, rollup, label))
+                else:
+                    holds.uses.record(request, rollup, label)
                 continue
         label = f"request {name} ({verdict})"
         holds.runs.record(request, rollup, label)
@@ -985,6 +1096,13 @@ def _request_holds(
                     _ = holds.runs.pairs.setdefault(pair, label)
                 for storage in named.storages:
                     _ = holds.storages.setdefault(storage, label)
+    if written:
+        exclusive = exclusively_written(base_dir, written, executions)
+        holds.retired = {
+            pair: digest for pair, digest in written.items() if pair in exclusive
+        }
+    for request, rollup, label in retired_uses:
+        holds.uses.record(request, rollup, label, skip=holds.retired.keys())
     return holds
 
 
@@ -1045,7 +1163,7 @@ def _may_still_run(
 def _first_reason(
     record: AnyRecord,
     *,
-    keeper: _Keeper,
+    keeper: _Keeper | None,
     bound: frozenset[tuple[str, str]],
     catalog: DeclarationCatalog,
     opened: Mapping[str, str],
@@ -1057,10 +1175,14 @@ def _first_reason(
     moment: datetime.datetime,
     global_entry: Entry,
 ) -> tuple[str, str]:
-    """The first rule that keeps *record*, or ``("superseded", "")``."""
+    """The first rule that keeps *record*, or ``("superseded", "")``.
+
+    *keeper* is ``None`` for a retired run in a storage the plan does not name,
+    which has no step to be unresolved and no replacement to cover.
+    """
     key = (record.name, record.run_id)
     slug = feature_slug_of(record.name)
-    if keeper.unresolved:
+    if keeper is not None and keeper.unresolved:
         return (
             "keeper_unresolved",
             f"step {keeper.unresolved!r} has no run id yet, so its storage is kept",
@@ -1092,7 +1214,11 @@ def _first_reason(
     user = holds.uses.get(key)
     if user:
         return ("recipe_uses", f"{user} uses it")
-    coverage = _coverage_reason(record, keeper, short, fit, global_entry)
+    coverage = (
+        _coverage_reason(record, keeper, short, fit, global_entry)
+        if keeper is not None
+        else None
+    )
     if coverage is not None:
         return coverage
     age = _age_hours(record, moment)

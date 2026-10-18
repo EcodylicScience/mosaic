@@ -44,9 +44,10 @@ from ..ops import ScopeTakes
 from ..types.feature import EmitsLevel
 from .compatibility import Declaration
 from .model import CleanupPolicy, GraphModel
-from .status import RequestSummaryWire
+from .status import RequestSummaryWire, RetirableRecipeWire
 
 __all__ = [
+    "RETIRED_SAMPLE",
     "SUPERSEDED_SAMPLE",
     "AttachReport",
     "Attachment",
@@ -594,6 +595,9 @@ type ReasonWire = Annotated[
 SUPERSEDED_SAMPLE: Final = 50
 """The most superseded runs one step of a plan lists."""
 
+RETIRED_SAMPLE: Final = 50
+"""The most retired runs of storages no step names that a plan lists."""
+
 
 class SupersededRunWire(GraphModel):
     """One run of a step's storage that the plan does not expect.
@@ -608,7 +612,10 @@ class SupersededRunWire(GraphModel):
         bytes: The bytes its directory holds.
         entries: How many entries its index rows name.
         finished_at: When it finished, ``""`` for a run that did not.
-        superseded_by: The run or runs the plan expects in its storage.
+        superseded_by: The run or runs the plan expects in its storage, ``""``
+            for a retired run in a storage the plan does not name.
+        retired: The digest of the retired recipe whose request wrote it,
+            ``""`` for a run no retirement reached.
     """
 
     run_id: str
@@ -620,6 +627,7 @@ class SupersededRunWire(GraphModel):
     entries: int
     finished_at: str
     superseded_by: str
+    retired: str = ""
 
 
 class CleanupPlanWire(GraphModel):
@@ -632,6 +640,13 @@ class CleanupPlanWire(GraphModel):
         kept_runs: How many superseded runs are kept, each listed on its step
             with its reason.
         kept_bytes: The bytes they hold.
+        retired: The digests of the recipes the plan retired.
+        retired_runs: The retired runs in storages no step of the plan names,
+            removable ones first, at most as many as the caller asked for. A
+            retired run in a storage a step names is listed on that step. The
+            totals above count both.
+        retired_omitted: How many more retired runs there are than
+            ``retired_runs`` lists.
     """
 
     policy: CleanupPolicy
@@ -639,6 +654,9 @@ class CleanupPlanWire(GraphModel):
     removable_bytes: int
     kept_runs: int
     kept_bytes: int
+    retired: tuple[str, ...] = ()
+    retired_runs: tuple[SupersededRunWire, ...] = ()
+    retired_omitted: int = 0
 
 
 class PlannedStepWire(GraphModel):
@@ -748,6 +766,11 @@ class PlanWire(GraphModel):
         cleanup: The totals of the plan's superseded runs, when it was asked
             for a cleanup, ``None`` otherwise. Each step lists its storage's
             runs in ``superseded``.
+        retirable: The saved recipes whose requests wrote runs, which
+            ``retire`` takes by digest. Empty unless the caller asked for a
+            cleanup and looked them up. The fingerprint leaves them out.
+        retirable_omitted: How many more recipes there are than ``retirable``
+            lists.
         parallel: The parallelism a submission may ask for, when the caller
             supplied the limits, ``None`` otherwise. The fingerprint leaves it
             out.
@@ -762,4 +785,6 @@ class PlanWire(GraphModel):
     cautions: tuple[Problem, ...] = ()
     open_requests: tuple[RequestSummaryWire, ...] = ()
     cleanup: CleanupPlanWire | None = None
+    retirable: tuple[RetirableRecipeWire, ...] = ()
+    retirable_omitted: int = 0
     parallel: ParallelWire | None = None

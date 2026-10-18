@@ -795,6 +795,7 @@ class JsonlRunLog:
         reason: str,
         superseded_by: str,
         params: Mapping[str, Any],
+        retired: str = "",
     ) -> None:
         """Record the intent to remove one feature run, before anything is removed.
 
@@ -813,7 +814,12 @@ class JsonlRunLog:
             reason: Why it is removed.
             superseded_by: The run that replaces it.
             params: Its recorded ``params.json``.
+            retired: The digest of the retired recipe whose request wrote it,
+                ``""`` for an ordinary superseded run. The event carries the
+                key only when it is set, so a log without a retirement is
+                what an older mosaic wrote.
         """
+        extra = {"retired": retired} if retired else {}
         self._emit(
             "run_removing",
             feature=feature,
@@ -821,6 +827,7 @@ class JsonlRunLog:
             reason=reason,
             superseded_by=superseded_by,
             params=dict(params),
+            **extra,
         )
 
     def run_removed(
@@ -1225,6 +1232,9 @@ class RemovalRecord(TypedDict):
         superseded_by: The run that replaced it, ``""`` when unrecorded.
         bytes: The bytes its directory held, 0 unless removed.
         params: Its recorded ``params.json``, empty for a run never removed.
+        retired: The digest of the retired recipe whose request wrote the run,
+            ``""`` when it was removed as superseded or the log predates
+            retirement.
     """
 
     feature: str
@@ -1235,6 +1245,7 @@ class RemovalRecord(TypedDict):
     superseded_by: str
     bytes: int
     params: dict[str, Any]
+    retired: str
 
 
 def read_removal_records(run_dir: Path | str, execution_id: str) -> list[RemovalRecord]:
@@ -1275,6 +1286,7 @@ def read_removal_records(run_dir: Path | str, execution_id: str) -> list[Removal
                 "superseded_by": "",
                 "bytes": 0,
                 "params": {},
+                "retired": "",
             }
         if found["state"] == "removed":
             continue
@@ -1282,6 +1294,7 @@ def read_removal_records(run_dir: Path | str, execution_id: str) -> list[Removal
             found["state"] = "interrupted"
             found["reason"] = _record_text(rec, "reason")
             found["superseded_by"] = _record_text(rec, "superseded_by")
+            found["retired"] = _record_text(rec, "retired")
             params = rec.get("params")
             if isinstance(params, dict):
                 found["params"] = cast("dict[str, Any]", params)

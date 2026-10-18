@@ -43,6 +43,7 @@ from mosaic.core.pipeline.graph import (
     RequestVerdict,
     strip_schema_keywords,
 )
+from mosaic.core.pipeline.graph.digest import DIGEST_LENGTH
 from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelMode
 from mosaic.core.strict_model import StrictModel
 from mosaic.runlog import AttemptLiveness, AttemptOutcome
@@ -73,10 +74,13 @@ __all__ = [
     "MAX_PAGE_SIZE",
     "MAX_PREVIEW_ROWS",
     "MAX_RESULT_CHARS",
+    "MAX_RETIRED_RECIPES",
     "MAX_SCHEMA_BYTES",
     "MAX_STEP_TYPE_DETAIL_CHARS",
     "MERGED_TOOLS",
     "PLAN_MISSING_SAMPLE",
+    "PLAN_RETIRABLE_SAMPLE",
+    "PLAN_RETIRED_SAMPLE",
     "PLAN_SUPERSEDED_SAMPLE",
     "PREVIEW_DEFAULT_ROWS",
     "PREVIEW_MAX_COLUMNS",
@@ -176,6 +180,23 @@ Each takes about 400 characters, and a session that tunes a chain leaves dozens
 in every storage of it, so the core default of 50 would put a plan over
 :data:`MAX_RESULT_CHARS`, which no argument narrows. The totals count them all.
 """
+
+PLAN_RETIRED_SAMPLE: Final = 5
+"""The retired runs of storages no step names that ``plan_recipe`` lists.
+
+They take about 400 characters each and no argument narrows the list, as for
+:data:`PLAN_SUPERSEDED_SAMPLE`. The totals count them all.
+"""
+
+PLAN_RETIRABLE_SAMPLE: Final = 8
+"""The saved recipes that ``plan_recipe`` lists as retirable, newest activity first.
+
+Each takes about 300 characters with its request ids. A session that iterates a
+recipe saves dozens.
+"""
+
+MAX_RETIRED_RECIPES: Final = 8
+"""The most recipes one call retires."""
 
 LISTING_MISSING_SAMPLE: Final = 5
 """The missing keys that a ``get_inventory`` listing names per artifact."""
@@ -295,7 +316,8 @@ CONFIRMATION_CONDITIONS: Final[Mapping[ConfirmationCondition, str]] = {
     ),
     "cleanup": (
         "the submission deletes superseded runs of its steps' storage after its "
-        "steps finish"
+        "steps finish, and with retire the runs that retired recipes wrote in any "
+        "storage"
     ),
     "hard_cancel": (
         "a running step loses its work when cancelled. A keypoint-MoSeq or VAME "
@@ -582,6 +604,23 @@ _CLEANUP_DESCRIPTION: Final = (
     "each removable or kept with its reason, under the server's cleanup policy."
 )
 
+RetireDigests = Annotated[
+    list[Annotated[str, Field(pattern=rf"^[0-9a-f]{{{DIGEST_LENGTH}}}$")]],
+    Field(
+        max_length=MAX_RETIRED_RECIPES,
+        description=(
+            "Digests of saved recipes to retire, from the retirable list of a "
+            "plan_recipe result with cleanup 'superseded'. The runs their requests "
+            "wrote are then judged in any storage, and stop being kept for "
+            "belonging to another recipe. It needs cleanup 'superseded' and "
+            "applies to this call only: pass it to plan_recipe and again to "
+            "submit_pipeline. A recipe with a request that has not ended is "
+            "refused."
+        ),
+    ),
+]
+"""The recipes a plan or a submission retires, by digest."""
+
 
 class PlanRecipeInput(ToolInput):
     """The arguments of ``plan_recipe``."""
@@ -595,6 +634,7 @@ class PlanRecipeInput(ToolInput):
         description=_CLEANUP_DESCRIPTION
         + " The fingerprint then covers the removable runs.",
     )
+    retire: RetireDigests = Field(default_factory=list)
 
 
 class SubmitPipelineInput(ToolInput):
@@ -632,6 +672,7 @@ class SubmitPipelineInput(ToolInput):
             "must allow it."
         ),
     )
+    retire: RetireDigests = Field(default_factory=list)
     workers: int | None = Field(
         default=None,
         ge=1,
@@ -1207,7 +1248,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "run id, status, coverage, entries asked, lane and why it waits, the "
             "problems that refuse it, the cautions to show the user, and the plan "
             "fingerprint that submit_pipeline requires. Show the user the plan "
-            "and its cautions before submitting."
+            "and its cautions before submitting. With cleanup 'superseded' it also "
+            "lists the saved recipes that retire can reclaim runs from."
         ),
         input_model=PlanRecipeInput,
         output=ModelRef("mosaic.core.pipeline.graph", "PlanWire"),
@@ -1220,7 +1262,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         title="Submit a pipeline",
         description=(
             "Submit a planned recipe and start running it in the background. "
-            "Requires the fingerprint of a current plan_recipe result. Returns the "
+            "Requires the fingerprint of a current plan_recipe result, planned "
+            "with the same cleanup and retire. Returns the "
             "request id and how long to wait before polling get_request_status. "
             "When the work is costly or a choice is the user's, a client that can "
             "ask the user asks. Otherwise the call is refused with reason "

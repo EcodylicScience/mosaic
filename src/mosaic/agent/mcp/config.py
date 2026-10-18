@@ -54,7 +54,10 @@ type CleanupClass = Literal["feature-runs"]
 """A class of artifact a server may let its tools remove."""
 
 CLEANUP_FEATURE_RUNS: Final[CleanupClass] = "feature-runs"
-"""The superseded feature runs that ``submit_pipeline`` removes with ``cleanup``."""
+"""The feature runs that ``submit_pipeline`` removes with ``cleanup``.
+
+Superseded ones, and with ``retire`` the runs of retired recipes.
+"""
 
 
 class ServerConfig(StrictModel):
@@ -68,7 +71,8 @@ class ServerConfig(StrictModel):
             may change a dataset whose manifest names a managing service.
         allow_cleanup: The artifacts the tools may remove. ``feature-runs``
             lets ``submit_pipeline`` remove superseded feature runs with
-            ``cleanup: superseded``.
+            ``cleanup: superseded``, and with ``retire`` the runs that retired
+            recipes wrote.
         cleanup: Which superseded runs a cleanup keeps by recency and age. The
             operator sets it here; no tool call does.
         max_workers: The most entries a parallelizable feature step computes at

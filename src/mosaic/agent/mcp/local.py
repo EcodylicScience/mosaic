@@ -38,6 +38,8 @@ from .spec import (
     LISTED_STATUS_NOT,
     LISTING_MISSING_SAMPLE,
     PLAN_MISSING_SAMPLE,
+    PLAN_RETIRABLE_SAMPLE,
+    PLAN_RETIRED_SAMPLE,
     PLAN_SUPERSEDED_SAMPLE,
     ActivityPage,
     AttemptDiagnosis,
@@ -625,7 +627,9 @@ class LocalBackend:
             plan_wire,
             plan_with_cleanup,
             requests_matching,
+            retirable_recipes,
         )
+        from mosaic.core.pipeline.index import feature_run_root
         from mosaic.core.scope import Scope
 
         held = self._dataset(args.dataset)
@@ -643,6 +647,7 @@ class LocalBackend:
                 catalog=catalog,
                 refuse=False,
                 step_scopes=_step_scopes(args.step_entries),
+                retire=args.retire,
             )
         # Read outside the lock: it reads request files and run-logs only.
         unended = requests_matching(
@@ -650,11 +655,26 @@ class LocalBackend:
             plan.recipe_digest,
             Scope() if scope is None else scope,
         )
+        retirable, retirable_omitted = (
+            retirable_recipes(
+                held.dataset.base_dir,
+                exclude_digest=plan.recipe_digest,
+                limit=PLAN_RETIRABLE_SAMPLE,
+                present=lambda storage, run_id: feature_run_root(
+                    held.dataset, storage, run_id
+                ).is_dir(),
+            )
+            if plan.cleanup is not None
+            else ((), 0)
+        )
         return plan_wire(
             plan,
             missing_sample=PLAN_MISSING_SAMPLE,
             open_requests=unended,
             superseded_sample=PLAN_SUPERSEDED_SAMPLE,
+            retired_sample=PLAN_RETIRED_SAMPLE,
+            retirable=retirable,
+            retirable_omitted=retirable_omitted,
             parallel=self._parallel_limits,
         )
 
@@ -694,6 +714,7 @@ class LocalBackend:
                 inventory=cache,
                 catalog=catalog,
                 step_scopes=step_scopes,
+                retire=args.retire,
             )
             found = plan_fingerprint(plan)
             if found != args.plan_fingerprint:
@@ -716,6 +737,7 @@ class LocalBackend:
                 refuse_duplicates=not args.confirm,
                 step_scopes=step_scopes,
                 cleanup=cleanup,
+                retire=args.retire,
             )
         request = submitted.request
         start = self._start_driver or start_detached_driver
@@ -1186,6 +1208,7 @@ def _submission_findings(
         GPU_TRAIN_LANE,
         open_requests_matching,
         recipe_digest,
+        retired_recipe_names,
     )
     from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
     from mosaic.core.scope import Scope
@@ -1226,18 +1249,27 @@ def _submission_findings(
             ConfirmationFinding("bind", f"the submission pins steps {pinned}")
         )
     removable = plan.cleanup.removable if plan.cleanup is not None else ()
-    if removable:
+    if plan.cleanup is not None and removable:
         storages = ", ".join(
             repr(name) for name in sorted({run.storage for run in removable})
         )
         gigabytes = sum(run.bytes for run in removable) / 1e9
-        findings.append(
-            ConfirmationFinding(
-                "cleanup",
-                f"the submission deletes {len(removable)} superseded run(s), "
-                f"{gigabytes:.1f} GB, in {storages}",
-            )
+        deleted = (
+            f"the submission deletes {len(removable)} superseded run(s), "
+            f"{gigabytes:.1f} GB, in {storages}"
         )
+        written = [run for run in removable if run.retired_by]
+        if written:
+            retiring = sorted({run.retired_by for run in written})
+            names = retired_recipe_names(dataset.base_dir, retiring)
+            recipes = ", ".join(
+                f"{names[digest]!r} ({digest})" if names[digest] else digest
+                for digest in retiring
+            )
+            deleted += (
+                f", {len(written)} of them written by the retired recipe(s) {recipes}"
+            )
+        findings.append(ConfirmationFinding("cleanup", deleted))
     duplicates = open_requests_matching(
         dataset.base_dir,
         recipe_digest(recipe),
