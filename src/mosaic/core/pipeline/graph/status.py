@@ -367,8 +367,7 @@ class RequestStatusWire(GraphModel):
         cleanup: The request's removal of superseded runs, ``None`` for a
             request without one.
         omitted_finished: How many steps a brief report leaves out because they
-            finished without losing an entry. ``steps`` lists them all, so 0,
-            for a report that is not brief.
+            finished without losing an entry, 0 for a report that is not brief.
         omitted_pending: How many steps a brief report leaves out because they
             have not started, 0 for a report that is not brief.
     """

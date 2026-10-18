@@ -591,8 +591,10 @@ def process_running(pid: int) -> bool:
     ``signal 0`` performs the existence and permission checks and delivers no
     signal. A process owned by another user raises ``PermissionError`` and is
     live. A pid of 0 or below names no process. A zombie has exited and is not
-    live: a detached driver that ends, or is killed, stays a zombie of the
-    long-lived process that started it until that process reaps it.
+    live: a child stays one until its parent waits for it, as a detached driver
+    does in the moment before the waiter thread of
+    :func:`~mosaic.core.pipeline.graph.run.start_detached_driver` reaps it, and for
+    as long as a parent that never waits lives.
     """
     if pid <= 0:
         return False
