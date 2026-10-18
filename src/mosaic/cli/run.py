@@ -29,6 +29,10 @@ from pydantic import ValidationError
 from mosaic.cli._context import attempt_facts, load_dataset
 from mosaic.cli._features import build_feature
 from mosaic.cli._io import (
+    MinFreeMemoryOption,
+    ParallelModeOption,
+    WorkersOption,
+    parallel_settings,
     emit_json,
     exit_refused,
     fail,
@@ -186,6 +190,9 @@ def run_command(
             help="Reuse an externally minted ULID (executor unit-of-work).",
         ),
     ] = None,
+    workers: WorkersOption = None,
+    parallel_mode: ParallelModeOption = None,
+    min_free_memory_fraction: MinFreeMemoryOption = 0.0,
     as_json: Annotated[
         bool,
         typer.Option(
@@ -209,6 +216,9 @@ def run_command(
         )
     if (graph_request is not None) != (step is not None):
         fail("--graph-request and --step are used together, or not at all.")
+    parallel = parallel_settings(workers, parallel_mode, min_free_memory_fraction)
+    if parallel is not None and kind is not None:
+        fail("--workers is used with --feature or --graph-request, not --kind.")
     if republish and kind is None:
         msg = (
             "--republish rebuilds an op's published outputs, so it is used with "
@@ -308,6 +318,7 @@ def run_command(
                     overwrite=overwrite,
                     owner=owner,
                     cancel_token=token,
+                    parallel=parallel,
                 )
             payload = {
                 "execution_id": exec_id,
@@ -339,6 +350,11 @@ def run_command(
                     execution_id=exec_id,
                     owner=owner,
                     cancel_token=token,
+                    parallel_workers=None if parallel is None else parallel.workers,
+                    parallel_mode="thread" if parallel is None else parallel.mode,
+                    min_free_memory_fraction=(
+                        0.0 if parallel is None else parallel.min_free_memory_fraction
+                    ),
                 )
             # "partial" rather than "finished" when entities were lost. It is
             # deliberately not a new *terminal* status: `partial` is absent from

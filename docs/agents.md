@@ -127,6 +127,9 @@ allow_cleanup: []      # [feature-runs] lets submit_pipeline remove superseded r
 cleanup:               # which superseded runs a cleanup keeps
   keep_newest: 1
   min_age_hours: 24
+max_workers: 1         # the most entries a parallelizable step computes at once
+allow_process_mode: false   # let a submission ask for process workers
+min_free_memory_fraction: 0.10   # the share of host memory a parallel run keeps free
 ```
 
 The tools name a dataset by the `uuid` in its manifest, which `list_datasets` reports.
@@ -142,9 +145,9 @@ that does not read, is left out and reported on the server's standard error.
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, found by words, and the ones named with their params as a table |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
-| `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. With `cleanup: superseded`, the superseded runs of its storages |
-| `submit_pipeline` | Submits a planned recipe and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards |
-| `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts |
+| `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. With `cleanup: superseded`, the superseded runs of its storages. The parallelism a submission may ask for, with the host's processors and memory |
+| `submit_pipeline` | Submits a planned recipe and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards. Takes `workers` and `parallel_mode` within your limits |
+| `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts. Each step's workers and peak memory |
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
 | `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class |
@@ -367,6 +370,60 @@ storage that was written outside a request is a candidate whichever recipe it be
 to. Each removed run's `params.json` is kept in the cleanup's run-log for computing
 the run again, and `get_request_status` reports what was removed and kept. A managed
 dataset refuses a cleanup, and a queue that runs the steps itself does not run one.
+
+### Parallel workers and memory
+
+A feature step computes its entries one at a time. A feature that computes each entry on
+its own, such as `speed-angvel` or `body-scale`, can compute several at once, and
+`describe_step_types` reports it as `parallelizable`. A fit across every entry, such as
+`global-kmeans`, and every op are not. The worker count belongs to the machine and not
+to the recipe, so it changes neither a run's identity nor its outputs. A run that used
+four workers is a cache hit for a run that uses one.
+
+You set the limits in the configuration. The agent chooses within them and cannot raise
+them:
+
+- `max_workers` is the most entries a step computes at once, from 1 to 32. It is also
+  the count a submission receives when it names none, and the effective count never
+  exceeds the machine's processors. The default, 1, computes entries in turn.
+- `allow_process_mode` lets a submission ask for `parallel_mode: process`. A submission
+  that names no mode receives `thread`.
+- `min_free_memory_fraction` is the share of the host's memory that a run with several
+  workers keeps available. While the share is lower, the run waits for its entries in
+  flight, whose tables free memory as they finish. When the share is still lower with
+  none in flight, the run fails in a state that a later run resumes.
+
+A submission over a limit is refused with the reason `parallel_limit`, and nothing is
+recorded.
+
+Threads share one copy of the feature and of the imported libraries, so memory grows by
+about one entry's table per worker. A thread gains little for work that holds Python's
+interpreter lock. Process workers use every core, and each is a separate interpreter that
+imports the feature libraries and receives a pickled copy of each entry's table, so
+memory grows by a whole interpreter and several copies of a table per worker. A
+feature that does not fit in memory at four process workers may fit at two, or in
+threads. A feature that defines `set_scope`, such as the interaction crop, runs in
+threads whatever the mode is, because a process worker rebuilds the feature without it.
+
+The agent sees what it needs to choose:
+
+- `plan_recipe` reports the limits, the host's processors and memory, and for each step
+  whether it is `parallelizable` and how many `workers` a default submission gives it.
+- `get_request_status` reports each step's `workers`, `parallel_mode`, `peak_rss_bytes`
+  and `min_available_bytes` while it runs and after. The peak is the resident memory of
+  the step's process and its workers. A page that several processes map counts once for
+  each, so process mode reads a little high.
+- A worker that the host stops, usually for lack of memory, ends the step with
+  `WorkerProcessDied`. The message gives the workers, the mode and the peak, and says
+  to run again with fewer workers or in thread mode. Entries already written are kept,
+  and the same recipe submitted again resumes.
+
+The same options exist outside the server: `mosaic run --feature`, `mosaic run
+--graph-request` and `mosaic pipeline run` take `--workers`, `--parallel-mode` and
+`--min-free-memory-fraction`. A request that you resume by hand with
+`mosaic pipeline run --request` runs its steps in turn unless you pass them. A queue
+that dispatches the steps builds its own commands and does not pass them. When a queue
+also runs several steps at once, the processors used are the steps times the workers.
 
 ### Data sent to the model provider
 

@@ -66,6 +66,7 @@ from mosaic.runlog import (
 
 from ..error_kind import ClassifiedError, ErrorKind
 from ..job import Cancelled, CancelToken
+from ..parallelism import ParallelSettings, parallel_flags
 from ..subprocess_util import terminate_group
 from .driver_lease import (
     LeaseKeeper,
@@ -212,6 +213,7 @@ def run_pipeline(
     owner: str = "",
     cancel_token: CancelToken | None = None,
     step_scopes: Mapping[str, Scope] | None = None,
+    parallel: ParallelSettings | None = None,
 ) -> PipelineRun:
     """Run every step of *recipe* against *ds*, in order, in this process.
 
@@ -256,6 +258,9 @@ def run_pipeline(
             does on SIGTERM and SIGINT. Each step's work checks it.
         step_scopes: Narrow single steps, keyed by step id. Recorded on the
             request that is submitted, and ignored when *request* is given.
+        parallel: How many entries a feature step computes at once, and how
+            (:class:`~mosaic.core.pipeline.parallelism.ParallelSettings`). ``None``
+            computes them in turn.
 
     Returns:
         One :class:`~mosaic.core.pipeline.graph.step.StepOutcome` per step, in
@@ -330,6 +335,7 @@ def run_pipeline(
                     catalog=catalog,
                     owner=owner,
                     cancel_token=token,
+                    parallel=parallel,
                 )
             finally:
                 # Cleared however the step ended. A lease left naming a step
@@ -513,7 +519,11 @@ class DetachedDriver:
 
 
 def run_request(
-    ds: Dataset, request: Request, *, cancel_token: CancelToken | None = None
+    ds: Dataset,
+    request: Request,
+    *,
+    cancel_token: CancelToken | None = None,
+    parallel: ParallelSettings | None = None,
 ) -> RequestRun:
     """Run the steps of a submitted request that have not finished, in order.
 
@@ -550,6 +560,9 @@ def run_request(
         request: The request.
         cancel_token: Fired to stop the run, as ``mosaic pipeline run`` does on
             SIGTERM and SIGINT.
+        parallel: How many entries a feature step computes at once, and how
+            (:class:`~mosaic.core.pipeline.parallelism.ParallelSettings`). ``None``
+            computes them in turn.
 
     Returns:
         What the driver ran, skipped, blocked and cancelled, and the request's
@@ -611,7 +624,13 @@ def run_request(
                     keeper.ensure_held()
                     ran.append(step_id)
                     status = _run_step(
-                        ds, request, step_id, log=log, token=token, keeper=keeper
+                        ds,
+                        request,
+                        step_id,
+                        log=log,
+                        token=token,
+                        keeper=keeper,
+                        parallel=parallel,
                     )
                 if status == "finished":
                     continue
@@ -644,7 +663,9 @@ def run_request(
     )
 
 
-def start_detached_driver(ds: Dataset, request: Request) -> DetachedDriver:
+def start_detached_driver(
+    ds: Dataset, request: Request, parallel: ParallelSettings | None = None
+) -> DetachedDriver:
     """Start ``mosaic pipeline run --request`` for *request* in a new session.
 
     The driver's standard input is closed and its output is appended to
@@ -655,6 +676,9 @@ def start_detached_driver(ds: Dataset, request: Request) -> DetachedDriver:
     Args:
         ds: The dataset the request was submitted against.
         request: The request.
+        parallel: How many entries a feature step computes at once, and how
+            (:class:`~mosaic.core.pipeline.parallelism.ParallelSettings`). ``None``
+            computes them in turn.
 
     Returns:
         The driver's pid and log.
@@ -676,6 +700,7 @@ def start_detached_driver(ds: Dataset, request: Request) -> DetachedDriver:
         str(ds.manifest_path),
         "--request",
         request.request_id,
+        *parallel_flags(parallel),
     ]
     with log_path.open("a", encoding="utf-8") as log:
         process = subprocess.Popen(
@@ -776,6 +801,7 @@ def _execute_or_error(
     catalog: DeclarationCatalog | None,
     owner: str,
     cancel_token: CancelToken,
+    parallel: ParallelSettings | None,
 ) -> StepOutcome | Exception:
     """Run one step in this process, and return the error that it raised.
 
@@ -792,6 +818,7 @@ def _execute_or_error(
             catalog=catalog,
             owner=owner,
             cancel_token=cancel_token,
+            parallel=parallel,
         )
     except Cancelled:
         raise
@@ -859,6 +886,7 @@ def _run_step(
     log: IO[str],
     token: CancelToken,
     keeper: LeaseKeeper,
+    parallel: ParallelSettings | None,
 ) -> str:
     """Run one step's process to its end, and return the status it recorded.
 
@@ -867,7 +895,13 @@ def _run_step(
     ``failed`` otherwise.
     """
     execution_id = request.execution_of(step_id)
-    argv = step_argv(ds.manifest_path, request, step_id, program=MOSAIC_COMMAND)
+    argv = step_argv(
+        ds.manifest_path,
+        request,
+        step_id,
+        program=MOSAIC_COMMAND,
+        parallel=parallel,
+    )
     _ = log.write(f"[mosaic] {now_iso()} step {step_id} ({execution_id}) started\n")
     log.flush()
     process = subprocess.Popen(

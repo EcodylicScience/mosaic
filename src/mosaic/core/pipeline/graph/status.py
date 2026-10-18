@@ -189,6 +189,11 @@ class RunStatusWire(GraphModel):
     pid_ns: str
     liveness_interval: float
     phase: str
+    workers: int
+    parallel_mode: str
+    peak_rss_bytes: int
+    min_available_bytes: int
+    total_memory_bytes: int
     outcome: AttemptOutcome
     terminal: bool
     progress_fraction: float | None
@@ -226,6 +231,14 @@ class StepStatusWire(GraphModel):
         started_at: When that process started, ``""`` before.
         heartbeat_at: When the attempt last wrote a line, ``""`` before.
         phase: The last phase it declared, such as ``fit`` or ``apply``.
+        workers: How many entries it computed at once, 0 before it reports.
+        parallel_mode: How it computed them, ``""`` for one at a time or before it
+            reports.
+        peak_rss_bytes: The largest resident memory of its process tree that it
+            measured, 0 before it reports. A process-mode worker counts toward it.
+        min_available_bytes: The least memory the host had available when it
+            measured, 0 before it reports.
+        total_memory_bytes: The host's physical memory, 0 before it reports.
         liveness: Whether its process may still be running (:mod:`~.liveness`),
             ``None`` before it writes a run-log.
     """
@@ -249,6 +262,11 @@ class StepStatusWire(GraphModel):
     started_at: str = ""
     heartbeat_at: str = ""
     phase: str = ""
+    workers: int = 0
+    parallel_mode: str = ""
+    peak_rss_bytes: int = 0
+    min_available_bytes: int = 0
+    total_memory_bytes: int = 0
     liveness: AttemptLiveness | None = None
 
 
@@ -688,6 +706,11 @@ def _step_status(
         started_at=attempt.started_at,
         heartbeat_at=attempt.heartbeat_at,
         phase=attempt.phase,
+        workers=attempt.workers,
+        parallel_mode=attempt.parallel_mode,
+        peak_rss_bytes=attempt.peak_rss_bytes,
+        min_available_bytes=attempt.min_available_bytes,
+        total_memory_bytes=attempt.total_memory_bytes,
         liveness=step_liveness(attempt, now=now) if attempt.started else None,
     )
 

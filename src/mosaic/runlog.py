@@ -147,6 +147,15 @@ class RunLogSnapshot(TypedDict):
     those are different relations and one key cannot hold both, which is what
     would make a downstream column unqueryable.
 
+    ``workers`` and ``parallel_mode`` are how many entries the attempt computed at
+    once and how, as the last ``resources`` event recorded them. ``peak_rss_bytes``
+    is the largest resident memory of the attempt's process tree that the attempt
+    measured, ``min_available_bytes`` the least memory the host had available and
+    ``total_memory_bytes`` the host's physical memory. They are last-write-wins like
+    ``entries_written``, because the writer reports extremes it already holds. A
+    process-mode worker counts toward the peak, and a page that several processes
+    map counts once for each.
+
     Zero, ``False`` and ``""`` are indistinguishable from "not reported", the same
     convention as the tracks index's blank ``n_keypoints`` cell meaning *unknown*
     rather than zero.
@@ -195,6 +204,11 @@ class RunLogSnapshot(TypedDict):
     pid_ns: str
     liveness_interval: float
     phase: str
+    workers: int
+    parallel_mode: str
+    peak_rss_bytes: int
+    min_available_bytes: int
+    total_memory_bytes: int
 
 
 ERROR_MESSAGE_LIMIT: Final = 2000
@@ -745,6 +759,32 @@ class JsonlRunLog:
             tracks_variant=",".join(sorted({v for v in variants if v})),
         )
 
+    def resources(
+        self,
+        *,
+        workers: int,
+        parallel_mode: str,
+        peak_rss_bytes: int,
+        min_available_bytes: int,
+        total_memory_bytes: int,
+    ) -> None:
+        """Record how many entries the attempt computes at once and the memory it uses.
+
+        Each event carries the extremes measured so far, so the last one before the
+        terminal event is the attempt's peak. A writer emits it repeatedly while the
+        attempt runs, because a reader polling a long step needs the memory now, and
+        a figure written only at the end is one that an attempt the host killed
+        never records.
+        """
+        self._emit(
+            "resources",
+            workers=workers,
+            parallel_mode=parallel_mode,
+            peak_rss_bytes=peak_rss_bytes,
+            min_available_bytes=min_available_bytes,
+            total_memory_bytes=total_memory_bytes,
+        )
+
     # -- removal of a superseded run -----------------------------------------
 
     def run_removing(
@@ -985,6 +1025,11 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         "pid_ns": "",
         "liveness_interval": 0.0,
         "phase": "",
+        "workers": 0,
+        "parallel_mode": "",
+        "peak_rss_bytes": 0,
+        "min_available_bytes": 0,
+        "total_memory_bytes": 0,
     }
     records = _iter_records(path)
     if not records:
@@ -1039,6 +1084,12 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
             snap["cache_hit"] = True
         elif ev == "tracks_variant":
             snap["tracks_variant"] = rec.get("tracks_variant", snap["tracks_variant"])
+        elif ev == "resources":
+            snap["workers"] = _record_count(rec, "workers")
+            snap["parallel_mode"] = _record_text(rec, "parallel_mode")
+            snap["peak_rss_bytes"] = _record_count(rec, "peak_rss_bytes")
+            snap["min_available_bytes"] = _record_count(rec, "min_available_bytes")
+            snap["total_memory_bytes"] = _record_count(rec, "total_memory_bytes")
         elif ev in TERMINAL_STATUSES:
             snap["status"] = ev
             snap["finished_at"] = ts
@@ -1059,6 +1110,11 @@ def _reset_for_start(snap: RunLogSnapshot) -> None:
     snap["cache_hit"] = False
     snap["tracks_variant"] = ""
     snap["phase"] = ""
+    snap["workers"] = 0
+    snap["parallel_mode"] = ""
+    snap["peak_rss_bytes"] = 0
+    snap["min_available_bytes"] = 0
+    snap["total_memory_bytes"] = 0
 
 
 def read_run(run_dir: Path | str, execution_id: str) -> RunLogSnapshot | None:

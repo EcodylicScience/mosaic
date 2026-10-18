@@ -316,6 +316,28 @@ class JobContext:
         if variants and self.run_log is not None:
             self.run_log.tracks_variant(variants)
 
+    def resources(
+        self,
+        *,
+        workers: int,
+        parallel_mode: str,
+        peak_rss_bytes: int,
+        min_available_bytes: int,
+        total_memory_bytes: int,
+    ) -> None:
+        """Record how many entries the attempt computes at once and the memory it uses.
+
+        Without a run-log it is a no-op.
+        """
+        if self.run_log is not None:
+            self.run_log.resources(
+                workers=workers,
+                parallel_mode=parallel_mode,
+                peak_rss_bytes=peak_rss_bytes,
+                min_available_bytes=min_available_bytes,
+                total_memory_bytes=total_memory_bytes,
+            )
+
     def phase(self, name: str, message: str = "") -> None:
         """Declare the phase the attempt has entered, such as ``fit`` or ``apply``.
 

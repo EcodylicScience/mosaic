@@ -46,6 +46,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.graph import run as graph_run
 from mosaic.core.pipeline.job import CancelToken
+from mosaic.core.pipeline.parallelism import ParallelSettings
 from mosaic.core.pipeline.markers import process_running
 from mosaic.runlog import JsonlRunLog, read_run, run_log_dir, run_log_path
 from tests.helpers import (
@@ -203,6 +204,92 @@ def test_a_refused_step_fails_the_request_with_its_refusal_parsed(
     assert speed.error.refusal.reason == "version_moved"
 
 
+def test_a_driver_hands_its_workers_to_every_step_process(
+    tracked: Dataset, submitted: Request, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    given: list[tuple[str, ParallelSettings | None]] = []
+
+    def recording(
+        manifest_path: Path | str,
+        request: Request,
+        step_id: str,
+        *,
+        program: str | Sequence[str],
+        parallel: ParallelSettings | None,
+    ) -> list[str]:
+        given.append((step_id, parallel))
+        return step_argv(
+            manifest_path, request, step_id, program=program, parallel=parallel
+        )
+
+    monkeypatch.setattr(graph_run, "step_argv", recording)
+    settings = ParallelSettings(workers=2, min_free_memory_fraction=0.05)
+
+    done = run_request(tracked, submitted, parallel=settings)
+
+    assert done.status == "finished"
+    assert given == [("speed", settings), ("templates", settings)]
+
+
+def test_a_detached_driver_is_started_with_the_parallel_flags(
+    tracked: Dataset, submitted: Request, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[list[str]] = []
+
+    class _Started:
+        pid = 4242
+
+        def poll(self) -> None:
+            return None
+
+    def popen(argv: list[str], **_kwargs: object) -> _Started:
+        seen.append(argv)
+        return _Started()
+
+    monkeypatch.setattr(graph_run.subprocess, "Popen", popen)
+    monkeypatch.setattr(graph_run, "_DETACHED", [])
+
+    driver = start_detached_driver(
+        tracked,
+        submitted,
+        ParallelSettings(workers=3, mode="process", min_free_memory_fraction=0.1),
+    )
+
+    assert driver.pid == 4242
+    assert seen[0][-6:] == [
+        "--workers",
+        "3",
+        "--parallel-mode",
+        "process",
+        "--min-free-memory-fraction",
+        "0.1",
+    ]
+
+
+def test_resuming_a_request_by_hand_accepts_the_worker_flags(
+    tracked: Dataset, submitted: Request
+) -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "pipeline",
+            "run",
+            "--manifest",
+            str(tracked.manifest_path),
+            "--request",
+            submitted.request_id,
+            "--workers",
+            "2",
+            "--parallel-mode",
+            "thread",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["status"] == "finished"
+
+
 def test_a_failed_step_ends_its_branch_and_the_driver_runs_its_sibling(
     tracked: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -214,10 +301,13 @@ def test_a_failed_step_ends_its_branch_and_the_driver_runs_its_sibling(
         step_id: str,
         *,
         program: str | Sequence[str],
+        parallel: ParallelSettings | None,
     ) -> list[str]:
         if step_id == "speed":
             return [sys.executable, "-c", "raise SystemExit(1)"]
-        return step_argv(manifest_path, request, step_id, program=program)
+        return step_argv(
+            manifest_path, request, step_id, program=program, parallel=parallel
+        )
 
     monkeypatch.setattr(graph_run, "step_argv", speed_exits)
     request = submit_request(tracked, chain_with_sibling_recipe()).request

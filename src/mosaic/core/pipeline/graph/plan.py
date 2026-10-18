@@ -98,6 +98,7 @@ from .resolve import (
     build_step_feature,
     build_step_op_params,
     declaration_catalog,
+    feature_parallelizable,
     op_class_for_kind,
     resolve_step_spec,
 )
@@ -312,6 +313,8 @@ class PlannedStep:
             nothing" both read as ``absent`` and only one of them is a fault a
             consumer must refuse to chain onto.
         reason: Why this step is not simply running, or ``None``.
+        parallelizable: Whether a feature step can compute several entries at once.
+            ``False`` for an op.
     """
 
     step_id: str
@@ -335,6 +338,7 @@ class PlannedStep:
     status: ArtifactStatus = "absent"
     finished: bool = False
     reason: Reason | None = None
+    parallelizable: bool = False
 
     @property
     def is_complete(self) -> bool:
@@ -1083,6 +1087,7 @@ def _resolve_feature_step(
             run_id=run_id,
             storage_name=spec.storage_name,
             artifact=FeatureRunRef(name=spec.storage_name, run_id=run_id),
+            parallelizable=feature_parallelizable(step.feature),
         ),
         scope_dependent=scope_dependent,
     )
@@ -1100,6 +1105,7 @@ def _unresolved_feature(
         run_id=None,
         storage_name=spec.storage_name,
         reason=IdentityUnresolved(step=step.id, because=problems[0].message),
+        parallelizable=feature_parallelizable(step.feature),
     )
 
 

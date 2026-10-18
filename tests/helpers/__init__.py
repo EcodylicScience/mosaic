@@ -246,6 +246,7 @@ from tests.helpers.stand_in_features import (
     CropLike,
     LossyFeature,
     PairClusterFeature,
+    ParallelFeature,
     PlainFeature,
     ScopedFeature,
 )
@@ -327,6 +328,7 @@ __all__ = [
     "LossyFeature",
     "MOUSE",
     "PairClusterFeature",
+    "ParallelFeature",
     "PlainFeature",
     "REPO_ROOT",
     "RUNNER_LINE_SECONDS",

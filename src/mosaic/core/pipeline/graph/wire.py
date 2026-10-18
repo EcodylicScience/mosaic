@@ -66,6 +66,7 @@ __all__ = [
     "InputCandidates",
     "InsertReport",
     "NeedStatus",
+    "ParallelWire",
     "ParamRow",
     "PlanWire",
     "PlannedStepWire",
@@ -274,6 +275,9 @@ class CatalogIndexEntry(GraphModel):
             runs here.
         license_note: The uses that a license of something it needs forbids,
             ``None`` when unrestricted.
+        parallelizable: Whether a run of it can compute several entries at once.
+            A server's worker limit applies to a step of it, and to no other.
+            An op, and a feature that fits a model across every entry, is not.
     """
 
     name: str
@@ -289,6 +293,7 @@ class CatalogIndexEntry(GraphModel):
     payload_families: bool
     unavailable: str | None
     license_note: str | None
+    parallelizable: bool = False
 
 
 class ParamRow(GraphModel):
@@ -663,6 +668,9 @@ class PlannedStepWire(GraphModel):
             a cleanup: at most :data:`SUPERSEDED_SAMPLE`, removable ones first,
             on the first step of each storage.
         superseded_omitted: How many more there are than ``superseded`` lists.
+        parallelizable: Whether a feature step can compute several entries at once.
+        workers: How many entries the step would compute at once under the
+            server's default settings, 1 for a step that is not parallelizable.
     """
 
     step: str
@@ -684,6 +692,34 @@ class PlannedStepWire(GraphModel):
     step_scope: Scope | None = None
     superseded: tuple[SupersededRunWire, ...] = ()
     superseded_omitted: int = 0
+    parallelizable: bool = False
+    workers: int = 1
+
+
+class ParallelWire(GraphModel):
+    """What a submission may ask for in parallelism, and the machine it runs on.
+
+    Attributes:
+        default_workers: How many entries a parallelizable step computes at once
+            when the submission names no count.
+        max_workers: The most a submission may ask for.
+        allow_process_mode: Whether a submission may ask for ``process`` mode. A
+            submission that names no mode receives ``thread``.
+        min_free_memory_fraction: The share of the host's memory that a run with
+            several workers keeps available, 0 for no check.
+        cpus: How many processors the server's process may use.
+        memory_total_bytes: The host's physical memory, 0 when unmeasured.
+        memory_available_bytes: The memory the host has available now, 0 when
+            unmeasured.
+    """
+
+    default_workers: int
+    max_workers: int
+    allow_process_mode: bool
+    min_free_memory_fraction: float
+    cpus: int
+    memory_total_bytes: int
+    memory_available_bytes: int
 
 
 class PlanWire(GraphModel):
@@ -712,6 +748,9 @@ class PlanWire(GraphModel):
         cleanup: The totals of the plan's superseded runs, when it was asked
             for a cleanup, ``None`` otherwise. Each step lists its storage's
             runs in ``superseded``.
+        parallel: The parallelism a submission may ask for, when the caller
+            supplied the limits, ``None`` otherwise. The fingerprint leaves it
+            out.
     """
 
     recipe_digest: str
@@ -723,3 +762,4 @@ class PlanWire(GraphModel):
     cautions: tuple[Problem, ...] = ()
     open_requests: tuple[RequestSummaryWire, ...] = ()
     cleanup: CleanupPlanWire | None = None
+    parallel: ParallelWire | None = None
