@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
-from typing import Annotated, ClassVar, TypedDict, final
+from typing import Annotated, ClassVar, TypedDict, TypeGuard, final, override
 
 import joblib
 import numpy as np
@@ -28,6 +28,8 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputStream,
+    JoblibArtifact,
+    JoblibLoadSpec,
     POSE_CONFIG_DESCRIPTION,
     PoseConfig,
     TrackInputs,
@@ -67,12 +69,40 @@ _BATCH_SIZE_DESCRIPTION = (
 )
 
 
+_MODEL_DESCRIPTION = (
+    "The model.joblib of a pair-posedistance-pca run to apply, such as a fit "
+    "step scoped to the training groups. Unset, the feature fits a basis on "
+    "the entries in its scope. Set, nothing is fitted, the entries in scope "
+    "leave the run id, and n_components, pose, include_intra_A, include_intra_B "
+    "and include_inter must equal the fit's."
+)
+
+
 class PairPoseDistancePCABundle(TypedDict):
     ipca: IncrementalPCA
     tri_i: np.ndarray | None
     tri_j: np.ndarray | None
     feat_len: int | None
     version: str
+
+
+def _is_bundle(value: object) -> TypeGuard[PairPoseDistancePCABundle]:
+    """Whether *value* is a pair-posedistance-pca bundle.
+
+    ``global-kmeans`` and others also write ``model.joblib``, so a ``model``
+    naming the wrong run resolves to a file that loads.
+    """
+    return isinstance(value, dict) and all(
+        key in value for key in ("ipca", "tri_i", "tri_j", "feat_len")
+    )
+
+
+class PairPoseDistancePCAModelArtifact(JoblibArtifact[PairPoseDistancePCABundle]):
+    """Fitted PCA basis (model.joblib)."""
+
+    feature: str = "pair-posedistance-pca"
+    pattern: str = "model.joblib"
+    load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,13 +135,23 @@ class PairPoseDistancePCA:
     and ``perspective`` says which ordering, so the key is
     ``(frame, id1, id2, perspective)``.
 
+    The basis is fitted on the entries in scope, so a different scope is a
+    different fit. ``model`` names a fitted run's ``model.joblib`` instead: the
+    run then applies that basis and fits nothing, and its run id does not depend
+    on the entries it covers. A fit step scoped to the training groups and an
+    apply step over every group, with ``model`` naming the fit step, give the test
+    groups the training basis. ``scope_dependent`` is therefore True on the class,
+    which describes a fit, and False on an instance that was given a model.
+
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.pairposedistancepca.PairPoseDistancePCA.Params`.
     """
 
     category = "per-frame"
     name = "pair-posedistance-pca"
-    version = "0.2"
+    # 0.3: `model` applies a basis fitted by another run. Without one the output
+    # is that of 0.2, and the digest of the run id is unchanged.
+    version = "0.3"
     parallelizable = True
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -136,6 +176,8 @@ class PairPoseDistancePCA:
         conditional=kept(C.frame_col, C.group_col),
     )
 
+    ModelArtifact = PairPoseDistancePCAModelArtifact
+
     class Inputs(TrackInputs):
         pass
 
@@ -156,6 +198,21 @@ class PairPoseDistancePCA:
         batch_size: Annotated[int, Declared(_BATCH_SIZE_DESCRIPTION)] = Field(
             default=5000, gt=0
         )
+        model: Annotated[
+            PairPoseDistancePCAModelArtifact | None, Declared(_MODEL_DESCRIPTION)
+        ] = None
+
+        @override
+        def identity_dump(self) -> dict[str, object]:
+            """The hashed params, with ``model`` left out while it is unset.
+
+            A run that fits has the identity it had before the field existed, so
+            only the version segment of its run id moves.
+            """
+            dumped = super().identity_dump()
+            if self.model is None:
+                del dumped["model"]
+            return dumped
 
     def __init__(
         self,
@@ -172,6 +229,9 @@ class PairPoseDistancePCA:
         self._tri_i: np.ndarray | None = None
         self._tri_j: np.ndarray | None = None
         self._feat_len: int | None = None
+        # A fit derives its basis from the entries in scope, so they are part of its
+        # identity. A run given a model reads none of them for a fit.
+        self.scope_dependent = self.params.model is None
 
     # ---------- Feature protocol ----------
     def load_state(
@@ -182,14 +242,28 @@ class PairPoseDistancePCA:
     ) -> bool:
         path = run_root / "model.joblib"
         if path.exists():
-            bundle: PairPoseDistancePCABundle = joblib.load(path)
-            self._ipca = bundle["ipca"]
-            self._tri_i = bundle["tri_i"]
-            self._tri_j = bundle["tri_j"]
-            self._feat_len = bundle["feat_len"]
-            self._fitted = True
+            self._adopt(joblib.load(path))
             return True
-        return False
+        model = self.params.model
+        if model is None:
+            return False
+        # A named basis that is not there must not become a fit over this scope.
+        if "model" not in artifact_paths:
+            raise FileNotFoundError(
+                f"[pair-posedistance-pca] The model {model.feature!r} run "
+                f"{model.run_id!r} holds no {model.pattern!r}. Run the fit that "
+                f"writes it first."
+            )
+        loaded: object = model.from_path(artifact_paths["model"])
+        if not _is_bundle(loaded):
+            raise ValueError(
+                f"[pair-posedistance-pca] {artifact_paths['model']} is not a "
+                f"pair-posedistance-pca model. Name the run of a "
+                f"pair-posedistance-pca fit."
+            )
+        self._refuse_mismatch(loaded)
+        self._adopt(loaded)
+        return True
 
     def fit(self, inputs: InputStream) -> None:
         for _entry_key, df in inputs():
@@ -254,6 +328,54 @@ class PairPoseDistancePCA:
         return out_df
 
     # ---------- Internals ----------
+    def _adopt(self, bundle: PairPoseDistancePCABundle) -> None:
+        """Take a fitted basis as this feature's state."""
+        self._ipca = bundle["ipca"]
+        self._tri_i = bundle["tri_i"]
+        self._tri_j = bundle["tri_j"]
+        self._feat_len = bundle["feat_len"]
+        self._fitted = True
+
+    def _refuse_mismatch(self, bundle: PairPoseDistancePCABundle) -> None:
+        """Refuse params that would not rebuild the fit's vectors or its scores."""
+        _, _, feat_len = self._vector_layout()
+        found: list[str] = []
+        n_fitted = int(
+            bundle["ipca"].n_components_  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        )
+        if n_fitted != self.params.n_components:
+            found.append(
+                f"n_components is {self.params.n_components} and the model "
+                f"holds {n_fitted}"
+            )
+        if bundle["feat_len"] != feat_len:
+            found.append(
+                f"pose, include_intra_A, include_intra_B and include_inter make "
+                f"vectors of {feat_len} distances and the model was fitted on "
+                f"{bundle['feat_len']}"
+            )
+        if found:
+            raise ValueError(
+                "[pair-posedistance-pca] The params do not match the model: "
+                + "; ".join(found)
+                + ". Give the apply step the params of the fit step."
+            )
+
+    def _vector_layout(self) -> tuple[np.ndarray, np.ndarray, int]:
+        """The lower-triangle indices of one animal's keypoints and the vector length."""
+        N = self._effective_pose_n()
+        tri_i, tri_j = np.tril_indices(N, k=-1)
+        n_intra = len(tri_i)
+        n_cross = N * N
+        feat_len = 0
+        if self.params.include_intra_A:
+            feat_len += n_intra
+        if self.params.include_intra_B:
+            feat_len += n_intra
+        if self.params.include_inter:
+            feat_len += n_cross
+        return tri_i, tri_j, feat_len
+
     def _effective_pose_n(self) -> int:
         """Return the number of pose points being used."""
         return len(self.params.pose.selected_indices())
@@ -290,18 +412,7 @@ class PairPoseDistancePCA:
             )
 
         if self._tri_i is None or self._tri_j is None or self._feat_len is None:
-            N = self._effective_pose_n()
-            tri_i, tri_j = np.tril_indices(N, k=-1)
-            n_intra = len(tri_i)
-            n_cross = N * N
-            feat_len = 0
-            if self.params.include_intra_A:
-                feat_len += n_intra
-            if self.params.include_intra_B:
-                feat_len += n_intra
-            if self.params.include_inter:
-                feat_len += n_cross
-            self._tri_i, self._tri_j, self._feat_len = tri_i, tri_j, feat_len
+            self._tri_i, self._tri_j, self._feat_len = self._vector_layout()
         return df_small, pairs
 
     def _build_pair_feat(self, row_a: np.ndarray, row_b: np.ndarray) -> np.ndarray:

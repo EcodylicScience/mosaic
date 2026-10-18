@@ -57,6 +57,16 @@ class ArtifactSpec(Result[str], Generic[L, R]):
         return self
 
     @classmethod
+    def pinned_feature(cls) -> str:
+        """The feature that writes this artifact type, or ``""`` for a generic one.
+
+        A typed subclass such as ``KMeansModelArtifact`` defaults ``feature`` to
+        its writer, which the base class and the templates references leave unset.
+        """
+        pinned: object = cls.model_fields["feature"].default
+        return pinned if isinstance(pinned, str) else ""
+
+    @classmethod
     def from_result(cls, result: Result[str]) -> Self:
         """Create from a Result, validating feature match.
 

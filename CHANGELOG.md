@@ -113,6 +113,42 @@ already read a zombie as exited, so no verdict, lease or run id changes.
   instead of polling or watching the driver. `driver_pid` and `driver_log` stay in
   `SubmittedPipeline`.
 
+**A params reference to a step of another feature is refused where the field names a
+feature.** A field typed as one feature's artifact, such as the `model` of `global-kmeans`
+or `xgboost`, must name a step that runs that feature. `mosaic pipeline validate`, the
+plan and submission report the step and the field (`params.model`) with both feature
+names. Several features write a `model.joblib`, so a reference to the wrong step used to
+resolve to a file that loads and was read as the wrong model. No run id moves. A recipe
+stored in mosaic-api that does this no longer validates. `ArtifactSpec.pinned_feature()`
+returns the feature that a typed artifact names, or `""` for a generic one.
+
+**`pair-posedistance-pca` applies a basis fitted on other entries.** The feature (0.2 to
+0.3) takes `model`, a `PairPoseDistancePCAModelArtifact` naming a `pair-posedistance-pca`
+run's `model.joblib`, as the global fitters take theirs. A run with `model` loads that
+basis and fits nothing, and its run id has no scope term, so one apply step is one run
+whichever entries it covers. A recipe with a fit step narrowed to the training groups
+and a second step with `"model": {"step": "<fit step>", "pattern": "model.joblib"}`
+projects every group onto the training basis.
+
+- Every `pair-posedistance-pca` run id moves with the version, and the digest stays
+  (`0.2-c217c7a3fd` is now `0.3-c217c7a3fd`), because `model` is left out of the hashed
+  params while it is unset. Every run that reads one through `inputs` moves too. An
+  existing dataset recomputes them once and the bases are the same. The old runs are
+  superseded runs for a cleanup. No other run id moves, and a plan fingerprint moves
+  only for a plan with such a step.
+- `scope_dependent` is True on the class and for a fit, and False on an instance given
+  `model`. The planner, the run id and the inventory read the instance, so a step that
+  applies a model is planned and measured as a scope-free step and is asked for the
+  entries it lacks. `StepTypeDetail.scope_dependent` reads the class and still says
+  True.
+- A run that applies a model writes no `fit_scope.json`, as a `global-kmeans` run given
+  a `model` writes none.
+- The apply refuses a `model` whose run holds no `model.joblib`, a file of another
+  feature, an `n_components` that differs from the fit's, and `pose` and `include_*`
+  params that make vectors of another length. Other differences between the two steps
+  pass, such as `pose_indices` that select other keypoints of the same number. It never
+  refits on the scope.
+
 **A step can compute several entries at once, and reports the memory it used.**
 `mosaic run` and `mosaic pipeline run` take `--workers`, `--parallel-mode` and
 `--min-free-memory-fraction`, and `submit_pipeline` takes `workers` and `parallel_mode`
