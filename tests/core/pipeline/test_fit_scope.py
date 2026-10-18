@@ -41,6 +41,7 @@ from mosaic.core.scope import Scope
 SOURCE_DIR = "fit-scope-source__from__tracks"
 FIT_DIR = "fit-scope-fit__from__tracks"
 PROBE_DIR = "fit-scope-probe__from__tracks"
+CONSUMER_DIR = "fit-scope-consumer__from__tracks"
 
 
 class _P(Params):
@@ -102,6 +103,25 @@ class _ArtifactFit(_StatefulStub):
     name = "fit-scope-fit"
     version = "0.1"
     scope_dependent = False
+
+    def __init__(self, source: str, run_id: str) -> None:
+        self.inputs = Inputs(("tracks",))
+        self.params = _ArtifactParams(
+            templates=TemplatesRef(feature=source, run_id=run_id)
+        )
+        self.fits = 0
+
+
+class _ArtifactConsumer(_StatefulStub):
+    """A scope-dependent feature that applies an artifact another run fitted.
+
+    The shape of ``evaluate-labels`` with a ``label_map``: it fits from its own
+    stream, and reads a pinned artifact it did not fit.
+    """
+
+    name = "fit-scope-consumer"
+    version = "0.1"
+    scope_dependent = True
 
     def __init__(self, source: str, run_id: str) -> None:
         self.inputs = Inputs(("tracks",))
@@ -174,6 +194,49 @@ def test_a_scope_free_fit_takes_its_scope_from_the_pinned_artifact(
     assert [(ref.field, ref.feature, ref.run_id, ref.known) for ref in fitted.via] == [
         ("templates", SOURCE_DIR, source_run, True)
     ]
+
+
+def test_a_scope_dependent_fit_keeps_its_stream_scope_and_names_the_artifact_it_read(
+    scenario_dataset: Dataset,
+) -> None:
+    """Scored on one sequence, with a map fitted on another: the record says both."""
+    source_run = _templates(scenario_dataset, ["seq_a"])
+
+    run_id = _run(
+        scenario_dataset, _ArtifactConsumer(SOURCE_DIR, source_run), ["seq_b"]
+    )
+
+    fitted = read_fit_scope(feature_run_root(scenario_dataset, CONSUMER_DIR, run_id))
+    assert fitted is not None
+    assert fitted.entries == (("", "seq_b"),), "the entries stay what the fit read"
+    assert fitted.scope_dependent is True
+    assert fitted.source == "stream"
+    assert [(ref.field, ref.feature, ref.run_id, ref.known) for ref in fitted.via] == [
+        ("templates", SOURCE_DIR, source_run, True)
+    ]
+    upstream = read_fit_scope(
+        feature_run_root(scenario_dataset, SOURCE_DIR, source_run)
+    )
+    assert upstream is not None
+    assert upstream.entries == (("", "seq_a"),)
+
+
+def test_a_scope_dependent_fit_marks_an_artifact_with_no_record_as_unknown(
+    scenario_dataset: Dataset,
+) -> None:
+    source_run = _templates(scenario_dataset, ["seq_a"])
+    (
+        feature_run_root(scenario_dataset, SOURCE_DIR, source_run) / FIT_SCOPE_NAME
+    ).unlink()
+
+    run_id = _run(
+        scenario_dataset, _ArtifactConsumer(SOURCE_DIR, source_run), ["seq_b"]
+    )
+
+    fitted = read_fit_scope(feature_run_root(scenario_dataset, CONSUMER_DIR, run_id))
+    assert fitted is not None
+    assert fitted.entries == (("", "seq_b"),), "its own scope is known all the same"
+    assert [ref.known for ref in fitted.via] == [False]
 
 
 def test_the_fit_scope_carries_the_upstream_labels_and_tracks_variants(

@@ -29,6 +29,13 @@ training set is a pinned artifact (``templates``) written by another run, and th
 scope it was *invoked* over says nothing about what that artifact holds. Its
 record is therefore derived from the fit records of the artifacts it pins
 (:func:`derive_fit_scope`), and is "unknown" when no pinned artifact can say.
+
+A scope-dependent feature may also apply an artifact that another run fitted:
+``evaluate-labels`` scores the test groups through a ``label_map`` that
+``fit-label-map`` fitted on the training groups. Its ``entries`` stay what its
+own stream held, the test groups, and ``via`` names the pinned artifact. What
+that artifact was fitted over is the record in its own run, one hop away, so it
+is not copied here, where it could go stale.
 """
 
 from __future__ import annotations
@@ -64,7 +71,9 @@ FIT_SCOPE_NAME = "fit_scope.json"
 FitSource = Literal["stream", "artifacts", "unknown", "legacy"]
 """Where a record's entries came from.
 
-- ``stream``: a scope-dependent feature, fitted over the scope it ran on.
+- ``stream``: a scope-dependent feature, fitted over the scope it ran on. Its
+  ``via`` names the artifacts it applied that other runs fitted, and is empty
+  when it pinned none.
 - ``artifacts``: a scope-free fitter, whose entries are the union of the fit
   records of the artifacts it pins (``via``).
 - ``unknown``: a scope-free fitter with no pinned artifact to ask, such as one
@@ -105,6 +114,11 @@ class FitScope:
     entries are an upper bound: the entries whose data could reach the fit. An
     ``xgboost`` run fits only the ``split == "train"`` rows of its templates, and
     its record still lists every entry the templates were drawn from.
+
+    For ``source="stream"``, ``via`` lists the pinned artifacts the feature
+    applied without fitting them. Those entries are not in ``entries``, and the
+    artifact's run says what it was fitted over (``known`` is False when it
+    cannot).
     """
 
     scope_dependent: bool
@@ -127,10 +141,11 @@ def derive_fit_scope(
     """The fit scope of a fit that just ran, from where its data came from.
 
     A scope-dependent feature fits from its own stream, so its record is the
-    scope it resolved. A scope-free fitter fits from the artifacts its params pin
-    -- the scope it was invoked over is only where it is *applied* -- so its
-    record is the union of those artifacts' own fit records. That is transitive:
-    each upstream recorded its own fit scope when it ran.
+    scope it resolved, and its ``via`` names the artifacts it pinned. A
+    scope-free fitter fits from the artifacts its params pin -- the scope it was
+    invoked over is only where it is *applied* -- so its record is the union of
+    those artifacts' own fit records. That is transitive: each upstream recorded
+    its own fit scope when it ran.
 
     Args:
         ds: The dataset the run belongs to.
@@ -146,8 +161,7 @@ def derive_fit_scope(
         exists (``source="unknown"``) or when some pinned artifact has no known
         fit scope (``source="artifacts"`` with that upstream ``known=False``).
     """
-    from .index import feature_run_root
-
+    pinned = _pinned_artifacts(ds, feature, resolutions, artifact_paths)
     if feature.scope_dependent:
         return FitScope(
             scope_dependent=True,
@@ -157,12 +171,49 @@ def derive_fit_scope(
             fitted_at=now_iso(),
             identity_scheme=FEATURE_IDENTITY_SCHEME,
             source="stream",
+            via=tuple(ref for ref, _ in pinned),
         )
 
-    via: list[FitSourceRef] = []
     entries: set[tuple[str, str]] = set()
     tracks: set[str] = set()
     labels: set[str] = set()
+    for _, upstream in pinned:
+        if upstream is not None:
+            entries.update(upstream.entries or ())
+            tracks.update(upstream.tracks_variants or ())
+            labels.update(upstream.labels_variants or ())
+
+    via = tuple(ref for ref, _ in pinned)
+    if not via:
+        return _unknown(source="unknown", via=())
+    if not all(ref.known for ref in via):
+        return _unknown(source="artifacts", via=via)
+    return FitScope(
+        scope_dependent=False,
+        entries=tuple(sorted(entries)),
+        tracks_variants=tuple(sorted(tracks)),
+        labels_variants=tuple(sorted(labels)),
+        fitted_at=now_iso(),
+        identity_scheme=FEATURE_IDENTITY_SCHEME,
+        source="artifacts",
+        via=via,
+    )
+
+
+def _pinned_artifacts(
+    ds: Dataset,
+    feature: Feature,
+    resolutions: tuple[Resolution, ...],
+    artifact_paths: Mapping[str, Path],
+) -> list[tuple[FitSourceRef, FitScope | None]]:
+    """Each artifact the params pin that fed the run, and its own fit record.
+
+    The record is ``None`` for a run that has none. The artifact is ``known``
+    only when its record holds entries and both variant sets.
+    """
+    from .index import feature_run_root
+
+    pinned: list[tuple[FitSourceRef, FitScope | None]] = []
     for resolution in resolutions:
         field = resolution.where.removeprefix("params.")
         if field == resolution.where or field not in artifact_paths:
@@ -180,33 +231,14 @@ def derive_fit_scope(
             and upstream.tracks_variants is not None
             and upstream.labels_variants is not None
         )
-        via.append(
-            FitSourceRef(
-                field=field,
-                feature=resolution.feature,
-                run_id=resolution.run_id,
-                known=known,
-            )
+        ref = FitSourceRef(
+            field=field,
+            feature=resolution.feature,
+            run_id=resolution.run_id,
+            known=known,
         )
-        if upstream is not None:
-            entries.update(upstream.entries or ())
-            tracks.update(upstream.tracks_variants or ())
-            labels.update(upstream.labels_variants or ())
-
-    if not via:
-        return _unknown(source="unknown", via=())
-    if not all(ref.known for ref in via):
-        return _unknown(source="artifacts", via=tuple(via))
-    return FitScope(
-        scope_dependent=False,
-        entries=tuple(sorted(entries)),
-        tracks_variants=tuple(sorted(tracks)),
-        labels_variants=tuple(sorted(labels)),
-        fitted_at=now_iso(),
-        identity_scheme=FEATURE_IDENTITY_SCHEME,
-        source="artifacts",
-        via=tuple(via),
-    )
+        pinned.append((ref, upstream))
+    return pinned
 
 
 def _unknown(*, source: FitSource, via: tuple[FitSourceRef, ...]) -> FitScope:
