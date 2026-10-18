@@ -22,6 +22,7 @@ import pytest
 from typer.testing import CliRunner
 
 import mosaic.core.pipeline.graph.step as step_module
+import mosaic.core.pipeline.parallelism as parallelism
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
@@ -52,6 +53,7 @@ from mosaic.core.pipeline.storage_names import NAME_MAX_BYTES, SHORTENED_MARKER
 from mosaic.core.pipeline.graph.claims import FileFailureStore
 from mosaic.core.pipeline.graph.digest import document_digest, recipe_digest
 from mosaic.core.pipeline.job import Cancelled
+from mosaic.core.pipeline.parallelism import ParallelSettings
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from mosaic.core.scope import Scope
 from mosaic.runlog import read_run, run_log_dir
@@ -1062,3 +1064,78 @@ def test_a_name_that_fits_until_encoded_records_and_clears_claims(
     store.clear_entry(entry_key)
     assert store.step_record(step_key).attempts == 0
     assert store.entry_record(entry_key).attempts == 0
+
+
+# --- parallelism -------------------------------------------------------------
+
+
+class _Stopped(Exception):
+    """Ends a step at the call of ``run_feature``, after its arguments are seen."""
+
+
+def _run_feature_arguments(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """Replace ``run_feature`` with a stub that records its keyword arguments."""
+    seen: dict[str, object] = {}
+
+    def run_feature(*_args: object, **kwargs: object) -> None:
+        seen.update(kwargs)
+        raise _Stopped
+
+    monkeypatch.setattr(step_module, "run_feature", run_feature)
+    monkeypatch.setattr(parallelism, "host_cpus", lambda: 8)
+    return seen
+
+
+def test_a_parallelizable_step_is_run_with_the_workers_it_was_given(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    seen = _run_feature_arguments(monkeypatch)
+    settings = ParallelSettings(workers=3, mode="process", min_free_memory_fraction=0.2)
+
+    with pytest.raises(_Stopped):
+        _ = execute_step(tracked, request, "speed", parallel=settings)
+
+    assert seen["parallel_workers"] == 3
+    assert seen["parallel_mode"] == "process"
+    assert seen["min_free_memory_fraction"] == 0.2
+
+
+def test_a_step_given_no_workers_runs_in_turn(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    seen = _run_feature_arguments(monkeypatch)
+
+    with pytest.raises(_Stopped):
+        _ = execute_step(tracked, request, "speed")
+
+    assert seen["parallel_workers"] is None
+    assert seen["min_free_memory_fraction"] == 0.0
+
+
+def test_a_step_that_fits_across_every_entry_is_not_given_workers(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    _ = execute_step(tracked, request, "speed")
+    seen = _run_feature_arguments(monkeypatch)
+
+    with pytest.raises(_Stopped):
+        _ = execute_step(
+            tracked, request, "templates", parallel=ParallelSettings(workers=4)
+        )
+
+    assert seen["parallel_workers"] is None
+
+
+def test_the_worker_count_is_not_part_of_a_steps_identity(tracked: Dataset) -> None:
+    recipe = Recipe.model_validate(_chain())
+    request = submit_request(tracked, recipe).request
+    planned = plan_pipeline(tracked, recipe).step("speed")
+
+    outcome = execute_step(
+        tracked, request, "speed", parallel=ParallelSettings(workers=2)
+    )
+
+    assert outcome.run_id == planned.run_id

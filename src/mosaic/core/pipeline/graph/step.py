@@ -49,6 +49,7 @@ from ..inventory.cache import InventoryCache
 from ..inventory.model import ArtifactRef, FeatureRunRef
 from ..job import Cancelled
 from ..ops import run_op
+from ..parallelism import ParallelSettings, effective_parallel
 from ..run import run_feature
 from .claims import FileFailureStore
 from .model import FeatureStepSpec
@@ -151,6 +152,7 @@ def execute_step(
     catalog: DeclarationCatalog | None = None,
     owner: str = "",
     cancel_token: CancelToken | None = None,
+    parallel: ParallelSettings | None = None,
 ) -> StepOutcome:
     """Run one step of *request* against *ds*, and say what it did.
 
@@ -168,6 +170,11 @@ def execute_step(
         owner: Recorded on the attempt.
         cancel_token: Cooperative cancellation, so a signal reaches the work
             rather than only the process around it.
+        parallel: How many entries a feature step computes at once, and how.
+            ``None`` computes them in turn. The setting belongs to the machine
+            and not to the recipe, so it changes neither a step's identity nor
+            its outputs. A feature that is not parallelizable ignores it, and an
+            op step does too.
 
     Returns:
         What this step did, and what it recorded doing it under.
@@ -194,6 +201,7 @@ def execute_step(
             catalog=catalog,
             owner=owner,
             cancel_token=cancel_token,
+            parallel=parallel,
         )
     except StepRefused as refusal:
         # Written here because nothing else will: a refusal happens before
@@ -223,6 +231,7 @@ def _execute(
     catalog: DeclarationCatalog | None,
     owner: str,
     cancel_token: CancelToken | None,
+    parallel: ParallelSettings | None,
 ) -> StepOutcome:
     """The body, with every refusal free to propagate to its recorder."""
     recipe = load_recipe_for_request(ds.base_dir, request)
@@ -291,6 +300,7 @@ def _execute(
         store=store,
         owner=owner,
         cancel_token=cancel_token,
+        parallel=parallel,
     )
     return _measured(ds, held, plan, planned, outcome)
 
@@ -485,6 +495,7 @@ def _run(
     store: FailureStore,
     owner: str,
     cancel_token: CancelToken | None,
+    parallel: ParallelSettings | None,
 ) -> StepOutcome:
     """Do the work, and record what it lost.
 
@@ -519,9 +530,24 @@ def _run(
 
     spec = planned.spec
     try:
+        feature = build_step_feature(spec)
+        # Resolved from the built feature: a recipe does not say whether a feature
+        # is parallelizable, and a feature that defines ``set_scope`` cannot run in
+        # process workers.
+        chosen = effective_parallel(
+            parallel,
+            parallelizable=feature.parallelizable,
+            needs_scope=hasattr(feature, "set_scope"),
+        )
+        several = chosen.workers > 1
         result = run_feature(
             ds,
-            build_step_feature(spec),
+            feature,
+            parallel_workers=chosen.workers if several else None,
+            parallel_mode=chosen.mode,
+            min_free_memory_fraction=(
+                chosen.min_free_memory_fraction if several else 0.0
+            ),
             scope=Scope(entries=sorted(asked)) if asked else None,
             asks_every_entry=asks_every_entry,
             overwrite=overwrite,

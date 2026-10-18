@@ -417,6 +417,9 @@ def test_a_log_predating_the_new_events_folds_to_their_zero_defaults(tmp_path: P
     assert snap["cache_hit"] is False
     assert snap["tracks_variant"] == ""
     assert snap["entries_columns_dropped"] == 0
+    assert (snap["workers"], snap["parallel_mode"]) == (0, "")
+    assert (snap["peak_rss_bytes"], snap["min_available_bytes"]) == (0, 0)
+    assert snap["total_memory_bytes"] == 0
     # and the fields that did exist are untouched by the new branches
     assert snap["status"] == "finished"
     assert int(snap["progress_total"]) == 9
@@ -443,6 +446,64 @@ def test_the_writer_records_the_three_attempt_facts(tmp_path: Path):
     assert snap["entries_written"] == 4
     assert snap["cache_hit"] is True
     assert snap["tracks_variant"] == "convert-trex.0.2-aaa,convert-trex.0.2-bbb"
+
+
+def test_the_last_resources_event_is_the_attempts_workers_and_memory(
+    tmp_path: Path,
+) -> None:
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    log = JsonlRunLog(path, eid)
+    log.started(kind="feature", target="t", owner="", host="h")
+    log.resources(
+        workers=4,
+        parallel_mode="process",
+        peak_rss_bytes=100,
+        min_available_bytes=900,
+        total_memory_bytes=1000,
+    )
+    log.resources(
+        workers=4,
+        parallel_mode="process",
+        peak_rss_bytes=300,
+        min_available_bytes=500,
+        total_memory_bytes=1000,
+    )
+    log.close()
+
+    snap = reduce_run_log(path)
+
+    assert snap is not None
+    assert (snap["workers"], snap["parallel_mode"]) == (4, "process")
+    assert (snap["peak_rss_bytes"], snap["min_available_bytes"]) == (300, 500)
+    assert snap["total_memory_bytes"] == 1000
+
+
+def test_a_resumed_attempt_reports_the_resources_of_its_last_process(
+    tmp_path: Path,
+) -> None:
+    eid = new_execution_id()
+    path = run_log_path(tmp_path, eid)
+    log = JsonlRunLog(path, eid)
+    log.started(kind="feature", target="t", owner="", host="h")
+    log.resources(
+        workers=4,
+        parallel_mode="process",
+        peak_rss_bytes=300,
+        min_available_bytes=500,
+        total_memory_bytes=1000,
+    )
+    log.started(kind="feature", target="t", owner="", host="h")
+    log.close()
+
+    snap = reduce_run_log(path)
+
+    assert snap is not None
+    assert (snap["workers"], snap["parallel_mode"], snap["peak_rss_bytes"]) == (
+        0,
+        "",
+        0,
+    )
 
 
 def test_an_unrecognised_event_only_advances_liveness(tmp_path: Path):

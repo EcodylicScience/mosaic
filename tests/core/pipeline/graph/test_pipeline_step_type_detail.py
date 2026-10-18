@@ -86,6 +86,23 @@ def test_a_feature_reports_its_class_scope_dependence() -> None:
     assert not step_type_detail("speed-angvel").scope_dependent
 
 
+def test_a_feature_reports_whether_it_computes_entries_in_parallel() -> None:
+    assert step_type_detail("speed-angvel").parallelizable
+    assert not step_type_detail("extract-templates").parallelizable
+    assert not step_type_detail("tracks").parallelizable
+
+
+def test_an_op_is_not_parallelizable() -> None:
+    assert not step_type_detail("transcode").parallelizable
+
+
+def test_the_index_row_of_a_feature_reports_parallelizable() -> None:
+    rows = {entry.name: entry for entry in catalog_index().entries}
+
+    assert rows["speed-angvel"].parallelizable
+    assert not rows["global-kmeans"].parallelizable
+
+
 def test_a_step_type_names_what_it_consumes() -> None:
     assert step_type_detail("speed-angvel").consumes == ("tracks", "features")
     assert step_type_detail("tracks").consumes == ("nothing",)

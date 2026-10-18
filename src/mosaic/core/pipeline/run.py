@@ -14,6 +14,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     wait,
 )
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import ClassVar, Final, TYPE_CHECKING, Literal
 
@@ -99,6 +100,13 @@ from .types import (
     TracksColumn,
 )
 from .job import CancelToken, Cancelled, JobContext, job_context
+from .memory_watch import MemoryWatch
+from .parallelism import (
+    MemoryFloorReached,
+    ParallelMode,
+    WorkerProcessDied,
+    memory_use_text,
+)
 from .parquet_reader import output_n_rows
 from .progress import ProgressCallback
 from .writers import (
@@ -1114,6 +1122,7 @@ def run_feature(
     progress_callback: ProgressCallback | None = None,
     cancel_token: CancelToken | None = None,
     asks_every_entry: bool | None = None,
+    min_free_memory_fraction: float = 0.0,
 ) -> Result:
     """Apply a Feature over a chosen scope (default: whole dataset).
 
@@ -1148,7 +1157,17 @@ def run_feature(
         phase in parallel. Defaults to sequential execution.
     parallel_mode : {'thread','process'}
         Execution backend when parallel_workers > 1. 'thread' (default) uses
-        ThreadPoolExecutor; 'process' uses ProcessPoolExecutor.
+        ThreadPoolExecutor; 'process' uses ProcessPoolExecutor, which spawns an
+        interpreter per worker and pickles each entry's table to it, and so uses
+        much more memory than threads. A worker that dies raises
+        :class:`~mosaic.core.pipeline.parallelism.WorkerProcessDied`, and the
+        entries already written are kept.
+    min_free_memory_fraction : float, default 0.0
+        With several workers, the share of the host's memory that must stay
+        available. While it is lower the run waits for its in-flight entries before
+        it starts another, and raises
+        :class:`~mosaic.core.pipeline.parallelism.MemoryFloorReached` when it is
+        still lower with none in flight. 0 turns the check off.
     overlap_frames : int, default 0
         Load this many frames of context from the sequences on either side, so a
         feature computing across frames -- a rolling window, a backward
@@ -1247,6 +1266,7 @@ def run_feature(
                 filter_end_time=filter_end_time,
                 check_output=check_output,
                 asks_every_entry=asks_every_entry,
+                min_free_memory_fraction=min_free_memory_fraction,
             )
         finally:
             _close_feature(feature)
@@ -1271,6 +1291,7 @@ def _run_feature_impl(
     filter_end_time: float | None = None,
     check_output: bool = False,
     asks_every_entry: bool | None = None,
+    min_free_memory_fraction: float = 0.0,
 ) -> Result:
     """Body of :func:`run_feature`, executed inside a :func:`job_context`.
 
@@ -1291,6 +1312,9 @@ def _run_feature_impl(
     has_frame_filter = frame_start is not None or frame_end is not None
     if has_frame_filter and overlap_frames > 0:
         raise ValueError("Frame/time filters and overlap_frames are mutually exclusive")
+    if not 0.0 <= min_free_memory_fraction < 1.0:
+        msg = f"min_free_memory_fraction must be in [0, 1), not {min_free_memory_fraction}"
+        raise ValueError(msg)
 
     # The selector as the caller named it. An unset one covers every entry the
     # inputs resolve, the same answer an absent narrowing has always given here.
@@ -1695,9 +1719,9 @@ def _run_feature_impl(
     max_workers = (
         parallel_workers if parallel_workers is not None and parallel_workers > 1 else 1
     )
-    parallel_mode_str = (parallel_mode or "thread").lower()
-    if parallel_mode_str not in {"thread", "process"}:
-        parallel_mode_str = "thread"
+    parallel_mode_str: ParallelMode = (
+        "process" if (parallel_mode or "thread").lower() == "process" else "thread"
+    )
     if max_workers > 1 and not feature.parallelizable:
         print(
             f"[feature:{feature.name}] parallel_workers requested but feature is not parallelizable; running sequentially.",
@@ -1716,6 +1740,34 @@ def _run_feature_impl(
             executor = ThreadPoolExecutor(max_workers=max_workers)
 
     pending: dict[Future[pd.DataFrame], tuple[FeatureMeta, CoreSelector | None]] = {}
+
+    watch = MemoryWatch()
+
+    def _report_resources(*, final: bool = False) -> None:
+        """Record the workers and the memory measured so far on the run-log.
+
+        Throttled to the sampler's interval unless *final*. The final report is
+        written on every exit from the apply loop, a failure included, because the
+        reader of a failed step needs the memory it reached.
+        """
+        measured = watch.sample() is not None if final else watch.sample_if_due()
+        if not measured:
+            return
+        ctx.resources(
+            workers=max_workers,
+            parallel_mode=parallel_mode_str if max_workers > 1 else "",
+            peak_rss_bytes=watch.peak_rss_bytes,
+            min_available_bytes=watch.min_available_bytes,
+            total_memory_bytes=watch.total_bytes,
+        )
+
+    def _memory_use() -> str:
+        return memory_use_text(
+            workers=max_workers,
+            mode=parallel_mode_str,
+            peak_rss_bytes=watch.peak_rss_bytes,
+            total_bytes=watch.total_bytes,
+        )
 
     def _entry_failed(group: str, sequence: str, exc: Exception) -> None:
         """Record that one entity's ``apply`` raised, unless the run was cancelled.
@@ -1745,6 +1797,11 @@ def _run_feature_impl(
             meta, selector = pending.pop(future)
             try:
                 result_df: FeatureOutput = future.result()
+            except BrokenProcessPool as exc:
+                # Every other pending future of a broken pool fails the same way, so
+                # this is the run's failure and not one entity's.
+                _report_resources(final=True)
+                raise WorkerProcessDied(_memory_use()) from exc
             except Exception as exc:
                 _entry_failed(meta.group, meta.sequence, exc)
                 continue
@@ -1773,6 +1830,28 @@ def _run_feature_impl(
             )
             del result_df
             gc.collect()
+        _report_resources()
+
+    def _wait_for_memory() -> None:
+        """Hold dispatch while the host's available memory is under the floor.
+
+        Waits for in-flight entries, whose tables free memory as they finish, and
+        raises when the host is still under the floor with none in flight.
+        """
+        if min_free_memory_fraction <= 0.0:
+            return
+        while True:
+            free = watch.free_fraction()
+            if free is None or free >= min_free_memory_fraction:
+                return
+            if not pending:
+                _report_resources(final=True)
+                raise MemoryFloorReached(
+                    _memory_use(),
+                    free_fraction=free,
+                    floor=min_free_memory_fraction,
+                )
+            _drain_completed()
 
     def _process_entry(
         entry_key: str,
@@ -1803,24 +1882,30 @@ def _run_feature_impl(
         if executor is not None:
             while len(pending) >= max_workers:
                 _drain_completed()
-            if parallel_mode_str == "process":
-                artifact_paths_str = {k: str(v) for k, v in artifact_paths.items()}
-                pending[
-                    executor.submit(
-                        process_apply_worker,
-                        feature.__module__,
-                        type(feature).__name__,
-                        feature.inputs.model_dump(),
-                        feature.params.model_dump(),
-                        str(run_root),
-                        artifact_paths_str,
-                        dependency_lookups,
-                        df,
-                        str(ds.manifest_path),
-                    )
-                ] = (meta, selector)
-            else:
-                pending[executor.submit(feature.apply, df)] = (meta, selector)
+            _wait_for_memory()
+            try:
+                if parallel_mode_str == "process":
+                    artifact_paths_str = {k: str(v) for k, v in artifact_paths.items()}
+                    pending[
+                        executor.submit(
+                            process_apply_worker,
+                            feature.__module__,
+                            type(feature).__name__,
+                            feature.inputs.model_dump(),
+                            feature.params.model_dump(),
+                            str(run_root),
+                            artifact_paths_str,
+                            dependency_lookups,
+                            df,
+                            str(ds.manifest_path),
+                        )
+                    ] = (meta, selector)
+                else:
+                    pending[executor.submit(feature.apply, df)] = (meta, selector)
+            except BrokenProcessPool as exc:
+                _report_resources(final=True)
+                raise WorkerProcessDied(_memory_use()) from exc
+            _report_resources()
         else:
             try:
                 result_df: FeatureOutput = feature.apply(df)
@@ -1852,6 +1937,7 @@ def _run_feature_impl(
             )
             del result_df
             gc.collect()
+            _report_resources()
 
     # Iterate manifest entries. A cooperative cancel (raised at the top of
     # _process_entry) stops dispatch; completed entries stay recorded in
@@ -1881,15 +1967,21 @@ def _run_feature_impl(
             while pending:
                 _drain_completed()
             executor.shutdown(wait=True)
-    except Cancelled:
+    except (Cancelled, WorkerProcessDied, MemoryFloorReached):
         _flush_idx()
-        # A cancelled run that wrote 40 of 100 entries has 40 durable on disk, and
-        # "how far did it get" is the question an operator resubmits on. Recorded
-        # here because the flush above is the last moment the count is true.
+        # A run that stops after writing 40 of 100 entries has 40 durable on disk,
+        # and "how far did it get" is the question an operator resubmits on.
+        # Recorded here because the flush above is the last moment the count is
+        # true.
         ctx.entries_written(_total_written)
+        raise
+    finally:
+        # Every exit shuts the pool down: a pool left running holds its workers'
+        # memory, and a broken one is of no further use. Shutting down a pool that
+        # already shut down does nothing.
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
-        raise
+        _report_resources(final=True)
 
     # Global marker (for empty-input features).
     #

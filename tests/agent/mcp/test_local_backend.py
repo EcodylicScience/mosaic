@@ -50,6 +50,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.inventory import InventoryWire
 from mosaic.core.pipeline.markers import process_running
+from mosaic.core.pipeline.parallelism import ParallelLimits, host_cpus
 from mosaic.core.pipeline.preview import ArtifactPreview
 from mosaic.core.scope import Scope
 from mosaic.runlog import JsonlRunLog, run_log_path
@@ -513,6 +514,70 @@ def test_a_submitted_request_runs_detached_and_its_output_is_previewed(
         request_id=submitted.request_id,
     )
     assert (diagnosis.verdict, diagnosis.attempts) == ("finished", ())
+
+
+def test_a_submission_with_workers_runs_them_and_reports_the_memory_used(
+    dataset: Dataset,
+) -> None:
+    """The workers travel from the tool to the step process and back into its status."""
+    backend = LocalBackend(
+        [dataset.manifest_path],
+        warm=False,
+        parallel_limits=ParallelLimits(max_workers=2),
+    )
+    uuid = _uuid(dataset)
+    plan = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=uuid,
+        recipe=CHAIN_RECIPE,
+        entries=ENTRIES,
+    )
+
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        dataset=uuid,
+        recipe=CHAIN_RECIPE,
+        entries=ENTRIES,
+        plan_fingerprint=plan.fingerprint,
+        workers=2,
+    )
+
+    assert submitted.workers == 2
+    wait_for(
+        lambda: (
+            _call(
+                backend,
+                "get_request_status",
+                RequestStatusWire,
+                dataset=uuid,
+                request_id=submitted.request_id,
+            ).terminal
+        ),
+        REQUEST_SECONDS,
+        "the detached driver never ended the request",
+    )
+    status = _call(
+        backend,
+        "get_request_status",
+        RequestStatusWire,
+        dataset=uuid,
+        request_id=submitted.request_id,
+    )
+    wait_for(
+        lambda: not process_running(submitted.driver_pid),
+        REQUEST_SECONDS,
+        "the detached driver never exited",
+    )
+    assert status.verdict == "finished", status
+    speed, templates = status.steps
+    assert speed.workers == min(2, host_cpus())
+    assert speed.peak_rss_bytes > 0
+    # A fit across every entry is not parallelizable, so it runs in turn.
+    assert templates.workers == 1
 
 
 def test_plan_and_submit_a_recipe_whose_first_step_converts(tmp_path: Path) -> None:

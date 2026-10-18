@@ -12,11 +12,15 @@ import contextlib
 import json
 import sys
 from collections.abc import Generator
-from typing import TYPE_CHECKING, Annotated, NoReturn
+from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
 
 import typer
 
 from mosaic.core.entry import parse_entry_tokens
+from mosaic.core.pipeline.parallelism import (
+    MAX_WORKERS_CEILING,
+    ParallelSettings,
+)
 from mosaic.user_paths import user_path
 
 if TYPE_CHECKING:
@@ -51,6 +55,75 @@ StepScopeOption = Annotated[
         ),
     ),
 ]
+
+ParallelChoice = Literal["thread", "process"]
+
+WorkersOption = Annotated[
+    int | None,
+    typer.Option(
+        "--workers",
+        min=1,
+        max=MAX_WORKERS_CEILING,
+        help=(
+            "Compute this many entries of a parallelizable feature at once. The "
+            "default computes them in turn. More workers use more memory."
+        ),
+    ),
+]
+
+ParallelModeOption = Annotated[
+    ParallelChoice | None,
+    typer.Option(
+        "--parallel-mode",
+        help=(
+            "With --workers above 1, 'thread' (the default) shares one copy of the "
+            "feature. 'process' uses every core but spawns an interpreter per "
+            "worker and copies each entry's table to it, so it uses far more memory."
+        ),
+    ),
+]
+
+MinFreeMemoryOption = Annotated[
+    float,
+    typer.Option(
+        "--min-free-memory-fraction",
+        min=0.0,
+        max=0.99,
+        help=(
+            "With --workers above 1, the share of the host's memory that must stay "
+            "available. The run waits for its in-flight entries while the share is "
+            "lower, and fails when it is still lower with none in flight. 0 turns "
+            "the check off."
+        ),
+    ),
+]
+
+
+def parallel_settings(
+    workers: int | None, mode: ParallelChoice | None, min_free_memory_fraction: float
+) -> ParallelSettings | None:
+    """Return the settings that the parallel flags name, or fail when they conflict.
+
+    Args:
+        workers: The ``--workers`` value.
+        mode: The ``--parallel-mode`` value.
+        min_free_memory_fraction: The ``--min-free-memory-fraction`` value.
+
+    Returns:
+        The settings, or ``None`` when no flag asks for more than one worker.
+    """
+    if workers is None or workers <= 1:
+        if mode is not None or min_free_memory_fraction > 0.0:
+            fail(
+                "--parallel-mode and --min-free-memory-fraction apply to a run "
+                "with --workers above 1."
+            )
+        return None
+    return ParallelSettings(
+        workers=workers,
+        mode="thread" if mode is None else mode,
+        min_free_memory_fraction=min_free_memory_fraction,
+    )
 
 
 @contextlib.contextmanager

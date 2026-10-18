@@ -80,6 +80,14 @@ class StepAttempt:
         liveness_interval: The seconds between the ``alive`` events that the
             process promised, 0 for none.
         phase: The last phase the attempt declared, ``""`` before one.
+        workers: How many entries it computed at once, 0 before it reports.
+        parallel_mode: How it computed them, ``""`` for one at a time or before it
+            reports.
+        peak_rss_bytes: The largest resident memory of its process tree that it
+            measured, 0 before it reports.
+        min_available_bytes: The least memory the host had available when it
+            measured, 0 before it reports.
+        total_memory_bytes: The host's physical memory, 0 before it reports.
     """
 
     step_id: str
@@ -100,6 +108,11 @@ class StepAttempt:
     pid_ns: str = ""
     liveness_interval: float = 0.0
     phase: str = ""
+    workers: int = 0
+    parallel_mode: str = ""
+    peak_rss_bytes: int = 0
+    min_available_bytes: int = 0
+    total_memory_bytes: int = 0
 
     @property
     def started(self) -> bool:
@@ -207,6 +220,11 @@ def _attempt(logs: Path, step_id: str, execution_id: str) -> StepAttempt:
         pid_ns=snapshot["pid_ns"],
         liveness_interval=snapshot["liveness_interval"],
         phase=snapshot["phase"],
+        workers=snapshot["workers"],
+        parallel_mode=snapshot["parallel_mode"],
+        peak_rss_bytes=snapshot["peak_rss_bytes"],
+        min_available_bytes=snapshot["min_available_bytes"],
+        total_memory_bytes=snapshot["total_memory_bytes"],
     )
 
 

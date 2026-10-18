@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
 from mosaic.core.pipeline.error_kind import ClassifiedError
+from mosaic.core.pipeline.parallelism import ParallelLimits, ParallelRefused
 
 from .spec import (
     LISTED_STATUS_NOT,
@@ -94,6 +95,7 @@ if TYPE_CHECKING:
         ValidationReport,
     )
     from mosaic.core.pipeline.inventory import InventoryCache, InventoryWire
+    from mosaic.core.pipeline.parallelism import ParallelSettings
     from mosaic.core.pipeline.preview import ArtifactPreview
     from mosaic.core.scope import Scope
     from mosaic.runlog import AttemptOutcome, RunLogSnapshot
@@ -127,8 +129,8 @@ POLL_AFTER_SECONDS: Final = POLL_AFTER_MIN_SECONDS
 POLL_AFTER_TRAINING_SECONDS: Final = 60
 """How long a client waits before polling a request that trains on a GPU."""
 
-type DriverStarter = Callable[[Dataset, Request], DetachedDriver]
-"""What starts the process driving a submitted request."""
+type DriverStarter = Callable[[Dataset, Request, ParallelSettings], DetachedDriver]
+"""What starts the process driving a submitted request, given its parallelism."""
 
 
 class ToolFailure(Exception):
@@ -180,6 +182,7 @@ class LocalBackend:
         start_driver: DriverStarter | None = None,
         allow_cleanup: frozenset[CleanupClass] = frozenset(),
         cleanup_policy: CleanupPolicy | None = None,
+        parallel_limits: ParallelLimits | None = None,
     ) -> None:
         """Serve the datasets of *manifests*.
 
@@ -192,6 +195,8 @@ class LocalBackend:
                 runs when called with ``cleanup: superseded``.
             cleanup_policy: Which superseded runs a cleanup keeps, fixed by the
                 operator. The default policy when ``None``.
+            parallel_limits: The parallelism a submission may ask for, fixed by
+                the operator. One worker, in threads, when ``None``.
             warm: Whether to open the datasets and build the step-type catalog
                 on a background thread now. Otherwise the first call that needs
                 each builds it.
@@ -203,6 +208,9 @@ class LocalBackend:
         self._allow_managed: bool = allow_managed
         self._allow_cleanup: frozenset[CleanupClass] = allow_cleanup
         self._cleanup_policy: CleanupPolicy | None = cleanup_policy
+        self._parallel_limits: ParallelLimits = (
+            ParallelLimits() if parallel_limits is None else parallel_limits
+        )
         self._start_driver: DriverStarter | None = start_driver
         self._served: dict[str, _Served] | None = None
         self._served_lock: threading.Lock = threading.Lock()
@@ -226,6 +234,7 @@ class LocalBackend:
         start_driver: DriverStarter | None = None,
         allow_cleanup: frozenset[CleanupClass] = frozenset(),
         cleanup_policy: CleanupPolicy | None = None,
+        parallel_limits: ParallelLimits | None = None,
     ) -> LocalBackend:
         """Serve the datasets found in *root* and below it.
 
@@ -240,6 +249,7 @@ class LocalBackend:
             start_driver: As for :class:`LocalBackend`.
             allow_cleanup: As for :class:`LocalBackend`.
             cleanup_policy: As for :class:`LocalBackend`.
+            parallel_limits: As for :class:`LocalBackend`.
         """
         manifests = discovered_manifests(root, max_depth=max_depth)
         return cls(
@@ -249,6 +259,7 @@ class LocalBackend:
             start_driver=start_driver,
             allow_cleanup=allow_cleanup,
             cleanup_policy=cleanup_policy,
+            parallel_limits=parallel_limits,
         )
 
     def dataset(self, uuid: str) -> Dataset:
@@ -644,6 +655,7 @@ class LocalBackend:
             missing_sample=PLAN_MISSING_SAMPLE,
             open_requests=unended,
             superseded_sample=PLAN_SUPERSEDED_SAMPLE,
+            parallel=self._parallel_limits,
         )
 
     def _submit_pipeline(self, args: SubmitPipelineInput) -> SubmittedPipeline:
@@ -662,6 +674,12 @@ class LocalBackend:
         if args.cleanup == "superseded" and "feature-runs" not in self._allow_cleanup:
             raise ToolFailure(cleanup_not_allowed("submit_pipeline"))
         cleanup = self._cleanup(args.cleanup)
+        try:
+            parallel = self._parallel_limits.settings_for(
+                args.workers, args.parallel_mode
+            )
+        except ParallelRefused as refused:
+            raise ToolFailure(error_envelope(refused)) from refused
         recipe = _recipe(args.recipe)
         catalog = self._declarations()
         narrowing = _scope(args.entries) or Scope()
@@ -702,7 +720,7 @@ class LocalBackend:
         request = submitted.request
         start = self._start_driver or start_detached_driver
         try:
-            driver = start(dataset, request)
+            driver = start(dataset, request, parallel)
         except ClassifiedError as error:
             envelope = error_envelope(error)
             detail = {**(envelope.detail or {}), "request_id": request.request_id}
@@ -733,6 +751,8 @@ class LocalBackend:
             if request.cleanup is None
             else len(request.cleanup.approved),
             cleanup_bytes=_approved_bytes(submitted.plan, request),
+            workers=parallel.workers,
+            parallel_mode=parallel.mode,
         )
 
     # ------------------------------------------------------------- requests

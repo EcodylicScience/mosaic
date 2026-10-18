@@ -339,6 +339,18 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   checked. Ask the user whether its process still runs. Once they confirm it has
   exited, propose `mosaic cancel --manifest <manifest> --request <id>
   --assume-exited`, then submit the recipe again.
+- Parallel workers: a `parallelizable` step can compute several entries at once.
+  `plan_recipe` reports the operator's limits, the host's processors and memory, and
+  each step's `workers`. `submit_pipeline` takes `workers` and `parallel_mode`, never
+  above those limits, and a request over one is refused with `parallel_limit`. Start
+  with `thread`. Use `process` only for small, fast steps, after checking that the
+  host's available memory holds one interpreter and several copies of an entry's table
+  per worker.
+- Watch memory while a step runs: `get_request_status` reports each step's
+  `peak_rss_bytes` and `min_available_bytes`. When a step ends with `WorkerProcessDied`
+  or a memory-floor failure, or its peak nears the host's memory, halve `workers` or
+  use `thread`, then submit the recipe again. Written entries are kept, because the
+  worker count is not part of a run's identity. Do not retry at the same setting.
 - The tools delete nothing except superseded feature runs, through `cleanup` on
   `submit_pipeline`, which the operator must allow and the user confirms. They do not
   overwrite, sweep, prune, reindex or change the manifest. Propose the `mosaic`
