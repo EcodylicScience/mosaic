@@ -19,6 +19,7 @@ from mosaic.behavior.feature_library.pairposedistancepca import PairPoseDistance
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import (
+    IdentityUnresolved,
     Recipe,
     check_recipe,
     plan_pipeline,
@@ -28,7 +29,7 @@ from mosaic.core.pipeline.graph import (
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.types import Result
 from mosaic.core.scope import Scope
-from tests.helpers import calms21_dataset
+from tests.helpers import calms21_dataset, converting_recipe
 
 TRAIN = Scope(groups=["train"])
 TEST = Scope(groups=["test"])
@@ -233,6 +234,31 @@ def test_an_apply_run_over_a_narrower_scope_is_the_same_run(split: Dataset) -> N
     assert [(o.step_id, o.run_id) for o in again.outcomes] == [
         (o.step_id, o.run_id) for o in first.outcomes
     ]
+
+
+def test_an_apply_is_deferred_with_a_fit_that_waits_for_the_conversion(
+    tmp_path: Path,
+) -> None:
+    """With no tracks yet the fit has no entries to be named for, and nor has its apply."""
+    ds = calms21_dataset(
+        tmp_path / "ds",
+        {"train": {"a": {"s1": 40, "s2": 30}}, "test": {"a": {"s3": 30}}},
+        seed=5,
+    )
+    converted: dict[str, JsonValue] = {"tracks": {"step": "tracks"}}
+    recipe = converting_recipe({**FIT, **converted}, {**APPLY, **converted})
+
+    plan = plan_pipeline(ds, recipe, step_scopes={"fit": TRAIN})
+
+    for step_id in ("fit", "apply"):
+        assert plan.step(step_id).run_id is None
+        assert isinstance(plan.step(step_id).reason, IdentityUnresolved)
+    run = run_pipeline(ds, recipe, step_scopes={"fit": TRAIN})
+    after = plan_pipeline(ds, recipe, step_scopes={"fit": TRAIN})
+    executed = {outcome.step_id: outcome.run_id for outcome in run.outcomes}
+    assert after.is_complete
+    for step_id in ("fit", "apply"):
+        assert executed[step_id] == after.step(step_id).run_id is not None
 
 
 # --- the plan and validation -----------------------------------------------------
