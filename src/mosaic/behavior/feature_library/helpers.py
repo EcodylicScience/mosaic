@@ -7,7 +7,7 @@ feature_library to avoid code duplication.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -33,8 +33,12 @@ __all__ = [
     "farthest_first",
     "feature_columns",
     "finite_rows",
+    "iter_series",
     "label_individuals",
+    "label_series",
     "meta_columns",
+    "refuse_repeated_series_rows",
+    "series_columns",
     "smooth_1d",
     "unwrap_diff",
     "wrap_angle",
@@ -189,6 +193,122 @@ def label_individuals(
             result[COLUMNS.id_col] = individual
         labeled.append(result)
     return pd.concat(labeled, ignore_index=True)
+
+
+# The columns of a pair row, in the order that a series is keyed and sorted by them.
+_PAIR_ORDER = ("id1", "id2", "perspective")
+
+
+def series_columns(df: pd.DataFrame) -> list[str]:
+    """Return the columns that key the series of *df*, in the order of their key.
+
+    A series is the rows of one individual (the ``id`` column), of one ordered
+    pair (``id1``, ``id2`` and ``perspective``, those of them *df* has), or the
+    whole table when it has neither. A table with an ``id`` is read by
+    individual whatever else it carries.
+    """
+    if COLUMNS.id_col in df.columns:
+        return [COLUMNS.id_col]
+    return [column for column in _PAIR_ORDER if column in df.columns]
+
+
+def iter_series(
+    df: pd.DataFrame, order_col: str = COLUMNS.frame_col
+) -> Iterator[tuple[tuple[Scalar, ...], pd.DataFrame]]:
+    """Yield the rows of each series in *df*, ordered by *order_col*.
+
+    A model that reads rows in order, as an autoregressive one does, reads one
+    animal's rows at a time. A pair table holds two rows per frame, one per
+    perspective, so reading it as a single series would interleave the animals.
+
+    Args:
+        df: The rows to split. Left unchanged.
+        order_col: The column that orders each series' rows.
+
+    Yields:
+        ``(key, rows)`` per series, the rows sorted by *order_col* and indexed
+        from 0. The key holds the values of :func:`series_columns`, and is
+        empty for a table without identity. A table with an ``id`` splits as
+        :func:`~mosaic.core.individuals.iter_individuals` splits it, the ids in
+        the order they first appear. A pair table's series come sorted by
+        ``(id1, id2, perspective)``, whatever the order of its rows. A row
+        whose key is missing belongs to no series and is not yielded.
+    """
+    columns = series_columns(df)
+    if not columns or columns == [COLUMNS.id_col]:
+        for individual, rows in iter_individuals(df, order_col):
+            yield (() if individual is None else (individual,)), rows
+        return
+    for _, rows in df.groupby(columns, sort=True):
+        rows = rows.sort_values(order_col, kind="stable").reset_index(drop=True)
+        yield tuple(rows[name].iloc[0] for name in columns), rows
+
+
+def label_series(
+    df: pd.DataFrame,
+    label: Callable[[tuple[Scalar, ...], pd.DataFrame], npt.ArrayLike],
+    column: str = "syllable",
+) -> pd.DataFrame:
+    """Label each series' rows of *df*, as :func:`iter_series` yields them.
+
+    Args:
+        df: The rows to label. Left unchanged.
+        label: Called with each series' key and rows. It returns one label per
+            row.
+        column: The column of the labels.
+
+    Returns:
+        The frame and the label of each series' rows, and the columns of
+        :func:`series_columns`, so that the labels join back to the rows they
+        describe. The series come in the order of :func:`iter_series`, each in
+        frame order.
+    """
+    keys = series_columns(df)
+    labeled: list[pd.DataFrame] = []
+    for key, rows in iter_series(df):
+        result = pd.DataFrame(
+            {
+                COLUMNS.frame_col: rows[COLUMNS.frame_col].to_numpy(),
+                column: label(key, rows),
+            }
+        )
+        for name in keys:
+            result[name] = rows[name].to_numpy()
+        labeled.append(result)
+    if not labeled:
+        return pd.DataFrame(columns=[COLUMNS.frame_col, column, *keys])
+    return pd.concat(labeled, ignore_index=True)
+
+
+def refuse_repeated_series_rows(
+    df: pd.DataFrame, who: str, order_col: str = COLUMNS.frame_col
+) -> None:
+    """Refuse *df* when a series has two rows of one *order_col* value.
+
+    The series are those of :func:`iter_series`. The two perspectives of a pair
+    at one frame are two series, and not a repeat.
+
+    Args:
+        df: The rows to check.
+        who: The feature that the refusal names.
+        order_col: The column that orders each series' rows.
+
+    Raises:
+        ValueError: Naming *who*, the first repeated *order_col* value and its
+            series.
+    """
+    keys = series_columns(df)
+    read = df.dropna(subset=keys) if keys else df
+    repeated = np.flatnonzero(read.duplicated([order_col, *keys]).to_numpy())
+    if repeated.size == 0:
+        return
+    first = int(repeated[0])
+    where = f"{order_col} {read[order_col].iloc[first]}"
+    if keys:
+        series = ", ".join(f"{name} {read[name].iloc[first]}" for name in keys)
+        where += f" of {series}"
+    msg = f"{who}: {where} appears in more than one row"
+    raise ValueError(msg)
 
 
 def entry_identity(df: pd.DataFrame) -> tuple[str, str]:
