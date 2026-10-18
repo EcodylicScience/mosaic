@@ -39,6 +39,13 @@ from mosaic.core.pipeline.graph import (
     topological_order,
 )
 from mosaic.core.json_value import JsonValue
+from mosaic.core.pipeline._utils import (
+    NAME_MAX_BYTES,
+    SHORTENED_MARKER,
+    SHORTENED_NAME_BYTES,
+    derive_storage_name,
+    hash_params,
+)
 from mosaic.core.pipeline.graph.digest import document_digest
 from mosaic.core.pipeline.graph.model import canonical_params
 from mosaic.core.scope import Scope
@@ -525,4 +532,81 @@ def test_storage_name_matches_the_run_feature_rule() -> None:
     assert (
         storage_name_of("temporal-stack", ["speed-angvel__from__tracks", "tracks"])
         == "temporal-stack__from__speed-angvel__from__tracks+tracks"
+    )
+
+
+_EGO = "pair-egocentric__from__tracks"
+_PCA = "pair-posedistance-pca__from__tracks"
+_WAVELET_PCA = f"pair-wavelet__from__{_PCA}"
+_WAVELET_EGO = f"pair-wavelet__from__{_EGO}"
+_SCALER = storage_name_of("global-scaler", [_EGO, _PCA, _WAVELET_PCA, _WAVELET_EGO])
+_STACK = storage_name_of("temporal-stack", [_SCALER])
+
+
+def _bytes(name: str) -> int:
+    return len(name.encode("utf-8"))
+
+
+def test_a_storage_name_that_fits_is_unchanged() -> None:
+    """The longest name a CalMS21 run wrote, four levels deep, keeps its lineage."""
+    stack = storage_name_of("temporal-stack", [_EGO, _PCA])
+    classifier = storage_name_of("xgboost", [stack, _WAVELET_PCA, _WAVELET_EGO])
+    name = storage_name_of("evaluate-labels", [classifier])
+
+    assert _bytes(name) == 231
+    assert name == f"evaluate-labels__from__{classifier}"
+    assert SHORTENED_MARKER not in name
+
+
+def test_a_storage_name_too_long_for_a_directory_is_abbreviated() -> None:
+    """Two multi-input parents give a 440-byte lineage, which cannot be created."""
+    full = f"extract-labeled-templates__from__{_SCALER}+{_STACK}"
+    assert _bytes(full) == 440
+
+    name = storage_name_of("extract-labeled-templates", [_SCALER, _STACK])
+
+    assert name == (
+        "extract-labeled-templates__from__global-scaler__from__"
+        "pair-egocentric__from__tracks+pair-posedistance-pca__from__tracks"
+        "+pair-wavelet~ac28332f35"
+    )
+    assert _bytes(name) <= SHORTENED_NAME_BYTES
+    assert name == storage_name_of("extract-labeled-templates", [_SCALER, _STACK])
+
+
+def test_a_single_input_lineage_past_the_limit_is_abbreviated() -> None:
+    parent = storage_name_of("temporal-stack", [_STACK])
+    name = storage_name_of("extract-labeled-templates", [parent])
+
+    assert _bytes(f"extract-labeled-templates__from__{parent}") > NAME_MAX_BYTES
+    assert name.startswith("extract-labeled-templates__from__temporal-stack__from__")
+    assert SHORTENED_MARKER in name
+    assert _bytes(name) <= SHORTENED_NAME_BYTES
+
+
+def test_an_input_longer_than_the_budget_leaves_an_empty_head() -> None:
+    """A single token past the budget is cut at its start."""
+    name = storage_name_of("temporal-stack", ["x" * 300])
+
+    assert name == f"temporal-stack__from__{SHORTENED_MARKER}{hash_params('x' * 300)}"
+
+
+def test_lineages_that_share_a_head_get_different_names() -> None:
+    other_stack = storage_name_of("temporal-stack", [_SCALER.replace("ego", "allo")])
+    name = storage_name_of("extract-labeled-templates", [_SCALER, _STACK])
+    other = storage_name_of("extract-labeled-templates", [_SCALER, other_stack])
+
+    head = name.split(SHORTENED_MARKER)[0]
+    assert other.split(SHORTENED_MARKER)[0] == head
+    assert other != name
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [["tracks"], [_EGO, _PCA], [_SCALER, _STACK], ["x" * 300]],
+    ids=["one", "two", "abbreviated", "empty-head"],
+)
+def test_the_planner_and_run_feature_derive_one_name(inputs: list[str]) -> None:
+    assert storage_name_of("temporal-stack", inputs) == derive_storage_name(
+        "temporal-stack", "+".join(inputs)
     )

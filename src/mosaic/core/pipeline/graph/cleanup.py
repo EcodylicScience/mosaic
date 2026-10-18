@@ -1192,9 +1192,15 @@ def _reads_of(storage: str, params: RunParams | None, fit: FitScope | None) -> _
     for a file older than that block, the runs its ``_inputs`` and top-level
     ``_params`` name. A reference recorded without a run id reads every run of
     its storage. A run whose params are unknown reads every storage its own
-    storage name was derived from, and everything when its feature takes a run
-    through a params field.
+    storage name was derived from. It reads everything when its feature takes a
+    run through a params field, or when its storage name contains
+    :data:`~mosaic.core.pipeline._utils.SHORTENED_MARKER`, because an abbreviated
+    name does not list its inputs. The marker also appears in a name that reads
+    a shortened storage, and such a run is treated the same way. An attempt
+    that has not named its run is read by this rule as well. A cleanup during
+    an attempt on a shortened storage keeps every superseded run.
     """
+    from .._utils import SHORTENED_MARKER
     from ..inventory.params import LABELS_EDGE, TRACKS_EDGE
     from .resolve import run_reference_fields
 
@@ -1206,7 +1212,7 @@ def _reads_of(storage: str, params: RunParams | None, fit: FitScope | None) -> _
         return _Reads(
             pairs=via,
             chain=chain,
-            everything=bool(run_reference_fields(slug)),
+            everything=bool(run_reference_fields(slug)) or SHORTENED_MARKER in chain,
         )
     pairs: set[tuple[str, str]] = set(via)
     storages: set[str] = set()

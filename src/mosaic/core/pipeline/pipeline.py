@@ -135,10 +135,10 @@ def _newest_mtime(run_root: "Path") -> str | None:
 
 
 def storage_name(feature: object) -> str:
-    """Compute on-disk storage name, mirroring ``run_feature`` logic.
+    """Return the storage name that ``run_feature`` writes *feature* under.
 
-    If the feature reads from upstream features, the directory includes
-    a ``__from__`` suffix (e.g. ``speed__from__tracks``).
+    The rule is :func:`~mosaic.core.pipeline._utils.derive_storage_name`'s,
+    including the abbreviation of a name too long for one path component.
     """
     return derive_storage_name(feature.name, feature.inputs.storage_suffix())  # type: ignore[union-attr]
 

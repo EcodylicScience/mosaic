@@ -16,7 +16,9 @@ use to make one run root exclusive. This module does not introduce a second one.
 
 **One file per addressable thing, and the address is percent-encoded.** An entry
 name may hold any character a filesystem does not want, so it goes through
-``to_safe_name`` like every other name mosaic turns into a path.
+``to_safe_name`` like every other name mosaic turns into a path. A storage name
+whose encoded form is longer than one path component is abbreviated with a
+digest.
 
 **Reads are tolerant.** A record that cannot be parsed reads as absent, because
 it gates a *retry* rather than an artifact: the cost of ignoring one is at most a
@@ -36,6 +38,7 @@ from pydantic import BaseModel, ValidationError
 from mosaic.core.entry import make_entry_key, to_safe_name
 from mosaic.runlog import ERROR_MESSAGE_LIMIT
 
+from .._utils import NAME_MAX_BYTES, abbreviate
 from .failures import (
     QUARANTINE_AFTER,
     EntryFailureKey,
@@ -83,7 +86,7 @@ def entry_record_path(base_dir: Path | str, key: EntryFailureKey) -> Path:
     return (
         claims_root(base_dir)
         / _ENTRIES_DIR
-        / to_safe_name(storage_name)
+        / _storage_component(storage_name)
         / to_safe_name(run_id)
         / f"{make_entry_key(group, sequence)}.json"
     )
@@ -95,8 +98,27 @@ def step_record_path(base_dir: Path | str, key: StepFailureKey) -> Path:
     return (
         claims_root(base_dir)
         / _STEPS_DIR
-        / to_safe_name(storage_name)
+        / _storage_component(storage_name)
         / f"{to_safe_name(run_id)}.json"
+    )
+
+
+def _storage_component(storage_name: str) -> str:
+    """The path component that names *storage_name*'s records.
+
+    It is ``to_safe_name(storage_name)`` when that fits in one component.
+    Percent-encoding lengthens a name by at least 2 bytes for every ``+``, ``@``
+    or other character it escapes. A storage name that fits on disk can encode
+    past the limit, and is then abbreviated to a head and a digest of the whole
+    name, which fit once encoded.
+    """
+    safe = to_safe_name(storage_name)
+    if len(safe) <= NAME_MAX_BYTES:
+        return safe
+    return to_safe_name(
+        abbreviate(
+            storage_name, lambda short: len(to_safe_name(short)) <= NAME_MAX_BYTES
+        )
     )
 
 

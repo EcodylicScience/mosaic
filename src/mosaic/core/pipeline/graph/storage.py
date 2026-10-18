@@ -10,7 +10,9 @@ It can, because the rule takes no feature: the suffix is the ``+``-joined names
 of the inputs, and a planner already knows those -- each is either the ``tracks``
 literal or an upstream step's storage name, resolved earlier in the same
 topological walk. So this is the same two functions ``run_feature`` composes,
-called with the values rather than with an instance.
+called with the values rather than with an instance. A name too long for one
+path component is abbreviated by the same rule, and the planner predicts the
+shortened name as well.
 """
 
 from __future__ import annotations
@@ -36,7 +38,9 @@ def storage_name_of(feature_slug: str, inputs: Sequence[str]) -> str:
             its bare slug.
 
     Returns:
-        The storage name, e.g. ``speed-angvel__from__tracks``.
+        The storage name, e.g. ``speed-angvel__from__tracks``, abbreviated as
+        :func:`~mosaic.core.pipeline._utils.derive_storage_name` describes when
+        it exceeds 255 UTF-8 bytes.
     """
     suffix = "+".join(inputs) if inputs else None
     return derive_storage_name(feature_slug, suffix)

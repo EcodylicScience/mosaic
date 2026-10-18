@@ -8,6 +8,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Final
 
 import numpy as np
 from pydantic import BaseModel
@@ -306,12 +307,75 @@ def coerce_np(obj: object) -> object:
     return obj
 
 
-def derive_storage_name(feature_name: str, inputs_suffix: str | None) -> str:
-    """Compute on-disk directory name for a feature run.
+NAME_MAX_BYTES: Final = 255
+"""The longest single path component, in UTF-8 bytes, that Linux and macOS accept."""
 
-    If the feature reads from upstream features, the directory includes
-    a ``__from__`` suffix (e.g. ``speed__from__tracks``).
+SHORTENED_NAME_BYTES: Final = 160
+"""The most UTF-8 bytes in a name that :func:`derive_storage_name` shortened.
+
+It leaves room under :data:`NAME_MAX_BYTES` for the steps that read the name, and
+keeps the name within a 255-character column that records a run's target.
+"""
+
+SHORTENED_MARKER: Final = "~"
+"""The character that separates an abbreviated name from its digest.
+
+Feature slugs and literal input names do not contain it. A storage name that
+contains it was shortened or reads a shortened storage.
+"""
+
+_LINEAGE_BOUNDARIES: Final = ("+", "__from__")
+
+
+def abbreviate(text: str, fits: Callable[[str], bool]) -> str:
+    """Return ``<head>~<digest>``, the abbreviation of *text*.
+
+    ``<digest>`` is :func:`hash_params` of *text*. ``<head>`` is the longest
+    prefix of *text* whose result *fits* accepts, cut where a ``+`` or
+    ``__from__`` begins. The head is empty when every cut is too long.
     """
-    if inputs_suffix is not None:
-        return f"{feature_name}__from__{inputs_suffix}"
-    return feature_name
+    marked = f"{SHORTENED_MARKER}{hash_params(text)}"
+    cuts = sorted(
+        {
+            index
+            for boundary in _LINEAGE_BOUNDARIES
+            for index in range(len(text))
+            if text.startswith(boundary, index)
+        },
+        reverse=True,
+    )
+    for cut in cuts:
+        if fits(text[:cut] + marked):
+            return text[:cut] + marked
+    return marked
+
+
+def derive_storage_name(feature_name: str, inputs_suffix: str | None) -> str:
+    """Return the directory name under ``features/`` for a run of *feature_name*.
+
+    A feature that reads inputs stores under ``<slug>__from__<suffix>``, for
+    example ``speed__from__tracks``. The suffix is the ``+``-joined storage names
+    of the inputs. A name longer than :data:`NAME_MAX_BYTES` UTF-8 bytes cannot be
+    a directory. Its suffix is abbreviated (:func:`abbreviate`) to keep the whole
+    name within :data:`SHORTENED_NAME_BYTES`: ``<slug>__from__<head>~<10 hex>``.
+    The digest is of the full suffix, and two lineages that share a head get
+    different names. Each run's ``params.json`` records the full lineage under
+    ``_inputs``.
+
+    Names that fit are returned unchanged. A step reading a shortened name
+    inherits the short form, and names stop growing at a shortened step.
+    """
+    if inputs_suffix is None:
+        return feature_name
+    prefix = f"{feature_name}__from__"
+    name = prefix + inputs_suffix
+    if _byte_length(name) <= NAME_MAX_BYTES:
+        return name
+    return prefix + abbreviate(
+        inputs_suffix,
+        lambda suffix: _byte_length(prefix + suffix) <= SHORTENED_NAME_BYTES,
+    )
+
+
+def _byte_length(text: str) -> int:
+    return len(text.encode("utf-8"))

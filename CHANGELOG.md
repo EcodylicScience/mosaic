@@ -33,6 +33,24 @@ integer (the RFC 8785 number rule), and `save_recipe` writes that form.
   `mosaic track --set` call keeps the float, so for those settings it no longer shares
   a run with the same value written in a recipe.
 
+**A feature storage name longer than 255 bytes is abbreviated, and its step runs.** A
+storage name contains the whole input lineage, and a step over two multi-input parents
+could pass the 255-byte limit on one path component. `validate_recipe` and
+`plan_recipe` accepted it, and the step failed when it created its run directory, then
+again writing its failure record. Such a name is now
+`<slug>__from__<head>~<10 hex>`, at most 160 bytes, where the digest is of the full
+input suffix. `run_feature`, `Pipeline`, the planner and the plan wire all derive it.
+`params.json` `_inputs` lists the full lineage.
+
+- Names of 255 bytes or fewer, which covers every name on disk, are unchanged. No
+  directory, index row or run id moves. Only names that could not be created gain the
+  `~` tail.
+- The failure records under `.mosaic/claims` abbreviate the same way when the
+  percent-encoded storage name passes 255 bytes. A step whose name fit on disk and
+  overflowed once encoded failed when it cleared its records, and now finishes.
+- Cleanup treats a run of a `~` storage whose params are unknown, including an attempt
+  that has not named its run, as reading every run.
+
 **mosaic needs mosaic-media 0.3.5, which accepts PyAV 19.** mosaic-media 0.3.4
 required `av>=18,<19`, and conda-forge now ships `av` 19, so the documented conda
 recipe followed by pip replaced conda's `av` with the PyPI wheel. That wheel bundles
