@@ -32,6 +32,7 @@ from mosaic.behavior.feature_library.body_scale import BodyScaleFeature
 from mosaic.behavior.feature_library.helpers import entry_identity, wrap_angle
 from mosaic.behavior.feature_library.orientation_relative import (
     OrientationRelativeFeature,
+    _ordered_pairs,  # pyright: ignore[reportPrivateUsage]
 )
 from mosaic.core.pipeline.run import process_apply_worker
 from mosaic.core.pipeline.types import COLUMNS as C
@@ -735,6 +736,104 @@ def test_both_features_match_the_loops_when_the_ids_are_text() -> None:
     new, reference = _orientation(table)
     _same(new, reference)
     assert set(new["id1"]) == {"mouse-a", "mouse-b", "mouse-c"}
+
+
+# --- the pairs of a frame, and what apply must leave alone --------------------
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_the_ordered_pairs_are_every_pair_of_a_frame_by_focal_then_other(
+    seed: int,
+) -> None:
+    """The index arithmetic, against a nested loop, over frames of any size."""
+    rng = np.random.default_rng(seed)
+    lengths = rng.integers(1, 9, size=40)
+    frames = np.repeat(np.arange(lengths.size) * 3, lengths)
+
+    focal, other = _ordered_pairs(frames)
+
+    expected: list[tuple[int, int]] = []
+    for a in range(frames.size):
+        for b in range(frames.size):
+            if a != b and frames[a] == frames[b]:
+                expected.append((a, b))
+    assert list(zip(focal.tolist(), other.tolist(), strict=True)) == expected
+
+
+def test_the_ordered_pairs_of_no_rows_or_of_single_rows_are_none() -> None:
+    for frames in (np.array([], dtype=np.int64), np.array([4, 5, 9], dtype=np.int64)):
+        focal, other = _ordered_pairs(frames)
+        assert focal.size == other.size == 0
+
+
+def test_orientation_rel_matches_the_loop_when_individuals_come_and_go() -> None:
+    """Frames of every size from empty to seven, the ids in each chosen at random."""
+    table = _pose_table(n_frames=60, ids=tuple(range(7)), seed=11)
+    keep = np.random.default_rng(12).random(len(table)) < 0.55
+    table = _drop_cells(table[keep].reset_index(drop=True), 0.2, seed=13)
+
+    new, reference = _orientation(table, nearest_k=4)
+
+    assert new["frame"].nunique() > 20
+    _same(new, reference)
+
+
+@pytest.mark.parametrize(
+    "feature_class",
+    [BodyScaleFeature, OrientationRelativeFeature],
+    ids=lambda c: c.name,
+)
+def test_apply_leaves_the_table_it_was_given_as_it_was(
+    feature_class: type[BodyScaleFeature] | type[OrientationRelativeFeature],
+) -> None:
+    table = _unsorted(_drop_cells(_pose_table(n_frames=20, ids=(0, 1, 2)), 0.3))
+    repeat = table.iloc[[2, 7]].copy()
+    repeat["poseX1"] += 9.0
+    table = pd.concat([table, repeat])  # a repeated row, and a repeated index label
+    before = table.copy(deep=True)
+
+    _ = feature_class().apply(table)
+
+    pd.testing.assert_frame_equal(table, before, check_exact=True)
+
+
+@pytest.mark.parametrize("feature", ["body-scale", "orientation-rel"])
+def test_a_table_whose_index_repeats_gives_the_output_of_one_that_does_not(
+    feature: str,
+) -> None:
+    table = _drop_cells(_pose_table(n_frames=15, ids=(0, 1, 2)), 0.25)
+    repeating = table.copy()
+    repeating.index = pd.Index(np.arange(len(table)) % 5)
+    run: Callable[[pd.DataFrame], pd.DataFrame] = (
+        BodyScaleFeature().apply
+        if feature == "body-scale"
+        else OrientationRelativeFeature().apply
+    )
+
+    pd.testing.assert_frame_equal(run(repeating), run(table), check_exact=True)
+
+
+def test_an_infinite_coordinate_is_a_missing_keypoint_in_both_features() -> None:
+    table = _pose_table(n_frames=12, ids=(0, 1))
+    table.loc[[1, 4, 9], "poseX2"] = np.inf
+    table.loc[[2, 4], "poseY5"] = -np.inf
+
+    _same(BodyScaleFeature().apply(table), _reference_body_scale(table))
+    new, reference = _orientation(table)
+    _same(new, reference)
+    assert np.isfinite(new[["dist_max", "x_max", "y_max"]].to_numpy()).all()
+
+
+@pytest.mark.parametrize("dtype", [np.int32, np.float64])
+def test_both_features_match_the_loops_for_a_frame_stored_as_it_arrived(
+    dtype: type,
+) -> None:
+    table = _drop_cells(_pose_table(n_frames=15, ids=(0, 1, 2)), 0.2)
+    table["frame"] = table["frame"].astype(dtype)
+
+    _same(BodyScaleFeature().apply(table), _reference_body_scale(table))
+    new, reference = _orientation(table)
+    _same(new, reference)
 
 
 # --- the scale a body-scale run supplies -------------------------------------
