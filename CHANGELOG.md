@@ -150,8 +150,9 @@ no row is held out. Nothing in `metrics.json` said so, and the
   The ten hex digits stay for the same params, and change for a step that takes its
   `label_map` from a step, which pins the new `fit-label-map` id. The identifier of
   every `fit-label-map` run takes a `0.2-` version and new digits, because the
-  `weighting` field joins the hash although its default gives the map of 0.1. No other
-  feature moves. A dataset recomputes those two steps once, and the maps are the same.
+  `weighting` field joins the hash although its default gives the map of 0.1. This
+  change moves no other feature. A dataset recomputes those two steps once, and the maps
+  are the same.
   The old runs stay on disk.
 - mosaic-api does not read `EvaluationReport`, `label_map` or `metrics.json` in this
   checkout, and every addition to the report and the output is a new field or column
@@ -178,8 +179,8 @@ projects every group onto the training basis.
   (`0.2-c217c7a3fd` is now `0.3-c217c7a3fd`), because `model` is left out of the hashed
   params while it is unset. Every run that reads one through `inputs` moves too. An
   existing dataset recomputes them once and the bases are the same. The old runs are
-  superseded runs for a cleanup. No other run id moves, and a plan fingerprint moves
-  only for a plan with such a step.
+  superseded runs for a cleanup. This change moves no other run id, and a plan
+  fingerprint moves only for a plan with such a step.
 - `scope_dependent` is True on the class and for a fit, and False on an instance given
   `model`. The planner, the run id and the inventory read the instance, so a step that
   applies a model is planned and measured as a scope-free step and is asked for the
