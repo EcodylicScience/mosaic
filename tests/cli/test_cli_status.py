@@ -175,7 +175,7 @@ def test_pipeline_status_waits_until_a_step_ends_and_prints_the_same_model(
             log.started(kind="feature", target="speed")
             log.finished()
 
-    ender = threading.Timer(0.3, run_the_step)
+    ender = threading.Timer(1.0, run_the_step)
     ender.start()
     began = time.monotonic()
     try:

@@ -15,6 +15,7 @@ from pathlib import Path
 from mosaic.core.pipeline.graph import (
     MAX_WAIT_SECONDS,
     WAIT_POLL_SECONDS,
+    CleanupSpec,
     Request,
     request_status_wire,
 )
@@ -184,6 +185,39 @@ def test_a_request_that_has_ended_is_returned_without_waiting(tmp_path: Path) ->
 
     assert clock.slept == []
     assert report.terminal
+
+
+def test_a_wait_returns_when_the_cleanup_of_a_request_whose_steps_ended_ends(
+    tmp_path: Path,
+) -> None:
+    """No step ends in the wait, so only the request ending can end it."""
+    _finish(tmp_path, "E1")
+    with _log(tmp_path, "C1") as log:
+        log.started(kind="feature-cleanup", target="cleanup")
+    request = Request(
+        request_id="R1",
+        recipe_digest="d" * 64,
+        step_executions={"speed": "E1"},
+        cleanup=CleanupSpec(execution_id="C1"),
+    )
+    clock = _Clock()
+
+    def end_the_cleanup(_count: int) -> None:
+        with _log(tmp_path, "C1") as log:
+            log.finished()
+
+    clock.on_sleep = end_the_cleanup
+
+    report = request_status_wire(
+        tmp_path,
+        request,
+        wait_seconds=30,
+        sleep=clock.sleep,
+        monotonic=clock.monotonic,
+    )
+
+    assert len(clock.slept) == 1
+    assert (report.verdict, report.terminal) == ("finished", True)
 
 
 def test_an_orphaned_request_is_returned_without_waiting(tmp_path: Path) -> None:

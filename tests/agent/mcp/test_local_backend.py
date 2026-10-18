@@ -906,7 +906,7 @@ def test_a_status_call_waits_for_a_step_to_end_and_lists_only_what_changed(
             log.started(kind="feature", target=STORAGE)
             log.finished()
 
-    ender = threading.Timer(0.3, run_the_step)
+    ender = threading.Timer(1.0, run_the_step)
     ender.start()
     began = time.monotonic()
     try:
@@ -928,6 +928,34 @@ def test_a_status_call_waits_for_a_step_to_end_and_lists_only_what_changed(
         ("speed", "finished")
     ]
     assert (status.omitted_finished, status.omitted_pending) == (0, 1)
+
+
+def test_a_status_call_with_nothing_to_report_returns_when_its_wait_runs_out(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    request = submit_request(dataset, chain_recipe()).request
+    execution_id = request.execution_of("speed")
+    path = run_log_path(dataset.base_dir, execution_id)
+    with JsonlRunLog(path, execution_id) as log:
+        log.started(kind="feature", target=STORAGE)
+
+    began = time.monotonic()
+    status = _call(
+        backend,
+        "get_request_status",
+        RequestStatusWire,
+        dataset=_uuid(dataset),
+        request_id=request.request_id,
+        wait_seconds=1,
+    )
+    waited = time.monotonic() - began
+
+    assert 0.9 <= waited < 10
+    assert (status.verdict, status.terminal) == ("running", False)
+    assert [(step.step, step.outcome) for step in status.steps] == [
+        ("speed", "running"),
+        ("templates", "pending"),
+    ]
 
 
 def test_a_diagnosis_names_one_request_or_one_attempt(
