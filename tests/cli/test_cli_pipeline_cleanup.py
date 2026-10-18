@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import json
 from pathlib import Path
 
@@ -22,6 +21,7 @@ from tests.helpers import (
     add_tracks_variant,
     invoke_json,
     make_dataset,
+    run_id_of,
     run_speed,
     speed_heading_recipe,
     speed_recipe_stepping,
@@ -193,13 +193,6 @@ def test_run_cleanup_without_expect_plan_fails_and_removes_nothing(
 # --- retiring a recipe ----------------------------------------------------------------
 
 
-@pytest.fixture
-def lapsed_holds(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A request that has ended holds its runs for no time at all."""
-    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
-    monkeypatch.setattr(module, "REQUEST_HOLD_FLOOR_HOURS", 0)
-
-
 def _plan(dataset: Dataset, recipe: str, *extra: str) -> dict[str, object]:
     return invoke_json(
         [
@@ -243,7 +236,7 @@ def test_plan_lists_the_recipes_whose_runs_can_be_retired(
 
 
 def test_plan_with_retire_lists_the_retired_runs(
-    dataset: Dataset, recipe: str, lapsed_holds: None
+    dataset: Dataset, recipe: str, lapsed_request_holds: None
 ) -> None:
     ran = run_pipeline(dataset, speed_heading_recipe())
 
@@ -273,10 +266,10 @@ def test_plan_with_retire_lists_the_retired_runs(
 
 
 def test_run_retires_the_recipe_and_status_reports_the_runs(
-    dataset: Dataset, recipe: str, lapsed_holds: None
+    dataset: Dataset, recipe: str, lapsed_request_holds: None
 ) -> None:
     ran = run_pipeline(dataset, speed_heading_recipe())
-    heading = next(o.run_id for o in ran.outcomes if o.step_id == "heading")
+    heading = run_id_of(ran, "heading")
     retire = ["--retire", ran.recipe_digest]
     plan = _plan(dataset, recipe, *retire)
 
@@ -315,7 +308,7 @@ def test_run_retires_the_recipe_and_status_reports_the_runs(
 
 
 def test_submit_records_the_retirement(
-    dataset: Dataset, recipe: str, lapsed_holds: None
+    dataset: Dataset, recipe: str, lapsed_request_holds: None
 ) -> None:
     ran = run_pipeline(dataset, speed_heading_recipe())
     retire = ["--retire", ran.recipe_digest]

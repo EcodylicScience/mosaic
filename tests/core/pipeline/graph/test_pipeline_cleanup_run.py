@@ -49,6 +49,7 @@ from tests.helpers import (
     exited_pid,
     make_dataset,
     record_open_attempt,
+    run_id_of,
     run_speed,
     speed_heading_recipe,
     speed_recipe_stepping,
@@ -305,11 +306,9 @@ def test_run_pipeline_runs_the_cleanup_last(dataset: Dataset) -> None:
 
 
 def test_a_run_an_earlier_version_recorded_is_removed_by_name(
-    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+    dataset: Dataset, lapsed_request_holds: None
 ) -> None:
     """The recipe's name reaches the judging at submission and at removal."""
-    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
-    monkeypatch.setattr(module, "REQUEST_HOLD_FLOOR_HOURS", 0)
     first = run_pipeline(dataset, speed_recipe_stepping(1))
     [old] = [outcome.run_id for outcome in first.outcomes]
     request = _submit(dataset, speed_recipe_stepping(2))
@@ -460,14 +459,12 @@ def test_a_run_an_attempt_resolving_its_inputs_may_read_is_kept(
 
 
 def test_a_retired_recipes_run_is_removed_and_the_removal_names_the_recipe(
-    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+    dataset: Dataset, lapsed_request_holds: None
 ) -> None:
     """The retirement reaches the judging at submission and again at removal."""
-    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
-    monkeypatch.setattr(module, "REQUEST_HOLD_FLOOR_HOURS", 0)
     old = run_pipeline(dataset, speed_heading_recipe())
-    heading = next(o.run_id for o in old.outcomes if o.step_id == "heading")
-    speed = next(o.run_id for o in old.outcomes if o.step_id == "speed")
+    heading = run_id_of(old, "heading")
+    speed = run_id_of(old, "speed")
     recipe = speed_recipe_stepping(2)
 
     request = _submit(dataset, recipe, retire=(old.recipe_digest,))
@@ -514,12 +511,10 @@ def test_a_run_removed_without_a_retirement_records_none(
 
 
 def test_a_retired_recipe_that_opens_after_the_submission_keeps_its_runs(
-    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+    dataset: Dataset, lapsed_request_holds: None
 ) -> None:
-    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
-    monkeypatch.setattr(module, "REQUEST_HOLD_FLOOR_HOURS", 0)
     old = run_pipeline(dataset, speed_heading_recipe())
-    heading = next(o.run_id for o in old.outcomes if o.step_id == "heading")
+    heading = run_id_of(old, "heading")
     recipe = speed_recipe_stepping(2)
     request = _submit(dataset, recipe, retire=(old.recipe_digest,))
     _ = submit_request(dataset, speed_heading_recipe())
@@ -532,3 +527,35 @@ def test_a_retired_recipe_that_opens_after_the_submission_keeps_its_runs(
     assert {kept.run_id: kept.reason for kept in status.cleanup.kept}[heading] == (
         "held_by_request"
     )
+
+
+def test_a_retired_recipe_run_again_after_the_review_keeps_the_runs_it_used(
+    dataset: Dataset, lapsed_request_holds: None
+) -> None:
+    """The recipe was retired for the runs it had made, not for the ones it makes
+    next: a request of it that began after the submission protects what it used."""
+    old = run_pipeline(dataset, speed_heading_recipe())
+    heading = run_id_of(old, "heading")
+    speed = run_id_of(old, "speed")
+    recipe = speed_recipe_stepping(2)
+    request = _submit(dataset, recipe, retire=(old.recipe_digest,))
+    again = run_pipeline(dataset, speed_heading_recipe())
+
+    done = run_pipeline(dataset, recipe, request=request)
+
+    assert {
+        t.run_id for t in (request.cleanup.approved if request.cleanup else [])
+    } == {
+        heading,
+        speed,
+    }
+    assert [o.run_id for o in again.outcomes] == [speed, heading]
+    assert done.cleanup_status == "finished"
+    assert feature_run_root(dataset, HEADING, heading).is_dir()
+    assert _exists(dataset, speed)
+    status = request_status_wire(dataset.base_dir, request)
+    assert status.cleanup is not None
+    assert {kept.run_id: kept.reason for kept in status.cleanup.kept} == {
+        heading: "recipe_uses",
+        speed: "recipe_uses",
+    }

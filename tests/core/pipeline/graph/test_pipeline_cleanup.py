@@ -51,6 +51,7 @@ from tests.helpers import (
     add_tracks_variant,
     assert_tree_unchanged,
     make_dataset,
+    named_recipe,
     record_open_attempt,
     register_trained_model,
     run_speed,
@@ -118,11 +119,6 @@ def _chain(step_size: int, *, scaler: bool = False) -> Recipe:
             }
         )
     return Recipe.model_validate({"schema_version": 1, "name": "chain", "steps": steps})
-
-
-def _named(recipe: Recipe, name: str) -> Recipe:
-    """*recipe* under *name*."""
-    return Recipe.model_validate({**recipe.model_dump(mode="json"), "name": name})
 
 
 def _cleanup(
@@ -247,7 +243,7 @@ def test_a_run_a_retained_run_reads_through_inputs_or_params_is_kept(
 
     if site == "inputs":
         cleanup = _cleanup(
-            dataset, _named(speed_recipe_stepping(2), "chain"), now=LATER
+            dataset, named_recipe(speed_recipe_stepping(2), "chain"), now=LATER
         )
         read, reader = first["speed"], first["templates"]
     else:
@@ -294,7 +290,9 @@ def test_a_reader_with_unreadable_params_keeps_its_chain(dataset: Dataset) -> No
     first = _run_ids(dataset, _chain(1))
     (feature_run_root(dataset, TEMPLATES, first["templates"]) / "params.json").unlink()
 
-    cleanup = _cleanup(dataset, _named(speed_recipe_stepping(2), "chain"), now=LATER)
+    cleanup = _cleanup(
+        dataset, named_recipe(speed_recipe_stepping(2), "chain"), now=LATER
+    )
 
     assert _reasons(cleanup) == {first["speed"]: "read_by"}
 
@@ -413,10 +411,12 @@ def test_a_run_another_recipe_recorded_is_kept_after_its_hold(
     dataset: Dataset, recorded_by: str, planned: str, reason: str
 ) -> None:
     """Recipes of one non-empty name are versions of each other, unnamed ones not."""
-    ran = run_pipeline(dataset, _named(speed_recipe_stepping(1), recorded_by))
+    ran = run_pipeline(dataset, named_recipe(speed_recipe_stepping(1), recorded_by))
     old = _run_ids(dataset, speed_recipe_stepping(1))["speed"]
 
-    cleanup = _cleanup(dataset, _named(speed_recipe_stepping(2), planned), now=LATER)
+    cleanup = _cleanup(
+        dataset, named_recipe(speed_recipe_stepping(2), planned), now=LATER
+    )
 
     [run] = cleanup.runs
     assert (run.run_id, run.reason) == (old, reason)
@@ -429,7 +429,7 @@ def test_a_run_another_recipe_binds_is_kept_after_its_hold(dataset: Dataset) -> 
     old = run_speed(dataset, 1)
     request = submit_request(
         dataset,
-        _named(speed_recipe_stepping(5), "other"),
+        named_recipe(speed_recipe_stepping(5), "other"),
         bind={"speed": BoundRef(feature=STORAGE, run_id=old)},
     ).request
     _ = cancel_request(dataset, request.request_id)
@@ -444,7 +444,7 @@ def test_a_request_saved_under_an_earlier_canonical_form_is_the_same_recipe(
 ) -> None:
     """The legacy digest of the planned recipe, unchanged, names no other recipe."""
     old = run_speed(dataset, 1)
-    unnamed = _named(speed_recipe_stepping(2), "")
+    unnamed = named_recipe(speed_recipe_stepping(2), "")
     request = submit_request(
         dataset, unnamed, bind={"speed": BoundRef(feature=STORAGE, run_id=old)}
     ).request
@@ -801,7 +801,7 @@ def _old(name: str = "old") -> Recipe:
 
 
 def _new(name: str = "new") -> Recipe:
-    return _named(speed_recipe_stepping(2), name)
+    return named_recipe(speed_recipe_stepping(2), name)
 
 
 def _run_heading(dataset: Dataset, **params: object) -> str:
@@ -825,7 +825,7 @@ def _heading_of(ds: Dataset, recipe: Recipe) -> str:
 def test_a_run_in_a_storage_the_recipe_no_longer_names_is_not_a_candidate(
     dataset: Dataset,
 ) -> None:
-    ran = run_pipeline(dataset, _old())
+    _ = run_pipeline(dataset, _old())
     speed = _run_ids(dataset, _old())["speed"]
 
     cleanup = _cleanup(dataset, _new(), now=LATER)
@@ -833,7 +833,6 @@ def test_a_run_in_a_storage_the_recipe_no_longer_names_is_not_a_candidate(
     assert {run.storage for run in cleanup.runs} == {STORAGE}
     assert _reasons(cleanup) == {speed: "recipe_uses"}
     assert cleanup.retired == ()
-    assert ran.recipe_digest
 
 
 def test_retiring_the_recipe_that_wrote_a_run_makes_it_removable(
@@ -1035,16 +1034,19 @@ def test_retiring_a_same_named_earlier_version_reaches_its_other_storages(
 def test_retiring_with_no_candidate_in_a_named_storage_still_finds_the_runs(
     dataset: Dataset,
 ) -> None:
+    """The planned recipe expects the run the old one wrote, so its storage holds no
+    candidate, and the plan used to end there."""
     ran = run_pipeline(dataset, _old())
 
     cleanup = _cleanup(
         dataset,
-        _named(speed_recipe_stepping(7), "new"),
+        named_recipe(speed_recipe_stepping(1), "new"),
         now=LATER,
         retire=[ran.recipe_digest],
     )
 
-    assert _heading_of(dataset, _old()) in _by_run(cleanup)
+    assert [run.storage for run in cleanup.runs] == [HEADING]
+    assert cleanup.runs[0].removable
 
 
 def test_a_recipe_run_again_after_the_cleaning_request_keeps_its_runs(
@@ -1076,19 +1078,40 @@ def test_a_recipe_run_again_after_the_cleaning_request_keeps_its_runs(
 def test_retiring_the_calms21_shape_reclaims_only_the_abandoned_run(
     dataset: Dataset,
 ) -> None:
-    """Round 2 stacked into a storage round 2b no longer reads, and round 2b reads
-    what round 2 also read: only the stack is reclaimed."""
-    round2 = run_pipeline(dataset, _named(_chain(1, scaler=True), "round2"))
-    ids = _run_ids(dataset, _chain(1, scaler=True))
-    round2b = _named(speed_recipe_stepping(1), "round2b")
-    ids_b = _run_ids(dataset, round2b)
+    """Round 2 wrote a run into a storage round 2b no longer names, and a run that
+    round 2b expects. Retiring round 2 from round 2b reaches the first alone."""
+    round2 = run_pipeline(dataset, named_recipe(_chain(1), "round2"))
+    ids = _run_ids(dataset, _chain(1))
+    round2b = speed_heading_recipe("round2b")
+    assert _run_ids(dataset, round2b)["speed"] == ids["speed"]
 
+    plain = _cleanup(dataset, round2b, now=LATER)
     cleanup = _cleanup(dataset, round2b, now=LATER, retire=[round2.recipe_digest])
 
-    assert ids_b["speed"] == ids["speed"]
-    removable = {run.storage for run in cleanup.removable}
-    assert removable == {TEMPLATES, "global-scaler__from__speed-angvel__from__tracks"}
-    assert ids["speed"] not in _by_run(cleanup)
+    assert plain.runs == ()
+    [reclaimed] = cleanup.runs
+    assert (reclaimed.run_id, reclaimed.storage) == (ids["templates"], TEMPLATES)
+    assert (reclaimed.removable, reclaimed.retired_by) == (True, round2.recipe_digest)
+    assert feature_run_root(dataset, STORAGE, ids["speed"]).is_dir()
+
+
+def test_each_retired_run_names_the_recipe_that_wrote_it(dataset: Dataset) -> None:
+    first = run_pipeline(dataset, _old())
+    second = run_pipeline(dataset, named_recipe(_chain(3), "older"))
+    heading = _heading_of(dataset, _old())
+    templates = _run_ids(dataset, _chain(3))["templates"]
+
+    cleanup = _cleanup(
+        dataset,
+        _new(),
+        now=LATER,
+        retire=[second.recipe_digest, first.recipe_digest],
+    )
+
+    runs = _by_run(cleanup)
+    assert runs[heading].retired_by == first.recipe_digest
+    assert runs[templates].retired_by == second.recipe_digest
+    assert cleanup.retired == tuple(sorted({first.recipe_digest, second.recipe_digest}))
 
 
 @pytest.mark.parametrize("kind", ["unknown", "own", "without a cleanup"])
@@ -1119,11 +1142,15 @@ def test_planning_a_retirement_writes_nothing(dataset: Dataset) -> None:
     assert_tree_unchanged(dataset.base_dir, before)
 
 
-@pytest.mark.parametrize(("pid", "candidate"), [(0, False), (4242, True)])
+@pytest.mark.parametrize(
+    ("pid", "cache_hit", "candidate"),
+    [(0, False, False), (4242, False, True), (4242, True, False)],
+)
 def test_only_an_attempt_that_ran_in_a_process_wrote_the_run_it_names(
-    dataset: Dataset, pid: int, candidate: bool
+    dataset: Dataset, pid: int, cache_hit: bool, candidate: bool
 ) -> None:
-    """A stalled or cached step records the run it found, with no process."""
+    """A stalled or planner-cached step records the run it found, with no process,
+    and a feature run that found all its work done says so."""
     from mosaic.behavior.feature_library.heading import HeadingFeature
     from mosaic.core.pipeline.run import run_feature
 
@@ -1140,6 +1167,8 @@ def test_only_an_attempt_that_ran_in_a_process_wrote_the_run_it_names(
         ) as log:
             log.started(kind="feature", target=target, host="somewhere", pid=pid)
             log.set_run_id(run_id)
+            if cache_hit:
+                log.cache_hit()
             log.entries_written(2)
             log.finished()
 
@@ -1211,3 +1240,43 @@ def test_the_retirable_recipes_ride_the_plan_wire_outside_the_fingerprint(
     assert [row.digest for row in informed.retirable] == [ran.recipe_digest]
     assert informed.fingerprint == plain.fingerprint
     assert PlanWire.model_validate_json(informed.model_dump_json()) == informed
+
+
+def test_a_sample_of_retired_runs_lists_the_removable_ones_first(
+    dataset: Dataset,
+) -> None:
+    """The storage name sorts the kept runs first; the sample must not hide a removal."""
+    plan = plan_pipeline(dataset, _new())
+    kept = [
+        SupersededRun(
+            step_id="",
+            storage=f"a{index}__from__tracks",
+            run_id=f"0.1-kept{index}",
+            removable=False,
+            reason="newest",
+            detail="",
+            bytes=1,
+            entries=0,
+            finished_at="",
+            superseded_by="",
+            retired_by="d" * 16,
+        )
+        for index in range(2)
+    ]
+    removable = dataclasses.replace(
+        kept[0],
+        storage="z__from__tracks",
+        run_id="0.1-gone",
+        removable=True,
+        reason="superseded",
+    )
+    cleanup = CleanupPlan(policy=LOOSE, runs=(*kept, removable), retired=("d" * 16,))
+
+    wire = plan_wire(dataclasses.replace(plan, cleanup=cleanup), retired_sample=2)
+
+    assert wire.cleanup is not None
+    assert [run.run_id for run in wire.cleanup.retired_runs] == [
+        "0.1-gone",
+        "0.1-kept0",
+    ]
+    assert wire.cleanup.retired_omitted == 1

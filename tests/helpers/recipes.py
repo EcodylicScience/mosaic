@@ -22,6 +22,7 @@ from tests.helpers.golden import golden_path, read_golden
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.graph import PipelineRun
 
 SPEED_RECIPE: dict[str, object] = {
     "schema_version": 1,
@@ -107,6 +108,17 @@ def speed_recipe_stepping(step_size: int) -> Recipe:
             ],
         }
     )
+
+
+def named_recipe(recipe: Recipe, name: str) -> Recipe:
+    """*recipe* under *name*, which makes it a different recipe with its own digest."""
+    return Recipe.model_validate({**recipe.model_dump(mode="json"), "name": name})
+
+
+def run_id_of(done: PipelineRun, step_id: str) -> str:
+    """The run that step *step_id* of a finished recipe run named."""
+    [found] = [o.run_id for o in done.outcomes if o.step_id == step_id and o.run_id]
+    return found
 
 
 def speed_heading_recipe(name: str = "old") -> Recipe:

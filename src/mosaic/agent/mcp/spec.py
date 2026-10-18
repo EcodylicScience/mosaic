@@ -1235,7 +1235,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         title="Submit a pipeline",
         description=(
             "Submit a planned recipe and start running it in the background. "
-            "Requires the fingerprint of a current plan_recipe result. Returns the "
+            "Requires the fingerprint of a current plan_recipe result, planned "
+            "with the same cleanup and retire. Returns the "
             "request id and how long to wait before polling get_request_status. "
             "When the work is costly or a choice is the user's, a client that can "
             "ask the user asks. Otherwise the call is refused with reason "

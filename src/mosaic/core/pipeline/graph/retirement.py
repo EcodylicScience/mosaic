@@ -52,18 +52,19 @@ from .store import (
     current_digest,
     load_recipe,
     load_request,
+    pipelines_root,
     recipe_path,
     request_ids,
     requests_matching,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Container, Iterable
+    from collections.abc import Callable, Collection, Container, Iterable
     from pathlib import Path
 
     from mosaic.core.json_value import JsonValue
 
-    from .model import Request
+    from .model import Recipe, Request
     from .rollup import RequestRollup
 
 __all__ = [
@@ -80,6 +81,12 @@ __all__ = [
 ]
 
 _DIGEST: Final = re.compile(rf"[0-9a-f]{{{DIGEST_LENGTH}}}")
+
+NAME_LIMIT: Final = 80
+"""The most characters of a recipe's ``name`` that a listing or a question shows.
+
+A name is dataset content of any length, and a plan or a confirmation holds a few.
+"""
 
 
 class RetireNeedsCleanup(ClassifiedError):
@@ -228,20 +235,53 @@ def validate_retirement(
 
 
 def _saved_digest(base_dir: Path | str, digest: str) -> str:
-    """What the saved recipe named *digest* digests to now."""
+    """What the saved recipe named *digest* digests to now.
+
+    *digest* may name the file as it was saved or the recipe in the current
+    canonical form, which ``mosaic pipeline show`` and the plan's ``retirable``
+    list print (:func:`_saved_recipe`).
+    """
     if not _DIGEST.fullmatch(digest):
         raise RetireUnknownRecipe(
             digest, f"a recipe digest is {DIGEST_LENGTH} lowercase hex characters"
         )
     path = recipe_path(base_dir, digest)
-    if not path.is_file():
+    if path.is_file():
+        try:
+            return recipe_digest(load_recipe(path))
+        except (OSError, ValueError) as error:
+            raise RetireUnknownRecipe(
+                digest, f"its saved recipe does not read: {error}"
+            ) from error
+    if _saved_recipe(base_dir, digest) is None:
         raise RetireUnknownRecipe(digest, "this dataset has no saved recipe with it")
+    return digest
+
+
+def _saved_recipe(base_dir: Path | str, digest: str) -> Recipe | None:
+    """The saved recipe that *digest* names in either canonical form, or ``None``.
+
+    A recipe saved by an earlier mosaic stays in the file named for the form it
+    was saved in, and nothing saves it again under its current digest. So a
+    digest with no file of its own is looked for among the recipes that read.
+    """
+    path = recipe_path(base_dir, digest)
     try:
-        return recipe_digest(load_recipe(path))
-    except (OSError, ValueError) as error:
-        raise RetireUnknownRecipe(
-            digest, f"its saved recipe does not read: {error}"
-        ) from error
+        if path.is_file():
+            return load_recipe(path)
+    except (OSError, ValueError):
+        return None
+    root = pipelines_root(base_dir)
+    for candidate in sorted(root.glob("*.json")) if root.is_dir() else ():
+        if not _DIGEST.fullmatch(candidate.stem):
+            continue
+        try:
+            recipe = load_recipe(candidate)
+        except (OSError, ValueError):
+            continue
+        if recipe_digest(recipe) == digest:
+            return recipe
+    return None
 
 
 def retired_digest_of(
@@ -325,18 +365,25 @@ def exclusively_written(
 
 
 def retirable_recipes(
-    base_dir: Path | str, *, exclude_digest: str = "", limit: int | None = None
+    base_dir: Path | str,
+    *,
+    exclude_digest: str = "",
+    limit: int | None = None,
+    present: Callable[[str, str], bool] | None = None,
 ) -> tuple[tuple[RetirableRecipeWire, ...], int]:
     """The saved recipes whose requests wrote runs, newest activity first.
 
-    A recipe is listed under the digest that ``retire`` takes, whichever form its
-    requests name. Requests that do not read and recipes that do not read are left
-    out.
+    A recipe is listed under its digest in the current canonical form, which
+    ``retire`` takes whichever form its requests name. Requests that do not read
+    and recipes that do not read are left out.
 
     Args:
         base_dir: The dataset root.
         exclude_digest: A recipe to leave out, the one being planned.
         limit: The most recipes to return, ``None`` for all.
+        present: Whether the feature run ``(storage, run_id)`` is still on disk.
+            The listing counts only those, so a recipe whose runs were removed, or
+            that only ran ops, is not offered. ``None`` counts every run written.
 
     Returns:
         The recipes, and how many more there were.
@@ -364,11 +411,11 @@ def retirable_recipes(
             name=_recipe_name(base_dir, group.named),
             requests=len(group.request_ids),
             request_ids=tuple(group.request_ids[:RETIRABLE_REQUEST_IDS]),
-            runs=len(group.runs),
+            runs=len(kept),
             open=group.open,
         )
         for digest, group in groups.items()
-        if group.runs
+        if (kept := _present(group.runs, present))
     ]
     shown = found if limit is None else found[:limit]
     return tuple(shown), len(found) - len(shown)
@@ -379,10 +426,20 @@ def retired_recipe_names(
 ) -> dict[str, str]:
     """Each digest's recipe ``name``, for a sentence that names the recipes.
 
-    A recipe saved only under an earlier canonical form, or one that does not
-    read, has the name ``""``.
+    A recipe that does not read has the name ``""``. A name is cut to
+    :data:`NAME_LIMIT` characters.
     """
     return {digest: _recipe_name(base_dir, digest) for digest in digests}
+
+
+def _present(
+    runs: Collection[tuple[str, str]],
+    present: Callable[[str, str], bool] | None,
+) -> set[tuple[str, str]]:
+    """The runs of *runs* that *present* finds, all of them without it."""
+    if present is None:
+        return set(runs)
+    return {pair for pair in runs if present(*pair)}
 
 
 @dataclass(slots=True)
@@ -396,8 +453,9 @@ class _Group:
 
 
 def _recipe_name(base_dir: Path | str, digest: str) -> str:
-    """The ``name`` of the recipe saved under *digest*, ``""`` when it does not read."""
-    try:
-        return load_recipe(recipe_path(base_dir, digest)).name
-    except (OSError, ValueError):
-        return ""
+    """The ``name`` of the recipe *digest* names, cut to :data:`NAME_LIMIT`.
+
+    ``""`` when no saved recipe that reads has the digest.
+    """
+    recipe = _saved_recipe(base_dir, digest)
+    return recipe.name[:NAME_LIMIT] if recipe is not None else ""

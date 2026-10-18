@@ -526,3 +526,15 @@ def runner_module() -> Iterator[ModuleType]:
         ("ultralytics_protocol",),
     ) as program:
         yield program
+
+
+@pytest.fixture
+def lapsed_request_holds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A request that has ended holds the runs it recorded for no time at all.
+
+    A cleanup keeps those runs for at least an hour
+    (``REQUEST_HOLD_FLOOR_HOURS``), so a test that removes a run an earlier request
+    recorded lapses the hold, with a policy whose ``min_age_hours`` is 0.
+    """
+    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
+    monkeypatch.setattr(module, "REQUEST_HOLD_FLOOR_HOURS", 0)

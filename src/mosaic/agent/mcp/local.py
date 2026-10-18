@@ -618,6 +618,7 @@ class LocalBackend:
             requests_matching,
             retirable_recipes,
         )
+        from mosaic.core.pipeline.index import feature_run_root
         from mosaic.core.scope import Scope
 
         held = self._dataset(args.dataset)
@@ -648,6 +649,9 @@ class LocalBackend:
                 held.dataset.base_dir,
                 exclude_digest=plan.recipe_digest,
                 limit=PLAN_RETIRABLE_SAMPLE,
+                present=lambda storage, run_id: feature_run_root(
+                    held.dataset, storage, run_id
+                ).is_dir(),
             )
             if plan.cleanup is not None
             else ((), 0)
@@ -1236,10 +1240,11 @@ def _submission_findings(
         )
         written = [run for run in removable if run.retired_by]
         if written:
-            names = retired_recipe_names(dataset.base_dir, plan.cleanup.retired)
+            retiring = sorted({run.retired_by for run in written})
+            names = retired_recipe_names(dataset.base_dir, retiring)
             recipes = ", ".join(
                 f"{names[digest]!r} ({digest})" if names[digest] else digest
-                for digest in plan.cleanup.retired
+                for digest in retiring
             )
             deleted += (
                 f", {len(written)} of them written by the retired recipe(s) {recipes}"

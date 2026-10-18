@@ -470,11 +470,8 @@ def test_a_retirement_is_written_and_read_back(tmp_path: Path) -> None:
 
 
 def test_the_request_records_the_recipes_it_retires(
-    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+    tracked: Dataset, lapsed_request_holds: None
 ) -> None:
-    monkeypatch.setattr(
-        "mosaic.core.pipeline.graph.cleanup.REQUEST_HOLD_FLOOR_HOURS", 0
-    )
     ran = run_pipeline(tracked, speed_heading_recipe())
     recipe = speed_recipe_stepping(2)
     fingerprint = plan_fingerprint(

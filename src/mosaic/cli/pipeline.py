@@ -289,6 +289,7 @@ def plan_command(
         requests_matching,
         retirable_recipes,
     )
+    from mosaic.core.pipeline.index import feature_run_root
     from mosaic.core.scope import Scope
 
     ds = load_dataset(manifest, read_only=True)
@@ -316,7 +317,13 @@ def plan_command(
         ds.base_dir, plan.recipe_digest, Scope() if scope is None else scope
     )
     retirable, omitted = (
-        retirable_recipes(ds.base_dir, exclude_digest=plan.recipe_digest)
+        retirable_recipes(
+            ds.base_dir,
+            exclude_digest=plan.recipe_digest,
+            present=lambda storage, run_id: feature_run_root(
+                ds, storage, run_id
+            ).is_dir(),
+        )
         if plan.cleanup is not None
         else ((), 0)
     )
@@ -1075,6 +1082,7 @@ def _emit_plan(
         superseded = [run for step in wire.steps for run in step.superseded]
         if superseded:
             typer.echo("superseded runs")
+            retiring = any(run.retired for run in superseded)
             render_table(
                 [
                     {
@@ -1083,11 +1091,13 @@ def _emit_plan(
                         "removable": "yes" if run.removable else "kept",
                         "reason": run.reason,
                         "size": _size(run.bytes),
+                        "recipe": run.retired or "-",
                     }
                     for step in wire.steps
                     for run in step.superseded
                 ],
-                ["step", "run_id", "removable", "reason", "size"],
+                ["step", "run_id", "removable", "reason", "size"]
+                + (["recipe"] if retiring else []),
             )
         if wire.cleanup.retired_runs:
             typer.echo("retired runs")

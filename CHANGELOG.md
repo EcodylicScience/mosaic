@@ -530,6 +530,18 @@ run it pinned, and a run that a feature call outside every request also used.
 - A removed run's digest is recorded on the cleanup run-log's `run_removing` event, not
   on `run_removed`, which does not repeat the reason. The reason is `retired`, and the
   line of an ordinary removal is unchanged.
+- New library: `retire=` on `plan_with_cleanup`, `plan_cleanup` and `submit_request`;
+  `retirable_recipes`, `retired_recipe_names`, `RetirableRecipeWire`, `RETIRED_SAMPLE`,
+  `RETIRABLE_REQUEST_IDS` and the errors `RetireNeedsCleanup`, `RetireUnknownRecipe`,
+  `RetireOwnRecipe` and `RetireOpenRecipe` in `mosaic.core.pipeline.graph`;
+  `current_digest` and `request_ids` public in `store`; `RemovalRecord.retired`, a new
+  key of the published dict.
+- `retirable` lists at most eight recipes over MCP, newest activity first, and only
+  recipes with a run still on disk; a call retires at most eight, and
+  `cleanup.retired_runs` lists five, removable first. Take a digest the list omits from
+  `list_activity`. An earlier version of the planned recipe, one with the same name,
+  never keeps a run, a retired one included. `retire` takes a recipe's digest in
+  either canonical form.
 
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 

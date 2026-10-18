@@ -77,7 +77,8 @@ def serve(
         allow_managed: Whether ``submit_pipeline`` and ``cancel_request`` may
             change a dataset whose manifest names a managing service.
         allow_cleanup: The artifacts the tools may remove. ``feature-runs``
-            lets ``submit_pipeline`` remove superseded feature runs.
+            lets ``submit_pipeline`` remove superseded feature runs, and with
+            ``retire`` the runs of retired recipes.
         cleanup_policy: Which superseded runs a cleanup keeps, the default
             policy when ``None``.
 

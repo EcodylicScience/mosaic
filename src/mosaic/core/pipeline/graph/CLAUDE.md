@@ -60,8 +60,9 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   which the CLI's `pipeline plan`, the MCP tools and `submit_request` share.
   `plan_cleanup` only reads: no lock, no write (`test_planning_a_cleanup_writes_nothing`
   in `test_pipeline_cleanup.py`). Its candidates are the other runs of the plan's
-  feature storages, never tracks, models or another recipe's storages, and its
-  rules, in the order they decide, are in the module docstring. Two recipes are
+  feature storages and the runs of retired recipes (below), never tracks, models or
+  another recipe's storages, and its rules, in the order they decide, are in the module
+  docstring. Two recipes are
   versions of each other by digest, the current canonical one included, or by
   non-empty `name`. A run that a request of another recipe recorded or binds is kept
   as `recipe_uses` after that request's hold lapses

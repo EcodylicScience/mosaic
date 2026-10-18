@@ -8,7 +8,6 @@ tracks entry has appeared in between.
 from __future__ import annotations
 
 import datetime
-import importlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -351,10 +350,8 @@ def test_a_retirement_enters_the_fingerprint_only_when_given(
 
 @pytest.mark.parametrize("reviewed_with", [True, False])
 def test_a_retirement_must_be_the_one_the_plan_was_reviewed_with(
-    tracked: Dataset, monkeypatch: pytest.MonkeyPatch, reviewed_with: bool
+    tracked: Dataset, lapsed_request_holds: None, reviewed_with: bool
 ) -> None:
-    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
-    monkeypatch.setattr(module, "REQUEST_HOLD_FLOOR_HOURS", 0)
     ran = run_pipeline(tracked, speed_heading_recipe())
     recipe = speed_recipe_stepping(2)
     retire = [ran.recipe_digest]

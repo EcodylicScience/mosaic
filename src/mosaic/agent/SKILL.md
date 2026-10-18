@@ -164,7 +164,8 @@ A dataset is a directory with `dataset.yaml` and named roots
   storages the new recipe no longer names.
 - Give a recipe a `name` and keep it across the recipe's versions. A cleanup can then
   remove the runs of its earlier versions, and it keeps every run that a request of
-  another recipe recorded. An unnamed recipe is a version only of itself.
+  another recipe recorded, unless you retire that recipe. An unnamed recipe is a version
+  only of itself.
 
 ## Bringing data in
 
@@ -317,9 +318,12 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   `plan_recipe` and `submit_pipeline`, or the fingerprint will not match.
 - To reclaim the runs of an earlier recipe that wrote to storages this one no longer
   names, call `plan_recipe` with `cleanup: "superseded"` and read `retirable`: name,
-  digest, request ids and run count. Plan again with `retire: [digest]`, show the user
-  `cleanup.retired_runs`, and pass the same `retire` and the new fingerprint to
-  `submit_pipeline`. A retirement lasts for that call, so repeat it each time.
+  digest, request ids and run count; `retirable` lists the eight newest, and
+  `list_activity` shows the `recipe_digest` of any other request. Plan again with
+  `retire: [digest]`, show the user `cleanup.retired_runs` and every entry of a step's
+  `superseded` whose `retired` is set, and pass the same `retire` and the new
+  fingerprint to `submit_pipeline`. A retirement lasts for that call, so repeat it each
+  time.
 - A run's report, such as `evaluate-labels`' scores, is the resource
   `mosaic://dataset/{id}/artifacts/feature/{name}/{run_id}/report`.
 - A read returns at most 40,000 characters. A `result_too_large` error names the
@@ -347,9 +351,9 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   checked. Ask the user whether its process still runs. Once they confirm it has
   exited, propose `mosaic cancel --manifest <manifest> --request <id>
   --assume-exited`, then submit the recipe again.
-- The tools delete nothing except superseded feature runs, and with `retire` the runs
-  of recipes retired in that call, through `cleanup` on `submit_pipeline`, which the
-  operator must allow and the user confirms. They do not
+- The tools delete nothing except superseded feature runs, and with `retire` the
+  runs of recipes retired in that call, through `cleanup` on `submit_pipeline`, which
+  the operator must allow and the user confirms. They do not
   overwrite, sweep, prune, reindex or change the manifest. Propose the `mosaic`
   command and let the user run it.
 

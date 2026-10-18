@@ -306,8 +306,10 @@ def plan_cleanup(
 ) -> CleanupPlan:
     """Judge every superseded run of *plan*'s feature storages. Writes nothing.
 
-    The rules are listed in the module docstring, and the first that matches is
-    the reason a run is kept. Every kept run is reported with it.
+    With *retire*, the runs that the retired recipes' requests wrote are judged
+    too, wherever they sit. The rules are listed in the module docstring, and the
+    first that matches is the reason a run is kept. Every kept run is reported
+    with it.
 
     Args:
         ds: The planned dataset.

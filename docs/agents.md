@@ -124,6 +124,7 @@ discover:              # directories searched for datasets, three levels deep
   - ~/data/projects
 allow_managed_writes: false
 allow_cleanup: []      # [feature-runs] lets submit_pipeline remove superseded runs
+                       # and, with retire, the runs of retired recipes
 cleanup:               # which superseded runs a cleanup keeps
   keep_newest: 1
   min_age_hours: 24
@@ -323,8 +324,8 @@ The server does not expose them as tools. When one is needed, the agent proposes
 - overwriting a computed run (`overwrite`);
 - deleting tables, entries or runs, except superseded feature runs and the runs of
   recipes retired with them, which `submit_pipeline` removes with
-  `cleanup: superseded` when the server runs with `--allow-cleanup feature-runs` (see
-  below);
+  `cleanup: superseded` when the server runs with `--allow-cleanup feature-runs`
+  (see below);
 - `--apply` on `sweep-tracking`, `prune-media`, `prune-joined`, `reconcile` and
   `upgrade-tracks`;
 - `reindex` and `release`;
@@ -359,7 +360,8 @@ cleanup:
 
 A run is always kept when its feature is costly to fit again, when its `params.json`
 is missing, when a running or recent request holds it (for at least an hour), when a
-request of another recipe recorded it or pins it, when an attempt that may still run
+request of another recipe recorded it or pins it (unless it is a retired recipe that
+wrote it, below), when an attempt that may still run
 names it or may read it, when it covers entries or a fit its replacement does not, or
 when a kept run or a step of the plan reads it. Recipes with the same non-empty
 `name` are versions of each other, and an unnamed recipe is a version only of itself.
@@ -386,13 +388,22 @@ another name keeps the runs it recorded. To reclaim them, retire the earlier rec
 3. Show the user the plan, then pass the same `retire` and the plan's fingerprint to
    `submit_pipeline`. The confirmation names the retired recipes.
 
+`retirable` lists at most eight recipes, newest activity first, and counts the rest
+under `retirable_omitted`; a recipe whose runs are all gone is not listed. When the
+recipe you want is missing, take its digest from `list_activity`, whose requests carry
+their `recipe_digest`. A call retires at most eight recipes, and `cleanup.retired_runs`
+lists at most five runs, removable ones first, with the rest counted in
+`cleanup.retired_omitted`.
+
 A retirement applies to that one plan and submission, and the next plan judges as if
 nothing was retired. It needs `cleanup: superseded`. It reaches only runs a retired
 request wrote. A run that request only found already done, a run it pinned with `bind`,
 and a run that a call outside every request, such as a notebook, also used keep their
 protection. The other rules still apply to a retired run: a request's hold, a costly
 feature, a reader, the policy's age, and `keep_newest` for each storage, so with the
-default policy the newest retired run of each abandoned storage stays. The call is
+default policy the newest retired run of each abandoned storage stays. An earlier
+version of the planned recipe, one with the same name, never keeps a run, a retired one
+included. The call is
 refused for a digest that no saved recipe has, for the recipe being planned, and for a
 recipe with a request that has not ended.
 

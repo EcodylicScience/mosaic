@@ -133,12 +133,16 @@ def _cleanup_wire(
 ) -> CleanupPlanWire | None:
     """The totals of *cleanup*, ``None`` for a plan not asked for one.
 
-    The retired runs of storages no step names are listed here, at most
-    *retired_sample* of them in the order *cleanup* reports them.
+    The retired runs of storages no step names are listed here, removable ones
+    first and otherwise in the order *cleanup* reports them, at most
+    *retired_sample* of them, so a sample never hides a run the cleanup would remove.
     """
     if cleanup is None:
         return None
-    unplaced = [run for run in cleanup.runs if not run.step_id]
+    unplaced = sorted(
+        (run for run in cleanup.runs if not run.step_id),
+        key=lambda run: not run.removable,
+    )
     return CleanupPlanWire(
         policy=cleanup.policy,
         removable_runs=len(cleanup.removable),
