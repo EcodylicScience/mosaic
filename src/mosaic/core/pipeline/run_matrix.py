@@ -416,9 +416,9 @@ def _select_columns(
         if not matched:
             msg = (
                 f"{where}: columns={pattern!r} matches no numeric column of entry "
-                f"{_name(entry)}. The frame, id and perspective columns are in "
-                f".index and a string column is not a value. The numeric columns "
-                f"are: {_listed(candidates)}."
+                f"{_name(entry)}. An identity column (frame, time, id, id1, id2, "
+                f"perspective) is not a value, and nor is a string column. The "
+                f"numeric columns are: {_listed(candidates)}."
             )
             raise ValueError(msg)
         taken.extend(name for name in matched if name not in taken)
