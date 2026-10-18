@@ -6,13 +6,13 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, ClassVar, final
 
 import numpy as np
 import pandas as pd
 from pydantic import Field
-from scipy.spatial.distance import pdist
 
 from mosaic.core.pipeline.column_contract import (
     POSE_X,
@@ -39,8 +39,16 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 
 from .helpers import (
+    block_rows,
     ensure_columns,
     entry_identity,
+    finite_keypoints,
+    one_row_per_frame_and_id,
+    pairwise_median_distance,
+    row_max,
+    row_median,
+    row_quantile,
+    sort_nan_last,
     wrap_angle,
 )
 from .registry import register_feature
@@ -191,107 +199,155 @@ class OrientationRelativeFeature:
             )
         group, sequence = entry_identity(df)
         global_scale = self._scale_for(group, sequence)
-        quantiles = self.params.quantiles
-        nearest_k = self.params.nearest_k
-        rows: list[dict[str, object]] = []
 
-        x_cols = [x for x, _ in pose_pairs]
-        y_cols = [y for _, y in pose_pairs]
+        rows = one_row_per_frame_and_id(df)
+        x, y = finite_keypoints(rows, pose_pairs)
+        measurable = np.isfinite(x).sum(axis=1) >= 2
+        rows, x, y = rows[measurable], x[measurable], y[measurable]
+        if global_scale is not None and np.isfinite(global_scale) and global_scale > 0:
+            scale = np.full(len(rows), float(global_scale))
+        else:
+            scale = pairwise_median_distance(x, y)
+        individuals = _Individuals.of(
+            x, y, rows[C.orientation_col].to_numpy(dtype=float), scale
+        )
 
-        grouped = df.groupby([C.frame_col, C.id_col], sort=True)
-        pose_cache: dict[tuple[int, object], dict] = {}
-        for (frame_val, id_val), sub in grouped:
-            row = sub.iloc[0]
-            xs = row[x_cols].to_numpy(dtype=float)
-            ys = row[y_cols].to_numpy(dtype=float)
-            valid = np.isfinite(xs) & np.isfinite(ys)
-            if valid.sum() < 2:
-                continue
-            arr = np.column_stack((xs[valid], ys[valid]))
-            centroid = arr.mean(axis=0)
-            angle = float(row.get(C.orientation_col, 0.0))
-            pose_cache[(int(frame_val), id_val)] = {
-                "pts": arr,
-                "centroid": centroid,
-                "angle": angle,
-            }
+        frames = rows[C.frame_col].to_numpy().astype(np.int64)
+        focal, other = _ordered_pairs(frames)
+        # A focal with no usable scale measures no one
+        usable = np.isfinite(scale[focal]) & (scale[focal] > 0)
+        focal, other = focal[usable], other[usable]
+        if not focal.size:
+            return pd.DataFrame()
 
-        frames = sorted({f for f, _ in pose_cache})
-        for f in frames:
-            ids_here = [i for (fv, i) in pose_cache if fv == f]
-            if len(ids_here) < 2:
-                continue
-            for id_a in ids_here:
-                for id_b in ids_here:
-                    if id_a == id_b:
-                        continue
-                    cache_a = pose_cache[(f, id_a)]
-                    cache_b = pose_cache[(f, id_b)]
-                    pts_b = cache_b["pts"]
-                    centroid_a = cache_a["centroid"]
-                    centroid_b = cache_b["centroid"]
-                    angle_a = cache_a["angle"]
-                    angle_b = cache_b["angle"]
-                    scale = global_scale
-                    if scale is None or not np.isfinite(scale) or scale <= 0:
-                        scale = _local_scale(cache_a["pts"])
-                    if scale is None or scale <= 0:
-                        continue
-                    delta = pts_b - centroid_a
-                    rot = _rotation(-angle_a)
-                    rel = (rot @ delta.T).T / scale
-                    rel_centroid = (rot @ (centroid_b - centroid_a)) / scale
-                    dtheta = wrap_angle(np.array(angle_b - angle_a))
-
-                    dists = np.sqrt((rel**2).sum(axis=1))
-                    q_vals = np.quantile(dists, quantiles).tolist() if quantiles else []
-                    d_near = np.sort(dists)[:nearest_k].tolist()
-                    d_near += [np.nan] * (nearest_k - len(d_near))
-
-                    x_vals = rel[:, 0]
-                    y_vals = rel[:, 1]
-                    feats: dict[str, object] = {
-                        C.frame_col: int(f),
-                        "id1": id_a,
-                        "id2": id_b,
-                        # The focal-first ordering is perspective 0; its mirror,
-                        # the same pair computed the other way round, is 1.
-                        "perspective": 0 if id_a < id_b else 1,
-                        C.seq_col: sequence,
-                        C.group_col: group,
-                        "dx": float(rel_centroid[0]),
-                        "dy": float(rel_centroid[1]),
-                        "dtheta": float(dtheta),
-                        "dist_min": float(np.min(dists)),
-                        "dist_median": float(np.median(dists)),
-                        "dist_max": float(np.max(dists)),
-                    }
-                    for idx, qv in enumerate(q_vals):
-                        feats[f"dist_q{int(quantiles[idx] * 100):02d}"] = float(qv)
-                    feats["x_min"] = float(np.nanmin(x_vals))
-                    feats["x_median"] = float(np.nanmedian(x_vals))
-                    feats["x_max"] = float(np.nanmax(x_vals))
-                    feats["y_min"] = float(np.nanmin(y_vals))
-                    feats["y_median"] = float(np.nanmedian(y_vals))
-                    feats["y_max"] = float(np.nanmax(y_vals))
-                    for i, val in enumerate(d_near):
-                        feats[f"near_{i}"] = float(val) if np.isfinite(val) else np.nan
-                    rows.append(feats)
-
-        return pd.DataFrame(rows)
+        step = block_rows(x.shape[1])
+        blocks = [
+            individuals.pair_columns(
+                focal[lo : lo + step],
+                other[lo : lo + step],
+                self.params.quantiles,
+                self.params.nearest_k,
+            )
+            for lo in range(0, focal.size, step)
+        ]
+        ids = rows[C.id_col]
+        columns: dict[str, object] = {
+            C.frame_col: frames[focal],
+            "id1": ids.iloc[focal].reset_index(drop=True),
+            "id2": ids.iloc[other].reset_index(drop=True),
+            # The focal-first ordering is perspective 0; its mirror, the same
+            # pair computed the other way round, is 1. A frame's rows run in id
+            # order, so the order of the rows is the order of the ids.
+            "perspective": (other < focal).astype(np.int64),
+            C.seq_col: sequence,
+            C.group_col: group,
+        }
+        for name in blocks[0]:
+            columns[name] = np.concatenate([block[name] for block in blocks])
+        return pd.DataFrame(columns)
 
 
-def _rotation(angle: float) -> np.ndarray:
-    """2D rotation matrix."""
-    c = np.cos(angle)
-    s = np.sin(angle)
-    return np.array([[c, -s], [s, c]], dtype=float)
+def _ordered_pairs(frames: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return every ordered pair of rows that share a frame, as two arrays of row numbers.
+
+    Args:
+        frames: The frame of each row, in non-decreasing order.
+
+    Returns:
+        ``(focal, other)``, which list the pairs by focal row and then by other
+        row. A frame with one row has none.
+    """
+    n_rows = frames.size
+    starts = np.flatnonzero(np.r_[True, frames[1:] != frames[:-1]])
+    lengths = np.diff(np.r_[starts, n_rows])
+    first = np.repeat(starts, lengths)
+    n_others = np.repeat(lengths, lengths) - 1
+    focal = np.repeat(np.arange(n_rows), n_others)
+    # The k-th row of the focal's frame, leaving the focal's own out
+    k = np.arange(focal.size) - np.repeat(np.cumsum(n_others) - n_others, n_others)
+    return focal, first[focal] + k + (k >= focal - first[focal])
 
 
-def _local_scale(pts: np.ndarray) -> float | None:
-    """Median pairwise distance as fallback body scale."""
-    if pts.shape[0] < 2:
-        return None
-    dists = pdist(pts)
-    val = float(np.median(dists))
-    return val if np.isfinite(val) and val > 0 else None
+@dataclass(frozen=True, eq=False)
+class _Individuals:
+    """The individuals of one entry, a row of each array apiece.
+
+    Attributes:
+        x: ``(n, n_keypoints)`` x of each keypoint, NaN where it is missing.
+        y: The same for y.
+        centre: ``(n, 2)`` mean of the keypoints present.
+        heading: ``(n,)`` heading in radians.
+        scale: ``(n,)`` the length that this individual's distances divide by.
+        cos: ``(n,)`` cosine of the rotation that turns the heading onto +x.
+        sin: The sine of that rotation.
+    """
+
+    x: np.ndarray
+    y: np.ndarray
+    centre: np.ndarray
+    heading: np.ndarray
+    scale: np.ndarray
+    cos: np.ndarray
+    sin: np.ndarray
+
+    @classmethod
+    def of(
+        cls, x: np.ndarray, y: np.ndarray, heading: np.ndarray, scale: np.ndarray
+    ) -> _Individuals:
+        """Return the individuals with these keypoints, headings and scales."""
+        n_present = np.isfinite(x).sum(axis=1)
+        centre = np.column_stack([np.nansum(x, axis=1), np.nansum(y, axis=1)])
+        return cls(
+            x,
+            y,
+            centre / n_present[:, None],
+            heading,
+            scale,
+            np.cos(-heading),
+            np.sin(-heading),
+        )
+
+    def pair_columns(
+        self,
+        focal: np.ndarray,
+        other: np.ndarray,
+        quantiles: list[float],
+        nearest_k: int,
+    ) -> dict[str, np.ndarray]:
+        """Return the output columns of the pairs ``(focal[i], other[i])``.
+
+        Each of the other's keypoints is placed in the focal's body frame:
+        centred on the focal's centroid, turned by its heading and divided by its
+        scale.
+        """
+        cos, sin, scale = self.cos[focal], self.sin[focal], self.scale[focal]
+        dx = self.x[other] - self.centre[focal, :1]
+        dy = self.y[other] - self.centre[focal, 1:]
+        rel_x = (cos[:, None] * dx - sin[:, None] * dy) / scale[:, None]
+        rel_y = (sin[:, None] * dx + cos[:, None] * dy) / scale[:, None]
+        between_x, between_y = (self.centre[other] - self.centre[focal]).T
+        ordered, count = sort_nan_last(np.sqrt(rel_x**2 + rel_y**2))
+
+        columns = {
+            "dx": (cos * between_x - sin * between_y) / scale,
+            "dy": (sin * between_x + cos * between_y) / scale,
+            "dtheta": wrap_angle(self.heading[other] - self.heading[focal]),
+            "dist_min": ordered[:, 0],
+            "dist_median": row_median(ordered, count),
+            "dist_max": row_max(ordered, count),
+        }
+        for q in quantiles:
+            columns[f"dist_q{int(q * 100):02d}"] = row_quantile(ordered, count, q)
+        for axis, rel in (("x", rel_x), ("y", rel_y)):
+            along, along_count = sort_nan_last(rel)
+            columns[f"{axis}_min"] = along[:, 0]
+            columns[f"{axis}_median"] = row_median(along, along_count)
+            columns[f"{axis}_max"] = row_max(along, along_count)
+        for i in range(nearest_k):
+            # Past the keypoints there is nothing to be nearest
+            if i < ordered.shape[1]:
+                nearest = np.where(np.isfinite(ordered[:, i]), ordered[:, i], np.nan)
+            else:
+                nearest = np.full(len(focal), np.nan)
+            columns[f"near_{i}"] = nearest
+        return columns
