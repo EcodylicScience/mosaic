@@ -226,6 +226,9 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   in `template_provenance.parquet`.
 - Inputs combine at one entity level. Mosaic refuses to merge per-individual output
   with per-pair output.
+- `arhmm` reads each individual, or each ordered pair and perspective of a pair table,
+  as its own sequence, and writes `id1`, `id2` and `perspective` beside its states.
+  `lightning-action` refuses a pair table. Use `xgboost` on pair features.
 - A label of `-1` means unlabeled: no annotation covers the row. Templates leave it
   out and scoring drops and counts it. Never read it as a class. A pair row takes the
   label of its own direction, so a CalMS21 label marks only the resident-focal row.
