@@ -156,6 +156,7 @@ def run_tracker(
                 if opened is None:
                     skipped.append(item.key)
                     job.progress.on_entry_end(i + 1, len(items), item.key)
+                    job.heartbeat(i + 1)
                     continue
                 work_dir, _held = opened
                 attempted.add(item.key)

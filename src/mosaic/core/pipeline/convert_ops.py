@@ -110,7 +110,11 @@ class ConvertTracksParams(Params):
 
 @register_op
 class ConvertTracksOp(Op[ConvertTracksParams]):
-    """Convert one format's raw tracks into a tracks variant."""
+    """Convert one format's raw tracks into a tracks variant.
+
+    Its progress counts the raw files of the format, and ``entries_written``
+    counts the entries they produce.
+    """
 
     kind = "convert-tracks"
     category = "convert"
@@ -214,7 +218,11 @@ class ConvertLabelsParams(Params):
 
 @register_op
 class ConvertLabelsOp(Op[ConvertLabelsParams]):
-    """Convert one format's raw labels into a labels variant of one kind."""
+    """Convert one format's raw labels into a labels variant of one kind.
+
+    Its progress counts the raw files of the format, and ``entries_written``
+    counts the entries they produce.
+    """
 
     kind = "convert-labels"
     category = "convert"
