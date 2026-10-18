@@ -416,6 +416,57 @@ class TestNonFinite:
         assert len(feat.apply(df)) == len(df)
 
 
+class TestShortSeries:
+    """A series with no more rows than ``n_lags`` has no state to decode."""
+
+    @staticmethod
+    def _with_short_pair(df: pd.DataFrame, rows: int) -> pd.DataFrame:
+        """*df* and the first *rows* frames of perspective 0 for the pair (5, 6)."""
+        short = df[df["perspective"] == 0].iloc[:rows].assign(id1=5, id2=6)
+        return pd.concat([df, short], ignore_index=True)
+
+    def test_a_series_too_short_to_decode_is_left_out(self) -> None:
+        df = _make_pair_df()
+        feat = _fit(_make_feature("numba", n_lags=2), [df])
+
+        result = feat.apply(self._with_short_pair(df, rows=2))
+
+        pd.testing.assert_frame_equal(result, feat.apply(df))
+
+    def test_a_series_one_row_longer_than_the_lags_is_decoded(self) -> None:
+        df = _make_pair_df()
+        feat = _fit(_make_feature("numba", n_lags=2), [df])
+
+        result = feat.apply(self._with_short_pair(df, rows=3))
+
+        assert len(result) == len(df) + 3
+
+    def test_the_length_that_counts_is_the_downsampled_one(self) -> None:
+        df = _make_pair_df()
+        feat = _fit(_make_feature("numba", n_lags=1, downsample_rate=2), [df])
+
+        left_out = feat.apply(self._with_short_pair(df, rows=2))
+        decoded = feat.apply(self._with_short_pair(df, rows=3))
+
+        assert len(left_out) == len(df)
+        assert len(decoded) == len(df) + 3
+
+    def test_an_entry_of_short_series_alone_gives_an_empty_table(self) -> None:
+        df = _make_pair_df()
+        feat = _fit(_make_feature("numba"), [df])
+
+        result = feat.apply(df.iloc[:1])
+
+        assert result.empty
+        assert list(result.columns) == [
+            "frame",
+            "syllable",
+            "id1",
+            "id2",
+            "perspective",
+        ]
+
+
 class TestDeclaration:
     """The catalog predicts what a step writes, from the level of its input."""
 

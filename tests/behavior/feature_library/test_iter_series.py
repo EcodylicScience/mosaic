@@ -171,6 +171,17 @@ def test_each_pair_series_is_labeled_and_carries_its_key() -> None:
     pd.testing.assert_frame_equal(labeled, expected)
 
 
+def test_a_series_with_no_label_is_left_out() -> None:
+    """A label of None leaves the series' rows out of the result."""
+
+    def label(key: object, rows: pd.DataFrame) -> npt.NDArray[np.int64] | None:
+        return None if key == (4, 9, 0) else np.zeros(len(rows), dtype=np.int64)
+
+    labeled = label_series(_pairs(), label)
+
+    assert labeled["perspective"].tolist() == [1, 1]
+
+
 def test_the_labels_join_back_to_the_rows_they_describe() -> None:
     rows = _pairs()
 

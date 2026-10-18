@@ -247,7 +247,7 @@ def iter_series(
 
 def label_series(
     df: pd.DataFrame,
-    label: Callable[[tuple[Scalar, ...], pd.DataFrame], npt.ArrayLike],
+    label: Callable[[tuple[Scalar, ...], pd.DataFrame], npt.ArrayLike | None],
     column: str = "syllable",
 ) -> pd.DataFrame:
     """Label each series' rows of *df*, as :func:`iter_series` yields them.
@@ -255,7 +255,7 @@ def label_series(
     Args:
         df: The rows to label. Left unchanged.
         label: Called with each series' key and rows. It returns one label per
-            row.
+            row, or ``None`` to leave the series out of the result.
         column: The column of the labels.
 
     Returns:
@@ -267,11 +267,11 @@ def label_series(
     keys = series_columns(df)
     labeled: list[pd.DataFrame] = []
     for key, rows in iter_series(df):
+        labels = label(key, rows)
+        if labels is None:
+            continue
         result = pd.DataFrame(
-            {
-                COLUMNS.frame_col: rows[COLUMNS.frame_col].to_numpy(),
-                column: label(key, rows),
-            }
+            {COLUMNS.frame_col: rows[COLUMNS.frame_col].to_numpy(), column: labels}
         )
         for name in keys:
             result[name] = rows[name].to_numpy()

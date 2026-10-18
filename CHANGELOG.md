@@ -29,6 +29,10 @@ the output carries the same columns beside `frame` and `syllable`.
   not with individual ones.
 - A sequence with two rows of one frame fails `arhmm`, in fit and in apply, naming the
   frame and the sequence, as `vame` does. It used to stable-sort them into one sequence.
+- A sequence with no more rows than `n_lags` after `downsample_rate`, which the fit
+  already left out, gets no states in apply and its rows are absent from the output,
+  where apply raised an `IndexError` that failed the entry. A pair that meets for a
+  few frames is such a sequence. The run reports the count on its standard error.
 - `iter_series`, `label_series`, `series_columns`, `refuse_repeated_series_rows` and
   `refuse_pair_rows` join `mosaic.behavior.feature_library.helpers` beside
   `label_individuals`. `kpms` and `vame` keep their split by individual.

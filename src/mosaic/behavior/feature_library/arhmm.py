@@ -61,6 +61,7 @@ from .types import PAYLOAD_COLUMNS_DESCRIPTION, PayloadColumnNames
 
 if TYPE_CHECKING:
     import pandas as pd
+    from pandas._typing import Scalar
 
 log = logging.getLogger(__name__)
 
@@ -420,7 +421,22 @@ class ArHmmFeature:
 
         cols = self._feature_columns
         refuse_repeated_series_rows(df, self.name)
-        return label_series(df, lambda _, rows: self._apply_one(rows, cols))
+        left_out: list[int] = []
+
+        def decode(_: tuple[Scalar, ...], rows: pd.DataFrame) -> np.ndarray | None:
+            states = self._apply_one(rows, cols)
+            if states is None:
+                left_out.append(len(rows))
+            return states
+
+        result = label_series(df, decode)
+        if left_out:
+            print(
+                f"[arhmm] {len(left_out)} series of {sum(left_out)} rows are too "
+                f"short to decode and have no states",
+                file=sys.stderr,
+            )
+        return result
 
     def save_state(self, run_root: Path) -> None:
         if self._model is None or self._feature_columns is None:
@@ -488,8 +504,13 @@ class ArHmmFeature:
 
         return arr
 
-    def _apply_one(self, df: pd.DataFrame, cols: list[str]) -> np.ndarray:
-        """Apply the fitted model to a single sub-sequence."""
+    def _apply_one(self, df: pd.DataFrame, cols: list[str]) -> np.ndarray | None:
+        """Apply the fitted model to a single sub-sequence.
+
+        Returns:
+            The state of each row, or ``None`` for a sequence too short for the
+            model to decode, which the fit leaves out as well.
+        """
         assert self._model is not None
         original_len = len(df)
         arr = df[cols].to_numpy(dtype=np.float64)
@@ -497,6 +518,8 @@ class ArHmmFeature:
         ds_rate = self.params.downsample_rate
         if ds_rate is not None and ds_rate > 1:
             arr = arr[::ds_rate]
+        if arr.shape[0] <= self.params.n_lags:
+            return None
 
         # Standardize, then read a missing value as the column mean
         if self._scaler_mean is not None and self._scaler_std is not None:
