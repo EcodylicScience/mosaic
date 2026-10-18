@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 from pydantic import TypeAdapter
@@ -11,12 +13,14 @@ from typer.testing import CliRunner
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
+    MAX_WAIT_SECONDS,
     EntryErrorsWire,
     FileFailureStore,
     Recipe,
     RequestPageWire,
     RequestStatusWire,
     RunStatusWire,
+    request_status_wire,
     submit_request,
 )
 from mosaic.core.pipeline.refusal import Refusal
@@ -133,6 +137,97 @@ def test_pipeline_status_prints_phase_and_liveness(
     (row,) = [line for line in result.stdout.splitlines() if line.startswith("speed")]
     assert row.split()[-2:] == ["fit", "alive"]
     assert "note: poll again in 10 s" in result.stderr
+
+
+def test_pipeline_status_brief_leaves_out_the_steps_that_have_not_started(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, ds = dataset
+    request = submit_request(ds, Recipe.model_validate(RECIPE)).request
+    command = [
+        "pipeline",
+        "status",
+        "-m",
+        str(manifest),
+        "--request",
+        request.request_id,
+        "--brief",
+    ]
+
+    brief = RequestStatusWire.model_validate(invoke_json([*command, "--json"]))
+    plain = invoke_ok(command)
+
+    assert brief == request_status_wire(ds.base_dir, request, brief=True)
+    assert brief.steps == ()
+    assert (brief.omitted_finished, brief.omitted_pending) == (0, 1)
+    assert "note: 0 finished and 1 not started step(s) are not listed" in plain.stderr
+
+
+def test_pipeline_status_waits_until_a_step_ends_and_prints_the_same_model(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, ds = dataset
+    request = submit_request(ds, Recipe.model_validate(RECIPE)).request
+    execution_id = request.execution_of("speed")
+
+    def run_the_step() -> None:
+        with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as log:
+            log.started(kind="feature", target="speed")
+            log.finished()
+
+    ender = threading.Timer(0.3, run_the_step)
+    ender.start()
+    began = time.monotonic()
+    try:
+        waited = RequestStatusWire.model_validate(
+            invoke_json(
+                [
+                    "pipeline",
+                    "status",
+                    "-m",
+                    str(manifest),
+                    "--request",
+                    request.request_id,
+                    "--wait-seconds",
+                    "30",
+                    "--brief",
+                    "--json",
+                ]
+            )
+        )
+    finally:
+        ender.join()
+
+    assert time.monotonic() - began < 20
+    assert (waited.verdict, waited.terminal) == ("finished", True)
+    assert [(step.step, step.outcome) for step in waited.steps] == [
+        ("speed", "finished")
+    ]
+    assert waited == request_status_wire(ds.base_dir, request)
+
+
+def test_pipeline_status_refuses_a_wait_above_the_cap(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, ds = dataset
+    request = submit_request(ds, Recipe.model_validate(RECIPE)).request
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "pipeline",
+            "status",
+            "-m",
+            str(manifest),
+            "--request",
+            request.request_id,
+            "--wait-seconds",
+            str(MAX_WAIT_SECONDS + 1),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert f"0<=x<={MAX_WAIT_SECONDS}" in result.output
 
 
 def test_plain_status_prints_the_error_and_each_failed_entry_as_text(
