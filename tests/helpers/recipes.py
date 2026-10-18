@@ -109,6 +109,37 @@ def speed_recipe_stepping(step_size: int) -> Recipe:
     )
 
 
+def speed_heading_recipe(name: str = "old") -> Recipe:
+    """``speed-angvel`` and ``heading`` over the tracks, each a storage of its own.
+
+    A cleanup that plans ``speed_recipe_stepping`` names only the speed storage,
+    which leaves ``heading__from__tracks`` as a storage the planned recipe does not
+    name.
+    """
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": name,
+            "steps": [
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": ["tracks"],
+                    "params": {"step_size": 1},
+                },
+                {
+                    "id": "heading",
+                    "type": "feature",
+                    "feature": "heading",
+                    "inputs": ["tracks"],
+                    "params": {},
+                },
+            ],
+        }
+    )
+
+
 def run_speed(dataset: Dataset, step_size: int) -> str:
     """Run ``speed-angvel`` at *step_size* outside any request, and return its run id.
 

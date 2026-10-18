@@ -187,8 +187,10 @@ def plan_fingerprint(plan: Plan) -> str:
 
     A plan asked for a cleanup (:func:`~.cleanup.plan_with_cleanup`) adds the
     policy and the runs it may remove, so a submission removes only the runs
-    its caller reviewed. Their sizes and the runs kept are left out. A plan not
-    asked for one fingerprints as before.
+    its caller reviewed. Their sizes and the runs kept are left out. The
+    recipes it retires are added only when there are any, so a submission that
+    retires nothing fingerprints as it did before retirement existed. A plan not
+    asked for a cleanup fingerprints as before.
     """
     document: dict[str, JsonValue] = {
         "dataset": plan.dataset_uuid,
@@ -207,13 +209,16 @@ def plan_fingerprint(plan: Plan) -> str:
         policy = plan.cleanup.policy
         removable = sorted((run.storage, run.run_id) for run in plan.cleanup.removable)
         remove: list[JsonValue] = [[storage, run_id] for storage, run_id in removable]
-        document["cleanup"] = {
+        cleanup_document: dict[str, JsonValue] = {
             "policy": {
                 "keep_newest": policy.keep_newest,
                 "min_age_hours": policy.min_age_hours,
             },
             "remove": remove,
         }
+        if plan.cleanup.retired:
+            cleanup_document["retire"] = list(plan.cleanup.retired)
+        document["cleanup"] = cleanup_document
     return document_digest(document)
 
 

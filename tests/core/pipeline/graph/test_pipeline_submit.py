@@ -27,6 +27,8 @@ from mosaic.core.pipeline.graph import (
     PlanChanged,
     Recipe,
     Request,
+    RetireNeedsCleanup,
+    RetireUnknownRecipe,
     declared_version,
     load_request,
     plan_fingerprint,
@@ -35,6 +37,7 @@ from mosaic.core.pipeline.graph import (
     recipe_digest,
     recipe_path,
     request_path,
+    run_pipeline,
     save_request,
     step_argv,
     submit_request,
@@ -43,6 +46,7 @@ from tests.helpers import (
     add_tracks_variant,
     make_dataset,
     run_speed,
+    speed_heading_recipe,
     speed_recipe_stepping,
 )
 
@@ -333,6 +337,11 @@ def test_the_request_records_the_approved_set_and_policy(tracked: Dataset) -> No
         fingerprint,
     )
     assert spec.approved == [CleanupTarget(storage=SPEED_STORAGE, run_id=old)]
+    assert spec.retired == []
+    saved = json.loads(
+        request_path(tracked.base_dir, submitted.request.request_id).read_text()
+    )
+    assert "retired" not in saved["cleanup"]
     assert spec.execution_id not in submitted.request.step_executions.values()
     assert submitted.plan.cleanup is not None
 
@@ -458,3 +467,68 @@ def test_a_retirement_is_written_and_read_back(tmp_path: Path) -> None:
     assert loaded.cleanup is not None
     assert loaded.cleanup.retired == ["51b2573baa1b4a84"]
     assert loaded == request
+
+
+def test_the_request_records_the_recipes_it_retires(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "mosaic.core.pipeline.graph.cleanup.REQUEST_HOLD_FLOOR_HOURS", 0
+    )
+    ran = run_pipeline(tracked, speed_heading_recipe())
+    recipe = speed_recipe_stepping(2)
+    fingerprint = plan_fingerprint(
+        plan_with_cleanup(tracked, recipe, cleanup=LOOSE, retire=[ran.recipe_digest])
+    )
+
+    submitted = submit_request(
+        tracked,
+        recipe,
+        cleanup=LOOSE,
+        expect_plan=fingerprint,
+        retire=[ran.recipe_digest, ran.recipe_digest],
+    )
+
+    spec = load_request(tracked.base_dir, submitted.request.request_id).cleanup
+    assert spec is not None
+    assert spec.retired == [ran.recipe_digest]
+    assert {target.storage for target in spec.approved} == {
+        SPEED_STORAGE,
+        "heading__from__tracks",
+    }
+    assert submitted.plan.cleanup is not None
+    assert submitted.plan.cleanup.retired == (ran.recipe_digest,)
+
+
+def test_a_submission_that_retires_without_a_cleanup_is_refused(
+    tracked: Dataset,
+) -> None:
+    ran = run_pipeline(tracked, speed_heading_recipe())
+
+    with pytest.raises(RetireNeedsCleanup):
+        _ = submit_request(
+            tracked, speed_recipe_stepping(2), retire=[ran.recipe_digest]
+        )
+
+    assert list(request_path(tracked.base_dir, "x").parent.glob("*.json")) == [
+        request_path(tracked.base_dir, ran.request_id)
+    ]
+
+
+def test_a_submission_that_retires_an_unknown_recipe_writes_nothing(
+    tracked: Dataset,
+) -> None:
+    recipe = speed_recipe_stepping(2)
+    fingerprint = _cleanup_fingerprint(tracked, recipe)
+
+    with pytest.raises(RetireUnknownRecipe):
+        _ = submit_request(
+            tracked,
+            recipe,
+            cleanup=LOOSE,
+            expect_plan=fingerprint,
+            retire=["0123456789abcdef"],
+        )
+
+    assert not request_path(tracked.base_dir, "x").parent.exists()
+    assert not recipe_path(tracked.base_dir, recipe_digest(recipe)).exists()

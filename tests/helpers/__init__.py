@@ -184,6 +184,7 @@ from tests.helpers.recipes import (
     guppies_recipe,
     recipe_saved_by_0_17,
     run_speed,
+    speed_heading_recipe,
     speed_recipe,
     speed_recipe_stepping,
 )
@@ -460,6 +461,7 @@ __all__ = [
     "self_referenced_extras",
     "set_tracks_cell",
     "source_tree",
+    "speed_heading_recipe",
     "speed_recipe",
     "speed_recipe_stepping",
     "store_dataset",

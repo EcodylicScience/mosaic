@@ -44,6 +44,7 @@ from .plan import Plan, plan_pipeline
 from .serialize import plan_fingerprint
 from .step_preflight import StepRefused, refuse_mixed_schemas
 from .resolve import declared_version
+from .retirement import validate_retirement
 from .store import (
     open_requests_matching,
     read_recipe_document,
@@ -55,7 +56,7 @@ from .store import (
 from .topo import topological_order
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
     from pathlib import Path
 
     from mosaic.core.dataset import Dataset
@@ -221,6 +222,7 @@ def submit_request(
     refuse_duplicates: bool = False,
     step_scopes: Mapping[str, Scope] | None = None,
     cleanup: CleanupPolicy | None = None,
+    retire: Iterable[str] = (),
 ) -> SubmittedRequest:
     """Record one submission of *recipe* against *ds*, and resolve its plan.
 
@@ -259,6 +261,11 @@ def submit_request(
             resolves it, so *expect_plan* must be the fingerprint of a plan reviewed with
             the same policy. The request records the runs that plan found
             removable, less any run *bind* pins, and removes no other.
+        retire: The digests of saved recipes to retire, which needs *cleanup*:
+            the runs their requests wrote are judged wherever they sit
+            (:func:`~.retirement.validate_retirement`). *expect_plan* must be the
+            fingerprint of a plan reviewed with the same recipes. The request
+            records them in ``cleanup.retired``, for this submission alone.
 
     Returns:
         The request, the plan, the paths of both documents, and the open
@@ -276,6 +283,10 @@ def submit_request(
         CleanupNeedsPlan: *cleanup* is given without *expect_plan*.
         CleanupOnManagedDataset: *cleanup* is given and a service manages the
             dataset.
+        RetireNeedsCleanup: *retire* is given without *cleanup*.
+        RetireUnknownRecipe: A digest is not that of a saved recipe that reads.
+        RetireOwnRecipe: A digest is *recipe*'s own.
+        RetireOpenRecipe: A retired recipe has a request that has not ended.
     """
     # Before planning, and again at each step's own start. Resolving any feature
     # identity against a dataset of mixed schemas already fails; checking first
@@ -289,6 +300,9 @@ def submit_request(
     refuse_mixed_schemas(ds, "")
     narrowing = scope if scope is not None else Scope()
     digest = recipe_digest(recipe)
+    retired = validate_retirement(
+        ds.base_dir, digest, retire, cleanup=cleanup is not None
+    )
     if refuse_duplicates:
         # Refuses before planning, which can take seconds.
         _ = _open_duplicates(ds.base_dir, digest, narrowing, refuse=True)
@@ -316,6 +330,7 @@ def submit_request(
             inventory=inventory,
             catalog=catalog,
             recipe_name=recipe.name,
+            retire=retired,
         )
         plan = replace(plan, cleanup=found_runs)
     found = plan_fingerprint(plan)
@@ -334,6 +349,7 @@ def submit_request(
                 if (run.storage, run.run_id) not in pinned
             ],
             fingerprint=found,
+            retired=list(retired),
         )
     )
     ordered = topological_order(recipe)
