@@ -310,7 +310,12 @@ def submit_request(
     if cleanup is not None and inventory is not None and catalog is not None:
         # What plan_with_cleanup does, with the plan_pipeline of this module.
         found_runs = plan_cleanup(
-            ds, plan, policy=cleanup, inventory=inventory, catalog=catalog
+            ds,
+            plan,
+            policy=cleanup,
+            inventory=inventory,
+            catalog=catalog,
+            recipe_name=recipe.name,
         )
         plan = replace(plan, cleanup=found_runs)
     found = plan_fingerprint(plan)

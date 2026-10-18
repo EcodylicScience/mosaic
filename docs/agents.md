@@ -355,13 +355,18 @@ cleanup:
 ```
 
 A run is always kept when its feature is costly to fit again, when its `params.json`
-is missing, when a running or recent request holds it (for at least an hour), when an
-attempt that may still run names it or may read it, when it covers entries or a fit
-its replacement does not, or when a kept run or a step of the plan reads it. Only the feature storages the recipe
-names are touched. Each removed run's `params.json` is kept in the cleanup's run-log,
-so the run can be computed again, and `get_request_status` reports what was removed
-and kept. A managed dataset refuses a cleanup, and a queue that runs the steps itself
-does not run one.
+is missing, when a running or recent request holds it (for at least an hour), when a
+request of another recipe recorded it or pins it, when an attempt that may still run
+names it or may read it, when it covers entries or a fit its replacement does not, or
+when a kept run or a step of the plan reads it. Recipes with the same non-empty
+`name` are versions of each other, and an unnamed recipe is a version only of itself.
+Name a recipe and keep the name across its versions, so a cleanup can remove the runs
+of its earlier versions. Only the feature storages the recipe names are touched. A
+run in a storage the recipe no longer names is not removed, and a run of a named
+storage that was written outside a request is a candidate whichever recipe it belongs
+to. Each removed run's `params.json` is kept in the cleanup's run-log for computing
+the run again, and `get_request_status` reports what was removed and kept. A managed
+dataset refuses a cleanup, and a queue that runs the steps itself does not run one.
 
 ### Data sent to the model provider
 

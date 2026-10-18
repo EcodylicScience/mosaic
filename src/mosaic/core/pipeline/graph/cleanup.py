@@ -1,10 +1,15 @@
 """Which superseded feature runs a recipe's plan may remove, and removing them.
 
 A recipe's feature steps each name a run of a storage under ``features/``. The
-other runs of those storages are **superseded**: an earlier version of the same
-step, with other params. :func:`plan_cleanup` reports each one as removable or as
-kept with its reason, and :func:`run_cleanup` removes the ones a submission
-approved, after the request's steps have finished.
+other runs of those storages are **superseded** candidates. :func:`plan_cleanup`
+reports each one as removable or as kept with its reason, and :func:`run_cleanup`
+removes the ones a submission approved, after the request's steps have finished.
+
+Two recipes are versions of each other when they have the same digest or the same
+non-empty ``name``. An unnamed recipe is a version only of itself. A candidate that
+a request of another recipe recorded or binds stays kept after that request's hold
+lapses (``recipe_uses``). A candidate recorded by no request, such as a run written by
+``run_feature``, is judged by the other rules alone.
 
 Only feature runs of the storages the recipe names are ever candidates. Tracks,
 models, media and the storages of other recipes are not, and a run directory with
@@ -26,13 +31,16 @@ A candidate is kept, by the first rule that matches:
    steps' params, a running one also for every run of the features its recipe
    names, and an ended one for :data:`~.model.REQUEST_HOLD_FLOOR_HOURS` or
    ``min_age_hours``, whichever is longer.
-7. It holds entries its replacement lacks (``wider_coverage``), or it is a
+7. A request of a recipe that is not a version of the planned one recorded or
+   binds it, at any age (``recipe_uses``). A request whose recipe file does not
+   read keeps the runs it recorded the same way.
+8. It holds entries its replacement lacks (``wider_coverage``), or it is a
    scope-dependent fit over entries its replacement does not cover
    (``other_fit_scope``).
-8. It is younger than ``min_age_hours`` (``young``).
-9. It is among the ``keep_newest`` newest superseded runs of its storage
-   (``newest``).
-10. A run that is kept, or a step of the plan, reads it, through ``inputs``, a
+9. It is younger than ``min_age_hours`` (``young``).
+10. It is among the ``keep_newest`` newest superseded runs of its storage
+    (``newest``).
+11. A run that is kept, or a step of the plan, reads it, through ``inputs``, a
     params reference or its fit record, directly or through other runs
     (``read_by``).
 
@@ -72,6 +80,7 @@ if TYPE_CHECKING:
     from .compatibility import DeclarationCatalog
     from .model import Recipe, Request
     from .plan import Plan
+    from .rollup import RequestRollup
 
 __all__ = [
     "CLEANUP_KIND",
@@ -100,6 +109,7 @@ type KeptReason = Literal[
     "params_unknown",
     "attempt_open",
     "held_by_request",
+    "recipe_uses",
     "wider_coverage",
     "other_fit_scope",
     "young",
@@ -238,6 +248,7 @@ def plan_with_cleanup(
         policy=cleanup,
         inventory=held,
         catalog=declarations,
+        recipe_name=recipe.name,
         own_request=request,
         now=now,
     )
@@ -251,6 +262,7 @@ def plan_cleanup(
     policy: CleanupPolicy,
     inventory: InventoryCache,
     catalog: DeclarationCatalog,
+    recipe_name: str,
     own_request: Request | None = None,
     recorded: Mapping[str, str] | None = None,
     now: datetime.datetime | None = None,
@@ -267,6 +279,9 @@ def plan_cleanup(
         policy: The age and recency rules.
         inventory: The held inventory the plan read, which lists the runs.
         catalog: The declarations, for ``costly_fit``.
+        recipe_name: The planned recipe's ``name``. A request of a saved recipe
+            with this name, when it is not empty, holds its runs only for its
+            hold window.
         own_request: The request being cleaned up: its binds are kept, and its
             own file and attempts hold nothing.
         recorded: The run id each step's attempt recorded, which replaces the
@@ -301,7 +316,14 @@ def plan_cleanup(
     own_id = own_request.request_id if own_request is not None else ""
     bound = _bound_pairs(own_request)
     hold_hours = max(policy.min_age_hours, REQUEST_HOLD_FLOOR_HOURS)
-    holds = _request_holds(base, now=moment, hold_hours=hold_hours, exclude=own_id)
+    holds = _request_holds(
+        base,
+        now=moment,
+        hold_hours=hold_hours,
+        exclude=own_id,
+        planned_digest=plan.recipe_digest,
+        planned_name=recipe_name,
+    )
     whole = _whole_plan_hold(ds, holds)
     opened, unnamed = _open_attempts(base, now=moment)
     short = frozenset(short_storages)
@@ -547,6 +569,7 @@ def _remove_approved(
         policy=spec.policy,
         inventory=held,
         catalog=declarations,
+        recipe_name=recipe.name,
         own_request=request,
         recorded=recorded,
         now=now,
@@ -829,29 +852,65 @@ def _bound_pairs(request: Request | None) -> frozenset[tuple[str, str]]:
 
 
 @dataclass(slots=True)
-class _Holds:
-    """What other requests hold, and the first request file that does not read."""
+class _RunLabels:
+    """Runs by ``(storage, run_id)`` or by run id, each with its request's label."""
 
     pairs: dict[tuple[str, str], str] = field(
         default_factory=dict[tuple[str, str], str]
     )
     run_ids: dict[str, str] = field(default_factory=dict[str, str])
+
+    def record(self, request: Request, rollup: RequestRollup, label: str) -> None:
+        """Record the runs that *request*'s attempts recorded and its binds."""
+        for attempt in rollup.steps:
+            if attempt.run_id:
+                _ = self.run_ids.setdefault(attempt.run_id, label)
+        for bound in request.bind.values():
+            _ = self.pairs.setdefault((bound.feature, bound.run_id), label)
+
+    def get(self, key: tuple[str, str]) -> str:
+        """The label of run *key*, or ``""``."""
+        return self.pairs.get(key) or self.run_ids.get(key[1]) or ""
+
+
+@dataclass(slots=True)
+class _Holds:
+    """What other requests hold, and the first request file that does not read.
+
+    ``uses`` contains the runs of the ended requests of other recipes after their
+    hold lapsed.
+    """
+
+    runs: _RunLabels = field(default_factory=_RunLabels)
     slugs: dict[str, str] = field(default_factory=dict[str, str])
     storages: dict[str, str] = field(default_factory=dict[str, str])
+    uses: _RunLabels = field(default_factory=_RunLabels)
     unreadable: str = ""
 
 
 def _request_holds(
-    base_dir: Path, *, now: datetime.datetime, hold_hours: float, exclude: str
+    base_dir: Path,
+    *,
+    now: datetime.datetime,
+    hold_hours: float,
+    exclude: str,
+    planned_digest: str,
+    planned_name: str,
 ) -> _Holds:
     """What the dataset's other requests hold.
 
     A running or orphaned request holds the run ids its attempts recorded, its
     binds and the runs its steps' params name outright, whatever its age, and a
-    running one also every run of each feature its recipe names. A request that has ended holds its recorded runs and binds
-    for *hold_hours* after its last attempt wrote a line.
+    running one also every run of each feature its recipe names. A request that
+    has ended holds its recorded runs and binds for *hold_hours* after its last
+    attempt wrote a line. After that, they are recorded in ``uses`` when the
+    request's recipe is not a version of the planned one (*planned_digest*,
+    *planned_name*), or when its recipe does not read. A saved recipe that digests
+    to *planned_digest* only under the current canonical form is the planned one.
+    Each saved recipe is read once.
     """
     from ..markers import parse_instant
+    from .digest import recipe_digest
     from .request import load_recipe_for_request
     from .rollup import request_rollup
     from .status import request_verdict_of
@@ -859,6 +918,8 @@ def _request_holds(
     from .store import RequestUnreadable, load_request, requests_root
 
     holds = _Holds()
+    # Each saved recipe's name and current digest, or None when it does not read.
+    saved_recipes: dict[str, tuple[str, str] | None] = {}
     root = requests_root(base_dir)
     names = sorted(path.stem for path in root.glob("*.json")) if root.is_dir() else []
     for name in names:
@@ -882,17 +943,34 @@ def _request_holds(
             ]
             last = max((at for at in instants if at is not None), default=None)
             if last is not None and (now - last).total_seconds() > hold_hours * 3600:
+                digest = request.recipe_digest
+                if digest == planned_digest:
+                    continue
+                if digest not in saved_recipes:
+                    try:
+                        loaded = load_recipe_for_request(base_dir, request)
+                    except (StepRefused, OSError):
+                        saved_recipes[digest] = None
+                    else:
+                        saved_recipes[digest] = (loaded.name, recipe_digest(loaded))
+                saved = saved_recipes[digest]
+                if saved is None:
+                    label = f"request {name}, whose recipe {digest} does not read,"
+                else:
+                    other_name, current = saved
+                    if current == planned_digest or (
+                        planned_name and other_name == planned_name
+                    ):
+                        continue
+                    label = f"recipe {other_name or digest} (request {name})"
+                holds.uses.record(request, rollup, label)
                 continue
         label = f"request {name} ({verdict})"
-        for attempt in rollup.steps:
-            if attempt.run_id:
-                _ = holds.run_ids.setdefault(attempt.run_id, label)
-        for bound in request.bind.values():
-            _ = holds.pairs.setdefault((bound.feature, bound.run_id), label)
+        holds.runs.record(request, rollup, label)
         if verdict in ("running", "orphaned"):
             try:
                 recipe = load_recipe_for_request(base_dir, request)
-            except StepRefused as error:
+            except (StepRefused, OSError) as error:
                 # What it may still read is unknown, so it holds every run.
                 holds.unreadable = holds.unreadable or f"{label}: {error}"
                 continue
@@ -904,7 +982,7 @@ def _request_holds(
                 # A run its params name outright, which no step of it writes.
                 named = _literal_reads(step.params)
                 for pair in named.pairs:
-                    _ = holds.pairs.setdefault(pair, label)
+                    _ = holds.runs.pairs.setdefault(pair, label)
                 for storage in named.storages:
                     _ = holds.storages.setdefault(storage, label)
     return holds
@@ -1007,13 +1085,13 @@ def _first_reason(
     if record.run_id in opened:
         return ("attempt_open", f"attempt {opened[record.run_id]} may still run")
     held = (
-        holds.pairs.get(key)
-        or holds.run_ids.get(record.run_id)
-        or holds.slugs.get(slug)
-        or holds.storages.get(record.name)
+        holds.runs.get(key) or holds.slugs.get(slug) or holds.storages.get(record.name)
     )
     if held:
         return ("held_by_request", f"{held} holds it")
+    user = holds.uses.get(key)
+    if user:
+        return ("recipe_uses", f"{user} uses it")
     coverage = _coverage_reason(record, keeper, short, fit, global_entry)
     if coverage is not None:
         return coverage
@@ -1306,6 +1384,7 @@ _REASONS: Final[tuple[KeptReason | Literal["superseded"], ...]] = (
     "params_unknown",
     "attempt_open",
     "held_by_request",
+    "recipe_uses",
     "wider_coverage",
     "other_fit_scope",
     "young",
