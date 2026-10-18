@@ -342,9 +342,10 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - Wait with `get_request_status(wait_seconds=45)`, which returns when a step or the
   request ends; `brief: true` lists only the steps still running or not finished
   cleanly. Do not watch `driver_pid` (`kill -0`) or `tail` the driver log for
-  progress: the log holds output for explaining a failure. For a request that reads
-  `orphaned`, propose `mosaic pipeline run --manifest <manifest> --request <id>`,
-  which resumes it.
+  progress: the log holds output for explaining a failure. When no step has started
+  after a few waits, read `driver_log` once, because a driver that failed to start
+  leaves the request `running`. For a request that reads `orphaned`, propose
+  `mosaic pipeline run --manifest <manifest> --request <id>`, which resumes it.
 - A failed step ends only the branch below it. The steps below it are recorded
   failed with error type `ParentFailed`, whose `parent` names the failed step. The
   other steps still run. Answer the failed step. An ended request is not run again.
