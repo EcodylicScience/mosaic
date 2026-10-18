@@ -110,6 +110,7 @@ When `mosaic` is not on `PATH`, run `<python> -m mosaic` with the interpreter be
 - `mosaic.core.pipeline`: `load_values` reads columns of runs and labels into one
   frame, aligned row by row. Name a column with `ResultColumn` and labels with
   `GroundTruthLabelsSource`, both from `mosaic.core.pipeline.types`.
+  `load_run_matrix` reads one finished run's columns as an array.
 - `mosaic.core.evaluation`: `align_predictions_to_labels` pairs a run's rows with
   their labels, `classification_scores` scores predicted classes,
   `cluster_label_scores` a clustering, and `select_scored_rows` chooses the
@@ -301,6 +302,15 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 - In Python, `load_values(ds, [ResultColumn(...), GroundTruthLabelsSource()])` gives
   each row its label, and `labels_run_id=` picks a labels variant when the dataset
   holds two.
+- To fit or score on a run's columns in your own code, do not read the parquet files.
+  `load_run_matrix(ds, result, columns="prob_*", perspective=0, scope=...)` returns
+  `.index` (group, sequence, frame, and id or id1/id2/perspective), `.values` (float32,
+  one row per row of the index) and `.columns`, in order of group and sequence. It
+  refuses a run that is not finished, an entry of the scope the run lacks, and a read
+  too large for the memory, and the message says how to narrow it. Pass
+  `allow_partial=True` only once the user accepts results over fewer entries;
+  `.missing` lists the entries left out. It carries no labels, so take those from
+  `align_predictions_to_labels`.
 
 ## Mosaic's MCP tools
 
