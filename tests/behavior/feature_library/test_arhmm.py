@@ -466,6 +466,20 @@ class TestShortSeries:
             "perspective",
         ]
 
+    def test_an_empty_entry_concatenates_with_the_others_without_changing_a_dtype(
+        self,
+    ) -> None:
+        """A reader that stacks the entries of a run keeps integer columns."""
+        df = _make_pair_df()
+        feat = _fit(_make_feature("numba"), [df])
+        decoded = feat.apply(df)
+
+        stacked = pd.concat([decoded, feat.apply(df.iloc[:1])], ignore_index=True)
+
+        assert stacked.dtypes["frame"] == decoded.dtypes["frame"]
+        assert stacked.dtypes["id1"] == decoded.dtypes["id1"]
+        assert pd.api.types.is_integer_dtype(stacked["syllable"])
+
 
 class TestDeclaration:
     """The catalog predicts what a step writes, from the level of its input."""

@@ -32,7 +32,8 @@ the output carries the same columns beside `frame` and `syllable`.
 - A sequence with no more rows than `n_lags` after `downsample_rate`, which the fit
   already left out, gets no states in apply and its rows are absent from the output,
   where apply raised an `IndexError` that failed the entry. A pair that meets for a
-  few frames is such a sequence. The run reports the count on its standard error.
+  few frames is such a sequence, and an entry of such sequences alone writes an empty
+  table. The run reports the count on its standard error.
 - `iter_series`, `label_series`, `series_columns`, `refuse_repeated_series_rows` and
   `refuse_pair_rows` join `mosaic.behavior.feature_library.helpers` beside
   `label_individuals`. `kpms` and `vame` keep their split by individual.
@@ -43,8 +44,8 @@ In a synthetic check on wavelet-like log-power columns with NaN at the edges of 
 sequence (7% and 20% of the rows), that moved a column's mean by up to 0.26 and 0.95 of
 its standard deviation and inflated the deviation by up to 1.36 and 2.10 times, and every
 NaN frame decoded as a state that no other frame used. The mean and standard deviation
-now count the finite values only, and a missing value reads as its column's mean. This
-is inside the 0.3 bump. An input with no missing value gets the scaler of 0.2 up to
+now count the finite values only, and a missing value reads as its column's mean (as 0
+when `standardize` is off, as before). This is inside the 0.3 bump. An input with no missing value gets the scaler of 0.2 up to
 rounding.
 
 **`lightning-action` refuses a pair table.** Its `apply` wrote an entry's rows to the

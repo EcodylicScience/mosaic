@@ -239,6 +239,26 @@ def test_a_table_with_no_series_is_labeled_with_no_rows() -> None:
     assert list(labeled.columns) == ["frame", "syllable", "id1", "id2", "perspective"]
 
 
+def test_a_result_with_no_rows_keeps_the_dtypes_that_a_concatenation_needs() -> None:
+    """An object column of no rows turns an integer column to object when concatenated."""
+    rows = _pairs().astype({"id1": "int32", "id2": "int32", "perspective": "int8"})
+    nothing = label_series(rows, lambda key, series: None)
+    something = label_series(rows, lambda key, series: np.zeros(len(series), dtype=int))
+
+    assert nothing.empty
+    assert nothing.dtypes.to_dict() == {
+        "frame": np.dtype("int64"),
+        "syllable": np.dtype("int64"),
+        "id1": np.dtype("int32"),
+        "id2": np.dtype("int32"),
+        "perspective": np.dtype("int8"),
+    }
+    pd.testing.assert_series_equal(
+        pd.concat([something, nothing], ignore_index=True).dtypes,
+        something.dtypes,
+    )
+
+
 # --- Repeated rows ---
 
 

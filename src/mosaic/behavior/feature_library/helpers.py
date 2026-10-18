@@ -262,7 +262,10 @@ def label_series(
         The frame and the label of each series' rows, and the columns of
         :func:`series_columns`, so that the labels join back to the rows they
         describe. The series come in the order of :func:`iter_series`, each in
-        frame order.
+        frame order. When no series is labeled the result has no rows, the frame
+        and key columns keep the dtypes they have in *df*, and the label column
+        is ``int64``, so that concatenating it with another result keeps their
+        dtypes.
     """
     keys = series_columns(df)
     labeled: list[pd.DataFrame] = []
@@ -277,7 +280,9 @@ def label_series(
             result[name] = rows[name].to_numpy()
         labeled.append(result)
     if not labeled:
-        return pd.DataFrame(columns=[COLUMNS.frame_col, column, *keys])
+        empty = df.iloc[:0][[COLUMNS.frame_col, *keys]].reset_index(drop=True)
+        empty.insert(1, column, np.empty(0, dtype=np.int64))
+        return empty
     return pd.concat(labeled, ignore_index=True)
 
 
