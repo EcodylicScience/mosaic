@@ -115,10 +115,21 @@ mosaic pipeline run -m dataset.yaml --recipe @supervised.json \
 `evaluate-labels` writes `metrics.json` in its run directory: accuracy, a macro F1 over
 `average_over` (here every class but `other`), precision, recall and F1 per class, and
 a confusion matrix, which is also `confusion.parquet`. Each of its output rows is one
-entry's own score. A row no label covers is left out and counted in `n_unlabeled`.
+entry's own score, with its true positives, false positives and false negatives per class
+(`tp_<class>`, `fp_<class>`, `fn_<class>`). A row no label covers is left out and counted
+in `n_unlabeled`.
 `perspective` chooses which rows of a pair output are scored: one perspective, both
 (`"pooled"`), or the mean of a pair's two probability vectors
 (`"mean_probabilities"`). It refuses pair rows of both perspectives unless it is set.
+
+The counts add across entries, so `mosaic.core.evaluation` can score any set of them as
+one and put an interval on the score. `pool_entry_counts` takes the output table and
+returns the macro F1 of all its rows together, which is the report's number and not the
+mean of the entries' scores. `bootstrap_sequences` resamples the entries, with the
+`random_state` you pass, and returns percentile intervals for the accuracy, the macro F1
+and each class's F1. A report from a run over other entries, such as one fold of a
+cross-validation, joins the rest through `pool_reports`, and `aggregate_reports` gives
+the mean and standard deviation of repeated runs.
 
 ## Give each frame its context
 

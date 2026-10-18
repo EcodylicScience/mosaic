@@ -11,6 +11,12 @@ The map is :func:`~mosaic.core.evaluation.majority_mapping`: each cluster's most
 frequent class among the labeled rows, a tie going to the lower class id. A
 cluster no labeled row falls in is left out, and ``evaluate-labels`` counts a
 row of it as wrong.
+
+**Which weighting.** ``count`` gives a cluster to the class with the most rows in
+it, which follows prevalence: a behavior that is 6% of the training frames and
+12% of the test frames can end up with no cluster, and then scores an F1 of 0
+whatever the clustering holds. ``class_balanced`` gives a cluster to the class
+whose frames it holds the largest share of, which weights every class alike.
 """
 
 from __future__ import annotations
@@ -22,7 +28,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.evaluation import majority_mapping, select_scored_rows
+from mosaic.core.evaluation import Weighting, majority_mapping, select_scored_rows
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
@@ -69,6 +75,12 @@ _PERSPECTIVE_DESCRIPTION = (
     "'pooled' for both. Unset fits on the rows as they are, and refuses rows "
     "of more than one perspective."
 )
+_WEIGHTING_DESCRIPTION = (
+    "How a cluster picks its class. count takes the class with the most rows "
+    "in the cluster, which follows prevalence and can leave a rare class with "
+    "no cluster. class_balanced takes the class whose rows the cluster holds "
+    "the largest share of."
+)
 
 
 class LabelMapRef(ParquetArtifact):
@@ -100,7 +112,7 @@ def read_label_map(path: Path) -> dict[int, int]:
 @final
 @register_feature
 class FitLabelMap:
-    """Map each cluster to the behavior class most of its labeled rows hold.
+    """Map each cluster to the behavior class its labeled rows favor.
 
     Fit on one set of entries, such as the training groups, the map scores a
     clustering on others through ``evaluate-labels``. Apply writes each row's
@@ -113,7 +125,7 @@ class FitLabelMap:
     category = "global"
     costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
     name = "fit-label-map"
-    version = "0.1"
+    version = "0.2"
     parallelizable = False
     scope_dependent = True
     accepts_overlap = False
@@ -142,6 +154,7 @@ class FitLabelMap:
         perspective: Annotated[
             int | Literal["pooled"] | None, Declared(_PERSPECTIVE_DESCRIPTION)
         ] = None
+        weighting: Annotated[Weighting, Declared(_WEIGHTING_DESCRIPTION)] = "count"
 
     def __init__(
         self, inputs: FitLabelMap.Inputs, params: dict[str, object] | None = None
@@ -187,7 +200,7 @@ class FitLabelMap:
             pred.append(scored[self.params.prediction_column].to_numpy(dtype=np.int64))
         y_true = np.concatenate(true) if true else np.empty(0, dtype=np.int64)
         y_pred = np.concatenate(pred) if pred else np.empty(0, dtype=np.int64)
-        self._map = majority_mapping(y_true, y_pred)
+        self._map = majority_mapping(y_true, y_pred, weighting=self.params.weighting)
         if not self._map:
             msg = (
                 "[fit-label-map] no labeled row to fit a map on. Check that the "

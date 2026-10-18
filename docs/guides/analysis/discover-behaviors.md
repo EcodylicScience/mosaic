@@ -288,9 +288,11 @@ run as `metrics.json`:
 ```
 
 Without a `label_map`, each cluster is mapped to its majority behavior among the rows
-being scored, so the report's `accuracy` is the purity. To ask how well the clusters
-predict behavior on groups they were not mapped on, fit the map on one set of groups
-and score on another, with step scopes narrowing each step:
+being scored, so the report's `accuracy` is the purity and no row is held out. The
+report's `label_map_source` says which map it used: `scored_rows` for this one,
+`fit-label-map` for a map fitted elsewhere. To ask how well the clusters predict
+behavior on groups they were not mapped on, fit the map on one set of groups and score
+on another, with step scopes narrowing each step:
 
 ```json
 {"id": "map", "type": "feature", "feature": "fit-label-map",
@@ -303,6 +305,18 @@ and score on another, with step scopes narrowing each step:
 
 Narrow `map` to the training groups and `score` to the test groups (`--step-scope
 'map={"groups": ["train"]}'`). A cluster the map does not name scores as wrong.
+
+`fit-label-map` gives each cluster the behavior with the most rows in it by default, so
+the map follows how common each behavior is. A behavior that is a small share of the
+training frames can get no cluster and score an F1 of 0 on the test groups, whatever the
+clustering holds.
+`"weighting": "class_balanced"` gives a cluster to the behavior whose frames it holds the
+largest share of, which treats every behavior alike.
+
+The run also writes `cluster_confusion.parquet`, the number of rows of each behavior in
+each cluster, and the report's `clusters` holds `homogeneity`, `completeness` and
+`v_measure` beside `ARI`, `AMI` and `purity`. These compare the clusters with the
+behaviors without a map, so they do not depend on which groups the map was fitted on.
 
 That is a check on the clustering, not a classifier. To predict labels, see
 [Train a behavior classifier](train-a-classifier.md).
