@@ -91,6 +91,12 @@ step process may still run, or every step that started is `dead`. Resume it with
 skipped. `mosaic cancel` records a `dead` attempt `cancelled` without signalling
 anything.
 
+A failed step ends only the branch below it. The steps below it read `failed` with
+the error type `ParentFailed`, which names the failed step, and the other steps still
+run. A request that has ended is not run again, and `mosaic pipeline run --request`
+reports its status and starts nothing. Answer the failed step, then submit the recipe
+again. Its finished steps are cache hits.
+
 For an `unknown` attempt, first make sure its process has exited. Then record it and
 submit the recipe again, and the steps that finished are cache hits:
 

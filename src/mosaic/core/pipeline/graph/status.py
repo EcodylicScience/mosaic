@@ -5,10 +5,11 @@ request and :class:`RequestPageWire` a page of a dataset's requests. ``mosaic st
 --json``, ``mosaic pipeline status --json`` and ``mosaic pipeline list --json`` print
 these models dumped, and other programmatic callers return the same models.
 
-Each report reads run-logs alone, through the readers of :mod:`mosaic.runlog`, and
-judges whether each attempt's process may still run by :mod:`~.liveness`. A poll
-costs a few small files. The module and its imports leave the feature library,
-pandas, cv2 and av unloaded (``tests/meta/test_status_imports.py``).
+Each report reads run-logs, through the readers of :mod:`mosaic.runlog`, and the
+request's driver lease (:mod:`~.driver_lease`). It judges whether each attempt's
+process may still run by :mod:`~.liveness`. A poll costs a few small files. The
+module and its imports leave the feature library, pandas, cv2 and av unloaded
+(``tests/meta/test_status_imports.py``).
 """
 
 from __future__ import annotations

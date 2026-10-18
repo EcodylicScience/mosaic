@@ -346,18 +346,20 @@ def show_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
 def _failed_attempt(
     base_dir: Path, request: Request | None, error: ClassifiedError
 ) -> tuple[str, str]:
-    """Return the step of *request* that *error* ended the run at, and its attempt.
+    """Return the step of *request* that raised *error*, and its attempt.
 
     An error that names its step names the attempt too, because the request
     assigned every step one. A refused step can be refused after its attempt
     finished, when the run finds coverage did not move. An error raised inside an
     attempt, such as a tracker's refusal of a codec or a missing optional
-    dependency, does not name its step. A step that raises ends the run. Its
-    attempt is therefore the one that the run-logs record as failed: every step
-    before it finished, and none after it started. Both are empty when neither answers, as for an
-    error raised before any step started.
+    dependency, does not name its step. The run raises the first error of its
+    steps, and they run in the request's order. Its attempt is therefore the
+    first failed one in the run-logs, leaving out the steps recorded failed for
+    a failed parent (``PARENT_FAILED_TYPE``). Both are empty when neither
+    answers, as for an error raised before any step started.
     """
-    from mosaic.core.pipeline.graph import request_rollup
+    from mosaic.core.pipeline.graph import PARENT_FAILED_TYPE, request_rollup
+    from mosaic.runlog import error_summary
 
     named = error.error_step() or ""
     if request is None:
@@ -365,7 +367,10 @@ def _failed_attempt(
     if named:
         return named, request.step_executions.get(named, "")
     for attempt in request_rollup(base_dir, request).steps:
-        if attempt.status == "failed":
+        if (
+            attempt.status == "failed"
+            and error_summary(attempt.error_json)["type"] != PARENT_FAILED_TYPE
+        ):
             return attempt.step_id, attempt.execution_id
     return "", ""
 
@@ -527,7 +532,8 @@ def run_command(
         raise typer.Exit(code=130) from None
     except Refusal as refusal:
         # A step's own refusal, or one raised inside a step's attempt, such as a
-        # tracker's refusal of a codec. Either ends the run at that step.
+        # tracker's refusal of a codec. The run raises the first one after the
+        # steps on other branches have run.
         step_id, execution_id = _failed_attempt(ds.base_dir, submitted, refusal)
         exit_refused(execution_id, refusal, step_id=step_id, as_json=as_json)
     except ClassifiedError as error:
@@ -647,6 +653,7 @@ def _run_request(
                 "ran": list(done.ran),
                 "skipped": list(done.skipped),
                 "cancelled": list(done.cancelled),
+                "blocked": list(done.blocked),
                 "log_path": str(done.log_path),
                 "cleanup": None
                 if report.cleanup is None

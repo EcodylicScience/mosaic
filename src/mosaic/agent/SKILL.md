@@ -327,6 +327,11 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - Poll `get_request_status` after the `poll_after_seconds` it reports. For a
   request that reads `orphaned`, propose
   `mosaic pipeline run --manifest <manifest> --request <id>`, which resumes it.
+- A failed step ends only the branch below it. The steps below it are recorded
+  failed with error type `ParentFailed`, whose `parent` names the failed step. The
+  other steps still run. Answer the failed step. An ended request is not run again.
+  Submit the recipe again once the failed step is answered. Its finished steps are
+  cache hits.
 - A step whose `liveness` reads `unknown` runs on another machine that cannot be
   checked. Ask the user whether its process still runs. Once they confirm it has
   exited, propose `mosaic cancel --manifest <manifest> --request <id>

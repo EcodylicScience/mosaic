@@ -129,6 +129,30 @@ schema`. `mosaic pipeline catalog NAME` prints the same for any step type, ops a
 defaults are today's output, so `CatalogEntry`, `EditorCatalog`, `PlanWire` and the
 plan fingerprint are unchanged for mosaic-api. Nothing on disk moves.
 
+**A failed step ends only the branch below it.** `mosaic pipeline run --request`, the
+detached driver that `submit_pipeline` starts, and `mosaic pipeline run --recipe`
+stopped at the first step that failed. Steps on other branches did not run, and the
+request closed `failed`. A mosaic-queue gate already ran them.
+
+- Both drivers record each step below a failed one `failed`, with `error_json`
+  `{"type": "ParentFailed", "message", "reason": "parent_failed", "parent",
+  "parent_execution_id"}`, and run the steps that do not descend from it. A
+  `version_moved`, `recipe_missing` or `digest_mismatch` refusal, which every step
+  meets, and a cancel still end the run.
+- `request_rollup` reads a failed request with an unstarted step `running` while its
+  driver lease file exists. A poll, `open_requests_matching` and `mosaic cancel` then
+  see the driver at work. A stale lease reads `orphaned`, and a resume runs the rest.
+  `request_verdict` and `runlog.TERMINAL_STATUSES` are unchanged.
+- `mosaic pipeline run --request` does not drive a request that has ended: it starts
+  nothing, deletes a stale driver lease and reports the request's status.
+  `RequestRun` gains `blocked`, and the `--json` output gains `blocked`, the steps
+  the driver recorded `ParentFailed`.
+- `run_pipeline` and `mosaic pipeline run --recipe` raise the first step error after
+  the other branches ran, with the same exit codes. A step that raised before its
+  run-log recorded an end, and a stall without `allow_partial`, leave the steps below
+  them unrecorded and keep the lease. The request then resumes.
+- No identifier moves.
+
 **A request whose step died reads `orphaned`, even with no driver lease or on another
 host.** A request run by `mosaic pipeline run --recipe` took no driver lease, so its
 crash left it `running` for good, and a step on another host, such as a Docker

@@ -122,10 +122,13 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   (`test_pipeline_partial_failure.py`).
 - Failure attempts per `(storage_name, run_id, group, sequence)` accumulate across
   resubmits, and exclusions belong to one request (`test_pipeline_failure_record.py`).
-- A request is one-shot. `request_rollup` (`rollup.py`) reads run-logs alone, and a failed
-  branch is not terminal while a sibling runs (`test_pipeline_step.py`).
-- `status.py` builds `RunStatusWire` and `RequestStatusWire` from run-logs alone. Their
-  `partial`, `pending` and `orphaned` are derived words, and none joins
+- A request is one-shot, and a driver does not drive one whose rollup has ended. A
+  failed branch is not terminal while a sibling runs: `request_rollup` (`rollup.py`)
+  reads a failed request with an unstarted step `running` while its driver lease file
+  exists, live or not. `request_verdict` does not read the lease
+  (`test_pipeline_step.py`).
+- `status.py` builds `RunStatusWire` and `RequestStatusWire` from run-logs and driver
+  leases. Their `partial`, `pending` and `orphaned` are derived words, and none joins
   `runlog.TERMINAL_STATUSES`. `orphaned` is a running request whose driver lease is
   stale and none of whose step processes may still run, or that has no lease and
   every one of whose started, unended steps is `dead` (`request_verdict_of`,
@@ -141,8 +144,13 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
 - `run_request` (`run.py`) runs each unfinished step's `step_argv` as a process of its
   own session, with output to the driver log and never to inherited streams, and
   submits nothing. It skips a finished step, which makes running a request again a
-  resume. A cancel forwards SIGTERM to the running step's group and records every step
-  without a terminal record `cancelled` (`record_step_ended`). The rollup then closes.
+  resume. A failed step ends the branch below it: its descendants are recorded `failed`
+  with the error type `ParentFailed` (`PARENT_FAILED_TYPE`, reason `parent_failed`,
+  as the mosaic-queue gate records it) and listed in `RequestRun.blocked`, and the
+  other steps run. A `version_moved`, `recipe_missing` or `digest_mismatch` refusal,
+  which every step would meet, ends the run. A cancel forwards SIGTERM to the running
+  step's group and records every step without a terminal record `cancelled`
+  (`record_step_ended`). The rollup then closes.
   The driver deletes its lease when the request ends and keeps it when it raises
   (`test_pipeline_request_driver.py`, `test_pipeline_driver_lease.py`). The lease
   names the running step's process, which a killed driver leaves running in its own
@@ -152,9 +160,14 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   unrefreshed for half the grace.
 - `run_pipeline` (`run.py`) holds an `in_process` lease that names its own pid as the
   running step's, deletes it when the request ends, and keeps it after a shortfall
-  until a later call in the same process takes it over.
-  It stops before a step that a cancel recorded `cancelled`, and records its unended
-  steps `cancelled` on `Cancelled` or `KeyboardInterrupt` (`test_pipeline_run.py`).
+  until a later call in the same process takes it over. It catches an error of
+  `execute_step` alone, and a lease error still stops it. A failure that the step's
+  run-log records in this call ends the branch as in `run_request`, and a later call
+  skips that branch when the step fails again. A raise with no recorded end, and a
+  stall without `allow_partial`, leave the branch unrecorded and keep the lease, so
+  the request resumes. It raises the first error after the other steps ran. It stops
+  before a step that a cancel recorded `cancelled`, and records its unended steps
+  `cancelled` on `Cancelled` or `KeyboardInterrupt` (`test_pipeline_run.py`).
 - A request's cleanup runs in its driver after every step finished, in `run_request`
   and `run_pipeline` alike (`run_cleanup`, `cleanup.py`), under the driver's lease; it
   records no step. It removes only the approved runs that are still removable. Before
