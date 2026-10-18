@@ -291,6 +291,24 @@ def test_run_pipeline_runs_the_cleanup_last(dataset: Dataset) -> None:
     assert request_rollup(dataset.base_dir, request).status == "finished"
 
 
+def test_a_run_an_earlier_version_recorded_is_removed_by_name(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recipe's name reaches the judging at submission and at removal."""
+    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
+    monkeypatch.setattr(module, "REQUEST_HOLD_FLOOR_HOURS", 0)
+    first = run_pipeline(dataset, speed_recipe_stepping(1))
+    [old] = [outcome.run_id for outcome in first.outcomes]
+    request = _submit(dataset, speed_recipe_stepping(2))
+
+    run = run_pipeline(dataset, speed_recipe_stepping(2), request=request)
+
+    assert request.cleanup is not None
+    assert [target.run_id for target in request.cleanup.approved] == [old]
+    assert run.cleanup_status == "finished"
+    assert not _exists(dataset, old)
+
+
 def test_a_request_without_cleanup_rolls_up_as_before(dataset: Dataset) -> None:
     request = submit_request(dataset, speed_recipe_stepping(2)).request
     _run_steps(dataset, request)

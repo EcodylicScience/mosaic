@@ -320,8 +320,8 @@ def plan_cleanup(
         now=moment,
         hold_hours=hold_hours,
         exclude=own_id,
-        recipe_digest=plan.recipe_digest,
-        recipe_name=recipe_name,
+        planned_digest=plan.recipe_digest,
+        planned_name=recipe_name,
     )
     whole = _whole_plan_hold(ds, holds)
     opened, unnamed = _open_attempts(base, now=moment)
@@ -893,8 +893,8 @@ def _request_holds(
     now: datetime.datetime,
     hold_hours: float,
     exclude: str,
-    recipe_digest: str,
-    recipe_name: str,
+    planned_digest: str,
+    planned_name: str,
 ) -> _Holds:
     """What the dataset's other requests hold.
 
@@ -903,11 +903,13 @@ def _request_holds(
     running one also every run of each feature its recipe names. A request that
     has ended holds its recorded runs and binds for *hold_hours* after its last
     attempt wrote a line. After that, they are recorded in ``uses`` when the
-    request's recipe is not a version of the planned one (*recipe_digest*,
-    *recipe_name*), or when its recipe does not read. Each saved recipe is read
-    once.
+    request's recipe is not a version of the planned one (*planned_digest*,
+    *planned_name*), or when its recipe does not read. A saved recipe that digests
+    to *planned_digest* only under the current canonical form is the planned one.
+    Each saved recipe is read once.
     """
     from ..markers import parse_instant
+    from .digest import recipe_digest
     from .request import load_recipe_for_request
     from .rollup import request_rollup
     from .status import request_verdict_of
@@ -915,7 +917,8 @@ def _request_holds(
     from .store import RequestUnreadable, load_request, requests_root
 
     holds = _Holds()
-    names_by_digest: dict[str, str | None] = {}
+    # Each saved recipe's name and current digest, or None when it does not read.
+    saved_recipes: dict[str, tuple[str, str] | None] = {}
     root = requests_root(base_dir)
     names = sorted(path.stem for path in root.glob("*.json")) if root.is_dir() else []
     for name in names:
@@ -940,22 +943,25 @@ def _request_holds(
             last = max((at for at in instants if at is not None), default=None)
             if last is not None and (now - last).total_seconds() > hold_hours * 3600:
                 digest = request.recipe_digest
-                if digest == recipe_digest:
+                if digest == planned_digest:
                     continue
-                if digest not in names_by_digest:
+                if digest not in saved_recipes:
                     try:
                         loaded = load_recipe_for_request(base_dir, request)
-                    except StepRefused:
-                        names_by_digest[digest] = None
+                    except (StepRefused, OSError):
+                        saved_recipes[digest] = None
                     else:
-                        names_by_digest[digest] = loaded.name
-                other = names_by_digest[digest]
-                if other is None:
+                        saved_recipes[digest] = (loaded.name, recipe_digest(loaded))
+                saved = saved_recipes[digest]
+                if saved is None:
                     label = f"request {name}, whose recipe {digest} does not read,"
-                elif recipe_name and other == recipe_name:
-                    continue
                 else:
-                    label = f"recipe {other or digest} (request {name})"
+                    other_name, current = saved
+                    if current == planned_digest or (
+                        planned_name and other_name == planned_name
+                    ):
+                        continue
+                    label = f"recipe {other_name or digest} (request {name})"
                 holds.uses.record(request, rollup, label)
                 continue
         label = f"request {name} ({verdict})"
@@ -963,7 +969,7 @@ def _request_holds(
         if verdict in ("running", "orphaned"):
             try:
                 recipe = load_recipe_for_request(base_dir, request)
-            except StepRefused as error:
+            except (StepRefused, OSError) as error:
                 # What it may still read is unknown, so it holds every run.
                 holds.unreadable = holds.unreadable or f"{label}: {error}"
                 continue

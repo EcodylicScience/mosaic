@@ -383,10 +383,12 @@ and then the directory go, so the run can be computed again.
 **A cleanup keeps a run that a request of another recipe recorded.** A candidate in a
 planned storage was judged whichever recipe wrote it. A sibling that another saved
 recipe uses, such as a second `k` of `global-kmeans`, was therefore removable an hour
-after that recipe's request ended. Two recipes are now versions of each other when they
-have the same digest or the same non-empty `name`. A run that a request of any other
-recipe recorded or binds is kept as `recipe_uses` once that request's hold lapses, and
-so is a run recorded by a request whose recipe file does not read.
+after that recipe's request ended. Recipes with the same non-empty `name` are now
+versions of each other, and an unnamed recipe is a version only of itself. A run that a
+request of any other recipe recorded or binds is kept as `recipe_uses` once that
+request's hold lapses, and so is a run recorded by a request whose recipe file does not
+read. A running request whose recipe file cannot be opened holds every run, where the
+plan used to fail.
 
 - Name a recipe and keep the name across its versions. An unnamed recipe is a version
   only of itself. A params edit of one keeps the runs that its earlier requests

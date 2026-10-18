@@ -62,10 +62,11 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   in `test_pipeline_cleanup.py`). Its candidates are the other runs of the plan's
   feature storages, never tracks, models or another recipe's storages, and its
   rules, in the order they decide, are in the module docstring. Two recipes are
-  versions of each other by digest or by non-empty `name`. A run that a request of
-  another recipe recorded or binds is kept as `recipe_uses` after that request's
-  hold lapses (`test_a_run_another_recipe_recorded_is_kept_after_its_hold`). It does
-  not import `FEATURES`; `run_reference_fields` in `resolve.py` answers for it.
+  versions of each other by digest, the current canonical one included, or by
+  non-empty `name`. A run that a request of another recipe recorded or binds is kept
+  as `recipe_uses` after that request's hold lapses
+  (`test_a_run_another_recipe_recorded_is_kept_after_its_hold`). It does not import
+  `FEATURES`; `run_reference_fields` in `resolve.py` answers for it.
 - `plan_fingerprint` covers the cleanup's policy and removable runs only when a plan
   was asked for a cleanup, so every other fingerprint is unchanged
   (`test_pipeline_plan_fingerprint.py`). Given a policy, `submit_request` needs

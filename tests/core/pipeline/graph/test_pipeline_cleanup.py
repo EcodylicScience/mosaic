@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import json
 from pathlib import Path
 
 import pytest
@@ -31,9 +32,11 @@ from mosaic.core.pipeline.graph import (
     plan_with_cleanup,
     recipe_path,
     run_pipeline,
+    save_request,
     submit_request,
 )
 from mosaic.core.pipeline.cancel import cancel_request
+from mosaic.core.pipeline.graph.digest import document_digest
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory import InventoryCache
 from mosaic.core.scope import Scope
@@ -427,12 +430,40 @@ def test_a_run_another_recipe_binds_is_kept_after_its_hold(dataset: Dataset) -> 
     assert _reasons(cleanup) == {old: "recipe_uses"}
 
 
-def test_an_ended_request_whose_recipe_does_not_read_keeps_its_runs(
+def test_a_request_saved_under_an_earlier_canonical_form_is_the_same_recipe(
     dataset: Dataset,
+) -> None:
+    """The legacy digest of the planned recipe, unchanged, names no other recipe."""
+    old = run_speed(dataset, 1)
+    unnamed = _named(speed_recipe_stepping(2), "")
+    request = submit_request(
+        dataset, unnamed, bind={"speed": BoundRef(feature=STORAGE, run_id=old)}
+    ).request
+    _ = cancel_request(dataset, request.request_id)
+    legacy = unnamed.model_dump(mode="json")
+    legacy["steps"][0]["params"]["step_size"] = 2.0
+    legacy_digest = document_digest(legacy)
+    _ = recipe_path(dataset.base_dir, legacy_digest).write_text(json.dumps(legacy))
+    _ = save_request(
+        dataset.base_dir, request.model_copy(update={"recipe_digest": legacy_digest})
+    )
+
+    cleanup = _cleanup(dataset, unnamed, now=LATER)
+
+    assert legacy_digest != request.recipe_digest
+    assert _reasons(cleanup) == {old: "superseded"}
+
+
+@pytest.mark.parametrize("fault", ["missing", "a directory"])
+def test_an_ended_request_whose_recipe_does_not_read_keeps_its_runs(
+    dataset: Dataset, fault: str
 ) -> None:
     ran = run_pipeline(dataset, speed_recipe_stepping(1))
     old = _run_ids(dataset, speed_recipe_stepping(1))["speed"]
-    recipe_path(dataset.base_dir, ran.recipe_digest).unlink()
+    saved = recipe_path(dataset.base_dir, ran.recipe_digest)
+    saved.unlink()
+    if fault == "a directory":
+        saved.mkdir()
 
     cleanup = _cleanup(dataset, speed_recipe_stepping(2), now=LATER)
 
