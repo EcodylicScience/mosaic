@@ -586,6 +586,7 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
         return problems
 
     problems.extend(_glob_reference_problems(step, name, built))
+    problems.extend(_artifact_feature_problems(step, name, built, walk))
     if isinstance(step, FeatureStepSpec):
         # An edge refusal or an empty input already says why these inputs
         # cannot feed this step. The columns they lack would restate it.
@@ -849,6 +850,36 @@ def _glob_reference_problems(step: Step, name: str, built: Params) -> list[Probl
                 f"sequence beside its named artifacts, so a glob resolves whichever "
                 f"file sorts first rather than the artifact meant. Name the file: "
                 f"{spelling}",
+            )
+        )
+    return found
+
+
+def _artifact_feature_problems(
+    step: Step, name: str, built: Params, walk: _Walk
+) -> list[Problem]:
+    """An artifact reference must name a step of the feature that writes the artifact.
+
+    A field typed as one feature's artifact, such as the ``model`` of
+    ``pair-posedistance-pca``, pins that feature. Several features write a
+    ``model.joblib``, so a reference to the wrong step resolves to a file that
+    loads and is read as the wrong model.
+    """
+    found: list[Problem] = []
+    for field_name, reference in params_step_refs(step.params).items():
+        value: object = getattr(built, field_name, None)
+        if not isinstance(value, ArtifactSpec):
+            continue
+        pinned = value.pinned_feature()
+        upstream = walk.runs.get(reference.step)
+        if not pinned or upstream in (None, pinned):
+            continue
+        found.append(
+            Problem(
+                step.id,
+                f"params.{field_name}",
+                f"{name}'s {field_name!r} reads a run of {pinned!r}, and "
+                f"{reference.step!r} runs {upstream!r}. Name a {pinned!r} step",
             )
         )
     return found

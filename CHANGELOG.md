@@ -10,6 +10,15 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**A params reference to a step of another feature is refused where the field names a
+feature.** A field typed as one feature's artifact, such as the `model` of `global-kmeans`
+or `xgboost`, must name a step that runs that feature. `mosaic pipeline validate`, the
+plan and submission report the step and the field (`params.model`) with both feature
+names. Several features write a `model.joblib`, so a reference to the wrong step used to
+resolve to a file that loads and was read as the wrong model. No run id moves. A recipe
+stored in mosaic-api that does this no longer validates. `ArtifactSpec.pinned_feature()`
+returns the feature that a typed artifact names, or `""` for a generic one.
+
 **A step can compute several entries at once, and reports the memory it used.**
 `mosaic run` and `mosaic pipeline run` take `--workers`, `--parallel-mode` and
 `--min-free-memory-fraction`, and `submit_pipeline` takes `workers` and `parallel_mode`

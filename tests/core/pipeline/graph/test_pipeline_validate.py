@@ -269,6 +269,66 @@ def test_an_artifact_reference_with_no_pattern_is_admissible() -> None:
     )
 
 
+def test_an_artifact_reference_to_a_step_of_another_feature_is_refused() -> None:
+    """A typed artifact names the feature that writes it.
+
+    Several features write a ``model.joblib``, so a reference to the wrong step
+    resolves to a file that loads and is read as the wrong model. The author
+    hears it before any step has run.
+    """
+    problem = _at(
+        {
+            "steps": [
+                SPEED_STEP,
+                {
+                    "id": "kmeans",
+                    "type": "feature",
+                    "feature": "global-kmeans",
+                    "inputs": [{"step": "speed"}],
+                    "params": {"model": {"step": "speed", "pattern": "model.joblib"}},
+                },
+            ]
+        },
+        "params.model",
+    )
+    assert problem.step == "kmeans"
+    assert "global-kmeans" in problem.message
+    assert "speed-angvel" in problem.message
+
+
+def test_an_artifact_reference_to_a_step_of_its_own_feature_is_admissible() -> None:
+    reject_unless_valid(
+        Recipe.model_validate(
+            {
+                "steps": [
+                    SPEED_STEP,
+                    {
+                        "id": "templates",
+                        "type": "feature",
+                        "feature": "extract-templates",
+                        "inputs": [{"step": "speed"}],
+                        "params": {"n_templates": 8},
+                    },
+                    {
+                        "id": "fit",
+                        "type": "feature",
+                        "feature": "global-kmeans",
+                        "inputs": [{"step": "speed"}],
+                        "params": {"templates": {"step": "templates"}, "k": 2},
+                    },
+                    {
+                        "id": "apply",
+                        "type": "feature",
+                        "feature": "global-kmeans",
+                        "inputs": [{"step": "speed"}],
+                        "params": {"model": {"step": "fit"}, "k": 2},
+                    },
+                ]
+            }
+        )
+    )
+
+
 def test_templates_and_model_together_are_refused() -> None:
     """``GlobalModelParams`` allows exactly one source, and validation asks it."""
     problem = _at(
