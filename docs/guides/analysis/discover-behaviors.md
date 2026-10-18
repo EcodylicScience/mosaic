@@ -91,7 +91,9 @@ entries it covers:
 Narrow `pca-fit` to the training groups with a [step
 scope](../pipelines/chain-steps.md#narrow-one-step-step-scopes) and read `pca` downstream.
 From Python, `PairPoseDistancePCA.ModelArtifact().from_result(result)` turns the fit's
-result into `model`. A step whose params differ from the fit's is refused.
+result into `model`. A step is refused when its `n_components` differs from the fit's, or
+when its `pose` and `include_*` params make vectors of another length. Nothing else is
+compared, so give it the fit's params, `pose_indices` among them.
 
 **Where this comes from.** The chain follows the approach of Berman et al. (2014),
 MotionMapper ([doi:10.1098/rsif.2014.0672](https://doi.org/10.1098/rsif.2014.0672)),

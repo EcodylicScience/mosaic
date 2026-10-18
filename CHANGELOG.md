@@ -41,8 +41,10 @@ projects every group onto the training basis.
 - A run that applies a model writes no `fit_scope.json`, as a `global-kmeans` run given
   a `model` writes none.
 - The apply refuses a `model` whose run holds no `model.joblib`, a file of another
-  feature, and `n_components`, `pose`, `include_intra_A`, `include_intra_B` or
-  `include_inter` that differ from the fit's. It never refits on the scope.
+  feature, an `n_components` that differs from the fit's, and `pose` and `include_*`
+  params that make vectors of another length. Other differences between the two steps
+  pass, such as `pose_indices` that select other keypoints of the same number. It never
+  refits on the scope.
 
 **A step can compute several entries at once, and reports the memory it used.**
 `mosaic run` and `mosaic pipeline run` take `--workers`, `--parallel-mode` and
