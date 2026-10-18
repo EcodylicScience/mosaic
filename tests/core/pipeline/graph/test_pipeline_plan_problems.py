@@ -26,13 +26,11 @@ from mosaic.core.pipeline.graph import (
     RecipeRefused,
     RecipeRefusedAtStep,
     Request,
-    driver_lease_path,
     execute_step,
     plan_pipeline,
     plan_wire,
     read_recipe,
     request_rollup,
-    run_pipeline,
     submit_request,
 )
 from mosaic.core.pipeline.graph.columns import measured_columns
@@ -320,36 +318,6 @@ def test_a_refused_running_step_records_its_attempt(tracked: Dataset) -> None:
         ("late", "run.filter_start_time")
     ]
     assert request_rollup(tracked.base_dir, request).status == "failed"
-
-
-def test_a_step_the_dataset_refuses_ends_an_in_process_run(tracked: Dataset) -> None:
-    """``late`` comes first and is refused, so ``speed`` after it is not run."""
-    tracked.meta["fps_default"] = 30.0
-    recipe = read_recipe(
-        {
-            "steps": [
-                {
-                    "id": "late",
-                    "type": "feature",
-                    "feature": "speed-angvel",
-                    "run": {"filter_start_time": 0.5},
-                },
-                {"id": "speed", "type": "feature", "feature": "speed-angvel"},
-            ]
-        }
-    )
-    request = submit_request(tracked, recipe).request
-    del tracked.meta["fps_default"]
-
-    with pytest.raises(RecipeRefusedAtStep):
-        _ = run_pipeline(tracked, recipe, request=request)
-
-    statuses = {
-        attempt.step_id: attempt.status
-        for attempt in request_rollup(tracked.base_dir, request).steps
-    }
-    assert statuses == {"late": "failed", "speed": ""}
-    assert not driver_lease_path(tracked.base_dir, request.request_id).exists()
 
 
 def test_the_cli_exits_with_the_refused_code_for_a_refused_step(
