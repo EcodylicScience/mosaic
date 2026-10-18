@@ -372,6 +372,20 @@ def test_pooling_reports_of_disjoint_entries_equals_scoring_them_together() -> N
     assert pooled == whole
 
 
+def test_pooling_reports_that_list_other_classes_orders_them_as_one_run_would() -> None:
+    """A fold with classes 0 and 2 and one with 0 and 1 pool to the order 0, 1, 2."""
+    true_a, pred_a = np.array([0, 2, 2, 0]), np.array([0, 2, 0, 0])
+    true_b, pred_b = np.array([0, 1, 1]), np.array([0, 1, 0])
+
+    pooled = pool_reports([_report(true_a, pred_a), _report(true_b, pred_b)])
+    whole = _report(
+        np.concatenate([true_a, true_b]), np.concatenate([pred_a, pred_b]), n_entries=2
+    )
+
+    assert pooled.classes == [0, 1, 2]
+    assert pooled == whole
+
+
 def test_pooling_reports_keeps_the_average_over_they_share() -> None:
     true_a, pred_a = _noisy(4, 200)
     true_b, pred_b = _noisy(5, 200)
@@ -590,6 +604,81 @@ def test_a_bootstrap_resamples_only_the_entries_that_scored_rows() -> None:
 
     assert padded["n_entries"] == 12
     assert padded["macro_f1"] == plain["macro_f1"]
+
+
+def test_counts_of_runs_that_listed_other_classes_are_refused_until_filled() -> None:
+    """A concatenation leaves NaN where a run listed no such class. It is not a count."""
+    first = pd.DataFrame({"tp_0": [3], "fp_0": [1], "fn_0": [1]})
+    second = pd.DataFrame(
+        {
+            "tp_0": [2],
+            "fp_0": [0],
+            "fn_0": [0],
+            "tp_1": [4],
+            "fp_1": [1],
+            "fn_1": [0],
+        }
+    )
+    both = pd.concat([first, second], ignore_index=True)
+
+    with pytest.raises(ValueError, match="tp_1"):
+        _ = pool_entry_counts(both)
+    with pytest.raises(ValueError, match="missing"):
+        _ = bootstrap_sequences(both, n_boot=5, random_state=0)
+    pooled = pool_entry_counts(both.fillna(0))
+    assert [row["support"] for row in pooled["per_class"]] == [6, 4]
+
+
+def _hit_or_miss_table() -> pd.DataFrame:
+    """One entry that scored one row right, and one that scored one row wrong."""
+    return pd.DataFrame(
+        [
+            {"tp_0": 1, "fp_0": 0, "fn_0": 0, "tp_1": 0, "fp_1": 0, "fn_1": 0},
+            {"tp_0": 0, "fp_0": 0, "fn_0": 0, "tp_1": 0, "fp_1": 0, "fn_1": 1},
+        ]
+    )
+
+
+def test_a_bootstrap_draws_as_many_entries_as_it_has() -> None:
+    """Two entries, one right and one wrong: a resample of two is 0, 1 or 2 right."""
+    result = bootstrap_sequences(_hit_or_miss_table(), n_boot=4000, random_state=0)
+
+    accuracy = result["replicates"]["accuracy"]
+    values, counts = np.unique(accuracy, return_counts=True)
+    assert values.tolist() == [0.0, 0.5, 1.0]
+    assert (counts / accuracy.size).tolist() == pytest.approx(
+        [0.25, 0.5, 0.25], abs=0.03
+    )
+    assert accuracy.mean() == pytest.approx(result["accuracy"]["estimate"], abs=0.03)
+
+
+def test_a_bootstrap_interval_is_the_percentile_of_its_replicates() -> None:
+    table = _bootstrap_table()
+
+    result = bootstrap_sequences(table, n_boot=300, random_state=2, confidence=0.8)
+
+    replicates = result["replicates"]["macro_f1"]
+    assert result["macro_f1"]["lower"] == np.quantile(replicates, 0.1)
+    assert result["macro_f1"]["upper"] == np.quantile(replicates, 0.9)
+    f1_of_zero = result["replicates"]["f1"][:, 0]
+    assert result["per_class"][0]["f1"]["lower"] == np.quantile(f1_of_zero, 0.1)
+
+
+def test_a_bootstrap_averages_the_classes_it_was_given_in_every_resample() -> None:
+    """Class 1 is absent from some resamples and is not the macro average's to drop."""
+    table = _hit_or_miss_table()
+
+    only_zero = bootstrap_sequences(table, n_boot=200, random_state=3, average_over=[0])
+    both = bootstrap_sequences(table, n_boot=200, random_state=3)
+
+    assert np.array_equal(
+        only_zero["replicates"]["macro_f1"], only_zero["replicates"]["f1"][:, 0]
+    )
+    assert only_zero["average_over"] == [0]
+    assert np.array_equal(
+        both["replicates"]["macro_f1"], both["replicates"]["f1"].mean(axis=1)
+    )
+    assert both["average_over"] == [0, 1]
 
 
 def test_a_bootstrap_needs_entries_and_a_sensible_confidence() -> None:

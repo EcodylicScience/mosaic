@@ -758,7 +758,15 @@ def _count_array(table: pd.DataFrame, classes: Sequence[int]) -> np.ndarray:
     counts = np.zeros((table.shape[0], len(classes), len(_COUNT_KINDS)), dtype=np.int64)
     for column, value in enumerate(classes):
         for kind, name in enumerate(_COUNT_KINDS):
-            counts[:, column, kind] = table[f"{name}_{value}"].to_numpy(dtype=np.int64)
+            series = table[f"{name}_{value}"]
+            if series.isna().any():
+                msg = (
+                    f"the {name}_{value} column holds missing counts. Tables of runs "
+                    "that listed different classes leave a class's counts missing "
+                    "in the runs that did not list it; fill them with 0 first."
+                )
+                raise ValueError(msg)
+            counts[:, column, kind] = series.to_numpy(dtype=np.int64)
     return counts
 
 
@@ -816,7 +824,8 @@ def pool_entry_counts(
         and ``per_class`` (see :class:`ClassScoreRow`).
 
     Raises:
-        ValueError: *table* holds no count columns, or only some of a class's.
+        ValueError: *table* holds no count columns, only some of a class's, or
+            a missing count.
     """
     classes = _count_classes(table)
     totals = _count_array(table, classes).sum(axis=0)
@@ -900,7 +909,8 @@ def bootstrap_sequences(
 
     Raises:
         ValueError: *n_boot* is below 1, *confidence* is outside (0, 1), *table*
-            holds no count columns, or no entry scored a row.
+            holds no count columns, only some of a class's or a missing count, or
+            no entry scored a row.
     """
     if n_boot < 1:
         msg = f"n_boot must be at least 1, not {n_boot}."
@@ -991,8 +1001,10 @@ def pool_reports(reports: Sequence[EvaluationReport]) -> EvaluationReport:
         reports: The reports to pool, of one ``mode`` and ``perspective``.
 
     Returns:
-        The pooled report. Its ``average_over`` is the one the reports share, or
-        else the sorted union of theirs.
+        The pooled report. Its ``classes`` are the union of theirs, ascending
+        when each report's are and otherwise in order of first appearance. Its
+        ``average_over`` is the one the reports share, or else the sorted union
+        of theirs.
 
     Raises:
         ValueError: *reports* is empty, or differs in ``mode`` or
@@ -1014,6 +1026,10 @@ def pool_reports(reports: Sequence[EvaluationReport]) -> EvaluationReport:
     classes: list[int] = []
     for report in reports:
         classes.extend(value for value in report.classes if value not in classes)
+    if all(report.classes == sorted(report.classes) for report in reports):
+        # Reports that left ``classes`` unset list them ascending, as a run over
+        # all their entries would.
+        classes.sort()
     position = {value: index for index, value in enumerate(classes)}
     confusion = np.zeros((len(classes), len(classes)), dtype=np.int64)
     support = np.zeros(len(classes), dtype=np.int64)
