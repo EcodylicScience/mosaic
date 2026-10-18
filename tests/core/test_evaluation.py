@@ -8,6 +8,7 @@ other's labels.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -19,11 +20,19 @@ import pytest
 from mosaic.core.evaluation import (
     LABEL_COLUMN,
     PREDICTION_COLUMN,
+    ClassScore,
+    EvaluationReport,
+    aggregate_reports,
     align_predictions_to_labels,
+    bootstrap_sequences,
     classification_scores,
+    cluster_contingency,
     cluster_label_scores,
+    entry_counts,
     majority_mapping,
     perspective_consistency,
+    pool_entry_counts,
+    pool_reports,
     select_scored_rows,
 )
 from mosaic.core.pipeline.types import ResultColumn
@@ -246,3 +255,349 @@ def test_majority_map_ties_break_to_the_lowest_class() -> None:
         5: 1,
         6: 0,
     }
+
+
+def test_the_contingency_has_a_row_per_cluster_and_a_column_per_class() -> None:
+    """Unlabeled rows are no class, and a cluster they alone fill has no row."""
+    y_true = np.array([0, 0, 1, 1, 1, -1, -1])
+    y_pred = np.array([3, 3, 3, 4, 4, 4, 9])
+
+    contingency = cluster_contingency(y_true, y_pred)
+
+    assert contingency.to_dict("list") == {
+        "cluster": [3, 4],
+        "class_0": [2, 0],
+        "class_1": [1, 2],
+    }
+    assert np.array_equal(
+        contingency[["class_0", "class_1"]].to_numpy().T,
+        np.asarray(cluster_label_scores(y_true, y_pred)["confusion"]),
+    )
+
+
+def test_class_balanced_weighting_follows_the_share_of_a_class_not_the_count() -> None:
+    """Class 1 is rare: cluster 5 holds all of it, and more rows of the common class."""
+    y_true = np.array([0] * 30 + [1] * 8 + [0] * 62)
+    y_pred = np.array([5] * 38 + [6] * 62)
+
+    assert majority_mapping(y_true, y_pred) == {5: 0, 6: 0}
+    assert majority_mapping(y_true, y_pred, weighting="count") == {5: 0, 6: 0}
+    assert majority_mapping(y_true, y_pred, weighting="class_balanced") == {
+        5: 1,
+        6: 0,
+    }
+
+
+def test_class_balanced_ties_break_to_the_lowest_class_and_skip_unlabeled() -> None:
+    """Cluster 9 holds half of each class's four rows. Unlabeled rows are no class."""
+    y_true = np.array([0, 0, 0, 0, 1, 1, 1, 1, -1, -1, -1])
+    y_pred = np.array([1, 1, 9, 9, 3, 3, 9, 9, 9, 9, 7])
+
+    mapping = majority_mapping(y_true, y_pred, weighting="class_balanced")
+
+    assert mapping == {1: 0, 3: 1, 9: 0}
+
+
+def test_an_unknown_weighting_is_refused() -> None:
+    with pytest.raises(ValueError, match="weighting"):
+        _ = majority_mapping(
+            np.array([0, 1]),
+            np.array([0, 1]),
+            weighting="prevalence",  # pyright: ignore[reportArgumentType]
+        )
+
+
+# --- the report, pooled and aggregated -------------------------------------------
+
+
+def _report(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    *,
+    average_over: list[int] | None = None,
+    n_entries: int = 1,
+) -> EvaluationReport:
+    """The report a classifier run over *y_true* and *y_pred* writes."""
+    scores = classification_scores(y_true, y_pred, average_over=average_over)
+    return EvaluationReport(
+        mode="classifier",
+        n_entries=n_entries,
+        n_scored=scores["n_samples"],
+        n_unlabeled=scores["n_unlabeled"],
+        n_missing_prediction=0,
+        accuracy=scores["accuracy"],
+        macro_f1=scores["macro_f1"],
+        average_over=scores["average_over"],
+        classes=scores["classes"],
+        per_class=[ClassScore(**row) for row in scores["per_class"]],
+        confusion=scores["confusion"].tolist(),
+    )
+
+
+def _noisy(
+    seed: int, n: int, n_classes: int = 4, error: float = 0.35
+) -> tuple[np.ndarray, np.ndarray]:
+    """Labels of uneven prevalence, and predictions that are wrong at rate *error*."""
+    rng = np.random.default_rng(seed)
+    weights = np.arange(n_classes, 0, -1, dtype=float)
+    y_true = rng.choice(n_classes, size=n, p=weights / weights.sum())
+    wrong = rng.random(n) < error
+    y_pred = np.where(wrong, rng.integers(0, n_classes, size=n), y_true)
+    return y_true, y_pred
+
+
+def test_a_report_written_before_label_map_source_still_loads() -> None:
+    old = _report(np.array([0, 1]), np.array([0, 1])).model_dump(mode="json")
+    del old["label_map_source"]
+
+    report = EvaluationReport.model_validate_json(json.dumps(old))
+
+    assert report.label_map_source == ""
+
+
+def test_pooling_reports_of_disjoint_entries_equals_scoring_them_together() -> None:
+    """Folds with different classes pool to the report of all their rows at once."""
+    true_a, pred_a = _noisy(1, 300)
+    true_b, pred_b = _noisy(2, 200, n_classes=3)
+    true_c, pred_c = _noisy(3, 250, n_classes=5)
+    folds = [(true_a, pred_a), (true_b, pred_b), (true_c, pred_c)]
+
+    pooled = pool_reports([_report(*fold) for fold in folds])
+    whole = _report(
+        np.concatenate([fold[0] for fold in folds]),
+        np.concatenate([fold[1] for fold in folds]),
+        n_entries=3,
+    )
+
+    assert pooled == whole
+
+
+def test_pooling_reports_keeps_the_average_over_they_share() -> None:
+    true_a, pred_a = _noisy(4, 200)
+    true_b, pred_b = _noisy(5, 200)
+    reports = [
+        _report(true_a, pred_a, average_over=[2, 0, 1]),
+        _report(true_b, pred_b, average_over=[2, 0, 1]),
+    ]
+
+    pooled = pool_reports(reports)
+
+    assert pooled.average_over == [2, 0, 1]
+    whole = _report(
+        np.concatenate([true_a, true_b]),
+        np.concatenate([pred_a, pred_b]),
+        average_over=[2, 0, 1],
+        n_entries=2,
+    )
+    assert pooled.macro_f1 == whole.macro_f1
+
+
+def test_pooling_refuses_nothing_and_mixed_modes() -> None:
+    clusters = _report(np.array([0, 1]), np.array([0, 1])).model_copy(
+        update={"mode": "clusters"}
+    )
+
+    with pytest.raises(ValueError, match="at least one report"):
+        _ = pool_reports([])
+    with pytest.raises(ValueError, match="mode"):
+        _ = pool_reports([_report(np.array([0]), np.array([0])), clusters])
+
+
+def test_pooling_cluster_reports_drops_what_cannot_be_added() -> None:
+    """ARI and purity are not additive, and a map fitted per fold is not one map."""
+    first = _report(np.array([0, 1]), np.array([0, 1])).model_copy(
+        update={
+            "mode": "clusters",
+            "clusters": {"ARI": 1.0},
+            "label_map": {7: 0, 9: 1},
+            "label_map_source": "fit-label-map",
+        }
+    )
+    second = first.model_copy(update={"label_map": {7: 1, 9: 0}})
+
+    pooled = pool_reports([first, second])
+
+    assert pooled.clusters == {}
+    assert pooled.label_map == {}
+    assert pooled.label_map_source == "fit-label-map"
+    assert pool_reports([first, first]).label_map == {7: 0, 9: 1}
+
+
+def test_aggregating_reports_gives_mean_and_sd_per_class_and_for_macro_f1() -> None:
+    reports = [_report(*_noisy(seed, 150, error=0.2 + 0.1 * seed)) for seed in range(3)]
+
+    spread = aggregate_reports(reports)
+
+    macro = [report.macro_f1 for report in reports]
+    assert spread["n_reports"] == 3
+    assert spread["macro_f1"]["mean"] == pytest.approx(np.mean(macro))
+    assert spread["macro_f1"]["sd"] == pytest.approx(np.std(macro, ddof=1))
+    accuracy = [report.accuracy for report in reports]
+    assert spread["accuracy"]["sd"] == pytest.approx(np.std(accuracy, ddof=1))
+    f1_of_zero = [report.per_class[0].f1 for report in reports]
+    first = spread["per_class"][0]
+    assert first["label"] == 0
+    assert first["n_reports"] == 3
+    assert first["f1"]["mean"] == pytest.approx(np.mean(f1_of_zero))
+    assert first["f1"]["sd"] == pytest.approx(np.std(f1_of_zero, ddof=1))
+
+
+def test_aggregating_averages_a_class_over_the_reports_that_list_it() -> None:
+    """A class one fold never saw is not a zero in the mean of the others."""
+    with_class = _report(np.array([0, 0, 1, 1]), np.array([0, 0, 1, 0]))
+    without = _report(np.array([0, 0, 0, 0]), np.array([0, 0, 0, 0]))
+
+    spread = aggregate_reports([with_class, without])
+
+    by_label = {row["label"]: row for row in spread["per_class"]}
+    assert by_label[1]["n_reports"] == 1
+    assert by_label[1]["f1"]["mean"] == with_class.per_class[1].f1
+    assert np.isnan(by_label[1]["f1"]["sd"])
+    assert by_label[0]["n_reports"] == 2
+
+
+def test_a_single_report_has_no_sd() -> None:
+    spread = aggregate_reports([_report(np.array([0, 1]), np.array([0, 1]))])
+
+    assert spread["macro_f1"]["mean"] == 1.0
+    assert np.isnan(spread["macro_f1"]["sd"])
+
+
+# --- per-entry counts ---------------------------------------------------------------
+
+
+def _entry_table(
+    true: np.ndarray, pred: np.ndarray, sizes: list[int], classes: list[int]
+) -> pd.DataFrame:
+    """One row per entry of the counts ``evaluate-labels`` writes, from slices of the rows."""
+    rows: list[dict[str, int]] = []
+    start = 0
+    for size in sizes:
+        scores = classification_scores(
+            true[start : start + size], pred[start : start + size], classes=classes
+        )
+        rows.append({"n_scored": scores["n_samples"], **entry_counts(scores, classes)})
+        start += size
+    return pd.DataFrame(rows)
+
+
+def test_entry_counts_name_each_class_once() -> None:
+    scores = classification_scores(
+        np.array([0, 0, 1, 1, 1]), np.array([0, 1, 1, 1, 2]), classes=[0, 1, 2]
+    )
+
+    assert entry_counts(scores, [0, 1, 2]) == {
+        "tp_0": 1,
+        "fp_0": 0,
+        "fn_0": 1,
+        "tp_1": 2,
+        "fp_1": 1,
+        "fn_1": 1,
+        "tp_2": 0,
+        "fp_2": 1,
+        "fn_2": 0,
+    }
+
+
+def test_a_pooled_score_from_entry_counts_equals_the_pooled_rows_exactly() -> None:
+    """Exactly, not approximately: both take the same sums through the same formula."""
+    true, pred = _noisy(7, 900, n_classes=5, error=0.45)
+    sizes = [100, 250, 50, 300, 200]
+    classes = [0, 1, 2, 3, 4]
+
+    pooled = pool_entry_counts(_entry_table(true, pred, sizes, classes))
+    whole = classification_scores(true, pred, classes=classes)
+
+    assert pooled["macro_f1"] == whole["macro_f1"]
+    assert pooled["accuracy"] == whole["accuracy"]
+    assert pooled["average_over"] == whole["average_over"]
+    assert pooled["per_class"] == whole["per_class"]
+
+
+def test_pooling_counts_takes_average_over_from_the_caller() -> None:
+    true, pred = _noisy(8, 400, n_classes=4)
+    table = _entry_table(true, pred, [200, 200], [0, 1, 2, 3])
+
+    pooled = pool_entry_counts(table, average_over=[1, 2])
+
+    whole = classification_scores(true, pred, classes=[0, 1, 2, 3], average_over=[1, 2])
+    assert pooled["macro_f1"] == whole["macro_f1"]
+
+
+def test_a_table_without_counts_is_refused() -> None:
+    with pytest.raises(ValueError, match="tp_<class>"):
+        _ = pool_entry_counts(pd.DataFrame({"n_scored": [3]}))
+    with pytest.raises(ValueError, match="fp_1"):
+        _ = pool_entry_counts(pd.DataFrame({"tp_1": [1], "fn_1": [0]}))
+
+
+def _bootstrap_table() -> pd.DataFrame:
+    true, pred = _noisy(9, 1200, n_classes=3, error=0.3)
+    return _entry_table(true, pred, [100] * 12, [0, 1, 2])
+
+
+def test_a_bootstrap_over_entries_is_repeatable_from_its_random_state() -> None:
+    table = _bootstrap_table()
+
+    first = bootstrap_sequences(table, n_boot=200, random_state=3)
+    again = bootstrap_sequences(table, n_boot=200, random_state=3)
+    other = bootstrap_sequences(table, n_boot=200, random_state=4)
+
+    assert first["macro_f1"] == again["macro_f1"]
+    assert np.array_equal(
+        first["replicates"]["macro_f1"], again["replicates"]["macro_f1"]
+    )
+    assert not np.array_equal(
+        first["replicates"]["macro_f1"], other["replicates"]["macro_f1"]
+    )
+
+
+def test_a_bootstrap_interval_brackets_the_pooled_estimate() -> None:
+    table = _bootstrap_table()
+
+    result = bootstrap_sequences(table, n_boot=500, random_state=0, confidence=0.9)
+
+    pooled = pool_entry_counts(table)
+    macro = result["macro_f1"]
+    assert macro["estimate"] == pooled["macro_f1"]
+    assert macro["lower"] < macro["estimate"] < macro["upper"]
+    assert result["n_entries"] == 12
+    assert result["confidence"] == 0.9
+    assert result["replicates"]["f1"].shape == (500, 3)
+    assert [row["label"] for row in result["per_class"]] == [0, 1, 2]
+    for row in result["per_class"]:
+        assert row["f1"]["lower"] <= row["f1"]["estimate"] <= row["f1"]["upper"]
+
+
+def test_a_bootstrap_of_identical_entries_has_no_width() -> None:
+    row = {"tp_0": 8, "fp_0": 2, "fn_0": 1, "tp_1": 5, "fp_1": 1, "fn_1": 2}
+    table = pd.DataFrame([row] * 6)
+
+    result = bootstrap_sequences(table, n_boot=50, random_state=1)
+
+    macro = result["macro_f1"]
+    assert macro["lower"] == macro["estimate"] == macro["upper"]
+
+
+def test_a_bootstrap_resamples_only_the_entries_that_scored_rows() -> None:
+    table = _bootstrap_table()
+    empty = pd.DataFrame([{column: 0 for column in table.columns}] * 3)
+
+    plain = bootstrap_sequences(table, n_boot=100, random_state=5)
+    padded = bootstrap_sequences(
+        pd.concat([table, empty], ignore_index=True), n_boot=100, random_state=5
+    )
+
+    assert padded["n_entries"] == 12
+    assert padded["macro_f1"] == plain["macro_f1"]
+
+
+def test_a_bootstrap_needs_entries_and_a_sensible_confidence() -> None:
+    table = _bootstrap_table()
+
+    with pytest.raises(ValueError, match="no entry scored"):
+        _ = bootstrap_sequences(table.iloc[0:0], n_boot=10, random_state=0)
+    with pytest.raises(ValueError, match="confidence"):
+        _ = bootstrap_sequences(table, n_boot=10, random_state=0, confidence=1.0)
+    with pytest.raises(ValueError, match="n_boot"):
+        _ = bootstrap_sequences(table, n_boot=0, random_state=0)
