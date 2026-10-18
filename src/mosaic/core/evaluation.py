@@ -1,17 +1,24 @@
 """Scoring a run's predictions against ground-truth labels.
 
-Two halves, kept apart so either can be used without the other:
+Three parts, kept apart so any can be used without the others:
 
 - **Scorers** take arrays or frames and return plain dicts. They read no dataset,
   so a feature's ``apply`` can call them on the rows it was handed:
   :func:`classification_scores` for a classifier's predicted classes,
   :func:`cluster_label_scores` for a clustering, and :func:`select_scored_rows`
   for which perspective of a pair row is scored.
+- **Pooling** combines scores that were taken over separate entries, with no
+  dataset and no random state but the one a caller passes: :func:`pool_reports`
+  and :func:`aggregate_reports` over the reports of several runs, and
+  :func:`pool_entry_counts` and :func:`bootstrap_sequences` over the per-entry
+  counts that ``evaluate-labels`` writes (``tp_<class>``, ``fp_<class>`` and
+  ``fn_<class>`` per entry). A score pooled from the counts is the score of the
+  pooled rows, to the last bit.
 - **Alignment** reads a run's output and the labels of the same entries from a
   dataset and pairs them row by row (:func:`align_predictions_to_labels`).
 
 :class:`EvaluationReport` is what the ``evaluate-labels`` feature writes, and
-reads the same whichever half produced its numbers.
+reads the same whichever part produced its numbers.
 
 Both drop a row whose label is :data:`~mosaic.core.helpers.UNLABELED` and count
 it, so a score never treats "nobody annotated this frame" as a class, and a
@@ -23,6 +30,7 @@ use them, so importing this module stays cheap.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, TypedDict
 
@@ -43,17 +51,33 @@ __all__ = [
     "PREDICTION_COLUMN",
     "LABEL_COLUMN",
     "AlignedLabels",
+    "BootstrapScores",
+    "ClassInterval",
     "ClassScore",
     "ClassScoreRow",
+    "ClassSpread",
     "ClassificationScores",
+    "CountScores",
     "EvaluationReport",
+    "Interval",
+    "LabelMapSource",
+    "MetricSpread",
     "Perspective",
+    "ReportAggregate",
+    "Replicates",
     "ScoredRows",
+    "Weighting",
+    "aggregate_reports",
     "align_predictions_to_labels",
+    "bootstrap_sequences",
     "classification_scores",
+    "cluster_contingency",
     "cluster_label_scores",
+    "entry_counts",
     "majority_mapping",
     "perspective_consistency",
+    "pool_entry_counts",
+    "pool_reports",
     "select_scored_rows",
 ]
 
@@ -64,6 +88,22 @@ An ``int`` keeps the rows of that ``perspective``. ``"pooled"`` scores every row
 ``"mean_probabilities"`` averages the class probabilities of a pair's two rows
 at one frame and scores the class they then favor. ``None`` scores the rows as
 they are and refuses an output holding more than one perspective.
+"""
+
+type Weighting = Literal["count", "class_balanced"]
+"""How :func:`majority_mapping` picks the class a cluster stands for.
+
+``"count"`` takes the class with the most rows in the cluster. ``"class_balanced"``
+takes the class whose rows the cluster holds the largest share of.
+"""
+
+type LabelMapSource = Literal["", "scored_rows", "fit-label-map"]
+"""Where the cluster to class map of an :class:`EvaluationReport` was fitted.
+
+``""`` is no map, as for a classifier. ``"scored_rows"`` is the majority map of
+the rows the report scored, which makes the accuracy the clustering's purity and
+leaves the map not held out. ``"fit-label-map"`` is a map fitted on other
+entries and referenced through ``label_map``.
 """
 
 PREDICTION_COLUMN = "prediction"
@@ -99,27 +139,48 @@ def _contingency(
     return classes, clusters, counts
 
 
-def majority_mapping(y_true: np.ndarray, y_pred: np.ndarray) -> dict[int, int]:
+def majority_mapping(
+    y_true: np.ndarray, y_pred: np.ndarray, *, weighting: Weighting = "count"
+) -> dict[int, int]:
     """Each cluster's most frequent class, as ``{cluster: class}``.
 
     Many clusters may map to one class, which is what a clustering finer than the
     behavior vocabulary needs. Rows labeled :data:`~mosaic.core.helpers.UNLABELED`
     are left out. A tie goes to the lower class id.
 
+    **Which weighting to read.** ``"count"`` follows prevalence: a cluster goes to
+    whichever class has the most rows in it, so a common class takes every
+    cluster it holds more rows of than a rare class does, however small a share
+    of its own rows that is, and a rare behavior can end up with no cluster at
+    all. ``"class_balanced"`` gives a cluster to the class for which it holds the
+    largest share of that class's rows, so each class is weighted equally
+    whatever its size.
+
     Args:
         y_true: Ground-truth class per row.
         y_pred: Cluster per row.
+        weighting: See above.
 
     Returns:
         The mapping, empty when no labeled row remains.
+
+    Raises:
+        ValueError: *weighting* is neither of its two values.
     """
+    if weighting not in ("count", "class_balanced"):
+        msg = f"weighting must be 'count' or 'class_balanced', not {weighting!r}."
+        raise ValueError(msg)
     true, pred = _as_int_arrays(y_true, y_pred)
     labeled = true != UNLABELED
     true, pred = true[labeled], pred[labeled]
     if true.size == 0:
         return {}
     classes, clusters, counts = _contingency(true, pred)
-    best = counts.argmax(axis=0)
+    if weighting == "class_balanced":
+        # Every class listed holds a labeled row, so no row sums to zero.
+        best = (counts / counts.sum(axis=1, keepdims=True)).argmax(axis=0)
+    else:
+        best = counts.argmax(axis=0)
     return {int(clusters[c]): int(classes[best[c]]) for c in range(clusters.size)}
 
 
@@ -219,6 +280,33 @@ def cluster_label_scores(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, ob
     }
 
 
+def cluster_contingency(y_true: np.ndarray, y_pred: np.ndarray) -> pd.DataFrame:
+    """How many rows of each class fall in each cluster.
+
+    Rows labeled :data:`~mosaic.core.helpers.UNLABELED` are left out, so a
+    cluster seen only on them has no row. This is the ``confusion`` of
+    :func:`cluster_label_scores` with its axes named and transposed.
+
+    Args:
+        y_true: Ground-truth class per row.
+        y_pred: Cluster per row.
+
+    Returns:
+        One row per cluster, ascending: ``cluster``, then ``class_<k>`` for each
+        class ``k`` a labeled row holds, ascending.
+    """
+    true, pred = _as_int_arrays(y_true, y_pred)
+    labeled = true != UNLABELED
+    true, pred = true[labeled], pred[labeled]
+    classes, clusters, counts = _contingency(true, pred)
+    frame = pd.DataFrame(
+        counts.T.astype(np.int64),
+        columns=pd.Index([f"class_{value}" for value in classes]),
+    )
+    frame.insert(0, "cluster", clusters.astype(np.int64))
+    return frame
+
+
 class ClassScoreRow(TypedDict):
     """One class's row of :class:`ClassificationScores`."""
 
@@ -241,6 +329,33 @@ class ClassificationScores(TypedDict):
     classes: list[int]
     per_class: list[ClassScoreRow]
     confusion: np.ndarray
+
+
+def _class_row(label: int, *, hit: int, support: int, predicted: int) -> ClassScoreRow:
+    """One class's scores from its counts.
+
+    The one formula behind :func:`classification_scores` and the pooling helpers,
+    so a score pooled from counts equals the score of the pooled rows exactly.
+    """
+    precision = hit / predicted if predicted else 0.0
+    recall = hit / support if support else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    return {
+        "label": label,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "support": support,
+        "predicted": predicted,
+    }
+
+
+def _macro_f1(rows: Sequence[ClassScoreRow], averaged: Sequence[int]) -> float:
+    """The mean F1 over *averaged*, a class with no row scoring 0."""
+    f1_of = {row["label"]: row["f1"] for row in rows}
+    if not averaged:
+        return 0.0
+    return float(np.mean([f1_of.get(value, 0.0) for value in averaged]))
 
 
 def classification_scores(
@@ -287,43 +402,25 @@ def classification_scores(
         cols = np.array([position[int(value)] for value in pred], dtype=np.int64)
         np.add.at(confusion, (rows, cols), 1)
 
-    per_class: list[ClassScoreRow] = []
-    for index, value in enumerate(order):
-        hit = int(confusion[index, index])
-        support = int(confusion[index].sum())
-        predicted = int(confusion[:, index].sum())
-        precision = hit / predicted if predicted else 0.0
-        recall = hit / support if support else 0.0
-        f1 = (
-            2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    per_class = [
+        _class_row(
+            value,
+            hit=int(confusion[index, index]),
+            support=int(confusion[index].sum()),
+            predicted=int(confusion[:, index].sum()),
         )
-        per_class.append(
-            {
-                "label": value,
-                "precision": precision,
-                "recall": recall,
-                "f1": f1,
-                "support": support,
-                "predicted": predicted,
-            }
-        )
-
+        for index, value in enumerate(order)
+    ]
     averaged = (
         [int(value) for value in average_over]
         if average_over is not None
         else sorted({int(value) for value in true})
     )
-    f1_of = {row["label"]: row["f1"] for row in per_class}
-    macro = (
-        float(np.mean([f1_of.get(value, 0.0) for value in averaged]))
-        if averaged
-        else 0.0
-    )
     return {
         "n_samples": int(true.size),
         "n_unlabeled": n_unlabeled,
         "accuracy": float((true == pred).mean()) if true.size else 0.0,
-        "macro_f1": macro,
+        "macro_f1": _macro_f1(per_class, averaged),
         "average_over": averaged,
         "classes": order,
         "per_class": per_class,
@@ -499,10 +596,20 @@ class EvaluationReport(StrictModel):
         confusion: Rows the true classes, columns the predicted ones.
         clusters: In clusters mode, the scores of :func:`cluster_label_scores`
             that a clustering has and a classifier does not: ``ARI``, ``AMI``,
-            ``purity``, ``hungarian_accuracy``, ``hungarian_one_to_one``,
-            ``n_clusters``.
-        label_map: The cluster to class map the predictions went through, empty
-            when none was given.
+            ``homogeneity``, ``completeness``, ``v_measure``, ``purity``,
+            ``hungarian_accuracy``, ``hungarian_one_to_one``, ``n_clusters``.
+            These compare the clusters with the classes and go through no map.
+        label_map: In clusters mode, the cluster to class map the predictions
+            went through: the map that was given, or else the majority map of
+            the rows scored. Empty for a classifier, and for a report pooled
+            from reports that went through different maps.
+        label_map_source: Where ``label_map`` came from
+            (:data:`LabelMapSource`). Read it before reading ``accuracy``. From
+            ``"scored_rows"`` the map was fitted on the rows scored, so
+            ``accuracy`` equals the clustering's purity and no row was held out;
+            only ``"fit-label-map"`` measures how well the clusters predict
+            behavior on other entries. ``""`` in a report saved before the field
+            existed, which cannot say.
     """
 
     mode: Literal["classifier", "clusters"]
@@ -520,6 +627,7 @@ class EvaluationReport(StrictModel):
     confusion: list[list[int]]
     clusters: dict[str, float | int | bool] = {}
     label_map: dict[int, int] = {}
+    label_map_source: LabelMapSource = ""
 
 
 _PAIR_KEY = ["group", "sequence", "frame", "_low", "_high"]
@@ -569,6 +677,492 @@ def perspective_consistency(
     if n_pairs == 0:
         return float("nan"), 0
     return float((both["values"] == 1).sum()) / n_pairs, n_pairs
+
+
+# --- Pooling and spread --------------------------------------------------------------
+
+_COUNT_KINDS = ("tp", "fp", "fn")
+_DRAW_CELLS = 1 << 22
+"""How many resample weights :func:`bootstrap_sequences` holds at once."""
+_COUNT_COLUMN = re.compile(r"^(tp|fp|fn)_(-?[0-9]+)$")
+
+
+def entry_counts(
+    scores: ClassificationScores, classes: Sequence[int]
+) -> dict[str, int]:
+    """One entry's true positives, false positives and false negatives per class.
+
+    The columns ``evaluate-labels`` writes beside each entry's score:
+    ``tp_<class>`` rows predicted and labeled as the class, ``fp_<class>`` rows
+    predicted as it and labeled otherwise, and ``fn_<class>`` rows labeled as it
+    and predicted otherwise. They are all that precision, recall and F1 need, and
+    they add across entries. A row predicted as a class outside *classes*, such
+    as a cluster the label map does not name, counts for its true class as a
+    false negative and for no class as a false positive.
+
+    Args:
+        scores: The entry's :func:`classification_scores`.
+        classes: The classes to name, in column order.
+
+    Returns:
+        ``tp_<class>``, ``fp_<class>`` and ``fn_<class>`` for each class, 0 for
+        a class *scores* does not list.
+    """
+    position = {value: index for index, value in enumerate(scores["classes"])}
+    confusion = np.asarray(scores["confusion"])
+    by_label = {row["label"]: row for row in scores["per_class"]}
+    counts: dict[str, int] = {}
+    for value in classes:
+        row = by_label.get(value)
+        hit = int(confusion[position[value], position[value]]) if row else 0
+        counts[f"tp_{value}"] = hit
+        counts[f"fp_{value}"] = row["predicted"] - hit if row else 0
+        counts[f"fn_{value}"] = row["support"] - hit if row else 0
+    return counts
+
+
+class CountScores(TypedDict):
+    """What :func:`pool_entry_counts` returns."""
+
+    n_samples: int
+    accuracy: float
+    macro_f1: float
+    average_over: list[int]
+    classes: list[int]
+    per_class: list[ClassScoreRow]
+
+
+def _count_classes(table: pd.DataFrame) -> list[int]:
+    """The classes whose counts *table* holds, ascending."""
+    found: dict[int, set[str]] = {}
+    for column in table.columns:
+        match = _COUNT_COLUMN.match(str(column))
+        if match is not None:
+            found.setdefault(int(match[2]), set()).add(match[1])
+    if not found:
+        msg = (
+            "the table has no tp_<class>, fp_<class> and fn_<class> columns. "
+            "They are the columns of an evaluate-labels run's output."
+        )
+        raise ValueError(msg)
+    for value in sorted(found):
+        for kind in _COUNT_KINDS:
+            if kind not in found[value]:
+                msg = f"the table has counts for class {value} but no {kind}_{value} column."
+                raise ValueError(msg)
+    return sorted(found)
+
+
+def _count_array(table: pd.DataFrame, classes: Sequence[int]) -> np.ndarray:
+    """*table*'s counts as an array: entry, class, then ``tp``, ``fp``, ``fn``."""
+    counts = np.zeros((table.shape[0], len(classes), len(_COUNT_KINDS)), dtype=np.int64)
+    for column, value in enumerate(classes):
+        for kind, name in enumerate(_COUNT_KINDS):
+            series = table[f"{name}_{value}"]
+            if series.isna().any():
+                msg = (
+                    f"the {name}_{value} column holds missing counts. Tables of runs "
+                    "that listed different classes leave a class's counts missing "
+                    "in the runs that did not list it; fill them with 0 first."
+                )
+                raise ValueError(msg)
+            counts[:, column, kind] = series.to_numpy(dtype=np.int64)
+    return counts
+
+
+def _score_totals(
+    totals: np.ndarray, classes: Sequence[int], average_over: Sequence[int] | None
+) -> CountScores:
+    """The scores of counts already summed over entries, one ``(tp, fp, fn)`` per class."""
+    per_class = [
+        _class_row(
+            value,
+            hit=int(totals[index, 0]),
+            support=int(totals[index, 0] + totals[index, 2]),
+            predicted=int(totals[index, 0] + totals[index, 1]),
+        )
+        for index, value in enumerate(classes)
+    ]
+    n_samples = sum(row["support"] for row in per_class)
+    hits = int(totals[:, 0].sum())
+    averaged = (
+        [int(value) for value in average_over]
+        if average_over is not None
+        else [row["label"] for row in per_class if row["support"] > 0]
+    )
+    return {
+        "n_samples": n_samples,
+        "accuracy": hits / n_samples if n_samples else 0.0,
+        "macro_f1": _macro_f1(per_class, averaged),
+        "average_over": averaged,
+        "classes": [int(value) for value in classes],
+        "per_class": per_class,
+    }
+
+
+def pool_entry_counts(
+    table: pd.DataFrame, *, average_over: Sequence[int] | None = None
+) -> CountScores:
+    """The score of all the rows of several entries, from their counts.
+
+    Adds the ``tp_<class>``, ``fp_<class>`` and ``fn_<class>`` columns over the
+    rows of *table* and scores the sums with the formula of
+    :func:`classification_scores`. The result equals scoring the rows
+    themselves, bit for bit, which averaging per-entry scores does not: an
+    entry's score weighs a short sequence like a long one.
+
+    Args:
+        table: One row per entry with the count columns, as ``evaluate-labels``
+            writes them. Other columns are ignored. The rows of every entry or
+            of a chosen subset, such as the test groups.
+        average_over: The classes ``macro_f1`` averages over. Unset, every
+            class with a row labeled as it. Pass the report's ``average_over``
+            to match a run that set it.
+
+    Returns:
+        ``n_samples``, ``accuracy``, ``macro_f1``, ``average_over``, ``classes``
+        and ``per_class`` (see :class:`ClassScoreRow`).
+
+    Raises:
+        ValueError: *table* holds no count columns, only some of a class's, or
+            a missing count.
+    """
+    classes = _count_classes(table)
+    totals = _count_array(table, classes).sum(axis=0)
+    return _score_totals(totals, classes, average_over)
+
+
+class Interval(TypedDict):
+    """A score and the percentile interval of its bootstrap."""
+
+    estimate: float
+    lower: float
+    upper: float
+
+
+class ClassInterval(TypedDict):
+    """One class's F1 interval in :class:`BootstrapScores`."""
+
+    label: int
+    f1: Interval
+
+
+class Replicates(TypedDict):
+    """The bootstrap replicates behind :class:`BootstrapScores`, one row each."""
+
+    accuracy: np.ndarray
+    macro_f1: np.ndarray
+    f1: np.ndarray
+
+
+class BootstrapScores(TypedDict):
+    """What :func:`bootstrap_sequences` returns."""
+
+    n_entries: int
+    n_boot: int
+    confidence: float
+    random_state: int
+    average_over: list[int]
+    accuracy: Interval
+    macro_f1: Interval
+    per_class: list[ClassInterval]
+    replicates: Replicates
+
+
+def bootstrap_sequences(
+    table: pd.DataFrame,
+    *,
+    random_state: int,
+    n_boot: int = 1000,
+    confidence: float = 0.95,
+    average_over: Sequence[int] | None = None,
+) -> BootstrapScores:
+    """How much a pooled score moves when the entries drawn are other entries.
+
+    Resamples the rows of *table*, the entries, with replacement, pools the
+    counts of each resample as :func:`pool_entry_counts` does, and reads the
+    percentile interval of the replicates. The unit is the entry, not the frame:
+    frames of one sequence are not independent, so a bootstrap over rows would
+    be too narrow. An entry that scored no row is left out before the draw.
+
+    A fixed *random_state* and the same number of scored entries draw the same
+    resamples, so two systems scored on the same entries, in the same order,
+    can be compared replicate by replicate through ``replicates``. The test of
+    their difference is not made here.
+
+    Args:
+        table: One row per entry with the count columns that ``evaluate-labels``
+            writes.
+        random_state: The seed. Required, so a run is repeated by passing the
+            same value.
+        n_boot: How many resamples.
+        confidence: The width of the interval, between 0 and 1 exclusive.
+        average_over: The classes ``macro_f1`` averages over, fixed across
+            replicates. Unset, every class with a row labeled as it in *table*.
+
+    Returns:
+        ``n_entries`` (those resampled), the arguments, ``average_over``,
+        ``accuracy`` and ``macro_f1`` as an :class:`Interval`, ``per_class``
+        (each class's F1 interval) and ``replicates``: ``accuracy`` and
+        ``macro_f1`` with one value per resample, and ``f1`` with a column per
+        class of ``per_class``.
+
+    Raises:
+        ValueError: *n_boot* is below 1, *confidence* is outside (0, 1), *table*
+            holds no count columns, only some of a class's or a missing count, or
+            no entry scored a row.
+    """
+    if n_boot < 1:
+        msg = f"n_boot must be at least 1, not {n_boot}."
+        raise ValueError(msg)
+    if not 0.0 < confidence < 1.0:
+        msg = f"confidence must lie between 0 and 1, not {confidence}."
+        raise ValueError(msg)
+    classes = _count_classes(table)
+    counts = _count_array(table, classes)
+    counts = counts[counts.sum(axis=(1, 2)) > 0]
+    n_entries = counts.shape[0]
+    if n_entries == 0:
+        msg = "no entry scored a row, so there is nothing to resample."
+        raise ValueError(msg)
+
+    point = _score_totals(counts.sum(axis=0), classes, average_over)
+    averaged = point["average_over"]
+    rng = np.random.default_rng(random_state)
+    chances = np.full(n_entries, 1.0 / n_entries)
+    flat = counts.reshape(n_entries, -1)
+    step = max(1, _DRAW_CELLS // n_entries)
+    pooled = np.concatenate(
+        [
+            rng.multinomial(n_entries, chances, size=min(step, n_boot - start)) @ flat
+            for start in range(0, n_boot, step)
+        ]
+    ).reshape(n_boot, len(classes), 3)
+
+    hit = pooled[:, :, 0].astype(np.float64)
+    predicted = hit + pooled[:, :, 1]
+    support = hit + pooled[:, :, 2]
+    precision = np.divide(hit, predicted, out=np.zeros_like(hit), where=predicted > 0)
+    recall = np.divide(hit, support, out=np.zeros_like(hit), where=support > 0)
+    both = precision + recall
+    f1 = np.divide(2 * precision * recall, both, out=np.zeros_like(hit), where=both > 0)
+    padded = np.concatenate([f1, np.zeros((n_boot, 1))], axis=1)
+    column = {value: index for index, value in enumerate(classes)}
+    macro = (
+        padded[:, [column.get(value, len(classes)) for value in averaged]].mean(axis=1)
+        if averaged
+        else np.zeros(n_boot)
+    )
+    labeled = support.sum(axis=1)
+    accuracy = np.divide(
+        hit.sum(axis=1), labeled, out=np.zeros(n_boot), where=labeled > 0
+    )
+
+    tail = (1.0 - confidence) / 2.0
+
+    def interval(estimate: float, replicates: np.ndarray) -> Interval:
+        lower, upper = np.quantile(replicates, [tail, 1.0 - tail])
+        return {"estimate": estimate, "lower": float(lower), "upper": float(upper)}
+
+    return {
+        "n_entries": n_entries,
+        "n_boot": n_boot,
+        "confidence": confidence,
+        "random_state": random_state,
+        "average_over": averaged,
+        "accuracy": interval(point["accuracy"], accuracy),
+        "macro_f1": interval(point["macro_f1"], macro),
+        "per_class": [
+            {
+                "label": row["label"],
+                "f1": interval(row["f1"], f1[:, index]),
+            }
+            for index, row in enumerate(point["per_class"])
+        ],
+        "replicates": {"accuracy": accuracy, "macro_f1": macro, "f1": f1},
+    }
+
+
+def pool_reports(reports: Sequence[EvaluationReport]) -> EvaluationReport:
+    """One report for the entries of several, as if they were scored in one run.
+
+    Sums the confusion matrices over the union of the classes and scores the
+    sums, so the result equals the report of a run over every entry at once. It
+    pools the runs of a cross-validation, whose entry sets are disjoint and so
+    cannot be one run. A report names no entries, so *reports* that overlap are
+    not detected and count a shared entry twice.
+
+    A clustering's agreement scores (``ARI``, ``purity`` and the rest) are not
+    sums, so the pooled report holds none. Its ``label_map`` is kept only when
+    every report went through one map, and its ``label_map_source`` only when
+    they share one source.
+
+    Args:
+        reports: The reports to pool, of one ``mode`` and ``perspective``.
+
+    Returns:
+        The pooled report. Its ``classes`` are the union of theirs, ascending
+        when each report's are and otherwise in order of first appearance. Its
+        ``average_over`` is the one the reports share, or else the sorted union
+        of theirs.
+
+    Raises:
+        ValueError: *reports* is empty, or differs in ``mode`` or
+            ``perspective``.
+    """
+    if not reports:
+        msg = "pool_reports needs at least one report."
+        raise ValueError(msg)
+    first = reports[0]
+    for report in reports[1:]:
+        for name in ("mode", "perspective"):
+            if getattr(report, name) != getattr(first, name):
+                msg = (
+                    f"cannot pool reports with another {name} "
+                    f"({getattr(first, name)!r} and {getattr(report, name)!r})."
+                )
+                raise ValueError(msg)
+
+    classes: list[int] = []
+    for report in reports:
+        classes.extend(value for value in report.classes if value not in classes)
+    if all(report.classes == sorted(report.classes) for report in reports):
+        # Reports that left ``classes`` unset list them ascending, as a run over
+        # all their entries would.
+        classes.sort()
+    position = {value: index for index, value in enumerate(classes)}
+    confusion = np.zeros((len(classes), len(classes)), dtype=np.int64)
+    support = np.zeros(len(classes), dtype=np.int64)
+    predicted = np.zeros(len(classes), dtype=np.int64)
+    names: dict[int, str] = {}
+    for report in reports:
+        own = [position[value] for value in report.classes]
+        confusion[np.ix_(own, own)] += np.asarray(
+            report.confusion, dtype=np.int64
+        ).reshape(len(own), len(own))
+        for score in report.per_class:
+            support[position[score.label]] += score.support
+            predicted[position[score.label]] += score.predicted
+            if score.name and score.label not in names:
+                names[score.label] = score.name
+
+    rows = [
+        _class_row(
+            value,
+            hit=int(confusion[index, index]),
+            support=int(support[index]),
+            predicted=int(predicted[index]),
+        )
+        for index, value in enumerate(classes)
+    ]
+    n_scored = sum(report.n_scored for report in reports)
+    shared = all(report.average_over == first.average_over for report in reports)
+    averaged = (
+        list(first.average_over)
+        if shared
+        else sorted({value for report in reports for value in report.average_over})
+    )
+    same_map = all(report.label_map == first.label_map for report in reports)
+    same_source = all(
+        report.label_map_source == first.label_map_source for report in reports
+    )
+    return EvaluationReport(
+        mode=first.mode,
+        n_entries=sum(report.n_entries for report in reports),
+        n_scored=n_scored,
+        n_unlabeled=sum(report.n_unlabeled for report in reports),
+        n_missing_prediction=sum(report.n_missing_prediction for report in reports),
+        n_conflicting=sum(report.n_conflicting for report in reports),
+        perspective=first.perspective,
+        accuracy=int(np.trace(confusion)) / n_scored if n_scored else 0.0,
+        macro_f1=_macro_f1(rows, averaged),
+        average_over=averaged,
+        classes=classes,
+        per_class=[ClassScore(name=names.get(row["label"], ""), **row) for row in rows],
+        confusion=confusion.tolist(),
+        label_map=dict(first.label_map) if same_map else {},
+        label_map_source=first.label_map_source if same_source else "",
+    )
+
+
+class MetricSpread(TypedDict):
+    """A score's mean over reports, and its sample standard deviation."""
+
+    mean: float
+    sd: float
+
+
+class ClassSpread(TypedDict):
+    """One class's spread in :class:`ReportAggregate`."""
+
+    label: int
+    name: str
+    n_reports: int
+    precision: MetricSpread
+    recall: MetricSpread
+    f1: MetricSpread
+
+
+class ReportAggregate(TypedDict):
+    """What :func:`aggregate_reports` returns."""
+
+    n_reports: int
+    accuracy: MetricSpread
+    macro_f1: MetricSpread
+    per_class: list[ClassSpread]
+
+
+def _spread(values: Sequence[float]) -> MetricSpread:
+    """The mean and sample standard deviation of *values*, NaN for one value."""
+    array = np.asarray(values, dtype=np.float64)
+    sd = float(np.std(array, ddof=1)) if array.size > 1 else float("nan")
+    return {"mean": float(array.mean()), "sd": sd}
+
+
+def aggregate_reports(reports: Sequence[EvaluationReport]) -> ReportAggregate:
+    """The mean and spread of the scores of several runs of one experiment.
+
+    For the reports of repeated runs, such as seeds or folds, whose variation is
+    the quantity wanted. To score the rows of all of them as one set, use
+    :func:`pool_reports`. The standard deviation is the sample one (``ddof=1``)
+    and NaN where one report gives a value.
+
+    A class is averaged over the reports that list it: a fold that never saw a
+    class has no score for it, which is not a score of 0.
+
+    Args:
+        reports: The reports to summarize.
+
+    Returns:
+        The spread of ``accuracy`` and ``macro_f1``, and of the precision,
+        recall and F1 of each class, the classes ascending.
+
+    Raises:
+        ValueError: *reports* is empty.
+    """
+    if not reports:
+        msg = "aggregate_reports needs at least one report."
+        raise ValueError(msg)
+    scores: dict[int, list[ClassScore]] = {}
+    for report in reports:
+        for score in report.per_class:
+            scores.setdefault(score.label, []).append(score)
+    return {
+        "n_reports": len(reports),
+        "accuracy": _spread([report.accuracy for report in reports]),
+        "macro_f1": _spread([report.macro_f1 for report in reports]),
+        "per_class": [
+            {
+                "label": label,
+                "name": next((score.name for score in held if score.name), ""),
+                "n_reports": len(held),
+                "precision": _spread([score.precision for score in held]),
+                "recall": _spread([score.recall for score in held]),
+                "f1": _spread([score.f1 for score in held]),
+            }
+            for label, held in sorted(scores.items())
+        ],
+    }
 
 
 # --- Alignment ---------------------------------------------------------------

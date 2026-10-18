@@ -88,3 +88,65 @@ def test_a_row_without_a_cluster_is_left_out_of_the_fit(tmp_path: Path) -> None:
 
     saved = pd.read_parquet(run_root / LABEL_MAP_FILE)
     assert saved[["cluster", "label", "n_rows"]].values.tolist() == [[5, 1, 8]]
+
+
+def _rare_class_rows(tmp_path: Path) -> tuple[pd.DataFrame, Path]:
+    """Class 0 on frames 0-7 and the rare class 1 on frames 8-9.
+
+    Cluster 5 holds three of class 0's eight rows and both of class 1's two, so
+    class 0 has more rows in it and class 1 has more of its own.
+    """
+    events = [(frame, 0, 1, 0 if frame < 8 else 1) for frame in range(FRAMES)]
+    labels = write_sparse_labels(tmp_path / "labels.npz", events)
+    return _rows([5, 5, 5, 6, 6, 6, 6, 6, 5, 5]), labels
+
+
+def _fit(
+    rows: pd.DataFrame, labels: Path, run_root: Path, **params: object
+) -> FitLabelMap:
+    feature = FitLabelMap(
+        FitLabelMap.Inputs((Result(feature="global-kmeans"),)), dict(params)
+    )
+    _ = feature.load_state(run_root, {}, {"labels": {("g", "s"): labels}})
+    feature.fit(
+        InputStream(lambda: iter([(make_entry_key("g", "s"), rows)]), n_entries=1)
+    )
+    feature.save_state(run_root)
+    return feature
+
+
+def test_the_default_weighting_follows_the_count_of_rows(tmp_path: Path) -> None:
+    rows, labels = _rare_class_rows(tmp_path)
+
+    _ = _fit(rows, labels, tmp_path / "default")
+    _ = _fit(rows, labels, tmp_path / "count", weighting="count")
+
+    assert FitLabelMap.Params().weighting == "count"
+    assert read_label_map(tmp_path / "default" / LABEL_MAP_FILE) == {5: 0, 6: 0}
+    assert read_label_map(tmp_path / "count" / LABEL_MAP_FILE) == {5: 0, 6: 0}
+
+
+def test_class_balanced_weighting_maps_a_cluster_to_the_class_it_holds_most_of(
+    tmp_path: Path,
+) -> None:
+    rows, labels = _rare_class_rows(tmp_path)
+
+    feature = _fit(rows, labels, tmp_path / "run", weighting="class_balanced")
+
+    assert read_label_map(tmp_path / "run" / LABEL_MAP_FILE) == {5: 1, 6: 0}
+    saved = pd.read_parquet(tmp_path / "run" / LABEL_MAP_FILE)
+    assert saved["n_rows"].tolist() == [5, 5], "n_rows still counts the labeled rows"
+    assert feature.apply(rows)[MAPPED_COLUMN].tolist() == [1, 1, 1, 0, 0, 0, 0, 0, 1, 1]
+
+
+def test_the_weighting_enters_the_run_identity_and_the_version() -> None:
+    count = FitLabelMap.Params(weighting="count").identity_dump()
+    balanced = FitLabelMap.Params(weighting="class_balanced").identity_dump()
+
+    assert count != balanced
+    assert FitLabelMap.version == "0.2"
+
+
+def test_an_unknown_weighting_is_refused() -> None:
+    with pytest.raises(ValueError, match="class_balanced"):
+        _ = FitLabelMap.Params.model_validate({"weighting": "prevalence"})

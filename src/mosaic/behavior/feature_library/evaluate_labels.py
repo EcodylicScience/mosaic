@@ -4,7 +4,12 @@ The step a supervised chain ends with. Under a step scope naming the test
 groups, it scores a classifier fitted on the training groups, in the same
 request that fitted it. Its report is ``metrics.json``, an
 :class:`~mosaic.core.evaluation.EvaluationReport` over every entry it scored,
-beside ``confusion.parquet``; each output row is one entry's own score.
+beside ``confusion.parquet``; each output row is one entry's own score, and its
+true positives, false positives and false negatives per class
+(``tp_<class>``, ``fp_<class>`` and ``fn_<class>``). Those counts add across
+entries, so the score of any set of entries, and a bootstrap over them, follow
+from the output (:func:`~mosaic.core.evaluation.pool_entry_counts` and
+:func:`~mosaic.core.evaluation.bootstrap_sequences`).
 
 **Which rows are scored.** Each row is labeled by its own frame and individuals
 (:func:`~mosaic.core.pipeline.loading.labels_for_rows`), so a pair row takes the
@@ -15,7 +20,9 @@ never class 0. A pair output holds each pair twice per frame, and
 **Two modes.** ``classifier`` scores predicted classes. ``clusters`` scores a
 clustering: through ``label_map`` when one is given, a map fitted on other
 entries by ``fit-label-map``, and otherwise through the majority mapping of the
-scored rows themselves, whose accuracy is the clustering's purity.
+scored rows themselves, whose accuracy is the clustering's purity and which no
+row is held out of. The report's ``label_map_source`` says which, and the
+cluster by class counts are ``cluster_confusion.parquet``.
 
 The labels come from the run's dependency lookup, so a ``labels`` reference to a
 ``convert-labels`` step scores against the variant that step wrote.
@@ -34,8 +41,11 @@ from pydantic import Field
 from mosaic.core.evaluation import (
     ClassScore,
     EvaluationReport,
+    LabelMapSource,
     classification_scores,
+    cluster_contingency,
     cluster_label_scores,
+    entry_counts,
     majority_mapping,
     select_scored_rows,
 )
@@ -45,6 +55,7 @@ from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.column_contract import (
     Column,
     ParamColumn,
+    Prefix,
     Provides,
     Requirement,
     kept,
@@ -72,6 +83,22 @@ METRICS_FILE = "metrics.json"
 
 CONFUSION_FILE = "confusion.parquet"
 """The confusion matrix: a row per true class, a ``predicted_<k>`` column per class."""
+
+CLUSTER_CONFUSION_FILE = "cluster_confusion.parquet"
+"""In clusters mode, a row per cluster and a ``class_<k>`` column per class."""
+
+_CLUSTER_KEYS = (
+    "ARI",
+    "AMI",
+    "homogeneity",
+    "completeness",
+    "v_measure",
+    "purity",
+    "hungarian_accuracy",
+    "hungarian_one_to_one",
+    "n_clusters",
+)
+"""The scores of :func:`cluster_label_scores` that the report keeps."""
 
 _WRONG: int = -2
 """What a cluster outside the label map scores as: a class no label holds."""
@@ -125,7 +152,9 @@ class EvaluateLabels:
 
     Writes ``metrics.json`` (accuracy, macro F1, per-class precision, recall
     and F1, and the clustering scores in clusters mode) and
-    ``confusion.parquet`` over every entry it scored, and one row per entry.
+    ``confusion.parquet`` over every entry it scored, ``cluster_confusion.parquet``
+    in clusters mode, and one row per entry with its score and its per-class
+    counts.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.evaluate_labels.EvaluateLabels.Params`.
@@ -133,7 +162,7 @@ class EvaluateLabels:
 
     category = "summary"
     name = "evaluate-labels"
-    version = "0.1"
+    version = "0.2"
     parallelizable = False
     scope_dependent = True
     accepts_overlap = False
@@ -151,6 +180,9 @@ class EvaluateLabels:
             Column("n_unlabeled"),
             Column("accuracy"),
             Column("macro_f1"),
+            Prefix("tp_"),
+            Prefix("fp_"),
+            Prefix("fn_"),
         ),
         conditional=kept(C.group_col, C.seq_col),
     )
@@ -194,7 +226,7 @@ class EvaluateLabels:
         self._labels_lookup: DependencyLookup = {}
         self._label_map: dict[int, int] | None = None
         self._report: EvaluationReport | None = None
-        self._confusion: pd.DataFrame | None = None
+        self._contingency: pd.DataFrame | None = None
         self._names: dict[int, str] = {}
 
     # --- Feature protocol ---
@@ -208,7 +240,7 @@ class EvaluateLabels:
         self._labels_lookup = dependency_lookups.get("labels", {})
         self._label_map = None
         self._report = None
-        self._confusion = None
+        self._contingency = None
         self._names = {}
         if self.params.label_map is not None and "label_map" in artifact_paths:
             self._label_map = read_label_map(artifact_paths["label_map"])
@@ -267,18 +299,22 @@ class EvaluateLabels:
             "accuracy": float("nan"),
             "macro_f1": float("nan"),
         }
+        y_true = y_pred = np.empty(0, dtype=np.int64)
         if scored is not None:
             frame, unlabeled, _, _ = scored
             y_true = frame["_label"].to_numpy(dtype=np.int64)
             y_pred = self._mapped(frame["_prediction"].to_numpy(dtype=np.int64))
-            scores = classification_scores(
-                y_true, y_pred, average_over=self.params.average_over
-            )
-            row["n_scored"] = scores["n_samples"]
             row["n_unlabeled"] = unlabeled
-            if scores["n_samples"]:
-                row["accuracy"] = scores["accuracy"]
-                row["macro_f1"] = scores["macro_f1"]
+        # Every entry names the report's classes, so the rows stack into one table.
+        classes = self._report.classes
+        scores = classification_scores(
+            y_true, y_pred, classes=classes, average_over=self.params.average_over
+        )
+        row["n_scored"] = scores["n_samples"]
+        if scores["n_samples"]:
+            row["accuracy"] = scores["accuracy"]
+            row["macro_f1"] = scores["macro_f1"]
+        row.update(entry_counts(scores, classes))
         return pd.DataFrame([row])
 
     def save_state(self, run_root: Path) -> None:
@@ -298,6 +334,10 @@ class EvaluateLabels:
         )
         confusion.insert(0, "label", classes)
         _ = write_parquet_atomic(confusion, run_root / CONFUSION_FILE)
+        if self._contingency is not None:
+            _ = write_parquet_atomic(
+                self._contingency, run_root / CLUSTER_CONFUSION_FILE
+            )
 
     # --- scoring ---
 
@@ -364,21 +404,19 @@ class EvaluateLabels:
     ) -> EvaluationReport:
         """The report over every scored row of every entry."""
         clusters: dict[str, float | int | bool] = {}
+        source: LabelMapSource = ""
         if self.params.mode == "clusters":
-            if self._label_map is None:
+            if self.params.label_map is not None:
+                source = "fit-label-map"
+            else:
+                source = "scored_rows"
                 self._label_map = majority_mapping(y_true, y_pred)
             scored = cluster_label_scores(y_true, y_pred)
-            for key in (
-                "ARI",
-                "AMI",
-                "purity",
-                "hungarian_accuracy",
-                "hungarian_one_to_one",
-                "n_clusters",
-            ):
+            for key in _CLUSTER_KEYS:
                 value = scored[key]
                 if isinstance(value, bool | int | float):
                     clusters[key] = value
+            self._contingency = cluster_contingency(y_true, y_pred)
         mapped = self._mapped(y_pred)
         classes = self.params.classes
         if self.params.mode == "clusters":
@@ -420,6 +458,7 @@ class EvaluateLabels:
             label_map=dict(self._label_map or {})
             if self.params.mode == "clusters"
             else {},
+            label_map_source=source,
         )
 
 

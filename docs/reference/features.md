@@ -509,7 +509,7 @@ Per-frame group-level collective-motion metrics (Tunstrom et al. 2013).
 
 ### `evaluate-labels`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.evaluate_labels.EvaluateLabels`
+Version `0.2` &middot; `mosaic.behavior.feature_library.evaluate_labels.EvaluateLabels`
 
 Score a run's predictions or clusters against ground-truth labels.
 
@@ -831,15 +831,16 @@ FERAL vision-transformer behavior classifier as a pipeline feature.
 
 ### `fit-label-map`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.fit_label_map.FitLabelMap`
+Version `0.2` &middot; `mosaic.behavior.feature_library.fit_label_map.FitLabelMap`
 
-Map each cluster to the behavior class most of its labeled rows hold.
+Map each cluster to the behavior class its labeled rows favor.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `labels` | `GroundTruthLabelsSource` | _constructed_ |  | The ground-truth labels the map is fitted on, resolved from labels/<kind>/index.csv. A {step: <id>} reference names a convert-labels step and pins the variant it writes. |
 | `prediction_column` | `string` | `"cluster"` |  | The column holding each row's cluster. |
 | `perspective` | `integer` \| `"pooled"` \| `None` | `null` |  | Which rows of a pair output to fit on: the rows of one perspective, or 'pooled' for both. Unset fits on the rows as they are, and refuses rows of more than one perspective. |
+| `weighting` | `"count"` \| `"class_balanced"` | `"count"` |  | How a cluster picks its class. count takes the class with the most rows in the cluster, which follows prevalence and can leave a rare class with no cluster. class_balanced takes the class whose rows the cluster holds the largest share of. |
 
 ??? note "`GroundTruthLabelsSource`"
 

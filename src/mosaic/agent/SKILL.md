@@ -300,7 +300,14 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
 - For a clustering, `fit-label-map` on the training groups fits the cluster to
   behavior map that `evaluate-labels` applies to the test groups through
-  `label_map`. Without one, its accuracy is the purity of the scored rows.
+  `label_map`. Without one, its accuracy is the purity of the scored rows, and the
+  report's `label_map_source` reads `scored_rows`: report it as purity, not as a
+  held-out score. `weighting: "class_balanced"` keeps a common behavior from taking
+  every cluster, which leaves a rare one at F1 0.
+- Each output row of `evaluate-labels` carries `tp_<class>`, `fp_<class>` and
+  `fn_<class>`. `mosaic.core.evaluation` pools them (`pool_entry_counts`), bootstraps
+  over sequences from them (`bootstrap_sequences`, with a required `random_state`),
+  and combines the reports of separate runs (`pool_reports`, `aggregate_reports`).
 - In Python, `load_values(ds, [ResultColumn(...), GroundTruthLabelsSource()])` gives
   each row its label, and `labels_run_id=` picks a labels variant when the dataset
   holds two.
