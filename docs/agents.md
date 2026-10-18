@@ -148,7 +148,7 @@ that does not read, is left out and reported on the server's standard error.
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
 | `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from. The parallelism a submission may ask for, with the host's processors and memory |
 | `submit_pipeline` | Submits a planned recipe and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards, and with `retire` the runs that retired recipes wrote. Takes `workers` and `parallel_mode` within your limits |
-| `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts. Each step's workers and peak memory |
+| `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts. Each step's workers and peak memory. `get_request_status` can wait for a step to end |
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
 | `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class |
@@ -161,12 +161,22 @@ with `mosaic pipeline status`, cancel it with `cancel_request` or
 `mosaic cancel --request`, and resume a request that reads `orphaned` with
 `mosaic pipeline run --manifest dataset.yaml --request <id>`.
 
-`get_request_status` reports `poll_after_seconds`, how long the agent waits before it
-polls again, and each step's phase and liveness. A request reads `orphaned` when its
-driver stopped or its step's process is provably gone: the process exited, its machine
-rebooted, or it wrote nothing for ten minutes. `plan_recipe` lists the requests of the
-same recipe that are still running or orphaned. A step on another machine whose
-liveness reads `unknown` was started by mosaic 0.17 or earlier and cannot be checked.
+An agent waits for a request with `get_request_status` and `wait_seconds` (60 at most).
+The call returns as soon as a step of the request ends or the request does, and
+otherwise when the time is up, so the agent needs no polling loop and no look at the
+driver's process. With `brief` it lists only the steps that are running or did not
+finish cleanly, and counts the others (`omitted_finished`, `omitted_pending`).
+`mosaic pipeline status --request <id> --wait-seconds 60 --brief` does the same from a
+shell. The driver log, `.mosaic/drivers/<id>.log` in the dataset, holds the output of
+the driver and its steps. It explains a failure and does not report progress.
+
+`get_request_status` also reports `poll_after_seconds`, how long to wait before reading
+again without `wait_seconds`, and each step's phase and liveness. A request reads
+`orphaned` when its driver stopped or its step's process is provably gone: the process
+exited, its machine rebooted, or it wrote nothing for ten minutes. `plan_recipe` lists
+the requests of the same recipe that are still running or orphaned. A step on another
+machine whose liveness reads `unknown` was started by mosaic 0.17 or earlier and cannot
+be checked.
 Once you know its process has exited, record it with
 `mosaic cancel --manifest dataset.yaml --request <id> --assume-exited`, then submit
 the recipe again. The server offers no tool for this

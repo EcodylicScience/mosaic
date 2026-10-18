@@ -10,6 +10,33 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**A request can be waited for, and a detached driver that exits is gone.** A detached
+driver was reaped only when the same process started another, so an exited driver stayed
+a zombie child of `mosaic agent serve`, and `kill -0 <driver_pid>` kept succeeding: a
+shell loop on it ran 1 h 53 min past the end of its request. mosaic's own liveness
+already read a zombie as exited, so no verdict, lease or run id changes.
+
+- `start_detached_driver` starts a daemon waiter thread per driver, which reaps it as it
+  exits. The pid is released at once, whether or not another driver is started.
+- `request_status_wire`, the MCP tool `get_request_status` and `mosaic pipeline status
+  --request` gain `wait_seconds` (`--wait-seconds`, 0 to `MAX_WAIT_SECONDS`, 60) and
+  `brief` (`--brief`), both defaulted. A wait returns as soon as a step has ended since
+  the call began, or the request has ended or reads `orphaned`, and otherwise when the
+  time is up. It runs on the worker thread that answers the call, never on the server's
+  event loop. A client whose request timeout is under 60 s should ask for less.
+- A brief report lists the steps that are running, failed, cancelled or `partial`, and
+  those that ended during the wait. `RequestStatusWire` gains `omitted_finished` and
+  `omitted_pending`, which count the steps it leaves out and read 0 for a report that is
+  not brief. `brief` joins the tool's `narrowing`, so a `result_too_large` refusal names
+  it. The server still has 14 tools.
+- `GetRequestStatusInput` gains `wait_seconds` and `brief`. A backend of another server
+  that ignores them returns the whole report at once. `plan_fingerprint`, recipe digests,
+  run ids and the files on disk are unchanged.
+- The summary of a submission no longer says the request is "driven by process N", and
+  the guide, the prompts and the server instructions say to wait with `wait_seconds`
+  instead of polling or watching the driver. `driver_pid` and `driver_log` stay in
+  `SubmittedPipeline`.
+
 **A step can compute several entries at once, and reports the memory it used.**
 `mosaic run` and `mosaic pipeline run` take `--workers`, `--parallel-mode` and
 `--min-free-memory-fraction`, and `submit_pipeline` takes `workers` and `parallel_mode`
