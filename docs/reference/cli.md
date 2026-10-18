@@ -1205,7 +1205,7 @@ $ mosaic pipeline status [OPTIONS]
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--request <str>`: Which submission to report on.  [required]
-* `--wait-seconds <int range>`: Wait up to this many seconds for a step to end, and report as soon as one has, or the request has. 0 reports at once.  [default: 0; 0<=x<=60]
+* `--wait-seconds <int range>`: Wait up to this many seconds for a step to end, and report as soon as one has, or the request has. 0 reports at once.  [default: 0; 0<=x<=45]
 * `--brief`: List only the steps that are running, failed, cancelled or partial, and those that ended during the wait. Count the rest.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.

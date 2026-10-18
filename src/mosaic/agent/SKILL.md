@@ -339,7 +339,7 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   unattended may approve conditions in advance with a hook
   (`mosaic agent confirm-hook`). A confirmation it does not approve comes back
   declined or unanswered.
-- Wait with `get_request_status(wait_seconds=60)`, which returns when a step or the
+- Wait with `get_request_status(wait_seconds=45)`, which returns when a step or the
   request ends; `brief: true` lists only the steps still running or not finished
   cleanly. Do not watch `driver_pid` (`kill -0`) or `tail` the driver log for
   progress: the log holds output for explaining a failure. For a request that reads

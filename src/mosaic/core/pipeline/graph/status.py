@@ -102,11 +102,12 @@ POLL_AFTER_MIN_SECONDS: Final = 10
 POLL_AFTER_MAX_SECONDS: Final = 300
 """The most seconds a request report asks a poller to wait."""
 
-MAX_WAIT_SECONDS: Final = 60
+MAX_WAIT_SECONDS: Final = 45
 """The most seconds one request report waits for a step to end.
 
-A caller that wants a longer wait reads again. A client may time out a call that
-stays open longer.
+A caller that wants a longer wait reads again. It stays under 60 s, which is the
+default request timeout of the MCP TypeScript SDK and of clients built on it, so
+that a wait which runs to its end is answered before such a client gives up.
 """
 
 WAIT_POLL_SECONDS: Final = 0.5

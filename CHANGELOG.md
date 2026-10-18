@@ -19,11 +19,13 @@ already read a zombie as exited, so no verdict, lease or run id changes.
 - `start_detached_driver` starts a daemon waiter thread per driver, which reaps it as it
   exits. The pid is released at once, whether or not another driver is started.
 - `request_status_wire`, the MCP tool `get_request_status` and `mosaic pipeline status
-  --request` gain `wait_seconds` (`--wait-seconds`, 0 to `MAX_WAIT_SECONDS`, 60) and
+  --request` gain `wait_seconds` (`--wait-seconds`, 0 to `MAX_WAIT_SECONDS`, 45) and
   `brief` (`--brief`), both defaulted. A wait returns as soon as a step has ended since
   the call began, or the request has ended or reads `orphaned`, and otherwise when the
   time is up. It runs on the worker thread that answers the call, never on the server's
-  event loop. A client whose request timeout is under 60 s should ask for less.
+  event loop. The cap keeps a wait that runs to its end under the 60 s that clients
+  built on the MCP TypeScript SDK allow a request by default. A client with a shorter
+  timeout should ask for less.
 - A brief report lists the steps that are running, failed, cancelled or `partial`, and
   those that ended during the wait. `RequestStatusWire` gains `omitted_finished` and
   `omitted_pending`, which count the steps it leaves out and read 0 for a report that is

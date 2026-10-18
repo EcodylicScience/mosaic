@@ -73,7 +73,7 @@ A request without a running driver has its running steps signalled and its other
 steps recorded `cancelled`. A process on another machine is not signalled.
 
 `mosaic pipeline status -m dataset.yaml --request <request id>` reports a submitted
-request step by step. `--wait-seconds 60` holds the report until a step of the request
+request step by step. `--wait-seconds 45` holds the report until a step of the request
 ends, the request does, or the time is up, so a script need not poll or watch the
 driver's process. `--brief` lists only the steps that are running or did not finish
 cleanly, and counts the rest.

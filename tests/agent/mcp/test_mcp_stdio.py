@@ -28,7 +28,7 @@ pytest.importorskip("mcp")
 
 import mcp_types as types
 
-from mosaic.agent.mcp.spec import TOOLS
+from mosaic.agent.mcp.spec import MAX_WAIT_SECONDS, TOOLS
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import submit_request
@@ -367,7 +367,7 @@ def test_a_client_plans_submits_polls_and_previews_over_clean_stdout(
     assert CHILD_PRINT in errors
 
 
-WAIT_SECONDS: Final = 60
+WAIT_SECONDS: Final = MAX_WAIT_SECONDS
 """The wait the stdio test asks for, ended long before by the step that ends."""
 
 
