@@ -51,6 +51,11 @@ per frame with nothing to tell them apart, and mosaic will then refuse to join t
 predictions back to the embedding they came from — correctly, since the key was
 destroyed upstream rather than at the join.
 
+The same holds for a model that reads frames in order. An autoregressive model reads
+each frame after the one before it, so `arhmm` takes each `(id1, id2, perspective)` as a
+sequence of its own and writes those columns beside its states. `lightning-action` reads
+an entry's rows as one sequence, and refuses a pair table.
+
 A symmetric quantity, such as the distance between the two, is written the same on
 both rows rather than stored once. One shape with no special case is what lets any
 two pair results join.

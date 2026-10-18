@@ -56,6 +56,7 @@ from .helpers import (
     ensure_columns,
     feature_columns,
     meta_columns,
+    refuse_pair_rows,
     refuse_unlabeled_templates,
 )
 from .registry import register_feature
@@ -172,7 +173,8 @@ class LightningActionFeature:
 
     Trains a temporal neural network classifier (DilatedTCN, RNN, or
     TemporalMLP head + linear classifier) on labeled templates and
-    predicts per-frame action probabilities.
+    predicts per-frame action probabilities. ``apply`` reads an entry's rows as
+    one sequence, so it takes an individual-level input and refuses a pair table.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature.Params`.
@@ -373,6 +375,7 @@ class LightningActionFeature:
             )
             raise RuntimeError(msg)
 
+        refuse_pair_rows(df, self.name)
         ensure_columns(df, self._feature_columns)
 
         # Load model if not cached
@@ -425,10 +428,8 @@ class LightningActionFeature:
             pad = np.full((n - len(probs), probs.shape[1]), np.nan)
             probs = np.vstack([probs, pad])
 
-        # Build output DataFrame. The identity travels with the predictions: this
-        # feature is routinely fed pair-level input, and a list that stopped at the
-        # individual columns left two rows per frame with nothing to tell them
-        # apart -- unjoinable against the very features it was trained on.
+        # Build output DataFrame. The identity travels with the predictions, so
+        # that they join back to the rows they describe.
         result = df[meta_columns(df)].copy()
 
         for i, cls in enumerate(self._classes):

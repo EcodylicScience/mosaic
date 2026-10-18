@@ -139,6 +139,15 @@ ds.run_feature(ArHmmFeature(Inputs((scaler_result,)),
                             params={"n_states": 25, "n_lags": 3, "pca_dim": 10}))
 ```
 
+The model reads each sequence on its own, so it never reads one animal's frame after
+another's. Fed per-individual features, a sequence is one individual's frames. Fed pair
+features, as `scaler_result` is here, it is one ordered pair seen from one perspective.
+The states come with `id1`, `id2` and `perspective`, so they join back to the pair
+features they were computed from. A sequence that holds the same frame twice fails the
+step. A sequence with no more rows than `n_lags` gets no states, and its rows are left out
+of the result. A missing value reads as the mean of its column, or as 0 when
+`standardize` is off, and the standardizing counts only the values that are present.
+
 `kpms` runs keypoint-MoSeq for the same purpose, fitting on keypoints rather than on
 derived features. It runs in an environment you build and is licensed for
 non-commercial research and academic use only — see

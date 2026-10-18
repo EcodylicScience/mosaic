@@ -139,6 +139,8 @@ stacked_result = ds.run_feature(TemporalStackingFeature(
 features.
 
 `lightning-action` models the temporal structure itself, so it does not need this step.
+It reads an individual-level input and refuses a pair table. Train `xgboost` on pair
+features.
 
 ## Read the predictions
 

@@ -10,6 +10,51 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**`arhmm` reads each ordered pair as a sequence of its own, and keeps its columns.**
+`arhmm` split a table by `id`, and a pair table has none, so its rows were one sequence
+in table order. The two perspectives of a frame interleaved, the autoregressive lag read
+the other animal's row, an even `downsample_rate` kept one perspective only, and the
+output held `frame` and `syllable` with nothing to join it back to the pair features.
+A table with an `id` splits as before. A table without one splits by `id1`, `id2` and
+`perspective`, those the table has, in sorted order whatever the order of its rows, and
+the output carries the same columns beside `frame` and `syllable`.
+
+- `arhmm` moves from 0.2 to 0.3. Every `arhmm` run id changes its version segment, and
+  so does every run that reads an `arhmm` result through `inputs` or fits its `model`
+  from one, with the runs that read those. An existing dataset recomputes those chains
+  once. The states of a pair-level 0.2 run are not comparable with 0.3's.
+- The catalog declares `emits` `as-input` for `arhmm`, where it declared `individual`,
+  and its output may contain `id1`, `id2` and `perspective`. A chain from pair features
+  resolves to a pair-level `arhmm` step, whose output merges with other pair inputs and
+  not with individual ones.
+- A sequence with two rows of one frame fails `arhmm`, in fit and in apply, naming the
+  frame and the sequence, as `vame` does. It used to stable-sort them into one sequence.
+- A sequence with no more rows than `n_lags` after `downsample_rate`, which the fit
+  already left out, gets no states in apply and its rows are absent from the output,
+  where apply raised an `IndexError` that failed the entry. A pair that meets for a
+  few frames is such a sequence, and an entry of such sequences alone writes an empty
+  table. The run reports the count on its standard error.
+- `iter_series`, `label_series`, `series_columns`, `refuse_repeated_series_rows` and
+  `refuse_pair_rows` join `mosaic.behavior.feature_library.helpers` beside
+  `label_individuals`. `kpms` and `vame` keep their split by individual.
+
+**`arhmm` standardizes over the values that are present.** It replaced every NaN and
+infinity with 0 before computing the mean and standard deviation that it standardizes by.
+In a synthetic check on wavelet-like log-power columns with NaN at the edges of each
+sequence (7% and 20% of the rows), that moved a column's mean by up to 0.26 and 0.95 of
+its standard deviation and inflated the deviation by up to 1.36 and 2.10 times, and every
+NaN frame decoded as a state that no other frame used. The mean and standard deviation
+now count the finite values only, and a missing value reads as its column's mean (as 0
+when `standardize` is off, as before). This is inside the 0.3 bump. An input with no missing value gets the scaler of 0.2 up to
+rounding.
+
+**`lightning-action` refuses a pair table.** Its `apply` wrote an entry's rows to the
+model as one sequence in table order, so a pair entry interleaved the two perspectives.
+`apply` raises a `ValueError` that names the feature, so a run over pair-level input
+fails at its first entry, after its fit. Individual-level input is unchanged, and
+`lightning-action` stays at 0.3. A pair-level run already on disk keeps its run id and
+is still read.
+
 **A step can compute several entries at once, and reports the memory it used.**
 `mosaic run` and `mosaic pipeline run` take `--workers`, `--parallel-mode` and
 `--min-free-memory-fraction`, and `submit_pipeline` takes `workers` and `parallel_mode`

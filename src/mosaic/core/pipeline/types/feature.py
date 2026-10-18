@@ -103,7 +103,7 @@ class Feature(Protocol):
     The four values, and which identity columns each one means:
 
     - ``"individual"`` -- one row per ``(frame, id)``, or per ``id`` for a
-      per-sequence summary. ``speed-angvel``, ``nearest-neighbor``, ``arhmm``.
+      per-sequence summary. ``speed-angvel``, ``nearest-neighbor``.
     - ``"pair"`` -- one row per **ordered** pair per frame: ``id1`` the focal,
       ``id2`` the other, and ``perspective`` saying which ordering, so the key is
       ``(frame, id1, id2, perspective)``. The ``pair-*`` family,
@@ -129,8 +129,8 @@ class Feature(Protocol):
       per-chunk aggregate over everyone present. ``collective-motion-metrics``,
       ``frame-aggregate``.
     - ``"as-input"`` -- whatever came in goes out. The global fitters augment
-      the frame they were given rather than re-keying it, and ``temporal-stack``
-      and ``feral`` branch on whether their input carries a pair.
+      the frame they were given rather than re-keying it, and ``temporal-stack``,
+      ``feral`` and ``arhmm`` branch on whether their input carries a pair.
 
     **No default**, for the reason ``scope_dependent`` and ``accepts_overlap``
     have none: a default would let the next feature ship without answering, and
