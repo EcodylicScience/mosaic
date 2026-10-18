@@ -1,10 +1,17 @@
-"""`lightning-action` must carry a pair row's identity onto its predictions.
+"""`lightning-action` reads an individual table, and refuses a pair table.
 
-The same defect `xgboost` carried until commit 250051e, in a feature that declares
-`emits = "as-input"` and is routinely handed pair-level input: the passthrough list
-stopped at `[frame, time, id, group, sequence]`, so the predictions came back with
-two rows per `(group, sequence, frame)` and nothing to tell them apart. Its comment
-said the output "matches XGBoost format"; once xgboost was fixed, it did not.
+`apply` writes an entry's rows to the model as one sequence in table order. A pair
+table holds two rows per frame, one per perspective, so that sequence would
+interleave the two animals' frames, and a window of the temporal model would read
+one animal's frame after the other's. `apply` refuses such a table until it reads
+each pair as a sequence of its own. `fit` reads the templates and not its input
+stream, so it cannot tell a pair input apart, and the refusal comes at the first
+entry.
+
+The identity columns an individual table carries still reach the predictions. The
+passthrough list once stopped at `[frame, time, id, group, sequence]` while the
+feature was handed pair tables, so predictions came back with two rows per
+`(group, sequence, frame)` and nothing to tell them apart.
 
 No test covered this feature's `apply` at all, because the extra it needs does not
 resolve on a machine without CUDA -- `lightning-action` requires `nvidia-dali-cuda110`
@@ -75,15 +82,11 @@ def _fitted(n_rows: int) -> LightningActionFeature:
     return feature
 
 
-def test_apply_keeps_pair_identity() -> None:
+def test_apply_refuses_a_pair_table() -> None:
     df = make_pair_df(6, len(_FEATURES))
 
-    out = _fitted(len(df)).apply(df)
-
-    key = ["frame", "id1", "id2", "perspective"]
-    assert set(key) <= set(out.columns)
-    assert not out.duplicated(subset=key).any()
-    assert {"prob_1", "prob_2", "prob_3", "predicted_label"} <= set(out.columns)
+    with pytest.raises(ValueError, match=r"^\[lightning-action\] .*pair table"):
+        _fitted(len(df)).apply(df)
 
 
 def test_apply_keeps_individual_identity() -> None:
@@ -109,7 +112,8 @@ def test_apply_keeps_individual_identity() -> None:
 
 def test_predictions_are_labels_not_indices() -> None:
     """The stub's argmax is class 3, which is a label and not an index into it."""
-    df = make_pair_df(4, len(_FEATURES))
+    df = make_pair_df(4, len(_FEATURES)).query("perspective == 0")
+    df = df.drop(columns=["id1", "id2", "perspective"]).assign(id=0)
 
     out = _fitted(len(df)).apply(df)
 

@@ -37,6 +37,7 @@ __all__ = [
     "label_individuals",
     "label_series",
     "meta_columns",
+    "refuse_pair_rows",
     "refuse_repeated_series_rows",
     "series_columns",
     "smooth_1d",
@@ -309,6 +310,30 @@ def refuse_repeated_series_rows(
         where += f" of {series}"
     msg = f"{who}: {where} appears in more than one row"
     raise ValueError(msg)
+
+
+def refuse_pair_rows(df: pd.DataFrame, feature: str) -> None:
+    """Refuse *df* when it is a pair table, for a feature that reads its rows as one sequence.
+
+    A pair table holds two rows per frame, one per perspective. Read in table
+    order as a single sequence, they interleave the two animals' frames.
+
+    Args:
+        df: The rows to check.
+        feature: The feature that reads them, which the error names.
+
+    Raises:
+        ValueError: When *df* has no ``id`` column and has any of ``id1``,
+            ``id2`` and ``perspective``.
+    """
+    pair = [name for name in series_columns(df) if name != COLUMNS.id_col]
+    if pair:
+        msg = (
+            f"[{feature}] the input is a pair table ({', '.join(pair)}), and "
+            f"{feature} reads a table's rows as one sequence, which would read one "
+            "animal's frame after the other's. Use an individual-level input"
+        )
+        raise ValueError(msg)
 
 
 def entry_identity(df: pd.DataFrame) -> tuple[str, str]:
