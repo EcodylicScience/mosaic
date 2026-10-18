@@ -152,6 +152,38 @@ _BACKEND_DESCRIPTION = (
 )
 
 
+# --- Missing values ---
+
+
+def _finite_moments(sequences: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """Return the mean and standard deviation of each column over its finite values.
+
+    Two passes over the sequences, so that no copy of all of them is made. A
+    column without a finite value has mean 0, and a standard deviation of
+    almost 0 is 1.
+    """
+    n_columns = sequences[0].shape[1]
+    count = np.zeros(n_columns)
+    total = np.zeros(n_columns)
+    for sequence in sequences:
+        finite = np.isfinite(sequence)
+        count += finite.sum(axis=0)
+        total += np.where(finite, sequence, 0.0).sum(axis=0)
+    mean = np.divide(total, count, out=np.zeros(n_columns), where=count > 0)
+    squares = np.zeros(n_columns)
+    for sequence in sequences:
+        finite = np.isfinite(sequence)
+        squares += (np.where(finite, sequence - mean, 0.0) ** 2).sum(axis=0)
+    std = np.sqrt(np.divide(squares, count, out=np.zeros(n_columns), where=count > 0))
+    std[std < 1e-10] = 1.0
+    return mean, std
+
+
+def _fill_missing(arr: np.ndarray) -> np.ndarray:
+    """Return *arr* with each non-finite value set to 0."""
+    return np.where(np.isfinite(arr), arr, 0.0)
+
+
 # --- Feature class ---
 
 
@@ -315,14 +347,21 @@ class ArHmmFeature:
             f"{D} features, n_states={p.n_states}, n_lags={p.n_lags}",
             file=sys.stderr,
         )
+        n_missing = sum(int((~np.isfinite(s)).sum()) for s in sequences)
+        if n_missing:
+            total = sum(s.size for s in sequences)
+            print(
+                f"[arhmm] {n_missing} non-finite values ({100 * n_missing / total:.1f}%) "
+                "read as missing",
+                file=sys.stderr,
+            )
 
-        # Standardize
+        # Standardize over the finite values, then read a missing value as 0,
+        # which is the column mean once standardized.
         if p.standardize:
-            all_data = np.vstack(sequences)
-            self._scaler_mean = all_data.mean(axis=0)
-            self._scaler_std = all_data.std(axis=0)
-            self._scaler_std[self._scaler_std < 1e-10] = 1.0
+            self._scaler_mean, self._scaler_std = _finite_moments(sequences)
             sequences = [(s - self._scaler_mean) / self._scaler_std for s in sequences]
+        sequences = [_fill_missing(s) for s in sequences]
 
         # PCA
         if p.pca_dim is not None and p.pca_dim < D:
@@ -431,20 +470,13 @@ class ArHmmFeature:
         self._feature_columns = bundle["feature_columns"]
 
     def _df_to_array(self, df: pd.DataFrame, cols: list[str]) -> np.ndarray | None:
-        """Convert a DataFrame to a numpy array for AR-HMM, with
-        downsampling and NaN handling."""
-        arr = df[cols].to_numpy(dtype=np.float64)
+        """Convert a series to a numpy array for AR-HMM, with downsampling.
 
-        # Replace non-finite values with 0
-        bad_mask = ~np.isfinite(arr)
-        if bad_mask.any():
-            n_bad = int(bad_mask.sum())
-            pct = 100 * n_bad / arr.size
-            print(
-                f"[arhmm] Replaced {n_bad} non-finite values ({pct:.1f}%) with 0",
-                file=sys.stderr,
-            )
-            arr = np.where(bad_mask, 0.0, arr)
+        A non-finite value is NaN in the result: standardizing reads the finite
+        values only, and :func:`_fill_missing` fills the rest.
+        """
+        arr = df[cols].to_numpy(dtype=np.float64)
+        arr = np.where(np.isfinite(arr), arr, np.nan)
 
         # Downsample
         if self.params.downsample_rate is not None and self.params.downsample_rate > 1:
@@ -461,15 +493,15 @@ class ArHmmFeature:
         assert self._model is not None
         original_len = len(df)
         arr = df[cols].to_numpy(dtype=np.float64)
-        arr = np.where(~np.isfinite(arr), 0.0, arr)
 
         ds_rate = self.params.downsample_rate
         if ds_rate is not None and ds_rate > 1:
             arr = arr[::ds_rate]
 
-        # Standardize
+        # Standardize, then read a missing value as the column mean
         if self._scaler_mean is not None and self._scaler_std is not None:
             arr = (arr - self._scaler_mean) / self._scaler_std
+        arr = _fill_missing(arr)
 
         # PCA
         if self._pca is not None:

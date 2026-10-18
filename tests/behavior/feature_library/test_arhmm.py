@@ -348,6 +348,74 @@ class TestRepeatedRows:
             feat.apply(repeated)
 
 
+class TestNonFinite:
+    """A NaN or an infinity is a missing value, and standardizing does not count it."""
+
+    @staticmethod
+    def _with_gaps() -> pd.DataFrame:
+        """Two regimes with their first and last 30 frames missing in two columns."""
+        df = _make_sequence_df("s1", seed=6)
+        df.loc[:29, ["f0", "f2"]] = np.nan
+        df.loc[370:, ["f0", "f2"]] = np.inf
+        return df
+
+    @staticmethod
+    def _scaler(run_root: Path) -> tuple[np.ndarray, np.ndarray]:
+        bundle = ArHmmFeature.ModelArtifact().from_path(run_root / "arhmm_model.joblib")
+        assert bundle["scaler_mean"] is not None
+        assert bundle["scaler_std"] is not None
+        return bundle["scaler_mean"], bundle["scaler_std"]
+
+    def test_the_scaler_reads_the_finite_values_only(self, tmp_path: Path) -> None:
+        df = self._with_gaps()
+        feat = _fit(_make_feature("numpy"), [df])
+        feat.save_state(tmp_path)
+
+        values = df[["f0", "f1", "f2"]].to_numpy()
+        finite = np.where(np.isfinite(values), values, np.nan)
+        mean, std = self._scaler(tmp_path)
+
+        np.testing.assert_allclose(mean, np.nanmean(finite, axis=0))
+        np.testing.assert_allclose(std, np.nanstd(finite, axis=0))
+
+    def test_a_missing_value_reads_as_the_column_mean(self, tmp_path: Path) -> None:
+        feat = _fit(_make_feature("numpy"), [self._with_gaps()])
+        feat.save_state(tmp_path)
+        mean, _ = self._scaler(tmp_path)
+        gappy = _make_sequence_df("s1", seed=6)
+        gappy.loc[100:119, "f0"] = np.nan
+        gappy.loc[200:209, "f2"] = np.inf
+        filled = gappy.copy()
+        filled.loc[100:119, "f0"] = mean[0]
+        filled.loc[200:209, "f2"] = mean[2]
+
+        pd.testing.assert_frame_equal(feat.apply(gappy), feat.apply(filled))
+
+    def test_an_unstandardized_missing_value_reads_as_zero(self) -> None:
+        feat = _fit(
+            _make_feature("numpy", standardize=False), [_make_sequence_df("s1")]
+        )
+        gappy = _make_sequence_df("s1")
+        gappy.loc[100:119, "f1"] = np.nan
+        zeroed = gappy.copy()
+        zeroed.loc[100:119, "f1"] = 0.0
+
+        pd.testing.assert_frame_equal(feat.apply(gappy), feat.apply(zeroed))
+
+    def test_a_column_without_a_finite_value_is_left_unscaled(
+        self, tmp_path: Path
+    ) -> None:
+        df = _make_sequence_df("s1")
+        df["f1"] = np.nan
+        feat = _fit(_make_feature("numpy"), [df])
+        feat.save_state(tmp_path)
+
+        mean, std = self._scaler(tmp_path)
+
+        assert (mean[1], std[1]) == (0.0, 1.0)
+        assert len(feat.apply(df)) == len(df)
+
+
 class TestDeclaration:
     """The catalog predicts what a step writes, from the level of its input."""
 
