@@ -48,6 +48,10 @@ if TYPE_CHECKING:
         Pipeline as Pipeline,
     )
     from .run import load_values as load_values
+    from .run_matrix import (
+        RunMatrix as RunMatrix,
+        load_run_matrix as load_run_matrix,
+    )
     from .types import (
         Feature as Feature,
         Inputs as Inputs,
@@ -82,6 +86,8 @@ _MODULE_OF: Final[dict[str, str]] = {
     "FeatureStep": ".pipeline",
     "Pipeline": ".pipeline",
     "load_values": ".run",
+    "RunMatrix": ".run_matrix",
+    "load_run_matrix": ".run_matrix",
     "Feature": ".types",
     "Inputs": ".types",
     "InputsLike": ".types",
@@ -115,12 +121,14 @@ __all__ = [
     "ManifestEntry",
     "Pipeline",
     "Result",
+    "RunMatrix",
     "build_manifest",
     "feature_index_path",
     "feature_run_root",
     "iter_manifest",
     "latest_feature_run_root",
     "list_feature_runs",
+    "load_run_matrix",
     "load_values",
     "show_pipeline_diagram",
     "show_pipeline_tree",
