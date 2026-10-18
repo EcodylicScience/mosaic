@@ -6,6 +6,7 @@ completion marker, and the claim that keeps two executions off one entry.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.tracking.external.runner.ultralytics_protocol import InferPointsRequest
 from mosaic.tracking.pose_training.ultralytics_infer import InferenceOutcome
-from mosaic.core.pipeline.run_log import read_runs, run_log_dir
+from mosaic.core.pipeline.run_log import read_runs, run_log_dir, run_log_path
 from mosaic.tracking import resolve_model
 
 from tests.helpers import (
@@ -265,11 +266,14 @@ def test_a_finished_inference_entry_carries_a_completion_marker(tmp_path, monkey
     assert read_inflight(seq_dir) is None
 
 
-def test_an_entry_held_by_another_execution_is_skipped(tmp_path, monkeypatch):
+def test_an_entry_held_by_another_execution_is_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A claim, not a cache -- two writers on one predictions.parquet.
 
     Asserted by the *absence* of output rather than by a log line: the point is
-    that the second execution did not write, not that it said so.
+    that the second execution did not write, not that it said so. The skipped
+    entry still counts toward the run's progress.
     """
     import shutil
 
@@ -309,3 +313,12 @@ def test_an_entry_held_by_another_execution_is_skipped(tmp_path, monkeypatch):
     assert (run_root / "vid2" / "predictions.parquet").exists(), (
         "an unheld entry must still run"
     )
+
+    # The skipped entry counts on the context's heartbeat, whose first call is
+    # written. Without it, vid2's heartbeat would be the first one.
+    latest = max(read_runs(run_log_dir(ds.base_dir)), key=lambda s: s["started_at"])
+    lines = run_log_path(ds.base_dir, latest["execution_id"]).read_text().splitlines()
+    records = [json.loads(line) for line in lines]
+    heartbeats = [(r["done"], r["total"]) for r in records if r["ev"] == "heartbeat"]
+    assert heartbeats == [(1, 2)]
+    assert (latest["progress_done"], latest["progress_total"]) == (2, 2)

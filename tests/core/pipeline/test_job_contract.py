@@ -849,6 +849,21 @@ def test_a_later_entry_end_keeps_its_count(tmp_path: Path) -> None:
     assert _progress(ds.base_dir, ctx.execution_id) == ("finished", 3, 3)
 
 
+def test_a_heartbeat_after_its_entry_end_is_not_written_again(
+    tmp_path: Path,
+) -> None:
+    """Each entry ends before its heartbeat, so the last entry_end holds the count."""
+    ds = make_dataset(tmp_path)
+    with job_context(ds, kind="trex", target="t") as ctx:
+        ctx.set_total(3)
+        for done, key in ((1, "a"), (2, "b"), (3, "c")):
+            ctx.progress.on_entry_end(done, 3, key)
+            ctx.heartbeat(done)
+
+    assert _heartbeats(ds.base_dir, ctx.execution_id) == [(1, 3)]
+    assert _progress(ds.base_dir, ctx.execution_id) == ("finished", 3, 3)
+
+
 def test_a_heartbeat_without_a_count_is_not_flushed(tmp_path: Path) -> None:
     """A throttled heartbeat without a count does not write the context's stale count."""
     ds = make_dataset(tmp_path)

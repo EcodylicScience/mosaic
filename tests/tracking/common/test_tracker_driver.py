@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from mosaic.core.entry import make_entry_key
 from mosaic.core.pipeline.markers import new_inflight, write_inflight
-from mosaic.core.pipeline.run_log import read_runs, run_log_dir
+from mosaic.core.pipeline.run_log import read_runs, run_log_dir, run_log_path
 from mosaic.tracking.common.driver import EntryJob, run_tracker
 from mosaic.tracking.common.index import tracker_index, tracker_index_path
 from mosaic.tracking.common.mint import MintedRun
@@ -20,7 +21,11 @@ def _never_run(job: EntryJob) -> TRexIndexRow | None:
 
 
 def test_a_run_that_skips_every_entry_ends_at_its_total(tmp_path: Path) -> None:
-    """Another execution claims each entry, and progress still ends at 3 of 3."""
+    """Another execution claims each entry, and progress still ends at 3 of 3.
+
+    A skipped entry also counts on the context's heartbeat, whose first call is
+    written.
+    """
     ds = make_dataset(tmp_path)
     run_id = "trex.0.1-0123456789"
     minted = MintedRun(
@@ -67,3 +72,7 @@ def test_a_run_that_skips_every_entry_ends_at_its_total(tmp_path: Path) -> None:
     (snap,) = read_runs(run_log_dir(ds.base_dir))
     assert snap["status"] == "finished"
     assert (snap["progress_done"], snap["progress_total"]) == (3, 3)
+    path = run_log_path(ds.base_dir, snap["execution_id"])
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    heartbeats = [(r["done"], r["total"]) for r in records if r["ev"] == "heartbeat"]
+    assert heartbeats == [(1, 3)]

@@ -205,15 +205,17 @@ class JobContext:
         """Write the count of the last throttled heartbeat.
 
         It writes one ``heartbeat`` unless the run-log wrote a ``heartbeat``,
-        ``entry_end`` or ``epoch`` event after the throttled call. Such an event
-        records a count at least as recent, and a ``heartbeat`` written after it
-        could move the count backward.
+        ``entry_end`` or ``epoch`` event after the throttled call, or its last
+        such event already records the count. An event after the call records a
+        count at least as recent, and a ``heartbeat`` written after it could move
+        the count backward.
         """
         pending, self._pending = self._pending, None
         if (
             self.run_log is not None
             and pending is not None
             and pending == self.run_log.progress_writes
+            and self.run_log.last_progress != (self._done, self._total)
         ):
             self.run_log.heartbeat(self._done, self._total)
 

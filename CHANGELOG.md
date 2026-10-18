@@ -385,14 +385,15 @@ every tenth call or after 15 s, and the attempt ended without the count of a
 throttled call. A `convert-tracks` or `convert-labels` over two raw files then
 finished at 1 of 2, and `get_request_status` reported the step half done. Before its
 `finished`, `failed` or `cancelled` record, an attempt now writes one `heartbeat` with
-that count, unless a later `heartbeat`, `entry_end` or `epoch` already recorded one.
-A failed or cancelled attempt reports its last count too.
+that count, unless the last `heartbeat`, `entry_end` or `epoch` line holds it or came
+after the throttled call. A failed or cancelled attempt reports its last count too.
 
 - Run-log, additive: at most one more `heartbeat` line before the terminal event.
   `TERMINAL_STATUSES` and the wires are unchanged.
 - The progress of `convert-tracks` and `convert-labels` counts raw files, so
   CalMS21 reports 2 of 2 beside `entries_written` 89.
-- `JsonlRunLog.progress_writes` and `JobContext.flush_progress` are new.
+- `JsonlRunLog.progress_writes`, `JsonlRunLog.last_progress` and
+  `JobContext.flush_progress` are new.
 - No identifier moves.
 
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
