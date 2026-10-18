@@ -261,6 +261,8 @@ class CleanupRunWire(GraphModel):
         reason: Why it was kept, ``""`` for a run removed.
         detail: What kept it, ``""`` for a run removed.
         bytes: The bytes its directory held, 0 for a run kept.
+        retired: For a run removed, the digest of the retired recipe whose
+            request wrote it; ``""`` for a superseded run and for a run kept.
     """
 
     storage: str
@@ -268,6 +270,7 @@ class CleanupRunWire(GraphModel):
     reason: str = ""
     detail: str = ""
     bytes: int = 0
+    retired: str = ""
 
 
 class CleanupStatusWire(GraphModel):
@@ -502,6 +505,7 @@ def cleanup_status_wire(
                 storage=record["feature"],
                 run_id=record["run_id"],
                 bytes=record["bytes"],
+                retired=record["retired"],
             )
             for record in removed[:CLEANUP_RUN_SAMPLE]
         ),

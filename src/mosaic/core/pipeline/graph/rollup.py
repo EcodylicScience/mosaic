@@ -80,6 +80,8 @@ class StepAttempt:
         liveness_interval: The seconds between the ``alive`` events that the
             process promised, 0 for none.
         phase: The last phase the attempt declared, ``""`` before one.
+        target: What the run-log names as its target: the storage name under
+            ``features/`` for a feature step, ``""`` before it started.
     """
 
     step_id: str
@@ -100,6 +102,7 @@ class StepAttempt:
     pid_ns: str = ""
     liveness_interval: float = 0.0
     phase: str = ""
+    target: str = ""
 
     @property
     def started(self) -> bool:
@@ -207,6 +210,7 @@ def _attempt(logs: Path, step_id: str, execution_id: str) -> StepAttempt:
         pid_ns=snapshot["pid_ns"],
         liveness_interval=snapshot["liveness_interval"],
         phase=snapshot["phase"],
+        target=snapshot["target"],
     )
 
 

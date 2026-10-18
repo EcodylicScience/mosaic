@@ -22,9 +22,11 @@ from mosaic.core.pipeline.graph import (
     CleanupNeedsPlan,
     CleanupOnManagedDataset,
     CleanupPolicy,
+    CleanupSpec,
     CleanupTarget,
     PlanChanged,
     Recipe,
+    Request,
     declared_version,
     load_request,
     plan_fingerprint,
@@ -33,6 +35,7 @@ from mosaic.core.pipeline.graph import (
     recipe_digest,
     recipe_path,
     request_path,
+    save_request,
     step_argv,
     submit_request,
 )
@@ -368,3 +371,90 @@ def test_a_fingerprint_without_cleanup_does_not_submit_a_cleanup(
         request_path(tracked.base_dir, submitted.request.request_id).read_text()
     )
     assert "cleanup" not in saved
+
+
+# --- the request file an older mosaic reads --------------------------------------------
+
+_FILE_HEAD = """{
+  "request_id": "%s",
+  "recipe_digest": "0123456789abcdef",
+  "owner": "",
+  "created_at": "2026-10-18T00:00:00Z",
+  "scope": {
+    "entries": null,
+    "groups": null,
+    "sequences": null
+  },
+  "bind": {},
+  "allow_partial": false,
+  "max_concurrent_steps": null,
+  "step_executions": {
+    "speed": "E1"
+  },
+  "step_versions": {
+    "speed": "0.2"
+  }"""
+
+_CLEANUP_BODY = """,
+  "cleanup": {
+    "mode": "superseded",
+    "policy": {
+      "keep_newest": 1,
+      "min_age_hours": 24.0
+    },
+    "execution_id": "E2",
+    "approved": [
+      {
+        "storage": "s",
+        "run_id": "0.2-aaaaaaaaaa"
+      }
+    ],
+    "fingerprint": "f"%s
+  }
+}"""
+
+
+def _request(*, retired: list[str] | None = None, cleanup: bool = True) -> Request:
+    spec = (
+        CleanupSpec(
+            execution_id="E2",
+            approved=[CleanupTarget(storage="s", run_id="0.2-aaaaaaaaaa")],
+            fingerprint="f",
+            retired=retired or [],
+        )
+        if cleanup
+        else None
+    )
+    return Request(
+        request_id="R1" if cleanup else "R2",
+        recipe_digest="0123456789abcdef",
+        created_at="2026-10-18T00:00:00Z",
+        step_executions={"speed": "E1"},
+        step_versions={"speed": "0.2"},
+        cleanup=spec,
+    )
+
+
+def test_a_request_without_a_retirement_is_written_as_an_older_mosaic_wrote_it(
+    tmp_path: Path,
+) -> None:
+    """Pinned to the bytes written before ``retired`` existed."""
+    plain = save_request(tmp_path, _request(cleanup=False))
+    cleaning = save_request(tmp_path, _request())
+
+    assert plain.read_text() == (_FILE_HEAD % "R2") + "\n}"
+    assert cleaning.read_text() == (_FILE_HEAD % "R1") + (_CLEANUP_BODY % "")
+
+
+def test_a_retirement_is_written_and_read_back(tmp_path: Path) -> None:
+    request = _request(retired=["51b2573baa1b4a84"])
+
+    path = save_request(tmp_path, request)
+
+    assert path.read_text() == (_FILE_HEAD % "R1") + (
+        _CLEANUP_BODY % ',\n    "retired": [\n      "51b2573baa1b4a84"\n    ]'
+    )
+    loaded = load_request(tmp_path, "R1")
+    assert loaded.cleanup is not None
+    assert loaded.cleanup.retired == ["51b2573baa1b4a84"]
+    assert loaded == request

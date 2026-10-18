@@ -413,6 +413,11 @@ class CleanupSpec(GraphModel):
             removes no other run, and keeps any of these that is no longer
             removable when it runs.
         fingerprint: The fingerprint of the plan the submission reviewed.
+        retired: The digests of the saved recipes this submission retired: the
+            runs their requests wrote were judged as candidates, wherever they
+            sit. It applies to this submission alone. Left out of the request
+            file when empty, because an older mosaic refuses a key it does not
+            know.
     """
 
     mode: Literal["superseded"] = "superseded"
@@ -420,6 +425,7 @@ class CleanupSpec(GraphModel):
     execution_id: str
     approved: list[CleanupTarget] = Field(default_factory=list)
     fingerprint: str = ""
+    retired: list[str] = Field(default_factory=list)
 
 
 class Request(GraphModel):

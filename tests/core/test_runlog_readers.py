@@ -632,3 +632,43 @@ def test_a_resumed_cleanup_never_undoes_a_removal(tmp_path: Path) -> None:
 
 def test_removal_records_of_an_absent_log_are_empty(tmp_path: Path) -> None:
     assert runlog.read_removal_records(run_log_dir(tmp_path), "missing") == []
+
+
+def test_a_retired_removal_keeps_its_digest_through_the_done_event(
+    tmp_path: Path,
+) -> None:
+    """The digest is on the intent, which ``run_removed`` does not repeat."""
+    with _log(tmp_path, "C2") as log:
+        log.started(kind="feature-cleanup", target="R1")
+        log.run_removing(
+            feature="speed",
+            run_id="0.1-a",
+            reason="retired",
+            superseded_by="",
+            params={},
+            retired="51b2573baa1b4a84",
+        )
+        interrupted = runlog.read_removal_records(run_log_dir(tmp_path), "C2")
+        log.run_removed(feature="speed", run_id="0.1-a", bytes=10, files=2, rows=1)
+
+    [record] = runlog.read_removal_records(run_log_dir(tmp_path), "C2")
+
+    assert interrupted[0]["state"] == "interrupted"
+    assert interrupted[0]["retired"] == "51b2573baa1b4a84"
+    assert (record["state"], record["reason"]) == ("removed", "retired")
+    assert record["retired"] == "51b2573baa1b4a84"
+
+
+def test_a_removal_without_a_retirement_writes_the_line_an_older_mosaic_wrote(
+    tmp_path: Path,
+) -> None:
+    with _removal_log(tmp_path):
+        pass
+
+    lines = (run_log_dir(tmp_path) / "C1.jsonl").read_text().splitlines()
+    removing = [json.loads(line) for line in lines if '"run_removing"' in line]
+
+    assert removing
+    assert all("retired" not in event for event in removing)
+    records = runlog.read_removal_records(run_log_dir(tmp_path), "C1")
+    assert {record["retired"] for record in records} == {""}

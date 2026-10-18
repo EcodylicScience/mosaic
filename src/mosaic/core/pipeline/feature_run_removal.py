@@ -88,6 +88,7 @@ def remove_feature_run(
     log: JsonlRunLog,
     reason: str,
     superseded_by: str,
+    retired: str = "",
 ) -> RemovedRun:
     """Remove one feature run: record it, drop its rows, then delete its files.
 
@@ -102,6 +103,8 @@ def remove_feature_run(
         log: The run-log of the cleanup removing it.
         reason: Why it is removed.
         superseded_by: The run that replaces it.
+        retired: The digest of the retired recipe whose request wrote the run,
+            ``""`` for a superseded run.
 
     Returns:
         What was removed.
@@ -122,6 +125,7 @@ def remove_feature_run(
         reason=reason,
         superseded_by=superseded_by,
         params=params.model_dump(mode="json", by_alias=True),
+        retired=retired,
     )
     dropped = feature_index(feature_index_path(ds, storage)).drop_runs({run_id})
     size, files = run_bytes(run_root)
