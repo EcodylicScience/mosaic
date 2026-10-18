@@ -57,6 +57,12 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   put on one line, and a finding quotes dataset content with `repr`, so nothing in a
   dataset can forge the tag. `confirm_hook` answers a confirmation whose tag it cannot
   read with its fallback, as it answers an unapproved one (`test_confirm_hook.py`).
+- `get_request_status` waits when given `wait_seconds`, at most `MAX_WAIT_SECONDS`.
+  `request_status_wire` polls the run-logs, and `LocalBackend` blocks on the worker
+  thread that `_binding._run_tool` gives each call, never on the event loop, and holds
+  no dataset lock while it waits. `brief` shrinks the result and is among the tool's
+  `narrowing`, and `wait_seconds` delays it and is not
+  (`test_mcp_server.py`, `test_mcp_stdio.py`).
 - A run's report is a resource, not a tool: a feature declaring `report_file` has it
   served at `.../artifacts/feature/{name}/{run_id}/report` through
   `read_run_report`.

@@ -113,11 +113,11 @@ INSTRUCTIONS: Final = (
     "work they cover. Workflow: describe_dataset and list_sequences; "
     "describe_step_types with a query, then with names=[...] for the step types "
     "you choose; draft a recipe and validate_recipe; plan_recipe, show the user "
-    "the plan and wait for their approval; submit_pipeline, then poll "
-    "get_request_status; get_inventory and preview_output read the results, "
-    "and diagnose_failures explains a failure. Reads change nothing. A result "
-    "is at most 40,000 characters, and a result_too_large error names the "
-    "arguments that narrow the call. The mosaic://guide resource, the "
+    "the plan and wait for their approval; submit_pipeline, then wait with "
+    "get_request_status and wait_seconds; get_inventory and preview_output read "
+    "the results, and diagnose_failures explains a failure. Reads change "
+    "nothing. A result is at most 40,000 characters, and a result_too_large "
+    "error names the arguments that narrow the call. The mosaic://guide resource, the "
     "`mosaic agent guide` command and the installed SKILL.md are one text; read "
     "it once, when the tools leave a question open. " + _CONFIRMATION_RULES
 )

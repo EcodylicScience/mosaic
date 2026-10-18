@@ -50,6 +50,7 @@ from mosaic.cli._io import (
     with_command_line_scope,
 )
 from mosaic.core.pipeline.error_kind import ClassifiedError
+from mosaic.core.pipeline.graph.status import MAX_WAIT_SECONDS
 from mosaic.core.pipeline.ops import ScopeRefused
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.cli._render import render_step_type_detail, render_table
@@ -905,6 +906,28 @@ def status_command(
     request_id: Annotated[
         str, typer.Option("--request", help="Which submission to report on.")
     ],
+    wait_seconds: Annotated[
+        int,
+        typer.Option(
+            "--wait-seconds",
+            help=(
+                "Wait up to this many seconds for a step to end, and report as "
+                "soon as one has, or the request has. 0 reports at once."
+            ),
+            min=0,
+            max=MAX_WAIT_SECONDS,
+        ),
+    ] = 0,
+    brief: Annotated[
+        bool,
+        typer.Option(
+            "--brief",
+            help=(
+                "List only the steps that are running, failed, cancelled or "
+                "partial, and those that ended during the wait. Count the rest."
+            ),
+        ),
+    ] = False,
     as_json: JsonOption = False,
 ) -> None:
     """Say how far one submission got, from its steps' own attempt logs.
@@ -921,6 +944,11 @@ def status_command(
     ``pipeline run --request`` resumes it. A step of ``unknown`` liveness runs on
     another host whose run-log declares no heartbeat, and ``mosaic cancel
     --assume-exited`` records it once its process is known to have exited.
+
+    ``--wait-seconds`` waits instead of polling: the report comes as soon as a
+    step has ended since the command began, or the request has ended or reads
+    ``orphaned``, and otherwise when the time is up. ``--brief`` lists the steps
+    that are running or did not finish cleanly, and counts the others.
     """
     from mosaic.core.pipeline.graph import load_request, request_status_wire
 
@@ -929,7 +957,9 @@ def status_command(
         request = load_request(ds.base_dir, request_id)
     except FileNotFoundError as exc:
         fail(str(exc))
-    report = request_status_wire(ds.base_dir, request)
+    report = request_status_wire(
+        ds.base_dir, request, brief=brief, wait_seconds=wait_seconds
+    )
     if as_json:
         emit_json(report.model_dump(mode="json"))
         return
@@ -962,6 +992,11 @@ def _render_request_status(report: RequestStatusWire) -> None:
             "liveness",
         ],
     )
+    if report.omitted_finished or report.omitted_pending:
+        log(
+            f"note: {report.omitted_finished} finished and {report.omitted_pending} "
+            "not started step(s) are not listed"
+        )
     if report.cleanup is not None:
         _render_cleanup_status(report.cleanup)
     if report.poll_after_seconds is not None:

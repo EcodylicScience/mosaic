@@ -44,11 +44,13 @@ still end the run.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from typing import IO, TYPE_CHECKING, ClassVar, Final
 
@@ -154,10 +156,11 @@ _POLL_SECONDS: Final = 0.2
 """How often a driver checks its cancel token while a step runs."""
 
 _DETACHED: list[subprocess.Popen[bytes]] = []
-"""The detached drivers that this process started and has not reaped.
+"""The detached drivers that this process started and that are still running.
 
-A ``Popen`` collected while its child runs warns, and a long-lived process reaps an
-exited driver at its next start.
+A waiter thread per driver (:func:`_reap`) removes it from the list as it reaps it,
+so a driver that exits leaves no zombie and no entry, whether or not this process
+starts another.
 """
 
 _IN_PROCESS_LEASES: set[tuple[str, str]] = set()
@@ -710,11 +713,27 @@ def start_detached_driver(
             stderr=log,
             start_new_session=True,
         )
-    _DETACHED[:] = [running for running in _DETACHED if running.poll() is None]
     _DETACHED.append(process)
+    threading.Thread(
+        target=_reap, args=(process,), name=f"mosaic-reap-{process.pid}", daemon=True
+    ).start()
     return DetachedDriver(
         request_id=request.request_id, pid=process.pid, log_path=log_path
     )
+
+
+def _reap(process: subprocess.Popen[bytes]) -> None:
+    """Wait for a detached driver to exit, so that its pid is released at once.
+
+    A driver is a child of the process that started it, and an exited child is a
+    zombie until that process waits for it. ``kill -0`` and ``/proc/<pid>`` then
+    keep reporting a driver that ended, to every process watching its pid, for as
+    long as the starting process lives. The thread is a daemon, so it never keeps
+    a server or a notebook from exiting, and a driver outlives its parent.
+    """
+    _ = process.wait()
+    with contextlib.suppress(ValueError):
+        _DETACHED.remove(process)
 
 
 def _refuse_undrivable(ds: Dataset, request: Request) -> tuple[Recipe, tuple[str, ...]]:

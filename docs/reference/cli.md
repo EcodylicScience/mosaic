@@ -1190,6 +1190,11 @@ exited, its host rebooted, or it wrote nothing for ten heartbeat intervals).
 another host whose run-log declares no heartbeat, and ``mosaic cancel
 --assume-exited`` records it once its process is known to have exited.
 
+``--wait-seconds`` waits instead of polling: the report comes as soon as a
+step has ended since the command began, or the request has ended or reads
+``orphaned``, and otherwise when the time is up. ``--brief`` lists the steps
+that are running or did not finish cleanly, and counts the others.
+
 **Usage**:
 
 ```console
@@ -1200,6 +1205,8 @@ $ mosaic pipeline status [OPTIONS]
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--request <str>`: Which submission to report on.  [required]
+* `--wait-seconds <int range>`: Wait up to this many seconds for a step to end, and report as soon as one has, or the request has. 0 reports at once.  [default: 0; 0<=x<=45]
+* `--brief`: List only the steps that are running, failed, cancelled or partial, and those that ended during the wait. Count the rest.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 

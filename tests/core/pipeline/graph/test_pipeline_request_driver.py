@@ -239,8 +239,8 @@ def test_a_detached_driver_is_started_with_the_parallel_flags(
     class _Started:
         pid = 4242
 
-        def poll(self) -> None:
-            return None
+        def wait(self) -> int:
+            return 0
 
     def popen(argv: list[str], **_kwargs: object) -> _Started:
         seen.append(argv)
@@ -264,6 +264,65 @@ def test_a_detached_driver_is_started_with_the_parallel_flags(
         "--min-free-memory-fraction",
         "0.1",
     ]
+
+
+def _pid_exists(pid: int) -> bool:
+    """Whether ``kill -0 <pid>`` succeeds, which it does for a zombie."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_a_detached_driver_that_exits_leaves_no_zombie_while_its_parent_lives(
+    tracked: Dataset,
+    submitted: Request,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``kill -0`` fails once the driver exits, with no other driver started after.
+
+    An unreaped driver is a zombie child of the long-lived server that started it,
+    and an agent polling its pid never sees it end.
+    """
+    ended = tmp_path / "ended"
+    stand_in = (sys.executable, "-c", f"open({str(ended)!r}, 'w').close()")
+    listed: list[object] = []
+    monkeypatch.setattr(graph_run, "MOSAIC_COMMAND", stand_in)
+    monkeypatch.setattr(graph_run, "_DETACHED", listed)
+
+    driver = start_detached_driver(tracked, submitted)
+    wait_for(ended.exists, STEP_SECONDS, "the stand-in driver never ran")
+
+    wait_for(
+        lambda: not _pid_exists(driver.pid),
+        10.0,
+        "the exited driver is still a process of this one",
+    )
+    wait_for(lambda: not listed, 10.0, "the exited driver is still listed")
+
+
+def test_a_killed_detached_driver_is_reaped_and_a_running_one_is_listed(
+    tracked: Dataset, submitted: Request, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    listed: list[subprocess.Popen[bytes]] = []
+    monkeypatch.setattr(graph_run, "MOSAIC_COMMAND", (*SLEEPER_COMMAND, "600"))
+    monkeypatch.setattr(graph_run, "_DETACHED", listed)
+
+    driver = start_detached_driver(tracked, submitted)
+    try:
+        assert process_running(driver.pid)
+        assert [running.pid for running in listed] == [driver.pid]
+    finally:
+        os.kill(driver.pid, signal.SIGKILL)
+
+    wait_for(
+        lambda: not _pid_exists(driver.pid),
+        10.0,
+        "the killed driver is still a process of this one",
+    )
+    wait_for(lambda: not listed, 10.0, "the killed driver is still listed")
 
 
 def test_resuming_a_request_by_hand_accepts_the_worker_flags(

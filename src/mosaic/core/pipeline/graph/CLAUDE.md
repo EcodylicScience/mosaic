@@ -154,6 +154,12 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   `live_step_process`, `test_pipeline_status_wire.py`). A same-host pid counts only
   when its process began by the attempt's recorded start, which rules out a pid
   reused after a reboot.
+- `request_status_wire` also waits (`wait_seconds`, at most `MAX_WAIT_SECONDS`): it
+  reads the rollup every `WAIT_POLL_SECONDS` and returns when a step ended since the
+  call began, or the request ended or reads `orphaned`. A request already in either
+  state is returned at once, and `brief` lists the running, failed, cancelled and
+  partial steps and the ones that ended in the wait, and counts the rest
+  (`test_pipeline_status_wait.py`, which injects `sleep` and `monotonic`).
 - `liveness.py` is the one rule for whether an attempt's process may still run
   (`alive`, `unknown`, `dead`, `ended`): an earlier boot of this host, then a local
   pid, then ten declared intervals of silence. A job's `started` event declares the
@@ -170,6 +176,9 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   which every step would meet, ends the run. A cancel forwards SIGTERM to the running
   step's group and records every step without a terminal record `cancelled`
   (`record_step_ended`). The rollup then closes.
+  `start_detached_driver` reaps each driver it starts with a daemon waiter thread, so
+  an exited driver leaves no zombie of a long-lived server
+  (`test_pipeline_request_driver.py`).
   The driver deletes its lease when the request ends and keeps it when it raises
   (`test_pipeline_request_driver.py`, `test_pipeline_driver_lease.py`). The lease
   names the running step's process, which a killed driver leaves running in its own

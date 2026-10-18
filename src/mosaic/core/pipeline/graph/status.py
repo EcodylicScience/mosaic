@@ -10,11 +10,17 @@ request's driver lease (:mod:`~.driver_lease`). It judges whether each attempt's
 process may still run by :mod:`~.liveness`. A poll costs a few small files. The
 module and its imports leave the feature library, pandas, cv2 and av unloaded
 (``tests/meta/test_status_imports.py``).
+
+:func:`request_status_wire` also waits: given ``wait_seconds`` it reads the
+run-logs on a short interval and returns when a step of the request ends or the
+request does, and ``brief`` leaves out the steps that need no attention.
 """
 
 from __future__ import annotations
 
 import datetime
+import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Final, Literal, TypeGuard, get_args
 
 from pydantic import TypeAdapter, ValidationError
@@ -55,9 +61,11 @@ __all__ = [
     "CLEANUP_RUN_SAMPLE",
     "FAILED_ENTRY_SAMPLE",
     "JSON_OBJECT",
+    "MAX_WAIT_SECONDS",
     "POLL_AFTER_MAX_SECONDS",
     "POLL_AFTER_MIN_SECONDS",
     "RETIRABLE_REQUEST_IDS",
+    "WAIT_POLL_SECONDS",
     "CleanupRunWire",
     "CleanupStatusWire",
     "FailedEntryWire",
@@ -93,6 +101,17 @@ POLL_AFTER_MIN_SECONDS: Final = 10
 
 POLL_AFTER_MAX_SECONDS: Final = 300
 """The most seconds a request report asks a poller to wait."""
+
+MAX_WAIT_SECONDS: Final = 45
+"""The most seconds one request report waits for a step to end.
+
+A caller that wants a longer wait reads again. It stays under 60 s, which is the
+default request timeout of the MCP TypeScript SDK and of clients built on it, so
+that a wait which runs to its end is answered before such a client gives up.
+"""
+
+WAIT_POLL_SECONDS: Final = 0.5
+"""How often a request report that waits reads the run-logs again."""
 
 type RequestVerdict = Literal[
     "running", "finished", "partial", "failed", "cancelled", "orphaned"
@@ -348,6 +367,10 @@ class RequestStatusWire(GraphModel):
             will change it by itself.
         cleanup: The request's removal of superseded runs, ``None`` for a
             request without one.
+        omitted_finished: How many steps a brief report leaves out because they
+            finished without losing an entry, 0 for a report that is not brief.
+        omitted_pending: How many steps a brief report leaves out because they
+            have not started, 0 for a report that is not brief.
     """
 
     request_id: str
@@ -357,6 +380,8 @@ class RequestStatusWire(GraphModel):
     steps: tuple[StepStatusWire, ...]
     poll_after_seconds: int | None = None
     cleanup: CleanupStatusWire | None = None
+    omitted_finished: int = 0
+    omitted_pending: int = 0
 
 
 class RequestSummaryWire(GraphModel):
@@ -482,33 +507,141 @@ def request_status_wire(
     request: Request,
     *,
     now: datetime.datetime | None = None,
+    brief: bool = False,
+    wait_seconds: float = 0,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> RequestStatusWire:
     """Report one request from the run-logs of the attempts it assigned.
 
     The verdict also reads the request's driver lease (:func:`request_verdict_of`).
+
+    With ``wait_seconds`` the call reads the run-logs every
+    :data:`WAIT_POLL_SECONDS` and returns as soon as a step has ended since the
+    call began, or the request has ended or reads ``orphaned``, or the wait runs
+    out. A request that has ended or reads ``orphaned`` when the call begins is
+    returned at once, and so is a call that asks for no wait. A step that ended
+    before the call does not end the wait.
 
     Args:
         base_dir: The dataset root containing ``.mosaic/runs``.
         request: The submission to report on.
         now: The current instant that liveness and the poll interval are judged
             at. ``None`` reads the clock.
+        brief: List only the steps that are running, failed, cancelled or
+            ``partial``, and those that ended during the wait. The others are
+            counted in ``omitted_finished`` and ``omitted_pending``.
+        wait_seconds: The longest to wait, at most :data:`MAX_WAIT_SECONDS`.
+        sleep: How the wait pauses, a seam for tests.
+        monotonic: The clock the wait is timed by, a seam for tests.
 
     Returns:
         The request's status, its verdict, one report per step and when to poll
         again.
     """
-    logs = run_log_dir(base_dir)
     rollup = request_rollup(base_dir, request)
+    ended: frozenset[str] = frozenset()
+    if wait_seconds > 0:
+        rollup, ended = _wait_for_change(
+            base_dir,
+            request,
+            rollup,
+            min(wait_seconds, MAX_WAIT_SECONDS),
+            now=now,
+            sleep=sleep,
+            monotonic=monotonic,
+        )
     verdict = request_verdict_of(base_dir, rollup, now=now)
+    attempts = _brief_attempts(rollup, ended) if brief else None
+    listed = rollup.steps if attempts is None else attempts[0]
+    logs = run_log_dir(base_dir)
     return RequestStatusWire(
         request_id=rollup.request_id,
         status=rollup.status,
         terminal=rollup.is_terminal,
         verdict=verdict,
-        steps=tuple(_step_status(logs, attempt, now=now) for attempt in rollup.steps),
+        steps=tuple(_step_status(logs, attempt, now=now) for attempt in listed),
         poll_after_seconds=poll_after_seconds(rollup, verdict, now=now),
         cleanup=cleanup_status_wire(base_dir, request, rollup),
+        omitted_finished=0 if attempts is None else attempts[1],
+        omitted_pending=0 if attempts is None else attempts[2],
     )
+
+
+def _ended_steps(rollup: RequestRollup) -> frozenset[str]:
+    """The steps of *rollup* whose attempts are over, whichever way they went."""
+    return frozenset(attempt.step_id for attempt in rollup.steps if attempt.terminal)
+
+
+def _wait_for_change(
+    base_dir: Path | str,
+    request: Request,
+    rollup: RequestRollup,
+    wait: float,
+    *,
+    now: datetime.datetime | None,
+    sleep: Callable[[float], None],
+    monotonic: Callable[[], float],
+) -> tuple[RequestRollup, frozenset[str]]:
+    """Read *request* until a step ends or *wait* seconds pass.
+
+    Args:
+        base_dir: The dataset root containing ``.mosaic/runs``.
+        request: The submission.
+        rollup: Its rollup when the call began, which the steps that ended are
+            counted against.
+        wait: The most seconds to wait.
+        now: The instant a verdict is judged at, ``None`` for the clock.
+        sleep: How to pause.
+        monotonic: The clock the wait is timed by.
+
+    Returns:
+        The latest rollup, and the steps that ended since *rollup*.
+    """
+    if (
+        rollup.is_terminal
+        or request_verdict_of(base_dir, rollup, now=now) == "orphaned"
+    ):
+        return rollup, frozenset()
+    before = _ended_steps(rollup)
+    deadline = monotonic() + wait
+    while (remaining := deadline - monotonic()) > 0:
+        sleep(min(WAIT_POLL_SECONDS, remaining))
+        rollup = request_rollup(base_dir, request)
+        ended = _ended_steps(rollup) - before
+        if (
+            ended
+            or rollup.is_terminal
+            or request_verdict_of(base_dir, rollup, now=now) == "orphaned"
+        ):
+            return rollup, ended
+    return rollup, frozenset()
+
+
+def _brief_attempts(
+    rollup: RequestRollup, ended: frozenset[str]
+) -> tuple[tuple[StepAttempt, ...], int, int]:
+    """The steps of *rollup* a brief report lists, and the counts it leaves out.
+
+    A step is listed when it is running, failed, cancelled or finished having
+    lost entries, or is in *ended*. A step that finished cleanly, or has not
+    started, is counted.
+
+    Returns:
+        The listed steps in the request's order, how many steps finished
+        cleanly and were left out, and how many have not started.
+    """
+    listed: list[StepAttempt] = []
+    finished = pending = 0
+    for attempt in rollup.steps:
+        outcome = attempt_outcome(attempt.status, attempt.entries_failed)
+        if attempt.step_id in ended or outcome not in ("finished", "pending"):
+            listed.append(attempt)
+        elif outcome == "finished":
+            finished += 1
+        else:
+            pending += 1
+    return tuple(listed), finished, pending
 
 
 def cleanup_status_wire(
