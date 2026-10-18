@@ -45,8 +45,8 @@ sequence (7% and 20% of the rows), that moved a column's mean by up to 0.26 and 
 its standard deviation and inflated the deviation by up to 1.36 and 2.10 times, and every
 NaN frame decoded as a state that no other frame used. The mean and standard deviation
 now count the finite values only, and a missing value reads as its column's mean (as 0
-when `standardize` is off, as before). This is inside the 0.3 bump. An input with no missing value gets the scaler of 0.2 up to
-rounding.
+when `standardize` is off, as before). This is inside the 0.3 bump. An input with no
+missing value gets the scaler of 0.2 up to rounding.
 
 **`lightning-action` refuses a pair table.** Its `apply` wrote an entry's rows to the
 model as one sequence in table order, so a pair entry interleaved the two perspectives.
@@ -78,11 +78,11 @@ per second) and now takes 0.06 s (700,000).
 **The agent guide and the `parallel_mode` tool text agree on when to use `process`.**
 `SKILL.md` said to use `process` only for small, fast steps, and the `submit_pipeline`
 argument said it is faster for work that holds the interpreter lock. The second is what
-happens. On 8 entries and 10 cores, a Python loop took 17.9 s in turn, 26.2 s in four threads and
-4.8 s in four processes, and a vectorised numpy step took 2.0 s in turn, 1.1 s in four
-threads and 2.1 s in four processes. Both texts now say to start with `thread` and to
-use `process` for a step that stays slow in threads because its Python code holds the
-interpreter lock, when the host's memory allows. Nothing recomputes.
+happens. On 8 entries and 10 cores, a Python loop took 17.9 s in turn, 26.2 s in four
+threads and 4.8 s in four processes, and a vectorised numpy step took 2.0 s in turn,
+1.1 s in four threads and 2.1 s in four processes. Both texts now say to start with
+`thread` and to use `process` for a step that stays slow in threads because its Python
+code holds the interpreter lock, when the host's memory allows. Nothing recomputes.
 
 **A request can be waited for, and a detached driver that exits is gone.** A detached
 driver was reaped only when the same process started another, so an exited driver stayed
