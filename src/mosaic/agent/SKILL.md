@@ -159,6 +159,10 @@ A dataset is a directory with `dataset.yaml` and named roots
   whose files are gone. All four are dry runs until given `--apply`. For superseded
   feature runs, plan with `mosaic pipeline plan --cleanup superseded`, which lists
   them, and submit with `--cleanup superseded --expect-plan <fingerprint>`.
+- Give a recipe a `name` and keep it across the recipe's versions. A cleanup removes
+  the runs of earlier versions, which share the name or the digest, and keeps every
+  run that a request of another recipe recorded. An unnamed recipe is a version only
+  of itself.
 
 ## Bringing data in
 

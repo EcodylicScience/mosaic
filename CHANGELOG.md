@@ -380,6 +380,23 @@ and then the directory go, so the run can be computed again.
   the requests of a dataset that holds one. A request without one is written as
   before.
 
+**A cleanup keeps a run that a request of another recipe recorded.** A candidate in a
+planned storage was judged whichever recipe wrote it. A sibling that another saved
+recipe uses, such as a second `k` of `global-kmeans`, was therefore removable an hour
+after that recipe's request ended. Two recipes are now versions of each other when they
+have the same digest or the same non-empty `name`. A run that a request of any other
+recipe recorded or binds is kept as `recipe_uses` once that request's hold lapses, and
+so is a run recorded by a request whose recipe file does not read.
+
+- Name a recipe and keep the name across its versions. An unnamed recipe is a version
+  only of itself. A params edit of one keeps the runs that its earlier requests
+  recorded.
+- A run in a storage the recipe no longer names is still not a candidate, and a run
+  written outside a request (`run_feature`, `Pipeline`) is judged as before.
+- `plan_cleanup` takes a required `recipe_name`. `KeptReason` gains `recipe_uses`, and
+  the wire's `reason` is a string. A fingerprint taken before the change for a plan
+  with such a sibling is refused with `PlanChanged`; plan again.
+
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
 **mosaic-behavior is on PyPI.** `pip install "mosaic-behavior[all]"` replaces the

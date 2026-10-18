@@ -108,6 +108,11 @@ def _chain(step_size: int, *, scaler: bool = False) -> Recipe:
     return Recipe.model_validate({"schema_version": 1, "name": "chain", "steps": steps})
 
 
+def _named(recipe: Recipe, name: str) -> Recipe:
+    """*recipe* under *name*."""
+    return Recipe.model_validate({**recipe.model_dump(mode="json"), "name": name})
+
+
 def _cleanup(
     ds: Dataset,
     recipe: Recipe,
@@ -229,7 +234,9 @@ def test_a_run_a_retained_run_reads_through_inputs_or_params_is_kept(
     first = _run_ids(dataset, _chain(1, scaler=True))
 
     if site == "inputs":
-        cleanup = _cleanup(dataset, speed_recipe_stepping(2), now=LATER)
+        cleanup = _cleanup(
+            dataset, _named(speed_recipe_stepping(2), "chain"), now=LATER
+        )
         read, reader = first["speed"], first["templates"]
     else:
         cleanup = _cleanup(dataset, _chain(2), now=LATER)
@@ -275,7 +282,7 @@ def test_a_reader_with_unreadable_params_keeps_its_chain(dataset: Dataset) -> No
     first = _run_ids(dataset, _chain(1))
     (feature_run_root(dataset, TEMPLATES, first["templates"]) / "params.json").unlink()
 
-    cleanup = _cleanup(dataset, speed_recipe_stepping(2), now=LATER)
+    cleanup = _cleanup(dataset, _named(speed_recipe_stepping(2), "chain"), now=LATER)
 
     assert _reasons(cleanup) == {first["speed"]: "read_by"}
 
@@ -382,6 +389,58 @@ def test_a_request_older_than_the_window_holds_nothing(dataset: Dataset) -> None
     assert _reasons(cleanup) == {old: "superseded"}
 
 
+@pytest.mark.parametrize(
+    ("recorded_by", "planned", "reason"),
+    [
+        ("other", "speed", "recipe_uses"),
+        ("speed", "speed", "superseded"),
+        ("", "", "recipe_uses"),
+    ],
+)
+def test_a_run_another_recipe_recorded_is_kept_after_its_hold(
+    dataset: Dataset, recorded_by: str, planned: str, reason: str
+) -> None:
+    """Recipes of one non-empty name are versions of each other, unnamed ones not."""
+    ran = run_pipeline(dataset, _named(speed_recipe_stepping(1), recorded_by))
+    old = _run_ids(dataset, speed_recipe_stepping(1))["speed"]
+
+    cleanup = _cleanup(dataset, _named(speed_recipe_stepping(2), planned), now=LATER)
+
+    [run] = cleanup.runs
+    assert (run.run_id, run.reason) == (old, reason)
+    if reason == "recipe_uses":
+        assert ran.request_id in run.detail
+        assert (recorded_by or ran.recipe_digest) in run.detail
+
+
+def test_a_run_another_recipe_binds_is_kept_after_its_hold(dataset: Dataset) -> None:
+    old = run_speed(dataset, 1)
+    request = submit_request(
+        dataset,
+        _named(speed_recipe_stepping(5), "other"),
+        bind={"speed": BoundRef(feature=STORAGE, run_id=old)},
+    ).request
+    _ = cancel_request(dataset, request.request_id)
+
+    cleanup = _cleanup(dataset, speed_recipe_stepping(2), now=LATER)
+
+    assert _reasons(cleanup) == {old: "recipe_uses"}
+
+
+def test_an_ended_request_whose_recipe_does_not_read_keeps_its_runs(
+    dataset: Dataset,
+) -> None:
+    ran = run_pipeline(dataset, speed_recipe_stepping(1))
+    old = _run_ids(dataset, speed_recipe_stepping(1))["speed"]
+    recipe_path(dataset.base_dir, ran.recipe_digest).unlink()
+
+    cleanup = _cleanup(dataset, speed_recipe_stepping(2), now=LATER)
+
+    [run] = cleanup.runs
+    assert (run.run_id, run.reason) == (old, "recipe_uses")
+    assert "does not read" in run.detail
+
+
 def test_an_orphaned_request_holds_its_runs_at_any_age(dataset: Dataset) -> None:
     old = run_speed(dataset, 1)
     request = submit_request(dataset, speed_recipe_stepping(1)).request
@@ -425,6 +484,7 @@ def test_the_own_requests_binds_are_kept(dataset: Dataset) -> None:
         policy=LOOSE,
         inventory=InventoryCache(dataset),
         catalog=declaration_catalog(),
+        recipe_name=recipe.name,
         own_request=request,
     )
 
@@ -625,6 +685,7 @@ def test_a_feature_the_catalog_does_not_know_is_kept(dataset: Dataset) -> None:
         policy=LOOSE,
         inventory=InventoryCache(dataset),
         catalog=DeclarationCatalog(entries=entries),
+        recipe_name="speed",
     )
 
     assert _reasons(cleanup) == {old: "costly_fit"}
