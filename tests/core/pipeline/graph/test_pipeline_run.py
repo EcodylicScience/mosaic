@@ -12,7 +12,9 @@ from __future__ import annotations
 import datetime
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
+from typing import Final
 
 import pandas as pd
 import pytest
@@ -32,6 +34,7 @@ from mosaic.core.pipeline.graph import (
     Recipe,
     Request,
     StepOutcome,
+    StepRefused,
     build_step_feature,
     driver_lease_path,
     execute_step,
@@ -881,26 +884,46 @@ def test_an_in_process_step_that_raises_unrecorded_leaves_no_step_named(
     assert request_verdict_of(tracked.base_dir, rollup, now=later) == "orphaned"
 
 
-def test_an_in_process_failure_ends_its_branch_and_raises_after_the_sibling(
-    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    ran: list[str] = []
+def _speed_raising(
+    ran: list[str], error: Exception, *, error_json: str = ""
+) -> Callable[..., StepOutcome]:
+    """Return an ``execute_step`` under which ``speed`` raises *error*.
 
-    def speed_fails(ds: Dataset, request: Request, step_id: str, **_: object):
+    With *error_json*, ``speed`` first records its attempt failed with it, and
+    without one it raises before its run-log exists. Every other step finishes.
+    Each step that runs is appended to *ran*.
+    """
+
+    def execute(
+        ds: Dataset, request: Request, step_id: str, **_: object
+    ) -> StepOutcome:
         ran.append(step_id)
-        if step_id == "speed":
+        if step_id != "speed":
+            return _finish_step(ds, request, step_id)
+        if error_json:
             record_step_ended(
                 ds,
                 request.execution_of(step_id),
                 step_id=step_id,
                 owner="",
                 status="failed",
-                error_json=json.dumps({"type": "RuntimeError", "message": "broke"}),
+                error_json=error_json,
             )
-            raise RuntimeError("speed broke")
-        return _finish_step(ds, request, step_id)
+        raise error
 
-    monkeypatch.setattr(run_module, "execute_step", speed_fails)
+    return execute
+
+
+_SPEED_BROKE: Final = json.dumps({"type": "RuntimeError", "message": "broke"})
+"""The ``error_json`` of a ``speed`` attempt that failed."""
+
+
+def test_an_in_process_failure_ends_its_branch_and_raises_after_the_sibling(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[str] = []
+    execute = _speed_raising(ran, RuntimeError("speed broke"), error_json=_SPEED_BROKE)
+    monkeypatch.setattr(run_module, "execute_step", execute)
     submitted = submit_request(tracked, chain_with_sibling_recipe()).request
 
     with pytest.raises(RuntimeError, match="speed broke"):
@@ -916,6 +939,102 @@ def test_an_in_process_failure_ends_its_branch_and_raises_after_the_sibling(
     error = json.loads(steps["templates"].error_json)
     assert (error["type"], error["parent"]) == (PARENT_FAILED_TYPE, "speed")
     assert not driver_lease_path(tracked.base_dir, submitted.request_id).exists()
+
+
+def test_an_in_process_run_again_skips_the_steps_below_a_step_that_fails_again(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``templates`` is already recorded ``ParentFailed``, and is not run."""
+    ran: list[str] = []
+    execute = _speed_raising(ran, RuntimeError("speed broke"), error_json=_SPEED_BROKE)
+    monkeypatch.setattr(run_module, "execute_step", execute)
+    submitted = submit_request(tracked, chain_with_sibling_recipe()).request
+    with pytest.raises(RuntimeError, match="speed broke"):
+        _ = run_pipeline(tracked, chain_with_sibling_recipe(), request=submitted)
+    ran.clear()
+
+    with pytest.raises(RuntimeError, match="speed broke"):
+        _ = run_pipeline(tracked, chain_with_sibling_recipe(), request=submitted)
+
+    assert ran == ["speed", "sibling"]
+    templates = read_run(
+        run_log_dir(tracked.base_dir), submitted.execution_of("templates")
+    )
+    assert templates is not None
+    assert json.loads(templates["error_json"])["type"] == PARENT_FAILED_TYPE
+
+
+def test_a_refusal_that_every_step_meets_ends_an_in_process_run(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[str] = []
+    refusal = StepRefused("version_moved", "speed", "a pinned version moved")
+    execute = _speed_raising(ran, refusal, error_json=refusal.error_json())
+    monkeypatch.setattr(run_module, "execute_step", execute)
+    submitted = submit_request(tracked, chain_with_sibling_recipe()).request
+
+    with pytest.raises(StepRefused, match="a pinned version moved"):
+        _ = run_pipeline(tracked, chain_with_sibling_recipe(), request=submitted)
+
+    assert ran == ["speed"]
+    statuses = {
+        attempt.step_id: attempt.status
+        for attempt in request_rollup(tracked.base_dir, submitted).steps
+    }
+    assert statuses == {"speed": "failed", "sibling": "", "templates": ""}
+    assert not driver_lease_path(tracked.base_dir, submitted.request_id).exists()
+
+
+def test_an_in_process_raise_unrecorded_runs_the_sibling_and_keeps_the_lease(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``templates`` stays unrecorded. A resume runs ``speed`` and then it."""
+    ran: list[str] = []
+    execute = _speed_raising(ran, RuntimeError("raised before the attempt began"))
+    monkeypatch.setattr(run_module, "execute_step", execute)
+    submitted = submit_request(tracked, chain_with_sibling_recipe()).request
+
+    with pytest.raises(RuntimeError, match="before the attempt began"):
+        _ = run_pipeline(tracked, chain_with_sibling_recipe(), request=submitted)
+
+    assert ran == ["speed", "sibling"]
+    statuses = {
+        attempt.step_id: attempt.status
+        for attempt in request_rollup(tracked.base_dir, submitted).steps
+    }
+    assert statuses == {"speed": "", "sibling": "finished", "templates": ""}
+    assert read_driver_lease(tracked.base_dir, submitted.request_id) is not None
+
+
+def test_a_failure_recorded_by_an_earlier_attempt_is_not_this_runs_record(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``speed`` raises unrecorded over its earlier failure.
+
+    ``templates`` stays unrecorded, and the lease is kept.
+    """
+    submitted = submit_request(tracked, chain_with_sibling_recipe()).request
+    record_step_ended(
+        tracked,
+        submitted.execution_of("speed"),
+        step_id="speed",
+        owner="",
+        status="failed",
+        error_json=_SPEED_BROKE,
+    )
+    ran: list[str] = []
+    execute = _speed_raising(ran, RuntimeError("raised before the attempt began"))
+    monkeypatch.setattr(run_module, "execute_step", execute)
+
+    with pytest.raises(RuntimeError, match="before the attempt began"):
+        _ = run_pipeline(tracked, chain_with_sibling_recipe(), request=submitted)
+
+    assert ran == ["speed", "sibling"]
+    assert (
+        read_run(run_log_dir(tracked.base_dir), submitted.execution_of("templates"))
+        is None
+    )
+    assert read_driver_lease(tracked.base_dir, submitted.request_id) is not None
 
 
 def test_an_in_process_stall_leaves_its_branch_unrecorded_and_runs_the_sibling(

@@ -114,9 +114,9 @@ Explain request {arguments["rid"]} of dataset {arguments["dataset"]}.
    what answers it: allow_partial for a coverage shortfall or a quarantined
    entry, a changed recipe for a problem in it, or a CLI command for the user to
    run. A step whose error type is ParentFailed did not run, because the parent
-   step in its error failed. The steps on other branches ran on. A request
-   reading orphaned, because its driver stopped or its step's
-   process is provably gone, is resumed with mosaic pipeline run --manifest
+   step in its error failed. The steps on other branches still ran. A request
+   reading orphaned, because its driver stopped or its step's process is
+   provably gone, is resumed with mosaic pipeline run --manifest
    <manifest> --request <request id>. A step whose liveness reads unknown runs on
    another host that wrote no heartbeat: if the user confirms that its process
    has exited, they record it with mosaic cancel --manifest <manifest> --request

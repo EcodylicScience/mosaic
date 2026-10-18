@@ -162,11 +162,12 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   running step's, deletes it when the request ends, and keeps it after a shortfall
   until a later call in the same process takes it over. It catches an error of
   `execute_step` alone, and a lease error still stops it. A failure that the step's
-  run-log records ends the branch as in `run_request`. A raise with no recorded end,
-  and a stall without `allow_partial`, leave the branch unrecorded and keep the lease,
-  so the request resumes. It raises the first error after the other steps ran.
-  It stops before a step that a cancel recorded `cancelled`, and records its unended
-  steps `cancelled` on `Cancelled` or `KeyboardInterrupt` (`test_pipeline_run.py`).
+  run-log records in this call ends the branch as in `run_request`, and a later call
+  skips that branch when the step fails again. A raise with no recorded end, and a
+  stall without `allow_partial`, leave the branch unrecorded and keep the lease, so
+  the request resumes. It raises the first error after the other steps ran. It stops
+  before a step that a cancel recorded `cancelled`, and records its unended steps
+  `cancelled` on `Cancelled` or `KeyboardInterrupt` (`test_pipeline_run.py`).
 - A request's cleanup runs in its driver after every step finished, in `run_request`
   and `run_pipeline` alike (`run_cleanup`, `cleanup.py`), under the driver's lease; it
   records no step. It removes only the approved runs that are still removable. Before

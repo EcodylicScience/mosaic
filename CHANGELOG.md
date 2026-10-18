@@ -100,8 +100,9 @@ request closed `failed`. A mosaic-queue gate already ran them.
   see the driver at work. A stale lease reads `orphaned`, and a resume runs the rest.
   `request_verdict` and `runlog.TERMINAL_STATUSES` are unchanged.
 - `mosaic pipeline run --request` does not drive a request that has ended: it starts
-  nothing and reports the request's status. `RequestRun` gains `blocked`, and the
-  `--json` output gains `blocked`, the steps the driver recorded `ParentFailed`.
+  nothing, deletes a stale driver lease and reports the request's status.
+  `RequestRun` gains `blocked`, and the `--json` output gains `blocked`, the steps
+  the driver recorded `ParentFailed`.
 - `run_pipeline` and `mosaic pipeline run --recipe` raise the first step error after
   the other branches ran, with the same exit codes. A step that raised before its
   run-log recorded an end, and a stall without `allow_partial`, leave the steps below

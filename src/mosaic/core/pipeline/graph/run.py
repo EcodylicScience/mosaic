@@ -37,8 +37,9 @@ the process that started it.
 
 **A failed step ends the branch below it.** Both drivers record each step below a
 failed one ``failed``, with :data:`PARENT_FAILED_TYPE` naming the parent, and run
-the steps that do not descend from it. A refusal that every step of the request
-would meet (:data:`_REFUSALS_OF_EVERY_STEP`) and a cancel still end the run.
+the steps that do not descend from it. A ``version_moved``, ``recipe_missing`` or
+``digest_mismatch`` refusal, which every step of the request meets, and a cancel
+still end the run.
 """
 
 from __future__ import annotations
@@ -91,6 +92,7 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.entry import Entry
     from mosaic.core.json_value import JsonValue
+    from mosaic.runlog import RunLogSnapshot
 
     from ..inventory.cache import InventoryCache
     from .compatibility import DeclarationCatalog
@@ -219,8 +221,8 @@ def run_pipeline(
     (:data:`PARENT_FAILED_TYPE`). A step that raises before its run-log records
     an end, and a stall without ``allow_partial``, leave the steps below them
     unrecorded. Once every other step has run, the first error is raised. A
-    refusal that every step would meet (:data:`_REFUSALS_OF_EVERY_STEP`) ends
-    the run at once.
+    ``version_moved``, ``recipe_missing`` or ``digest_mismatch`` refusal, which
+    every step meets, ends the run at once.
 
     The run holds the request's driver lease, marked ``in_process``, and names in
     it the step that runs. It deletes the lease when the request has ended and
@@ -298,16 +300,17 @@ def run_pipeline(
     _IN_PROCESS_LEASES.add(_lease_key(lease))
     outcomes: list[StepOutcome] = []
     cleanup_status = ""
-    blocked: set[str] = set()
+    below_failure: set[str] = set()
     unrecorded: set[str] = set()
     first_error: Exception | None = None
     driving_ended = False
     try:
         for step_id in order:
-            if step_id in blocked or step_id in unrecorded:
+            if step_id in below_failure or step_id in unrecorded:
                 continue
             keeper.ensure_held()
             keeper.record_step(step_id, os.getpid())
+            before = _run_record(ds, submitted, step_id)
             try:
                 # Checked once the lease names the step. A cancel that reads the
                 # lease from then on signals this process instead of recording
@@ -336,12 +339,15 @@ def run_pipeline(
                 keeper.record_step("", 0)
             if isinstance(outcome, Exception):
                 first_error = first_error or outcome
-                if _recorded_status(ds, submitted, step_id) != "failed":
+                # A record left by an earlier call is not this call's failure.
+                after = _run_record(ds, submitted, step_id)
+                if after is None or after == before or after["status"] != "failed":
                     unrecorded |= _blocked_by(recipe, step_id)
-                elif _refuses_every_step(ds, submitted, step_id):
+                elif _refuses_every_step(after):
                     break
                 else:
-                    blocked.update(_record_blocked(ds, submitted, recipe, step_id))
+                    _ = _record_blocked(ds, submitted, recipe, step_id)
+                    below_failure |= _blocked_by(recipe, step_id)
                 continue
             outcomes.append(outcome)
             if outcome.state == "stalled" and not submitted.allow_partial:
@@ -518,10 +524,11 @@ def run_request(
     (:func:`~.step.record_step_ended`). A failed step ends the branch below it: every
     step below it is recorded ``failed`` for it (:data:`PARENT_FAILED_TYPE`), and
     the steps that do not descend from it run. A step that a resume finds
-    ``failed`` ends its branch the same way. A cancelled step, and a refusal that
-    every step would meet (:data:`_REFUSALS_OF_EVERY_STEP`), end the run, and
-    the steps after them are left as they are. A request whose rollup has ended
-    is not driven, because a request is one-shot.
+    ``failed`` ends its branch the same way. A cancelled step, and a
+    ``version_moved``, ``recipe_missing`` or ``digest_mismatch`` refusal, which
+    every step meets, end the run, and the steps after them are left as they
+    are. A request whose rollup has ended is not driven, because a request is
+    one-shot. Its stale driver lease, if one is left, is deleted.
 
     When *cancel_token* fires, the running step's process group receives SIGTERM,
     and SIGKILL after :data:`STEP_CANCEL_GRACE_SECONDS`. Every step without a
@@ -563,6 +570,10 @@ def run_request(
     log_path = driver_log_path(ds.base_dir, request.request_id)
     ended = request_rollup(ds.base_dir, request)
     if ended.is_terminal:
+        # A lease left here is stale, because a live one was refused above.
+        stale = read_driver_lease(ds.base_dir, request.request_id)
+        if stale is not None:
+            release_driver_lease(ds.base_dir, stale)
         return RequestRun(
             request_id=request.request_id,
             status=ended.status,
@@ -582,6 +593,7 @@ def run_request(
     ran: list[str] = []
     skipped: list[str] = []
     blocked: list[str] = []
+    below_failure: set[str] = set()
     cancelled: tuple[str, ...] = ()
     cleanup_status = ""
     try:
@@ -589,7 +601,7 @@ def run_request(
             for step_id in order:
                 if token.is_cancelled():
                     break
-                if step_id in blocked:
+                if step_id in below_failure:
                     continue
                 status = _recorded_status(ds, request, step_id)
                 if status == "finished":
@@ -603,9 +615,12 @@ def run_request(
                     )
                 if status == "finished":
                     continue
-                if status != "failed" or _refuses_every_step(ds, request, step_id):
+                if status != "failed" or _refuses_every_step(
+                    _run_record(ds, request, step_id)
+                ):
                     break
                 blocked.extend(_record_blocked(ds, request, recipe, step_id))
+                below_failure |= _blocked_by(recipe, step_id)
         if not token.is_cancelled() and _cleanup_due(ds, request):
             keeper.ensure_held()
             cleanup_status = run_cleanup(ds, request, token=token).status
@@ -740,9 +755,14 @@ def _refuse_running_step(ds: Dataset, request: Request) -> None:
         )
 
 
+def _run_record(ds: Dataset, request: Request, step_id: str) -> RunLogSnapshot | None:
+    """Return what a step's run-log records, ``None`` without one."""
+    return read_run(run_log_dir(ds.base_dir), request.execution_of(step_id))
+
+
 def _recorded_status(ds: Dataset, request: Request, step_id: str) -> str:
     """Return the status that a step's run-log records, ``""`` without one."""
-    snapshot = read_run(run_log_dir(ds.base_dir), request.execution_of(step_id))
+    snapshot = _run_record(ds, request, step_id)
     return "" if snapshot is None else snapshot["status"]
 
 
@@ -820,9 +840,8 @@ def _record_blocked(
     return unended
 
 
-def _refuses_every_step(ds: Dataset, request: Request, step_id: str) -> bool:
-    """Whether a step's run-log records a refusal that every later step would meet."""
-    snapshot = read_run(run_log_dir(ds.base_dir), request.execution_of(step_id))
+def _refuses_every_step(snapshot: RunLogSnapshot | None) -> bool:
+    """Whether a step's run-log records a refusal that every later step meets."""
     if snapshot is None:
         return False
     try:

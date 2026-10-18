@@ -35,6 +35,7 @@ from mosaic.core.pipeline.graph import (
     driver_lease_path,
     execute_step,
     read_driver_lease,
+    record_step_ended,
     request_rollup,
     request_status_wire,
     run_request,
@@ -244,10 +245,38 @@ def test_a_failed_step_ends_its_branch_and_the_driver_runs_its_sibling(
     assert not driver_lease_path(tracked.base_dir, request.request_id).exists()
     assert request_status_wire(tracked.base_dir, request).verdict == "failed"
 
+    _ = write_driver_lease(tracked.base_dir, request.request_id, stale=True)
+
     again = run_request(tracked, request)
 
     assert (again.status, again.ran, again.blocked) == ("failed", (), ())
     assert again.skipped == ("sibling",)
+    assert not driver_lease_path(tracked.base_dir, request.request_id).exists()
+
+
+def test_a_request_that_has_ended_is_not_driven_again(tracked: Dataset) -> None:
+    """``speed`` failed with no driver left to run ``sibling``. The request is closed."""
+    request = submit_request(tracked, chain_with_sibling_recipe()).request
+    record_step_ended(
+        tracked,
+        request.execution_of("speed"),
+        step_id="speed",
+        owner="",
+        status="failed",
+        error_json=json.dumps({"type": "RuntimeError", "message": "speed broke"}),
+    )
+
+    done = run_request(tracked, request)
+
+    assert (done.status, done.ran, done.skipped, done.blocked) == (
+        "failed",
+        (),
+        (),
+        (),
+    )
+    for step_id in ("sibling", "templates"):
+        assert _status(tracked, request, step_id) == ""
+    assert not driver_lease_path(tracked.base_dir, request.request_id).exists()
 
 
 def test_a_driver_refuses_while_a_step_process_runs(
