@@ -315,3 +315,12 @@ def derive_storage_name(feature_name: str, inputs_suffix: str | None) -> str:
     if inputs_suffix is not None:
         return f"{feature_name}__from__{inputs_suffix}"
     return feature_name
+
+
+def feature_slug_of(storage_name: str) -> str:
+    """Return the slug of the feature behind a storage name.
+
+    :func:`derive_storage_name` writes ``<slug>`` or ``<slug>__from__<suffix>``,
+    so the slug is everything before the first ``__from__``.
+    """
+    return storage_name.split("__from__", 1)[0]

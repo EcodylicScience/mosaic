@@ -36,7 +36,7 @@ scaled_templates_result = ds.run_feature(ExtractTemplates(
 
 # 4. Embed.
 tsne_result = ds.run_feature(GlobalTSNE(
-    Inputs((scaled_templates_result,)),
+    Inputs((scaler_result,)),
     params={
         "perplexity": 50,
         "templates": ExtractTemplates.TemplatesArtifact().from_result(scaled_templates_result),
@@ -45,7 +45,7 @@ tsne_result = ds.run_feature(GlobalTSNE(
 
 # 5. Cluster.
 kmeans_result = ds.run_feature(GlobalKMeansClustering(
-    Inputs((scaled_templates_result,)),
+    Inputs((scaler_result,)),
     params={
         "k": 100,
         "templates": ExtractTemplates.TemplatesArtifact().from_result(scaled_templates_result),
@@ -58,7 +58,9 @@ affordable nor more informative than fitting on a representative sample.
 `strategy="random"` takes a plain subsample; `"farthest_first"` spreads the picks to
 cover the feature space, which is what an embedding wants. A template set is an
 *artifact* — `ExtractTemplates.TemplatesArtifact().from_result(...)` hands the same
-sample to every consumer without recomputing it.
+sample to every consumer without recomputing it. A template run writes only that
+sample. A consumer reads the template step's inputs (here `scaler_result`) and fits on
+the sample through `templates`.
 
 `GlobalWardClustering` is the agglomerative alternative to k-means. It builds a
 hierarchy, so you can change `n_clusters` and cut it again without refitting.

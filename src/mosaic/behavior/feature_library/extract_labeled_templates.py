@@ -137,25 +137,27 @@ class ExtractLabeledTemplates:
     # 0.4: a row no label event matches is unlabeled (-1) and never sampled,
     # where it was class 0, and a pair row takes the label of its own direction
     # (``labels_for_rows``), so a CalMS21 intruder-focal row is unlabeled.
-    version = "0.4"
+    # 0.5: each entry's table is empty, where it copied the entry's input with
+    # its split and label. A consumer reads this step's inputs, and the templates
+    # through a params field. ``template_provenance.parquet`` records each
+    # entry's split.
+    version = "0.5"
     parallelizable = False
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     # Fit aligns each entry's labels by frame and samples its payload columns,
-    # every one or those that ``columns`` names. Apply passes its input through
-    # with the split and the aligned label. ``columns`` is not declared, because
-    # a requirement on a list param is met by any one of its names. The fit
-    # refuses each named column that the input lacks.
+    # every one or those that ``columns`` names. Apply returns an empty table,
+    # because the sample in ``save_state`` is the output. ``columns`` is not
+    # declared, because a requirement on a list param is met by any one of its
+    # names. The fit refuses each named column that the input lacks.
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.seq_col),
         Column(C.frame_col),
         Payload(),
     )
-    provides: ClassVar[Provides] = Provides(
-        passthrough=True, adds=(Column("split"), Column("label"))
-    )
+    provides: ClassVar[Provides] = Provides()
     LabeledTemplatesArtifact = LabeledTemplatesArtifact
     LabeledProvenanceArtifact = LabeledProvenanceArtifact
 
@@ -706,23 +708,7 @@ class ExtractLabeledTemplates:
         return pd.DataFrame(rows)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        ensure_columns(df, [C.seq_col])
-        group, sequence = entry_identity(df)
-
-        # Add split assignment
-        split = self._sequence_splits.get((group, sequence), "train")
-        df = df.copy()
-        df["split"] = split
-
-        # Add aligned labels. A row no event labels, or of an entry with no
-        # label file, is unlabeled rather than class 0.
-        npz_path = self._labels_lookup.get((group, sequence))
-        if npz_path is not None and C.frame_col in df.columns:
-            df["label"] = labels_for_rows(npz_path, df)
-        else:
-            df["label"] = UNLABELED
-
-        return df
+        return pd.DataFrame()
 
     def save_state(self, run_root: Path) -> None:
         if (

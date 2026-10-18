@@ -323,6 +323,15 @@ class Provides:
     conditional: tuple[Conditional, ...] = ()
     payload_families: bool = False
 
+    @property
+    def is_empty(self) -> bool:
+        """Whether the declared output is empty, with no passthrough, column or family.
+
+        A feature that writes only a sample declares this. Its table for each
+        entry is empty, and a step cannot read it through ``inputs``.
+        """
+        return self == Provides()
+
 
 def kept(*names: str) -> tuple[Conditional, ...]:
     """Columns that the output copies from the merged input when it contains them."""

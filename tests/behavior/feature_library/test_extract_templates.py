@@ -641,8 +641,18 @@ class TestEdgeCases:
         assert len(provenance) == 1
         assert provenance.iloc[0]["count"] == 20
 
-    def test_apply_is_passthrough(self) -> None:
+    def test_apply_writes_an_empty_table_and_the_sample_is_saved(
+        self, tmp_path: Path
+    ) -> None:
         df = _make_df(10, sequence="seq_a")
         feat = _make_feature(params={"n_templates": 5})
+
+        templates, provenance = _fit_and_save(
+            feat, _make_factory([("a", df)]), tmp_path
+        )
+
         result = feat.apply(df)
-        pd.testing.assert_frame_equal(result, df)
+        assert result.empty
+        assert result.columns.empty
+        assert len(templates) == 5
+        assert provenance["count"].tolist() == [5]

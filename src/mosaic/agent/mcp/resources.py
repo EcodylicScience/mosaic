@@ -342,6 +342,7 @@ def _read_params(backend: LocalBackend, variables: UriVariables) -> ResourceText
 
 
 def _read_report(backend: LocalBackend, variables: UriVariables) -> ResourceText:
+    from mosaic.core.pipeline._utils import feature_slug_of
     from mosaic.core.pipeline.graph.resolve import feature_class_for_slug
     from mosaic.core.pipeline.index import feature_run_root
     from mosaic.core.pipeline.inventory import ReportTooLarge, read_run_report
@@ -349,8 +350,7 @@ def _read_report(backend: LocalBackend, variables: UriVariables) -> ResourceText
     dataset = backend.dataset(_variable(variables, "id"))
     name = _variable(variables, "name")
     run_id = _variable(variables, "run_id")
-    # A storage name is the feature's slug, then ``__from__`` and its inputs.
-    slug = name.partition("__from__")[0]
+    slug = feature_slug_of(name)
     cls = feature_class_for_slug(slug)
     report_file: object = getattr(cls, "report_file", None)
     if not isinstance(report_file, str):

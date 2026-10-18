@@ -365,7 +365,7 @@ CASES: tuple[Case, ...] = (
     Case(
         case_id="global-scaler/templates",
         feature="global-scaler",
-        inputs=[{"feature": "extract-templates"}],
+        inputs=[{"feature": "pair-wavelet"}],
         params={"templates": _TEMPLATES_REF},
     ),
     Case(

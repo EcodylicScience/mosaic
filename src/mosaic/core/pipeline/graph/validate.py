@@ -524,6 +524,7 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
     edge = _edge_problem(step, declared, walk)
     if edge is not None:
         problems.append(edge)
+    problems.extend(_empty_input_problems(step, recipe, walk))
 
     one_run = one_run_problems(step, walk.resolved, walk.runs, alike=_SAME_TERMS)
     if one_run:
@@ -700,6 +701,34 @@ def _column_problems(
             "not declare its columns, or a params value does not name a column"
         )
         walk.cautions.append(Problem(step.id, "inputs", message))
+    return problems
+
+
+def _empty_input_problems(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
+    """A problem at *step*'s inputs for each input step with an empty declared output.
+
+    Such a step writes only a sample (``Provides.is_empty``), and its table for
+    each entry is empty. Each problem names the inputs of that step to read
+    instead. It is raised even when another input meets *step*'s requirements.
+    """
+    problems: list[Problem] = []
+    for item in _inputs_of(step):
+        if isinstance(item, str):
+            continue
+        declared = walk.declaration_behind(item.step)
+        if declared is None or declared.provides is None:
+            continue
+        if not declared.provides.is_empty:
+            continue
+        upstream = ", ".join(
+            _input_label(each) for each in _inputs_of(recipe.step(item.step))
+        )
+        message = (
+            f"{item.step!r} runs {declared.produces.name}, which writes only its "
+            "sample and an empty table for each entry. Read its inputs "
+            f"({upstream or 'none'}) here, and its sample through a params field"
+        )
+        problems.append(Problem(step.id, "inputs", message))
     return problems
 
 

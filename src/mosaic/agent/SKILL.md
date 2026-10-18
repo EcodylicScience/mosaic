@@ -213,6 +213,10 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 - A global fit reads every numeric payload column of its input unless the `columns`
   param of `extract-templates`, `extract-labeled-templates`, `arhmm` or
   `temporal-stack` names the measurements to fit.
+- A template step (`extract-templates`, `extract-labeled-templates`) writes only its
+  sample, and each entry's table is empty. A consumer reads the template step's inputs
+  and takes the sample through `templates`. A labeled run records each entry's `split`
+  in `template_provenance.parquet`.
 - Inputs combine at one entity level. Mosaic refuses to merge per-individual output
   with per-pair output.
 - A label of `-1` means unlabeled: no annotation covers the row. Templates leave it

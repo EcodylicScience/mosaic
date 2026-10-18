@@ -10,6 +10,31 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**A template step writes only its sample.** `extract-templates` (0.3 to 0.4) and
+`extract-labeled-templates` (0.4 to 0.5) wrote a copy of each entry's input as that
+entry's table, beside the `templates.parquet` sample, and the labeled one added `split`
+and `label`. Each entry's table is now empty, and its index row counts 0 rows. The
+sample and `template_provenance.parquet` are unchanged.
+
+- Every template run id moves with the version, and so does every run that pins one
+  through `templates`: `global-scaler`, `global-kmeans`, `global-ward`, `global-tsne`,
+  `xgboost` and `lightning-action`. An existing dataset recomputes those chains once,
+  and their models are the same.
+- A step that reads a template step through `inputs` is refused by
+  `mosaic pipeline validate`, the plan and submission, beside another input too. The
+  problem, at `inputs`, names the inputs of the template step to read instead.
+  `run_feature` raises `InputWritesNoColumns` for such an input. A reader rewired to
+  the template step's inputs loses the `extract-templates__from__` segment of its
+  storage name and gets a new run id.
+- A recipe stored in mosaic-api that reads a template step through `inputs` no longer
+  validates.
+- The editor catalog lists both features with `passthrough` false and no provided
+  column. `Provides.is_empty` is true for a feature that declares an empty output.
+- A labeled template run records each entry's `split` in
+  `template_provenance.parquet`. Read it there instead of from the entry tables.
+- Old template runs stay on disk. A superseded-run cleanup keeps an old run while a
+  run that read its entry tables names it (`read_by`).
+
 **A whole number in a recipe's `params` is an integer, so `5` and `5.0` name one
 recipe.** A step's `params` are free JSON. A hand-written recipe file kept `5.0` while
 an MCP client sent `5`, so one recipe had two digests: a CLI request and an MCP plan of
