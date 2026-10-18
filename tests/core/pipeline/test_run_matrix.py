@@ -25,6 +25,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+import pyarrow as pa
 import pytest
 
 from mosaic.core.dataset import Dataset, open_dataset
@@ -94,6 +95,20 @@ class VeryWideFeature(WideFeature):
 
     name = "prov-very-wide"
     n_wide = 200
+
+
+class PairWideFeature(PairClusterFeature):
+    """Both perspectives of a pair with six numeric columns beside ``cluster``."""
+
+    name = "prov-pair-wide"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        table = super().apply(df)
+        for k in range(6):
+            table[f"w{k}"] = (
+                table["frame"] * 10.0 + table["perspective"] * 0.5 + k / 100.0
+            )
+        return table
 
 
 def wide_run(
@@ -293,6 +308,39 @@ def test_an_explicit_name_can_select_a_bookkeeping_column(tmp_path: Path) -> Non
 
     assert matrix.columns == ("fps",)
     assert set(matrix.values[:, 0]) == {30.0}
+
+
+def test_a_glob_selects_the_bookkeeping_columns_the_default_leaves_out(
+    tmp_path: Path,
+) -> None:
+    """``None`` is the payload, and a pattern is what it matches among the numeric columns."""
+    ds, result = wide_run(tmp_path)
+
+    everything = load_run_matrix(ds, result, columns="*")
+
+    assert "fps" in everything.columns
+    assert set(everything.columns) - set(load_run_matrix(ds, result).columns) == {"fps"}
+    assert "note" not in everything.columns
+
+
+def test_a_name_with_glob_characters_selects_itself_and_not_what_it_would_match(
+    tmp_path: Path,
+) -> None:
+    """``a[1]`` as a glob matches ``a1``, and as the name of a column it is that column."""
+    ds, result = wide_run(tmp_path)
+    for group, sequence in ENTRIES:
+        path = output_of(ds, result, group, sequence)
+        frame = pd.read_parquet(path)
+        frame["a[1]"] = 1.0
+        frame["a1"] = 2.0
+        frame.to_parquet(path, index=False)
+
+    literal = load_run_matrix(ds, result, columns="a[1]")
+    globbed = load_run_matrix(ds, result, columns="a[0-9]")
+
+    assert literal.columns == ("a[1]",)
+    assert set(literal.values[:, 0]) == {1.0}
+    assert globbed.columns == ("a1",)
 
 
 @pytest.mark.parametrize("pattern", ["nope*", "note", "frame"])
@@ -528,6 +576,25 @@ def test_an_output_that_cannot_be_read_is_named(tmp_path: Path) -> None:
         _ = load_run_matrix(ds, result)
 
 
+def test_a_file_that_shrinks_between_the_count_and_the_read_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The array was sized from the footers, so a different file cannot fill it."""
+    ds, result = wide_run(tmp_path)
+    path = output_of(ds, result, "g1", "s1")
+    real = run_matrix_module.host_memory_bytes
+
+    def shrinking() -> tuple[int, int]:
+        frame = pd.read_parquet(path)
+        frame.iloc[: len(frame) // 2].to_parquet(path, index=False)
+        return real()
+
+    monkeypatch.setattr(run_matrix_module, "host_memory_bytes", shrinking)
+
+    with pytest.raises(RuntimeError, match=r"g1/s1 changed while it was being read"):
+        _ = load_run_matrix(ds, result)
+
+
 # --- the batch reader -------------------------------------------------------
 
 
@@ -642,6 +709,120 @@ def test_the_peak_is_the_matrix_and_not_a_copy_of_it(
     identity_bytes = int(matrix.index.memory_usage(deep=False).sum())
     assert matrix.values.shape == (9600, 202)
     assert peak < matrix.values.nbytes + 4 * identity_bytes + 2**20
+
+
+def very_wide_run(tmp_path: Path) -> tuple[Dataset, Result]:
+    """Three entries of 1,600 rows, each file holding 204 columns of numbers."""
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, *[("g", f"s{k}") for k in range(3)], n_rows=800, n_ids=2)
+    return ds, ds.run_feature(VeryWideFeature())
+
+
+def arrow_held_bytes() -> int:
+    """What Arrow's memory pool holds now, which pyarrow's missing stubs leave unknown."""
+    return int(pa.total_allocated_bytes())  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+
+
+def watch_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[tuple[str, ...], int]]:
+    """Record each read of a file as its column names and what Arrow holds during it."""
+    seen: list[tuple[tuple[str, ...], int]] = []
+    real = iter_column_batches
+
+    def watching(
+        path: Path, names: Sequence[str], batch_size: int
+    ) -> Generator[dict[str, npt.NDArray[Any]]]:
+        held = 0
+        for batch in real(path, names, batch_size):
+            held = max(held, arrow_held_bytes())
+            yield batch
+        seen.append((tuple(names), held))
+
+    monkeypatch.setattr(run_matrix_module, "iter_column_batches", watching)
+    return seen
+
+
+def test_a_file_is_read_a_block_of_columns_at_a_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every column once for each entry, and the same matrix as one pass gives."""
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, *ENTRIES, n_rows=4, n_ids=2)
+    result = ds.run_feature(PairWideFeature())
+    whole = {p: load_run_matrix(ds, result, perspective=p) for p in (None, 0, 1)}
+    file_rows = 8
+    cell_bytes = run_matrix_module.DECODE_FACTOR * 8 * file_rows
+    monkeypatch.setattr(run_matrix_module, "BLOCK_BYTES", 3 * cell_bytes)
+    monkeypatch.setattr(run_matrix_module, "BATCH_ROWS", 3)
+
+    for perspective, expected in whole.items():
+        reads = watch_reads(monkeypatch)
+        blocked = load_run_matrix(ds, result, perspective=perspective)
+
+        np.testing.assert_array_equal(blocked.values, expected.values)
+        pd.testing.assert_frame_equal(blocked.index, expected.index)
+        values = {"cluster", *(f"w{k}" for k in range(6))}
+        passes = [
+            names
+            for names, _ in reads
+            if names != ("perspective",) or perspective is None
+        ]
+        assert len(passes) == 3 * len(ENTRIES)
+        for first in range(0, len(passes), 3):
+            entry = passes[first : first + 3]
+            assert sorted(
+                name for names in entry for name in names if name in values
+            ) == (sorted(values))
+            assert all(len([n for n in names if n in values]) <= 3 for names in entry)
+            assert "frame" in entry[0] and "frame" not in entry[1] + entry[2]
+
+
+def test_the_columns_that_pyarrow_decodes_at_once_follow_the_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batch size does not bound what pyarrow holds: it decodes a row group whole."""
+    ds, result = very_wide_run(tmp_path)
+    whole_reads = watch_reads(monkeypatch)
+    baseline = arrow_held_bytes()
+    whole = load_run_matrix(ds, result)
+    file_rows = len(whole.values) // len(whole.entries)
+    cell_bytes = run_matrix_module.DECODE_FACTOR * 8 * file_rows
+    monkeypatch.setattr(run_matrix_module, "BLOCK_BYTES", 20 * cell_bytes)
+    block_reads = watch_reads(monkeypatch)
+
+    blocked = load_run_matrix(ds, result)
+
+    np.testing.assert_array_equal(blocked.values, whole.values)
+    held_whole = max(held for _, held in whole_reads) - baseline
+    held_blocked = max(held for _, held in block_reads) - baseline
+    assert len(block_reads) > len(whole_reads)
+    assert held_whole > 8 * file_rows * len(whole.columns)
+    assert held_blocked < held_whole / 3
+
+
+def test_the_refusal_counts_what_pyarrow_decodes_of_the_largest_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same file fits when it is read in blocks, and does not when it is read whole."""
+    ds, result = very_wide_run(tmp_path)
+    whole = load_run_matrix(ds, result)
+    n_rows, n_columns = whole.values.shape
+    file_rows = n_rows // len(whole.entries)
+    cell_bytes = run_matrix_module.DECODE_FACTOR * 8 * file_rows
+    array_bytes = n_rows * n_columns * whole.values.itemsize
+    available = int(1.5 * array_bytes / (1.0 - run_matrix_module.MEMORY_HEADROOM))
+    monkeypatch.setattr(
+        run_matrix_module, "host_memory_bytes", lambda: (2 * available, available)
+    )
+
+    with pytest.raises(MemoryError):
+        _ = load_run_matrix(ds, result)
+    monkeypatch.setattr(run_matrix_module, "BLOCK_BYTES", 10 * cell_bytes)
+
+    blocked = load_run_matrix(ds, result)
+
+    np.testing.assert_array_equal(blocked.values, whole.values)
 
 
 # --- a read writes nothing --------------------------------------------------

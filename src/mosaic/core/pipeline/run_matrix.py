@@ -12,6 +12,12 @@ not fit, and then writes each entry into the array in place, a batch of rows at 
 time. A perspective filter applies to each batch, so a pair run holds only the rows
 it returns.
 
+A batch size does not bound what pyarrow holds. It decodes a whole row group of the
+columns it is asked for, and a feature's output is one row group up to a million rows.
+A file whose columns would take more than :data:`BLOCK_BYTES` to decode is therefore
+read a block of columns at a time, and the estimate that a read is checked against
+counts the largest block.
+
 ``mosaic.core.pipeline`` binds the names of this module on access.
 """
 
@@ -51,6 +57,18 @@ BATCH_BYTES: Final = 64 * 1024**2
 
 A wide table takes fewer rows per batch than :data:`BATCH_ROWS`, so a 546-column run
 reads as many bytes per batch as a 5-column one.
+"""
+
+BLOCK_BYTES: Final = 256 * 1024**2
+"""The most memory that pyarrow may hold to decode the columns of one file at a time.
+
+A file that would take more is read a block of columns at a time, down to one column.
+"""
+
+DECODE_FACTOR: Final = 2
+"""How many times the float64 size of its cells pyarrow holds while it decodes a row group.
+
+Measured at 1.9 for a row group of 400,000 rows, whatever the batch size.
 """
 
 MEMORY_HEADROOM: Final = 0.20
@@ -114,6 +132,7 @@ class _Layout:
     columns: tuple[str, ...]
     identity: tuple[str, ...]
     entry_rows: tuple[int, ...]
+    file_rows: tuple[int, ...]
 
 
 def load_run_matrix(
@@ -131,7 +150,8 @@ def load_run_matrix(
     The entries come in order of ``(group, sequence)``, whatever order the index
     lists them in, and the rows of an entry in the order of its file. Nothing is
     written, so a dataset opened with ``ensure_roots=False`` reads as well. The
-    memory taken is the array, the identity frame, and one batch of rows.
+    memory taken is the array, the identity frame, and what pyarrow holds to decode
+    the largest block of columns of one file.
 
     Args:
         ds: The dataset holding the run.
@@ -141,10 +161,11 @@ def load_run_matrix(
         perspective: Keep only the rows of this ``perspective``, when the run writes
             one, and read all rows when it does not.
         columns: The columns to return. A name, a glob (``"w*"``) or a list of
-            either; a list keeps its order and a column once. A pattern matches the
-            numeric columns that are not part of a row's identity. ``None`` returns
-            every numeric column except identity and bookkeeping (``fps``,
-            ``label``, ``nn_id`` and the like), which only a name selects.
+            either; a list keeps its order and a column once. A name or a pattern
+            matches the numeric columns that are not part of a row's identity,
+            bookkeeping columns (``fps``, ``label``, ``nn_id`` and the like)
+            among them. ``None`` returns every numeric column except identity and
+            bookkeeping.
         dtype: The floating-point dtype of the array. An integer or a boolean column
             is converted, and a missing value is NaN.
         allow_partial: Read what the run holds when the scope names entries that it
@@ -181,7 +202,7 @@ def load_run_matrix(
         perspective,
     )
     batch_rows = _batch_rows(len(layout.columns) + len(layout.identity))
-    _check_memory(result.feature, run_id, layout, value_dtype, batch_rows)
+    _check_memory(result.feature, run_id, layout, value_dtype)
     index, values = _read(outputs.found, layout, perspective, value_dtype, batch_rows)
     return RunMatrix(
         feature=result.feature,
@@ -321,6 +342,7 @@ def _plan(
     first: tuple[tuple[str, ...], tuple[str, ...]] | None = None
     first_entry = found[0][0]
     entry_rows: list[int] = []
+    file_rows: list[int] = []
     for entry, path in found:
         footer = read_footer(path)
         chosen = _select_columns(footer, patterns, f"{feature} run {run_id}", entry)
@@ -338,8 +360,9 @@ def _plan(
             )
             raise ValueError(msg)
         entry_rows.append(_rows_returned(path, footer, perspective))
+        file_rows.append(footer.n_rows)
     assert first is not None
-    return _Layout(first[0], first[1], tuple(entry_rows))
+    return _Layout(first[0], first[1], tuple(entry_rows), tuple(file_rows))
 
 
 def _has_column(footer: ParquetFooter, name: str) -> bool:
@@ -407,18 +430,40 @@ def _batch_rows(n_columns: int) -> int:
     return max(1, min(BATCH_ROWS, BATCH_BYTES // (8 * max(1, n_columns))))
 
 
+def _block_width(file_rows: int) -> int:
+    """How many columns of a file of *file_rows* rows one read may ask pyarrow for.
+
+    At least one, so that a file too long for :data:`BLOCK_BYTES` is still read, and
+    its estimate counts the one column.
+    """
+    return max(1, BLOCK_BYTES // (DECODE_FACTOR * 8 * max(1, file_rows)))
+
+
+def _blocks(columns: tuple[str, ...], file_rows: int) -> list[tuple[str, ...]]:
+    """The columns of one file, in the blocks that are read one after another.
+
+    A block is one pass over the file. One block holds every column of a file that
+    is short enough, as the read has always gone. No columns is one empty block,
+    which still reads the identity.
+    """
+    width = _block_width(file_rows)
+    return [
+        columns[start : start + width] for start in range(0, len(columns), width)
+    ] or [()]
+
+
 def _check_memory(
     feature: str,
     run_id: str,
     layout: _Layout,
     dtype: np.dtype[Any],
-    batch_rows: int,
 ) -> None:
     """Raise if the read would leave less than the headroom free.
 
     The estimate is the array, the identity frame (counted twice, because the frame
-    is built from copies of its pieces), and one batch of float64 cells. Where the
-    host reports no memory, as without ``psutil``, the read goes ahead.
+    is built from copies of its pieces), and what pyarrow holds to decode the largest
+    block of columns of one file. Where the host reports no memory, as without
+    ``psutil``, the read goes ahead.
     """
     _, available = host_memory_bytes()
     if available <= 0:
@@ -426,8 +471,14 @@ def _check_memory(
     n_rows = sum(layout.entry_rows)
     n_columns, n_identity = len(layout.columns), len(layout.identity)
     identity_bytes = n_rows * 8 * (n_identity + 2)
-    batch_bytes = batch_rows * 8 * (n_columns + n_identity)
-    estimated = n_rows * n_columns * dtype.itemsize + 2 * identity_bytes + batch_bytes
+    decoding = max(
+        (
+            DECODE_FACTOR * 8 * rows * (min(n_columns, _block_width(rows)) + n_identity)
+            for rows in layout.file_rows
+        ),
+        default=0,
+    )
+    estimated = n_rows * n_columns * dtype.itemsize + 2 * identity_bytes + decoding
     if estimated <= available * (1.0 - MEMORY_HEADROOM):
         return
     msg = (
@@ -447,33 +498,43 @@ def _read(
     dtype: np.dtype[Any],
     batch_rows: int,
 ) -> tuple[pd.DataFrame, npt.NDArray[np.floating[Any]]]:
-    """Write every entry into one array, a batch at a time, and build the identity."""
+    """Write every entry into one array, a batch at a time, and build the identity.
+
+    The first block of an entry's columns is read with its identity columns, and a
+    later block with the ``perspective`` column alone beside it, to choose its rows.
+    """
     values = np.empty((sum(layout.entry_rows), len(layout.columns)), dtype=dtype)
     filtering = perspective is not None and "perspective" in layout.identity
-    names = [*layout.identity, *layout.columns]
+    later = ("perspective",) if filtering else ()
+    column_of = {name: position for position, name in enumerate(layout.columns)}
     groups: list[npt.NDArray[np.object_]] = []
     sequences: list[npt.NDArray[np.object_]] = []
     parts: dict[str, list[npt.NDArray[Any]]] = {name: [] for name in layout.identity}
-    position = 0
-    for ((group, sequence), path), expected in zip(
-        found, layout.entry_rows, strict=True
+    start = 0
+    for ((group, sequence), path), file_rows, expected in zip(
+        found, layout.file_rows, layout.entry_rows, strict=True
     ):
-        start = position
-        for batch in iter_column_batches(path, names, batch_rows):
-            keep = batch["perspective"] == perspective if filtering else None
-            n_batch = len(batch[names[0]]) if keep is None else int(keep.sum())
-            for name in layout.identity:
-                cells = batch[name]
-                parts[name].append(cells if keep is None else cells[keep])
-            for column, name in enumerate(layout.columns):
-                cells = batch[name]
-                values[position : position + n_batch, column] = (
-                    cells if keep is None else cells[keep]
-                )
-            position += n_batch
-        if position - start != expected:
-            msg = f"{_name((group, sequence))} changed while it was being read"
-            raise RuntimeError(msg)
+        for block, block_columns in enumerate(_blocks(layout.columns, file_rows)):
+            beside = layout.identity if block == 0 else later
+            names = [*beside, *block_columns]
+            position = start
+            for batch in iter_column_batches(path, names, batch_rows):
+                keep = batch["perspective"] == perspective if filtering else None
+                n_batch = len(batch[names[0]]) if keep is None else int(keep.sum())
+                if block == 0:
+                    for name in layout.identity:
+                        cells = batch[name]
+                        parts[name].append(cells if keep is None else cells[keep])
+                for name in block_columns:
+                    cells = batch[name]
+                    values[position : position + n_batch, column_of[name]] = (
+                        cells if keep is None else cells[keep]
+                    )
+                position += n_batch
+            if position - start != expected:
+                msg = f"{_name((group, sequence))} changed while it was being read"
+                raise RuntimeError(msg)
+        start += expected
         groups.append(np.full(expected, group, dtype=object))
         sequences.append(np.full(expected, sequence, dtype=object))
     identity: dict[str, npt.NDArray[Any]] = {

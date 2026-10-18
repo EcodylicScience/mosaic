@@ -191,10 +191,12 @@ def iter_column_batches(
     """Yield the named columns of *path* as numpy arrays, *batch_size* rows at a time.
 
     Only the named columns are read, and a batch holds at most *batch_size* rows
-    of them, so the memory a read takes does not grow with the file. A column
-    that holds a null arrives as floating point with NaN for it, and a boolean
-    column as ``bool``. The batches follow the file's row order. *names* must
-    not repeat a column.
+    of them. The batch size does not bound the memory of the read: pyarrow decodes
+    a whole row group of the named columns, about twice their float64 size, so a
+    caller that reads a long file names few columns at a time. A column that
+    holds a null arrives as floating point with NaN for it, and a boolean column
+    as ``bool``. The batches follow the file's row order. *names* must not repeat
+    a column.
     """
     if not names:
         return

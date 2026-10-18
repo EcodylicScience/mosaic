@@ -138,7 +138,11 @@ pipeline graph are in `graph/CLAUDE.md`.
   missing output with a note.
 - The array is sized from the footers (and from the `perspective` column, so the count
   is of the rows returned), checked against available memory, and filled in place a
-  batch at a time. A step that concatenates per-entry arrays doubles the peak
+  batch at a time. A step that concatenates per-entry arrays doubles the peak.
+- A batch size does not bound what pyarrow holds: it decodes a whole row group of the
+  columns it is asked for, about twice their float64 size, and a feature output is one
+  row group up to a million rows. A file that would take more than `BLOCK_BYTES` is read
+  a block of columns at a time, and the memory check counts the largest block
   (`tests/core/pipeline/test_run_matrix.py`).
 
 ## Media variants
