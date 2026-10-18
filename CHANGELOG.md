@@ -113,6 +113,50 @@ already read a zombie as exited, so no verdict, lease or run id changes.
   instead of polling or watching the driver. `driver_pid` and `driver_log` stay in
   `SubmittedPipeline`.
 
+**A report says where its label map came from, a clustering's counts are kept, and
+every entry's hits and misses can be pooled.** A clustering scored without a
+`label_map` is mapped on the rows it is scored on, so `accuracy` is its purity and
+no row is held out. Nothing in `metrics.json` said so, and the
+`EvaluationReport.label_map` docstring said the map was empty when none was given.
+`evaluate-labels` goes from 0.1 to 0.2.
+
+- `EvaluationReport` gains `label_map_source`: `""` for a classifier,
+  `"scored_rows"` for the map of the rows scored, `"fit-label-map"` for a referenced
+  map. It defaults to `""`, so a report saved by 0.1 loads. The `clusters` dict
+  gains `homogeneity`, `completeness` and `v_measure`, which
+  `cluster_label_scores` already computed.
+- `evaluate-labels` writes `cluster_confusion.parquet` in clusters mode: a row per
+  cluster, `cluster` and a `class_<k>` count per class. Each entry's output row gains
+  `tp_<k>`, `fp_<k>` and `fn_<k>` (integers) for every class of the report, 0 for
+  an entry that scored no row. They add across entries, and the declared output
+  gains the prefixes `tp_`, `fp_` and `fn_`.
+- New in `mosaic.core.evaluation`: `pool_entry_counts` scores any set of those
+  rows as one, and equals the report's number to the last bit; `bootstrap_sequences`
+  resamples the entries with a required `random_state`; `pool_reports` and
+  `aggregate_reports` combine the reports of separate runs, such as the folds of a
+  cross-validation, which the entry-coverage rule keeps from being one run;
+  `cluster_contingency`; and `majority_mapping(..., weighting=)`.
+- `fit-label-map` goes from 0.1 to 0.2 and gains `weighting`. `"count"`, the
+  default, is the map of 0.1. `"class_balanced"` gives a cluster to the class whose
+  rows it holds the largest share of, so a common behavior does not take every
+  cluster and leave a rare one at an F1 of 0.
+- `fit_scope.json` of a scope-dependent run gains `via`: the pinned artifacts it
+  applied without fitting, with their run ids. An `evaluate-labels` run over the test
+  groups now names the `fit-label-map` run of its `label_map`, whose own record holds
+  the training groups. Its `entries` still list the entries scored. A run that pins no
+  artifact writes `via` empty, as before. A superseded-run cleanup already reads `via`
+  as a read of that run.
+- Run ids: the identifier of every `evaluate-labels` run moves from `0.1-` to `0.2-`.
+  The ten hex digits stay for the same params, and change for a step that takes its
+  `label_map` from a step, which pins the new `fit-label-map` id. The identifier of
+  every `fit-label-map` run takes a `0.2-` version and new digits, because the
+  `weighting` field joins the hash although its default gives the map of 0.1. No other
+  feature moves. A dataset recomputes those two steps once, and the maps are the same.
+  The old runs stay on disk.
+- mosaic-api does not read `EvaluationReport`, `label_map` or `metrics.json` in this
+  checkout, and every addition to the report and the output is a new field or column
+  with a default.
+
 **A params reference to a step of another feature is refused where the field names a
 feature.** A field typed as one feature's artifact, such as the `model` of `global-kmeans`
 or `xgboost`, must name a step that runs that feature. `mosaic pipeline validate`, the
@@ -724,50 +768,6 @@ run it pinned, and a run that a feature call outside every request also used.
   `list_activity`. An earlier version of the planned recipe, one with the same name,
   never keeps a run, a retired one included. `retire` takes a recipe's digest in
   either canonical form.
-
-**A report says where its label map came from, a clustering's counts are kept, and
-every entry's hits and misses can be pooled.** A clustering scored without a
-`label_map` is mapped on the rows it is scored on, so `accuracy` is its purity and
-no row is held out. Nothing in `metrics.json` said so, and the
-`EvaluationReport.label_map` docstring said the map was empty when none was given.
-`evaluate-labels` goes from 0.1 to 0.2.
-
-- `EvaluationReport` gains `label_map_source`: `""` for a classifier,
-  `"scored_rows"` for the map of the rows scored, `"fit-label-map"` for a referenced
-  map. It defaults to `""`, so a report saved by 0.1 loads. The `clusters` dict
-  gains `homogeneity`, `completeness` and `v_measure`, which
-  `cluster_label_scores` already computed.
-- `evaluate-labels` writes `cluster_confusion.parquet` in clusters mode: a row per
-  cluster, `cluster` and a `class_<k>` count per class. Each entry's output row gains
-  `tp_<k>`, `fp_<k>` and `fn_<k>` (integers) for every class of the report, 0 for
-  an entry that scored no row. They add across entries, and the declared output
-  gains the prefixes `tp_`, `fp_` and `fn_`.
-- New in `mosaic.core.evaluation`: `pool_entry_counts` scores any set of those
-  rows as one, and equals the report's number to the last bit; `bootstrap_sequences`
-  resamples the entries with a required `random_state`; `pool_reports` and
-  `aggregate_reports` combine the reports of separate runs, such as the folds of a
-  cross-validation, which the entry-coverage rule keeps from being one run;
-  `cluster_contingency`; and `majority_mapping(..., weighting=)`.
-- `fit-label-map` goes from 0.1 to 0.2 and gains `weighting`. `"count"`, the
-  default, is the map of 0.1. `"class_balanced"` gives a cluster to the class whose
-  rows it holds the largest share of, so a common behavior does not take every
-  cluster and leave a rare one at an F1 of 0.
-- `fit_scope.json` of a scope-dependent run gains `via`: the pinned artifacts it
-  applied without fitting, with their run ids. An `evaluate-labels` run over the test
-  groups now names the `fit-label-map` run of its `label_map`, whose own record holds
-  the training groups. Its `entries` still list the entries scored. A run that pins no
-  artifact writes `via` empty, as before. A superseded-run cleanup already reads `via`
-  as a read of that run.
-- Run ids: the identifier of every `evaluate-labels` run moves from `0.1-` to `0.2-`.
-  The ten hex digits stay for the same params, and change for a step that takes its
-  `label_map` from a step, which pins the new `fit-label-map` id. The identifier of
-  every `fit-label-map` run takes a `0.2-` version and new digits, because the
-  `weighting` field joins the hash although its default gives the map of 0.1. No other
-  feature moves. A dataset recomputes those two steps once, and the maps are the same.
-  The old runs stay on disk.
-- mosaic-api does not read `EvaluationReport`, `label_map` or `metrics.json` in this
-  checkout, and every addition to the report and the output is a new field or column
-  with a default.
 
 ## 0.17.0: a `vame` feature embeds keypoints, `kpms` fits and applies in one run, `mosaic agent serve` serves an MCP client, fits leave track ids out, a fit reads the columns it is given, and a TRex table is timed at its media's measured rate
 
