@@ -6,6 +6,7 @@ request is recorded and nothing runs.
 
 from __future__ import annotations
 
+import importlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -13,9 +14,12 @@ from pathlib import Path
 import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
+from mosaic.agent.mcp.summaries import summarize
 from mosaic.agent.mcp.spec import (
-    ConfirmationCondition,
+    MAX_RESULT_CHARS,
+    PLAN_RETIRABLE_SAMPLE,
     PLAN_SUPERSEDED_SAMPLE,
+    ConfirmationCondition,
     DatasetList,
     SubmittedPipeline,
     call_tool,
@@ -44,6 +48,7 @@ from tests.helpers import (
     add_tracks_variant,
     make_dataset,
     run_speed,
+    speed_heading_recipe,
     speed_recipe_stepping,
 )
 
@@ -575,3 +580,230 @@ def test_plan_recipe_lists_a_bounded_sample_of_superseded_runs(
     assert plan.cleanup.removable_runs == len(old)
     assert len(plan.steps[0].superseded) == PLAN_SUPERSEDED_SAMPLE
     assert plan.steps[0].superseded_omitted == len(old) - PLAN_SUPERSEDED_SAMPLE
+
+
+# --- retiring a recipe ----------------------------------------------------------------
+
+
+def _retiring(
+    backend: LocalBackend, dataset: Dataset, digest: str, **arguments: object
+) -> PlanWire:
+    return _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=_uuid(dataset),
+        recipe=SPEED_STEP_2,
+        cleanup="superseded",
+        retire=[digest],
+        **arguments,
+    )
+
+
+@pytest.fixture
+def lapsed_holds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A request that has ended holds its runs for no time at all."""
+    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
+    monkeypatch.setattr(module, "REQUEST_HOLD_FLOOR_HOURS", 0)
+
+
+def test_plan_recipe_lists_the_recipes_that_can_be_retired(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    ran = graph.run_pipeline(dataset, speed_heading_recipe())
+    backend = _cleaning(dataset, starter, allowed=False)
+
+    plan = _cleanup_plan(backend, dataset)
+    plain = _call(
+        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_STEP_2
+    )
+
+    [row] = plan.retirable
+    assert (row.digest, row.name, row.requests, row.runs, row.open) == (
+        ran.recipe_digest,
+        "old",
+        1,
+        2,
+        False,
+    )
+    assert row.request_ids == (ran.request_id,)
+    assert plain.retirable == ()
+    assert plan.fingerprint != plain.fingerprint
+
+
+def test_plan_recipe_reports_the_runs_a_retirement_reaches(
+    dataset: Dataset, starter: RecordingStarter, lapsed_holds: None
+) -> None:
+    ran = graph.run_pipeline(dataset, speed_heading_recipe())
+    backend = _cleaning(dataset, starter, allowed=False)
+
+    plan = _retiring(backend, dataset, ran.recipe_digest)
+
+    assert plan.cleanup is not None
+    assert plan.cleanup.retired == (ran.recipe_digest,)
+    [retired] = plan.cleanup.retired_runs
+    assert retired.storage == "heading__from__tracks"
+    assert plan.cleanup.removable_runs == 2
+
+
+def test_submit_with_retire_names_the_retired_recipe_in_the_question(
+    dataset: Dataset, starter: RecordingStarter, lapsed_holds: None
+) -> None:
+    ran = graph.run_pipeline(dataset, speed_heading_recipe())
+    backend = _cleaning(dataset, starter, allowed=True)
+    plan = _retiring(backend, dataset, ran.recipe_digest)
+
+    refused = _submit_cleanup(
+        backend, dataset, plan.fingerprint, retire=[ran.recipe_digest]
+    )
+    submitted = _submit_cleanup(
+        backend, dataset, plan.fingerprint, retire=[ran.recipe_digest], confirm=True
+    )
+
+    assert _conditions(refused) == {"cleanup"}
+    assert isinstance(refused, ErrorEnvelope)
+    assert "deletes 2 superseded run(s)" in refused.message
+    assert f"retired recipe(s) 'old' ({ran.recipe_digest})" in refused.message
+    assert "\n" not in refused.message.split("[mosaic-confirm")[0].strip()
+    assert isinstance(submitted, SubmittedPipeline)
+    assert submitted.cleanup_runs == 2
+    request = graph.load_request(dataset.base_dir, submitted.request_id)
+    assert request.cleanup is not None
+    assert request.cleanup.retired == [ran.recipe_digest]
+    assert {target.storage for target in request.cleanup.approved} == {
+        "speed-angvel__from__tracks",
+        "heading__from__tracks",
+    }
+
+
+def test_a_retirement_the_plan_was_not_reviewed_with_changes_the_plan(
+    dataset: Dataset, starter: RecordingStarter, lapsed_holds: None
+) -> None:
+    ran = graph.run_pipeline(dataset, speed_heading_recipe())
+    backend = _cleaning(dataset, starter, allowed=True)
+    plain = _cleanup_plan(backend, dataset)
+
+    refused = _submit_cleanup(
+        backend, dataset, plain.fingerprint, retire=[ran.recipe_digest], confirm=True
+    )
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert refused.kind == "conflict"
+    assert starter.started == []
+    assert [path.stem for path in _requests(dataset)] == [ran.request_id]
+
+
+def test_a_retirement_needs_the_operator_flag_like_any_cleanup(
+    dataset: Dataset, starter: RecordingStarter, lapsed_holds: None
+) -> None:
+    ran = graph.run_pipeline(dataset, speed_heading_recipe())
+    backend = _cleaning(dataset, starter, allowed=False)
+    plan = _retiring(backend, dataset, ran.recipe_digest)
+
+    refused = _submit_cleanup(
+        backend, dataset, plan.fingerprint, retire=[ran.recipe_digest], confirm=True
+    )
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert refused.reason == "cleanup_not_allowed"
+
+
+@pytest.mark.parametrize("tool", ["plan_recipe", "submit_pipeline"])
+def test_retire_without_a_cleanup_is_refused(
+    dataset: Dataset, starter: RecordingStarter, tool: str
+) -> None:
+    ran = graph.run_pipeline(dataset, speed_heading_recipe())
+    backend = _cleaning(dataset, starter, allowed=True)
+
+    refused = call_tool(
+        backend,
+        tool,
+        {
+            "dataset": _uuid(dataset),
+            "recipe": SPEED_STEP_2,
+            "plan_fingerprint": "x",
+            "retire": [ran.recipe_digest],
+        }
+        if tool == "submit_pipeline"
+        else {
+            "dataset": _uuid(dataset),
+            "recipe": SPEED_STEP_2,
+            "retire": [ran.recipe_digest],
+        },
+    )
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert (refused.kind, refused.reason) == ("invalid", "retire_needs_cleanup")
+
+
+def test_retiring_a_recipe_that_is_not_saved_is_refused(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    refused = call_tool(
+        _cleaning(dataset, starter, allowed=True),
+        "plan_recipe",
+        {
+            "dataset": _uuid(dataset),
+            "recipe": SPEED_STEP_2,
+            "cleanup": "superseded",
+            "retire": ["0123456789abcdef"],
+        },
+    )
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert (refused.kind, refused.reason) == ("not_found", "retire_unknown_recipe")
+
+
+@pytest.mark.parametrize("digest", ["short", "0123456789ABCDEF", "../../etc/passwd"])
+def test_a_retire_entry_that_is_not_a_digest_is_invalid_arguments(
+    dataset: Dataset, starter: RecordingStarter, digest: str
+) -> None:
+    refused = call_tool(
+        _cleaning(dataset, starter, allowed=True),
+        "plan_recipe",
+        {
+            "dataset": _uuid(dataset),
+            "recipe": SPEED_STEP_2,
+            "cleanup": "superseded",
+            "retire": [digest],
+        },
+    )
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert refused.reason == "invalid_arguments"
+
+
+def test_plan_recipe_bounds_the_list_of_retirable_recipes(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    """An iterated recipe leaves one saved recipe per attempt."""
+    made = PLAN_RETIRABLE_SAMPLE + 2
+    for index in range(made):
+        recipe = Recipe.model_validate(
+            {
+                **speed_recipe_stepping(index + 10).model_dump(mode="json"),
+                "name": f"attempt {index}",
+            }
+        )
+        _ = graph.run_pipeline(dataset, recipe)
+    backend = _cleaning(dataset, starter, allowed=False)
+
+    plan = _cleanup_plan(backend, dataset)
+
+    assert len(plan.retirable) == PLAN_RETIRABLE_SAMPLE
+    assert plan.retirable_omitted == 2
+    assert plan.retirable[0].name == f"attempt {made - 1}"
+    assert len(plan.model_dump_json()) < MAX_RESULT_CHARS
+
+
+def test_the_plan_summary_points_at_the_retirable_recipes_and_the_retired_runs(
+    dataset: Dataset, starter: RecordingStarter, lapsed_holds: None
+) -> None:
+    ran = graph.run_pipeline(dataset, speed_heading_recipe())
+    backend = _cleaning(dataset, starter, allowed=False)
+
+    offering = summarize(_cleanup_plan(backend, dataset))
+    retiring = summarize(_retiring(backend, dataset, ran.recipe_digest))
+
+    assert "1 saved recipe(s) wrote runs that retire can reclaim" in offering
+    assert "It retires 1 recipe(s); 1 of their runs sit in storages" in retiring

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 
@@ -10,19 +11,27 @@ from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline.graph import CleanupPolicy, PlanWire
+from mosaic.core.pipeline.graph import (
+    CleanupPolicy,
+    CleanupStatusWire,
+    PlanWire,
+    run_pipeline,
+)
 from mosaic.core.pipeline.index import feature_run_root
 from tests.helpers import (
     add_tracks_variant,
     invoke_json,
     make_dataset,
     run_speed,
+    speed_heading_recipe,
     speed_recipe_stepping,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
 
 STORAGE = "speed-angvel__from__tracks"
+
+HEADING = "heading__from__tracks"
 
 LOOSE = ["--cleanup", "superseded", "--keep-newest", "0", "--min-age-hours", "0"]
 
@@ -153,14 +162,16 @@ def test_run_with_cleanup_removes_superseded_runs_and_status_reports_them(
     assert status["verdict"] == "finished"
 
 
-def test_run_refuses_cleanup_flags_with_a_request(dataset: Dataset) -> None:
+@pytest.mark.parametrize("flag", ["--cleanup", "--retire"])
+def test_run_refuses_cleanup_flags_with_a_request(dataset: Dataset, flag: str) -> None:
+    flags = LOOSE if flag == "--cleanup" else ["--retire", "0123456789abcdef"]
     result = runner.invoke(
         app,
-        ["pipeline", "run", "--request", "R1", *_manifest(dataset), *LOOSE],
+        ["pipeline", "run", "--request", "R1", *_manifest(dataset), *flags],
     )
 
     assert result.exit_code != 0
-    assert "--cleanup" in result.output
+    assert flag in result.output
 
 
 def test_run_cleanup_without_expect_plan_fails_and_removes_nothing(
@@ -177,3 +188,202 @@ def test_run_cleanup_without_expect_plan_fails_and_removes_nothing(
     assert json.loads(result.stdout)["reason"] == "cleanup_needs_plan"
     assert feature_run_root(dataset, STORAGE, old).is_dir()
     assert not (dataset.base_dir / ".mosaic" / "pipelines" / "requests").exists()
+
+
+# --- retiring a recipe ----------------------------------------------------------------
+
+
+@pytest.fixture
+def lapsed_holds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A request that has ended holds its runs for no time at all."""
+    module = importlib.import_module("mosaic.core.pipeline.graph.cleanup")
+    monkeypatch.setattr(module, "REQUEST_HOLD_FLOOR_HOURS", 0)
+
+
+def _plan(dataset: Dataset, recipe: str, *extra: str) -> dict[str, object]:
+    return invoke_json(
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            recipe,
+            *_manifest(dataset),
+            *LOOSE,
+            *extra,
+            "--json",
+        ]
+    )
+
+
+def test_plan_lists_the_recipes_whose_runs_can_be_retired(
+    dataset: Dataset, recipe: str
+) -> None:
+    ran = run_pipeline(dataset, speed_heading_recipe())
+
+    plan = PlanWire.model_validate(_plan(dataset, recipe))
+    plain = PlanWire.model_validate(
+        invoke_json(
+            ["pipeline", "plan", "--recipe", recipe, *_manifest(dataset), "--json"]
+        )
+    )
+    text = runner.invoke(
+        app, ["pipeline", "plan", "--recipe", recipe, *_manifest(dataset), *LOOSE]
+    )
+
+    [row] = plan.retirable
+    assert (row.digest, row.name, row.runs, row.open) == (
+        ran.recipe_digest,
+        "old",
+        2,
+        False,
+    )
+    assert plain.retirable == ()
+    assert "retirable recipes (pass a digest to --retire)" in text.stdout
+    assert ran.recipe_digest in text.stdout
+
+
+def test_plan_with_retire_lists_the_retired_runs(
+    dataset: Dataset, recipe: str, lapsed_holds: None
+) -> None:
+    ran = run_pipeline(dataset, speed_heading_recipe())
+
+    plan = PlanWire.model_validate(
+        _plan(dataset, recipe, "--retire", ran.recipe_digest)
+    )
+    text = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            recipe,
+            *_manifest(dataset),
+            *LOOSE,
+            "--retire",
+            ran.recipe_digest,
+        ],
+    )
+
+    assert plan.cleanup is not None
+    assert plan.cleanup.retired == (ran.recipe_digest,)
+    assert [run.storage for run in plan.cleanup.retired_runs] == [HEADING]
+    assert plan.cleanup.removable_runs == 2
+    assert "retired runs" in text.stdout
+    assert HEADING in text.stdout
+
+
+def test_run_retires_the_recipe_and_status_reports_the_runs(
+    dataset: Dataset, recipe: str, lapsed_holds: None
+) -> None:
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    heading = next(o.run_id for o in ran.outcomes if o.step_id == "heading")
+    retire = ["--retire", ran.recipe_digest]
+    plan = _plan(dataset, recipe, *retire)
+
+    done = invoke_json(
+        [
+            "pipeline",
+            "run",
+            "--recipe",
+            recipe,
+            *_manifest(dataset),
+            *LOOSE,
+            *retire,
+            "--expect-plan",
+            str(plan["fingerprint"]),
+            "--json",
+        ]
+    )
+    status = invoke_json(
+        [
+            "pipeline",
+            "status",
+            "--request",
+            str(done["request_id"]),
+            *_manifest(dataset),
+            "--json",
+        ]
+    )
+
+    assert not feature_run_root(dataset, HEADING, heading).exists()
+    cleanup = done["cleanup"]
+    assert isinstance(cleanup, dict)
+    assert (cleanup["status"], cleanup["removed_runs"]) == ("finished", 2)
+    assert status["cleanup"] == cleanup
+    report = CleanupStatusWire.model_validate(cleanup)
+    assert {run.retired for run in report.removed} == {ran.recipe_digest}
+
+
+def test_submit_records_the_retirement(
+    dataset: Dataset, recipe: str, lapsed_holds: None
+) -> None:
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    retire = ["--retire", ran.recipe_digest]
+    plan = _plan(dataset, recipe, *retire)
+
+    submitted = invoke_json(
+        [
+            "pipeline",
+            "submit",
+            "--recipe",
+            recipe,
+            *_manifest(dataset),
+            *LOOSE,
+            *retire,
+            "--expect-plan",
+            str(plan["fingerprint"]),
+            "--json",
+        ]
+    )
+
+    cleanup = submitted["cleanup"]
+    assert isinstance(cleanup, dict)
+    assert cleanup["retired"] == [ran.recipe_digest]
+
+
+@pytest.mark.parametrize("verb", ["plan", "submit", "run"])
+def test_retire_without_a_cleanup_fails_and_writes_nothing(
+    dataset: Dataset, recipe: str, verb: str
+) -> None:
+    ran = run_pipeline(dataset, speed_heading_recipe())
+    before = sorted((dataset.base_dir / ".mosaic").rglob("*"))
+
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            verb,
+            "--recipe",
+            recipe,
+            *_manifest(dataset),
+            "--retire",
+            ran.recipe_digest,
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["reason"] == "retire_needs_cleanup"
+    assert sorted((dataset.base_dir / ".mosaic").rglob("*")) == before
+
+
+def test_retiring_a_recipe_the_dataset_does_not_hold_fails(
+    dataset: Dataset, recipe: str
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            recipe,
+            *_manifest(dataset),
+            *LOOSE,
+            "--retire",
+            "0123456789abcdef",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["reason"] == "retire_unknown_recipe"

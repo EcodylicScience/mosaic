@@ -220,8 +220,9 @@ def serve_command(
             "--allow-cleanup",
             help=(
                 "Let submit_pipeline remove superseded feature runs with cleanup "
-                "'superseded', after the user confirms. Repeatable; the one "
-                "class is feature-runs. The policy is the config file's cleanup."
+                "'superseded', and with retire the runs that a retired recipe "
+                "wrote, after the user confirms. Repeatable; the one class is "
+                "feature-runs. The policy is the config file's cleanup."
             ),
         ),
     ] = None,
