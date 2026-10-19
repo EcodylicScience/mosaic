@@ -219,6 +219,26 @@ class TestXgboostFit:
         assert isinstance(feat._model, XGBClassifier)
         assert feat._classes == [0, 1, 2]
 
+    def test_two_classes_and_a_test_split_fit_and_report(self, tmp_path: Path) -> None:
+        """`predict` of a two-class softprob model returns probabilities, not classes."""
+        templates_path = _make_templates_parquet(tmp_path / "templates", n_classes=2)
+        feat = XgboostFeature(
+            XgboostFeature.Inputs((Result(feature="upstream"),)),
+            params={
+                "templates": {"feature": "extract-labeled-templates"},
+                "default_class": 0,
+                "n_estimators": 10,
+                "max_depth": 3,
+            },
+        )
+        feat._templates = pd.read_parquet(templates_path)
+        feat._feature_columns = [f"feat_{i}" for i in range(5)]
+
+        feat.fit(InputStream(lambda: iter([]), n_entries=0))
+
+        assert feat._metrics is not None
+        assert {"0", "1"} <= set(feat._metrics)
+
     def test_templates_with_unlabeled_rows_are_refused(self, tmp_path: Path) -> None:
         """A -1 row from an older templates run would be learned as a class."""
         templates = pd.read_parquet(_make_templates_parquet(tmp_path / "templates"))

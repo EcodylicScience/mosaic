@@ -64,7 +64,7 @@ class TestFoldAssignment:
             "print(json.dumps([[g, s, folds[(g, s)]] for g, s in entries]))"
         )
         source = str(Path(mosaic.__file__).parent.parent)
-        dealt = []
+        dealt: list[object] = []
         for hash_seed in ("1", "2"):
             env = {**os.environ, "PYTHONHASHSEED": hash_seed, "PYTHONPATH": source}
             done = subprocess.run(
