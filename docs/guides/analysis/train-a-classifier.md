@@ -66,8 +66,8 @@ draws its share of a class's count in proportion to the frames it holds. `class_
 is `"balanced"` by default (each frame weighs inversely to its class's frequency), `null`
 for equal weights, or a mapping from class to weight for the classes to weigh up or
 down. `n_jobs` limits the threads of a fit and does not enter the run id. The template
-draw and the fit each refuse, before they start, a sample that would not fit in the
-available memory, and the message says what to lower.
+draw and the fit each refuse a sample that would not fit in the available memory, and
+the message says what to lower.
 
 ## Train and score in one request
 
@@ -187,12 +187,20 @@ same `perspective` and `average_over` as the test score.
   held by few sequences can be missing from a fold's training rows, and its probability
   is 0 for that fold's sequences. The fit warns when a class has fewer sequences than
   folds, or when a fold's training rows hold under half of a class's rows, and it
-  refuses a fold whose training rows hold fewer than two classes.
+  refuses a fold whose training rows hold fewer than two classes, or with `use_smote`
+  fewer than six rows of a class that SMOTE oversamples.
+- `fit_scope.json` of the classifier lists the training sequences, as it does for any
+  model fitted on them. Each of them was still scored by a model that did not see it, and
+  `cv_folds.parquet` says which.
 
 When you have chosen a setting, widen the same classifier step to the training and test
-groups, and score the test groups once:
+groups, and score the test groups once. Leave `templates` and `labeled` on the training
+groups, so that no label of a test sequence enters the sample:
 
 ```bash
+mosaic pipeline run -m dataset.yaml --recipe @cv.json \
+  --step-scope 'templates={"groups": ["train"]}' \
+  --step-scope 'labeled={"groups": ["train"]}' \
   --step-scope 'classifier={"groups": ["train", "test"]}' \
   --step-scope 'evaluate={"groups": ["test"]}'
 ```
