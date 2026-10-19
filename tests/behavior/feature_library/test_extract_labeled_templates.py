@@ -13,6 +13,7 @@ from mosaic.behavior.feature_library.attention_target import AttentionTarget
 from mosaic.behavior.feature_library.extract_labeled_templates import (
     ExtractLabeledTemplates,
 )
+from mosaic.behavior.feature_library import helpers
 from mosaic.behavior.feature_library.helpers import feature_columns
 from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
 from mosaic.core.pipeline.loading import load_entry_data
@@ -130,6 +131,21 @@ class TestParams:
             }
         )
         assert params.n_per_class == 100
+
+    def test_a_mapping_value_of_null_or_all_takes_every_frame_of_the_class(
+        self,
+    ) -> None:
+        def params(per_class: dict[int, object]) -> ExtractLabeledTemplates.Params:
+            return ExtractLabeledTemplates.Params.from_overrides(
+                {"labels": GroundTruthLabelsSource(), "n_per_class": per_class}
+            )
+
+        assert params({0: None, 1: 5}).n_per_class == {0: None, 1: 5}
+        assert params({0: "all", 1: 5}).n_per_class == {0: None, 1: 5}
+        # One spelling, one run id.
+        assert run_id_digest(params({0: "all"})) == run_id_digest(params({0: None}))
+        with pytest.raises(ValueError, match="n_per_class"):
+            params({0: "some"})
 
     def test_n_total(self) -> None:
         params = ExtractLabeledTemplates.Params.from_overrides(
@@ -503,6 +519,120 @@ class TestExactAllocationIsProportional:
             assert len(rows) == 20
             assert set(rows["sequence"].value_counts()) == {10}
             assert rows["sequence"].nunique() == 2
+
+
+@pytest.mark.parametrize("allocation", ["reservoir", "exact"])
+class TestEveryFrameOfAClass:
+    """A null count takes every frame of its class, and the others keep their cap."""
+
+    def _drawn(
+        self, tmp_path: Path, allocation: str, params: dict[str, object]
+    ) -> pd.DataFrame:
+        labels = np.array([0] * 70 + [1] * 70 + [2] * 10)
+        lookup = _setup_labels_lookup(
+            tmp_path / "labels" / "behavior",
+            [("g", "a", labels), ("g", "b", labels)],
+        )
+        feat = _make_feature_with_labels(
+            lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "test_fraction": 0.0,
+                "pool": {"allocation": allocation},
+                **params,
+            },
+        )
+        feat.fit(
+            _make_factory(
+                [
+                    ("g__a", _coded_df("a", "g", 150, 0.0)),
+                    ("g__b", _coded_df("b", "g", 150, 1000.0)),
+                ]
+            )
+        )
+        feat.save_state(tmp_path / "run")
+        return pd.read_parquet(tmp_path / "run" / "templates.parquet")
+
+    def test_the_class_keeps_every_frame_and_the_others_their_cap(
+        self, tmp_path: Path, allocation: str
+    ) -> None:
+        drawn = self._drawn(
+            tmp_path, allocation, {"n_per_class": {0: 25, 1: None, 2: None}}
+        )
+
+        counts = drawn["label"].value_counts().to_dict()
+        assert counts == {0: 25, 1: 140, 2: 20}
+        every = drawn[drawn["label"] == 1]
+        assert len(every.drop_duplicates(subset=["feat_0"])) == 140
+
+    def test_a_class_the_mapping_leaves_out_contributes_nothing(
+        self, tmp_path: Path, allocation: str
+    ) -> None:
+        drawn = self._drawn(tmp_path, allocation, {"n_per_class": {1: None}})
+
+        assert set(drawn["label"]) == {1}
+        assert len(drawn) == 140
+
+
+def test_a_target_far_above_the_rows_a_class_holds_allocates_only_those_rows(
+    tmp_path: Path,
+) -> None:
+    """The reservoir grows with the rows it receives, not to its target at once.
+
+    A target of five million rows of 3 columns is 120 MB per class if allocated up
+    front, though the class holds fifty rows.
+    """
+    import tracemalloc
+
+    labels = np.array([0] * 50 + [1] * 50)
+    lookup = _setup_labels_lookup(
+        tmp_path / "labels" / "behavior", [("g", "a", labels)]
+    )
+    feat = _make_feature_with_labels(
+        lookup,
+        params={
+            "labels": {"kind": "behavior"},
+            "n_per_class": 5_000_000,
+            "test_fraction": 0.0,
+        },
+    )
+    entry = _make_factory([("g__a", _coded_df("a", "g", 100, 0.0))])
+
+    tracemalloc.start()
+    try:
+        feat.fit(entry)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 10_000_000
+    feat.save_state(tmp_path / "run")
+    assert len(pd.read_parquet(tmp_path / "run" / "templates.parquet")) == 100
+
+
+@pytest.mark.parametrize("allocation", ["reservoir", "exact"])
+def test_a_draw_that_will_not_fit_in_memory_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allocation: str
+) -> None:
+    labels = np.array([0] * 50 + [1] * 50)
+    lookup = _setup_labels_lookup(
+        tmp_path / "labels" / "behavior", [("g", "a", labels)]
+    )
+    feat = _make_feature_with_labels(
+        lookup,
+        params={
+            "labels": {"kind": "behavior"},
+            "n_per_class": {0: None, 1: None},
+            "test_fraction": 0.0,
+            "pool": {"allocation": allocation},
+        },
+    )
+    monkeypatch.setattr(helpers, "host_memory_bytes", lambda: (2000, 1000))
+
+    with pytest.raises(
+        MemoryError, match=r"\[extract-labeled-templates\] .*n_per_class"
+    ):
+        feat.fit(_make_factory([("g__a", _coded_df("a", "g", 100, 0.0))]))
 
 
 class TestFarthestFirstLabeled:

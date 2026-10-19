@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from mosaic.core.individuals import iter_individuals
+from mosaic.core.pipeline.memory_watch import host_memory_bytes
 from mosaic.core.pipeline.types import COLUMNS, META_COLS, NON_PAYLOAD_COLS
 
 from .types import InterpolationConfig
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 __all__ = [
     "apply_exclude_cols",
     "block_rows",
+    "check_memory_headroom",
     "chosen_payload_columns",
     "clean_animal_track",
     "clean_tracks_grouped",
@@ -634,3 +636,36 @@ def pairwise_median_distance(x: np.ndarray, y: np.ndarray) -> np.ndarray:
         ordered, count = sort_nan_last(np.sqrt(dx * dx + dy * dy))
         median[lo : lo + step] = row_median(ordered, count)
     return median
+
+
+# --- Memory preflight for a fit that holds its training set ---
+
+
+def check_memory_headroom(
+    estimated_bytes: int, feature: str, what: str, advice: str
+) -> None:
+    """Raise when *estimated_bytes* would leave less than a fifth of the available memory.
+
+    A fit that holds its whole training set, and copies of it, fails late and
+    takes the host with it. This asks first. Where the host reports no memory,
+    as without ``psutil``, it passes.
+
+    Args:
+        estimated_bytes: The peak the work adds to what the process holds.
+        feature: The feature that refuses, which the message names.
+        what: What the estimate is of, such as ``"fitting 6 models on 143,000
+            rows"``.
+        advice: What the user can change, in a sentence that ends the message.
+
+    Raises:
+        MemoryError: The estimate exceeds 80% of the available memory.
+    """
+    _, available = host_memory_bytes()
+    if available <= 0 or estimated_bytes <= available * 0.8:
+        return
+    msg = (
+        f"[{feature}] {what} would take about {estimated_bytes / 1024**3:.1f} GB "
+        f"at its peak, and only {available / 1024**3:.1f} GB of memory is "
+        f"available. {advice}"
+    )
+    raise MemoryError(msg)
