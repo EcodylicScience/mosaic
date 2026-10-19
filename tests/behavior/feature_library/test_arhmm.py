@@ -9,6 +9,13 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.arhmm import ArHmmFeature
+from mosaic.behavior.feature_library.fit_label_map import (
+    LABEL_MAP_FILE,
+    FitLabelMap,
+    read_label_map,
+)
+from mosaic.behavior.feature_library.helpers import entry_identity
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.graph import (
     Recipe,
     declaration_catalog,
@@ -16,8 +23,8 @@ from mosaic.core.pipeline.graph import (
     resolved_levels,
 )
 from mosaic.core.pipeline.loading import load_entry_data
-from mosaic.core.pipeline.types import ParquetLoadSpec, Result
-from tests.helpers import run_id_digest
+from mosaic.core.pipeline.types import InputStream, ParquetLoadSpec, Result
+from tests.helpers import run_id_digest, write_sparse_labels
 
 _INPUTS = ArHmmFeature.Inputs((Result(feature="speed-angvel"),))
 
@@ -99,7 +106,7 @@ class TestFitApply:
         df = _make_sequence_df("s1", seed=1)
         result = feat.apply(df)
 
-        assert list(result.columns) == ["frame", "syllable", "id"]
+        assert list(result.columns) == ["frame", "syllable", "id", "group", "sequence"]
         assert result["syllable"].dtype == np.int32
         assert len(result) == len(df)
         pd.testing.assert_series_equal(result["frame"], df["frame"], check_names=False)
@@ -245,7 +252,13 @@ class TestPairTable:
 
         result = feat.apply(df)
 
-        assert list(result.columns) == ["frame", "syllable", *self._KEY[1:]]
+        assert list(result.columns) == [
+            "frame",
+            "syllable",
+            *self._KEY[1:],
+            "group",
+            "sequence",
+        ]
         assert len(result) == len(df)
         assert not result.duplicated(self._KEY).any()
         joined = df[self._KEY].merge(
@@ -464,6 +477,8 @@ class TestShortSeries:
             "id1",
             "id2",
             "perspective",
+            "group",
+            "sequence",
         ]
 
     def test_an_empty_entry_concatenates_with_the_others_without_changing_a_dtype(
@@ -479,6 +494,77 @@ class TestShortSeries:
         assert stacked.dtypes["frame"] == decoded.dtypes["frame"]
         assert stacked.dtypes["id1"] == decoded.dtypes["id1"]
         assert pd.api.types.is_integer_dtype(stacked["syllable"])
+
+
+class TestEntryIdentity:
+    """The output names its entry, as the other fitters' outputs do.
+
+    A step that scores states against labels finds an entry's label file by the
+    ``group`` and ``sequence`` of its first row, so a table without them finds none.
+    """
+
+    def test_an_individual_output_carries_the_entry_name(self) -> None:
+        df = _make_sequence_df("s1")
+        result = _fit(_make_feature("numba"), [df]).apply(df)
+
+        assert (result["group"] == "g").all()
+        assert (result["sequence"] == "s1").all()
+        assert entry_identity(result) == ("g", "s1")
+
+    def test_a_pair_output_carries_the_entry_name(self) -> None:
+        df = _make_pair_df("s2")
+        result = _fit(_make_feature("numba"), [df]).apply(df)
+
+        assert (result["group"] == "g").all()
+        assert (result["sequence"] == "s2").all()
+        assert entry_identity(result) == ("g", "s2")
+
+    def test_a_table_without_the_names_gets_none(self) -> None:
+        """Only the identity the input carries is kept, as for the series key."""
+        df = _make_sequence_df().drop(columns=["group", "sequence"])
+        feat = _make_feature("numba")
+        feat.fit(lambda: iter([("g__s1", df)]))
+        result = feat.apply(df)
+
+        assert list(result.columns) == ["frame", "syllable", "id"]
+
+    def test_an_entry_of_short_series_keeps_the_names_of_its_dtype(self) -> None:
+        """An empty entry stacks with the others without turning a column to object."""
+        df = _make_pair_df()
+        feat = _fit(_make_feature("numba"), [df])
+        decoded = feat.apply(df)
+
+        stacked = pd.concat([decoded, feat.apply(df.iloc[:1])], ignore_index=True)
+
+        assert stacked.dtypes["group"] == decoded.dtypes["group"]
+        assert stacked.dtypes["sequence"] == decoded.dtypes["sequence"]
+
+    @pytest.mark.parametrize("pair", [False, True])
+    def test_the_states_can_be_scored_against_labels(
+        self, tmp_path: Path, pair: bool
+    ) -> None:
+        """``fit-label-map`` reads the states of an ``arhmm`` run, pair or individual."""
+        df = _make_pair_df() if pair else _make_sequence_df()
+        states = _fit(_make_feature("numba"), [df]).apply(df)
+        labels = write_sparse_labels(
+            tmp_path / "labels.npz",
+            [(frame, 0, 1, 1 if frame < 200 else 0) for frame in range(400)],
+        )
+        mapper = FitLabelMap(
+            FitLabelMap.Inputs((Result(feature="arhmm"),)),
+            {"prediction_column": "syllable", "perspective": 0 if pair else None},
+        )
+        run_root = tmp_path / "run"
+        assert not mapper.load_state(run_root, {}, {"labels": {("g", "s1"): labels}})
+
+        mapper.fit(
+            InputStream(
+                lambda: iter([(make_entry_key("g", "s1"), states)]), n_entries=1
+            )
+        )
+        mapper.save_state(run_root)
+
+        assert read_label_map(run_root / LABEL_MAP_FILE)
 
 
 class TestDeclaration:
@@ -510,6 +596,8 @@ class TestDeclaration:
             "id1",
             "id2",
             "perspective",
+            "group",
+            "sequence",
         }
 
     def test_an_individual_input_gives_an_individual_output(self) -> None:
@@ -519,7 +607,13 @@ class TestDeclaration:
         )
 
         assert resolved_levels(recipe, declaration_catalog())["hmm"] == "individual"
-        assert resolved_columns(recipe)["hmm"].guaranteed == {"frame", "syllable", "id"}
+        assert resolved_columns(recipe)["hmm"].guaranteed == {
+            "frame",
+            "syllable",
+            "id",
+            "group",
+            "sequence",
+        }
 
 
 class TestCacheKey:

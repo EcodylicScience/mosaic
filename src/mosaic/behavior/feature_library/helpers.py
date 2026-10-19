@@ -267,15 +267,19 @@ def label_series(
         column: The column of the labels.
 
     Returns:
-        The frame and the label of each series' rows, and the columns of
+        The frame and the label of each series' rows, the columns of
         :func:`series_columns`, so that the labels join back to the rows they
-        describe. The series come in the order of :func:`iter_series`, each in
-        frame order. When no series is labeled the result has no rows, the frame
-        and key columns keep the dtypes they have in *df*, and the label column
-        is ``int64``, so that concatenating it with another result keeps their
-        dtypes.
+        describe, and the ``group`` and ``sequence`` of *df* when it has them, as
+        the output of any other feature names its entry. The series come in the
+        order of :func:`iter_series`, each in frame order. When no series is
+        labeled the result has no rows, the frame and key columns keep the dtypes
+        they have in *df*, and the label column is ``int64``, so that
+        concatenating it with another result keeps their dtypes.
     """
-    keys = series_columns(df)
+    keys = [
+        *series_columns(df),
+        *(c for c in (COLUMNS.group_col, COLUMNS.seq_col) if c in df.columns),
+    ]
     labeled: list[pd.DataFrame] = []
     for key, rows in iter_series(df):
         labels = label(key, rows)

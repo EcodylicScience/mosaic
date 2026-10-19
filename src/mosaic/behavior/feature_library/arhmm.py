@@ -234,7 +234,7 @@ class ArHmmFeature:
     requires: ClassVar[tuple[Requirement, ...]] = (Column("frame"), Payload())
     provides: ClassVar[Provides] = Provides(
         adds=(Column("frame"), Column("syllable")),
-        conditional=kept("id", "id1", "id2", "perspective"),
+        conditional=kept("id", "id1", "id2", "perspective", "group", "sequence"),
     )
     ModelArtifact = ArHmmModelArtifact
 
