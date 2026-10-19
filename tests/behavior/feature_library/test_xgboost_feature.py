@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import joblib
@@ -231,13 +232,13 @@ class TestXgboostFit:
                 "max_depth": 3,
             },
         )
-        feat._templates = pd.read_parquet(templates_path)
-        feat._feature_columns = [f"feat_{i}" for i in range(5)]
+        _ = feat.load_state(tmp_path / "run", {"templates": templates_path}, {})
 
         feat.fit(InputStream(lambda: iter([]), n_entries=0))
+        feat.save_state(tmp_path / "run")
 
-        assert feat._metrics is not None
-        assert {"0", "1"} <= set(feat._metrics)
+        report = json.loads((tmp_path / "run" / "reports.json").read_text())
+        assert {"0", "1"} <= set(report)
 
     def test_templates_with_unlabeled_rows_are_refused(self, tmp_path: Path) -> None:
         """A -1 row from an older templates run would be learned as a class."""
