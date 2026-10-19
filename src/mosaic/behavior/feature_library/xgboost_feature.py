@@ -84,8 +84,8 @@ _DEFAULT_CLASS_DESCRIPTION = (
 _CLASS_WEIGHT_DESCRIPTION = (
     "Unset, every training sample is weighted equally. balanced weights "
     "each sample inversely to its class's frequency. A mapping from class "
-    "to weight multiplies each sample's weight by its class's, and a class "
-    "it does not list weighs 1."
+    "to weight gives each sample its class's weight, 1 for a class it does "
+    "not list, and applies no balanced weighting."
 )
 
 _USE_SMOTE_DESCRIPTION = (
