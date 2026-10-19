@@ -74,5 +74,5 @@
   "trajectory-smooth/default": "0.1-2346da87b7",
   "vame/scope-a": "0.1-41f95befb4",
   "vame/scope-ab": "0.1-7ac5c99474",
-  "xgboost/templates": "0.2-a47147dc32"
+  "xgboost/templates": "0.3-4670c3a245"
 }

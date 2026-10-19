@@ -243,6 +243,67 @@ recomputes. A run with several workers whose process worker is stopped raises
   parallelism as a last argument. mosaic-queue builds its own commands and does not pass
   the flags, so steps it dispatches run in turn.
 
+**`xgboost` cross-validates by sequence, and the labeled sample and the fit are
+bounded.** `xgboost` (0.2 to 0.3) takes `cv_folds` and `cv_seed`. With `cv_folds` set
+to K, the training sequences of the templates are dealt into K folds by the sha256 of
+`[cv_seed, group, sequence]`, K fold models are fitted beside the full model in the one
+fit, and each training sequence is scored by the model that never saw it. Every other
+entry, such as a test group, is scored by the full model. One `evaluate-labels` step
+over the training groups is then the pooled out-of-fold score, the probabilities are
+inputs a second stage can train on, and widening the same step to the test groups is
+the same run, so its model is a cache hit. `extract-labeled-templates` (0.5 to 0.6)
+writes the `group` and `sequence` of every template row, as text beside `label` and
+`split`, for the folds to read. They are no features: `feature_columns` and
+`lightning-action` read the same columns of a 0.6 table as of a 0.5 one.
+
+- The folds are the sha256 rank of the train entries that the templates run's
+  `template_provenance.parquet` lists, dealt out in turn, so they differ by at most one
+  entry and do not move with `random_state`, `n_per_class` or an entry that drew no row.
+  `cv_folds.parquet` beside the model gives each entry's fold, its rows and its rows per
+  class (`rows_<class>`). The output has no `fold` column.
+- `cv_folds` needs `templates`, is refused beside `model`, and `cv_seed` other than 0 is
+  refused without `cv_folds`. A fold model is fitted on the classes its rows hold, and
+  writes the full class order with probability 0 for an absent class. The fit refuses a
+  fold whose training rows hold fewer than two classes, or with `use_smote` fewer than
+  six rows of a class that SMOTE oversamples, and warns when a class has fewer
+  sequences than folds or a fold's training rows hold under half of a class's rows. A
+  table without `group` and `sequence` is refused by `apply` and never scored in sample.
+- The bundle gains an optional `cv` entry, so a 0.2 bundle loads through `model`. A
+  bundle with folds loaded through `model` scores every entry with the full model.
+- The bundle is written atomically, after the files that belong to it, where
+  `joblib.dump` wrote to the final path and `load_state` took any file there for a
+  finished model. `xgboost` reports each fit as progress and stops between fits when a
+  run is cancelled, with no bundle written.
+- Training-set hygiene, shipped with the bumps so the run ids move once.
+  `pool.allocation="exact"` gave each sequence its share of a class's count in
+  proportion to the frames it holds: it gave the first sequences the whole count and
+  the later ones nothing, so a sample drawn under it changes. A mapping value of `null`
+  in `n_per_class` (or `"all"`) takes every labeled frame of a class. The reservoir is
+  allocated as rows arrive, and the sample drawn from a capped class is unchanged. The
+  template draw and the `xgboost` fit refuse a sample that would not fit in the
+  available memory, naming what to lower. `xgboost` takes `n_jobs`, which bounds the
+  threads of a fit and is left out of the run id, and `class_weight` takes a mapping
+  from class to weight beside `"balanced"` and `null`.
+- A two-class `xgboost` fit with a test split failed while reporting on the split,
+  because `predict` of a two-class softprob model returns probabilities. It reads the
+  class from `predict_proba`.
+- Which run ids move. Every `extract-labeled-templates` run id changes its version
+  segment and keeps its digest. Every run that
+  pins one through `templates` moves with it: `xgboost` (new version and digest, because
+  `cv_folds` and `cv_seed` enter the hash) and `lightning-action` (digest only, still
+  0.3), then `evaluate-labels` and every run that reads their results. An existing
+  dataset recomputes that supervised tail once, and its models are the same: an
+  `xgboost` fit without `cv_folds` predicts as it did. The unlabeled chain
+  (`extract-templates`, `global-scaler`, `global-kmeans`, `global-tsne`, `global-ward`)
+  and every feature outside the tail keep their ids. The golden corpus moves one line,
+  `xgboost/templates`. Old runs stay on disk.
+- `mosaic reconcile` rebuilds an `xgboost` 0.2 run from its `params.json`, which names
+  neither `cv_folds` nor `cv_seed`, and hashes the defaults. A run under the current
+  identity scheme is reported `unresolvable_pre_provenance`, as is any run whose
+  feature gained a hashed field, and the `evaluate-labels` run that reads it
+  `identity_shift_recompute`. A run under an older scheme is re-addressed to a digest
+  with the 0.2 prefix. Neither collides with a 0.3 run, and nothing is deleted.
+
 **A template step writes only its sample.** `extract-templates` (0.3 to 0.4) and
 `extract-labeled-templates` (0.4 to 0.5) wrote a copy of each entry's input as that
 entry's table, beside the `templates.parquet` sample, and the labeled one added `split`

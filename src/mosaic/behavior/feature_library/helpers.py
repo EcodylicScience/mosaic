@@ -7,13 +7,16 @@ feature_library to avoid code duplication.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+import hashlib
+import json
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from mosaic.core.individuals import iter_individuals
+from mosaic.core.pipeline.memory_watch import host_memory_bytes
 from mosaic.core.pipeline.types import COLUMNS, META_COLS, NON_PAYLOAD_COLS
 
 from .types import InterpolationConfig
@@ -25,9 +28,11 @@ if TYPE_CHECKING:
 __all__ = [
     "apply_exclude_cols",
     "block_rows",
+    "check_memory_headroom",
     "chosen_payload_columns",
     "clean_animal_track",
     "clean_tracks_grouped",
+    "cv_fold_assignment",
     "ego_rotate",
     "ensure_columns",
     "entry_identity",
@@ -40,6 +45,7 @@ __all__ = [
     "label_series",
     "meta_columns",
     "one_row_per_frame_and_id",
+    "out_of_fold_choice",
     "pairwise_median_distance",
     "refuse_pair_rows",
     "refuse_repeated_series_rows",
@@ -638,3 +644,132 @@ def pairwise_median_distance(x: np.ndarray, y: np.ndarray) -> np.ndarray:
         ordered, count = sort_nan_last(np.sqrt(dx * dx + dy * dy))
         median[lo : lo + step] = row_median(ordered, count)
     return median
+
+
+# --- Memory preflight for a fit that holds its training set ---
+
+
+def check_memory_headroom(
+    estimated_bytes: int, feature: str, what: str, advice: str
+) -> None:
+    """Raise when *estimated_bytes* would leave less than a fifth of the available memory.
+
+    A fit that holds its whole training set, and copies of it, fails late and
+    takes the host with it. This asks first. Where the host reports no memory,
+    as without ``psutil``, it passes.
+
+    Args:
+        estimated_bytes: The peak the work adds to what the process holds.
+        feature: The feature that refuses, which the message names.
+        what: What the estimate is of, such as ``"fitting 6 models on 143,000
+            rows"``.
+        advice: What the user can change, in a sentence that ends the message.
+
+    Raises:
+        MemoryError: The estimate exceeds 80% of the available memory.
+    """
+    _, available = host_memory_bytes()
+    if available <= 0 or estimated_bytes <= available * 0.8:
+        return
+    msg = (
+        f"[{feature}] {what} would take about {estimated_bytes / 1024**3:.1f} GB "
+        f"at its peak, and only {available / 1024**3:.1f} GB of memory is "
+        f"available. {advice}"
+    )
+    raise MemoryError(msg)
+
+
+# --- Cross-validation by sequence ---
+#
+# A classifier that holds each training sequence out of the model that scores it deals
+# the sequences into folds once, at its fit, and chooses a fold's model for each entry it
+# scores. The two halves live here so that every classifier deals and chooses alike.
+
+
+def _cv_entry_key(seed: int, group: str, sequence: str) -> str:
+    """Return the sort key of an entry: the sha256 of the JSON text ``[seed, group, sequence]``.
+
+    JSON keeps a group and a sequence apart (``("a", "bc")`` and ``("ab", "c")``
+    differ, and a blank group stays a blank string), and unlike ``hash()`` it is
+    the same in every process.
+    """
+    text = json.dumps([seed, group, sequence], separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def cv_fold_assignment(
+    entries: Iterable[tuple[str, str]], n_folds: int, seed: int = 0
+) -> dict[tuple[str, str], int]:
+    """Deal entries into *n_folds* folds, balanced in their count.
+
+    The entries are ordered by the sha256 of ``[seed, group, sequence]`` and dealt
+    out in turn, so entry ``rank`` goes to fold ``rank % n_folds``. Folds differ by
+    at most one entry, and the result depends on the entries and the seed alone:
+    not on the order they arrive in, the process, or the rows each drew.
+
+    Args:
+        entries: The ``(group, sequence)`` of every entry to deal. A repeated
+            entry is dealt once.
+        n_folds: The number of folds, at least 2 and at most the number of
+            entries.
+        seed: Changes the folds and nothing else.
+
+    Returns:
+        The fold, from 0, of each entry.
+
+    Raises:
+        ValueError: *n_folds* is below 2 or above the number of entries.
+    """
+    unique = sorted(set(entries))
+    if n_folds < 2:
+        msg = f"cross-validation needs at least 2 folds, not {n_folds}"
+        raise ValueError(msg)
+    if n_folds > len(unique):
+        msg = (
+            f"cannot deal {len(unique)} train entries into {n_folds} folds. "
+            f"Lower the number of folds to at most {len(unique)}"
+        )
+        raise ValueError(msg)
+    ranked = sorted(unique, key=lambda entry: _cv_entry_key(seed, *entry))
+    return {entry: rank % n_folds for rank, entry in enumerate(ranked)}
+
+
+def out_of_fold_choice(
+    df: pd.DataFrame, fold_of: Mapping[tuple[str, str], int], feature: str
+) -> int | None:
+    """Return the fold whose model scores the entry *df* holds, ``None`` for the full model.
+
+    An entry in a fold is scored by the model that was fitted without it. Any other
+    entry, such as one of a test group, was in no fold's training rows and no
+    model's, so the full model scores it.
+
+    The entry is read from the ``group`` and ``sequence`` columns by
+    :func:`entry_identity`, the function that names an entry in the templates. A
+    table without those columns would read as the entry ``("", "")``, which is in
+    no fold, and would be scored by the full model that was fitted on its own
+    sequence. It is refused instead.
+
+    Args:
+        df: One entry's table.
+        fold_of: The fold of each ``(group, sequence)`` that was dealt.
+        feature: The feature that scores, which the message names.
+
+    Raises:
+        ValueError: *df* lacks ``group`` or ``sequence``, or holds more than one entry.
+    """
+    missing = [
+        column for column in (COLUMNS.group_col, COLUMNS.seq_col) if column not in df
+    ]
+    if missing:
+        msg = (
+            f"[{feature}] cross-validation names the fold of an entry by its "
+            f"group and sequence, and the input lacks {missing}"
+        )
+        raise ValueError(msg)
+    if len(df[[COLUMNS.group_col, COLUMNS.seq_col]].drop_duplicates()) > 1:
+        msg = (
+            f"[{feature}] cross-validation scores one entry at a time, and the "
+            "input holds more than one entry"
+        )
+        raise ValueError(msg)
+    return fold_of.get(entry_identity(df))

@@ -12,7 +12,9 @@ import pytest
 from mosaic.behavior.feature_library.attention_target import AttentionTarget
 from mosaic.behavior.feature_library.extract_labeled_templates import (
     ExtractLabeledTemplates,
+    _Reservoir,  # pyright: ignore[reportPrivateUsage]
 )
+from mosaic.behavior.feature_library import helpers
 from mosaic.behavior.feature_library.helpers import feature_columns
 from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
 from mosaic.core.pipeline.loading import load_entry_data
@@ -130,6 +132,21 @@ class TestParams:
             }
         )
         assert params.n_per_class == 100
+
+    def test_a_mapping_value_of_null_or_all_takes_every_frame_of_the_class(
+        self,
+    ) -> None:
+        def params(per_class: dict[int, object]) -> ExtractLabeledTemplates.Params:
+            return ExtractLabeledTemplates.Params.from_overrides(
+                {"labels": GroundTruthLabelsSource(), "n_per_class": per_class}
+            )
+
+        assert params({0: None, 1: 5}).n_per_class == {0: None, 1: 5}
+        assert params({0: "all", 1: 5}).n_per_class == {0: None, 1: 5}
+        # One spelling, one run id.
+        assert run_id_digest(params({0: "all"})) == run_id_digest(params({0: None}))
+        with pytest.raises(ValueError, match="n_per_class"):
+            params({0: "some"})
 
     def test_n_total(self) -> None:
         params = ExtractLabeledTemplates.Params.from_overrides(
@@ -385,6 +402,303 @@ class TestExactLabeled:
         assert (templates["label"] == 1).sum() == 30
 
 
+class TestExactAllocationIsProportional:
+    """Each sequence draws its share of a class's quota, not the quota's first rows."""
+
+    def _drawn(
+        self,
+        tmp_path: Path,
+        sequences: list[tuple[str, int, int]],
+        params: dict[str, object],
+    ) -> pd.DataFrame:
+        """Fit ``(sequence, class 0 rows, class 1 rows)`` entries and return the sample."""
+        labels = {
+            name: np.array([0] * n0 + [1] * n1, dtype=np.int64)
+            for name, n0, n1 in sequences
+        }
+        lookup = _setup_labels_lookup(
+            tmp_path / "labels" / "behavior",
+            [("g", name, array) for name, array in labels.items()],
+        )
+        feat = _make_feature_with_labels(
+            lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "pool": {"allocation": "exact"},
+                "test_fraction": 0.0,
+                **params,
+            },
+        )
+        feat.fit(
+            _make_factory(
+                [
+                    (f"g__{name}", _coded_df(name, "g", len(labels[name]), 0.0))
+                    for name in labels
+                ]
+            )
+        )
+        feat.save_state(tmp_path / "run")
+        return pd.read_parquet(tmp_path / "run" / "templates.parquet")
+
+    @staticmethod
+    def _shares(templates: pd.DataFrame, label: int) -> dict[str, int]:
+        rows = templates[templates["label"] == label]
+        return {str(k): int(v) for k, v in rows["sequence"].value_counts().items()}
+
+    def test_equal_sequences_draw_equal_shares(self, tmp_path: Path) -> None:
+        drawn = self._drawn(
+            tmp_path,
+            [("a", 100, 100), ("b", 100, 100), ("c", 100, 100)],
+            {"n_per_class": 30},
+        )
+
+        assert self._shares(drawn, 0) == {"a": 10, "b": 10, "c": 10}
+        assert self._shares(drawn, 1) == {"a": 10, "b": 10, "c": 10}
+
+    def test_shares_follow_the_rows_each_sequence_holds(self, tmp_path: Path) -> None:
+        drawn = self._drawn(
+            tmp_path,
+            [("a", 100, 20), ("b", 50, 20), ("c", 50, 60)],
+            {"n_per_class": {0: 40, 1: 50}},
+        )
+
+        assert self._shares(drawn, 0) == {"a": 20, "b": 10, "c": 10}
+        assert self._shares(drawn, 1) == {"a": 10, "b": 10, "c": 30}
+
+    def test_a_remainder_goes_to_the_larger_fractions_and_the_total_is_exact(
+        self, tmp_path: Path
+    ) -> None:
+        drawn = self._drawn(
+            tmp_path,
+            [("a", 100, 100), ("b", 100, 100), ("c", 100, 100)],
+            {"n_per_class": 10},
+        )
+
+        for label in (0, 1):
+            shares = self._shares(drawn, label)
+            assert sum(shares.values()) == 10
+            assert sorted(shares.values()) == [3, 3, 4]
+
+    def test_a_sequence_never_draws_more_than_it_holds(self, tmp_path: Path) -> None:
+        drawn = self._drawn(
+            tmp_path,
+            [("a", 1, 50), ("b", 1, 50), ("c", 98, 50)],
+            {"n_per_class": {0: 3, 1: 30}},
+        )
+
+        assert self._shares(drawn, 0) == {"c": 3}
+        assert self._shares(drawn, 1) == {"a": 10, "b": 10, "c": 10}
+
+    def test_a_quota_above_the_rows_takes_every_row(self, tmp_path: Path) -> None:
+        drawn = self._drawn(
+            tmp_path,
+            [("a", 7, 5), ("b", 9, 3)],
+            {"n_per_class": 100},
+        )
+
+        assert self._shares(drawn, 0) == {"a": 7, "b": 9}
+        assert self._shares(drawn, 1) == {"a": 5, "b": 3}
+
+    def test_the_draw_is_deterministic(self, tmp_path: Path) -> None:
+        sequences = [("a", 100, 100), ("b", 60, 30)]
+        first = self._drawn(tmp_path / "one", sequences, {"n_per_class": 25})
+        second = self._drawn(tmp_path / "two", sequences, {"n_per_class": 25})
+
+        pd.testing.assert_frame_equal(first, second)
+
+    def test_the_train_and_the_test_split_each_draw_their_own_shares(
+        self, tmp_path: Path
+    ) -> None:
+        drawn = self._drawn(
+            tmp_path,
+            [(name, 100, 100) for name in ("a", "b", "c", "d")],
+            {"n_per_class": 20, "test_fraction": 0.5},
+        )
+
+        for split in ("train", "test"):
+            rows = drawn[(drawn["split"] == split) & (drawn["label"] == 0)]
+            assert len(rows) == 20
+            assert set(rows["sequence"].value_counts()) == {10}
+            assert rows["sequence"].nunique() == 2
+
+
+@pytest.mark.parametrize("allocation", ["reservoir", "exact"])
+class TestEveryFrameOfAClass:
+    """A null count takes every frame of its class, and the others keep their cap."""
+
+    def _drawn(
+        self, tmp_path: Path, allocation: str, params: dict[str, object]
+    ) -> pd.DataFrame:
+        labels = np.array([0] * 70 + [1] * 70 + [2] * 10)
+        lookup = _setup_labels_lookup(
+            tmp_path / "labels" / "behavior",
+            [("g", "a", labels), ("g", "b", labels)],
+        )
+        feat = _make_feature_with_labels(
+            lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "test_fraction": 0.0,
+                "pool": {"allocation": allocation},
+                **params,
+            },
+        )
+        feat.fit(
+            _make_factory(
+                [
+                    ("g__a", _coded_df("a", "g", 150, 0.0)),
+                    ("g__b", _coded_df("b", "g", 150, 1000.0)),
+                ]
+            )
+        )
+        feat.save_state(tmp_path / "run")
+        return pd.read_parquet(tmp_path / "run" / "templates.parquet")
+
+    def test_the_class_keeps_every_frame_and_the_others_their_cap(
+        self, tmp_path: Path, allocation: str
+    ) -> None:
+        drawn = self._drawn(
+            tmp_path, allocation, {"n_per_class": {0: 25, 1: None, 2: None}}
+        )
+
+        counts = drawn["label"].value_counts().to_dict()
+        assert counts == {0: 25, 1: 140, 2: 20}
+        every = drawn[drawn["label"] == 1]
+        assert len(every.drop_duplicates(subset=["feat_0"])) == 140
+
+    def test_a_class_the_mapping_leaves_out_contributes_nothing(
+        self, tmp_path: Path, allocation: str
+    ) -> None:
+        drawn = self._drawn(tmp_path, allocation, {"n_per_class": {1: None}})
+
+        assert set(drawn["label"]) == {1}
+        assert len(drawn) == 140
+
+
+def test_a_target_far_above_the_rows_a_class_holds_allocates_only_those_rows(
+    tmp_path: Path,
+) -> None:
+    """The reservoir grows with the rows it receives, not to its target at once.
+
+    A target of five million rows of 3 columns is 120 MB per class if allocated up
+    front, though the class holds fifty rows.
+    """
+    import tracemalloc
+
+    labels = np.array([0] * 50 + [1] * 50)
+    lookup = _setup_labels_lookup(
+        tmp_path / "labels" / "behavior", [("g", "a", labels)]
+    )
+    feat = _make_feature_with_labels(
+        lookup,
+        params={
+            "labels": {"kind": "behavior"},
+            "n_per_class": 5_000_000,
+            "test_fraction": 0.0,
+        },
+    )
+    entry = _make_factory([("g__a", _coded_df("a", "g", 100, 0.0))])
+
+    tracemalloc.start()
+    try:
+        feat.fit(entry)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 10_000_000
+    feat.save_state(tmp_path / "run")
+    assert len(pd.read_parquet(tmp_path / "run" / "templates.parquet")) == 100
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"n_per_class": 25},
+        {"n_per_class": {0: 40, 1: 12, 2: 9}},
+        {"n_total": 60},
+        {"n_per_class": 8, "strategy": "farthest_first", "pool": {"size": 20}},
+    ],
+    ids=["int", "mapping", "n_total", "farthest_first"],
+)
+@pytest.mark.parametrize("seed", [0, 3])
+def test_a_reservoir_that_grows_with_its_rows_draws_what_one_allocated_up_front_would(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    params: dict[str, object],
+    seed: int,
+) -> None:
+    """The growth of a buffer must not touch which rows stay or what the generator draws.
+
+    Class 2 appears from the fifth sequence on, so an ``n_total`` target shrinks
+    while the buffers hold rows. The reference allocates every buffer at its target at
+    its first row, as 0.5 did.
+    """
+    rng = np.random.default_rng(1)
+    entries: list[tuple[str, np.ndarray, pd.DataFrame]] = []
+    for i in range(8):
+        n = int(rng.integers(30, 70))
+        pool = [0, 1, 2] if i >= 4 else [0, 1]
+        labels = rng.choice(pool, size=n).astype(np.int64)
+        entries.append((f"s{i}", labels, _coded_df(f"s{i}", "g", n, 1000.0 * i)))
+    lookup = _setup_labels_lookup(
+        tmp_path / "labels" / "behavior", [("g", name, lab) for name, lab, _ in entries]
+    )
+
+    def draw(root: Path) -> pd.DataFrame:
+        feat = _make_feature_with_labels(
+            lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "test_fraction": 0.0,
+                "random_state": seed,
+                **params,
+            },
+        )
+        feat.fit(_make_factory([(f"g__{name}", df) for name, _, df in entries]))
+        feat.save_state(root)
+        return pd.read_parquet(root / "templates.parquet")
+
+    grown = draw(tmp_path / "grown")
+    original = _Reservoir.grown_capacity
+
+    def up_front(self: _Reservoir, rows: int) -> int:
+        if self.target is None:
+            return original(self, rows)
+        return max(self.capacity, self.target)
+
+    monkeypatch.setattr(_Reservoir, "grown_capacity", up_front)
+    allocated = draw(tmp_path / "allocated")
+
+    assert len(grown) > 0
+    pd.testing.assert_frame_equal(grown, allocated)
+
+
+@pytest.mark.parametrize("allocation", ["reservoir", "exact"])
+def test_a_draw_that_will_not_fit_in_memory_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, allocation: str
+) -> None:
+    labels = np.array([0] * 50 + [1] * 50)
+    lookup = _setup_labels_lookup(
+        tmp_path / "labels" / "behavior", [("g", "a", labels)]
+    )
+    feat = _make_feature_with_labels(
+        lookup,
+        params={
+            "labels": {"kind": "behavior"},
+            "n_per_class": {0: None, 1: None},
+            "test_fraction": 0.0,
+            "pool": {"allocation": allocation},
+        },
+    )
+    monkeypatch.setattr(helpers, "host_memory_bytes", lambda: (2000, 1000))
+
+    with pytest.raises(
+        MemoryError, match=r"\[extract-labeled-templates\] .*n_per_class"
+    ):
+        feat.fit(_make_factory([("g__a", _coded_df("a", "g", 100, 0.0))]))
+
+
 class TestFarthestFirstLabeled:
     def test_farthest_first_per_class(self, tmp_path: Path) -> None:
         """Farthest-first should select spread points within each class."""
@@ -593,6 +907,98 @@ def test_only_the_labeled_perspective_is_sampled(
     assert templates["label"].tolist() == [0] * n_frames
 
 
+def _coded_df(sequence: str, group: str, n_rows: int, code: float) -> pd.DataFrame:
+    """A table whose ``feat_0`` says which entry a row came from: ``code`` plus its frame."""
+    return pd.DataFrame(
+        {
+            "frame": np.arange(n_rows),
+            "time": np.arange(n_rows, dtype=float) / 30.0,
+            "id": np.zeros(n_rows, dtype=int),
+            "group": [group] * n_rows,
+            "sequence": [sequence] * n_rows,
+            "feat_0": code + np.arange(n_rows, dtype=float),
+            "feat_1": np.zeros(n_rows),
+        }
+    )
+
+
+class TestIdentityColumns:
+    """Every template row names the entry it was drawn from."""
+
+    ENTRIES = (("", "10", 1000.0), ("g", "s2", 2000.0), ("g", "s3", 3000.0))
+
+    def _templates(self, tmp_path: Path, params: dict[str, object]) -> pd.DataFrame:
+        labels = np.array([0] * 20 + [1] * 20)
+        lookup = _setup_labels_lookup(
+            tmp_path / "labels" / "behavior",
+            [(group, sequence, labels) for group, sequence, _ in self.ENTRIES],
+        )
+        feat = _make_feature_with_labels(
+            lookup,
+            params={"labels": {"kind": "behavior"}, "test_fraction": 0.0, **params},
+        )
+        feat.fit(
+            _make_factory(
+                [
+                    (f"{group}__{sequence}", _coded_df(sequence, group, 40, code))
+                    for group, sequence, code in self.ENTRIES
+                ]
+            )
+        )
+        feat.save_state(tmp_path / "run")
+        return pd.read_parquet(tmp_path / "run" / "templates.parquet")
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"n_per_class": 15},
+            {"n_per_class": 60, "pool": {"allocation": "exact"}},
+            {"n_per_class": 6, "strategy": "farthest_first", "pool": {"size": 15}},
+        ],
+        ids=["reservoir", "exact", "farthest_first"],
+    )
+    def test_each_row_names_its_own_entry(
+        self, tmp_path: Path, params: dict[str, object]
+    ) -> None:
+        templates = self._templates(tmp_path, params)
+
+        code_of = {(g, s): code for g, s, code in self.ENTRIES}
+        assert set(zip(templates["group"], templates["sequence"])) == set(code_of)
+        for (group, sequence), rows in templates.groupby(["group", "sequence"]):
+            code = code_of[(str(group), str(sequence))]
+            assert rows["feat_0"].between(code, code + 39).all()
+
+    def test_the_identity_is_text_and_a_blank_group_stays_blank(
+        self, tmp_path: Path
+    ) -> None:
+        templates = self._templates(tmp_path, {"n_per_class": 15})
+
+        assert not pd.api.types.is_numeric_dtype(templates["group"])
+        assert not pd.api.types.is_numeric_dtype(templates["sequence"])
+        assert set(templates["group"]) == {"", "g"}
+        assert set(templates["sequence"]) == {"10", "s2", "s3"}
+
+    def test_the_identity_is_not_a_feature(self, tmp_path: Path) -> None:
+        templates = self._templates(tmp_path, {"n_per_class": 15})
+
+        assert feature_columns(templates) == ["feat_0", "feat_1"]
+
+    def test_the_identity_survives_a_save_after_a_load(self, tmp_path: Path) -> None:
+        _ = self._templates(tmp_path, {"n_per_class": 15})
+        feat = ExtractLabeledTemplates(
+            ExtractLabeledTemplates.Inputs((Result(feature="upstream"),)),
+            params={"labels": {"kind": "behavior"}, "n_per_class": 15},
+        )
+
+        assert feat.load_state(tmp_path / "run", {}, {}) is True
+        feat.save_state(tmp_path / "reload")
+
+        pd.testing.assert_frame_equal(
+            pd.read_parquet(tmp_path / "run" / "templates.parquet"),
+            pd.read_parquet(tmp_path / "reload" / "templates.parquet"),
+        )
+
+
 class TestColumns:
     """``columns`` names the payload columns that the templates sample."""
 
@@ -622,8 +1028,16 @@ class TestColumns:
         every = self._templates(tmp_path, "every", {})
         named = self._templates(tmp_path, "named", {"columns": ["feat_2", "feat_0"]})
 
-        assert list(every.columns) == ["feat_0", "feat_1", "feat_2", "label", "split"]
-        kept = ["feat_0", "feat_2", "label", "split"]
+        assert list(every.columns) == [
+            "feat_0",
+            "feat_1",
+            "feat_2",
+            "label",
+            "split",
+            "group",
+            "sequence",
+        ]
+        kept = ["feat_0", "feat_2", "label", "split", "group", "sequence"]
         pd.testing.assert_frame_equal(named, every[kept])
 
     @pytest.mark.parametrize(

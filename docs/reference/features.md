@@ -707,7 +707,7 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 
 ### `extract-labeled-templates`
 
-Version `0.5` &middot; `mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates`
+Version `0.6` &middot; `mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates`
 
 Extract labeled, split-annotated templates from upstream features.
 
@@ -715,7 +715,7 @@ Extract labeled, split-annotated templates from upstream features.
 | --- | --- | --- | --- | --- |
 | `labels` | `GroundTruthLabelsSource` | _required_ |  | Reference to the per-frame ground-truth labels used to assign a class to every template, resolved from labels/<kind>/index.csv. |
 | `strategy` | `"random"` \| `"farthest_first"` | `"random"` |  | How templates are selected from the candidate pool. random keeps the pool as collected. farthest_first reduces an oversized pool to the target count per class by iterative farthest-point sampling. |
-| `n_per_class` | `integer` \| `object` \| `None` | `null` |  | The number of templates per class. An int applies the same count to every class, and a mapping sets each class's count individually. Exactly one of n_per_class and n_total must be set. |
+| `n_per_class` | `integer` \| `object` \| `None` | `null` |  | The number of templates per class. An int applies the same count to every class, and a mapping sets each class's count individually. A mapping value of null (or the string all) takes every labeled frame of that class, and a class the mapping does not list contributes none. Exactly one of n_per_class and n_total must be set. |
 | `n_total` | `integer` \| `None` | `null` |  | The total number of templates, split equally across the classes seen. Each class gets n_total // (number of classes), so the realized total can be lower. Exactly one of n_per_class and n_total must be set. |
 | `pool` | `PoolConfig` | _constructed_ |  | Candidate pool size and per-entry allocation strategy consulted before final template selection. |
 | `test_fraction` | `number` | `0.2` | >= `0.0`, <= `1.0` | Fraction of sequences held out for the test split. |
@@ -1527,7 +1527,7 @@ Fits VAME to keypoint tracks, and embeds each frame in its latent space.
 
 ### `xgboost`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostFeature`
+Version `0.3` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostFeature`
 
 XGBoost behavior classifier as a pipeline feature.
 
@@ -1538,7 +1538,7 @@ XGBoost behavior classifier as a pipeline feature.
 | `strategy` | `"multiclass"` \| `"one_vs_rest"` | `"multiclass"` |  | The classification strategy. multiclass fits one multi-class model. one_vs_rest fits one binary classifier per class. |
 | `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. Any row where no class clears its threshold is assigned default_class. |
 | `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. |
-| `class_weight` | `"balanced"` \| `None` | `"balanced"` |  | Unset, every training sample is weighted equally. balanced weights each sample inversely to its class's frequency. |
+| `class_weight` | `"balanced"` \| `object` \| `None` | `"balanced"` |  | Unset, every training sample is weighted equally. balanced weights each sample inversely to its class's frequency. A mapping from class to weight gives each sample its class's weight, 1 for a class it does not list, and applies no balanced weighting. |
 | `use_smote` | `boolean` | `false` |  | Apply SMOTE oversampling to the training set, after any undersample_ratio undersampling. |
 | `undersample_ratio` | `number` \| `None` | `null` |  | Unset, no class is undersampled before training. Set, every class larger than the minority class is undersampled to this many times the minority class's size, never below the minority class's own size. |
 | `n_estimators` | `integer` | `100` | >= `1` | The number of boosting rounds the model fits. |
@@ -1547,6 +1547,9 @@ XGBoost behavior classifier as a pipeline feature.
 | `subsample` | `number` | `0.8` | > `0`, <= `1` | The fraction of training rows sampled for each boosting round. |
 | `colsample_bytree` | `number` | `0.8` | > `0`, <= `1` | The fraction of feature columns sampled for each tree. |
 | `random_state` | `integer` | `42` |  | The random seed for XGBoost training and, when enabled, for undersampling and SMOTE. |
+| `cv_folds` | `integer` \| `None` | `null` |  | Unset, one model is fitted and scores every entry. Set to K (at least 2), the training sequences of the templates are dealt into K folds and K more models are fitted, each on the training rows outside one fold. A training sequence is then scored by the model that did not see it, and every other entry by the model fitted on all training rows. The fold of each sequence is in cv_folds.parquet. Needs templates and is refused beside model. |
+| `cv_seed` | `integer` | `0` |  | The seed that deals the training sequences into folds. It changes the folds and nothing else, so runs that differ in random_state are compared on the same folds. Other than 0 only with cv_folds. |
+| `n_jobs` | `integer` \| `None` | `null` |  | The number of threads each fit uses. Unset, XGBoost uses every core. It changes the time of a fit and not its model, so it is not part of the run id. |
 
 ??? note "`JoblibLoadSpec`"
 

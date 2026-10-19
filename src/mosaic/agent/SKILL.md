@@ -309,6 +309,13 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   report's `label_map_source` reads `scored_rows`: report it as purity, not as a
   held-out score. `weighting: "class_balanced"` keeps a common behavior from taking
   every cluster, which leaves a rare one at F1 0.
+- To compare classifier settings without spending the test groups, set `cv_folds` on
+  `xgboost` and `test_fraction: 0` on the labeled templates, and scope both and
+  `evaluate-labels` to the training groups: that score is the pooled out-of-fold one.
+  For the final score widen the same `xgboost` step to the test groups, which is the
+  same run, and keep the labeled templates on the training groups. The score is not
+  nested, and a fold is whole sequences
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
 - Each output row of `evaluate-labels` carries `tp_<class>`, `fp_<class>` and
   `fn_<class>`. `mosaic.core.evaluation` pools them (`pool_entry_counts`), bootstraps
   over sequences from them (`bootstrap_sequences`, with a required `random_state`),
