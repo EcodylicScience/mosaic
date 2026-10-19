@@ -35,6 +35,7 @@ from mosaic.behavior.feature_library.helpers import cv_fold_assignment
 from mosaic.behavior.feature_library.xgboost_feature import XgboostFeature
 from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.progress import NullProgressCallback
+from mosaic.core.pipeline.run import process_apply_worker
 from mosaic.core.pipeline.types import InputStream, Result
 from tests.helpers import run_id_digest
 
@@ -831,6 +832,31 @@ class TestBundle:
             pd.testing.assert_frame_equal(
                 again.apply(world.frames[entry]), feature.apply(world.frames[entry])
             )
+
+    def test_a_process_worker_rebuilds_the_feature_and_scores_each_entry_alike(
+        self, tmp_path: Path
+    ) -> None:
+        """A process worker builds the feature from the dumps of its inputs and params.
+
+        The dump of a cross-validated run names `model` as `None` beside `templates`
+        and `cv_folds`, and the worker must still take the folds from the bundle.
+        """
+        world, feature = self._fitted(tmp_path, cv_folds=3, cv_seed=2)
+        feature.save_state(tmp_path / "run")
+
+        for entry in (world.train[0], world.train[3], ("test", "z")):
+            frame = world.frames[entry]
+            worker = process_apply_worker(
+                feature.__module__,
+                type(feature).__name__,
+                feature.inputs.model_dump(),
+                feature.params.model_dump(),
+                str(tmp_path / "run"),
+                {},
+                {},
+                frame,
+            )
+            pd.testing.assert_frame_equal(worker, feature.apply(frame))
 
     def test_the_bundle_holds_the_folds_beside_the_full_model(
         self, tmp_path: Path
