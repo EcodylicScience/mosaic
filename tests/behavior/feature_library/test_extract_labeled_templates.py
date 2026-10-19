@@ -385,6 +385,126 @@ class TestExactLabeled:
         assert (templates["label"] == 1).sum() == 30
 
 
+class TestExactAllocationIsProportional:
+    """Each sequence draws its share of a class's quota, not the quota's first rows."""
+
+    def _drawn(
+        self,
+        tmp_path: Path,
+        sequences: list[tuple[str, int, int]],
+        params: dict[str, object],
+    ) -> pd.DataFrame:
+        """Fit ``(sequence, class 0 rows, class 1 rows)`` entries and return the sample."""
+        labels = {
+            name: np.array([0] * n0 + [1] * n1, dtype=np.int64)
+            for name, n0, n1 in sequences
+        }
+        lookup = _setup_labels_lookup(
+            tmp_path / "labels" / "behavior",
+            [("g", name, array) for name, array in labels.items()],
+        )
+        feat = _make_feature_with_labels(
+            lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "pool": {"allocation": "exact"},
+                "test_fraction": 0.0,
+                **params,
+            },
+        )
+        feat.fit(
+            _make_factory(
+                [
+                    (f"g__{name}", _coded_df(name, "g", len(labels[name]), 0.0))
+                    for name in labels
+                ]
+            )
+        )
+        feat.save_state(tmp_path / "run")
+        return pd.read_parquet(tmp_path / "run" / "templates.parquet")
+
+    @staticmethod
+    def _shares(templates: pd.DataFrame, label: int) -> dict[str, int]:
+        rows = templates[templates["label"] == label]
+        return {str(k): int(v) for k, v in rows["sequence"].value_counts().items()}
+
+    def test_equal_sequences_draw_equal_shares(self, tmp_path: Path) -> None:
+        drawn = self._drawn(
+            tmp_path,
+            [("a", 100, 100), ("b", 100, 100), ("c", 100, 100)],
+            {"n_per_class": 30},
+        )
+
+        assert self._shares(drawn, 0) == {"a": 10, "b": 10, "c": 10}
+        assert self._shares(drawn, 1) == {"a": 10, "b": 10, "c": 10}
+
+    def test_shares_follow_the_rows_each_sequence_holds(self, tmp_path: Path) -> None:
+        drawn = self._drawn(
+            tmp_path,
+            [("a", 100, 20), ("b", 50, 20), ("c", 50, 60)],
+            {"n_per_class": {0: 40, 1: 50}},
+        )
+
+        assert self._shares(drawn, 0) == {"a": 20, "b": 10, "c": 10}
+        assert self._shares(drawn, 1) == {"a": 10, "b": 10, "c": 30}
+
+    def test_a_remainder_goes_to_the_larger_fractions_and_the_total_is_exact(
+        self, tmp_path: Path
+    ) -> None:
+        drawn = self._drawn(
+            tmp_path,
+            [("a", 100, 100), ("b", 100, 100), ("c", 100, 100)],
+            {"n_per_class": 10},
+        )
+
+        for label in (0, 1):
+            shares = self._shares(drawn, label)
+            assert sum(shares.values()) == 10
+            assert sorted(shares.values()) == [3, 3, 4]
+
+    def test_a_sequence_never_draws_more_than_it_holds(self, tmp_path: Path) -> None:
+        drawn = self._drawn(
+            tmp_path,
+            [("a", 1, 50), ("b", 1, 50), ("c", 98, 50)],
+            {"n_per_class": {0: 3, 1: 30}},
+        )
+
+        assert self._shares(drawn, 0) == {"c": 3}
+        assert self._shares(drawn, 1) == {"a": 10, "b": 10, "c": 10}
+
+    def test_a_quota_above_the_rows_takes_every_row(self, tmp_path: Path) -> None:
+        drawn = self._drawn(
+            tmp_path,
+            [("a", 7, 5), ("b", 9, 3)],
+            {"n_per_class": 100},
+        )
+
+        assert self._shares(drawn, 0) == {"a": 7, "b": 9}
+        assert self._shares(drawn, 1) == {"a": 5, "b": 3}
+
+    def test_the_draw_is_deterministic(self, tmp_path: Path) -> None:
+        sequences = [("a", 100, 100), ("b", 60, 30)]
+        first = self._drawn(tmp_path / "one", sequences, {"n_per_class": 25})
+        second = self._drawn(tmp_path / "two", sequences, {"n_per_class": 25})
+
+        pd.testing.assert_frame_equal(first, second)
+
+    def test_the_train_and_the_test_split_each_draw_their_own_shares(
+        self, tmp_path: Path
+    ) -> None:
+        drawn = self._drawn(
+            tmp_path,
+            [(name, 100, 100) for name in ("a", "b", "c", "d")],
+            {"n_per_class": 20, "test_fraction": 0.5},
+        )
+
+        for split in ("train", "test"):
+            rows = drawn[(drawn["split"] == split) & (drawn["label"] == 0)]
+            assert len(rows) == 20
+            assert set(rows["sequence"].value_counts()) == {10}
+            assert rows["sequence"].nunique() == 2
+
+
 class TestFarthestFirstLabeled:
     def test_farthest_first_per_class(self, tmp_path: Path) -> None:
         """Farthest-first should select spread points within each class."""

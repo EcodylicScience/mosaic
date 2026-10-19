@@ -92,6 +92,35 @@ class _Reservoir:
     n_seen: int = 0
 
 
+def _proportional_shares(counts: Mapping[int, int], quota: int) -> dict[int, int]:
+    """Split *quota* across entries in proportion to the rows each holds.
+
+    The largest-remainder method on integers: each entry takes the floor of its
+    exact share, and the rows still owed go one each to the entries with the
+    largest remainders, the earlier entry first on a tie. The shares add to
+    *quota* exactly and no entry's share exceeds its rows, because *quota* is at
+    most the total.
+
+    Args:
+        counts: The rows each entry holds, keyed by entry index.
+        quota: The rows to draw, at most ``sum(counts.values())``.
+
+    Returns:
+        The rows each entry draws, keyed as *counts* is.
+    """
+    total = sum(counts.values())
+    if quota >= total:
+        return dict(counts)
+    shares = {entry: quota * rows // total for entry, rows in counts.items()}
+    owed = quota - sum(shares.values())
+    by_remainder = sorted(
+        counts, key=lambda entry: (-(quota * counts[entry] % total), entry)
+    )
+    for entry in by_remainder[:owed]:
+        shares[entry] += 1
+    return shares
+
+
 class LabeledTemplatesArtifact(LabeledTemplatesRef):
     """Labeled template feature vectors, named for the run that produced them.
 
@@ -149,7 +178,9 @@ class ExtractLabeledTemplates:
     # 0.6: ``group`` and ``sequence`` (text) are written beside ``label`` and
     # ``split``, naming the entry each row was drawn from, so that a classifier
     # can hold a sequence out of its own fit. They are identity columns and no
-    # feature (``feature_columns``).
+    # feature (``feature_columns``). ``pool.allocation="exact"`` gives every
+    # entry its proportional share of a class's quota, where the first entries
+    # took the whole quota and the later ones drew nothing.
     version = "0.6"
     parallelizable = False
     scope_dependent = True
@@ -572,10 +603,10 @@ class ExtractLabeledTemplates:
         inputs: InputStream,
         split_assignments: list[str],
     ) -> None:
-        """Two-pass exact allocation: count, then sample per (split, class)."""
+        """Two-pass exact allocation: count, then sample each entry's share of a quota."""
 
-        # Pass 1: count rows per (split, class), capture metadata
-        class_counts: dict[tuple[str, int], int] = {}
+        # Pass 1: count rows per (split, class) and entry, capture metadata
+        entry_rows: dict[tuple[str, int], dict[int, int]] = {}
         entry_splits: dict[str, str] = {}
         entry_idx_map: dict[str, int] = {}
         n_seen = 0
@@ -607,35 +638,27 @@ class ExtractLabeledTemplates:
             labels = labels[labels != UNLABELED]
             for label_int in np.unique(labels).tolist():
                 key = (split, int(label_int))
-                class_counts[key] = class_counts.get(key, 0) + int(
+                entry_rows.setdefault(key, {})[entry_idx_map[entry_key]] = int(
                     (labels == label_int).sum()
                 )
 
-        if not class_counts:
+        if not entry_rows:
             msg = "No data received during fit"
             raise RuntimeError(msg)
 
-        # Compute targets per (split, class)
-        all_classes = sorted({label for _, label in class_counts})
-        n_classes = len(all_classes)
+        # Each (split, class) draws its target, or every row when the class has
+        # fewer, and splits that quota across the entries in proportion to the
+        # rows each holds.
+        n_classes = len({label for _, label in entry_rows})
+        shares: dict[tuple[str, int], dict[int, int]] = {}
+        for key, counts in entry_rows.items():
+            target = self._collection_target_for_class(key[1], n_classes)
+            total = sum(counts.values())
+            shares[key] = _proportional_shares(counts, min(total, target))
 
-        targets: dict[tuple[str, int], int] = {}
-        for key in class_counts:
-            split, label_int = key
-            targets[key] = self._collection_target_for_class(label_int, n_classes)
-
-        # Compute per-(split, class) quotas from counts
-        quotas: dict[tuple[str, int], int] = {}
-        for key, count in class_counts.items():
-            target = targets.get(key, 0)
-            quotas[key] = min(count, target)
-
-        # Pass 2: sample exactly quota rows per (split, class)
+        # Pass 2: sample exactly each entry's share per (split, class)
         # Use a derived seed for sampling RNG (independent of split-assignment draws)
         sampling_rng = np.random.default_rng(self.params.random_state + 1)
-        # Track how many we've sampled per key so far
-        sampled: dict[tuple[str, int], int] = {k: 0 for k in quotas}
-        remaining: dict[tuple[str, int], int] = dict(class_counts)
 
         template_blocks: list[np.ndarray] = []
         label_blocks: list[np.ndarray] = []
@@ -661,34 +684,22 @@ class ExtractLabeledTemplates:
 
             for label_int in np.unique(labels).tolist():
                 label_int = int(label_int)
-                key = (split, label_int)
-                quota = quotas.get(key, 0)
-                already = sampled.get(key, 0)
-                need = quota - already
-                if need <= 0:
+                take = shares.get((split, label_int), {}).get(entry_idx, 0)
+                if take <= 0:
                     continue
 
-                mask = labels == label_int
-                label_matrix = matrix[mask]
+                label_matrix = matrix[labels == label_int]
                 n_rows = int(label_matrix.shape[0])
-                rem = remaining.get(key, n_rows)
-
-                # Sample proportionally: this entry contributes n_rows / rem
-                # of the remaining quota
-                take = min(n_rows, need)
                 if n_rows > take:
                     sample_idx: np.ndarray = sampling_rng.choice(
                         n_rows, size=take, replace=False
                     )
                     label_matrix = label_matrix[sample_idx]
 
-                sampled_block: np.ndarray = label_matrix[:take]
-                template_blocks.append(sampled_block)
+                template_blocks.append(label_matrix)
                 label_blocks.append(np.full(take, label_int, dtype=np.int64))
                 split_blocks.append(np.array([split] * take, dtype=object))
                 entry_blocks.append(np.full(take, entry_idx, dtype=np.int32))
-                sampled[key] = already + take
-                remaining[key] = rem - n_rows
 
         if not template_blocks:
             msg = "No data received during fit"
