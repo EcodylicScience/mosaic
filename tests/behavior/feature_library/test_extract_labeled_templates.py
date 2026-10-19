@@ -12,6 +12,7 @@ import pytest
 from mosaic.behavior.feature_library.attention_target import AttentionTarget
 from mosaic.behavior.feature_library.extract_labeled_templates import (
     ExtractLabeledTemplates,
+    _Reservoir,  # pyright: ignore[reportPrivateUsage]
 )
 from mosaic.behavior.feature_library import helpers
 from mosaic.behavior.feature_library.helpers import feature_columns
@@ -608,6 +609,69 @@ def test_a_target_far_above_the_rows_a_class_holds_allocates_only_those_rows(
     assert peak < 10_000_000
     feat.save_state(tmp_path / "run")
     assert len(pd.read_parquet(tmp_path / "run" / "templates.parquet")) == 100
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"n_per_class": 25},
+        {"n_per_class": {0: 40, 1: 12, 2: 9}},
+        {"n_total": 60},
+        {"n_per_class": 8, "strategy": "farthest_first", "pool": {"size": 20}},
+    ],
+    ids=["int", "mapping", "n_total", "farthest_first"],
+)
+@pytest.mark.parametrize("seed", [0, 3])
+def test_a_reservoir_that_grows_with_its_rows_draws_what_one_allocated_up_front_would(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    params: dict[str, object],
+    seed: int,
+) -> None:
+    """The growth of a buffer must not touch which rows stay or what the generator draws.
+
+    Class 2 appears from the fifth sequence on, so an ``n_total`` target shrinks
+    while the buffers hold rows. The reference allocates every buffer at its target at
+    its first row, as 0.5 did.
+    """
+    rng = np.random.default_rng(1)
+    entries: list[tuple[str, np.ndarray, pd.DataFrame]] = []
+    for i in range(8):
+        n = int(rng.integers(30, 70))
+        pool = [0, 1, 2] if i >= 4 else [0, 1]
+        labels = rng.choice(pool, size=n).astype(np.int64)
+        entries.append((f"s{i}", labels, _coded_df(f"s{i}", "g", n, 1000.0 * i)))
+    lookup = _setup_labels_lookup(
+        tmp_path / "labels" / "behavior", [("g", name, lab) for name, lab, _ in entries]
+    )
+
+    def draw(root: Path) -> pd.DataFrame:
+        feat = _make_feature_with_labels(
+            lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "test_fraction": 0.0,
+                "random_state": seed,
+                **params,
+            },
+        )
+        feat.fit(_make_factory([(f"g__{name}", df) for name, _, df in entries]))
+        feat.save_state(root)
+        return pd.read_parquet(root / "templates.parquet")
+
+    grown = draw(tmp_path / "grown")
+    original = _Reservoir.grown_capacity
+
+    def up_front(self: _Reservoir, rows: int) -> int:
+        if self.target is None:
+            return original(self, rows)
+        return max(self.capacity, self.target)
+
+    monkeypatch.setattr(_Reservoir, "grown_capacity", up_front)
+    allocated = draw(tmp_path / "allocated")
+
+    assert len(grown) > 0
+    pd.testing.assert_frame_equal(grown, allocated)
 
 
 @pytest.mark.parametrize("allocation", ["reservoir", "exact"])
