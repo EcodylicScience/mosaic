@@ -24,6 +24,8 @@ What lives where:
   validation predicts from its declaration.
 - ``kpms`` contains the params of a kpms feature on three named keypoints.
 - ``labels`` writes converted label files of events, and their index rows.
+- ``lightning_action`` stands in for the lightning-action package, with its data
+  contract, and records what a feature hands it.
 - ``stand_in_features`` -- features that do nothing but declare the source
   roots they consume, for the tests of what a source change reaches.
 - ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
@@ -243,8 +245,23 @@ from tests.helpers.documents import dotted_values
 from tests.helpers.labels import (
     CALMS21_NAMES,
     LABELS_VARIANT,
+    Event,
     add_labels,
     write_sparse_labels,
+)
+from tests.helpers.lightning_action import (
+    LA_CLASS_NAMES,
+    LA_CLASSES,
+    LA_PAD,
+    LA_WINDOW,
+    LightningActionRecorder,
+    StudyEntry,
+    TemplatesStudy,
+    fit_lightning_action,
+    install_lightning_action_stub,
+    lightning_action_params,
+    stub_probabilities,
+    write_templates_study,
 )
 from tests.helpers.stand_in_features import (
     CropLike,
@@ -312,6 +329,7 @@ __all__ = [
     "CI_REQUIRED_MODULES",
     "CropLike",
     "EnvironmentMarker",
+    "Event",
     "EventRecorder",
     "FAKE_CONDA",
     "FAKE_HANDLERS",
@@ -328,7 +346,14 @@ __all__ = [
     "KPMS_PROTOCOL",
     "KPMS_SERVER",
     "KPMS_TOOL",
+    "LA_CLASSES",
+    "LA_CLASS_NAMES",
+    "LA_PAD",
+    "LA_WINDOW",
     "LABELS_VARIANT",
+    "LightningActionRecorder",
+    "StudyEntry",
+    "TemplatesStudy",
     "LineChildren",
     "LossyFeature",
     "MOUSE",
@@ -416,6 +441,9 @@ __all__ = [
     "install_fake_sleap",
     "install_fake_tool_python",
     "install_fake_trex",
+    "fit_lightning_action",
+    "install_lightning_action_stub",
+    "lightning_action_params",
     "invoke_json",
     "invoke_ok",
     "install_fake_ultralytics",
@@ -475,6 +503,7 @@ __all__ = [
     "store_dataset",
     "stub_join",
     "stub_media_dataset",
+    "stub_probabilities",
     "updating_golden",
     "video_store_maker",
     "wait_for",
@@ -488,6 +517,7 @@ __all__ = [
     "write_calms21_npy",
     "write_dlc_csv",
     "write_sparse_labels",
+    "write_templates_study",
     "write_driver_lease",
     "write_fake_runner",
     "write_golden",

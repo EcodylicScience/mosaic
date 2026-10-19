@@ -47,6 +47,7 @@ from .helpers import (
     meta_columns,
     out_of_fold_choice,
     refuse_unlabeled_templates,
+    train_entries_of_templates,
 )
 from .registry import register_feature
 
@@ -383,7 +384,9 @@ class XgboostFeature:
             )
             self._feature_columns = feature_columns(self._templates)
             if self.params.cv_folds is not None:
-                self._train_entries = _train_entries(artifact_paths["templates"])
+                self._train_entries = train_entries_of_templates(
+                    artifact_paths["templates"]
+                )
             return False
 
         return False
@@ -959,17 +962,3 @@ class XgboostFeature:
             run_root / "xgboost_model.joblib",
             lambda temporary: joblib.dump(bundle, temporary),
         )
-
-
-def _train_entries(templates_path: Path) -> list[tuple[str, str]] | None:
-    """The train entries of the run that wrote *templates_path*, ``None`` without its provenance.
-
-    The provenance lists every entry the run saw, one that drew no template row
-    included, which is why the folds deal it and not the rows.
-    """
-    path = templates_path.parent / "template_provenance.parquet"
-    if not path.exists():
-        return None
-    provenance = pd.read_parquet(path)
-    train = provenance[provenance["split"] == "train"]
-    return [(str(g), str(s)) for g, s in zip(train["group"], train["sequence"])]

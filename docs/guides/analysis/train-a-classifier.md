@@ -255,8 +255,80 @@ stacked_result = ds.run_feature(TemporalStackingFeature(
 features.
 
 `lightning-action` models the temporal structure itself, so it does not need this step.
-It reads an individual-level input and refuses a pair table. Train `xgboost` on pair
-features.
+See [Model the sequence directly](#model-the-sequence-directly).
+
+## Model the sequence directly
+
+`lightning-action` trains a temporal network on frames in order. It reads one individual,
+or one ordered pair, at a time: a pair table is split by `id1`, `id2` and `perspective`,
+and each series is trained on and predicted as a sequence of its own. The recipe is the
+XGBoost recipe with the classifier swapped and the scaler dropped, because the frames are
+standardized by statistics that are stored with the model.
+
+```json
+{
+  "schema_version": 1,
+  "name": "sequence-classifier",
+  "steps": [
+    {"id": "tracks", "type": "op", "kind": "convert-tracks",
+     "params": {"source_format": "calms21_npy"}},
+    {"id": "labels", "type": "op", "kind": "convert-labels",
+     "params": {"source_format": "calms21_npy"}},
+    {"id": "egocentric", "type": "feature", "feature": "pair-egocentric",
+     "inputs": ["tracks"], "tracks": {"step": "tracks"}},
+    {"id": "labeled", "type": "feature", "feature": "extract-labeled-templates",
+     "inputs": [{"step": "egocentric"}],
+     "params": {"labels": {"step": "labels"}, "n_per_class": 500, "test_fraction": 0}},
+    {"id": "classifier", "type": "feature", "feature": "lightning-action",
+     "inputs": [{"step": "egocentric"}],
+     "params": {"templates": {"step": "labeled"}, "labels": {"step": "labels"},
+                "default_class": 3, "head": "dtcn", "sequence_length": 500,
+                "num_epochs": 40}},
+    {"id": "evaluate", "type": "feature", "feature": "evaluate-labels",
+     "inputs": [{"step": "classifier"}],
+     "params": {"labels": {"step": "labels"}, "perspective": 0,
+                "average_over": [0, 1, 2]}}
+  ]
+}
+```
+
+```bash
+mosaic pipeline run -m dataset.yaml --recipe @sequence.json \
+  --step-scope 'labeled={"groups": ["train"]}' \
+  --step-scope 'classifier={"groups": ["train", "test"]}' \
+  --step-scope 'evaluate={"groups": ["test"]}'
+```
+
+What differs from `xgboost`:
+
+- **The templates name the training entries, and the frames come from the step's
+  inputs.** The model trains on the entries that `labeled` assigned to `train`, with the
+  labels from `labels`. An entry that `labeled` held out, or never saw, does not train.
+  The sample `labeled` drew is not read, so `n_per_class` shapes nothing here. `weight_classes`
+  (on by default) weights the loss by class frequency in its place. The step may read other
+  inputs than `labeled` did.
+- **The classifier's scope is part of its run id.** `xgboost` fits from its templates and
+  reuses its model on any entry. `lightning-action` fits from the entries in its own
+  scope, so the same step over other entries is another run, and fits again. The step
+  refuses a scope that leaves out a training entry that has labels. To predict more
+  entries with a model you have fitted, name it in a second step with `"model": {"step":
+  "classifier"}` and no `templates` or `labels`. `fit_scope.json` lists every entry of the
+  step's scope, test group included, though only the entries of the train split trained.
+- **A run of consecutive labeled frames is the unit of training.** A frame no label covers
+  ends a run, and so does a gap in the frame numbers. The network reads windows of
+  `sequence_length` frames from the first frame of a run, so a run shorter than that does
+  not train, and neither do the frames past its last whole window. `sequence_length` must
+  exceed twice the context the encoder reads on each side of a frame, which `num_layers`
+  and `num_lags` set. The fit names both numbers when it does not. The package validates on
+  a tenth of its windows and warns when it has fewer than ten.
+- **On CalMS21 pair features** the resident-focal series is labeled and trains. The
+  intruder-focal series is unlabeled, so it writes no training run, and it is still
+  predicted.
+- **Every row is predicted.** Each series is predicted as a whole, so no row at the end of
+  an entry falls to `default_class`. That class stands only for a row that no class clears
+  `decision_threshold` for, and for a row with a missing `id1`, `id2` or `perspective`.
+- **It trains on a GPU** when the machine has one, and the step is offered to GPU
+  workers. `device` set to `cpu` trains on the CPU.
 
 ## Read the predictions
 

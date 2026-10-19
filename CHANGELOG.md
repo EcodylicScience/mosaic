@@ -10,11 +10,45 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
-**`lightning-action` 0.4 fits.** lightning-action reads its feature and label CSVs with
-the first column as the index, and through 0.3 the feature wrote them without one, so
-every real fit raised a channel-count error. 0.4 writes the index and reads the
-predictions by class name. 0.3 run ids are not reused, and no 0.3 model exists to be
-lost. CI's new `lightning-action` job fits the real package on CPU.
+**`lightning-action` reads a pair table, and trains on frames in order.** It trained on
+the class-sampled templates, which hold no frame order, and normalized each file by its
+own statistics, so the temporal network that it fitted read neighbors that were not
+neighbors. The held-out entries of the templates run trained too, and `apply` wrote an
+entry's rows as one sequence, which interleaved the two perspectives of a pair table.
+A pair-level run trained and then raised at its first entry.
+Through 0.3 the package dropped the first feature and class column of every file, so
+every real fit raised, and no model of that version exists to be lost. 0.5 trains and
+predicts on each individual, or each `(id1, id2, perspective)` of a pair table, as a
+sequence of its own, and the optimizer settings now reach the package: it read them at
+the top level of its config, and `optimizer`, `learning_rate` and `weight_decay`
+sat under `training`, so every fit used the package's weight decay of 0.1.
+
+- `lightning-action` moves from 0.3 to 0.5, and every run id changes its version
+  segment, with the runs that read one through `inputs` or fit their `model` from one. A
+  0.4 model is refused with a message to fit again, because it stored no
+  statistics.
+- The step fits from its own inputs, so its scope is part of its run id, and a step over
+  other entries is another run that fits again. It trains on the runs of consecutive
+  labeled frames of the entries that its `templates` run assigned to `train`, aligned to
+  the new `labels` param, which `templates` now requires. A run with a `model` takes no
+  `labels` and stays scope-free. The drawn sample is no longer read, only the entries it
+  was drawn from. A train entry that has labels and is missing from the step's scope is
+  refused.
+- Frames are standardized by their mean and standard deviation over the training frames,
+  which the model stores, and a missing value reads as the mean. `sequence_length` must
+  exceed twice the context of the encoder, or the fit raises. A run shorter than
+  `sequence_length` does not train.
+- `apply` returns a row for every input row, in the input's order. No row falls to
+  `default_class` for lying past the last whole window, which it did for up to
+  `sequence_length - 1` rows of an entry. A series shorter than a window is predicted.
+  It reads its prediction batches in the calling process, where the package started four
+  worker processes for each series: two series of about 1,700 frames took 90 seconds to
+  predict and now take under a second.
+- The step declares `resource_class` `gpu`, so it is offered to a `gpu-train` worker
+  whatever its `device`, and `device` defaults to `gpu`. The package trains on the CPU
+  where there is no CUDA device.
+- `refuse_pair_rows` leaves `mosaic.behavior.feature_library.helpers`, which has
+  `consecutive_runs` and `train_entries_of_templates` in its place.
 
 **`arhmm` reads each ordered pair as a sequence of its own, and keeps its columns.**
 `arhmm` split a table by `id`, and a pair table has none, so its rows were one sequence
@@ -46,9 +80,8 @@ score the states against labels.
   few frames is such a sequence, and an entry of such sequences alone writes an empty
   table. The run reports the count on its standard error.
 - `label_series` keeps the `group` and `sequence` of its input beside the series key.
-  `iter_series`, `series_columns`, `refuse_repeated_series_rows` and
-  `refuse_pair_rows` join `mosaic.behavior.feature_library.helpers` beside
-  `label_individuals`. `kpms` and `vame` keep their split by individual.
+  `iter_series`, `series_columns` and `refuse_repeated_series_rows` join
+  `mosaic.behavior.feature_library.helpers` beside `label_individuals`. `kpms` and `vame` keep their split by individual.
 
 **`arhmm` standardizes over the values that are present.** It replaced every NaN and
 infinity with 0 before computing the mean and standard deviation that it standardizes by.
@@ -59,13 +92,6 @@ NaN frame decoded as a state that no other frame used. The mean and standard dev
 now count the finite values only, and a missing value reads as its column's mean (as 0
 when `standardize` is off, as before). This is inside the 0.3 bump. An input with no
 missing value gets the scaler of 0.2 up to rounding.
-
-**`lightning-action` refuses a pair table.** Its `apply` wrote an entry's rows to the
-model as one sequence in table order, so a pair entry interleaved the two perspectives.
-`apply` raises a `ValueError` that names the feature, so a run over pair-level input
-fails at its first entry, after its fit. Individual-level input is unchanged, and
-`lightning-action` stays at 0.3. A pair-level run already on disk keeps its run id and
-is still read.
 
 **`body-scale` and `orientation-rel` compute an entry at once, and a run of them takes
 seconds.** Both looped in Python over each `(frame, id)`, and `orientation-rel` also

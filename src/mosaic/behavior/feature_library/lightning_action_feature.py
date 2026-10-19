@@ -2,8 +2,12 @@
 
 Wraps the ``lightning-action`` package (Paninski lab, MIT license) as a
 mosaic global feature.  Trains a temporal neural network classifier
-(DilatedTCN, RNN, or TemporalMLP) on labeled templates and predicts
+(DilatedTCN, RNN, or TemporalMLP) on runs of consecutive frames and predicts
 per-frame action probabilities with temporal context.
+
+A temporal model reads one animal's frames in time order. The feature therefore
+splits each table into series, one per individual or per ordered pair, and trains
+and predicts on each series as a sequence of its own.
 
 Requires the optional ``lightning-action`` package::
 
@@ -17,18 +21,33 @@ Or install mosaic with the extra::
 from __future__ import annotations
 
 import logging
+import math
 import shutil
 import sys
 import tempfile
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Literal, TypedDict, final
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    ClassVar,
+    Final,
+    Literal,
+    NotRequired,
+    Protocol,
+    Self,
+    TypedDict,
+    final,
+    runtime_checkable,
+)
 
 import joblib
 import numpy as np
 import pandas as pd
-from pydantic import Field
+from pydantic import Field, model_validator
 
+from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
@@ -38,10 +57,13 @@ from mosaic.core.pipeline.column_contract import (
     Provides,
     Requirement,
 )
+from mosaic.core.pipeline.loading import labels_for_rows
 from mosaic.core.pipeline.types import (
+    COLUMNS,
     EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
+    GroundTruthLabelsSource,
     LabeledTemplatesRef,
     InputRequire,
     Inputs,
@@ -53,16 +75,20 @@ from mosaic.core.pipeline.types import (
 from mosaic.optional_dependency import OptionalModule, Prerequisite
 
 from .helpers import (
+    consecutive_runs,
     ensure_columns,
+    entry_identity,
     feature_columns,
+    iter_series,
     meta_columns,
-    refuse_pair_rows,
-    refuse_unlabeled_templates,
+    refuse_repeated_series_rows,
+    series_columns,
+    train_entries_of_templates,
 )
 from .registry import register_feature
 
 if TYPE_CHECKING:
-    pass
+    import numpy.typing as npt
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +111,11 @@ class LightningActionModelBundle(TypedDict):
     class_names: list[str]
     config: dict[str, object]
     version: str
+    # A bundle written by 0.4 or earlier has none of these four.
+    feature_mean: NotRequired[list[float]]
+    feature_std: NotRequired[list[float]]
+    sequence_length: NotRequired[int]
+    sequence_pad: NotRequired[int]
 
 
 class LightningActionModelArtifact(JoblibArtifact[LightningActionModelBundle]):
@@ -95,16 +126,138 @@ class LightningActionModelArtifact(JoblibArtifact[LightningActionModelBundle]):
     load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
 
 
+class _PackageModel(Protocol):
+    """The part of ``lightning_action.api.model.Model`` that the feature calls."""
+
+    @property
+    def config(self) -> Mapping[str, object]: ...
+
+    def train(self, output_dir: str, post_inference: bool) -> None: ...
+
+    def predict(self, *, data_path: str, input_dir: str, output_dir: str) -> None: ...
+
+
+class _PackageModelClass(Protocol):
+    """The part of the package's ``Model`` class that builds a fitted model."""
+
+    def from_config(self, config: dict[str, object], /) -> _PackageModel: ...
+
+    def from_dir(self, path: str, /) -> _PackageModel: ...
+
+
+@runtime_checkable
+class _Assignable(Protocol):
+    def __setitem__(self, key: str, value: int, /) -> None: ...
+
+
+def _package_model_class() -> _PackageModelClass:
+    """Return the package's ``Model``, imported when it is first needed."""
+    from lightning_action.api.model import Model
+
+    return Model
+
+
+def _predicting_in_process(model: _PackageModel) -> _PackageModel:
+    """Have a loaded *model* read its prediction batches in this process.
+
+    The package starts ``training.num_workers`` worker processes, four by default,
+    for every series that it predicts. Two series of about 1,700 frames took 90
+    seconds, and 0.2 seconds with none. Training reads the setting from the config
+    that is saved with the model, which this leaves as it is.
+    """
+    training = model.config["training"]
+    assert isinstance(training, _Assignable)
+    training["num_workers"] = 0
+    return model
+
+
+# --- Series statistics ---
+
+
+class _RunningMoments:
+    """Per-column count, mean and sum of squared deviations over the finite values.
+
+    Runs are added one at a time and combined with the pairwise update, so the
+    statistics of every training row exist without holding the rows together.
+    """
+
+    def __init__(self, n_columns: int) -> None:
+        self.count: npt.NDArray[np.int64] = np.zeros(n_columns, dtype=np.int64)
+        self.mean: npt.NDArray[np.float64] = np.zeros(n_columns)
+        self.squares: npt.NDArray[np.float64] = np.zeros(n_columns)
+
+    def add(self, matrix: npt.NDArray[np.float64]) -> None:
+        finite = np.isfinite(matrix)
+        data = np.where(finite, matrix, 0.0)
+        count = finite.sum(axis=0)
+        mean = np.divide(
+            data.sum(axis=0), count, out=np.zeros(data.shape[1]), where=count > 0
+        )
+        squares = np.where(finite, data - mean, 0.0)
+        squares = (squares * squares).sum(axis=0)
+        total = self.count + count
+        share = np.divide(count, total, out=np.zeros(data.shape[1]), where=total > 0)
+        delta = mean - self.mean
+        self.squares = self.squares + squares + delta * delta * self.count * share
+        self.mean = self.mean + delta * share
+        self.count = total
+
+    def standardizer(self) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """Return the mean and the standard deviation to standardize by.
+
+        A column with no finite value has mean 0, and one with no spread has a
+        standard deviation of 1, so that standardizing leaves neither undefined.
+        """
+        variance = np.divide(
+            self.squares,
+            self.count,
+            out=np.ones(self.count.shape[0]),
+            where=self.count > 0,
+        )
+        std = np.sqrt(variance)
+        return self.mean, np.where(std > 0.0, std, 1.0)
+
+
+def _standardize(
+    matrix: npt.NDArray[np.float64],
+    mean: npt.NDArray[np.float64],
+    std: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Standardize *matrix* by the training statistics, reading a missing value as the mean."""
+    standardized = (matrix - mean) / std
+    return np.where(np.isfinite(standardized), standardized, 0.0)
+
+
+@dataclass(frozen=True, slots=True)
+class _TrainingRuns:
+    """What a pass over the training entries left in a directory of runs."""
+
+    runs_dir: Path
+    columns: list[str]
+    moments: _RunningMoments
+    classes: list[int]
+    n_runs: int
+
+
 # --- Feature class ---
 
 
 _TEMPLATES_DESCRIPTION = (
-    "Labeled feature templates to fit the model on, with label and split "
-    "columns. Mutually exclusive with model."
+    "The extract-labeled-templates run whose train entries the model fits on. "
+    "Only its template_provenance.parquet is read: the model trains on the "
+    "frame runs of those entries, not on the sampled templates. An entry the "
+    "run lists as test, or does not list, never trains. Mutually exclusive "
+    "with model."
 )
 
 _MODEL_DESCRIPTION = (
     "Pre-fitted model to load instead of training. Mutually exclusive with templates."
+)
+
+_LABELS_DESCRIPTION = (
+    "The per-frame ground-truth labels that the frames of the training entries "
+    "are aligned to, resolved from labels/<kind>/index.csv. A frame no label "
+    "covers is left out of training. Required with templates."
 )
 
 _HEAD_DESCRIPTION = (
@@ -130,7 +283,13 @@ _DROPOUT_RATE_DESCRIPTION = (
     "Dropout rate applied in the temporal encoder for regularization."
 )
 
-_SEQUENCE_LENGTH_DESCRIPTION = "Length of each training sequence chunk."
+_SEQUENCE_LENGTH_DESCRIPTION = (
+    "Length of each training window. A run of consecutive labeled rows trains in "
+    "whole windows from its first row, so a run shorter than this does not "
+    "train, and neither do the rows past a run's last whole window. It must "
+    "exceed twice the context that the temporal encoder reads on each side of a "
+    "row, or the loss is empty."
+)
 
 _NUM_EPOCHS_DESCRIPTION = "How long the model trains."
 
@@ -149,7 +308,11 @@ _WEIGHT_CLASSES_DESCRIPTION = (
     "class imbalance."
 )
 
-_DEVICE_DESCRIPTION = "Which device trains the model. Known values are cpu and gpu."
+_DEVICE_DESCRIPTION = (
+    "Which device trains the model. Known values are cpu and gpu. The step is "
+    "offered to a GPU worker whichever it is, and gpu trains on the CPU where "
+    "the machine has no CUDA device."
+)
 
 _RANDOM_STATE_DESCRIPTION = "The random seed for model initialization and training."
 
@@ -161,8 +324,8 @@ _DECISION_THRESHOLD_DESCRIPTION = (
 
 _DEFAULT_CLASS_DESCRIPTION = (
     "Class label assigned to a frame when decision_threshold excludes "
-    "every class, or when the frame has no predicted probabilities at "
-    "all."
+    "every class, or when the frame belongs to no series because its "
+    "identity columns are missing."
 )
 
 
@@ -172,9 +335,22 @@ class LightningActionFeature:
     """Supervised temporal action segmentation via lightning-action.
 
     Trains a temporal neural network classifier (DilatedTCN, RNN, or
-    TemporalMLP head + linear classifier) on labeled templates and
-    predicts per-frame action probabilities. ``apply`` reads an entry's rows as
-    one sequence, so it takes an individual-level input and refuses a pair table.
+    TemporalMLP head + linear classifier) on runs of consecutive frames and
+    predicts per-frame action probabilities.
+
+    A table is read as series: one per ``id``, or one per ordered pair
+    (``id1``, ``id2``, ``perspective``) when it has no ``id``. Training uses the
+    runs of consecutive labeled frames of each series, in frame order, of the
+    entries that the ``templates`` run assigned to ``train``. ``fit`` streams the
+    step's inputs and aligns each series to ``labels``, so the step's scope is
+    its training set, and a model applied to further entries is named through
+    ``model`` by a second step. Frames are standardized by statistics computed
+    once over the training frames and stored with the model, so ``apply``
+    reads a frame as ``fit`` did. ``apply`` predicts each series as a sequence of
+    its own and returns a row for every input row, in the input's order.
+
+    The step is offered to a GPU worker whatever ``device`` says, as ``feral``
+    is, and an apply-only run from a ``model`` queues there too.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature.Params`.
@@ -182,6 +358,7 @@ class LightningActionFeature:
 
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
+    resource_class = "gpu"
     name = "lightning-action"
     # 0.3: ``nn_id`` and ``attention_target_id``, track ids, are no longer
     # fitted, from templates written before ``extract-labeled-templates``
@@ -190,15 +367,25 @@ class LightningActionFeature:
     # lightning-action reads with ``index_col=0``, and the predictions are
     # read by class column. Through 0.3 the package dropped the first feature
     # and class column, so every fit raised.
-    version = "0.4"
+    # 0.5: the model trains on runs of consecutive frames of one series,
+    # read from the step's inputs, where it trained on the class-sampled
+    # templates in no time order, and the entries the templates run held out
+    # no longer train. A pair table is read as one series per ``(id1, id2,
+    # perspective)``. Frames are standardized by statistics stored with the
+    # model, where the package standardized each file by its own. The optimizer
+    # block sits where the package reads it, so ``optimizer``,
+    # ``learning_rate`` and ``weight_decay`` take effect.
+    version = "0.5"
     parallelizable = True
-    scope_dependent = False
-    accepts_overlap = False  # computes within a frame, so gains nothing
+    # A fit reads its own stream, so its scope is its training set. A run given a
+    # ``model`` fits nothing, and ``__init__`` clears this for it.
+    scope_dependent = True
+    accepts_overlap = False  # reads each series as its own sequence
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (LIGHTNING_ACTION,)
     emits: EmitsLevel = "as-input"
     # Apply reads the template columns and writes one probability per class.
-    requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
+    requires: ClassVar[tuple[Requirement, ...]] = (Payload(), Column(COLUMNS.frame_col))
     provides: ClassVar[Provides] = Provides(
         adds=(Prefix("prob_"), Column("predicted_label")),
         conditional=META_COLUMNS_KEPT,
@@ -215,6 +402,9 @@ class LightningActionFeature:
         model: Annotated[
             LightningActionModelArtifact | None, Declared(_MODEL_DESCRIPTION)
         ] = Field(default_factory=LightningActionModelArtifact)
+        labels: Annotated[
+            GroundTruthLabelsSource | None, Declared(_LABELS_DESCRIPTION)
+        ] = None
         # --- Network architecture ---
         head: Annotated[
             Literal["temporalmlp", "rnn", "dtcn"], Declared(_HEAD_DESCRIPTION)
@@ -254,7 +444,7 @@ class LightningActionFeature:
         weight_classes: Annotated[bool, Declared(_WEIGHT_CLASSES_DESCRIPTION)] = True
         device: Annotated[
             str, Field(examples=["cpu", "gpu"]), Declared(_DEVICE_DESCRIPTION)
-        ] = "cpu"
+        ] = "gpu"
         random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
         # --- Inference ---
         decision_threshold: Annotated[
@@ -262,6 +452,24 @@ class LightningActionFeature:
             Declared(_DECISION_THRESHOLD_DESCRIPTION),
         ] = None
         default_class: Annotated[int, Declared(_DEFAULT_CLASS_DESCRIPTION)]
+
+        @model_validator(mode="after")
+        def _labels_belong_to_a_fit(self) -> Self:
+            """Name the labels of a fit, and of no run that loads a model."""
+            if self.templates is not None and self.labels is None:
+                msg = (
+                    "labels is required with templates: the model trains on the "
+                    "labeled frames of the entries the templates run assigned to "
+                    "train, and reads their labels from it"
+                )
+                raise ValueError(msg)
+            if self.model is not None and self.labels is not None:
+                msg = (
+                    "labels is read when fitting from templates, and a run given "
+                    "a model fits nothing"
+                )
+                raise ValueError(msg)
+            return self
 
     def __init__(
         self,
@@ -271,13 +479,19 @@ class LightningActionFeature:
         _ = LIGHTNING_ACTION.load()
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        self.scope_dependent = self.params.model is None
 
         self._feature_columns: list[str] | None = None
+        self._feature_mean: npt.NDArray[np.float64] | None = None
+        self._feature_std: npt.NDArray[np.float64] | None = None
         self._classes: list[int] | None = None
         self._class_names: list[str] | None = None
-        self._templates: pd.DataFrame | None = None
+        self._sequence_length: int | None = None
+        self._sequence_pad: int | None = None
+        self._train_entries: set[tuple[str, str]] | None = None
+        self._label_files: DependencyLookup = {}
         self._model_dir: Path | None = None
-        self._la_model: object | None = None  # cached lightning_action.api.model.Model
+        self._la_model: _PackageModel | None = None  # cached package Model
         self._config: dict[str, object] | None = None
 
     # --- Feature protocol ---
@@ -289,9 +503,14 @@ class LightningActionFeature:
         dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
         self._feature_columns = None
+        self._feature_mean = None
+        self._feature_std = None
         self._classes = None
         self._class_names = None
-        self._templates = None
+        self._sequence_length = None
+        self._sequence_pad = None
+        self._train_entries = None
+        self._label_files = {}
         self._model_dir = None
         self._la_model = None
         self._config = None
@@ -311,131 +530,111 @@ class LightningActionFeature:
             self._load_bundle(bundle, artifact_paths["model"].parent)
             return True
 
-        # Branch 3: templates to fit
+        # Branch 3: the entries of the templates run to fit on
         if self.params.templates is not None and "templates" in artifact_paths:
-            self._templates = self.params.templates.from_path(
-                artifact_paths["templates"]
-            )
-            self._feature_columns = feature_columns(self._templates)
+            train_entries = train_entries_of_templates(artifact_paths["templates"])
+            if train_entries is None:
+                msg = (
+                    f"[{self.name}] the templates run left no "
+                    "template_provenance.parquet beside its templates, so the "
+                    "entries it held out are unknown. Rerun extract-labeled-templates"
+                )
+                raise FileNotFoundError(msg)
+            self._train_entries = set(train_entries)
+            self._label_files = dependency_lookups.get("labels", {})
             return False
 
         return False
 
     def fit(self, inputs: InputStream) -> None:
-        from lightning_action.api.model import Model
+        from lightning_action.data.utils import compute_sequence_pad
 
-        if self._templates is None or self._feature_columns is None:
-            msg = "[lightning-action] No templates loaded — check load_state."
+        model_class = _package_model_class()
+        if self._train_entries is None:
+            msg = "[lightning-action] No templates loaded, so check load_state."
             raise RuntimeError(msg)
 
-        templates = self._templates
-        ensure_columns(templates, ["label", "split"])
-        refuse_unlabeled_templates(templates, self.name)
-        feat_cols = self._feature_columns
-
-        # Determine classes
-        self._classes = sorted(int(c) for c in templates["label"].unique())
-        self._class_names = [str(c) for c in self._classes]
-        n_classes = len(self._classes)
-        n_features = len(feat_cols)
-
-        print(
-            f"[lightning-action] Training: {n_features} features, "
-            f"{n_classes} classes, head={self.params.head}, "
-            f"epochs={self.params.num_epochs}",
-            file=sys.stderr,
+        p = self.params
+        pad = int(
+            compute_sequence_pad(p.head, num_layers=p.num_layers, num_lags=p.num_lags)
         )
+        if p.sequence_length <= 2 * pad:
+            msg = (
+                f"[{self.name}] sequence_length {p.sequence_length} must exceed twice "
+                f"the {pad} frames of context that head {p.head!r} reads on each side "
+                f"of a frame ({2 * pad}), or the loss of every window is empty. "
+                "Raise sequence_length or lower num_layers or num_lags"
+            )
+            raise ValueError(msg)
 
         with tempfile.TemporaryDirectory(prefix="la_") as tmpdir_str:
             tmpdir = Path(tmpdir_str)
             data_dir = tmpdir / "data"
             output_dir = tmpdir / "output"
 
+            runs = self._write_runs(inputs, tmpdir / "runs")
+            mean, std = runs.moments.standardizer()
+            self._classes = runs.classes
+            self._class_names = [str(c) for c in runs.classes]
+            self._feature_columns = runs.columns
+            self._feature_mean = mean
+            self._feature_std = std
+            self._sequence_length = p.sequence_length
+            self._sequence_pad = pad
+
+            print(
+                f"[lightning-action] Training: {runs.n_runs} runs, "
+                f"{len(runs.columns)} features, {len(runs.classes)} classes, "
+                f"head={p.head}, epochs={p.num_epochs}",
+                file=sys.stderr,
+            )
+
             # Write temp CSVs in lightning-action layout
-            self._write_training_csvs(templates, feat_cols, data_dir)
+            self._write_training_csvs(runs, data_dir)
 
             # Build config
-            config = self._build_config(n_features, n_classes, str(data_dir))
+            config = self._build_config(
+                len(runs.columns), len(runs.classes), str(data_dir)
+            )
 
             # Train
-            model = Model.from_config(config)
+            model = model_class.from_config(config)
             model.train(output_dir=str(output_dir), post_inference=False)
 
             # Persist trained model to a temp location (save_state copies to run_root)
             self._model_dir = Path(tempfile.mkdtemp(prefix="la_model_"))
             shutil.copytree(output_dir, self._model_dir / "model", dirs_exist_ok=True)
-            self._la_model = Model.from_dir(str(self._model_dir / "model"))
+            self._la_model = _predicting_in_process(
+                model_class.from_dir(str(self._model_dir / "model"))
+            )
             self._config = config
 
         print("[lightning-action] Training complete.", file=sys.stderr)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        from lightning_action.api.model import Model
-
-        if self._feature_columns is None or self._classes is None:
+        if (
+            self._feature_columns is None
+            or self._feature_mean is None
+            or self._feature_std is None
+            or self._classes is None
+            or self._sequence_length is None
+        ):
             msg = (
                 "[lightning-action] Model not fitted "
-                "— call fit() or load_state() first."
+                "and fit() or load_state() has not run."
             )
-            raise RuntimeError(msg)
-
-        refuse_pair_rows(df, self.name)
-        ensure_columns(df, self._feature_columns)
-
-        # Load model if not cached
-        if self._la_model is None and self._model_dir is not None:
-            model_path = self._model_dir / "model"
-            if not model_path.exists():
-                # model_dir IS the model directory (loaded from run_root)
-                model_path = self._model_dir / "lightning_action_model"
-            self._la_model = Model.from_dir(str(model_path))
-
-        if self._la_model is None:
-            msg = "[lightning-action] No model available for prediction."
             raise RuntimeError(msg)
 
         feat_cols = self._feature_columns
-        feat_matrix = df[feat_cols].to_numpy(dtype=np.float64)
-        n = len(df)
+        ensure_columns(df, [COLUMNS.frame_col, *feat_cols])
+        refuse_repeated_series_rows(df, self.name)
 
-        with tempfile.TemporaryDirectory(prefix="la_apply_") as tmpdir_str:
-            tmpdir = Path(tmpdir_str)
-            features_dir = tmpdir / "features"
-            pred_dir = tmpdir / "predictions"
-            features_dir.mkdir()
-            pred_dir.mkdir()
-
-            # Write single-sequence CSV. The package reads its first column as
-            # the index (``index_col=0``), so the index is written too.
-            pd.DataFrame(feat_matrix, columns=feat_cols).to_csv(
-                features_dir / "seq.csv", index=True
-            )
-
-            # Run prediction
-            self._la_model.predict(
-                data_path=str(tmpdir),
-                input_dir="features",
-                output_dir=str(pred_dir),
-            )
-
-            # Read prediction CSV
-            pred_files = sorted(pred_dir.glob("*.csv"))
-            if not pred_files:
-                msg = "[lightning-action] No prediction output found."
-                raise RuntimeError(msg)
-            # The package writes the row index first and one column per class
-            # name, so the probabilities are read by name rather than position.
-            pred_df = pd.read_csv(pred_files[0], index_col=0)
-            class_names = self._class_names or [str(c) for c in self._classes]
-            ensure_columns(pred_df, class_names)
-            probs = pred_df[class_names].to_numpy(dtype=np.float64)
-
-        # Trim or pad to match input length
-        if len(probs) > n:
-            probs = probs[:n]
-        elif len(probs) < n:
-            pad = np.full((n - len(probs), probs.shape[1]), np.nan)
-            probs = np.vstack([probs, pad])
+        matrix = _standardize(
+            df[feat_cols].to_numpy(dtype=np.float64),
+            self._feature_mean,
+            self._feature_std,
+        )
+        probs = self._predict_series(df, matrix)
 
         # Build output DataFrame. The identity travels with the predictions, so
         # that they join back to the rows they describe.
@@ -466,13 +665,13 @@ class LightningActionFeature:
             )
             predicted_labels[all_zero] = self.params.default_class
         else:
-            predicted_indices = np.argmax(probs, axis=1)
+            predicted_indices = np.argmax(np.nan_to_num(probs, nan=-1.0), axis=1)
             predicted_labels = np.array(
                 [self._classes[int(i)] for i in predicted_indices],
                 dtype=np.intp,
             )
 
-        # Handle NaN rows (from padding)
+        # A row of no series has no probabilities
         nan_mask = np.isnan(probs).any(axis=1)
         predicted_labels[nan_mask] = self.params.default_class
 
@@ -483,7 +682,11 @@ class LightningActionFeature:
         if (
             self._model_dir is None
             or self._feature_columns is None
+            or self._feature_mean is None
+            or self._feature_std is None
             or self._classes is None
+            or self._sequence_length is None
+            or self._sequence_pad is None
         ):
             return
         run_root.mkdir(parents=True, exist_ok=True)
@@ -502,8 +705,12 @@ class LightningActionFeature:
         bundle: LightningActionModelBundle = {
             "model_dir": "lightning_action_model",
             "feature_columns": self._feature_columns,
+            "feature_mean": self._feature_mean.tolist(),
+            "feature_std": self._feature_std.tolist(),
             "classes": self._classes,
             "class_names": self._class_names or [],
+            "sequence_length": self._sequence_length,
+            "sequence_pad": self._sequence_pad,
             "config": self._config or {},
             "version": self.version,
         }
@@ -518,57 +725,176 @@ class LightningActionFeature:
     # --- Helpers ---
 
     def _load_bundle(self, bundle: LightningActionModelBundle, base_dir: Path) -> None:
+        mean = bundle.get("feature_mean")
+        std = bundle.get("feature_std")
+        length = bundle.get("sequence_length")
+        pad = bundle.get("sequence_pad")
+        if mean is None or std is None or length is None or pad is None:
+            msg = (
+                f"[{self.name}] this model was fitted by version "
+                f"{bundle.get('version', '0.4 or earlier')}, which stood each "
+                "file on its own statistics and stored none. Fit it again"
+            )
+            raise ValueError(msg)
         self._feature_columns = bundle["feature_columns"]
+        self._feature_mean = np.asarray(mean, dtype=np.float64)
+        self._feature_std = np.asarray(std, dtype=np.float64)
         self._classes = bundle["classes"]
         self._class_names = bundle["class_names"]
-        self._config = bundle.get("config")  # pyright: ignore[reportAssignmentType]
+        self._sequence_length = length
+        self._sequence_pad = pad
+        self._config = bundle["config"]
         self._model_dir = base_dir
         self._la_model = None  # lazy-load on first apply()
 
-    def _write_training_csvs(
-        self,
-        templates: pd.DataFrame,
-        feat_cols: list[str],
-        data_dir: Path,
-    ) -> None:
-        """Write mosaic templates as CSVs in lightning-action layout.
+    def _write_runs(self, inputs: InputStream, runs_dir: Path) -> _TrainingRuns:
+        """Stream the training entries and keep each of their frame runs on disk.
 
-        Both files carry the index column, because the package reads its first
-        column as the index (``index_col=0``) and would otherwise drop the first
-        feature or class.
+        A run is a stretch of consecutive labeled frames of one series. It is
+        kept in whole windows from its first frame, which is how the package
+        cuts it, and a run with no whole window is left out. The statistics of
+        the frames that are kept accumulate as the runs are written, so the
+        stream is read once.
+
+        Raises:
+            ValueError: A train entry that has labels is missing from the stream.
+            RuntimeError: No run is left, or the runs hold one class.
+        """
+        assert self._train_entries is not None
+        window = self.params.sequence_length
+        runs_dir.mkdir(parents=True)
+
+        columns: list[str] | None = None
+        moments: _RunningMoments | None = None
+        classes: set[int] = set()
+        seen: set[tuple[str, str]] = set()
+        unlabeled_entries = 0
+        too_short = 0
+        past_last_window = 0
+        n_runs = 0
+
+        for _, df in inputs():
+            entry = entry_identity(df)
+            if entry not in self._train_entries:
+                continue
+            seen.add(entry)
+            label_file = self._label_files.get(entry)
+            if label_file is None:
+                unlabeled_entries += 1
+                continue
+            ensure_columns(df, [COLUMNS.frame_col])
+            refuse_repeated_series_rows(df, self.name)
+            if columns is None:
+                columns = feature_columns(df)
+                moments = _RunningMoments(len(columns))
+            else:
+                ensure_columns(df, columns)
+            assert moments is not None
+
+            for _, rows in iter_series(df):
+                labels = labels_for_rows(label_file, rows)
+                frames = rows[COLUMNS.frame_col].to_numpy()
+                matrix = rows[columns].to_numpy(dtype=np.float64)
+                for start, stop in consecutive_runs(frames, labels != UNLABELED):
+                    whole = (stop - start) // window * window
+                    if whole == 0:
+                        too_short += 1
+                        continue
+                    past_last_window += stop - start - whole
+                    stop = start + whole
+                    np.savez(
+                        runs_dir / f"run_{n_runs:06d}.npz",
+                        x=matrix[start:stop],
+                        y=labels[start:stop],
+                    )
+                    moments.add(matrix[start:stop])
+                    classes.update(int(c) for c in np.unique(labels[start:stop]))
+                    n_runs += 1
+
+        absent = sorted(
+            entry
+            for entry in self._train_entries
+            if entry in self._label_files and entry not in seen
+        )
+        if absent:
+            shown = ", ".join(f"{group}/{sequence}" for group, sequence in absent[:5])
+            msg = (
+                f"[{self.name}] {len(absent)} train entries of the templates run "
+                f"have labels and are not in this step's scope: {shown}. The model "
+                "would train on fewer entries than its templates name. Add them to "
+                "the scope, or apply a model fitted elsewhere through `model`"
+            )
+            raise ValueError(msg)
+        if unlabeled_entries or too_short or past_last_window:
+            print(
+                f"[lightning-action] {unlabeled_entries} train entries have no label "
+                f"file, {too_short} runs are shorter than sequence_length {window}, "
+                f"and {past_last_window} frames lie past the last whole window of a "
+                "run. None of them train",
+                file=sys.stderr,
+            )
+        if columns is None or moments is None or n_runs == 0:
+            msg = (
+                f"[{self.name}] no run of consecutive labeled frames of "
+                f"sequence_length {window} frames or more is left to train on: "
+                f"{unlabeled_entries} train entries have no label file and "
+                f"{too_short} runs are shorter than sequence_length"
+            )
+            raise RuntimeError(msg)
+        if len(classes) < 2:
+            msg = (
+                f"[{self.name}] the training runs hold {len(classes)} class "
+                f"({sorted(classes)}), and a classifier needs two or more"
+            )
+            raise RuntimeError(msg)
+        return _TrainingRuns(runs_dir, columns, moments, sorted(classes), n_runs)
+
+    def _write_training_csvs(self, runs: _TrainingRuns, data_dir: Path) -> None:
+        """Write the runs as standardized CSVs in lightning-action layout.
+
+        One file per run. Both files carry the index column, because the package
+        reads its first column as the index (``index_col=0``) and would otherwise
+        drop the first feature or class. The package standardizes nothing, so
+        the standardization that ``apply`` repeats is done here.
         """
         features_dir = data_dir / "features"
         labels_dir = data_dir / "labels"
         features_dir.mkdir(parents=True)
         labels_dir.mkdir(parents=True)
 
-        assert self._classes is not None
         assert self._class_names is not None
+        mean, std = runs.moments.standardizer()
+        classes = np.asarray(runs.classes)
 
-        for split_name, split_df in templates.groupby("split", sort=False):
-            split_df = split_df.reset_index(drop=True)
-
-            # Write features CSV
-            split_df[feat_cols].to_csv(features_dir / f"{split_name}.csv", index=True)
-
-            # Write labels CSV (one-hot encoded)
-            label_vals = split_df["label"].values
-            one_hot = np.zeros((len(label_vals), len(self._classes)), dtype=int)
-            for i, cls in enumerate(self._classes):
-                one_hot[:, i] = (label_vals == cls).astype(int)
-            label_df = pd.DataFrame(one_hot, columns=self._class_names)
-            label_df.to_csv(labels_dir / f"{split_name}.csv", index=True)
+        for path in sorted(runs.runs_dir.glob("run_*.npz")):
+            with np.load(path) as stored:
+                matrix = stored["x"]
+                labels = stored["y"]
+            pd.DataFrame(_standardize(matrix, mean, std), columns=runs.columns).to_csv(
+                features_dir / f"{path.stem}.csv", index=True, float_format="%.7g"
+            )
+            one_hot = (labels[:, None] == classes[None, :]).astype(int)
+            pd.DataFrame(one_hot, columns=self._class_names).to_csv(
+                labels_dir / f"{path.stem}.csv", index=True
+            )
 
     def _build_config(
         self, n_features: int, n_classes: int, data_path: str
     ) -> dict[str, object]:
-        """Translate mosaic Params into a lightning-action config dict."""
+        """Translate mosaic Params into a lightning-action config dict.
+
+        The package reads the optimizer from the top level of the config, and
+        takes weight decay as ``wd``. Under ``training`` it is ignored without a
+        warning. ``transforms`` is empty because the frames are standardized
+        before they are written.
+        """
         p = self.params
         return {
             "data": {
                 "data_path": data_path,
                 "input_dir": "features",
                 "weight_classes": p.weight_classes,
+                "transforms": [],
             },
             "model": {
                 "input_size": n_features,
@@ -579,7 +905,6 @@ class LightningActionFeature:
                 "num_lags": p.num_lags,
                 "activation": p.activation,
                 "dropout_rate": p.dropout_rate,
-                "sequence_length": p.sequence_length,
                 "seed": p.random_state,
             },
             "training": {
@@ -590,10 +915,114 @@ class LightningActionFeature:
                 "seed": p.random_state,
                 "train_probability": 0.9,
                 "val_probability": 0.1,
-                "optimizer": {
-                    "type": p.optimizer,
-                    "lr": p.learning_rate,
-                    "wd": p.weight_decay,
-                },
+            },
+            "optimizer": {
+                "type": p.optimizer,
+                "lr": p.learning_rate,
+                "wd": p.weight_decay,
             },
         }
+
+    def _loaded_model(self) -> _PackageModel:
+        """Return the fitted package model, loading it from its directory once."""
+        model_class = _package_model_class()
+        if self._la_model is None and self._model_dir is not None:
+            model_path = self._model_dir / "model"
+            if not model_path.exists():
+                # model_dir IS the model directory (loaded from run_root)
+                model_path = self._model_dir / "lightning_action_model"
+            self._la_model = _predicting_in_process(
+                model_class.from_dir(str(model_path))
+            )
+
+        if self._la_model is None:
+            msg = "[lightning-action] No model available for prediction."
+            raise RuntimeError(msg)
+        return self._la_model
+
+    def _predict_series(
+        self, df: pd.DataFrame, matrix: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """Predict the class probabilities of every row of *df*, one series at a time.
+
+        The package predicts whole windows from a file's first row, and only a file
+        of at least one window and its context. Each series is therefore written
+        as its own file, with zero rows (the column mean) ahead of its first frame
+        to fill a whole number of windows, and at least two. The last frame ends
+        the final window, so no row falls past it, and the zero rows sit where a
+        training run also starts with no context.
+
+        Returns:
+            One row of probabilities per row of *df*, NaN for a row that belongs
+            to no series because a key column is missing.
+        """
+        assert self._classes is not None
+        assert self._class_names is not None
+        assert self._sequence_length is not None
+        model = self._loaded_model()
+        window = self._sequence_length
+        n_classes = len(self._classes)
+        probs = np.full((len(df), n_classes), np.nan)
+
+        frames = df[COLUMNS.frame_col].to_numpy()
+        keys = series_columns(df)
+        groups: list[npt.NDArray[np.intp]]
+        if keys:
+            groups = [
+                np.asarray(rows, dtype=np.intp)
+                for rows in df.groupby(keys, sort=True).indices.values()
+            ]
+        else:
+            groups = [np.arange(len(df), dtype=np.intp)]
+        series = [rows[np.argsort(frames[rows], kind="stable")] for rows in groups]
+        if not series:
+            return probs
+
+        feat_cols = self._feature_columns
+        assert feat_cols is not None
+        with tempfile.TemporaryDirectory(prefix="la_apply_") as tmpdir_str:
+            tmpdir = Path(tmpdir_str)
+            features_dir = tmpdir / "features"
+            pred_dir = tmpdir / "predictions"
+            features_dir.mkdir()
+            pred_dir.mkdir()
+
+            # The package reads its first column as the index (``index_col=0``),
+            # so the index is written too.
+            leads: list[int] = []
+            for index, rows in enumerate(series):
+                n_windows = max(2, math.ceil(len(rows) / window))
+                padded = np.zeros((n_windows * window, len(feat_cols)))
+                lead = len(padded) - len(rows)
+                padded[lead:] = matrix[rows]
+                pd.DataFrame(padded, columns=feat_cols).to_csv(
+                    features_dir / f"s{index:06d}.csv", index=True, float_format="%.7g"
+                )
+                leads.append(lead)
+
+            model.predict(
+                data_path=str(tmpdir),
+                input_dir="features",
+                output_dir=str(pred_dir),
+            )
+
+            # The package writes the row index first and one column per class
+            # name, so the probabilities are read by name rather than position.
+            for index, rows in enumerate(series):
+                pred_file = pred_dir / f"s{index:06d}_predictions.csv"
+                if not pred_file.exists():
+                    msg = "[lightning-action] No prediction output found."
+                    raise RuntimeError(msg)
+                pred_df = pd.read_csv(pred_file, index_col=0)
+                ensure_columns(pred_df, self._class_names)
+                values = pred_df[self._class_names].to_numpy(dtype=np.float64)
+                values = values[leads[index] :]
+                if len(values) != len(rows) or np.isnan(values).any():
+                    msg = (
+                        f"[lightning-action] the package returned {len(values)} "
+                        f"rows, some of them without probabilities, for a series "
+                        f"of {len(rows)} rows"
+                    )
+                    raise RuntimeError(msg)
+                probs[rows] = values
+        return probs

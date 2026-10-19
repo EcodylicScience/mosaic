@@ -6,6 +6,7 @@ longer validates, plans or runs fails here before a reader copies it.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -16,7 +17,12 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import PipelineRun, Recipe, run_pipeline
 from mosaic.core.scope import Scope
-from tests.helpers import REPO_ROOT, calms21_dataset
+from tests.helpers import (
+    LA_WINDOW,
+    REPO_ROOT,
+    calms21_dataset,
+    install_lightning_action_stub,
+)
 
 GUIDE = REPO_ROOT / "docs" / "guides" / "analysis" / "train-a-classifier.md"
 N_CLASSES = 4  # the guide's recipe names `default_class: 3`
@@ -36,6 +42,13 @@ def _step_scopes(command: str) -> dict[str, Scope]:
 @pytest.fixture(scope="module")
 def supervised() -> dict[str, Any]:
     (block,) = [b for b in _blocks("json") if '"name": "supervised"' in b]
+    recipe: dict[str, Any] = json.loads(block)
+    return recipe
+
+
+@pytest.fixture(scope="module")
+def sequence() -> dict[str, Any]:
+    (block,) = [b for b in _blocks("json") if '"name": "sequence-classifier"' in b]
     recipe: dict[str, Any] = json.loads(block)
     return recipe
 
@@ -105,3 +118,35 @@ def test_the_cross_validation_commands_screen_and_then_score_the_test_groups(
     assert set(_states(screening).values()) == {"ran"}
     assert _run_ids(final)["classifier"] == _run_ids(screening)["classifier"]
     assert _states(final)["evaluate"] == "ran"
+
+
+def test_the_sequence_recipe_trains_on_the_train_group_and_predicts_every_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sequence: dict[str, Any],
+    commands: list[str],
+) -> None:
+    package = install_lightning_action_stub(monkeypatch)
+    recipe = copy.deepcopy(sequence)
+    (classifier,) = [s for s in recipe["steps"] if s["id"] == "classifier"]
+    # The guide's sizes suit a recording, not the two minutes of the fixture. The
+    # stub trains on windows of its own length.
+    classifier["params"].update(
+        sequence_length=LA_WINDOW,
+        num_epochs=1,
+        num_layers=1,
+        num_lags=1,
+        device="cpu",
+    )
+    (command,) = [c for c in commands if "@sequence.json" in c]
+
+    run = run_pipeline(
+        _dataset(tmp_path / "ds"),
+        Recipe.model_validate(recipe),
+        step_scopes=_step_scopes(command),
+    )
+
+    assert set(_states(run).values()) == {"ran"}
+    # One resident-focal run of each of the six training sequences, and no test group.
+    assert package.trainings == 1
+    assert len(package.trained) == 6

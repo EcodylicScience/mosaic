@@ -232,7 +232,9 @@ def _recipe_templates_ref(consumer: str) -> TemplatesRef:
         ),
         "xgboost": lambda: XgboostFeature.Params.from_overrides(labeled).templates,
         "lightning-action": lambda: (
-            LightningActionFeature.Params.from_overrides(labeled).templates
+            LightningActionFeature.Params.from_overrides(
+                {**labeled, "labels": {"kind": "behavior"}}
+            ).templates
         ),
     }
     templates = builders[consumer]()

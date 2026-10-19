@@ -1368,31 +1368,41 @@ Fits keypoint-MoSeq to keypoint tracks and applies it, in a runner process.
 
 ### `lightning-action`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
+Version `0.5` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
 
 Supervised temporal action segmentation via lightning-action.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | Labeled feature templates to fit the model on, with label and split columns. Mutually exclusive with model. |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The extract-labeled-templates run whose train entries the model fits on. Only its template_provenance.parquet is read: the model trains on the frame runs of those entries, not on the sampled templates. An entry the run lists as test, or does not list, never trains. Mutually exclusive with model. |
 | `model` | `LightningActionModelArtifact` \| `None` | _constructed_ |  | Pre-fitted model to load instead of training. Mutually exclusive with templates. |
+| `labels` | `GroundTruthLabelsSource` \| `None` | `null` |  | The per-frame ground-truth labels that the frames of the training entries are aligned to, resolved from labels/<kind>/index.csv. A frame no label covers is left out of training. Required with templates. |
 | `head` | `"temporalmlp"` \| `"rnn"` \| `"dtcn"` | `"dtcn"` |  | Temporal encoder architecture: dtcn (dilated temporal convolution), rnn (LSTM/GRU), or temporalmlp. |
 | `num_hid_units` | `integer` | `64` | >= `1` | Number of hidden units in the temporal encoder's layers. |
 | `num_layers` | `integer` | `2` | >= `1` | Number of layers in the temporal encoder. |
 | `num_lags` | `integer` | `4` | >= `1` | Number of temporal lags the encoder convolves over. Used by the temporalmlp and dtcn heads and ignored by rnn. [frames] |
 | `activation` | `string` | `"lrelu"` |  | Activation function used in the temporal encoder. Known values are relu, lrelu, sigmoid, tanh and linear. |
 | `dropout_rate` | `number` | `0.1` | >= `0`, <= `1` | Dropout rate applied in the temporal encoder for regularization. |
-| `sequence_length` | `integer` | `500` | >= `10` | Length of each training sequence chunk. [frames] |
+| `sequence_length` | `integer` | `500` | >= `10` | Length of each training window. A run of consecutive labeled rows trains in whole windows from its first row, so a run shorter than this does not train, and neither do the rows past a run's last whole window. It must exceed twice the context that the temporal encoder reads on each side of a row, or the loss is empty. [frames] |
 | `num_epochs` | `integer` | `200` | >= `1` | How long the model trains. [epochs] |
 | `batch_size` | `integer` | `32` | >= `1` | How many training sequence chunks the model reads in one forward pass. |
 | `learning_rate` | `number` | `0.001` | > `0` | The optimizer's learning rate. |
 | `weight_decay` | `number` | `0.0` | >= `0` | The optimizer's weight decay coefficient. |
 | `optimizer` | `"Adam"` \| `"AdamW"` | `"Adam"` |  | The optimizer used to train the network. |
 | `weight_classes` | `boolean` | `true` |  | Weight the training loss by inverse class frequency, to correct for class imbalance. |
-| `device` | `string` | `"cpu"` |  | Which device trains the model. Known values are cpu and gpu. |
+| `device` | `string` | `"gpu"` |  | Which device trains the model. Known values are cpu and gpu. The step is offered to a GPU worker whichever it is, and gpu trains on the CPU where the machine has no CUDA device. |
 | `random_state` | `integer` | `42` |  | The random seed for model initialization and training. |
 | `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Probability threshold for a positive class prediction: a single value applied to every class, or a mapping from class to its own threshold. Unset, the class with the highest probability wins. |
-| `default_class` | `integer` | _required_ |  | Class label assigned to a frame when decision_threshold excludes every class, or when the frame has no predicted probabilities at all. |
+| `default_class` | `integer` | _required_ |  | Class label assigned to a frame when decision_threshold excludes every class, or when the frame belongs to no series because its identity columns are missing. |
+
+??? note "`GroundTruthLabelsSource`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"behavior"` | `"behavior"` |  | Fixed to behavior. Ground-truth labels always resolve to labels/behavior/. |
+    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
+    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
+    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
 
 ??? note "`JoblibLoadSpec`"
 
@@ -1426,6 +1436,14 @@ Supervised temporal action segmentation via lightning-action.
     | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"lightning_action_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
+
+??? note "`NpzLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
 
 ??? note "`ParquetLoadSpec`"
 

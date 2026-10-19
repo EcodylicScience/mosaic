@@ -1,271 +1,785 @@
-"""`lightning-action` reads an individual table, and refuses a pair table.
+"""`lightning-action` trains on runs of consecutive frames and applies one series at a time.
 
-`apply` writes an entry's rows to the model as one sequence in table order. A pair
-table holds two rows per frame, one per perspective, so that sequence would
-interleave the two animals' frames, and a window of the temporal model would read
-one animal's frame after the other's. `apply` refuses such a table until it reads
-each pair as a sequence of its own. `fit` reads the templates and not its input
-stream, so it cannot tell a pair input apart, and the refusal comes at the first
-entry.
-
-The identity columns an individual table carries still reach the predictions. The
-passthrough list once stopped at `[frame, time, id, group, sequence]` while the
-feature was handed pair tables, so predictions came back with two rows per
-`(group, sequence, frame)` and nothing to tell them apart.
+A temporal model reads one animal's frames in time order. `fit` therefore writes each
+run of consecutive labeled frames of one series as a file of its own, from the entries
+that the templates run assigned to `train`, standardized by statistics stored with the
+model. `apply` writes each series of an entry, an individual or an ordered pair, as a
+file of its own and returns the predictions on the rows it was given.
 
 The extra it needs does not resolve on a machine without CUDA -- `lightning-action`
 requires `nvidia-dali-cuda110` with no environment marker -- so here the model is
 stubbed rather than skipped, and these tests run in every job. The stub keeps the
-package's CSV contract: it reads its input with `index_col=0` and writes the row
-index first, one column per class name, and NaN past the last whole window. A stub
-that wrote CSVs its own way once hid a fit that raised on every real call.
-`test_lightning_action_real.py` fits the real package on CPU in CI's
-`lightning-action` job.
+package's data contract: it reads each CSV with `index_col=0`, needs a label file for
+every feature file, cuts whole windows from a file's first row, refuses a file shorter
+than a window and its context at predict, and writes the row index first, one column
+per class name, and NaN past the last whole window. A stub that wrote CSVs its own way
+once hid a fit that raised on every real call. `test_lightning_action_real.py` fits the
+real package on CPU in CI's `lightning-action` job.
 """
 
 from __future__ import annotations
 
-import sys
-import types
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
+import joblib
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.lightning_action_feature import (
     LightningActionFeature,
+    LightningActionModelArtifact,
+    LightningActionModelBundle,
 )
-from mosaic.core.pipeline.types import InputStream, Result
-from tests.helpers import make_pair_df
+from mosaic.core.pipeline.types import Result
+from tests.helpers import (
+    LA_CLASS_NAMES,
+    LA_CLASSES,
+    LA_PAD,
+    LA_WINDOW,
+    Event,
+    LightningActionRecorder,
+    StudyEntry,
+    TemplatesStudy,
+    fit_lightning_action,
+    install_lightning_action_stub,
+    lightning_action_params,
+    stub_probabilities,
+    write_templates_study,
+)
 
-_CLASSES = [1, 2, 3]
-_FEATURES = ["feat_0", "feat_1"]
-_PROBS = np.array([0.2, 0.3, 0.5])
-_WINDOW = 4
-
-
-class _StubModel:
-    """Stands in for `lightning_action.api.model.Model`.
-
-    `predict` reads each input CSV and writes its predictions as the package does
-    (`lightning_action/data/utils.py` `load_feature_csv`, `api/model.py` `predict`):
-    the input's first column is the index, and the output carries the row index
-    first, one column per class name and NaN rows past the last whole window. The
-    probabilities are fixed, so the assertions are about bookkeeping rather than
-    about a model.
-    """
-
-    def __init__(self) -> None:
-        self.inputs: list[pd.DataFrame] = []
-
-    def predict(self, data_path: str, input_dir: str, output_dir: str) -> None:
-        for path in sorted((Path(data_path) / input_dir).glob("*.csv")):
-            features = pd.read_csv(path, index_col=0)
-            self.inputs.append(features)
-            n = len(features)
-            probs = np.tile(_PROBS, (n, 1))
-            probs[n - n % _WINDOW :] = np.nan
-            frame = pd.DataFrame(probs, columns=[str(c) for c in _CLASSES])
-            frame.to_csv(Path(output_dir) / f"{path.stem}_predictions.csv")
+_CLASSES = LA_CLASSES
+_NAMES = LA_CLASS_NAMES
+_FEATURES = ["feat_0", "feat_1", "feat_2"]
+_WINDOW = LA_WINDOW
+Entry = StudyEntry
+_PAD = LA_PAD
+_DEFAULT = 99  # a class the stub never predicts
 
 
 @pytest.fixture(autouse=True)
-def _stub_lightning_action(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Satisfy the unconditional `from lightning_action.api.model import Model`."""
-    package = types.ModuleType("lightning_action")
-    api = types.ModuleType("lightning_action.api")
-    model_module = types.ModuleType("lightning_action.api.model")
-    model_module.Model = _StubModel  # pyright: ignore[reportAttributeAccessIssue]
-    monkeypatch.setitem(sys.modules, "lightning_action", package)
-    monkeypatch.setitem(sys.modules, "lightning_action.api", api)
-    monkeypatch.setitem(sys.modules, "lightning_action.api.model", model_module)
+def package(monkeypatch: pytest.MonkeyPatch) -> LightningActionRecorder:
+    """Satisfy the package imports with the stub, and return what it records."""
+    return install_lightning_action_stub(monkeypatch)
 
 
-def _fitted() -> LightningActionFeature:
-    feature = LightningActionFeature(
-        LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
-        params={"default_class": 3, "model": {"feature": "lightning-action"}},
-    )
-    state: Any = feature
-    state._feature_columns = list(_FEATURES)
-    state._classes = list(_CLASSES)
-    state._class_names = [str(c) for c in _CLASSES]
-    state._la_model = _StubModel()
-    return feature
+# --- Tables and labels ---------------------------------------------------------
 
 
-def _individual_df(n: int) -> pd.DataFrame:
-    rng = np.random.default_rng(0)
-    df = pd.DataFrame(rng.standard_normal((n, len(_FEATURES))), columns=_FEATURES)
-    df.insert(0, "frame", np.arange(n))
-    df.insert(1, "id", 0)
-    return df
+def _table(
+    entry: Entry,
+    frames: Sequence[int],
+    *,
+    code: float,
+    pair: bool = True,
+    nan: tuple[int, str] | None = None,
+) -> pd.DataFrame:
+    """One entry's rows: `feat_0` is the frame, `feat_1` the entry, `feat_2` the perspective.
 
+    `feat_0` also carries a thousandth of the perspective, so that the two series of a
+    pair differ in the one column that the stub predicts from.
 
-def test_apply_refuses_a_pair_table() -> None:
-    df = make_pair_df(6, len(_FEATURES))
-
-    with pytest.raises(ValueError, match=r"^\[lightning-action\] .*pair table"):
-        _fitted().apply(df)
-
-
-def test_apply_keeps_individual_identity() -> None:
-    """The individual case must not lose what it already carried."""
-    n = 5
-    df = pd.DataFrame(
-        {
-            "frame": np.arange(n),
-            "time": np.arange(n, dtype=float) / 30.0,
-            "id": np.zeros(n, dtype=int),
-            "group": ["g"] * n,
-            "sequence": ["s"] * n,
-            "feat_0": np.zeros(n),
-            "feat_1": np.ones(n),
-        }
-    )
-
-    out = _fitted().apply(df)
-
-    assert {"frame", "time", "id", "group", "sequence"} <= set(out.columns)
-    assert "id1" not in out.columns
-
-
-def test_predictions_are_labels_not_indices() -> None:
-    """The stub's argmax is class 3, which is a label and not an index into it."""
-    df = make_pair_df(4, len(_FEATURES)).query("perspective == 0")
-    df = df.drop(columns=["id1", "id2", "perspective"]).assign(id=0)
-
-    out = _fitted().apply(df)
-
-    assert set(out["predicted_label"]) == {3}
-
-
-class _RecordingModel:
-    """Records the headers of the CSVs that `fit` hands to lightning-action."""
-
-    config: dict[str, Any] = {}
-    headers: dict[str, list[str]] = {}
-
-    @classmethod
-    def from_config(cls, config: dict[str, Any]) -> _RecordingModel:
-        cls.config = config
-        return cls()
-
-    @classmethod
-    def from_dir(cls, path: str) -> _RecordingModel:
-        return cls()
-
-    def train(self, output_dir: str, post_inference: bool) -> None:
-        data = Path(self.config["data"]["data_path"])
-        # The package reads each file with `index_col=0`.
-        type(self).headers = {
-            str(path.relative_to(data)): list(pd.read_csv(path, index_col=0).columns)
-            for path in sorted(data.rglob("*.csv"))
-        }
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-
-def _templates_table(*, with_identity: bool) -> pd.DataFrame:
-    rng = np.random.default_rng(0)
-    n = 12
-    table = pd.DataFrame(rng.standard_normal((n, 2)), columns=_FEATURES)
-    table["label"] = np.tile(_CLASSES, n // len(_CLASSES))
-    table["split"] = ["train"] * 8 + ["test"] * 4
-    if with_identity:
-        table["group"] = ["g", ""] * (n // 2)
-        table["sequence"] = ["s1", "12", "s3"] * (n // 3)
+    A pair table holds two rows per frame, perspective 0 first, each block in frame
+    order. An individual table holds one row per frame of `id` 0.
+    """
+    blocks: list[pd.DataFrame] = []
+    for perspective in (0, 1) if pair else (0,):
+        n = len(frames)
+        block = pd.DataFrame(
+            {
+                "frame": np.asarray(frames, dtype=np.int64),
+                "group": [entry[0]] * n,
+                "sequence": [entry[1]] * n,
+            }
+        )
+        if pair:
+            block["id1"] = perspective
+            block["id2"] = 1 - perspective
+            block["perspective"] = perspective
+        else:
+            block["id"] = 0
+        block["feat_0"] = (
+            np.asarray(frames, dtype=np.float64) / 100.0 + perspective / 1000.0
+        )
+        block["feat_1"] = code
+        block["feat_2"] = float(perspective)
+        blocks.append(block)
+    table = pd.concat(blocks, ignore_index=True)
+    if nan is not None:
+        row, column = nan
+        table.loc[row, column] = np.nan
     return table
 
 
-@pytest.mark.parametrize("with_identity", [False, True], ids=["0.5", "0.6"])
-def test_the_templates_identity_columns_reach_neither_the_features_nor_the_labels(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_identity: bool
-) -> None:
-    """`extract-labeled-templates` 0.6 writes `group` and `sequence` beside `split`.
+def _events(
+    frames: Sequence[int],
+    label_of: Callable[[int], int | None],
+    *,
+    pair: bool = True,
+    both_directions: bool = False,
+) -> list[Event]:
+    """The label events of the frames that `label_of` labels."""
+    events: list[Event] = []
+    for frame in frames:
+        label = label_of(frame)
+        if label is None:
+            continue
+        events.append((frame, 0, 1 if pair else -1, label))
+        if pair and both_directions:
+            events.append((frame, 1, 0, label))
+    return events
 
-    `lightning-action` reads the same columns of a 0.6 table as of a 0.5 one: the
-    feature columns come from `feature_columns`, and the CSVs it writes hold those and
-    the one-hot labels only.
-    """
-    monkeypatch.setattr(
-        sys.modules["lightning_action.api.model"], "Model", _RecordingModel
+
+def _cycling(frame: int) -> int:
+    return _CLASSES[(frame // 3) % len(_CLASSES)]
+
+
+def _study(
+    root: Path,
+    tables: dict[Entry, tuple[pd.DataFrame, list[Event]]],
+    *,
+    train: Sequence[Entry],
+    test: Sequence[Entry] = (),
+) -> TemplatesStudy:
+    events = {entry: entry_events for entry, (_, entry_events) in tables.items()}
+    return write_templates_study(root, events, train=train, test=test)
+
+
+def _fit_params(**overrides: object) -> dict[str, object]:
+    return lightning_action_params(default_class=_DEFAULT, **overrides)
+
+
+def _fit(
+    study: TemplatesStudy,
+    tables: dict[Entry, tuple[pd.DataFrame, list[Event]]],
+    **overrides: object,
+) -> LightningActionFeature:
+    streamed = {entry: table for entry, (table, _) in tables.items()}
+    return fit_lightning_action(study, streamed, default_class=_DEFAULT, **overrides)
+
+
+def _saved(feature: LightningActionFeature, root: Path) -> LightningActionModelBundle:
+    feature.save_state(root / "saved")
+    return LightningActionModelArtifact().from_path(
+        root / "saved" / "lightning_action_model.joblib"
     )
-    path = tmp_path / "templates.parquet"
-    _templates_table(with_identity=with_identity).to_parquet(path, index=False)
+
+
+@dataclass(frozen=True)
+class _Run:
+    """One training file, read back into the values the table held."""
+
+    frames: list[int]
+    codes: set[float]
+    perspectives: set[float]
+    labels: list[int]
+
+
+def _statistics(
+    bundle: LightningActionModelBundle,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    mean = bundle.get("feature_mean")
+    std = bundle.get("feature_std")
+    assert mean is not None
+    assert std is not None
+    return np.asarray(mean), np.asarray(std)
+
+
+def _runs(
+    package: LightningActionRecorder, bundle: LightningActionModelBundle
+) -> list[_Run]:
+    mean, std = _statistics(bundle)
+    runs: list[_Run] = []
+    for stem in sorted(package.trained):
+        features, one_hot = package.trained[stem]
+        raw = features.to_numpy(dtype=np.float64) * std + mean
+        hot = np.argmax(one_hot.to_numpy(dtype=np.int64), axis=1)
+        runs.append(
+            _Run(
+                frames=[int(round(v * 100.0)) for v in raw[:, 0]],
+                codes={round(float(v), 3) for v in raw[:, 1]},
+                perspectives={round(float(v), 3) for v in raw[:, 2]},
+                labels=[_CLASSES[int(i)] for i in hot],
+            )
+        )
+    return runs
+
+
+A: Entry = ("train", "a")
+B: Entry = ("train", "b")
+C: Entry = ("test", "c")
+
+
+# --- Training ------------------------------------------------------------------
+
+
+def test_each_training_file_is_one_entitys_consecutive_frames_with_their_labels(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    frames = list(range(23))
+    tables = {
+        entry: (
+            _table(entry, frames, code=code),
+            _events(frames, _cycling, both_directions=True),
+        )
+        for entry, code in ((A, 1.0), (B, 2.0), (C, 3.0))
+    }
+    study = _study(tmp_path, tables, train=[A, B], test=[C])
+
+    bundle = _saved(_fit(study, tables), tmp_path)
+
+    runs = _runs(package, bundle)
+    # Two entries, two perspectives each. A run keeps whole windows from its first
+    # frame, so the last three of the 23 frames are not in a file.
+    assert len(runs) == 4
+    for run in runs:
+        assert run.frames == list(range(20))
+        assert run.labels == [_cycling(f) for f in range(20)]
+        assert len(run.codes) == 1
+    assert {code for run in runs for code in run.codes} == {1.0, 2.0}
+    assert sorted(tuple(run.perspectives) for run in runs) == [
+        (0.0,),
+        (0.0,),
+        (1.0,),
+        (1.0,),
+    ]
+
+
+def test_an_entry_the_templates_run_holds_out_or_does_not_list_never_trains(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    frames = list(range(20))
+    unlisted: Entry = ("train", "unlisted")
+    tables = {
+        entry: (_table(entry, frames, code=code), _events(frames, _cycling))
+        for entry, code in ((A, 1.0), (B, 2.0), (C, 3.0), (unlisted, 4.0))
+    }
+    study = _study(tmp_path, tables, train=[A, B], test=[C])
+
+    bundle = _saved(_fit(study, tables), tmp_path)
+
+    assert {code for run in _runs(package, bundle) for code in run.codes} == {1.0, 2.0}
+
+
+def test_the_unlabeled_perspective_of_a_pair_writes_no_file(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    """A CalMS21 label covers the resident-focal row, and the intruder-focal row is unlabeled."""
+    frames = list(range(20))
+    tables = {
+        entry: (_table(entry, frames, code=code), _events(frames, _cycling))
+        for entry, code in ((A, 1.0), (B, 2.0))
+    }
+    study = _study(tmp_path, tables, train=[A, B])
+
+    bundle = _saved(_fit(study, tables), tmp_path)
+
+    runs = _runs(package, bundle)
+    assert len(runs) == 2
+    assert all(run.perspectives == {0.0} for run in runs)
+
+
+def test_a_run_ends_at_a_frame_gap_and_at_an_unlabeled_frame(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    frames = [*range(0, 30), *range(40, 70)]
+
+    def label(frame: int) -> int | None:
+        return None if 50 <= frame < 53 else _cycling(frame)
+
+    tables = {
+        A: (
+            _table(A, frames, code=1.0, pair=False),
+            _events(frames, label, pair=False),
+        ),
+        B: (
+            _table(B, frames, code=2.0, pair=False),
+            _events(frames, label, pair=False),
+        ),
+    }
+    study = _study(tmp_path, tables, train=[A, B])
+
+    bundle = _saved(_fit(study, tables), tmp_path)
+
+    per_entry = [run.frames for run in _runs(package, bundle) if run.codes == {1.0}]
+    # 0-29 is three windows, 40-49 one, and 53-69 holds 17 frames of which 10 train.
+    assert per_entry == [
+        list(range(30)),
+        list(range(40, 50)),
+        list(range(53, 63)),
+    ]
+
+
+def test_a_run_shorter_than_a_window_does_not_train(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    short = list(range(_WINDOW - 1))
+    long = list(range(_WINDOW))
+    tables = {
+        A: (
+            _table(A, short, code=1.0, pair=False),
+            _events(short, _cycling, pair=False),
+        ),
+        B: (_table(B, long, code=2.0, pair=False), _events(long, _cycling, pair=False)),
+    }
+    study = _study(tmp_path, tables, train=[A, B])
+
+    bundle = _saved(_fit(study, tables), tmp_path)
+
+    assert [run.codes for run in _runs(package, bundle)] == [{2.0}]
+
+
+def test_a_fit_with_no_run_of_a_whole_window_says_why(tmp_path: Path) -> None:
+    short = list(range(_WINDOW - 1))
+    tables = {
+        A: (_table(A, short, code=1.0), _events(short, _cycling)),
+        B: (_table(B, short, code=2.0), _events(short, _cycling)),
+    }
+    study = _study(tmp_path, tables, train=[A, B])
+
+    with pytest.raises(RuntimeError, match=r"2 runs are shorter than sequence_length"):
+        _fit(study, tables)
+
+
+def test_a_fit_over_one_class_is_refused(tmp_path: Path) -> None:
+    frames = list(range(20))
+    tables = {
+        A: (_table(A, frames, code=1.0), _events(frames, lambda _: 2)),
+        B: (_table(B, frames, code=2.0), _events(frames, lambda _: 2)),
+    }
+    study = _study(tmp_path, tables, train=[A, B])
+
+    with pytest.raises(RuntimeError, match=r"hold 1 class"):
+        _fit(study, tables)
+
+
+def test_an_entry_without_a_label_file_is_skipped(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    frames = list(range(20))
+    bare: Entry = ("train", "bare")
+    no_events: list[Event] = []
+    tables = {
+        A: (_table(A, frames, code=1.0), _events(frames, _cycling)),
+        B: (_table(B, frames, code=2.0), _events(frames, _cycling)),
+        bare: (_table(bare, frames, code=3.0), no_events),
+    }
+    study = _study(tmp_path, tables, train=[A, B, bare])
+
+    bundle = _saved(_fit(study, tables), tmp_path)
+
+    assert {code for run in _runs(package, bundle) for code in run.codes} == {1.0, 2.0}
+
+
+def test_a_train_entry_outside_the_steps_scope_is_refused(tmp_path: Path) -> None:
+    """Fitting on fewer entries than the templates name would be a silent narrowing."""
+    frames = list(range(20))
+    tables = {
+        entry: (_table(entry, frames, code=code), _events(frames, _cycling))
+        for entry, code in ((A, 1.0), (B, 2.0))
+    }
+    study = _study(tmp_path, tables, train=[A, B])
+    narrower = {A: tables[A]}
+
+    with pytest.raises(
+        ValueError, match=r"1 train entries .* not in this step's scope"
+    ):
+        _fit(study, narrower)
+
+
+def test_a_templates_run_without_provenance_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "templates").mkdir()
+    feature = LightningActionFeature(
+        LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
+        params=_fit_params(),
+    )
+
+    with pytest.raises(FileNotFoundError, match=r"template_provenance\.parquet"):
+        feature.load_state(
+            tmp_path / "run",
+            {"templates": tmp_path / "templates" / "templates.parquet"},
+            {},
+        )
+
+
+def test_a_window_that_the_context_would_empty_is_refused(tmp_path: Path) -> None:
+    frames = list(range(40))
+    tables = {
+        entry: (_table(entry, frames, code=code), _events(frames, _cycling))
+        for entry, code in ((A, 1.0), (B, 2.0))
+    }
+    study = _study(tmp_path, tables, train=[A, B])
+
+    # Six layers of four lags read 504 frames on each side of a frame.
+    with pytest.raises(ValueError, match=r"must exceed twice the 504 frames"):
+        _fit(study, tables, num_layers=6, num_lags=4)
+
+
+def test_the_config_puts_the_optimizer_where_the_package_reads_it(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    frames = list(range(20))
+    tables = {
+        entry: (_table(entry, frames, code=code), _events(frames, _cycling))
+        for entry, code in ((A, 1.0), (B, 2.0))
+    }
+    study = _study(tmp_path, tables, train=[A, B])
+
+    _fit(
+        study,
+        tables,
+        optimizer="AdamW",
+        learning_rate=0.01,
+        weight_decay=0.0005,
+        batch_size=4,
+    )
+
+    # The package reads `config["optimizer"]` and its weight decay as `wd`. Under
+    # `training` the block is ignored without a warning, and its defaults apply.
+    assert package.config["optimizer"] == {"type": "AdamW", "lr": 0.01, "wd": 0.0005}
+    assert package.config["training"] == {
+        "batch_size": 4,
+        "num_epochs": 1,
+        "device": "cpu",
+        "sequence_length": _WINDOW,
+        "seed": 42,
+        "train_probability": 0.9,
+        "val_probability": 0.1,
+    }
+    # The frames are standardized before they are written, so the package must not
+    # standardize each file again.
+    assert package.config_value("data", "transforms") == []
+    assert package.config_value("model", "input_size") == len(_FEATURES)
+    assert package.config_value("model", "output_size") == len(_CLASSES)
+
+
+# --- Standardization -----------------------------------------------------------
+
+
+def test_the_statistics_are_those_of_the_training_frames(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    frames = list(range(23))
+    tables = {
+        entry: (_table(entry, frames, code=code), _events(frames, _cycling))
+        for entry, code in ((A, 1.0), (B, 5.0), (C, 50.0))
+    }
+    study = _study(tmp_path, tables, train=[A, B], test=[C])
+
+    bundle = _saved(_fit(study, tables), tmp_path)
+
+    # The training frames are the resident-focal rows of A and B, whole windows only.
+    kept = np.array([[f / 100.0, code, 0.0] for code in (1.0, 5.0) for f in range(20)])
+    mean, std = _statistics(bundle)
+    np.testing.assert_allclose(mean, kept.mean(axis=0))
+    np.testing.assert_allclose(
+        std, np.where(kept.std(axis=0) > 0, kept.std(axis=0), 1.0)
+    )
+    assert bundle["feature_columns"] == _FEATURES
+    assert bundle.get("sequence_length") == _WINDOW
+    assert bundle.get("sequence_pad") == _PAD
+    assert bundle["classes"] == _CLASSES
+
+
+def test_a_missing_value_reads_as_the_column_mean_in_the_files_and_the_statistics(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    frames = list(range(20))
+    tables = {
+        A: (_table(A, frames, code=1.0, nan=(3, "feat_0")), _events(frames, _cycling)),
+        B: (_table(B, frames, code=2.0), _events(frames, _cycling)),
+    }
+    study = _study(tmp_path, tables, train=[A, B])
+
+    bundle = _saved(_fit(study, tables), tmp_path)
+
+    finite = np.array(
+        [f / 100.0 for f in range(20) if f != 3] + [f / 100.0 for f in range(20)]
+    )
+    assert _statistics(bundle)[0][0] == pytest.approx(finite.mean())
+    first = package.trained["run_000000"][0]
+    assert first["feat_0"].iloc[3] == 0.0
+    assert np.isfinite(first.to_numpy()).all()
+
+
+# --- Apply ---------------------------------------------------------------------
+
+
+def _write_bundle(
+    run_root: Path,
+    *,
+    mean: Sequence[float] = (0.0, 0.0, 0.0),
+    std: Sequence[float] = (1.0, 1.0, 1.0),
+    version: str = "0.5",
+    stored: bool = True,
+) -> None:
+    run_root.mkdir(parents=True)
+    bundle: LightningActionModelBundle = {
+        "model_dir": "lightning_action_model",
+        "feature_columns": list(_FEATURES),
+        "classes": list(_CLASSES),
+        "class_names": list(_NAMES),
+        "config": {},
+        "version": version,
+    }
+    if stored:
+        bundle["feature_mean"] = list(mean)
+        bundle["feature_std"] = list(std)
+        bundle["sequence_length"] = _WINDOW
+        bundle["sequence_pad"] = _PAD
+    joblib.dump(bundle, run_root / "lightning_action_model.joblib")
+
+
+def _applier(
+    tmp_path: Path,
+    *,
+    mean: Sequence[float] = (0.0, 0.0, 0.0),
+    std: Sequence[float] = (1.0, 1.0, 1.0),
+    threshold: float | None = None,
+) -> LightningActionFeature:
+    """A feature that applies a fitted model, the way a step given `model` does."""
+    _write_bundle(tmp_path / "model", mean=mean, std=std)
+    params: dict[str, object] = {
+        "model": {"feature": "lightning-action"},
+        "default_class": _DEFAULT,
+        "device": "cpu",
+        "decision_threshold": threshold,
+    }
+    feature = LightningActionFeature(
+        LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
+        params=params,
+    )
+    assert feature.load_state(tmp_path / "model", {}, {})
+    return feature
+
+
+def test_a_pair_table_is_applied_one_ordered_pair_at_a_time(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    n = 23
+    df = _table(C, list(range(n)), code=3.0)
+
+    _applier(tmp_path).apply(df)
+
+    [calls] = package.predicted
+    assert len(calls) == 2
+    for perspective, (_, features) in enumerate(sorted(calls.items())):
+        # A whole number of windows, and at least two, whose leading rows are zeros
+        # and whose last row is the series' last frame.
+        assert len(features) % _WINDOW == 0
+        lead = len(features) - n
+        assert 0 <= lead < _WINDOW
+        assert (features.iloc[:lead].to_numpy() == 0.0).all()
+        body = features.iloc[lead:]
+        np.testing.assert_allclose(
+            body["feat_0"], np.arange(n) / 100.0 + perspective / 1000.0
+        )
+        assert set(body["feat_2"]) == {float(perspective)}
+
+
+def test_each_row_takes_the_prediction_of_its_own_frame_and_stays_in_place(
+    tmp_path: Path,
+) -> None:
+    n = 23
+    df = _table(C, list(range(n)), code=3.0)
+    shuffled = df.sample(frac=1.0, random_state=3)
+
+    out = _applier(tmp_path).apply(shuffled)
+
+    assert list(out.index) == list(shuffled.index)
+    for column in ("frame", "group", "sequence", "id1", "id2", "perspective"):
+        assert list(out[column]) == list(shuffled[column])
+    expected = stub_probabilities(
+        shuffled["feat_0"].to_numpy(dtype=np.float64), len(_CLASSES)
+    )
+    for position, cls in enumerate(_CLASSES):
+        np.testing.assert_allclose(out[f"prob_{cls}"], expected[:, position])
+    assert list(out["predicted_label"]) == [
+        _CLASSES[i] for i in expected.argmax(axis=1)
+    ]
+
+
+@pytest.mark.parametrize("n", [3, 10, 23, 40])
+def test_no_row_falls_to_the_default_class_for_lying_past_the_last_window(
+    tmp_path: Path, n: int
+) -> None:
+    """A series shorter than a window, and one that ends inside a window, are predicted."""
+    out = _applier(tmp_path).apply(_table(C, list(range(n)), code=3.0))
+
+    prob_columns = [f"prob_{c}" for c in _CLASSES]
+    assert len(out) == 2 * n
+    assert not out[prob_columns].isna().any(axis=None)
+    assert _DEFAULT not in set(out["predicted_label"])
+
+
+def test_a_row_with_a_missing_key_has_no_series_and_takes_the_default_class(
+    tmp_path: Path,
+) -> None:
+    df = _table(C, list(range(12)), code=3.0)
+    df["id1"] = df["id1"].astype(float)
+    df.loc[5, "id1"] = np.nan
+
+    out = _applier(tmp_path).apply(df)
+
+    assert out["predicted_label"].iloc[5] == _DEFAULT
+    assert np.isnan(
+        out.loc[5, ["prob_1", "prob_2", "prob_3"]].to_numpy(dtype=float)
+    ).all()
+    assert (out.drop(index=5)["predicted_label"] != _DEFAULT).to_numpy().all()
+
+
+def test_a_frame_that_a_series_holds_twice_is_refused(tmp_path: Path) -> None:
+    df = _table(C, list(range(12)), code=3.0, pair=False)
+    df.loc[4, "frame"] = 3
+
+    with pytest.raises(ValueError, match=r"frame 3 .* appears in more than one row"):
+        _applier(tmp_path).apply(df)
+
+
+def test_an_individual_table_and_a_table_with_no_identity_are_each_one_series(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    individual = _table(C, list(range(15)), code=3.0, pair=False)
+    bare = individual.drop(columns=["id"])
+
+    feature = _applier(tmp_path)
+    feature.apply(individual)
+    feature.apply(bare)
+
+    assert [len(calls) for calls in package.predicted] == [1, 1]
+
+
+def test_the_stored_statistics_standardize_a_frame_whatever_its_entry_holds(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    df = _table(C, list(range(12)), code=3.0, nan=(2, "feat_1"))
+
+    _applier(tmp_path, mean=(0.0, 1.0, 0.0), std=(1.0, 2.0, 1.0)).apply(df)
+
+    [calls] = package.predicted
+    features = next(iter(calls.values())).iloc[-12:]
+    np.testing.assert_allclose(
+        features["feat_1"].to_numpy()[[0, 1, 3]], (3.0 - 1.0) / 2.0
+    )
+    assert features["feat_1"].iloc[2] == 0.0  # the missing value reads as the mean
+
+
+def test_a_loaded_model_reads_its_prediction_batches_in_this_process(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    """The package starts four worker processes for each series it predicts, by default."""
+    _applier(tmp_path).apply(_table(C, list(range(12)), code=3.0))
+
+    assert package.predict_workers == [0]
+
+
+def test_a_model_that_was_just_fitted_predicts_in_process_and_trained_with_the_defaults(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    frames = list(range(20))
+    tables = {
+        entry: (_table(entry, frames, code=code), _events(frames, _cycling))
+        for entry, code in ((A, 1.0), (B, 2.0))
+    }
+    study = _study(tmp_path, tables, train=[A, B])
+    fitted = _fit(study, tables)
+
+    fitted.apply(_table(C, list(range(12)), code=3.0))
+
+    assert package.predict_workers == [0]
+    # Training reads its workers from the config it is given, which names none.
+    training = package.config_value("training")
+    assert isinstance(training, dict)
+    assert "num_workers" not in training
+
+
+def test_a_decision_threshold_leaves_the_rows_no_class_clears_at_the_default_class(
+    tmp_path: Path,
+) -> None:
+    df = _table(C, list(range(12)), code=3.0)
+
+    out = _applier(tmp_path, threshold=0.99).apply(df)
+
+    assert set(out["predicted_label"]) == {_DEFAULT}
+
+
+def test_a_model_fitted_before_0_5_is_refused_with_the_reason(tmp_path: Path) -> None:
+    _write_bundle(tmp_path / "model", version="0.4", stored=False)
     feature = LightningActionFeature(
         LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
         params={
-            "templates": {"feature": "extract-labeled-templates"},
-            "default_class": 3,
-            "num_epochs": 1,
-            "sequence_length": 10,
+            "model": {"feature": "lightning-action"},
+            "default_class": _DEFAULT,
         },
     )
 
-    assert feature.load_state(tmp_path / "run", {"templates": path}, {}) is False
-    state: Any = feature
-    assert state._feature_columns == _FEATURES
-    feature.fit(InputStream(lambda: iter([]), n_entries=0))
+    with pytest.raises(ValueError, match=r"fitted by version 0\.4, .* Fit it again"):
+        feature.load_state(tmp_path / "model", {}, {})
 
-    assert _RecordingModel.headers == {
-        "features/test.csv": _FEATURES,
-        "features/train.csv": _FEATURES,
-        "labels/test.csv": [str(c) for c in _CLASSES],
-        "labels/train.csv": [str(c) for c in _CLASSES],
+
+def test_a_fitted_model_applies_the_same_after_it_is_saved_and_loaded(
+    tmp_path: Path,
+) -> None:
+    frames = list(range(23))
+    tables = {
+        entry: (_table(entry, frames, code=code), _events(frames, _cycling))
+        for entry, code in ((A, 1.0), (B, 2.0))
     }
+    study = _study(tmp_path, tables, train=[A, B])
+    fitted = _fit(study, tables)
+    df = _table(C, list(range(17)), code=3.0)
+    before = fitted.apply(df)
+    fitted.save_state(tmp_path / "run")
 
-
-def test_each_probability_column_holds_its_own_class() -> None:
-    """Read by position, the package's index column became `prob_<first class>`."""
-    df = _individual_df(2 * _WINDOW + 1)
-
-    out = _fitted().apply(df)
-
-    whole = out.iloc[: 2 * _WINDOW]
-    for cls, prob in zip(_CLASSES, _PROBS, strict=True):
-        np.testing.assert_array_equal(whole[f"prob_{cls}"], prob)
-    tail = out.iloc[2 * _WINDOW :][[f"prob_{c}" for c in _CLASSES]]
-    assert tail.isna().all(axis=None)
-    assert out["predicted_label"].iloc[-1] == 3  # default_class past the last window
-
-
-def test_predict_reads_every_feature_column() -> None:
-    feature = _fitted()
-    df = _individual_df(_WINDOW)
-
-    feature.apply(df)
-
-    stub: Any = feature
-    [seen] = stub._la_model.inputs
-    assert list(seen.columns) == _FEATURES
-    np.testing.assert_allclose(seen.to_numpy(), df[_FEATURES].to_numpy())
-
-
-def test_training_csvs_read_back_with_the_package_reader(tmp_path: Path) -> None:
-    """The package reads both files with `index_col=0`; no column may be lost."""
-    feature = _fitted()
-    labels = [1, 1, 2, 3, 3, 2]
-    templates = pd.DataFrame(
-        {
-            "feat_0": np.arange(6, dtype=float),
-            "feat_1": np.arange(6, dtype=float) * 10,
-            "label": labels,
-            "split": ["train"] * 4 + ["test"] * 2,
-        }
+    reloaded = LightningActionFeature(
+        LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
+        params=_fit_params(),
+    )
+    assert reloaded.load_state(
+        tmp_path / "run", {"templates": study.templates}, {"labels": study.label_files}
     )
 
-    feature._write_training_csvs(templates, list(_FEATURES), tmp_path)  # pyright: ignore[reportPrivateUsage]
+    pd.testing.assert_frame_equal(reloaded.apply(df), before)
 
-    for split, rows in (("train", slice(0, 4)), ("test", slice(4, 6))):
-        features = pd.read_csv(tmp_path / "features" / f"{split}.csv", index_col=0)
-        one_hot = pd.read_csv(tmp_path / "labels" / f"{split}.csv", index_col=0)
-        assert list(features.columns) == _FEATURES
-        np.testing.assert_array_equal(
-            features.to_numpy(), templates[_FEATURES].to_numpy()[rows]
+
+# --- Declaration ---------------------------------------------------------------
+
+
+def test_templates_come_with_labels_and_a_model_with_none() -> None:
+    inputs = LightningActionFeature.Inputs((Result(feature="temporal-stack"),))
+    templates = {"feature": "extract-labeled-templates"}
+    model = {"feature": "lightning-action"}
+
+    with pytest.raises(ValueError, match=r"labels is required with templates"):
+        LightningActionFeature(
+            inputs, params={"templates": templates, "default_class": 0}
         )
-        assert list(one_hot.columns) == [str(c) for c in _CLASSES]
-        hot = np.argmax(one_hot.to_numpy(dtype=np.int64), axis=1)
-        decoded = [_CLASSES[int(i)] for i in hot]
-        assert decoded == labels[rows]
+    with pytest.raises(ValueError, match=r"a run given a model fits nothing"):
+        LightningActionFeature(
+            inputs,
+            params={"model": model, "labels": {"kind": "behavior"}, "default_class": 0},
+        )
+
+
+def test_a_fit_is_scope_dependent_and_a_run_given_a_model_is_not() -> None:
+    inputs = LightningActionFeature.Inputs((Result(feature="temporal-stack"),))
+
+    fit = LightningActionFeature(inputs, params=_fit_params())
+    apply_only = LightningActionFeature(
+        inputs,
+        params={"model": {"feature": "lightning-action"}, "default_class": 0},
+    )
+
+    assert fit.scope_dependent is True
+    assert apply_only.scope_dependent is False
+
+
+def test_the_step_is_offered_to_a_gpu_worker_and_trains_there_by_default() -> None:
+    overrides = _fit_params()
+    del overrides["device"]
+
+    assert LightningActionFeature.resource_class == "gpu"
+    assert LightningActionFeature.Params.from_overrides(overrides).device == "gpu"

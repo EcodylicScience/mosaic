@@ -419,7 +419,7 @@ def test_a_lane_is_decided_from_what_a_step_declares() -> None:
     expected = {
         "speed-angvel": "feature-compute",
         "prepare-training-data": "feature-compute",
-        "lightning-action": "feature-compute",  # CPU unless its device param says not
+        "lightning-action": "gpu-train",  # a global fitter that declares a GPU, whatever its device
         "transcode": "transcode",
         "export-joined": "transcode",
         "export-store": "transcode",

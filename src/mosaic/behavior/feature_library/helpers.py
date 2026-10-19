@@ -22,6 +22,8 @@ from mosaic.core.pipeline.types import COLUMNS, META_COLS, NON_PAYLOAD_COLS
 from .types import InterpolationConfig
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import numpy.typing as npt
     from pandas._typing import Scalar
 
@@ -32,6 +34,7 @@ __all__ = [
     "chosen_payload_columns",
     "clean_animal_track",
     "clean_tracks_grouped",
+    "consecutive_runs",
     "cv_fold_assignment",
     "ego_rotate",
     "ensure_columns",
@@ -47,7 +50,6 @@ __all__ = [
     "one_row_per_frame_and_id",
     "out_of_fold_choice",
     "pairwise_median_distance",
-    "refuse_pair_rows",
     "refuse_repeated_series_rows",
     "row_max",
     "row_median",
@@ -55,6 +57,7 @@ __all__ = [
     "series_columns",
     "smooth_1d",
     "sort_nan_last",
+    "train_entries_of_templates",
     "unwrap_diff",
     "wrap_angle",
 ]
@@ -335,28 +338,35 @@ def refuse_repeated_series_rows(
     raise ValueError(msg)
 
 
-def refuse_pair_rows(df: pd.DataFrame, feature: str) -> None:
-    """Refuse *df* when it is a pair table, for a feature that reads its rows as one sequence.
+def consecutive_runs(
+    frames: npt.ArrayLike, keep: npt.ArrayLike
+) -> list[tuple[int, int]]:
+    """Return the runs of consecutive frames that *keep* marks, as row positions.
 
-    A pair table holds two rows per frame, one per perspective. Read in table
-    order as a single sequence, they interleave the two animals' frames.
+    A model that reads a window of neighboring frames reads one animal's rows at
+    a time, and only where each frame follows the one before it. A run ends at a
+    gap in *frames* and at a row that *keep* leaves out.
 
     Args:
-        df: The rows to check.
-        feature: The feature that reads them, which the error names.
+        frames: The frame number of each row of one series, in increasing order.
+        keep: One flag per row. A row that is ``False`` belongs to no run.
 
-    Raises:
-        ValueError: When *df* has no ``id`` column and has any of ``id1``,
-            ``id2`` and ``perspective``.
+    Returns:
+        The ``(start, stop)`` positions of each run, in order, half-open as a
+        slice reads them.
     """
-    pair = [name for name in series_columns(df) if name != COLUMNS.id_col]
-    if pair:
-        msg = (
-            f"[{feature}] the input is a pair table ({', '.join(pair)}), and "
-            f"{feature} reads a table's rows as one sequence, which would read one "
-            "animal's frame after the other's. Use an individual-level input"
-        )
-        raise ValueError(msg)
+    frame = np.asarray(frames)
+    kept = np.asarray(keep, dtype=bool)
+    if frame.size == 0:
+        return []
+    follows = np.zeros(frame.size, dtype=bool)
+    follows[1:] = kept[1:] & kept[:-1] & (np.diff(frame) == 1)
+    starts = np.flatnonzero(kept & ~follows)
+    ends = np.zeros(frame.size, dtype=bool)
+    ends[:-1] = ~follows[1:]
+    ends[-1] = True
+    stops = np.flatnonzero(kept & ends) + 1
+    return list(zip(starts.tolist(), stops.tolist(), strict=True))
 
 
 def entry_identity(df: pd.DataFrame) -> tuple[str, str]:
@@ -444,6 +454,28 @@ def refuse_unlabeled_templates(templates: pd.DataFrame, feature: str) -> None:
             f"later), which samples labeled rows only"
         )
         raise ValueError(msg)
+
+
+def train_entries_of_templates(templates_path: Path) -> list[tuple[str, str]] | None:
+    """Return the train entries of the run that wrote *templates_path*.
+
+    The provenance lists every entry the run saw, one that drew no template row
+    included, which is why a fit that deals the entries reads it and not the rows.
+
+    Args:
+        templates_path: The ``templates.parquet`` of an ``extract-labeled-templates`` run.
+
+    Returns:
+        The ``(group, sequence)`` of each entry the run assigned to ``train``, or
+        ``None`` when the run left no ``template_provenance.parquet`` beside the
+        templates.
+    """
+    path = templates_path.parent / "template_provenance.parquet"
+    if not path.exists():
+        return None
+    provenance = pd.read_parquet(path)
+    train = provenance[provenance["split"] == "train"]
+    return [(str(g), str(s)) for g, s in zip(train["group"], train["sequence"])]
 
 
 # --- Shared helpers for per-sequence features ---

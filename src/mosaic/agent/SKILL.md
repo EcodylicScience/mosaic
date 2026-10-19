@@ -230,7 +230,9 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 - `arhmm` reads each individual, or each ordered pair and perspective of a pair table,
   as its own sequence, and writes `id1`, `id2`, `perspective`, `group` and `sequence`
   beside its states, so `fit-label-map` can score them (`prediction_column: syllable`).
-  `lightning-action` refuses a pair table. Use `xgboost` on pair features.
+  `lightning-action` trains and predicts on each `(id1, id2, perspective)` as a
+  sequence of its own, from the entries of its `templates` run's train split, so its
+  scope is part of its run id. A second step with `model` predicts further entries.
 - A label of `-1` means unlabeled: no annotation covers the row. Templates leave it
   out and scoring drops and counts it. Never read it as a class. A pair row takes the
   label of its own direction, so a CalMS21 label marks only the resident-focal row.

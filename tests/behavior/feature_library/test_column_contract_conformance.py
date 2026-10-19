@@ -96,6 +96,7 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     "id-tag-columns": {"fields": ["focal"], "field_renames": {"focal": "Focal_fish"}},
     "lightning-action": {
         "templates": {"step": "extract-labeled-templates"},
+        "labels": {"kind": "behavior"},
         "default_class": 0,
         "num_epochs": 1,
         "sequence_length": 10,
