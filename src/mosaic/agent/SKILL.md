@@ -312,7 +312,8 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `xgboost` and `test_fraction: 0` on the labeled templates, and scope both and
   `evaluate-labels` to the training groups: that score is the pooled out-of-fold one.
   For the final score widen the same `xgboost` step to the test groups, which is the
-  same run. The score is not nested, and a fold is whole sequences
+  same run, and keep the labeled templates on the training groups. The score is not
+  nested, and a fold is whole sequences
   (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
 - Each output row of `evaluate-labels` carries `tp_<class>`, `fp_<class>` and
   `fn_<class>`. `mosaic.core.evaluation` pools them (`pool_entry_counts`), bootstraps
