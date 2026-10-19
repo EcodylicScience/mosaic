@@ -85,12 +85,12 @@ test group.
      "params": {"source_format": "calms21_npy"}},
     {"id": "labels", "type": "op", "kind": "convert-labels",
      "params": {"source_format": "calms21_npy"}},
-    {"id": "speed", "type": "feature", "feature": "speed-angvel",
+    {"id": "egocentric", "type": "feature", "feature": "pair-egocentric",
      "inputs": ["tracks"], "tracks": {"step": "tracks"}},
     {"id": "templates", "type": "feature", "feature": "extract-templates",
-     "inputs": [{"step": "speed"}], "params": {"n_templates": 2000}},
+     "inputs": [{"step": "egocentric"}], "params": {"n_templates": 2000}},
     {"id": "scaler", "type": "feature", "feature": "global-scaler",
-     "inputs": [{"step": "speed"}], "params": {"templates": {"step": "templates"}}},
+     "inputs": [{"step": "egocentric"}], "params": {"templates": {"step": "templates"}}},
     {"id": "labeled", "type": "feature", "feature": "extract-labeled-templates",
      "inputs": [{"step": "scaler"}],
      "params": {"labels": {"step": "labels"}, "n_per_class": 500}},
@@ -115,6 +115,11 @@ mosaic pipeline run -m dataset.yaml --recipe @supervised.json \
 
 - `{"step": "labels"}` in a `labels` field reads the labels that step converts, so the
   scores are against that conversion even when the dataset holds another.
+- CalMS21 labels belong to a pair, so the features are pair features, and
+  `pair-egocentric` writes a row for each direction of a pair. `"perspective": 0` in
+  `evaluate-labels` scores the row of each pair that a label marks. A feature of single
+  individuals, such as `speed-angvel`, has no `perspective` column and takes no such
+  setting.
 - A step that reads another through `inputs` or `tracks` must be narrowed to entries
   the other is asked for, and the plan names the step that is not. A params reference
   carries no such rule: the classifier reads templates drawn from the training groups
