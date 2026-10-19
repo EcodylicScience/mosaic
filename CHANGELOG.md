@@ -258,7 +258,8 @@ writes the `group` and `sequence` of every template row, as text beside `label` 
 - `cv_folds` needs `templates`, is refused beside `model`, and `cv_seed` other than 0 is
   refused without `cv_folds`. A fold model is fitted on the classes its rows hold, and
   writes the full class order with probability 0 for an absent class. The fit refuses a
-  fold whose training rows hold fewer than two classes, and warns when a class has fewer
+  fold whose training rows hold fewer than two classes, or with `use_smote` fewer than
+  six rows of a class that SMOTE oversamples, and warns when a class has fewer
   sequences than folds or a fold's training rows hold under half of a class's rows. A
   table without `group` and `sequence` is refused by `apply` and never scored in sample.
 - The bundle gains an optional `cv` entry, so a 0.2 bundle loads through `model`. A
