@@ -51,7 +51,8 @@ path breaks `pip install -e .`, because pip does not read that table.
   downgrade mosaic's floors).
 - `lightning-action` stays uncapped. Every release requires the DALI sdist that builds
   only with CUDA. A version cap leaves the extra on an older release with the same
-  requirement.
+  requirement. The `lightning-action` CI job therefore installs the package with
+  `--no-deps`, beside the requirements its import needs.
 - Retired extras stay retired, without aliases
   (`tests/meta/test_optional_dependency_messages.py`).
 - `feral>=1.0,<2`: mosaic imports FERAL symbols outside its `__all__`, and the `feral`
@@ -93,12 +94,14 @@ python scripts/gen_docs_reference.py --write
 
 ## CI
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs five jobs on a push to
-`main` and on pull requests. The four test jobs install the `test` dependency group.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs six jobs on a push to
+`main` and on pull requests. The five test jobs install the `test` dependency group.
 
-- `test`: `-m "not slow and not tracker and not identity and not feral"`.
+- `test`: `-m "not slow and not tracker and not identity and not feral and not
+  lightning_action"`.
 - `identity`, `feral`: every test of that marker, in a `deep-learning` or `feral`
   environment.
+- `lightning-action`: every `lightning_action` test, which fits the real package on CPU.
 - `tracking`: every `tracker` test against built Ultralytics and POLO environments.
 - `lint`: `ruff check` and `ruff format --check` over `src`, `tests` and `tools`.
 

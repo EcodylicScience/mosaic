@@ -154,10 +154,19 @@ def test_every_marker_used_in_the_suite_is_declared() -> None:
     with a readable message rather than at collection with a bare ``UsageError``.
     """
     declared = {entry.split(":", 1)[0] for entry in _declared_markers()}
-    assert {"slow", "media", "tracker", "identity", "feral"} <= declared
+    assert {
+        "slow",
+        "media",
+        "tracker",
+        "identity",
+        "feral",
+        "lightning_action",
+    } <= declared
 
 
-@pytest.mark.parametrize("marker", ["slow", "media", "tracker", "identity", "feral"])
+@pytest.mark.parametrize(
+    "marker", ["slow", "media", "tracker", "identity", "feral", "lightning_action"]
+)
 def test_each_declared_marker_carries_a_description(marker: str) -> None:
     """A bare name in ``markers`` tells ``pytest --markers`` nothing."""
     entry = next(m for m in _declared_markers() if m.split(":", 1)[0] == marker)

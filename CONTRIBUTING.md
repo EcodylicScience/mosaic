@@ -81,8 +81,9 @@ pytest tests/core/media         # one area
 pytest -n0                      # one process, for a debugger or -s
 ```
 
-Five markers are declared. `slow` takes seconds to minutes. `media` needs both
-`ffmpeg` and `ffprobe` on `PATH`. `tracker`, `identity` and `feral` are job markers.
+Six markers are declared. `slow` takes seconds to minutes. `media` needs both
+`ffmpeg` and `ffprobe` on `PATH`. `tracker`, `identity`, `feral` and
+`lightning_action` are job markers.
 Each selects the CI job whose environment its tests need, and `pytest -m identity`
 runs what the `identity` job runs. A test in one of those areas is marked with it.
 

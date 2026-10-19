@@ -1368,7 +1368,7 @@ Fits keypoint-MoSeq to keypoint tracks and applies it, in a runner process.
 
 ### `lightning-action`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
+Version `0.4` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
 
 Supervised temporal action segmentation via lightning-action.
 

@@ -95,6 +95,7 @@ from tests.helpers.datasets import make_dataset
 from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
 from tests.helpers.environment import (
     CI_FERAL_MODULES,
+    CI_LIGHTNING_ACTION_MODULES,
     CI_IDENTITY_MODULES,
     CI_MCP_MODULES,
     CI_REQUIRED_MODULES,
@@ -305,6 +306,7 @@ __all__ = [
     "CONVERT_LABELS_STEP",
     "CONVERT_TRACKS_STEP",
     "CI_FERAL_MODULES",
+    "CI_LIGHTNING_ACTION_MODULES",
     "CI_IDENTITY_MODULES",
     "CI_MCP_MODULES",
     "CI_REQUIRED_MODULES",
