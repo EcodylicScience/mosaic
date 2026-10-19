@@ -309,6 +309,25 @@ class TestFolds:
             cv_fold_assignment(entries, 4, seed=0)
         )
 
+    def test_cv_seed_reaches_the_deal_and_changes_the_folds_the_sidecar_reports(
+        self, tmp_path: Path
+    ) -> None:
+        world = make_world(tmp_path / "templates", sequences(12, {0: 8, 1: 8}))
+        dealt: dict[int, dict[Entry, int]] = {}
+
+        for seed in (0, 1, 7):
+            feature, _ = fitted(
+                world, tmp_path / f"run{seed}", cv_folds=3, cv_seed=seed
+            )
+            feature.save_state(tmp_path / f"run{seed}")
+            folds = sidecar(tmp_path / f"run{seed}")
+            dealt[seed] = dict(
+                zip(zip(folds["group"], folds["sequence"]), folds["fold"])
+            )
+            assert dealt[seed] == cv_fold_assignment(world.train, 3, seed=seed)
+
+        assert dealt[0] != dealt[1] != dealt[7]
+
     def test_the_sidecar_counts_the_rows_of_each_class_in_each_entry(
         self, tmp_path: Path
     ) -> None:
