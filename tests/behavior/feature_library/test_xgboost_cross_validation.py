@@ -546,6 +546,39 @@ class TestHeldOut:
             assert prob_columns(other) == ["prob_0", "prob_1", "prob_2"]
             assert state["_cv"]["classes"].count([0, 1]) == 1
 
+    @pytest.mark.parametrize("strategy", ["multiclass", "one_vs_rest"])
+    def test_a_fold_missing_a_middle_class_writes_the_others_to_their_own_columns(
+        self, tmp_path: Path, strategy: str
+    ) -> None:
+        """Classes 0, 1 and 3 with class 1 in one sequence: that fold's model has 0 and 3.
+
+        Written to the first two columns, its probabilities would stand for classes 0
+        and 1. Only a class absent from the middle of the order shows it.
+        """
+        entries = {
+            **sequences(5, {0: 10, 3: 10}),
+            ("g", "rare"): {0: 5, 1: 20, 3: 5},
+        }
+        world = make_world(tmp_path / "templates", entries, seed=2)
+        feature, state = fitted(world, tmp_path / "run", cv_folds=3, strategy=strategy)
+        fold = state["_fold_of"][("g", "rare")]
+        frame = world.frames[("g", "rare")]
+        x = frame[state["_feature_columns"]].to_numpy(dtype=np.float64)
+        model = state["_cv"]["models"][fold]
+        expected = (
+            np.column_stack([m.predict_proba(x)[:, 1] for m in model])
+            if isinstance(model, list)
+            else model.predict_proba(x)
+        )
+
+        out = feature.apply(frame)
+
+        assert state["_cv"]["classes"][fold] == [0, 3]
+        assert prob_columns(out) == ["prob_0", "prob_1", "prob_3"]
+        np.testing.assert_array_equal(out["prob_1"].to_numpy(), 0.0)
+        np.testing.assert_allclose(out[["prob_0", "prob_3"]].to_numpy(), expected)
+        assert set(out["predicted_label"]) <= {0, 3}
+
 
 class TestRefusals:
     def test_more_folds_than_train_entries_is_refused(self, tmp_path: Path) -> None:
@@ -953,8 +986,17 @@ class TestRunningState:
 
         assert recorder.epochs == [(0, 4), (1, 4), (2, 4), (3, 4)]
 
+    @pytest.mark.parametrize(
+        "cancelled_during",
+        [1, 2, 3],
+        ids=["first fold", "second fold", "last fold, before the full model"],
+    )
     def test_a_cancel_stops_before_the_next_fit_and_writes_no_bundle(
-        self, tmp_path: Path, fits: list[FitCall], monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        fits: list[FitCall],
+        monkeypatch: pytest.MonkeyPatch,
+        cancelled_during: int,
     ) -> None:
         world = make_world(tmp_path / "templates", sequences(6, {0: 10, 1: 10}))
         feature = make_feature(world, tmp_path / "run", cv_folds=3)
@@ -966,7 +1008,7 @@ class TestRunningState:
             self: XGBClassifier, X: Any, y: Any, **kwargs: Any
         ) -> XGBClassifier:
             fitted = original(self, X, y, **kwargs)
-            if len(fits) == 2:
+            if len(fits) == cancelled_during:
                 token.cancel()
             return fitted
 
@@ -976,7 +1018,7 @@ class TestRunningState:
             feature.fit(NO_INPUT)
         feature.save_state(tmp_path / "run")
 
-        assert len(fits) == 2
+        assert len(fits) == cancelled_during
         assert not (tmp_path / "run" / "xgboost_model.joblib").exists()
         assert not (tmp_path / "run" / "cv_folds.parquet").exists()
 
