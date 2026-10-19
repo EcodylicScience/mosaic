@@ -405,15 +405,13 @@ class XgboostFeature:
         self._cv = cv
         self._fold_of = {(g, s): fold for g, s, fold in cv["fold_of"]}
 
-    def _undersampled_counts(self, counts: np.ndarray) -> np.ndarray:
+    def _undersampled_counts(self, counts: np.ndarray) -> list[int]:
         """The rows each class keeps under ``undersample_ratio``, given its rows in *counts*."""
         ratio = self.params.undersample_ratio
         if ratio is None:
-            return counts
+            return [int(n) for n in counts]
         minority = int(counts.min())
-        return np.array(
-            [max(minority, min(int(n), int(minority * ratio))) for n in counts]
-        )
+        return [max(minority, min(int(n), int(minority * ratio))) for n in counts]
 
     def _undersample_then_smote(
         self, features: np.ndarray, labels: np.ndarray
@@ -690,7 +688,7 @@ class XgboostFeature:
             sparse = [
                 f"class {int(c)} ({int(n)} row{'' if n == 1 else 's'})"
                 for c, n in zip(present, kept)
-                if n < _SMOTE_MIN_ROWS and n < kept.max()
+                if n < _SMOTE_MIN_ROWS and n < max(kept)
             ]
             if self.params.use_smote and sparse:
                 msg = (

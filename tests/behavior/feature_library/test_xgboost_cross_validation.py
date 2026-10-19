@@ -561,11 +561,13 @@ class TestHeldOut:
         }
         world = make_world(tmp_path / "templates", entries, seed=2)
         feature, state = fitted(world, tmp_path / "run", cv_folds=3, strategy=strategy)
-        fold = state["_fold_of"][("g", "rare")]
+        fold: int = state["_fold_of"][("g", "rare")]
+        columns: list[str] = state["_feature_columns"]
+        folded: list[XGBClassifier | list[XGBClassifier]] = state["_cv"]["models"]
         frame = world.frames[("g", "rare")]
-        x = frame[state["_feature_columns"]].to_numpy(dtype=np.float64)
-        model = state["_cv"]["models"][fold]
-        expected = (
+        x = frame[columns].to_numpy(dtype=np.float64)
+        model = folded[fold]
+        expected: np.ndarray = (
             np.column_stack([m.predict_proba(x)[:, 1] for m in model])
             if isinstance(model, list)
             else model.predict_proba(x)
