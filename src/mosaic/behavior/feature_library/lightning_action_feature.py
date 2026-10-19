@@ -184,7 +184,11 @@ class LightningActionFeature:
     # 0.3: ``nn_id`` and ``attention_target_id``, track ids, are no longer
     # fitted, from templates written before ``extract-labeled-templates``
     # 0.3 too (``BOOKKEEPING_COLS``).
-    version = "0.3"
+    # 0.4: the training, label and apply CSVs carry the index column that
+    # lightning-action reads with ``index_col=0``, and the predictions are
+    # read by class column. Through 0.3 the package dropped the first feature
+    # and class column, so every fit raised.
+    version = "0.4"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -398,9 +402,10 @@ class LightningActionFeature:
             features_dir.mkdir()
             pred_dir.mkdir()
 
-            # Write single-sequence CSV
+            # Write single-sequence CSV. The package reads its first column as
+            # the index (``index_col=0``), so the index is written too.
             pd.DataFrame(feat_matrix, columns=feat_cols).to_csv(
-                features_dir / "seq.csv", index=False
+                features_dir / "seq.csv", index=True
             )
 
             # Run prediction
@@ -415,8 +420,12 @@ class LightningActionFeature:
             if not pred_files:
                 msg = "[lightning-action] No prediction output found."
                 raise RuntimeError(msg)
-            pred_df = pd.read_csv(pred_files[0])
-            probs = pred_df.to_numpy(dtype=np.float64)
+            # The package writes the row index first and one column per class
+            # name, so the probabilities are read by name rather than position.
+            pred_df = pd.read_csv(pred_files[0], index_col=0)
+            class_names = self._class_names or [str(c) for c in self._classes]
+            ensure_columns(pred_df, class_names)
+            probs = pred_df[class_names].to_numpy(dtype=np.float64)
 
         # Trim or pad to match input length
         if len(probs) > n:
@@ -521,7 +530,12 @@ class LightningActionFeature:
         feat_cols: list[str],
         data_dir: Path,
     ) -> None:
-        """Write mosaic templates as CSVs in lightning-action layout."""
+        """Write mosaic templates as CSVs in lightning-action layout.
+
+        Both files carry the index column, because the package reads its first
+        column as the index (``index_col=0``) and would otherwise drop the first
+        feature or class.
+        """
         features_dir = data_dir / "features"
         labels_dir = data_dir / "labels"
         features_dir.mkdir(parents=True)
@@ -534,7 +548,7 @@ class LightningActionFeature:
             split_df = split_df.reset_index(drop=True)
 
             # Write features CSV
-            split_df[feat_cols].to_csv(features_dir / f"{split_name}.csv", index=False)
+            split_df[feat_cols].to_csv(features_dir / f"{split_name}.csv", index=True)
 
             # Write labels CSV (one-hot encoded)
             label_vals = split_df["label"].values
@@ -542,7 +556,7 @@ class LightningActionFeature:
             for i, cls in enumerate(self._classes):
                 one_hot[:, i] = (label_vals == cls).astype(int)
             label_df = pd.DataFrame(one_hot, columns=self._class_names)
-            label_df.to_csv(labels_dir / f"{split_name}.csv", index=False)
+            label_df.to_csv(labels_dir / f"{split_name}.csv", index=True)
 
     def _build_config(
         self, n_features: int, n_classes: int, data_path: str

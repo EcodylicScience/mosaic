@@ -10,6 +10,12 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**`lightning-action` 0.4 fits.** lightning-action reads its feature and label CSVs with
+the first column as the index, and through 0.3 the feature wrote them without one, so
+every real fit raised a channel-count error. 0.4 writes the index and reads the
+predictions by class name. 0.3 run ids are not reused, and no 0.3 model exists to be
+lost. CI's new `lightning-action` job fits the real package on CPU.
+
 **A step can compute several entries at once, and reports the memory it used.**
 `mosaic run` and `mosaic pipeline run` take `--workers`, `--parallel-mode` and
 `--min-free-memory-fraction`, and `submit_pipeline` takes `workers` and `parallel_mode`

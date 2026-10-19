@@ -306,6 +306,7 @@ markers = [
     "tracker: Ultralytics tracking, inference or training; CI's `tracking` job runs these against the real environments",
     "identity: needs torch and timm, i.e. the `deep-learning` extra",
     "feral: needs the feral package, i.e. the `feral` extra",
+    "lightning_action: needs the lightning-action package; CI's `lightning-action` job installs it without its CUDA-only DALI requirement",
 ]
 # A warning is a failure, so that the next one becomes visible at the commit that
 # introduces it rather than joining a running total nobody reads. The suite emits

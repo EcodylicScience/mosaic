@@ -49,6 +49,7 @@ from mosaic.core.pipeline.toolenv import ToolNotFoundError, tool_invocation
 # this file.
 from tests.helpers import (
     CI_FERAL_MODULES,
+    CI_LIGHTNING_ACTION_MODULES,
     CI_IDENTITY_MODULES,
     CI_MCP_MODULES,
     CI_REQUIRED_MODULES,
@@ -189,6 +190,8 @@ def pytest_configure() -> None:
         required += CI_IDENTITY_MODULES
     if os.environ.get("MOSAIC_CI_FERAL"):
         required += CI_FERAL_MODULES
+    if os.environ.get("MOSAIC_CI_LIGHTNING_ACTION"):
+        required += CI_LIGHTNING_ACTION_MODULES
     if os.environ.get("MOSAIC_CI_MCP"):
         required += CI_MCP_MODULES
     missing = [name for name in required if importlib.util.find_spec(name) is None]

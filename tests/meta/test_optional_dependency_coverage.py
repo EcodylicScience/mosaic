@@ -37,6 +37,7 @@ from pathlib import Path
 
 from tests.helpers import (
     CI_FERAL_MODULES,
+    CI_LIGHTNING_ACTION_MODULES,
     CI_IDENTITY_MODULES,
     CI_MCP_MODULES,
     CI_REQUIRED_MODULES,
@@ -135,6 +136,7 @@ def _ci_modules() -> set[str]:
         set(CI_REQUIRED_MODULES)
         | set(CI_IDENTITY_MODULES)
         | set(CI_FERAL_MODULES)
+        | set(CI_LIGHTNING_ACTION_MODULES)
         | set(CI_MCP_MODULES)
     )
 
