@@ -143,6 +143,14 @@ _N_JOBS_DESCRIPTION = (
     "the run id."
 )
 
+_DEVICE_DESCRIPTION = (
+    "Which device fits the model. cpu fits on the processor. cuda fits on the "
+    "GPU and fails where XGBoost has no CUDA device. The step stays on a CPU "
+    "worker either way, so cuda runs only where the run is placed on a GPU "
+    "machine. A fitted model predicts on the CPU, so a model fitted on cuda "
+    "applies anywhere."
+)
+
 
 class XgboostCv(TypedDict):
     """The cross-validation half of a bundle, written when ``cv_folds`` is set.
@@ -224,7 +232,8 @@ class XgboostFeature:
     # 0.3: ``cv_folds`` and ``cv_seed`` cross-validate by sequence, ``class_weight``
     # takes a mapping, ``n_jobs`` bounds the threads of a fit, and the bundle is
     # written atomically. A 0.2 bundle still loads through ``model``.
-    version = "0.3"
+    # 0.4: ``device`` picks the CPU or a CUDA device for a fit.
+    version = "0.4"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -284,6 +293,8 @@ class XgboostFeature:
             default=None, ge=2
         )
         cv_seed: Annotated[int, Declared(_CV_SEED_DESCRIPTION)] = 0
+        # Not HASH_EXCLUDE: a GPU histogram build need not give the model a CPU one does.
+        device: Annotated[Literal["cpu", "cuda"], Declared(_DEVICE_DESCRIPTION)] = "cpu"
         # HASH_EXCLUDE: the threads of a fit change its time and not its model. One
         # fit predicted identically at 1, 2 and 4 threads.
         n_jobs: Annotated[int | None, HASH_EXCLUDE, Declared(_N_JOBS_DESCRIPTION)] = (
@@ -512,9 +523,10 @@ class XgboostFeature:
                 random_state=p.random_state,
                 eval_metric="mlogloss",
                 n_jobs=p.n_jobs,
+                device=p.device,
             )
             model.fit(x, y_index, sample_weight=self._sample_weight(y_index, classes))
-            return model
+            return self._predict_on_cpu(model)
 
         # one_vs_rest strategy
         lookup = {c: i for i, c in enumerate(classes)}
@@ -537,6 +549,7 @@ class XgboostFeature:
                 random_state=p.random_state,
                 eval_metric="logloss",
                 n_jobs=p.n_jobs,
+                device=p.device,
             )
             if p.class_weight == "balanced":
                 n_pos = int(binary_y.sum())
@@ -544,8 +557,18 @@ class XgboostFeature:
                 scale = n_neg / max(n_pos, 1)
                 ovr_model.set_params(scale_pos_weight=scale)
             ovr_model.fit(x, binary_y, sample_weight=weight)
-            models.append(ovr_model)
+            models.append(self._predict_on_cpu(ovr_model))
         return models
+
+    @staticmethod
+    def _predict_on_cpu(model: XGBClassifier) -> XGBClassifier:
+        """Move a fitted model to the CPU, so that a bundle applies on any machine.
+
+        The trees are the same, and a booster left on a CUDA device would predict
+        there, or warn and fall back, on a machine that has none.
+        """
+        model.set_params(device="cpu")
+        return model
 
     def _fit_rows(
         self, x: np.ndarray, y: np.ndarray, classes: list[int] | None = None

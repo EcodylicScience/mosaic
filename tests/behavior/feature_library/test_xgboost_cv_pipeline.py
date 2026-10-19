@@ -336,7 +336,7 @@ def test_a_run_recorded_before_the_folds_is_reported_by_reconcile_and_left_in_pl
     )
     root = ds.get_root("features") / storage / run_id
     recorded = json.loads((root / "params.json").read_text())
-    for field in ("cv_folds", "cv_seed", "n_jobs"):
+    for field in ("cv_folds", "cv_seed", "n_jobs", "device"):
         del recorded["_params"][field]
     (root / "params.json").write_text(json.dumps(recorded))
 

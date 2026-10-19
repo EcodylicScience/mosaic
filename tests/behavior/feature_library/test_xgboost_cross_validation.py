@@ -224,6 +224,7 @@ def test_params_default_to_no_cross_validation_and_the_library_threads() -> None
     assert params.cv_folds is None
     assert params.cv_seed == 0
     assert params.n_jobs is None
+    assert params.device == "cpu"
 
 
 class TestParams:
@@ -263,6 +264,18 @@ class TestParams:
             )
 
         assert digest(n_jobs=1) == digest(n_jobs=4) == digest(n_jobs=None)
+
+    def test_device_enters_the_run_id(self) -> None:
+        def digest(**extra: object) -> str:
+            return run_id_digest(
+                XgboostFeature.Params.from_overrides({**PARAMS, **extra})
+            )
+
+        assert digest(device="cuda") != digest(device="cpu") == digest()
+
+    def test_device_is_cpu_or_cuda(self) -> None:
+        with pytest.raises(ValueError, match="device"):
+            XgboostFeature.Params.from_overrides({**PARAMS, "device": "gpu"})
 
     def test_a_class_weight_may_be_balanced_none_or_a_mapping(self) -> None:
         def weight(value: object) -> object:
@@ -1123,6 +1136,47 @@ class TestThroughputAndWeights:
                 flat.extend(model if isinstance(model, list) else [model])
             assert len(flat) == count
             assert {m.get_params()["n_jobs"] for m in flat} == {2}
+
+    def test_device_reaches_every_fit_and_a_fitted_model_predicts_on_the_cpu(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The CI runners have no CUDA device, so the fit itself runs on the CPU."""
+        at_fit: list[str] = []
+        original = XGBClassifier.fit
+
+        def on_cpu(self: XGBClassifier, X: Any, y: Any, **kwargs: Any) -> XGBClassifier:
+            at_fit.append(self.get_params()["device"])
+            self.set_params(device="cpu")
+            return original(self, X, y, **kwargs)
+
+        monkeypatch.setattr(XGBClassifier, "fit", on_cpu)
+        world = make_world(tmp_path / "templates", sequences(6, {0: 10, 1: 10}))
+        for strategy, count in (("multiclass", 4), ("one_vs_rest", 8)):
+            at_fit.clear()
+            _, state = fitted(
+                world,
+                tmp_path / strategy,
+                cv_folds=3,
+                device="cuda",
+                strategy=strategy,
+            )
+            fold_models: list[XGBClassifier | list[XGBClassifier]] = state["_cv"][
+                "models"
+            ]
+            full: XGBClassifier | list[XGBClassifier] = state["_model"]
+            flat: list[XGBClassifier] = []
+            for model in [*fold_models, full]:
+                flat.extend(model if isinstance(model, list) else [model])
+            assert at_fit == ["cuda"] * count
+            assert {m.get_params()["device"] for m in flat} == {"cpu"}
+
+    def test_the_default_device_fits_on_the_cpu(
+        self, tmp_path: Path, fits: list[FitCall]
+    ) -> None:
+        world = make_world(tmp_path / "templates", sequences(6, {0: 10, 1: 10}))
+        fitted(world, tmp_path / "run")
+
+        assert {call.model.get_params()["device"] for call in fits} == {"cpu"}
 
     def test_balanced_weights_each_row_by_the_inverse_of_its_class_frequency(
         self, tmp_path: Path, fits: list[FitCall]

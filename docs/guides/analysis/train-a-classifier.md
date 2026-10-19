@@ -65,7 +65,9 @@ leaves out contributes nothing. With `pool.allocation` set to `"exact"`, each se
 draws its share of a class's count in proportion to the frames it holds. `class_weight`
 is `"balanced"` by default (each frame weighs inversely to its class's frequency), `null`
 for equal weights, or a mapping from class to weight for the classes to weigh up or
-down. `n_jobs` limits the threads of a fit and does not enter the run id. The template
+down. `n_jobs` limits the threads of a fit and does not enter the run id. `device` is `"cpu"`
+by default, and `"cuda"` fits on a GPU where the machine has one. It enters the run id,
+and the fitted model applies on any machine. The template
 draw and the fit each refuse a sample that would not fit in the available memory, and
 the message says what to lower.
 

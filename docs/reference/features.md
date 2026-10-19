@@ -1545,7 +1545,7 @@ Fits VAME to keypoint tracks, and embeds each frame in its latent space.
 
 ### `xgboost`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostFeature`
+Version `0.4` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostFeature`
 
 XGBoost behavior classifier as a pipeline feature.
 
@@ -1567,6 +1567,7 @@ XGBoost behavior classifier as a pipeline feature.
 | `random_state` | `integer` | `42` |  | The random seed for XGBoost training and, when enabled, for undersampling and SMOTE. |
 | `cv_folds` | `integer` \| `None` | `null` |  | Unset, one model is fitted and scores every entry. Set to K (at least 2), the training sequences of the templates are dealt into K folds and K more models are fitted, each on the training rows outside one fold. A training sequence is then scored by the model that did not see it, and every other entry by the model fitted on all training rows. The fold of each sequence is in cv_folds.parquet. Needs templates and is refused beside model. |
 | `cv_seed` | `integer` | `0` |  | The seed that deals the training sequences into folds. It changes the folds and nothing else, so runs that differ in random_state are compared on the same folds. Other than 0 only with cv_folds. |
+| `device` | `"cpu"` \| `"cuda"` | `"cpu"` |  | Which device fits the model. cpu fits on the processor. cuda fits on the GPU and fails where XGBoost has no CUDA device. The step stays on a CPU worker either way, so cuda runs only where the run is placed on a GPU machine. A fitted model predicts on the CPU, so a model fitted on cuda applies anywhere. |
 | `n_jobs` | `integer` \| `None` | `null` |  | The number of threads each fit uses. Unset, XGBoost uses every core. It changes the time of a fit and not its model, so it is not part of the run id. |
 
 ??? note "`JoblibLoadSpec`"
