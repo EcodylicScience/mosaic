@@ -277,3 +277,56 @@ def test_the_folds_and_their_seed_are_part_of_the_run_id(
 
     assert base.run_id is not None
     assert other.run_id != base.run_id
+
+
+def test_a_run_recorded_before_the_folds_is_reported_by_reconcile_and_left_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`mosaic reconcile` rebuilds a run from its `params.json`, which names no `cv_folds`.
+
+    The rebuilt feature now hashes `cv_folds` and `cv_seed` at their defaults, so a 0.2
+    run no longer reproduces its own identifier. The pass reports it, as it does any
+    run whose feature gained a hashed field, and moves nothing: the run keeps its
+    directory and its 0.2 prefix, and no run of 0.3 shares its name.
+    """
+    import json
+
+    ds = dataset(tmp_path / "ds")
+    base = recipe().model_dump(mode="json")
+    for step in base["steps"]:
+        if step["id"] == "classifier":
+            del step["params"]["cv_folds"]
+    without_folds = Recipe.model_validate(base)
+    dump = XgboostFeature.Params.identity_dump
+
+    def as_of_0_2(self: XgboostFeature.Params) -> dict[str, object]:
+        record = dump(self)
+        for field in ("cv_folds", "cv_seed"):
+            del record[field]
+        return record
+
+    monkeypatch.setattr(XgboostFeature, "version", "0.2")
+    monkeypatch.setattr(XgboostFeature.Params, "identity_dump", as_of_0_2)
+    run = run_pipeline(ds, without_folds, step_scopes=SCREENING)
+    monkeypatch.undo()
+    run_id = str({o.step_id: o for o in run.outcomes}["classifier"].run_id)
+    storage = (
+        plan_pipeline(ds, without_folds, step_scopes=SCREENING)
+        .step("classifier")
+        .storage_name
+    )
+    root = ds.get_root("features") / storage / run_id
+    recorded = json.loads((root / "params.json").read_text())
+    for field in ("cv_folds", "cv_seed", "n_jobs"):
+        del recorded["_params"][field]
+    (root / "params.json").write_text(json.dumps(recorded))
+
+    report = ds.reconcile(only=("features",), apply=True)
+
+    finding = next(f for f in report.findings if f.old_address == run_id)
+    assert (finding.verdict, finding.action) == (
+        "unresolvable_pre_provenance",
+        "reported",
+    )
+    assert root.exists()
+    assert sorted(p.name for p in root.parent.iterdir() if p.is_dir()) == [run_id]
