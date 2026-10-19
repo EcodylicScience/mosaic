@@ -202,7 +202,8 @@ class ExtractLabeledTemplates:
     Streams upstream feature data, aligns ground truth labels from NPZ
     files, assigns train/test splits by sequence, and subsamples per
     class. Produces a templates parquet with feature columns + label
-    (int) + split (str).
+    (int) + split (str) + group and sequence (str), the entry each row was
+    drawn from.
 
     The run writes ``templates.parquet`` and ``template_provenance.parquet``.
     The provenance records each entry's split. Each entry's table is empty. A

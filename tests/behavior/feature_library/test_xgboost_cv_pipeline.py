@@ -220,6 +220,25 @@ def test_widening_to_the_test_groups_keeps_the_run_and_computes_only_the_added_e
     )
 
 
+def test_an_invocation_over_the_test_groups_alone_applies_the_cached_model(
+    tmp_path: Path, fit_calls: list[int], scored: list[tuple[str, str]]
+) -> None:
+    ds = dataset(tmp_path / "ds")
+    first = run_pipeline(ds, recipe(), step_scopes=SCREENING)
+    fitted, applied = len(fit_calls), len(scored)
+
+    later = run_pipeline(
+        ds, recipe(), step_scopes={**SCREENING, "classifier": TEST, "evaluate": TEST}
+    )
+
+    ids = {o.step_id: o.run_id for o in first.outcomes}
+    assert {o.step_id: o.run_id for o in later.outcomes}["classifier"] == ids[
+        "classifier"
+    ]
+    assert len(fit_calls) == fitted
+    assert sorted(scored[applied:]) == sorted(TEST_ENTRIES)
+
+
 def test_the_pooled_out_of_fold_score_is_the_f1_of_the_concatenated_predictions(
     tmp_path: Path,
 ) -> None:
