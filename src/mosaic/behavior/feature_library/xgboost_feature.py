@@ -52,6 +52,9 @@ from .registry import register_feature
 
 log = logging.getLogger(__name__)
 
+_SMOTE_MIN_ROWS = 6
+"""The rows of a class that SMOTE needs to oversample it: its five neighbours and the row."""
+
 _TEMPLATES_DESCRIPTION = (
     "The labeled templates artifact to train on. Mutually exclusive with model."
 )
@@ -402,6 +405,16 @@ class XgboostFeature:
         self._cv = cv
         self._fold_of = {(g, s): fold for g, s, fold in cv["fold_of"]}
 
+    def _undersampled_counts(self, counts: np.ndarray) -> np.ndarray:
+        """The rows each class keeps under ``undersample_ratio``, given its rows in *counts*."""
+        ratio = self.params.undersample_ratio
+        if ratio is None:
+            return counts
+        minority = int(counts.min())
+        return np.array(
+            [max(minority, min(int(n), int(minority * ratio))) for n in counts]
+        )
+
     def _undersample_then_smote(
         self, features: np.ndarray, labels: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -409,16 +422,14 @@ class XgboostFeature:
         from imblearn.over_sampling import SMOTE  # type: ignore[import-untyped]
 
         classes, counts = np.unique(labels, return_counts=True)
-        minority_count = int(counts.min())
 
         # Undersample majority classes
         if self.params.undersample_ratio is not None:
-            ratio = self.params.undersample_ratio
             keep_indices: list[np.intp] = []
             rng = np.random.default_rng(self.params.random_state)
-            for cls, count in zip(classes, counts):
+            targets = self._undersampled_counts(counts)
+            for cls, count, target in zip(classes, counts, targets):
                 cls_indices = np.where(labels == cls)[0]
-                target = max(minority_count, min(count, int(minority_count * ratio)))
                 if count > target:
                     chosen = rng.choice(cls_indices, size=target, replace=False)
                     keep_indices.extend(chosen.tolist())
@@ -662,7 +673,7 @@ class XgboostFeature:
     ) -> None:
         """Refuse a fold that cannot be fitted without, and report one that will fit thinly."""
         for fold in range(k):
-            present = np.unique(labels[row_fold != fold])
+            present, counts = np.unique(labels[row_fold != fold], return_counts=True)
             if len(present) < 2:
                 msg = (
                     f"[{self.name}] cv_folds={k}: the train rows outside fold {fold} "
@@ -670,6 +681,23 @@ class XgboostFeature:
                     f"({present.tolist()}), and a classifier needs two. Lower "
                     "cv_folds, or draw the templates from more sequences of "
                     "each class"
+                )
+                raise ValueError(msg)
+            # A class that SMOTE oversamples from fewer rows fails in imblearn, late
+            # and without naming the fold, where the full fit would have passed. SMOTE
+            # leaves the largest class as it is.
+            kept = self._undersampled_counts(counts)
+            sparse = [
+                f"class {int(c)} ({int(n)} row{'' if n == 1 else 's'})"
+                for c, n in zip(present, kept)
+                if n < _SMOTE_MIN_ROWS and n < kept.max()
+            ]
+            if self.params.use_smote and sparse:
+                msg = (
+                    f"[{self.name}] cv_folds={k} with use_smote: the train rows "
+                    f"outside fold {fold} hold {', '.join(sparse)}, and SMOTE needs "
+                    f"{_SMOTE_MIN_ROWS} rows of a class to oversample it. Lower "
+                    "cv_folds, draw more rows of that class, or leave use_smote off"
                 )
                 raise ValueError(msg)
 

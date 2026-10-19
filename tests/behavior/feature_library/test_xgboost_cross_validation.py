@@ -669,6 +669,43 @@ class TestRefusals:
         assert "under half of" in caplog.text
         assert "class 2" in caplog.text
 
+    def test_smote_in_a_fold_that_leaves_a_class_too_few_rows_is_refused_before_any_fit(
+        self, tmp_path: Path, fits: list[FitCall]
+    ) -> None:
+        """The full fit has six rows of class 2. The fold without them has two."""
+        entries = {
+            **sequences(5, {0: 30, 1: 30}),
+            ("g", "big"): {0: 10, 1: 10, 2: 6},
+            ("g", "small"): {0: 10, 1: 10, 2: 2},
+        }
+        world = make_world(tmp_path / "templates", entries, seed=2)
+        feature = make_feature(world, tmp_path / "run", cv_folds=7, use_smote=True)
+
+        with pytest.raises(
+            ValueError, match=r"^\[xgboost\] .*outside fold \d hold class 2 \(2 rows\)"
+        ):
+            feature.fit(NO_INPUT)
+        assert fits == []
+
+        without = make_feature(world, tmp_path / "plain", cv_folds=7)
+        without.fit(NO_INPUT)
+
+    def test_smote_leaves_a_largest_class_alone_so_a_tie_of_small_ones_is_fitted(
+        self, tmp_path: Path
+    ) -> None:
+        world = make_world(tmp_path / "templates", sequences(3, {0: 2, 1: 2}))
+
+        _ = fitted(world, tmp_path / "run", cv_folds=3, use_smote=True)
+
+    def test_a_class_undersampled_to_a_tie_does_not_need_smote_neighbours(
+        self, tmp_path: Path
+    ) -> None:
+        world = make_world(tmp_path / "templates", sequences(4, {0: 30, 1: 1}))
+
+        _ = fitted(
+            world, tmp_path / "run", cv_folds=4, use_smote=True, undersample_ratio=1.0
+        )
+
     def test_a_fit_that_will_not_fit_in_memory_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
