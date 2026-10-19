@@ -1,0 +1,136 @@
+"""The shared fold helpers: dealing sequences into folds, and choosing a fold's model.
+
+A classifier that cross-validates by sequence calls `cv_fold_assignment` once, at its
+fit, and `out_of_fold_choice` for every entry it scores. The assignment is the
+contract between a run and everything that reads it, so it is pinned here by its
+properties: a partition, the same whatever order and process deal it, and a
+function of the seed.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import mosaic
+import pandas as pd
+import pytest
+
+from mosaic.behavior.feature_library.helpers import (
+    cv_fold_assignment,
+    out_of_fold_choice,
+)
+from mosaic.behavior.feature_library.helpers import _cv_entry_key  # pyright: ignore[reportPrivateUsage]
+
+ENTRIES = [(f"g{i % 3}", f"seq{i:02d}") for i in range(23)]
+
+
+class TestFoldAssignment:
+    def test_the_folds_partition_the_entries_and_differ_by_at_most_one(self) -> None:
+        folds = cv_fold_assignment(ENTRIES, 5, seed=0)
+
+        assert set(folds) == set(ENTRIES)
+        sizes = [list(folds.values()).count(fold) for fold in range(5)]
+        assert sorted(sizes) == [4, 4, 5, 5, 5]
+        assert set(folds.values()) == set(range(5))
+
+    def test_the_order_of_the_entries_changes_nothing(self) -> None:
+        shuffled = ENTRIES[7:] + ENTRIES[:7][::-1]
+
+        assert cv_fold_assignment(shuffled, 4, seed=3) == cv_fold_assignment(
+            ENTRIES, 4, seed=3
+        )
+
+    def test_the_seed_changes_the_folds(self) -> None:
+        assert cv_fold_assignment(ENTRIES, 5, seed=0) != cv_fold_assignment(
+            ENTRIES, 5, seed=1
+        )
+
+    def test_a_repeated_entry_is_dealt_once(self) -> None:
+        folds = cv_fold_assignment(ENTRIES + ENTRIES[:5], 5, seed=0)
+
+        assert folds == cv_fold_assignment(ENTRIES, 5, seed=0)
+
+    def test_the_process_that_deals_does_not_matter(self) -> None:
+        """Python's `hash()` is salted per process, and the folds must not be."""
+        program = (
+            "import json; "
+            "from mosaic.behavior.feature_library.helpers import cv_fold_assignment; "
+            f"entries = {ENTRIES!r}; "
+            "folds = cv_fold_assignment(entries, 5, seed=2); "
+            "print(json.dumps([[g, s, folds[(g, s)]] for g, s in entries]))"
+        )
+        source = str(Path(mosaic.__file__).parent.parent)
+        dealt = []
+        for hash_seed in ("1", "2"):
+            env = {**os.environ, "PYTHONHASHSEED": hash_seed, "PYTHONPATH": source}
+            done = subprocess.run(
+                [sys.executable, "-c", program],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            dealt.append(json.loads(done.stdout))
+
+        assert dealt[0] == dealt[1]
+        expected = cv_fold_assignment(ENTRIES, 5, seed=2)
+        assert dealt[0] == [[g, s, expected[(g, s)]] for g, s in ENTRIES]
+
+    def test_the_key_of_a_split_name_is_not_that_of_another_split(self) -> None:
+        """("a", "bc") and ("ab", "c") spell "abc" twice, and are two entries."""
+        assert _cv_entry_key(0, "a", "bc") != _cv_entry_key(0, "ab", "c")
+        assert _cv_entry_key(0, "", "x") != _cv_entry_key(0, "x", "")
+        assert _cv_entry_key(0, "a", "b") != _cv_entry_key(1, "a", "b")
+
+    def test_a_blank_group_is_an_entry_like_any_other(self) -> None:
+        folds = cv_fold_assignment([("", "a"), ("", "b"), ("x", "a")], 3, seed=0)
+
+        assert sorted(folds.values()) == [0, 1, 2]
+
+    def test_one_fold_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="at least 2"):
+            cv_fold_assignment(ENTRIES, 1, seed=0)
+
+    def test_more_folds_than_entries_is_refused_with_the_count(self) -> None:
+        with pytest.raises(ValueError, match=r"23 .*train.* entries"):
+            cv_fold_assignment(ENTRIES, 24, seed=0)
+
+
+class TestOutOfFoldChoice:
+    FOLDS = {("g", "a"): 0, ("g", "b"): 1, ("", "12"): 2}
+
+    @staticmethod
+    def _entry(group: object, sequence: object, n: int = 3) -> pd.DataFrame:
+        return pd.DataFrame(
+            {"frame": range(n), "group": [group] * n, "sequence": [sequence] * n}
+        )
+
+    def test_an_entry_in_a_fold_is_scored_by_that_fold(self) -> None:
+        assert out_of_fold_choice(self._entry("g", "b"), self.FOLDS, "xgboost") == 1
+
+    def test_the_identity_is_read_as_text(self) -> None:
+        assert out_of_fold_choice(self._entry("", 12), self.FOLDS, "xgboost") == 2
+
+    def test_an_entry_in_no_fold_has_no_choice(self) -> None:
+        assert (
+            out_of_fold_choice(self._entry("test", "z"), self.FOLDS, "xgboost") is None
+        )
+
+    @pytest.mark.parametrize("missing", ["group", "sequence"])
+    def test_a_table_without_an_identity_column_is_refused_naming_the_feature(
+        self, missing: str
+    ) -> None:
+        frame = self._entry("g", "a").drop(columns=[missing])
+
+        with pytest.raises(ValueError, match=rf"^\[xgboost\] .*{missing}"):
+            out_of_fold_choice(frame, self.FOLDS, "xgboost")
+
+    def test_a_table_of_two_entries_is_refused(self) -> None:
+        frame = pd.concat([self._entry("g", "a"), self._entry("g", "b")])
+
+        with pytest.raises(ValueError, match=r"^\[xgboost\] .*more than one entry"):
+            out_of_fold_choice(frame, self.FOLDS, "xgboost")
