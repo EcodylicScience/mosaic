@@ -146,7 +146,11 @@ class ExtractLabeledTemplates:
     # its split and label. A consumer reads this step's inputs, and the templates
     # through a params field. ``template_provenance.parquet`` records each
     # entry's split.
-    version = "0.5"
+    # 0.6: ``group`` and ``sequence`` (text) are written beside ``label`` and
+    # ``split``, naming the entry each row was drawn from, so that a classifier
+    # can hold a sequence out of its own fit. They are identity columns and no
+    # feature (``feature_columns``).
+    version = "0.6"
     parallelizable = False
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -211,6 +215,8 @@ class ExtractLabeledTemplates:
         self._labels: np.ndarray | None = None
         self._splits: np.ndarray | None = None
         self._template_entries: np.ndarray | None = None
+        # The group and the sequence of each template row, as text.
+        self._row_identity: tuple[np.ndarray, np.ndarray] | None = None
         self._entry_map: dict[int, tuple[str, str]] = {}
         self._provenance: pd.DataFrame | None = None
         self._sequence_splits: dict[tuple[str, str], str] = {}
@@ -228,6 +234,7 @@ class ExtractLabeledTemplates:
         self._labels = None
         self._splits = None
         self._template_entries = None
+        self._row_identity = None
         self._entry_map = {}
         self._provenance = None
         self._sequence_splits = {}
@@ -243,6 +250,11 @@ class ExtractLabeledTemplates:
             self._templates = df[feature_cols].to_numpy(dtype=np.float64)
             self._labels = label_col
             self._splits = split_col
+            if {C.group_col, C.seq_col} <= set(df.columns):
+                self._row_identity = (
+                    df[C.group_col].to_numpy(dtype=object),
+                    df[C.seq_col].to_numpy(dtype=object),
+                )
 
             provenance_path = run_root / "template_provenance.parquet"
             if provenance_path.exists():
@@ -280,7 +292,17 @@ class ExtractLabeledTemplates:
         if self.params.strategy == "farthest_first":
             self._apply_farthest_first_per_class()
 
+        self._row_identity = self._identity_of_rows()
         self._provenance = self._build_provenance()
+
+    def _identity_of_rows(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """The group and the sequence of the entry each template row was drawn from."""
+        if self._template_entries is None:
+            return None
+        order = sorted(self._entry_map)
+        groups = np.array([self._entry_map[i][0] for i in order], dtype=object)
+        sequences = np.array([self._entry_map[i][1] for i in order], dtype=object)
+        return groups[self._template_entries], sequences[self._template_entries]
 
     def _final_target_for_class(
         self,
@@ -725,6 +747,8 @@ class ExtractLabeledTemplates:
         df = pd.DataFrame(self._templates, columns=self._feature_columns)
         df["label"] = self._labels
         df["split"] = self._splits
+        if self._row_identity is not None:
+            df[C.group_col], df[C.seq_col] = self._row_identity
         _ = write_parquet_atomic(df, run_root / TEMPLATES_ARTIFACT_NAME)
 
         _ = write_parquet_atomic(

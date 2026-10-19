@@ -34,7 +34,7 @@ import pytest
 from mosaic.behavior.feature_library.lightning_action_feature import (
     LightningActionFeature,
 )
-from mosaic.core.pipeline.types import Result
+from mosaic.core.pipeline.types import InputStream, Result
 from tests.helpers import make_pair_df
 
 _CLASSES = [1, 2, 3]
@@ -118,3 +118,77 @@ def test_predictions_are_labels_not_indices() -> None:
     out = _fitted(len(df)).apply(df)
 
     assert set(out["predicted_label"]) == {3}
+
+
+class _RecordingModel:
+    """Records the headers of the CSVs that `fit` hands to lightning-action."""
+
+    config: dict[str, Any] = {}
+    headers: dict[str, list[str]] = {}
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> _RecordingModel:
+        cls.config = config
+        return cls()
+
+    @classmethod
+    def from_dir(cls, path: str) -> _RecordingModel:
+        return cls()
+
+    def train(self, output_dir: str, post_inference: bool) -> None:
+        data = Path(self.config["data"]["data_path"])
+        type(self).headers = {
+            str(path.relative_to(data)): list(pd.read_csv(path).columns)
+            for path in sorted(data.rglob("*.csv"))
+        }
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+
+def _templates_table(*, with_identity: bool) -> pd.DataFrame:
+    rng = np.random.default_rng(0)
+    n = 12
+    table = pd.DataFrame(rng.standard_normal((n, 2)), columns=_FEATURES)
+    table["label"] = np.tile(_CLASSES, n // len(_CLASSES))
+    table["split"] = ["train"] * 8 + ["test"] * 4
+    if with_identity:
+        table["group"] = ["g", ""] * (n // 2)
+        table["sequence"] = ["s1", "12", "s3"] * (n // 3)
+    return table
+
+
+@pytest.mark.parametrize("with_identity", [False, True], ids=["0.5", "0.6"])
+def test_the_templates_identity_columns_reach_neither_the_features_nor_the_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_identity: bool
+) -> None:
+    """`extract-labeled-templates` 0.6 writes `group` and `sequence` beside `split`.
+
+    `lightning-action` reads the same columns of a 0.6 table as of a 0.5 one: the
+    feature columns come from `feature_columns`, and the CSVs it writes hold those and
+    the one-hot labels only.
+    """
+    monkeypatch.setattr(
+        sys.modules["lightning_action.api.model"], "Model", _RecordingModel
+    )
+    path = tmp_path / "templates.parquet"
+    _templates_table(with_identity=with_identity).to_parquet(path, index=False)
+    feature = LightningActionFeature(
+        LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
+        params={
+            "templates": {"feature": "extract-labeled-templates"},
+            "default_class": 3,
+            "num_epochs": 1,
+            "sequence_length": 10,
+        },
+    )
+
+    assert feature.load_state(tmp_path / "run", {"templates": path}, {}) is False
+    state: Any = feature
+    assert state._feature_columns == _FEATURES
+    feature.fit(InputStream(lambda: iter([]), n_entries=0))
+
+    assert _RecordingModel.headers == {
+        "features/test.csv": _FEATURES,
+        "features/train.csv": _FEATURES,
+        "labels/test.csv": [str(c) for c in _CLASSES],
+        "labels/train.csv": [str(c) for c in _CLASSES],
+    }
