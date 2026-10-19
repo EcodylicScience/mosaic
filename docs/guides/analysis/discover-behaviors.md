@@ -166,7 +166,8 @@ The model reads each sequence on its own, so it never reads one animal's frame a
 another's. Fed per-individual features, a sequence is one individual's frames. Fed pair
 features, as `scaler_result` is here, it is one ordered pair seen from one perspective.
 The states come with `id1`, `id2` and `perspective`, so they join back to the pair
-features they were computed from. A sequence that holds the same frame twice fails the
+features they were computed from, and with `group` and `sequence`, so `fit-label-map`
+(with `prediction_column: "syllable"`) can score them against labels. A sequence that holds the same frame twice fails the
 step. A sequence with no more rows than `n_lags` gets no states, and its rows are left out
 of the result. A missing value reads as the mean of its column, or as 0 when
 `standardize` is off, and the standardizing counts only the values that are present.

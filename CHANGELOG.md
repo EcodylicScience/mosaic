@@ -17,14 +17,19 @@ the other animal's row, an even `downsample_rate` kept one perspective only, and
 output held `frame` and `syllable` with nothing to join it back to the pair features.
 A table with an `id` splits as before. A table without one splits by `id1`, `id2` and
 `perspective`, those the table has, in sorted order whatever the order of its rows, and
-the output carries the same columns beside `frame` and `syllable`.
+the output carries the same columns beside `frame` and `syllable`. It also carries the
+`group` and `sequence` of its input, as the output of every other fitter does. `arhmm`
+wrote neither before, and a step that finds an entry's labels by those two columns
+(`fit-label-map`, and `evaluate-labels` in clusters mode) found none and failed with
+"no labeled row to fit a map on". With them, set `prediction_column` to `syllable` to
+score the states against labels.
 
 - `arhmm` moves from 0.2 to 0.3. Every `arhmm` run id changes its version segment, and
   so does every run that reads an `arhmm` result through `inputs` or fits its `model`
   from one, with the runs that read those. An existing dataset recomputes those chains
   once. The states of a pair-level 0.2 run are not comparable with 0.3's.
 - The catalog declares `emits` `as-input` for `arhmm`, where it declared `individual`,
-  and its output may contain `id1`, `id2` and `perspective`. A chain from pair features
+  and its output may contain `id1`, `id2`, `perspective`, `group` and `sequence`. A chain from pair features
   resolves to a pair-level `arhmm` step, whose output merges with other pair inputs and
   not with individual ones.
 - A sequence with two rows of one frame fails `arhmm`, in fit and in apply, naming the
@@ -34,7 +39,8 @@ the output carries the same columns beside `frame` and `syllable`.
   where apply raised an `IndexError` that failed the entry. A pair that meets for a
   few frames is such a sequence, and an entry of such sequences alone writes an empty
   table. The run reports the count on its standard error.
-- `iter_series`, `label_series`, `series_columns`, `refuse_repeated_series_rows` and
+- `label_series` keeps the `group` and `sequence` of its input beside the series key.
+  `iter_series`, `series_columns`, `refuse_repeated_series_rows` and
   `refuse_pair_rows` join `mosaic.behavior.feature_library.helpers` beside
   `label_individuals`. `kpms` and `vame` keep their split by individual.
 
