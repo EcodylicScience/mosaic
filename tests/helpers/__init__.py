@@ -162,6 +162,18 @@ from tests.helpers.media import (
     write_painted_entry,
 )
 from tests.helpers.driver_leases import write_driver_lease
+from tests.helpers.guide_recipes import (
+    GUIDE,
+    GUIDE_CLASSES,
+    guide_blocks,
+    guide_commands,
+    guide_dataset,
+    guide_recipe,
+    run_ids,
+    step_scopes,
+    step_states,
+    with_params,
+)
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.processes import (
     SLEEPER_COMMAND,
@@ -321,6 +333,16 @@ from tests.helpers.variants import (
 __all__ = [
     "CHAIN_RECIPE",
     "CONVERT_LABELS_STEP",
+    "GUIDE",
+    "GUIDE_CLASSES",
+    "guide_blocks",
+    "guide_commands",
+    "guide_dataset",
+    "guide_recipe",
+    "run_ids",
+    "step_scopes",
+    "step_states",
+    "with_params",
     "CONVERT_TRACKS_STEP",
     "CI_FERAL_MODULES",
     "CI_LIGHTNING_ACTION_MODULES",

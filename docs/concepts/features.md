@@ -54,8 +54,8 @@ destroyed upstream rather than at the join.
 The same holds for a model that reads frames in order. An autoregressive model reads
 each frame after the one before it, so `arhmm` takes each `(id1, id2, perspective)` as a
 sequence of its own and writes those columns, with `group` and `sequence`, beside its
-states. `lightning-action` does the same, and trains and predicts on each series in
-frame order.
+states. `lightning-action` and `sequence-classifier` do the same, and train and predict on
+each series in frame order.
 
 A symmetric quantity, such as the distance between the two, is written the same on
 both rows rather than stored once. One shape with no special case is what lets any

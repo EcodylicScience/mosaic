@@ -59,13 +59,14 @@ removed.
 `pip install mosaic-behavior` on its own is a complete analysis install: every track
 and label converter, all per-frame and social features, wavelets, scaling, t-SNE,
 k-means, Ward, ARHMM, the XGBoost classifier, overlays and crops. What `[all]` adds is
-the deep-learning surface (the heatmap localizer and the identity models), which means
+the deep-learning surface (the heatmap localizer, the identity models and the
+sequence classifier), which means
 PyTorch, and on Linux about 4 GB of CUDA wheels.
 
 | Extra              | Adds                                                            |
 | ------------------ | --------------------------------------------------------------- |
 | `all`              | `deep-learning` + `faiss`: the documented install               |
-| `deep-learning`    | `torch` + `timm` — the heatmap localizer and all three identity models |
+| `deep-learning`    | `torch` + `timm` — the heatmap localizer, all three identity models and the `sequence-classifier` |
 | `faiss`            | The `"faiss"` kNN backend for `global-tsne`; its default `"annoy"` backend needs nothing |
 | `movement`         | The [movement](https://movement.neuroinformatics.dev/) smoothing and filtering features, and the xarray / netCDF4 / pynwb / sleap-io stack they sit on |
 | `lightning-action` | Lightning-Action temporal action classifier                     |

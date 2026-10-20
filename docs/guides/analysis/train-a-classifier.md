@@ -3,13 +3,17 @@
 Supervised classification predicts an annotated behavior on frames nobody annotated.
 It needs labels: see [Import behavior annotations](import-labels.md) first.
 
-Three classifiers ship. All are features, so all cache and take a `run_id`.
+Four classifiers ship. All are features, so all cache and take a `run_id`.
 
 | Feature | Reads | Install |
 | --- | --- | --- |
 | `xgboost` | per-frame feature columns | base install |
+| `sequence-classifier` | per-frame feature columns, modeled as sequences by a registered network | `[deep-learning]` |
 | `lightning-action` | per-frame feature columns, modeled as sequences | `[lightning-action]` |
 | `feral` | video directly, through a V-JEPA backbone | `[feral]`, in its own environment |
+
+`probability-ensemble` is a step beside them. It averages or blends the probabilities of
+several classifier runs ([Average and blend classifiers](#average-and-blend-classifiers)).
 
 ## The XGBoost route
 
@@ -256,8 +260,9 @@ stacked_result = ds.run_feature(TemporalStackingFeature(
 `stacked_result` to `ExtractLabeledTemplates` and to the classifier in place of the raw
 features.
 
-`lightning-action` models the temporal structure itself, so it does not need this step.
-See [Model the sequence directly](#model-the-sequence-directly).
+`lightning-action` and `sequence-classifier` model the temporal structure themselves,
+so they do not need this step. See [Model the sequence directly](#model-the-sequence-directly)
+and [Train a sequence network](#train-a-sequence-network).
 
 ## Model the sequence directly
 
@@ -270,7 +275,7 @@ standardized by statistics that are stored with the model.
 ```json
 {
   "schema_version": 1,
-  "name": "sequence-classifier",
+  "name": "lightning-action-sequence",
   "steps": [
     {"id": "tracks", "type": "op", "kind": "convert-tracks",
      "params": {"source_format": "calms21_npy"}},
@@ -331,6 +336,219 @@ What differs from `xgboost`:
   `decision_threshold` for, and for a row with a missing `id1`, `id2` or `perspective`.
 - **It trains on a GPU** when the machine has one, and the step is offered to GPU
   workers. `device` set to `cpu` trains on the CPU.
+
+## Train a sequence network
+
+`sequence-classifier` trains a neural network on frames in order and predicts each series
+whole. A head from a registry is the network: `tcn` (dilated convolutions, centered on
+each frame), `gru` (a bidirectional GRU) or `mlp` (each frame by itself). It needs the
+`[deep-learning]` extra and is offered to a GPU worker.
+
+Its defaults are those of the networks in the CalMS21 Task 1 agent runs, where a
+bidirectional GRU and a dilated TCN on 37 per-frame columns scored 0.859 and 0.855 test
+macro F1 over attack, investigation and mount, the score of XGBoost on 981 columns. The
+recipe is the `lightning-action` one with the classifier swapped:
+
+```json
+{
+  "schema_version": 1,
+  "name": "sequence-network",
+  "steps": [
+    {"id": "tracks", "type": "op", "kind": "convert-tracks",
+     "params": {"source_format": "calms21_npy"}},
+    {"id": "labels", "type": "op", "kind": "convert-labels",
+     "params": {"source_format": "calms21_npy"}},
+    {"id": "egocentric", "type": "feature", "feature": "pair-egocentric",
+     "inputs": ["tracks"], "tracks": {"step": "tracks"}},
+    {"id": "labeled", "type": "feature", "feature": "extract-labeled-templates",
+     "inputs": [{"step": "egocentric"}],
+     "params": {"labels": {"step": "labels"}, "n_per_class": 500, "test_fraction": 0}},
+    {"id": "classifier", "type": "feature", "feature": "sequence-classifier",
+     "inputs": [{"step": "egocentric"}],
+     "params": {"templates": {"step": "labeled"}, "labels": {"step": "labels"},
+                "default_class": 3, "head": "gru", "cv_folds": 5, "random_state": 42}},
+    {"id": "evaluate", "type": "feature", "feature": "evaluate-labels",
+     "inputs": [{"step": "classifier"}],
+     "params": {"labels": {"step": "labels"}, "perspective": 0,
+                "average_over": [0, 1, 2]}}
+  ]
+}
+```
+
+Choose a setting on the training groups first:
+
+```bash
+mosaic pipeline run -m dataset.yaml --recipe @network.json \
+  --step-scope 'labeled={"groups": ["train"]}' \
+  --step-scope 'classifier={"groups": ["train"]}' \
+  --step-scope 'evaluate={"groups": ["train"]}'
+```
+
+Then widen the classifier to the test groups and score them once:
+
+```bash
+mosaic pipeline run -m dataset.yaml --recipe @network.json \
+  --step-scope 'labeled={"groups": ["train"]}' \
+  --step-scope 'classifier={"groups": ["train", "test"]}' \
+  --step-scope 'evaluate={"groups": ["test"]}'
+```
+
+- **The second command fits again.** The classifier fits from the entries of its own
+  scope, so its scope is part of its run id, and the wider step is a new run. Expect about
+  the same time again, about 5 minutes per seed with five folds on a GPU (an estimate).
+  `xgboost` fits from its templates and keeps its run id, as the cross-validation section
+  above shows. Splitting fitting from applying into two steps, which is planned for every
+  classifier, removes the refit.
+- **The templates name the training entries, and the frames come from the step's
+  inputs.** As with `lightning-action`, the sample that `labeled` drew is not read, an
+  entry it held out never trains, and the step refuses a scope that leaves out a training
+  entry that has labels. With `test_fraction` above 0, the sequences the sample sets
+  aside are neither trained on nor dealt into a fold, and the full model scores them.
+  Leave it at 0 to cross-validate every training sequence.
+- **Heads and their options.** `head` is `tcn`, `gru` or `mlp`, and `head_config` holds
+  the options of that head: `hidden`, `blocks`, `kernel_size` and `dropout` for `tcn`,
+  `hidden`, `layers`, `bidirectional` and `dropout` for `gru`, and `hidden`, `layers` and
+  `dropout` for `mlp`. An option the head does not have is refused. A `tcn` reads
+  `(kernel_size - 1) * (2 ** blocks - 1) + 1` frames around each frame, 127 by default.
+- **Name the columns.** `columns` lists the payload columns the network reads. Narrow sets
+  usually win: 37 columns beat 562 to 999 by 0.04 of cross-validated macro F1.
+  Unset, every payload column of the inputs is read.
+- **A run of consecutive labeled frames is the unit of training.** A frame no label covers
+  ends a run, and so does a gap in the frame numbers. A batch is `batch_size` random crops
+  of up to `crop_length` frames of whole runs, drawn in proportion to the run's length,
+  and a run shorter than `min_run` does not train. The loop is AdamW under a one-cycle
+  schedule (`learning_rate`, `weight_decay`) for `steps` batches, with square-root class
+  weights (`class_weight`), and the weights of the last step are kept. There is no
+  validation split.
+- **A series is predicted whole.** The two perspectives of a pair table are two series, a
+  series is cut where its frames are not consecutive, and a row of no series takes
+  `default_class`. Frames are standardized by the training frames' mean and standard
+  deviation, which the model stores.
+- **`cv_folds` works as for `xgboost`.** The training entries are dealt into folds by the
+  same hash of `cv_seed`, group and sequence, so two classifiers on one templates run
+  share their folds. One network is fitted without each fold, and the full model last. A
+  training entry is scored by the network of its fold, and any other entry by the full
+  model. `cv_folds.parquet` lists the fold of every entry and its labeled frames per class.
+- **Device and repeatability.** `device` is `cuda` or `cpu` and is part of the run id,
+  because a GPU and a CPU need not give one model. A model fitted on a GPU applies on a
+  CPU (`apply_device`, not part of the run id). A CPU fit repeats at one thread count
+  (`n_threads`, 1 by default), and a GPU fit repeats on the same machine. The torch and
+  CUDA versions are recorded in the model's bundle.
+- **A head of your own.** Register one in Python with `register_head(HeadSpec(...))`,
+  giving its name, the model of its options and a function that builds a torch module
+  from the options, the number of input columns and the number of classes. Raise
+  `head_revision` when its code changes, so that the change is a new run. A head registered
+  in Python exists only in that process. The command line and a queue's workers start their
+  own, and cannot name it.
+
+## Average and blend classifiers
+
+`probability-ensemble` combines the `prob_<class>` columns of two or more classifier runs
+and writes `prob_<class>` and `predicted_label` as a classifier does. `weights` is
+`uniform` (an average, such as the seeds of one model), a list with one weight per input,
+or `fit`, which chooses the weights that maximize the pooled macro F1 over `score_classes`
+on the out-of-fold probabilities of the training entries. It searches a grid of
+`grid_step` over the weights and takes the first maximum, and it refuses a member fitted
+without `cv_folds`, so that no in-sample probability picks a weight.
+
+Averages of cross-validated runs are still out of fold, and the step writes their fold
+table, so a blend can take an average as a member. Two seeds of each of two networks, the
+averages of each pair, and a blend of the averages:
+
+```json
+{
+  "schema_version": 1,
+  "name": "blend",
+  "steps": [
+    {"id": "tracks", "type": "op", "kind": "convert-tracks",
+     "params": {"source_format": "calms21_npy"}},
+    {"id": "labels", "type": "op", "kind": "convert-labels",
+     "params": {"source_format": "calms21_npy"}},
+    {"id": "egocentric", "type": "feature", "feature": "pair-egocentric",
+     "inputs": ["tracks"], "tracks": {"step": "tracks"}},
+    {"id": "labeled", "type": "feature", "feature": "extract-labeled-templates",
+     "inputs": [{"step": "egocentric"}],
+     "params": {"labels": {"step": "labels"}, "n_per_class": 500, "test_fraction": 0}},
+    {"id": "gru_1", "type": "feature", "feature": "sequence-classifier",
+     "inputs": [{"step": "egocentric"}],
+     "params": {"templates": {"step": "labeled"}, "labels": {"step": "labels"},
+                "default_class": 3, "head": "gru", "cv_folds": 5, "random_state": 1}},
+    {"id": "gru_2", "type": "feature", "feature": "sequence-classifier",
+     "inputs": [{"step": "egocentric"}],
+     "params": {"templates": {"step": "labeled"}, "labels": {"step": "labels"},
+                "default_class": 3, "head": "gru", "cv_folds": 5, "random_state": 2}},
+    {"id": "tcn_1", "type": "feature", "feature": "sequence-classifier",
+     "inputs": [{"step": "egocentric"}],
+     "params": {"templates": {"step": "labeled"}, "labels": {"step": "labels"},
+                "default_class": 3, "head": "tcn", "cv_folds": 5, "random_state": 1}},
+    {"id": "tcn_2", "type": "feature", "feature": "sequence-classifier",
+     "inputs": [{"step": "egocentric"}],
+     "params": {"templates": {"step": "labeled"}, "labels": {"step": "labels"},
+                "default_class": 3, "head": "tcn", "cv_folds": 5, "random_state": 2}},
+    {"id": "gru", "type": "feature", "feature": "probability-ensemble",
+     "inputs": [{"step": "gru_1"}, {"step": "gru_2"}], "params": {"default_class": 3}},
+    {"id": "tcn", "type": "feature", "feature": "probability-ensemble",
+     "inputs": [{"step": "tcn_1"}, {"step": "tcn_2"}], "params": {"default_class": 3}},
+    {"id": "blend", "type": "feature", "feature": "probability-ensemble",
+     "inputs": [{"step": "gru"}, {"step": "tcn"}],
+     "params": {"default_class": 3, "weights": "fit", "labels": {"step": "labels"},
+                "score_classes": [0, 1, 2]}},
+    {"id": "evaluate", "type": "feature", "feature": "evaluate-labels",
+     "inputs": [{"step": "blend"}],
+     "params": {"labels": {"step": "labels"}, "perspective": 0,
+                "average_over": [0, 1, 2]}}
+  ]
+}
+```
+
+Screen on the training groups:
+
+```bash
+mosaic pipeline run -m dataset.yaml --recipe @blend.json \
+  --step-scope 'labeled={"groups": ["train"]}' \
+  --step-scope 'gru_1={"groups": ["train"]}' \
+  --step-scope 'gru_2={"groups": ["train"]}' \
+  --step-scope 'tcn_1={"groups": ["train"]}' \
+  --step-scope 'tcn_2={"groups": ["train"]}' \
+  --step-scope 'gru={"groups": ["train"]}' \
+  --step-scope 'tcn={"groups": ["train"]}' \
+  --step-scope 'blend={"groups": ["train"]}' \
+  --step-scope 'evaluate={"groups": ["train"]}'
+```
+
+Then widen the networks, the averages and the blend to the training and test groups, and
+score the test groups:
+
+```bash
+mosaic pipeline run -m dataset.yaml --recipe @blend.json \
+  --step-scope 'labeled={"groups": ["train"]}' \
+  --step-scope 'gru_1={"groups": ["train", "test"]}' \
+  --step-scope 'gru_2={"groups": ["train", "test"]}' \
+  --step-scope 'tcn_1={"groups": ["train", "test"]}' \
+  --step-scope 'tcn_2={"groups": ["train", "test"]}' \
+  --step-scope 'gru={"groups": ["train", "test"]}' \
+  --step-scope 'tcn={"groups": ["train", "test"]}' \
+  --step-scope 'blend={"groups": ["train", "test"]}' \
+  --step-scope 'evaluate={"groups": ["test"]}'
+```
+
+The second request fits every network again, for the reason given above.
+
+- A member of a fitted blend may be any classifier run that writes `cv_folds.parquet`,
+  `xgboost` included: add `{"step": "classifier"}` to the blend's `inputs` beside the
+  averages. The members must write the same classes and deal the same folds, so give them
+  one templates run and one `cv_seed`. The step compares the folds, `group`, `sequence`
+  and `fold`, and not the counts, because `xgboost` counts sampled template rows where
+  `sequence-classifier` counts labeled frames.
+- The blend's score over the training entries is optimistic by the freedom of its weights,
+  one fewer than the number of members. `ensemble_report.json` in the run directory gives
+  the weights, the objective, the objective of each member alone and of the uniform
+  average. The held-out score is the test one.
+- The grid has a limit of 20,000 weight vectors. Average the seeds of each model first, as
+  above, and blend the averages. Six members at the default step of 0.05 would be
+  well over the limit.
+- `weights` as a list or `uniform` needs no labels and no folds, and the run does not
+  depend on its scope.
 
 ## Read the predictions
 

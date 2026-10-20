@@ -233,6 +233,15 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `lightning-action` trains and predicts on each `(id1, id2, perspective)` as a
   sequence of its own, from the entries of its `templates` run's train split, so its
   scope is part of its run id. A second step with `model` predicts further entries.
+  `sequence-classifier` (`[deep-learning]`, GPU worker) is the same kind of step with a
+  registered network as `head` (`tcn`, `gru` or `mlp`, options in `head_config`). It takes
+  `cv_folds` and `cv_seed` as `xgboost` does, with the same folds. A head registered in
+  Python with `register_head` is visible to that process only, not to the CLI or a queue
+  worker. `probability-ensemble` averages or blends the `prob_<class>` columns of
+  classifier runs: `weights` is `uniform`, a list, or `fit`, which chooses them on the
+  members' out-of-fold probabilities and refuses a member fitted without `cv_folds`. It
+  writes the members' fold table when they all have the same one, so an average of
+  cross-validated runs can be a member of a blend.
 - A label of `-1` means unlabeled: no annotation covers the row. Templates leave it
   out and scoring drops and counts it. Never read it as a class. A pair row takes the
   label of its own direction, so a CalMS21 label marks only the resident-focal row.
@@ -315,8 +324,11 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `xgboost` and `test_fraction: 0` on the labeled templates, and scope both and
   `evaluate-labels` to the training groups: that score is the pooled out-of-fold one.
   For the final score widen the same `xgboost` step to the test groups, which is the
-  same run, and keep the labeled templates on the training groups. The score is not
-  nested, and a fold is whole sequences
+  same run, and keep the labeled templates on the training groups. Widening a
+  `sequence-classifier` or `lightning-action` step is not the same run: they fit from the
+  step's own inputs, so the wider step fits again, about 5 minutes per seed with five
+  folds on a GPU (an estimate). Splitting fitting from applying, planned for every
+  classifier, removes the refit. The score is not nested, and a fold is whole sequences
   (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
 - Each output row of `evaluate-labels` carries `tp_<class>`, `fp_<class>` and
   `fn_<class>`. `mosaic.core.evaluation` pools them (`pool_entry_counts`), bootstraps
