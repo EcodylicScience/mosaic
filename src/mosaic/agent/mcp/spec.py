@@ -51,11 +51,11 @@ from mosaic.runlog import AttemptLiveness, AttemptOutcome
 
 if TYPE_CHECKING:
     from mosaic.core.dataset_summary import DatasetSummary
-    from mosaic.core.pipeline.graph import PlanWire, ValidationReport
+    from mosaic.core.pipeline.graph import ValidationReport
     from mosaic.core.pipeline.inventory import InventoryWire
     from mosaic.core.pipeline.preview import ArtifactPreview
 
-    from .outputs import StepSuggestions, StepTypes
+    from .outputs import PlanPage, StepSuggestions, StepTypes
 
 __all__ = [
     "CLEANUP_NOT_ALLOWED",
@@ -637,6 +637,15 @@ class PlanRecipeInput(ToolInput):
         + " The fingerprint then covers the removable runs.",
     )
     retire: RetireDigests = Field(default_factory=list)
+    limit: PageSize | None = Field(
+        default=None,
+        description=(
+            f"The most steps to return, 1 to {MAX_PAGE_SIZE}. Omitted: every step. "
+            "A plan of about 40 steps or more is refused unless paged. The "
+            "fingerprint is the whole plan's on every page."
+        ),
+    )
+    cursor: Cursor = None
 
 
 class SubmitPipelineInput(ToolInput):
@@ -1274,12 +1283,14 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "problems that refuse it, the cautions to show the user, and the plan "
             "fingerprint that submit_pipeline requires. Show the user the plan "
             "and its cautions before submitting. With cleanup 'superseded' it also "
-            "lists the saved recipes that retire can reclaim runs from."
+            "lists the saved recipes that retire can reclaim runs from. A plan of "
+            "about 40 steps or more is refused as too large: page it with limit "
+            "(about 25) and cursor, and show the user every page."
         ),
         input_model=PlanRecipeInput,
-        output=ModelRef("mosaic.core.pipeline.graph", "PlanWire"),
+        output=ModelRef("mosaic.agent.mcp.outputs", "PlanPage"),
         annotations=READ,
-        narrowing=("entries",),
+        narrowing=("limit",),
         always_load=True,
     ),
     ToolSpec(
@@ -1450,7 +1461,7 @@ class ToolBackend(Protocol):
         """Answer ``suggest_steps``."""
         ...
 
-    def plan_recipe(self, args: PlanRecipeInput) -> ToolResult[PlanWire]:
+    def plan_recipe(self, args: PlanRecipeInput) -> ToolResult[PlanPage]:
         """Answer ``plan_recipe``."""
         ...
 

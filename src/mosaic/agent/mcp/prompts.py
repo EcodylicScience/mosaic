@@ -77,7 +77,9 @@ Build a mosaic pipeline on dataset {arguments["dataset"]} for this goal:
 3. Draft a recipe. Call validate_recipe and fix every problem, and use
    suggest_steps where a step needs an input or a following step.
 4. Call plan_recipe. Show the user each step's status, run id, entries asked
-   and lane, which steps are already complete, and the plan's cautions.
+   and lane, which steps are already complete, and the plan's cautions. A plan
+   of about 40 steps or more is refused as too large: call again with limit
+   (about 25) and the cursor of each page, and show every page.
 5. Stop and ask the user to approve the plan. Do not call submit_pipeline until
    they agree. Set confirm only when the user agreed to the conditions that a
    confirmation_required refusal lists. After confirmation_unanswered or

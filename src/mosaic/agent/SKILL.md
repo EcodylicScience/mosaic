@@ -359,6 +359,10 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   user the plan and its `cautions` (a plan over the whole dataset, a step asked for
   more than 100 entries) and wait for their approval, then pass its fingerprint to
   `submit_pipeline`.
+- A plan of about 40 steps or more is over the read limit. Plan it with `limit` (about
+  25) and then `cursor`, the previous page's `next_cursor`, until `next_cursor` is
+  empty, and show the user every page. Every page carries the whole plan's fingerprint;
+  `problems`, `cautions` and the other plan-level blocks are on the first page only.
 - `entries` takes `[group, sequence]` pairs or `{"groups": [...]}`, and
   `step_entries` narrows single steps by step id. Pass the same ones to
   `plan_recipe` and `submit_pipeline`, or the fingerprint will not match.

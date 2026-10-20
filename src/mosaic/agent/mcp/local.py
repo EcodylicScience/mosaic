@@ -103,7 +103,7 @@ if TYPE_CHECKING:
     from mosaic.runlog import AttemptOutcome, RunLogSnapshot
 
     from .config import CleanupClass
-    from .outputs import StepSuggestions, StepTypes
+    from .outputs import PlanPage, StepSuggestions, StepTypes
 
 __all__ = [
     "POLL_AFTER_MIN_SECONDS",
@@ -317,7 +317,7 @@ class LocalBackend:
         """Answer ``suggest_steps``."""
         return answer(lambda: self._suggest_steps(args))
 
-    def plan_recipe(self, args: PlanRecipeInput) -> ToolResult[PlanWire]:
+    def plan_recipe(self, args: PlanRecipeInput) -> ToolResult[PlanPage]:
         """Answer ``plan_recipe``."""
         return answer(lambda: self._plan_recipe(args))
 
@@ -622,7 +622,7 @@ class LocalBackend:
 
     # ------------------------------------------------------------- planning
 
-    def _plan_recipe(self, args: PlanRecipeInput) -> PlanWire:
+    def _plan_recipe(self, args: PlanRecipeInput) -> PlanPage:
         from mosaic.core.pipeline.graph import (
             plan_wire,
             plan_with_cleanup,
@@ -667,7 +667,7 @@ class LocalBackend:
             if plan.cleanup is not None
             else ((), 0)
         )
-        return plan_wire(
+        wire = plan_wire(
             plan,
             missing_sample=PLAN_MISSING_SAMPLE,
             open_requests=unended,
@@ -677,6 +677,7 @@ class LocalBackend:
             retirable_omitted=retirable_omitted,
             parallel=self._parallel_limits,
         )
+        return _plan_page(wire, args.limit, args.cursor)
 
     def _submit_pipeline(self, args: SubmitPipelineInput) -> SubmittedPipeline:
         from mosaic.core.pipeline.graph import (
@@ -1132,6 +1133,50 @@ def _page[T](
     page = remaining[:limit]
     more = len(remaining) > limit
     return page, json.dumps(list(key(page[-1]))) if more else None
+
+
+def _plan_page(wire: PlanWire, limit: int | None, cursor: str | None) -> PlanPage:
+    """Return the window of *wire*'s steps that starts after *cursor*.
+
+    The cursor is ``[last step id, fingerprint]``, because a plan lists its steps
+    in topological order and not in a sortable one. Every page carries the whole
+    plan's fingerprint. The first page carries the plan-level blocks and a later
+    page leaves them empty.
+
+    Raises:
+        ToolFailure: *cursor* names no step of this plan, or was written for a
+            plan with another fingerprint.
+    """
+    from .outputs import PlanPage
+
+    start = 0
+    if cursor is not None:
+        parts = _cursor_key(cursor)
+        ids = [step.step for step in wire.steps]
+        if len(parts) != 2 or parts[0] not in ids or parts[1] != wire.fingerprint:
+            raise ToolFailure(invalid_cursor(cursor))
+        start = ids.index(parts[0]) + 1
+    stop = len(wire.steps) if limit is None else start + limit
+    more = stop < len(wire.steps)
+    first = cursor is None
+    return PlanPage(
+        recipe_digest=wire.recipe_digest,
+        fingerprint=wire.fingerprint,
+        scope_size=wire.scope_size,
+        complete=wire.complete,
+        steps=wire.steps[start:stop],
+        problems=wire.problems if first else (),
+        cautions=wire.cautions if first else (),
+        open_requests=wire.open_requests if first else (),
+        cleanup=wire.cleanup if first else None,
+        retirable=wire.retirable if first else (),
+        retirable_omitted=wire.retirable_omitted if first else 0,
+        parallel=wire.parallel if first else None,
+        steps_total=len(wire.steps),
+        next_cursor=(
+            json.dumps([wire.steps[stop - 1].step, wire.fingerprint]) if more else None
+        ),
+    )
 
 
 def _cursor_key(cursor: str) -> tuple[str, ...]:

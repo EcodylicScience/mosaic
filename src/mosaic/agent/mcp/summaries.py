@@ -22,14 +22,13 @@ from mosaic.core.dataset_summary import DatasetSummary
 from mosaic.core.pipeline.cancel import RequestCancel
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
-    PlanWire,
     RequestStatusWire,
     ValidationReport,
 )
 from mosaic.core.pipeline.inventory import InventoryWire
 from mosaic.core.pipeline.preview import ArtifactPreview
 
-from .outputs import StepSuggestions, StepTypes
+from .outputs import PlanPage, StepSuggestions, StepTypes
 from .spec import (
     ActivityPage,
     DatasetList,
@@ -75,7 +74,7 @@ def summarize(output: BaseModel) -> str:
             return _validation(output)
         case StepSuggestions():
             return _suggestions(output)
-        case PlanWire():
+        case PlanPage():
             return _plan(output)
         case SubmittedPipeline():
             return _submitted(output)
@@ -207,7 +206,7 @@ def _suggestions(found: StepSuggestions) -> str:
     )
 
 
-def _plan(plan: PlanWire) -> str:
+def _plan(plan: PlanPage) -> str:
     steps = [
         f"{step.step} ({step.status}, {step.asked} asked, lane {step.lane})"
         for step in plan.steps
@@ -269,9 +268,21 @@ def _plan(plan: PlanWire) -> str:
             f" {len(plan.retirable) + plan.retirable_omitted} saved recipe(s) wrote "
             f"runs that retire can reclaim, under retirable."
         )
+    shown = (
+        f"{len(plan.steps)} of its {plan.steps_total} step(s)"
+        if len(plan.steps) < plan.steps_total
+        else f"{plan.steps_total} step(s)"
+    )
+    paging = (
+        f" More steps follow: call again with cursor {plan.next_cursor} to show "
+        f"the user every step before submitting."
+        if plan.next_cursor is not None
+        else ""
+    )
     return (
-        f"The plan covers {plan.scope_size} entries in {len(plan.steps)} step(s): "
-        f"{_names(steps)}.{done}{narrowing}{deferred}{problems}{cautions}{unended}"
+        f"The plan covers {plan.scope_size} entries in {shown}: "
+        f"{_names(steps)}.{paging}{done}{narrowing}{deferred}{problems}{cautions}"
+        f"{unended}"
         f"{cleanup} "
         f"Its fingerprint is {plan.fingerprint}, which submit_pipeline requires. "
         f"Show the user the plan and its cautions before submitting. {_STRUCTURED}"

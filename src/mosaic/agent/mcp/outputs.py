@@ -11,6 +11,7 @@ from mosaic.core.pipeline.graph import (
     Attachment,
     CatalogIndexEntry,
     InputCandidate,
+    PlanWire,
     StepTypeDetail,
     StillNeeded,
 )
@@ -18,7 +19,7 @@ from mosaic.core.strict_model import StrictModel
 
 from .spec import StepTypeDetailLevel, SuggestMode
 
-__all__ = ["StepSuggestions", "StepTypes"]
+__all__ = ["PlanPage", "StepSuggestions", "StepTypes"]
 
 
 class StepTypes(StrictModel):
@@ -74,3 +75,21 @@ class StepSuggestions(StrictModel):
     children: tuple[str, ...]
     still_needs: tuple[StillNeeded, ...]
     refused: int
+
+
+class PlanPage(PlanWire):
+    """A window of a plan's steps, or all of them when the call set no limit.
+
+    Every page carries the whole plan's ``recipe_digest``, ``fingerprint``,
+    ``scope_size`` and ``complete``, so a submission needs the fingerprint of
+    any one page. The first page also carries the plan-level blocks
+    (``problems``, ``cautions``, ``open_requests``, ``cleanup``, ``retirable``,
+    ``retirable_omitted`` and ``parallel``), and a later page leaves them empty.
+
+    Attributes:
+        steps_total: How many steps the whole plan has.
+        next_cursor: The cursor of the next page, ``None`` on the last.
+    """
+
+    steps_total: int
+    next_cursor: str | None

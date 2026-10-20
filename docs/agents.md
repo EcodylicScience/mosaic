@@ -210,11 +210,12 @@ needs to choose its next call, and the server refuses a result above a budget.
 | `describe_step_types` with `names` | Up to 8 step types, each a params table of at most about 16,000 characters |
 | `preview_output` | 5 rows and 40 columns by default (`limit`, `max_columns`), the identity and bookkeeping columns first |
 | `get_inventory` listing | No params, and 5 missing entries per artifact. A `ref` returns one artifact with its params |
-| `plan_recipe` | 3 missing entries per step |
+| `plan_recipe` | 3 missing entries per step. About 900 characters per step, so a plan of about 40 steps or more needs `limit` (and `cursor`) to be read a page of steps at a time |
 
 A read whose result would be larger fails with reason `result_too_large`. Its detail
 names the arguments that narrow the call (`narrow_with`), such as `columns` or
-`max_columns` for a preview. `submit_pipeline` and `cancel_request` are never refused
+`max_columns` for a preview and `limit` for a plan. Every page of a plan carries the
+whole plan's fingerprint, and its cautions are on the first page. `submit_pipeline` and `cancel_request` are never refused
 for their size, because their work is done by the time they return.
 
 A preview's `columns` takes names or `fnmatch` patterns (`W_*_f0`), and the columns
