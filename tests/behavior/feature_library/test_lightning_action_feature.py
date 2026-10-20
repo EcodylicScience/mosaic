@@ -397,7 +397,7 @@ def test_a_templates_run_without_provenance_is_refused(tmp_path: Path) -> None:
         params=_fit_params(),
     )
 
-    with pytest.raises(FileNotFoundError, match=r"template_provenance\.parquet"):
+    with pytest.raises(ValueError, match=r"template_provenance\.parquet"):
         feature.load_state(
             tmp_path / "run",
             {"templates": tmp_path / "templates" / "templates.parquet"},
@@ -743,6 +743,30 @@ def test_a_fitted_model_applies_the_same_after_it_is_saved_and_loaded(
     )
 
     pd.testing.assert_frame_equal(reloaded.apply(df), before)
+
+
+def test_a_bundle_that_fails_to_write_leaves_no_cached_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frames = list(range(23))
+    tables = {
+        entry: (_table(entry, frames, code=code), _events(frames, _cycling))
+        for entry, code in ((A, 1.0), (B, 2.0))
+    }
+    fitted = _fit(_study(tmp_path, tables, train=[A, B]), tables)
+
+    def fail(value: object, filename: object) -> None:
+        Path(str(filename)).write_bytes(b"partial")
+        message = "disk full"
+        raise OSError(message)
+
+    monkeypatch.setattr(joblib, "dump", fail)
+    with pytest.raises(OSError, match="disk full"):
+        fitted.save_state(tmp_path / "run")
+
+    # `load_state` takes a file at this path for a finished model.
+    assert not (tmp_path / "run" / "lightning_action_model.joblib").exists()
+    assert not [p for p in (tmp_path / "run").iterdir() if p.suffix == ".tmp"]
 
 
 # --- Declaration ---------------------------------------------------------------

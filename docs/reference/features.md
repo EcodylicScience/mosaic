@@ -1392,8 +1392,8 @@ Supervised temporal action segmentation via lightning-action.
 | `weight_classes` | `boolean` | `true` |  | Weight the training loss by inverse class frequency, to correct for class imbalance. |
 | `device` | `string` | `"gpu"` |  | Which device trains the model. Known values are cpu and gpu. The step is offered to a GPU worker whichever it is, and gpu trains on the CPU where the machine has no CUDA device. |
 | `random_state` | `integer` | `42` |  | The random seed for model initialization and training. |
-| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Probability threshold for a positive class prediction: a single value applied to every class, or a mapping from class to its own threshold. Unset, the class with the highest probability wins. |
-| `default_class` | `integer` | _required_ |  | Class label assigned to a frame when decision_threshold excludes every class, or when the frame belongs to no series because its identity columns are missing. |
+| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. Any row where no class clears its threshold is assigned default_class. |
+| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. It is also assigned to a frame that belongs to no series because its identity columns are missing. |
 
 ??? note "`GroundTruthLabelsSource`"
 

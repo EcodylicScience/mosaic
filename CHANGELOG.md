@@ -10,6 +10,23 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**The classifiers share their output, standardizer, fold and bundle code.** `xgboost` and
+`lightning-action` each assembled their `prob_` columns and `predicted_label`, applied
+the decision threshold, standardized, dealt cross-validation folds and wrote their bundle
+by code of their own. They now use `feature_library/classifier_common.py`. No run id,
+version, bundle key or parameter changes, and two behaviors are fixed.
+
+- `lightning-action` writes its model bundle to a temporary file and renames it, as
+  `xgboost` does. A kill during the write no longer leaves a truncated file at the path
+  that `load_state` reads as a finished model.
+- `lightning-action` raises `ValueError` for a templates run without
+  `template_provenance.parquet`, where it raised `FileNotFoundError`. `xgboost` raises
+  `ValueError` for the same condition.
+- The prose of `lightning-action`'s `decision_threshold` and `default_class` is the text
+  that `xgboost` declares, with the case of a frame in no series added to the second.
+- `helpers.iter_series_positions` yields the row positions of each series, ordered by
+  frame, and the apply of `lightning-action` uses it.
+
 **`lightning-action` reads a pair table, and trains on frames in order.** It trained on
 the class-sampled templates, which hold no frame order, and normalized each file by its
 own statistics, so the temporal network that it fitted read neighbors that were not

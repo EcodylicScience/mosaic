@@ -33,18 +33,27 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 from mosaic.core.params import HASH_EXCLUDE, Declared
-from mosaic.core.pipeline._utils import atomic_write
-from mosaic.core.pipeline.job import CancelToken
-from mosaic.core.pipeline.progress import ProgressCallback
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
+from .classifier_common import (
+    DEFAULT_CLASS_DESCRIPTION,
+    CvSeed,
+    DecisionThreshold,
+    FitReporting,
+    assemble_prediction,
+    check_cross_validation,
+    check_folds,
+    deal_folds,
+    fold_map,
+    fold_rows,
+    fold_table,
+    write_bundle,
+)
 from .helpers import (
     check_memory_headroom,
-    cv_fold_assignment,
     ensure_columns,
     feature_columns,
     finite_rows,
-    meta_columns,
     out_of_fold_choice,
     refuse_unlabeled_templates,
     train_entries_of_templates,
@@ -68,18 +77,6 @@ _MODEL_DESCRIPTION = (
 _STRATEGY_DESCRIPTION = (
     "The classification strategy. multiclass fits one multi-class model. "
     "one_vs_rest fits one binary classifier per class."
-)
-
-_DECISION_THRESHOLD_DESCRIPTION = (
-    "Unset, the predicted class is the class with the highest probability. "
-    "A float applies one probability threshold to every class, and a "
-    "mapping from class to threshold applies a per-class one. Any row "
-    "where no class clears its threshold is assigned default_class."
-)
-
-_DEFAULT_CLASS_DESCRIPTION = (
-    "The class assigned to a row where decision_threshold is set and no "
-    "class clears its threshold."
 )
 
 _CLASS_WEIGHT_DESCRIPTION = (
@@ -129,12 +126,6 @@ _CV_FOLDS_DESCRIPTION = (
     "and every other entry by the model fitted on all training rows. The "
     "fold of each sequence is in cv_folds.parquet. Needs templates and is "
     "refused beside model."
-)
-
-_CV_SEED_DESCRIPTION = (
-    "The seed that deals the training sequences into folds. It changes the "
-    "folds and nothing else, so runs that differ in random_state are "
-    "compared on the same folds. Other than 0 only with cv_folds."
 )
 
 _N_JOBS_DESCRIPTION = (
@@ -199,7 +190,7 @@ class _FoldPlan:
 
 @final
 @register_feature
-class XgboostFeature:
+class XgboostFeature(FitReporting):
     """XGBoost behavior classifier as a pipeline feature.
 
     Trains on labeled templates (from ExtractLabeledTemplates) and runs
@@ -260,11 +251,8 @@ class XgboostFeature:
         strategy: Annotated[
             Literal["multiclass", "one_vs_rest"], Declared(_STRATEGY_DESCRIPTION)
         ] = "multiclass"
-        decision_threshold: Annotated[
-            float | Mapping[int, float] | None,
-            Declared(_DECISION_THRESHOLD_DESCRIPTION),
-        ] = None
-        default_class: Annotated[int, Declared(_DEFAULT_CLASS_DESCRIPTION)]
+        decision_threshold: DecisionThreshold = None
+        default_class: Annotated[int, Declared(DEFAULT_CLASS_DESCRIPTION)]
         class_weight: Annotated[
             Literal["balanced"] | Mapping[int, float] | None,
             Declared(_CLASS_WEIGHT_DESCRIPTION),
@@ -292,7 +280,7 @@ class XgboostFeature:
         cv_folds: Annotated[int | None, Declared(_CV_FOLDS_DESCRIPTION)] = Field(
             default=None, ge=2
         )
-        cv_seed: Annotated[int, Declared(_CV_SEED_DESCRIPTION)] = 0
+        cv_seed: CvSeed = 0
         # Not HASH_EXCLUDE: a GPU histogram build need not give the model a CPU one does.
         device: Annotated[Literal["cpu", "cuda"], Declared(_DEVICE_DESCRIPTION)] = "cpu"
         # HASH_EXCLUDE: the threads of a fit change its time and not its model. One
@@ -318,22 +306,11 @@ class XgboostFeature:
 
         @model_validator(mode="after")
         def _cross_validation_fits_from_templates(self) -> Self:
-            """``cv_folds`` fits from templates, and ``cv_seed`` only deals its folds.
-
-            A ``cv_seed`` other than 0 without folds would give the same output a
-            second run id, since the id hashes both.
-            """
-            if self.cv_folds is None:
-                if self.cv_seed != 0:
-                    msg = "cv_seed deals the folds of cv_folds, which is not set"
-                    raise ValueError(msg)
-                return self
-            if "model" in self.model_fields_set and self.model is not None:
-                msg = (
-                    "cv_folds fits fold models from templates, so it needs "
-                    "templates and is refused beside model"
-                )
-                raise ValueError(msg)
+            check_cross_validation(
+                self.cv_folds,
+                self.cv_seed,
+                model_given="model" in self.model_fields_set and self.model is not None,
+            )
             return self
 
     def __init__(
@@ -343,9 +320,6 @@ class XgboostFeature:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        # Set by ``run_feature``, which reports each fit and stops between them.
-        self.progress_callback: ProgressCallback | None = None
-        self.cancel_token: CancelToken | None = None
 
         self._feature_columns: list[str] | None = None
         self._model: XGBClassifier | list[XGBClassifier] | None = None
@@ -417,7 +391,7 @@ class XgboostFeature:
             )
             raise RuntimeError(msg)
         self._cv = cv
-        self._fold_of = {(g, s): fold for g, s, fold in cv["fold_of"]}
+        self._fold_of = fold_map(cv["fold_of"])
 
     def _undersampled_counts(self, counts: np.ndarray) -> list[int]:
         """The rows each class keeps under ``undersample_ratio``, given its rows in *counts*."""
@@ -630,11 +604,7 @@ class XgboostFeature:
                 "found none. Rerun extract-labeled-templates 0.5 or later"
             )
             raise ValueError(msg)
-        try:
-            fold_of = cv_fold_assignment(self._train_entries, k, self.params.cv_seed)
-        except ValueError as exc:
-            msg = f"[{self.name}] {exc}"
-            raise ValueError(msg) from exc
+        fold_of = deal_folds(self.name, self._train_entries, k, self.params.cv_seed)
 
         keys = list(zip(map(str, train["group"]), map(str, train["sequence"])))
         row_fold = np.array([fold_of.get(key, -1) for key in keys], dtype=np.intp)
@@ -649,18 +619,6 @@ class XgboostFeature:
             raise ValueError(msg)
 
         classes = sorted(int(c) for c in np.unique(labels))
-        table = self._fold_table(fold_of, keys, labels, classes)
-        self._check_folds(k, row_fold, labels, classes, table)
-        return _FoldPlan(fold_of, row_fold, table)
-
-    @staticmethod
-    def _fold_table(
-        fold_of: dict[tuple[str, str], int],
-        keys: list[tuple[str, str]],
-        labels: np.ndarray,
-        classes: list[int],
-    ) -> pd.DataFrame:
-        """The fold of every train entry and its rows, in all and per class."""
         rows = pd.DataFrame(
             {
                 "group": [key[0] for key in keys],
@@ -671,102 +629,40 @@ class XgboostFeature:
         per_class = (
             rows.groupby(["group", "sequence", "label"]).size().unstack(fill_value=0)
         )
-        entries = pd.MultiIndex.from_tuples(
-            sorted(fold_of), names=["group", "sequence"]
+        table = fold_table(fold_of, per_class, classes)
+        check_folds(
+            self.name,
+            k,
+            table,
+            classes,
+            rows="template rows",
+            per_fold=self._check_smote_fold if self.params.use_smote else None,
         )
-        per_class = per_class.reindex(index=entries, columns=classes, fill_value=0)
-        table = per_class.reset_index()
-        table.columns = pd.Index(["group", "sequence", *[f"rows_{c}" for c in classes]])
-        table.insert(2, "fold", [fold_of[(g, s)] for g, s in entries])
-        table.insert(3, "n_rows", per_class.sum(axis=1).to_numpy())
-        return table.astype(
-            {
-                name: np.int64
-                for name in table.columns
-                if name not in ("group", "sequence")
-            }
-        )
+        return _FoldPlan(fold_of, row_fold, table)
 
-    def _check_folds(
-        self,
-        k: int,
-        row_fold: np.ndarray,
-        labels: np.ndarray,
-        classes: list[int],
-        table: pd.DataFrame,
+    def _check_smote_fold(
+        self, fold: int, present: np.ndarray, counts: np.ndarray
     ) -> None:
-        """Refuse a fold that cannot be fitted without, and report one that will fit thinly."""
-        for fold in range(k):
-            present, counts = np.unique(labels[row_fold != fold], return_counts=True)
-            if len(present) < 2:
-                msg = (
-                    f"[{self.name}] cv_folds={k}: the train rows outside fold {fold} "
-                    f"hold {len(present)} of the {len(classes)} classes "
-                    f"({present.tolist()}), and a classifier needs two. Lower "
-                    "cv_folds, or draw the templates from more sequences of "
-                    "each class"
-                )
-                raise ValueError(msg)
-            # A class that SMOTE oversamples from fewer rows fails in imblearn, late
-            # and without naming the fold, where the full fit would have passed. SMOTE
-            # leaves the largest class as it is.
-            kept = self._undersampled_counts(counts)
-            sparse = [
-                f"class {int(c)} ({int(n)} row{'' if n == 1 else 's'})"
-                for c, n in zip(present, kept)
-                if n < _SMOTE_MIN_ROWS and n < max(kept)
-            ]
-            if self.params.use_smote and sparse:
-                msg = (
-                    f"[{self.name}] cv_folds={k} with use_smote: the train rows "
-                    f"outside fold {fold} hold {', '.join(sparse)}, and SMOTE needs "
-                    f"{_SMOTE_MIN_ROWS} rows of a class to oversample it. Lower "
-                    "cv_folds, draw more rows of that class, or leave use_smote off"
-                )
-                raise ValueError(msg)
+        """Refuse a fold in which SMOTE could not oversample a class.
 
-        thin: list[str] = []
-        for cls in classes:
-            column = table[f"rows_{cls}"]
-            n_sequences = int((column > 0).sum())
-            if n_sequences < k:
-                log.warning(
-                    "[%s] class %d has template rows in %d sequence%s, fewer than "
-                    "cv_folds=%d, so the models of some fold never see it and "
-                    "give it probability 0 there (rows_%d of cv_folds.parquet "
-                    "shows where)",
-                    self.name,
-                    cls,
-                    n_sequences,
-                    "" if n_sequences == 1 else "s",
-                    k,
-                    cls,
-                )
-            total = int(column.sum())
-            for fold in range(k):
-                outside = total - int(column[table["fold"] == fold].sum())
-                if total > 0 and 2 * outside < total:
-                    thin.append(f"fold {fold} class {cls} ({outside} of {total})")
-        if thin:
-            log.warning(
-                "[%s] the train rows outside a fold hold under half of a class's "
-                "sample rows: %s. That fold's model is fitted on a thin remainder "
-                "of the class, so its score is noisy",
-                self.name,
-                ", ".join(thin),
+        A class that SMOTE oversamples from fewer rows fails in imblearn, late
+        and without naming the fold, where the full fit would have passed. SMOTE
+        leaves the largest class as it is.
+        """
+        kept = self._undersampled_counts(counts)
+        sparse = [
+            f"class {int(c)} ({int(n)} row{'' if n == 1 else 's'})"
+            for c, n in zip(present, kept)
+            if n < _SMOTE_MIN_ROWS and n < max(kept)
+        ]
+        if sparse:
+            msg = (
+                f"[{self.name}] cv_folds={self.params.cv_folds} with use_smote: the "
+                f"train rows outside fold {fold} hold {', '.join(sparse)}, and SMOTE "
+                f"needs {_SMOTE_MIN_ROWS} rows of a class to oversample it. Lower "
+                "cv_folds, draw more rows of that class, or leave use_smote off"
             )
-
-    def _before_fit(self, done: int, total: int) -> None:
-        """Stop if a cancel was asked for, and name the fit that starts."""
-        if self.cancel_token is not None:
-            self.cancel_token.raise_if_cancelled()
-        if self.progress_callback is not None and total > 1:
-            what = f"fold {done + 1} of {total - 1}" if done < total - 1 else "all rows"
-            self.progress_callback.on_phase("fit", what)
-
-    def _after_fit(self, done: int, total: int) -> None:
-        if self.progress_callback is not None and total > 1:
-            self.progress_callback.on_epoch_end(done - 1, total, {})
+            raise ValueError(msg)
 
     def fit(self, inputs: InputStream) -> None:
         if self._templates is None:
@@ -807,13 +703,13 @@ class XgboostFeature:
         fold_classes: list[list[int]] = []
         if plan is not None:
             for fold in range(n_folds):
-                self._before_fit(fold, total)
+                self._before_fit(fold, total, whole="all rows")
                 outside = plan.row_fold != fold
                 model, present = self._fit_rows(x_train[outside], y_train[outside])
                 fold_models.append(model)
                 fold_classes.append(present)
                 self._after_fit(fold + 1, total)
-        self._before_fit(total - 1, total)
+        self._before_fit(total - 1, total, whole="all rows")
         full, _ = self._fit_rows(x_train, y_train, classes)
         self._after_fit(total, total)
 
@@ -824,7 +720,7 @@ class XgboostFeature:
             self._cv = {
                 "folds": self.params.cv_folds,
                 "seed": self.params.cv_seed,
-                "fold_of": [(g, s, f) for (g, s), f in sorted(plan.fold_of.items())],
+                "fold_of": fold_rows(plan.fold_of),
                 "models": fold_models,
                 "classes": fold_classes,
             }
@@ -916,37 +812,13 @@ class XgboostFeature:
         model, model_classes = self._scoring_model(df)
         probs = self._probabilities(model, model_classes, feat_matrix)
 
-        # Apply thresholds
-        threshold = self.params.decision_threshold
-        if threshold is not None:
-            masked_probs = probs.copy()
-            for col_idx, cls in enumerate(self._classes):
-                if isinstance(threshold, Mapping):
-                    thresh_val = threshold.get(cls, 0.0)
-                else:
-                    thresh_val = threshold
-                masked_probs[:, col_idx] = np.where(
-                    probs[:, col_idx] >= thresh_val,
-                    probs[:, col_idx],
-                    0.0,
-                )
-            # Rows where all probs are zeroed out -> default_class
-            all_zero = masked_probs.sum(axis=1) == 0
-            predicted_labels = self._from_index(np.argmax(masked_probs, axis=1))
-            predicted_labels[all_zero] = self.params.default_class
-        else:
-            predicted_labels = self._from_index(np.argmax(probs, axis=1))
-
-        # Build output DataFrame. The whole identity travels with the predictions,
-        # `perspective` included: this feature is routinely fed pair-level input,
-        # and without it the output is two rows per frame with nothing to tell them
-        # apart -- unjoinable against the very features it was trained on.
-        result = df[meta_columns(df)].copy()
-        for col_idx, cls in enumerate(self._classes):
-            result[f"prob_{cls}"] = probs[:, col_idx]
-        result["predicted_label"] = predicted_labels
-
-        return result
+        return assemble_prediction(
+            df,
+            probs,
+            self._classes,
+            self.params.decision_threshold,
+            self.params.default_class,
+        )
 
     def save_state(self, run_root: Path) -> None:
         if (
@@ -956,8 +828,6 @@ class XgboostFeature:
         ):
             return
         run_root.mkdir(parents=True, exist_ok=True)
-
-        import joblib
 
         # The bundle goes last: its presence is what makes the run a cache, so the
         # files that belong to it are in place before it is.
@@ -979,9 +849,4 @@ class XgboostFeature:
         }
         if self._cv is not None:
             bundle["cv"] = self._cv
-        # A bundle of K+1 models takes a while to write, and a kill or a second
-        # invocation of this run must not leave `load_state` a partial file.
-        atomic_write(
-            run_root / "xgboost_model.joblib",
-            lambda temporary: joblib.dump(bundle, temporary),
-        )
+        write_bundle(run_root / "xgboost_model.joblib", bundle)

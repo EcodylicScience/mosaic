@@ -44,6 +44,7 @@ __all__ = [
     "finite_keypoints",
     "finite_rows",
     "iter_series",
+    "iter_series_positions",
     "label_individuals",
     "label_series",
     "meta_columns",
@@ -260,6 +261,39 @@ def iter_series(
     for _, rows in df.groupby(columns, sort=True):
         rows = rows.sort_values(order_col, kind="stable").reset_index(drop=True)
         yield tuple(rows[name].iloc[0] for name in columns), rows
+
+
+def iter_series_positions(
+    df: pd.DataFrame, order_col: str = COLUMNS.frame_col
+) -> Iterator[npt.NDArray[np.intp]]:
+    """Yield the row positions of each series in *df*, ordered by *order_col*.
+
+    The positional counterpart of :func:`iter_series`, for a caller that writes a
+    result back to the rows it came from. The positions index *df* as it is, so
+    ``df.iloc[positions]`` is a series in time order and an array filled at
+    ``positions`` lines up with the input.
+
+    Args:
+        df: The rows to split. Left unchanged.
+        order_col: The column that orders each series' rows.
+
+    Yields:
+        The positions of one series, sorted by *order_col* and, among equal
+        values, by position. A table with neither ``id`` nor pair columns is
+        one series. The series come sorted by their key, and a row whose key is
+        missing is in none.
+    """
+    keys = series_columns(df)
+    if keys:
+        groups = [
+            np.asarray(rows, dtype=np.intp)
+            for rows in df.groupby(keys, sort=True).indices.values()
+        ]
+    else:
+        groups = [np.arange(len(df), dtype=np.intp)]
+    order = df[order_col].to_numpy()
+    for rows in groups:
+        yield rows[np.argsort(order[rows], kind="stable")]
 
 
 def label_series(

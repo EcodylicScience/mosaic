@@ -42,7 +42,6 @@ from typing import (
     runtime_checkable,
 )
 
-import joblib
 import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
@@ -74,15 +73,22 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.optional_dependency import OptionalModule, Prerequisite
 
+from .classifier_common import (
+    DEFAULT_CLASS_DESCRIPTION,
+    DecisionThreshold,
+    RunningMoments,
+    assemble_prediction,
+    standardize,
+    write_bundle,
+)
 from .helpers import (
     consecutive_runs,
     ensure_columns,
     entry_identity,
     feature_columns,
     iter_series,
-    meta_columns,
+    iter_series_positions,
     refuse_repeated_series_rows,
-    series_columns,
     train_entries_of_templates,
 )
 from .registry import register_feature
@@ -171,70 +177,13 @@ def _predicting_in_process(model: _PackageModel) -> _PackageModel:
     return model
 
 
-# --- Series statistics ---
-
-
-class _RunningMoments:
-    """Per-column count, mean and sum of squared deviations over the finite values.
-
-    Runs are added one at a time and combined with the pairwise update, so the
-    statistics of every training row exist without holding the rows together.
-    """
-
-    def __init__(self, n_columns: int) -> None:
-        self.count: npt.NDArray[np.int64] = np.zeros(n_columns, dtype=np.int64)
-        self.mean: npt.NDArray[np.float64] = np.zeros(n_columns)
-        self.squares: npt.NDArray[np.float64] = np.zeros(n_columns)
-
-    def add(self, matrix: npt.NDArray[np.float64]) -> None:
-        finite = np.isfinite(matrix)
-        data = np.where(finite, matrix, 0.0)
-        count = finite.sum(axis=0)
-        mean = np.divide(
-            data.sum(axis=0), count, out=np.zeros(data.shape[1]), where=count > 0
-        )
-        squares = np.where(finite, data - mean, 0.0)
-        squares = (squares * squares).sum(axis=0)
-        total = self.count + count
-        share = np.divide(count, total, out=np.zeros(data.shape[1]), where=total > 0)
-        delta = mean - self.mean
-        self.squares = self.squares + squares + delta * delta * self.count * share
-        self.mean = self.mean + delta * share
-        self.count = total
-
-    def standardizer(self) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-        """Return the mean and the standard deviation to standardize by.
-
-        A column with no finite value has mean 0, and one with no spread has a
-        standard deviation of 1, so that standardizing leaves neither undefined.
-        """
-        variance = np.divide(
-            self.squares,
-            self.count,
-            out=np.ones(self.count.shape[0]),
-            where=self.count > 0,
-        )
-        std = np.sqrt(variance)
-        return self.mean, np.where(std > 0.0, std, 1.0)
-
-
-def _standardize(
-    matrix: npt.NDArray[np.float64],
-    mean: npt.NDArray[np.float64],
-    std: npt.NDArray[np.float64],
-) -> npt.NDArray[np.float64]:
-    """Standardize *matrix* by the training statistics, reading a missing value as the mean."""
-    standardized = (matrix - mean) / std
-    return np.where(np.isfinite(standardized), standardized, 0.0)
-
-
 @dataclass(frozen=True, slots=True)
 class _TrainingRuns:
     """What a pass over the training entries left in a directory of runs."""
 
     runs_dir: Path
     columns: list[str]
-    moments: _RunningMoments
+    moments: RunningMoments
     classes: list[int]
     n_runs: int
 
@@ -316,15 +265,9 @@ _DEVICE_DESCRIPTION = (
 
 _RANDOM_STATE_DESCRIPTION = "The random seed for model initialization and training."
 
-_DECISION_THRESHOLD_DESCRIPTION = (
-    "Probability threshold for a positive class prediction: a single "
-    "value applied to every class, or a mapping from class to its own "
-    "threshold. Unset, the class with the highest probability wins."
-)
-
 _DEFAULT_CLASS_DESCRIPTION = (
-    "Class label assigned to a frame when decision_threshold excludes "
-    "every class, or when the frame belongs to no series because its "
+    DEFAULT_CLASS_DESCRIPTION
+    + " It is also assigned to a frame that belongs to no series because its "
     "identity columns are missing."
 )
 
@@ -447,10 +390,7 @@ class LightningActionFeature:
         ] = "gpu"
         random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 42
         # --- Inference ---
-        decision_threshold: Annotated[
-            float | Mapping[int, float] | None,
-            Declared(_DECISION_THRESHOLD_DESCRIPTION),
-        ] = None
+        decision_threshold: DecisionThreshold = None
         default_class: Annotated[int, Declared(_DEFAULT_CLASS_DESCRIPTION)]
 
         @model_validator(mode="after")
@@ -539,7 +479,7 @@ class LightningActionFeature:
                     "template_provenance.parquet beside its templates, so the "
                     "entries it held out are unknown. Rerun extract-labeled-templates"
                 )
-                raise FileNotFoundError(msg)
+                raise ValueError(msg)
             self._train_entries = set(train_entries)
             self._label_files = dependency_lookups.get("labels", {})
             return False
@@ -629,54 +569,20 @@ class LightningActionFeature:
         ensure_columns(df, [COLUMNS.frame_col, *feat_cols])
         refuse_repeated_series_rows(df, self.name)
 
-        matrix = _standardize(
+        matrix = standardize(
             df[feat_cols].to_numpy(dtype=np.float64),
             self._feature_mean,
             self._feature_std,
         )
         probs = self._predict_series(df, matrix)
 
-        # Build output DataFrame. The identity travels with the predictions, so
-        # that they join back to the rows they describe.
-        result = df[meta_columns(df)].copy()
-
-        for i, cls in enumerate(self._classes):
-            result[f"prob_{cls}"] = probs[:, i]
-
-        # Decision threshold logic (same as XGBoost)
-        threshold = self.params.decision_threshold
-        if threshold is not None:
-            masked_probs = probs.copy()
-            for col_idx, cls in enumerate(self._classes):
-                if isinstance(threshold, Mapping):
-                    thresh_val = threshold.get(cls, 0.0)
-                else:
-                    thresh_val = threshold
-                masked_probs[:, col_idx] = np.where(
-                    probs[:, col_idx] >= thresh_val,
-                    probs[:, col_idx],
-                    0.0,
-                )
-            all_zero = masked_probs.sum(axis=1) == 0
-            predicted_indices = np.argmax(masked_probs, axis=1)
-            predicted_labels = np.array(
-                [self._classes[int(i)] for i in predicted_indices],
-                dtype=np.intp,
-            )
-            predicted_labels[all_zero] = self.params.default_class
-        else:
-            predicted_indices = np.argmax(np.nan_to_num(probs, nan=-1.0), axis=1)
-            predicted_labels = np.array(
-                [self._classes[int(i)] for i in predicted_indices],
-                dtype=np.intp,
-            )
-
-        # A row of no series has no probabilities
-        nan_mask = np.isnan(probs).any(axis=1)
-        predicted_labels[nan_mask] = self.params.default_class
-
-        result["predicted_label"] = predicted_labels
-        return result
+        return assemble_prediction(
+            df,
+            probs,
+            self._classes,
+            self.params.decision_threshold,
+            self.params.default_class,
+        )
 
     def save_state(self, run_root: Path) -> None:
         if (
@@ -714,7 +620,7 @@ class LightningActionFeature:
             "config": self._config or {},
             "version": self.version,
         }
-        joblib.dump(bundle, run_root / "lightning_action_model.joblib")
+        write_bundle(run_root / "lightning_action_model.joblib", bundle)
 
         # Clean up temp model dir (if it's separate from run_root)
         if self._model_dir != run_root and self._model_dir.exists():
@@ -765,7 +671,7 @@ class LightningActionFeature:
         runs_dir.mkdir(parents=True)
 
         columns: list[str] | None = None
-        moments: _RunningMoments | None = None
+        moments: RunningMoments | None = None
         classes: set[int] = set()
         seen: set[tuple[str, str]] = set()
         unlabeled_entries = 0
@@ -786,7 +692,7 @@ class LightningActionFeature:
             refuse_repeated_series_rows(df, self.name)
             if columns is None:
                 columns = feature_columns(df)
-                moments = _RunningMoments(len(columns))
+                moments = RunningMoments(len(columns))
             else:
                 ensure_columns(df, columns)
             assert moments is not None
@@ -870,7 +776,7 @@ class LightningActionFeature:
             with np.load(path) as stored:
                 matrix = stored["x"]
                 labels = stored["y"]
-            pd.DataFrame(_standardize(matrix, mean, std), columns=runs.columns).to_csv(
+            pd.DataFrame(standardize(matrix, mean, std), columns=runs.columns).to_csv(
                 features_dir / f"{path.stem}.csv", index=True, float_format="%.7g"
             )
             one_hot = (labels[:, None] == classes[None, :]).astype(int)
@@ -964,17 +870,7 @@ class LightningActionFeature:
         n_classes = len(self._classes)
         probs = np.full((len(df), n_classes), np.nan)
 
-        frames = df[COLUMNS.frame_col].to_numpy()
-        keys = series_columns(df)
-        groups: list[npt.NDArray[np.intp]]
-        if keys:
-            groups = [
-                np.asarray(rows, dtype=np.intp)
-                for rows in df.groupby(keys, sort=True).indices.values()
-            ]
-        else:
-            groups = [np.arange(len(df), dtype=np.intp)]
-        series = [rows[np.argsort(frames[rows], kind="stable")] for rows in groups]
+        series = list(iter_series_positions(df))
         if not series:
             return probs
 
