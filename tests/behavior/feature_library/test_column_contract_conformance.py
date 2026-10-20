@@ -113,6 +113,13 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     "pair-posedistance-pca": {"pose": {"pose_n": 3}},
     "probability-ensemble": {"default_class": 0},
     "scale-to-cm": {"cm_per_pixel": 0.1},
+    "sequence-classifier": {
+        "templates": {"step": "extract-labeled-templates"},
+        "labels": {"kind": "behavior"},
+        "default_class": 0,
+        "device": "cpu",
+        "steps": 20,
+    },
     "xgboost": {
         "templates": {"step": "extract-labeled-templates"},
         "default_class": 0,
@@ -183,6 +190,10 @@ UNRUN: dict[str, str] = {
     ),
     "movement-filter-interpolate": "no CI job installs the movement extra",
     "movement-smooth": "no CI job installs the movement extra",
+    "sequence-classifier": (
+        "it fits a network with torch, which only the identity job installs, and "
+        "test_sequence_classifier.py runs its fits there"
+    ),
     "vame": (
         "it trains VAME in a separate environment, and the slow "
         "test_vame_integration.py compares its output with its declaration"

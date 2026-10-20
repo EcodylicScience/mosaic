@@ -57,6 +57,8 @@
   "probability-ensemble/uniform": "0.1-452b8784fe",
   "probability-ensemble/weights-listed": "0.1-e69374cdc4",
   "scale-to-cm/default": "0.2-c4a726ae48",
+  "sequence-classifier/tcn-cross-validated": "0.1-19d803a209",
+  "sequence-classifier/templates": "0.1-646b8e8f68",
   "social-motion-summary/default": "0.2-d100e039c5",
   "social-motion-summary/subgroups-group-size": "0.2-fd2a79e43d",
   "speed-angvel/default": "0.2-6ce34fc21e",

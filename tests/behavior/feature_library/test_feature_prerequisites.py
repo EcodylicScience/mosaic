@@ -27,6 +27,7 @@ from mosaic.behavior.feature_library.lightning_action_feature import (
 from mosaic.behavior.feature_library.movement.convert import MOVEMENT
 from mosaic.behavior.feature_library.registry import FEATURES
 from mosaic.behavior.feature_library.runner_client import RunnerInterpreter
+from mosaic.behavior.feature_library.sequence_classifier import TORCH as SEQUENCE_TORCH
 from mosaic.behavior.feature_library.vame_feature import VAME_ENV
 from mosaic.behavior.model_library.timm_backbone import TIMM, TORCH
 from mosaic.core.narrowing import is_object_tuple
@@ -48,6 +49,7 @@ EXPECTED: dict[str, tuple[Prerequisite, ...]] = {
     "lightning-action": (LIGHTNING_ACTION,),
     "movement-filter-interpolate": (MOVEMENT,),
     "movement-smooth": (MOVEMENT,),
+    "sequence-classifier": (SEQUENCE_TORCH,),
     "vame": (RunnerInterpreter(VAME_ENV),),
 }
 

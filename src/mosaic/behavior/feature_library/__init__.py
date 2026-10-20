@@ -76,6 +76,9 @@ from . import (
     pairposedistancepca,
     probability_ensemble,
     scale_to_cm,
+    sequence_classifier,
+    sequence_heads,
+    sequence_training,
     social_motion_summary,
     speed_angvel,
     temporal_stacking,
@@ -121,6 +124,7 @@ from .pairposedistancepca import PairPoseDistancePCA
 from .probability_ensemble import ProbabilityEnsembleFeature
 from .scale_to_cm import ScaleToCm
 from .registry import FEATURES, register_feature
+from .sequence_classifier import SequenceClassifier
 from .social_motion_summary import SocialMotionSummary
 from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
@@ -206,6 +210,7 @@ __all__ = [
     "ProbabilityEnsembleFeature",
     "PairWavelet",
     "ScaleToCm",
+    "SequenceClassifier",
     "SocialMotionSummary",
     "SpeedAngvel",
     "TemporalStackingFeature",
@@ -259,6 +264,9 @@ __all__ = [
     "pairposedistancepca",
     "probability_ensemble",
     "scale_to_cm",
+    "sequence_classifier",
+    "sequence_heads",
+    "sequence_training",
     "social_motion_summary",
     "speed_angvel",
     "temporal_stacking",

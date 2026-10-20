@@ -41,6 +41,7 @@ from .classifier_common import (
     DecisionThreshold,
     FitReporting,
     assemble_prediction,
+    balanced_class_weights,
     check_cross_validation,
     check_folds,
     deal_folds,
@@ -453,11 +454,8 @@ class XgboostFeature(FitReporting):
         """
         weighting = self.params.class_weight
         if weighting == "balanced":
-            class_counts = np.bincount(y_index, minlength=len(classes))
-            weights = np.where(
-                class_counts > 0,
-                len(y_index) / (len(classes) * class_counts),
-                0.0,
+            weights = balanced_class_weights(
+                np.bincount(y_index, minlength=len(classes))
             )
             return weights[y_index]
         if isinstance(weighting, Mapping):

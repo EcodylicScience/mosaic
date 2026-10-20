@@ -3,7 +3,7 @@
 
 # Features
 
-49 features are registered. Each one runs as
+50 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -1505,6 +1505,106 @@ Average or blend the class probabilities of several classifier runs.
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
     | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+
+### `sequence-classifier`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.sequence_classifier.SequenceClassifier`
+
+Neural sequence classifier: a registered head on runs of consecutive frames.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The extract-labeled-templates run whose train entries the model fits on. Only its template_provenance.parquet is read: the model trains on the frame runs of those entries, not on the sampled templates. An entry the run lists as test, or does not list, never trains. Mutually exclusive with model. |
+| `model` | `SequenceClassifierModelArtifact` \| `None` | _constructed_ |  | A pre-fitted SequenceClassifierModelArtifact to load instead of training. Mutually exclusive with templates. |
+| `labels` | `GroundTruthLabelsSource` \| `None` | `null` |  | The per-frame ground-truth labels that the frames of the training entries are aligned to, resolved from labels/<kind>/index.csv. A frame no label covers is left out of training. Required with templates. |
+| `columns` | list of `string` \| `None` | `null` |  | The payload columns the network reads, in this order. Unset, every numeric payload column of the inputs. A narrow set usually beats a wide one: 37 columns beat 562 to 999 on CalMS21. |
+| `head` | `string` | `"gru"` |  | The network. A built-in head is tcn (dilated convolutions), gru (a bidirectional GRU) or mlp (each frame by itself). A head registered in Python with register_head in the process that runs the step is named here too. |
+| `head_config` | `HeadConfig` \| `None` | `null` |  | The options of the chosen head. Unset, the head's defaults. tcn takes hidden (128), blocks (6), kernel_size (3, odd) and dropout (0.3). gru takes hidden (128), layers (2), bidirectional (true) and dropout (0.3). mlp takes hidden (128), layers (2) and dropout (0.3). Options that the chosen head does not have are refused. |
+| `head_revision` | `integer` | `0` | >= `0` | A number that the author of a head registered in Python raises when its code changes, so that a changed head is a new run. A built-in head ignores it, because the version of the step names its code. |
+| `input_dropout` | `number` | `0.1` | >= `0.0`, < `1.0` | Dropout applied to the input frames while training. |
+| `clip` | `number` | `10.0` | > `0.0` | Standardized values are limited to this many standard deviations on both sides, so that an outlier frame does not dominate a batch. |
+| `class_weight` | `"sqrt"` \| `"balanced"` \| `"none"` | `"sqrt"` |  | How the loss weighs a class. balanced weights it by the inverse of its frequency, sqrt by the square root of that, none equally. Each is scaled to a mean of 1 over the classes of the training runs. |
+| `crop_length` | `integer` | `1024` | >= `2` | The longest crop of a run in a training batch. A batch is cut to its shortest crop. [frames] |
+| `batch_size` | `integer` | `16` | >= `1` | The crops in a training batch. |
+| `steps` | `integer` | `2500` | >= `1` | How long each model trains, counted in batches. [steps] |
+| `learning_rate` | `number` | `0.001` | > `0.0` | The peak learning rate of the one-cycle schedule. |
+| `weight_decay` | `number` | `0.001` | >= `0.0` | The weight decay of the AdamW optimizer. |
+| `pct_start` | `number` | `0.1` | > `0.0`, < `1.0` | The share of the steps that the learning rate climbs for. |
+| `grad_clip` | `number` | `1.0` | > `0.0` | The norm that gradients are clipped to. |
+| `min_run` | `integer` | `64` | >= `2` | The shortest run of consecutive labeled rows that trains. A shorter run is left out. [frames] |
+| `random_state` | `integer` | `42` |  | The random seed of the batches, the initial weights and the dropout. The model fitted on every training run uses it as it is, and each fold's model a seed derived from it. |
+| `cv_folds` | `integer` \| `None` | `null` |  | Unset, one model is fitted and scores every entry. Set to K (at least 2), the training entries of the templates are dealt into K folds and K more models are fitted, each on the training runs outside one fold. A training entry is then scored by the model that did not see it, and every other entry by the model fitted on all training runs. The fold of each entry is in cv_folds.parquet. Needs templates and is refused beside model. |
+| `cv_seed` | `integer` | `0` |  | The seed that deals the training sequences into folds. It changes the folds and nothing else, so runs that differ in random_state are compared on the same folds. Other than 0 only with cv_folds. |
+| `device` | `"cpu"` \| `"cuda"` | `"cuda"` |  | Where the network trains. cuda needs a CUDA device and fails without one. cpu is for small fits and tests. The device is part of the run id, since a GPU and a CPU need not give one model. The step is offered to a GPU worker whichever it is. |
+| `apply_device` | `"cpu"` \| `"cuda"` | `"cpu"` |  | Where a fitted network predicts. A model fitted on a GPU applies on the CPU. It changes the time of an apply and not the model, so it is not part of the run id. Probabilities agree across devices to about 1e-5. |
+| `n_threads` | `integer` | `1` | >= `1` | The CPU threads a fit or an apply uses. It changes the time, not the model beyond rounding, so it is not part of the run id. One thread makes a CPU fit repeat across machines. |
+| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. Any row where no class clears its threshold is assigned default_class. |
+| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. |
+
+??? note "`GroundTruthLabelsSource`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"behavior"` | `"behavior"` |  | Fixed to behavior. Ground-truth labels always resolve to labels/behavior/. |
+    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
+    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
+    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+
+??? note "`HeadConfig`"
+
+    No parameters.
+
+??? note "`JoblibLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
+
+??? note "`LabeledTemplatesRef`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  | Feature name whose output to consume. |
+    | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
+    | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
+    | `pattern` | `string` | `"templates.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
+
+??? note "`NpzLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
+
+??? note "`ParquetLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+
+??? note "`SequenceClassifierModelArtifact`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"sequence-classifier"` |  | Feature name whose output to consume. |
+    | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
+    | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
+    | `pattern` | `string` | `"sequence_classifier_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
 ### `vame`
 

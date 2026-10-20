@@ -426,6 +426,7 @@ def test_a_lane_is_decided_from_what_a_step_declares() -> None:
         "train-pose": "gpu-train",
         "train-sleap": "gpu-train",
         "feral": "gpu-train",
+        "sequence-classifier": "gpu-train",
         "kpms": "gpu-train",
         "vame": "gpu-train",
         "global-identity-model": "gpu-train",

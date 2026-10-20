@@ -78,6 +78,7 @@ from .classifier_common import (
     DecisionThreshold,
     RunningMoments,
     assemble_prediction,
+    refuse_entries_outside_scope,
     standardize,
     write_bundle,
 )
@@ -717,20 +718,15 @@ class LightningActionFeature:
                     classes.update(int(c) for c in np.unique(labels[start:stop]))
                     n_runs += 1
 
-        absent = sorted(
-            entry
-            for entry in self._train_entries
-            if entry in self._label_files and entry not in seen
+        refuse_entries_outside_scope(
+            self.name,
+            "train entries of the templates run",
+            self._train_entries,
+            self._label_files,
+            seen,
+            consequence="The model would train on fewer entries than its templates name.",
+            remedy="Add them to the scope, or apply a model fitted elsewhere through `model`",
         )
-        if absent:
-            shown = ", ".join(f"{group}/{sequence}" for group, sequence in absent[:5])
-            msg = (
-                f"[{self.name}] {len(absent)} train entries of the templates run "
-                f"have labels and are not in this step's scope: {shown}. The model "
-                "would train on fewer entries than its templates name. Add them to "
-                "the scope, or apply a model fitted elsewhere through `model`"
-            )
-            raise ValueError(msg)
         if unlabeled_entries or too_short or past_last_window:
             print(
                 f"[lightning-action] {unlabeled_entries} train entries have no label "

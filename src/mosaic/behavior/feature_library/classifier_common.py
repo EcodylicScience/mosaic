@@ -14,7 +14,7 @@ can use it without one.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Container, Mapping
 from typing import TYPE_CHECKING, Annotated, Final
 
 import numpy as np
@@ -42,6 +42,7 @@ __all__ = [
     "FitReporting",
     "RunningMoments",
     "assemble_prediction",
+    "balanced_class_weights",
     "check_cross_validation",
     "check_folds",
     "deal_folds",
@@ -49,6 +50,7 @@ __all__ = [
     "fold_rows",
     "fold_table",
     "predicted_labels",
+    "refuse_entries_outside_scope",
     "standardize",
     "write_bundle",
 ]
@@ -219,11 +221,17 @@ class RunningMoments:
         self.mean = self.mean + delta * share
         self.count = total
 
-    def standardizer(self) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    def standardizer(
+        self, min_std: float = 0.0
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Return the mean and the standard deviation to standardize by.
 
-        A column with no finite value has mean 0, and one with no spread has a
-        standard deviation of 1, so that standardizing leaves neither undefined.
+        A column with no finite value has mean 0, and one whose standard
+        deviation is not above *min_std* has a standard deviation of 1, so that
+        standardizing leaves neither undefined.
+
+        Args:
+            min_std: The spread under which a column counts as constant.
         """
         variance = np.divide(
             self.squares,
@@ -232,7 +240,7 @@ class RunningMoments:
             where=self.count > 0,
         )
         std = np.sqrt(variance)
-        return self.mean, np.where(std > 0.0, std, 1.0)
+        return self.mean, np.where(std > min_std, std, 1.0)
 
 
 def standardize(
@@ -445,3 +453,63 @@ def write_bundle(path: Path, bundle: object) -> None:
     import joblib
 
     atomic_write(path, lambda temporary: joblib.dump(bundle, temporary))
+
+
+# --- Class weights ---
+
+
+def balanced_class_weights(counts: npt.NDArray[np.intp]) -> npt.NDArray[np.float64]:
+    """Return the inverse-frequency weight of each class: ``total / (classes * count)``.
+
+    A class with no row has weight 0.
+
+    Args:
+        counts: The rows of each class, in the order of the classes.
+    """
+    return np.where(
+        counts > 0, counts.sum() / (len(counts) * np.maximum(counts, 1)), 0.0
+    )
+
+
+# --- Entries ---
+
+
+def refuse_entries_outside_scope(
+    feature: str,
+    who: str,
+    expected: Collection[tuple[str, str]],
+    labeled: Container[tuple[str, str]],
+    seen: Collection[tuple[str, str]],
+    *,
+    consequence: str,
+    remedy: str,
+) -> None:
+    """Refuse a fit that is missing an entry it was fitted for.
+
+    A fit that streams its inputs sees the entries of its scope. An entry that the
+    fit names, that has labels, and that the stream did not deliver would leave a
+    model fitted on fewer entries than its inputs say.
+
+    Args:
+        feature: The feature, which the refusal names.
+        who: What *expected* are, as the refusal says "N <who> have labels".
+        expected: The entries the fit is for.
+        labeled: The entries that have a label file.
+        seen: The entries that the stream delivered.
+        consequence: What the fit would then do.
+        remedy: What to do about it.
+
+    Raises:
+        ValueError: An entry of *expected* has labels and is not in *seen*.
+    """
+    absent = sorted(
+        entry for entry in expected if entry in labeled and entry not in seen
+    )
+    if not absent:
+        return
+    shown = ", ".join(f"{group}/{sequence}" for group, sequence in absent[:5])
+    msg = (
+        f"[{feature}] {len(absent)} {who} have labels and are not in this step's "
+        f"scope: {shown}. {consequence} {remedy}"
+    )
+    raise ValueError(msg)

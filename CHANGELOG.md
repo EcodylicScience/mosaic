@@ -27,6 +27,37 @@ version, bundle key or parameter changes, and two behaviors are fixed.
 - `helpers.iter_series_positions` yields the row positions of each series, ordered by
   frame, and the apply of `lightning-action` uses it.
 
+**`sequence-classifier` fits a neural network on runs of consecutive frames.** Small
+sequence networks matched XGBoost on CalMS21 in agent runs that trained them outside
+mosaic, and `lightning-action` did not (a unidirectional LSTM, a constant learning rate,
+fixed windows). The step is new, so no run id moves.
+
+- A `head` is a registered network: `tcn` (dilated convolutions), `gru` (bidirectional)
+  and `mlp` are built in, `head_config` holds the options of the chosen head, and
+  `register_head` adds a head of your own in the process that runs the step. A head
+  registered in a notebook is invisible to the command line and to a queue worker.
+- It trains on random crops of whole runs of consecutive labeled frames of each series
+  (one per `id`, or per `(id1, id2, perspective)`), with AdamW under a one-cycle schedule
+  and square-root class weights, and predicts a whole series in one pass. A series is cut
+  at a gap in its frames. The defaults are those of the agent's scripts, and a test
+  checks the loop against a copy of them. Frames are standardized by the training
+  frames' statistics, stored with the model.
+- `cv_folds` and `cv_seed` deal the folds as `xgboost` does, so two classifiers on one
+  templates run share them, and fit one network without each fold. `cv_folds.parquet`
+  counts labeled frames where `xgboost`'s counts sampled template rows. The fit reads its
+  stream, so widening the scope from the training groups to train plus test is a new run
+  that fits again. Splitting fitting from applying, planned for every classifier, removes
+  the refit.
+- `device` (`cpu` or `cuda`, default `cuda`) is part of the run id, because a GPU and a CPU
+  need not give one model. `apply_device` and `n_threads` are not, and a fitted network
+  applies on a CPU. A CPU fit repeats at one thread count. The torch version, the CUDA
+  version and the GPU are recorded with the model.
+- The step declares `resource_class` `gpu`, so it is offered to a `gpu-train` worker. It
+  needs the `deep-learning` extra. A schedule needs `pct_start * steps` above 1.
+- The shared module gains `balanced_class_weights`, `refuse_entries_outside_scope` and a
+  `min_std` for the standardizer. `xgboost`, `lightning-action` and the ensemble use them
+  with no change in behavior.
+
 **`probability-ensemble` averages or blends the probabilities of classifier runs.** A
 seed average, or a CV-chosen blend of different models, was a script over the parquet
 output of the members. The step reads two or more runs that write `prob_<class>`

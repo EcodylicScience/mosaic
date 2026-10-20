@@ -21,6 +21,7 @@ from mosaic.behavior.feature_library.classifier_common import (
     FitReporting,
     RunningMoments,
     assemble_prediction,
+    balanced_class_weights,
     check_cross_validation,
     check_folds,
     deal_folds,
@@ -28,6 +29,7 @@ from mosaic.behavior.feature_library.classifier_common import (
     fold_rows,
     fold_table,
     predicted_labels,
+    refuse_entries_outside_scope,
     standardize,
     write_bundle,
 )
@@ -164,6 +166,71 @@ def test_a_missing_value_standardizes_to_the_mean_and_a_clip_bounds_the_rest() -
     assert plain[:, 1].tolist() == [50.0, -50.0, 0.5]
     assert clipped[:, 1].tolist() == [10.0, -10.0, 0.5]
     assert clipped[1, 0] == 1.0
+
+
+def test_a_column_under_the_minimum_spread_standardizes_by_one() -> None:
+    matrix = np.column_stack([np.arange(10.0), 1e-9 * np.arange(10.0)])
+    moments = RunningMoments(2)
+    moments.add(matrix)
+
+    _, default = moments.standardizer()
+    _, floored = moments.standardizer(min_std=1e-6)
+
+    assert default[1] == pytest.approx(np.std(matrix[:, 1]))
+    assert floored[1] == 1.0
+    assert floored[0] == default[0]
+
+
+# --- Class weights and entries ---
+
+
+def test_balanced_weights_are_the_inverse_of_a_classs_share_and_zero_for_an_absent_class() -> (
+    None
+):
+    counts = np.array([10, 30, 0, 60], dtype=np.intp)
+
+    weights = balanced_class_weights(counts)
+
+    np.testing.assert_allclose(
+        weights, [100 / (4 * 10), 100 / (4 * 30), 0.0, 100 / (4 * 60)]
+    )
+
+
+def test_a_fit_with_every_labeled_entry_of_its_set_is_not_refused() -> None:
+    expected = [("g", "a"), ("g", "b"), ("g", "c")]
+    labeled = {("g", "a"), ("g", "b")}
+
+    # "c" has no labels, so a stream without it loses nothing.
+    refuse_entries_outside_scope(
+        "clf",
+        "train entries",
+        expected,
+        labeled,
+        {("g", "a"), ("g", "b")},
+        consequence="C.",
+        remedy="R.",
+    )
+
+
+def test_a_fit_that_is_missing_a_labeled_entry_of_its_set_is_refused() -> None:
+    expected = [("g", "a"), ("g", "b"), ("g", "c"), ("g", "d")]
+    labeled = {("g", "a"), ("g", "b"), ("g", "c")}
+
+    with pytest.raises(ValueError) as caught:
+        refuse_entries_outside_scope(
+            "clf",
+            "train entries",
+            expected,
+            labeled,
+            {("g", "a"), ("g", "d")},
+            consequence="Only a.",
+            remedy="Fix it.",
+        )
+
+    assert str(caught.value) == (
+        "[clf] 2 train entries have labels and are not in this step's scope: "
+        "g/b, g/c. Only a. Fix it."
+    )
 
 
 # --- Folds ---

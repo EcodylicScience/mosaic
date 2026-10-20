@@ -76,6 +76,7 @@ from .classifier_common import (
     DEFAULT_CLASS_DESCRIPTION,
     DecisionThreshold,
     assemble_prediction,
+    refuse_entries_outside_scope,
 )
 from .helpers import ensure_columns, entry_identity
 from .registry import register_feature
@@ -504,20 +505,18 @@ class ProbabilityEnsembleFeature:
             probability_blocks.append(probs[keep])
             truth_blocks.append(labels[keep])
 
-        absent = sorted(
-            entry
-            for entry in fit_entries
-            if entry in self._label_files and entry not in seen
+        refuse_entries_outside_scope(
+            self.name,
+            "entries of the members' folds",
+            fit_entries,
+            self._label_files,
+            seen,
+            consequence=(
+                "The weights would be chosen on fewer entries than the members "
+                "were fitted on."
+            ),
+            remedy="Add them to the scope",
         )
-        if absent:
-            shown = ", ".join(f"{group}/{sequence}" for group, sequence in absent[:5])
-            msg = (
-                f"[{self.name}] {len(absent)} entries of the members' folds have "
-                f"labels and are not in this step's scope: {shown}. The weights "
-                "would be chosen on fewer entries than the members were fitted on. "
-                "Add them to the scope"
-            )
-            raise ValueError(msg)
         if classes is None or not probability_blocks:
             msg = (
                 f"[{self.name}] no labeled frame of the members' fold entries "

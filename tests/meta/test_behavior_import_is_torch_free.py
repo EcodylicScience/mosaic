@@ -48,6 +48,11 @@ import mosaic.behavior.model_library.identity_classifier  # noqa: F401
 import mosaic.behavior.model_library.identity_common  # noqa: F401
 import mosaic.behavior.model_library.identity_embedding  # noqa: F401
 import mosaic.behavior.model_library.timm_backbone  # noqa: F401
+import mosaic.behavior.feature_library.classifier_common  # noqa: F401
+import mosaic.behavior.feature_library.probability_ensemble  # noqa: F401
+import mosaic.behavior.feature_library.sequence_classifier  # noqa: F401
+import mosaic.behavior.feature_library.sequence_heads  # noqa: F401
+import mosaic.behavior.feature_library.sequence_training  # noqa: F401
 
 assert "torch" not in sys.modules, "torch was imported despite the block"
 print("OK")
