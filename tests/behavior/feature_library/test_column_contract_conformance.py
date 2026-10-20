@@ -111,6 +111,7 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
         "morphological_structure_size": 0,
     },
     "pair-posedistance-pca": {"pose": {"pose_n": 3}},
+    "probability-ensemble": {"default_class": 0},
     "scale-to-cm": {"cm_per_pixel": 0.1},
     "xgboost": {
         "templates": {"step": "extract-labeled-templates"},
@@ -153,6 +154,7 @@ their one writer.
 SOURCES: dict[str, tuple[str, ...]] = {
     "attention-target": ("pair-facing",),
     "pair-wavelet": ("pair-posedistance-pca",),
+    "probability-ensemble": ("xgboost",),
 }
 """Inputs a feature reads in place of the tracks or :data:`MEASUREMENTS`.
 

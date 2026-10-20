@@ -74,6 +74,7 @@ from . import (
     pair_position,
     pair_wavelet,
     pairposedistancepca,
+    probability_ensemble,
     scale_to_cm,
     social_motion_summary,
     speed_angvel,
@@ -117,6 +118,7 @@ from .pair_interaction_filter import PairInteractionFilter
 from .pair_position import PairPositionFeatures
 from .pair_wavelet import PairWavelet
 from .pairposedistancepca import PairPoseDistancePCA
+from .probability_ensemble import ProbabilityEnsembleFeature
 from .scale_to_cm import ScaleToCm
 from .registry import FEATURES, register_feature
 from .social_motion_summary import SocialMotionSummary
@@ -201,6 +203,7 @@ __all__ = [
     "PairInteractionFilter",
     "PairPositionFeatures",
     "PairPoseDistancePCA",
+    "ProbabilityEnsembleFeature",
     "PairWavelet",
     "ScaleToCm",
     "SocialMotionSummary",
@@ -254,6 +257,7 @@ __all__ = [
     "pair_position",
     "pair_wavelet",
     "pairposedistancepca",
+    "probability_ensemble",
     "scale_to_cm",
     "social_motion_summary",
     "speed_angvel",

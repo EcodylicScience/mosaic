@@ -27,6 +27,25 @@ version, bundle key or parameter changes, and two behaviors are fixed.
 - `helpers.iter_series_positions` yields the row positions of each series, ordered by
   frame, and the apply of `lightning-action` uses it.
 
+**`probability-ensemble` averages or blends the probabilities of classifier runs.** A
+seed average, or a CV-chosen blend of different models, was a script over the parquet
+output of the members. The step reads two or more runs that write `prob_<class>`
+(`xgboost`, `lightning-action`, or another ensemble) and writes their weighted mean as a
+classifier would, `prob_<class>` and `predicted_label`. It is new, so no run id moves.
+
+- `weights` is `uniform`, a list with one weight per input, or `fit`. `fit` searches the
+  simplex on a grid of `grid_step` for the weights that maximize the pooled macro F1 of the
+  blend over `score_classes`, from the members' out-of-fold probabilities against `labels`.
+  It takes the first maximum in the grid's order, refuses a grid of more than 20,000
+  weight vectors, and refuses a member without a `cv_folds.parquet`, so an in-sample
+  probability never chooses a weight. Only `fit` reads its stream, so only a `fit` run holds
+  its scope in its run id. The report is `ensemble_report.json`.
+- When every input writes `cv_folds.parquet` and the tables agree on `group`, `sequence`
+  and `fold`, the step writes that table of its own, because an average of out-of-fold
+  probabilities is still out-of-fold. It refuses inputs of which some have a table and some
+  do not, and inputs whose folds differ. The count columns are not compared, since
+  `xgboost` counts sampled template rows.
+
 **`lightning-action` reads a pair table, and trains on frames in order.** It trained on
 the class-sampled templates, which hold no frame order, and normalized each file by its
 own statistics, so the temporal network that it fitted read neighbors that were not

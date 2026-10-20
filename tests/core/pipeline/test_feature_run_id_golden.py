@@ -400,6 +400,45 @@ CASES: tuple[Case, ...] = (
         inputs=[{"feature": "global-scaler"}],
         params={"templates": _TEMPLATES_REF, "default_class": 0},
     ),
+    # --- averaging and blending classifier runs ---
+    #
+    # Two runs of one classifier are the ensemble's inputs. Only weights "fit"
+    # reads its stream, so only that case's identifier holds the scope.
+    Case(
+        case_id="probability-ensemble/uniform",
+        feature="probability-ensemble",
+        inputs=[
+            {"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"},
+            {"feature": "xgboost", "run_id": "0.4-bbbbbbbbbb"},
+        ],
+        params={"default_class": 0},
+        scope=(("train", "s1"),),
+    ),
+    Case(
+        case_id="probability-ensemble/weights-listed",
+        feature="probability-ensemble",
+        inputs=[
+            {"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"},
+            {"feature": "xgboost", "run_id": "0.4-bbbbbbbbbb"},
+        ],
+        params={"default_class": 0, "weights": [2.0, 1.0]},
+    ),
+    Case(
+        case_id="probability-ensemble/fit",
+        feature="probability-ensemble",
+        inputs=[
+            {"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"},
+            {"feature": "xgboost", "run_id": "0.4-bbbbbbbbbb"},
+        ],
+        params={
+            "default_class": 0,
+            "weights": "fit",
+            "labels": {"kind": "behavior"},
+            "score_classes": [0, 1, 2],
+        },
+        scope=(("train", "s1"), ("train", "s2")),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
     # --- scoring against labels ---
     #
     # Both are scope-dependent: the entries scored, or the entries a label map

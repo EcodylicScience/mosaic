@@ -3,7 +3,7 @@
 
 # Features
 
-48 features are registered. Each one runs as
+49 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -1436,6 +1436,56 @@ Supervised temporal action segmentation via lightning-action.
     | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"lightning_action_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
+
+??? note "`NpzLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
+
+??? note "`ParquetLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+
+### `probability-ensemble`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.probability_ensemble.ProbabilityEnsembleFeature`
+
+Average or blend the class probabilities of several classifier runs.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `weights` | list of `number` \| `"uniform"` \| `"fit"` | `"uniform"` |  | How the members' probabilities are combined. uniform averages them. A list gives one non-negative weight per input, in the order of inputs, and the weights are scaled to sum to 1. fit chooses the weights that maximize the pooled macro F1 of the blend over the training entries of the members' cross-validation folds, which needs labels and members fitted with cv_folds. |
+| `labels` | `GroundTruthLabelsSource` \| `None` | `null` |  | The ground-truth labels that fit scores the blend against. Only with weights fit. |
+| `score_classes` | list of `integer` \| `None` | `null` |  | The classes that the macro F1 of fit averages over, such as every behavior but other. Unset, every class that a labeled frame has. Only with weights fit. |
+| `grid_step` | `number` | `0.05` | > `0.0`, <= `0.5` | The spacing of the weights that fit tries. It must divide 1, and the search refuses a grid of more than 20,000 weight vectors, which a coarser step or fewer members avoids. Only with weights fit. |
+| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. Any row where no class clears its threshold is assigned default_class. |
+| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. |
+
+??? note "`GroundTruthLabelsSource`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"behavior"` | `"behavior"` |  | Fixed to behavior. Ground-truth labels always resolve to labels/behavior/. |
+    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
+    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
+    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+
+??? note "`JoblibLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ??? note "`NpzLoadSpec`"
 
