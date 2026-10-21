@@ -24,6 +24,9 @@ one individual: `nearest-neighbor` reported `nn_id` 0, the detection's own id, a
   each entry keeps it.
 - The bridge no longer supplies an `id`. A table without one is refused as a failed
   entry, and nothing is published for it.
+- The inference bridge refuses a table in which a `frame` and `id` pair repeats, as a
+  failed entry, and publishes nothing for it. The trackers' bridge does not check this
+  yet.
 - The `id` of every `infer-*` op numbers the detections of one frame and names no
   animal across frames. A feature that follows `id` across frames needs a tracker's
   table.

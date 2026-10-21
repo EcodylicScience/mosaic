@@ -28,6 +28,7 @@ import pandas as pd
 from mosaic_media import MediaFacts
 
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.individuals import refuse_repeated_rows
 from mosaic.core.media.read_target import verified_read_facts
 from mosaic.core.media.timeline import concatenated_timeline
 from mosaic.core.pipeline.job import JobContext
@@ -508,12 +509,20 @@ def _bridge_df_to_tracks(
         Counts of the published table, which are ``(0, 0)`` for an empty one.
 
     Raises:
-        ValueError: If *timing* reports a frame rate that is not positive.
+        ValueError: If *timing* reports a frame rate that is not positive, or a
+            ``frame`` and ``id`` pair repeats, as when a producer reports two
+            detections of one frame under one number. Nothing is published.
         TrackSchemaError: If the table lacks a column that its schema requires,
             such as an ``id`` that its producer did not report. Nothing is
             published.
     """
     df = standard_inference_columns(df, group, sequence, timing)
+    if "id" in df.columns:
+        # One `id` twice in a frame is one individual in two places. Refused
+        # here, because a producer that loses its detection number publishes
+        # every detection as one animal, and the table still satisfies the
+        # schema. A table without `id` is refused by the validation below.
+        refuse_repeated_rows(df, f"{kind} table of {make_entry_key(group, sequence)}")
     return publish_tracks_table(
         ds,
         df,

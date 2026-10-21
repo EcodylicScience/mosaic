@@ -314,6 +314,23 @@ def test_a_table_without_an_id_is_refused_and_not_published(tmp_path: Path) -> N
     assert list(ds.get_root("tracks").rglob("*.parquet")) == []
 
 
+def test_a_table_in_which_a_frame_and_id_repeat_is_refused_and_not_published(
+    tmp_path: Path,
+) -> None:
+    """Two detections of one frame under one number fail their entry.
+
+    Published, they would be one individual in two places, in a table that
+    satisfies the schema.
+    """
+    ds = _dataset(tmp_path, "infer-points")
+    one_number = point_predictions().assign(detection_id=0)
+
+    with pytest.raises(ValueError, match="infer-points table of vid1: frame 0 of id 0"):
+        _ = _bridge_into(ds, "infer-points", one_number)
+
+    assert list(ds.get_root("tracks").rglob("*.parquet")) == []
+
+
 def test_the_localizer_table_has_the_same_types_with_and_without_a_row() -> None:
     """An empty localizer table is typed as a full one, column by column.
 
