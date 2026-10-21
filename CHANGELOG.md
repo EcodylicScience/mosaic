@@ -48,6 +48,29 @@ radius, is below `dor`. Two inputs of that step were wrong.
 The change shares the 0.5 of the `id` change above, and tables written under 0.4 or
 earlier should be re-run.
 
+**`infer-pose` and `infer-points` pass every detection argument the predictor reads.**
+Both called Ultralytics' `predict` with `device`, `conf` and `imgsz` alone, and left
+`iou`, `max_det`, `agnostic_nms`, `augment` and half precision at whatever the installed
+release defaults to. None of them entered the run id, so an environment built from a
+refreshed lock could compute different predictions under an id already on disk. Both
+ops now declare `max_det` (300), `agnostic_nms` (false) and `precision` (fp32), and
+`infer-pose` also declares `iou` (0.7). The runner passes these, with `augment` false,
+and spells precision `half` or `quantize` as the installed release takes it, as the
+tracker does. The defaults are what the locked Ultralytics 8.4.121 and POLO `dc3c45b`
+apply, so passing them changes no prediction in either locked environment.
+`infer-points` takes no `iou`, because POLO's locate NMS reads none.
+
+- `infer-pose` moves from 0.4 to 0.5, and `infer-points` takes the same 0.5 as the
+  `id` and `dor` changes above. `iou`, `max_det` and `agnostic_nms` enter the run id, and
+  `precision` does not, as for the tracker. Every run id and tracks variant of both
+  ops changes, and an existing run is recomputed rather than reused.
+  `infer-localizer` reads none of these arguments.
+- The tracks variant of both ops records the probe's `ultralytics_version` under
+  `observed`, beside the model, as the tracker's does.
+- The `ultralytics` tracker declares the same four fields from one place
+  (`tracking/common/detection_params.py`). Its identifiers do not move, and its `iou`
+  description no longer mentions the tracker.
+
 **The classifiers share their output, standardizer, fold and bundle code.** `xgboost` and
 `lightning-action` each assembled their `prob_` columns and `predicted_label`, applied
 the decision threshold, standardized, dealt cross-validation folds and wrote their bundle

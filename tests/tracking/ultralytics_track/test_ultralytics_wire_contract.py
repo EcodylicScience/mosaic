@@ -21,7 +21,7 @@ import dataclasses
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import override
+from typing import Literal, TypeAlias, override
 
 import numpy as np
 import pandas as pd
@@ -58,6 +58,7 @@ from tests.helpers import (
     FakeResult,
     install_fake_point_probe,
     install_fake_pose_probe,
+    install_ultralytics_config,
     make_dataset,
     stub_media_dataset,
     write_painted_entry,
@@ -68,6 +69,9 @@ from tests.helpers import (
 pytestmark = pytest.mark.tracker
 
 _N_KEYPOINTS = 2
+
+InferKind: TypeAlias = Literal["infer-pose", "infer-points"]
+"""The two inference ops whose runner is this program."""
 
 
 # --- the runner program, imported rather than spawned ----------------------
@@ -509,14 +513,18 @@ def _infer_in_process(
     runner_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    kind: str,
+    kind: InferKind,
     params: dict[str, object],
     weights: _FindsOneOfEach,
+    *,
+    quantize: bool = True,
 ) -> Dataset:
     """Run *kind* with *params* over a twenty-frame clip at 25 fps.
 
     The runner program runs in this process, through its own parser, request
-    models, reader and frame loop. Only the probe and *weights* are stood in for.
+    models, reader and frame loop. Only the probe, *weights* and the release's
+    shipped configuration, whose half-precision keyword *quantize* picks, are
+    stood in for.
     """
     ds = make_dataset(tmp_path / "ds")
     _ = write_painted_entry(ds, "sess", [(20, 25.0)], _gray)
@@ -527,6 +535,7 @@ def _infer_in_process(
         _ = install_fake_pose_probe(monkeypatch)
     else:
         _ = install_fake_point_probe(monkeypatch)
+    _ = install_ultralytics_config(monkeypatch, quantize=quantize)
 
     def loaded_for(_request: object) -> _FindsOneOfEach:
         return weights
@@ -562,7 +571,7 @@ def test_a_windowed_run_publishes_the_frames_that_the_runner_read(
     runner_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    kind: str,
+    kind: InferKind,
     requires_ffmpeg: None,
 ) -> None:
     """``start_frame`` 5 and ``frame_step`` 2 publish frames 5, 7, 9 and so on."""
@@ -621,3 +630,57 @@ def test_point_suppression_takes_the_stated_dor_or_else_the_checkpoints(
     assert recorder.calls
     for call in recorder.calls:
         assert {key: call[key] for key in ("dor", "radii") if key in call} == expected
+
+
+@pytest.mark.media
+@pytest.mark.parametrize("kind", ["infer-pose", "infer-points"])
+@pytest.mark.parametrize(
+    ("quantize", "half_precision"),
+    [(True, {"quantize": "fp16"}), (False, {"half": True})],
+    ids=["quantize", "half"],
+)
+def test_the_predictor_receives_every_detection_argument(
+    runner_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kind: InferKind,
+    quantize: bool,
+    half_precision: dict[str, object],
+    requires_ffmpeg: None,
+) -> None:
+    """No detection argument is left to the installed release's default.
+
+    A lock refresh could retune a default under an identifier already minted.
+    Precision travels under the keyword the installed release takes, and
+    ``iou`` reaches the pose predictor alone, because POLO's locate NMS reads
+    none. The weights record no checkpoint, so ``infer-points`` sends no
+    ``dor`` or radii.
+    """
+    params: dict[str, object] = {
+        "conf_threshold": 0.4,
+        "imgsz": 320,
+        "max_det": 50,
+        "agnostic_nms": True,
+        "precision": "fp16",
+    }
+    expected: dict[str, object] = {
+        "device": "0",
+        "conf": 0.4,
+        "imgsz": 320,
+        "max_det": 50,
+        "agnostic_nms": True,
+        "augment": False,
+        "verbose": False,
+        **half_precision,
+    }
+    if kind == "infer-pose":
+        params["iou"] = 0.5
+        expected["iou"] = 0.5
+    recorder = _RecordsItsArguments()
+
+    _ = _infer_in_process(
+        runner_module, monkeypatch, tmp_path, kind, params, recorder, quantize=quantize
+    )
+
+    assert recorder.calls
+    assert all(call == expected for call in recorder.calls), recorder.calls

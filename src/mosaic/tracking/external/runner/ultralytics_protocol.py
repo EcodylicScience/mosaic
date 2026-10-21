@@ -681,7 +681,12 @@ class InferRequestBase(BaseModel):
 
     conf: float
     imgsz: int
+    max_det: int
+    agnostic_nms: bool
     device: str
+    precision: Precision
+    """Spelled for the installed Ultralytics by the runner."""
+
     start_frame: int
     end_frame: int | None
     frame_step: int
@@ -697,6 +702,9 @@ class InferPoseRequest(InferRequestBase):
     """How many keypoints each row carries, from the probe. A term of the column
     contract, like ``columns`` itself, and the count this run's predictions are
     checked against."""
+
+    iou: float
+    """The NMS IoU threshold. Pose only: POLO's locate NMS reads none."""
 
 
 class InferPointsRequest(InferRequestBase):

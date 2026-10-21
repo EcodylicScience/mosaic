@@ -19,7 +19,7 @@ its ``source_abs_path``.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Callable, Final, TypeAlias
@@ -78,6 +78,12 @@ from mosaic.tracking.common.bridge import (
     BridgeCounts,
     publish_or_record,
     publish_tracks_table,
+)
+from mosaic.tracking.common.detection_params import (
+    AgnosticNms,
+    InferencePrecision,
+    IouThreshold,
+    MaxDetections,
 )
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
 from mosaic.tracking.common.scope import refuse_unjoinable
@@ -201,6 +207,20 @@ PerVideo: TypeAlias = Callable[[VideoInput], VideoPredictions]
 """What an op does with one entry's video."""
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedModel:
+    """An op's model, checked by its preflight and ready for each entry's video.
+
+    ``observed`` is what the preflight learned about the machine that runs the
+    model: for the two Ultralytics ops, which release the environment holds. It
+    is recorded beside the tracks variant as provenance and enters no
+    identifier.
+    """
+
+    per_video: PerVideo
+    observed: Mapping[str, str]
+
+
 # --- Params --------------------------------------------------------------
 
 
@@ -291,8 +311,25 @@ class _InferParamsBase(MediaInputParams):
     window_fields = _WINDOW_FIELDS
 
 
-class PoseInferParams(_InferParamsBase):
+class _UltralyticsInferParams(_InferParamsBase):
+    """What both Ultralytics inference ops predict with besides the base settings.
+
+    Every detection argument the predictor reads is a field and is passed
+    explicitly, so an upstream retune of a default cannot re-mean an identifier
+    already minted. The defaults are the ones the pinned Ultralytics and POLO
+    releases apply. ``infer-localizer`` runs mosaic's own network, which reads
+    none of them, so they are declared here rather than on the base.
+    """
+
+    max_det: MaxDetections = 300
+    agnostic_nms: AgnosticNms = False
+    precision: InferencePrecision = "fp32"
+
+
+class PoseInferParams(_UltralyticsInferParams):
     op_kind = "infer-pose"
+
+    iou: IouThreshold = 0.7
 
 
 _DOR_DESCRIPTION = (
@@ -303,7 +340,9 @@ _DOR_DESCRIPTION = (
 )
 
 
-class PointInferParams(_InferParamsBase):
+# No `iou`: POLO's locate NMS suppresses by distance over radius and never reads
+# one, so the field would key a run and change nothing.
+class PointInferParams(_UltralyticsInferParams):
     op_kind = "infer-points"
 
     dor: Annotated[float | None, Declared(_DOR_DESCRIPTION)] = None
@@ -759,7 +798,7 @@ def _run_inference_op(
     kind: str,
     version: str,
     declared: ModelReference,
-    per_video_for: Callable[[str], PerVideo],
+    prepare_model: Callable[[str], PreparedModel],
 ) -> str:
     """Shared scaffold: resolve model, preflight, loop scoped videos, predict, bridge.
 
@@ -853,8 +892,10 @@ def _run_inference_op(
     # and that must not leave a tracks variant behind naming it.
     #
     # Nothing it reports reaches an identifier. Which environment ran, and what
-    # version it holds, are properties of the machine.
-    per_video = per_video_for(str(model.path))
+    # version it holds, are properties of the machine, recorded beside the
+    # variant as provenance.
+    prepared = prepare_model(str(model.path))
+    per_video = prepared.per_video
 
     # The tracks variant these predictions will be bridged into, recorded beside
     # the tables. Same payload as the op run above, so the two identifiers
@@ -868,7 +909,7 @@ def _run_inference_op(
         kind,
         version,
         infer_variant_payload(params.identity_dump(), model_id, media=params.media),
-        observed=observed_model_source(model),
+        observed={**observed_model_source(model), **prepared.observed},
     )
 
     ctx.set_total(len(work))
@@ -1060,7 +1101,12 @@ class InferPoseOp(Op[PoseInferParams]):
     # `frame_step` a row's `frame` is now the frame that the model read, not its
     # place among the frames read. New runs mint new identifiers, and tables
     # written before keep theirs.
-    version = "0.4"
+    # 0.5 because `iou`, `max_det`, `agnostic_nms`, `augment` and precision are
+    # now passed to the predictor rather than left to the installed release, and
+    # the first three enter the identifier. The defaults are what the pinned
+    # releases applied, so a run in a locked environment predicts what it did
+    # under 0.4, and an upstream retune can no longer re-mean an identifier.
+    version = "0.5"
     scope_takes = "any"
     scope_dependent = False
     model_reference = _POSE_MODEL
@@ -1099,7 +1145,7 @@ class InferPoseOp(Op[PoseInferParams]):
             run_pose_inference_tool,
         )
 
-        def per_video_for(model_path: str) -> PerVideo:
+        def prepare_model(model_path: str) -> PreparedModel:
             probe = probe_environment(
                 model_path,
                 env=ULTRALYTICS_ENV,
@@ -1119,8 +1165,12 @@ class InferPoseOp(Op[PoseInferParams]):
                     columns=pose_columns(n_keypoints),
                     task="pose",
                     conf=params.conf_threshold,
+                    iou=params.iou,
                     imgsz=params.imgsz,
+                    max_det=params.max_det,
+                    agnostic_nms=params.agnostic_nms,
                     device=params.device,
+                    precision=params.precision,
                     start_frame=params.start_frame,
                     end_frame=params.end_frame,
                     frame_step=params.frame_step,
@@ -1142,7 +1192,10 @@ class InferPoseOp(Op[PoseInferParams]):
                     outcome.predictions_path,
                 )
 
-            return per_video
+            return PreparedModel(
+                per_video,
+                observed={"ultralytics_version": probe.ultralytics_version},
+            )
 
         return _run_inference_op(
             ds,
@@ -1152,7 +1205,7 @@ class InferPoseOp(Op[PoseInferParams]):
             kind=self.kind,
             version=self.version,
             declared=_POSE_MODEL,
-            per_video_for=per_video_for,
+            prepare_model=prepare_model,
         )
 
 
@@ -1179,6 +1232,9 @@ class InferPointsOp(Op[PointInferParams]):
     # suppression. Runs before it suppressed at POLO's own 0.3 whatever `dor`
     # their identifier records, and at a radius of one pixel for a checkpoint
     # whose training dataset config was not on the machine.
+    # The same 0.5 covers the detection arguments, which are passed rather than
+    # left to the installed release, for the reason `infer-pose` gives above,
+    # without `iou`.
     version = "0.5"
     scope_takes = "any"
     scope_dependent = False
@@ -1215,7 +1271,7 @@ class InferPointsOp(Op[PointInferParams]):
             run_point_inference_tool,
         )
 
-        def per_video_for(model_path: str) -> PerVideo:
+        def prepare_model(model_path: str) -> PreparedModel:
             probe = probe_environment(
                 model_path,
                 env=POLO_ENV,
@@ -1235,7 +1291,10 @@ class InferPointsOp(Op[PointInferParams]):
                     task="locate",
                     conf=params.conf_threshold,
                     imgsz=params.imgsz,
+                    max_det=params.max_det,
+                    agnostic_nms=params.agnostic_nms,
                     device=params.device,
+                    precision=params.precision,
                     start_frame=params.start_frame,
                     end_frame=params.end_frame,
                     frame_step=params.frame_step,
@@ -1259,7 +1318,10 @@ class InferPointsOp(Op[PointInferParams]):
                     outcome.predictions_path,
                 )
 
-            return per_video
+            return PreparedModel(
+                per_video,
+                observed={"ultralytics_version": probe.ultralytics_version},
+            )
 
         return _run_inference_op(
             ds,
@@ -1269,7 +1331,7 @@ class InferPointsOp(Op[PointInferParams]):
             kind=self.kind,
             version=self.version,
             declared=_POINTS_MODEL,
-            per_video_for=per_video_for,
+            prepare_model=prepare_model,
         )
 
 
@@ -1316,7 +1378,7 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
             run_localizer_inference,
         )
 
-        def per_video_for(model_path: str) -> PerVideo:
+        def prepare_model(model_path: str) -> PreparedModel:
             def per_video(item: VideoInput) -> VideoPredictions:
                 detections = run_localizer_inference(
                     model_path,
@@ -1339,7 +1401,8 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
                     localizer_detections_to_dataframe(detections), len(detections)
                 )
 
-            return per_video
+            # Mosaic's own network, in this process: no tool release to record.
+            return PreparedModel(per_video, observed={})
 
         return _run_inference_op(
             ds,
@@ -1350,7 +1413,7 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
             version=self.version,
             declared=_LOCALIZER_MODEL,
             # Reads a store natively, through mosaic's own reader.
-            per_video_for=per_video_for,
+            prepare_model=prepare_model,
         )
 
 

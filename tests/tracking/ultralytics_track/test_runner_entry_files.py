@@ -15,7 +15,6 @@ stores, against stand-in weights.
 
 from __future__ import annotations
 
-import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,6 +68,7 @@ from tests.helpers import (
     index_media_sequence,
     install_fake_pose_inference,
     install_fake_ultralytics,
+    install_ultralytics_config,
     make_dataset,
     paint_frame_code,
     point_at_a_store,
@@ -196,17 +196,11 @@ class _Weights:
 def weights(monkeypatch: pytest.MonkeyPatch) -> _Weights:
     """Install an ``ultralytics`` package whose ``YOLO`` loads one :class:`_Weights`.
 
-    ``ultralytics.utils`` holds the default configuration the runner reads to
-    spell half precision, as a current release ships it.
+    Its configuration spells half precision as a current release does.
     """
     loaded = _Weights()
-    package = ModuleType("ultralytics")
-    monkeypatch.setattr(package, "__path__", [], raising=False)
+    package = install_ultralytics_config(monkeypatch)
     monkeypatch.setattr(package, "YOLO", loaded.load, raising=False)
-    utils = ModuleType("ultralytics.utils")
-    monkeypatch.setattr(utils, "DEFAULT_CFG_DICT", {"quantize": None}, raising=False)
-    monkeypatch.setitem(sys.modules, "ultralytics", package)
-    monkeypatch.setitem(sys.modules, "ultralytics.utils", utils)
     return loaded
 
 

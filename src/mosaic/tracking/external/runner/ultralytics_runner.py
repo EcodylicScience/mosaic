@@ -256,6 +256,13 @@ def _quantize_spelling() -> QuantizeSpelling:
     return "quantize" if "quantize" in DEFAULT_CFG_DICT else "half"
 
 
+def _precision_kwarg(precision: Precision) -> dict[str, object]:
+    """The half-precision argument, spelled for the installed Ultralytics."""
+    if _quantize_spelling() == "quantize":
+        return {"quantize": precision}
+    return {"half": precision == "fp16"}
+
+
 def run_probe(request: ProbeRequest) -> ProbeResponse:
     """Report what this environment holds, refusing nothing.
 
@@ -335,13 +342,6 @@ def run_tracker_defaults(request: TrackerDefaultsRequest) -> TrackerDefaultsResp
 
 
 # --- track -----------------------------------------------------------------
-
-
-def _precision_kwarg(precision: Precision) -> dict[str, object]:
-    """The half-precision argument, spelled for the installed Ultralytics."""
-    if _quantize_spelling() == "quantize":
-        return {"quantize": precision}
-    return {"half": precision == "fp16"}
 
 
 def _track_kwargs(request: TrackRequest) -> dict[str, object]:
@@ -776,21 +776,22 @@ def run_track(request: TrackRequest) -> TrackResponse:
 def _infer_kwargs(request: InferRequestBase) -> dict[str, object]:
     """The arguments every frame of this video is predicted with.
 
-    Four, and deliberately not the full explicit set :func:`_track_kwargs`
-    passes. Single-model inference has always left ``iou``, ``max_det``,
-    ``agnostic_nms``, ``augment`` and half precision at Ultralytics' shipped
-    defaults, and pinning them here would change what these ops produce rather
-    than move where they produce it. That leaves the exposure the tracker closed
-    -- an upstream retune can still re-mean an identifier already on disk -- which
-    is recorded as its own defect rather than fixed in passing.
+    Every detection-affecting argument is passed explicitly, for the reason
+    :func:`_track_kwargs` gives: an upstream retune cannot silently re-mean an
+    identifier mosaic already minted. ``iou`` is added by the pose op alone,
+    because POLO's locate NMS never reads it.
     """
     return {
         "device": request.device,
         "conf": request.conf,
         "imgsz": request.imgsz,
+        "max_det": request.max_det,
+        "agnostic_nms": request.agnostic_nms,
+        "augment": False,
         # False so the tool does not chatter over the progress lines, which are
         # what mosaic's inactivity watchdog reads.
         "verbose": False,
+        **_precision_kwarg(request.precision),
     }
 
 
@@ -939,10 +940,12 @@ def _loaded_for(request: InferRequestBase) -> object:
 def run_infer_pose(request: InferPoseRequest) -> InferResponse:
     """Run one entry through a YOLO pose model and write its raw predictions."""
     model: _Predictor[PoseResult] = _loaded_for(request)
+    kwargs = _infer_kwargs(request)
+    kwargs["iou"] = request.iou
     outcome = _infer_frames(
         request,
         model,
-        _infer_kwargs(request),
+        kwargs,
         lambda result, frame_index: pose_rows_from_result(
             result, frame_index, n_keypoints=request.n_keypoints
         ),

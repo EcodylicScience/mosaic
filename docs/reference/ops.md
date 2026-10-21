@@ -212,7 +212,7 @@ Track scoped videos with a YOLO model, bridging results into ``tracks/``.
 | `tracker` | `"botsort"` \| `"bytetrack"` \| `"deepocsort"` \| `"fasttrack"` \| `"ocsort"` \| `"tracktrack"` | `"bytetrack"` |  | Which backend associates detections across frames. bytetrack is the default rather than Ultralytics' own, because botsort, deepocsort and tracktrack default to optical-flow camera motion compensation whose RANSAC is unseeded, and a run under one of those is not reproducible bit for bit. bytetrack constructs no motion estimator. The others stay one parameter away and are the right choice for a moving camera. |
 | `tracker_overrides` | `BotsortConfig` \| `BytetrackConfig` \| `DeepocsortConfig` \| `FasttrackConfig` \| `OcsortConfig` \| `TracktrackConfig` \| `None` | `null` |  | The chosen backend's settings. Every setting that backend has appears here with its declared default, so a caller states the ones it cares about and leaves the rest. Identity records the fully resolved table: restating a default mints the same identifier as passing nothing, and changing one setting mints a different one. |
 | `conf` | `number` | `0.1` | > `0.0`, <= `1.0` | The minimum detection confidence. Ultralytics' track mode replaces a falsy confidence with 0.1, so its documented predict default of 0.25 never applies here and 0.0 would be recorded as 0.0 and run as 0.1. The lower bound refuses that one value. |
-| `iou` | `number` | `0.7` | >= `0.0`, <= `1.0` | The NMS IoU threshold for suppressing overlapping detections before they reach the tracker. |
+| `iou` | `number` | `0.7` | >= `0.0`, <= `1.0` | The NMS IoU threshold for suppressing overlapping detections. |
 | `imgsz` | `integer` | `640` | > `0` | The side each frame is letterboxed to for inference. Predictions are mapped back to source pixels, so this changes what the detector sees rather than what the coordinates mean. [px] |
 | `max_det` | `integer` | `300` | > `0` | The most detections kept from one frame. |
 | `classes` | list of `integer` \| `None` | `null` |  | Which detector class indexes to keep. Unset keeps every class. Identity records the set sorted and de-duplicated, so the order a filter was typed in does not move the identifier. |
@@ -416,11 +416,14 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 | `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `batch_size` | `integer` | `8` |  | How many frames the model reads in one forward pass. |
 | `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
+| `max_det` | `integer` | `300` | > `0` | The most detections kept from one frame. |
+| `agnostic_nms` | `boolean` | `false` |  | Suppress overlapping detections across classes instead of within each one. |
+| `precision` | `"fp32"` \| `"fp16"` | `"fp32"` |  | The numeric precision inference runs at. fp16 halves the memory a batch needs and can move a detection across a threshold. |
 | `dor` | `number` \| `None` | `null` |  | Distance-over-radius threshold of POLO's point suppression. A point whose distance to a higher-scoring point, divided by its radius, is below it is dropped. Unset uses the threshold the checkpoint was trained with, or POLO's 0.3 for a checkpoint that records none. |
 
 #### `infer-pose`
 
-Version `0.4` &middot; `mosaic.tracking.ops.infer.InferPoseOp`
+Version `0.5` &middot; `mosaic.tracking.ops.infer.InferPoseOp`
 
 Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 
@@ -438,6 +441,10 @@ Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 | `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `batch_size` | `integer` | `8` |  | How many frames the model reads in one forward pass. |
 | `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
+| `max_det` | `integer` | `300` | > `0` | The most detections kept from one frame. |
+| `agnostic_nms` | `boolean` | `false` |  | Suppress overlapping detections across classes instead of within each one. |
+| `precision` | `"fp32"` \| `"fp16"` | `"fp32"` |  | The numeric precision inference runs at. fp16 halves the memory a batch needs and can move a detection across a threshold. |
+| `iou` | `number` | `0.7` | >= `0.0`, <= `1.0` | The NMS IoU threshold for suppressing overlapping detections. |
 
 ### train
 

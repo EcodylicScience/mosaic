@@ -320,6 +320,7 @@ from tests.helpers.ultralytics import (
     FakeUltralytics,
     ULTRALYTICS_KEYPOINTS,
     install_fake_ultralytics,
+    install_ultralytics_config,
     ultralytics_probe_response,
     write_ultralytics_predictions,
 )
@@ -469,6 +470,7 @@ __all__ = [
     "invoke_json",
     "invoke_ok",
     "install_fake_ultralytics",
+    "install_ultralytics_config",
     "isolate_tool_location",
     "journal_source",
     "keypoint_rows",

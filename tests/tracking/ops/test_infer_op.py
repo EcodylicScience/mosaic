@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypeAlias
 
 import pandas as pd
 import pytest
@@ -16,6 +17,12 @@ import pytest
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.tracking.external.runner.ultralytics_protocol import InferPointsRequest
+from mosaic.tracking.ops.infer import (
+    LocalizerInferParams,
+    PointInferParams,
+    PoseInferParams,
+    infer_run_id,
+)
 from mosaic.tracking.pose_training.ultralytics_infer import InferenceOutcome
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir, run_log_path
 from mosaic.tracking import resolve_model
@@ -61,6 +68,16 @@ def test_infer_pose_bridges_to_tracks(tmp_path, monkeypatch):
         assert {"X", "Y"} <= set(tdf.columns)
         assert (tdf["X"] == 3.0).all()  # mean(1.0, 5.0)
         assert (tdf["Y"] == 5.0).all()  # mean(2.0, 8.0)
+
+    # Which Ultralytics the environment held, as provenance beside the variant.
+    from mosaic.core.pipeline.tracks_identity import read_tracks_variant
+
+    (variant,) = {
+        ds.resolve_path(str(path)).parent.name for path in tracks_idx["abs_path"]
+    }
+    sidecar = read_tracks_variant(ds.get_root("tracks"), variant)
+    assert sidecar is not None
+    assert sidecar.observed["ultralytics_version"] == "8.4.63"
 
     # The audit parquet per sequence, under _tracking rather than a root of its
     # own. There is no inference index to assert against any more: the edge from
@@ -117,6 +134,8 @@ def test_infer_points_runs_and_bridges(
     assert sidecar is not None
     digest = resolve_model(ds, str(model), "train-points").digest
     assert recorded_models(sidecar) == (digest,)
+    # And the POLO release the probe reported, which enters no identifier.
+    assert sidecar.observed["ultralytics_version"] == "8.4.84"
 
     # A point detector already reports the body centre; only its name was
     # wrong. The bridge renames rather than copies, so the lowercase pair the
@@ -127,6 +146,56 @@ def test_infer_points_runs_and_bridges(
         assert not {"x", "y"} & set(tdf.columns)
         assert sorted(tdf["X"].tolist()) == [1.0, 2.0, 3.0]
         assert sorted(tdf["Y"].tolist()) == [4.0, 5.0, 6.0]
+
+
+# --- the detection arguments in the identifier ----------------------------
+
+PoseOrPointParams: TypeAlias = PoseInferParams | PointInferParams
+
+
+def _run_id(params: PoseOrPointParams) -> str:
+    return infer_run_id(params.op_kind, "0.5", params, "train.0.1-aaaaaaaaaa")
+
+
+@pytest.mark.parametrize(
+    ("params_type", "name", "value"),
+    [
+        (PoseInferParams, "iou", 0.5),
+        (PoseInferParams, "max_det", 50),
+        (PoseInferParams, "agnostic_nms", True),
+        (PointInferParams, "max_det", 50),
+        (PointInferParams, "agnostic_nms", True),
+    ],
+)
+def test_a_detection_argument_moves_the_run_identifier(
+    params_type: type[PoseOrPointParams], name: str, value: object
+) -> None:
+    """A run at another value cannot share an identifier with one at the default."""
+    default = params_type.model_validate({"model": "m.pt"})
+    changed = params_type.model_validate({"model": "m.pt", name: value})
+    assert _run_id(changed) != _run_id(default)
+
+
+@pytest.mark.parametrize("params_type", [PoseInferParams, PointInferParams])
+def test_precision_does_not_move_the_run_identifier(
+    params_type: type[PoseOrPointParams],
+) -> None:
+    """Precision stays out of identity, as the tracker's does."""
+    default = params_type.model_validate({"model": "m.pt"})
+    half = params_type.model_validate({"model": "m.pt", "precision": "fp16"})
+    assert _run_id(half) == _run_id(default)
+
+
+def test_an_op_declares_only_the_detection_arguments_its_model_reads() -> None:
+    """A field that keys a run and reaches no argument changes nothing.
+
+    POLO's locate NMS reads no ``iou``, and the localizer, mosaic's own network,
+    reads none of the four.
+    """
+    detection = {"iou", "max_det", "agnostic_nms", "precision"}
+    assert detection <= set(PoseInferParams.model_fields)
+    assert detection - set(PointInferParams.model_fields) == {"iou"}
+    assert not detection & set(LocalizerInferParams.model_fields)
 
 
 def _positionless_predictions_for(

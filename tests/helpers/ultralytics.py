@@ -16,9 +16,11 @@ result objects Ultralytics returns per frame, which the runner reads rows from.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import ModuleType
 from typing import Final
 
 import numpy as np
@@ -130,6 +132,27 @@ def frames_in_window(
     step = max(1, frame_step)
     read = sum(len(range(window.start, window.end, step)) for window in windows)
     return read if max_frames is None else min(read, max_frames)
+
+
+def install_ultralytics_config(
+    monkeypatch: pytest.MonkeyPatch, *, quantize: bool = True
+) -> ModuleType:
+    """Install an ``ultralytics`` package that holds only its shipped configuration.
+
+    The runner reads ``ultralytics.utils.DEFAULT_CFG_DICT`` to spell half
+    precision: a current release ships a ``quantize`` key, and an older one ships
+    ``half`` alone. *quantize* picks which of the two this release is.
+
+    Returns the package, to which a test adds the ``YOLO`` it stands in for.
+    """
+    package = ModuleType("ultralytics")
+    monkeypatch.setattr(package, "__path__", [], raising=False)
+    utils = ModuleType("ultralytics.utils")
+    config = {"quantize": None} if quantize else {"half": False}
+    monkeypatch.setattr(utils, "DEFAULT_CFG_DICT", config, raising=False)
+    monkeypatch.setitem(sys.modules, "ultralytics", package)
+    monkeypatch.setitem(sys.modules, "ultralytics.utils", utils)
+    return package
 
 
 def ultralytics_probe_response(

@@ -17,7 +17,7 @@ here for the same reason.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Annotated, Final, Literal
+from typing import TYPE_CHECKING, Annotated, Final
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
@@ -26,9 +26,14 @@ from mosaic.core.pipeline.media_input import MediaInputParams
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
-    Probability,
 )
 from mosaic.core.pipeline.ops import ModelReference
+from mosaic.tracking.common.detection_params import (
+    AgnosticNms,
+    InferencePrecision,
+    IouThreshold,
+    MaxDetections,
+)
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE, TrackerOpParams
 from mosaic.tracking.ultralytics_track.run import ModelTask
 from mosaic.tracking.ultralytics_track.tracker_defaults import (
@@ -83,27 +88,16 @@ _CONF_DESCRIPTION = (
     "lower bound refuses that one value."
 )
 
-_IOU_DESCRIPTION = (
-    "The NMS IoU threshold for suppressing overlapping detections before they "
-    "reach the tracker."
-)
-
 _IMGSZ_DESCRIPTION = (
     "The side each frame is letterboxed to for inference. Predictions are "
     "mapped back to source pixels, so this changes what the detector sees "
     "rather than what the coordinates mean."
 )
 
-_MAX_DET_DESCRIPTION = "The most detections kept from one frame."
-
 _CLASSES_DESCRIPTION = (
     "Which detector class indexes to keep. Unset keeps every class. Identity "
     "records the set sorted and de-duplicated, so the order a filter was typed "
     "in does not move the identifier."
-)
-
-_AGNOSTIC_NMS_DESCRIPTION = (
-    "Suppress overlapping detections across classes instead of within each one."
 )
 
 _START_FRAME_DESCRIPTION = (
@@ -126,11 +120,6 @@ _DEVICE_DESCRIPTION = (
     "Which CUDA device index, or cpu, runs inference. A property of the "
     "machine rather than of the result, so it stays out of identity."
 ) + DEVICE_INDEX_NOTE
-
-_PRECISION_DESCRIPTION = (
-    "The numeric precision inference runs at. fp16 halves the memory a batch "
-    "needs and can move a detection across a threshold."
-)
 
 _BATCH_SIZE_DESCRIPTION = (
     "How many frames are decoded and handed to the model per forward pass. "
@@ -185,11 +174,11 @@ class UltralyticsParams(TrackerOpParams, MediaInputParams):
         TrackerConfig | None, Declared(_TRACKER_OVERRIDES_DESCRIPTION)
     ] = None
     conf: Annotated[float, Field(gt=0.0, le=1.0), Declared(_CONF_DESCRIPTION)] = 0.1
-    iou: Annotated[Probability, Declared(_IOU_DESCRIPTION)] = 0.7
+    iou: IouThreshold = 0.7
     imgsz: Annotated[int, Field(gt=0), Declared(_IMGSZ_DESCRIPTION, unit="px")] = 640
-    max_det: Annotated[int, Field(gt=0), Declared(_MAX_DET_DESCRIPTION)] = 300
+    max_det: MaxDetections = 300
     classes: Annotated[list[int] | None, Declared(_CLASSES_DESCRIPTION)] = None
-    agnostic_nms: Annotated[bool, Declared(_AGNOSTIC_NMS_DESCRIPTION)] = False
+    agnostic_nms: AgnosticNms = False
     start_frame: Annotated[int, Field(ge=0), Declared(_START_FRAME_DESCRIPTION)] = 0
     end_frame: Annotated[int | None, Field(ge=0), Declared(_END_FRAME_DESCRIPTION)] = (
         None
@@ -198,9 +187,7 @@ class UltralyticsParams(TrackerOpParams, MediaInputParams):
 
     # Execution: where and how it ran, never what it produced.
     device: Annotated[str, HASH_EXCLUDE, Declared(_DEVICE_DESCRIPTION)] = "0"
-    precision: Annotated[
-        Literal["fp32", "fp16"], HASH_EXCLUDE, Declared(_PRECISION_DESCRIPTION)
-    ] = "fp32"
+    precision: InferencePrecision = "fp32"
     batch_size: Annotated[
         int, Field(ge=1), HASH_EXCLUDE, Declared(_BATCH_SIZE_DESCRIPTION)
     ] = 8
