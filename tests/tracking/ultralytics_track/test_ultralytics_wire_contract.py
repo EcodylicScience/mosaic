@@ -550,3 +550,7 @@ def test_a_windowed_run_publishes_the_frames_that_the_runner_read(
     read = list(range(5, 20, 2))
     assert table["frame"].tolist() == read
     assert table["time"].tolist() == pytest.approx([frame / 25.0 for frame in read])
+    # The one detection of each frame is number 0 of that frame, under the name
+    # that the schema gives it.
+    assert table["id"].tolist() == [0] * len(read)
+    assert "detection_id" not in table.columns

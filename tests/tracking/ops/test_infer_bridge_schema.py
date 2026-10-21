@@ -24,6 +24,7 @@ renames a column fails this rather than drifting past it.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -34,7 +35,7 @@ from mosaic.core.pipeline import tracks_index
 from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.tracking_roots import tracking_output_schema
 from mosaic.core.pipeline.tracks_index import read_tracks_index
-from mosaic.core.schema import ensure_track_schema
+from mosaic.core.schema import TrackSchemaError, ensure_track_schema
 from mosaic.tracking.common import bridge as bridge_module
 from mosaic.tracking.common.bridge import BridgeCounts
 from mosaic.tracking.external.runner.ultralytics_protocol import (
@@ -48,7 +49,7 @@ from mosaic.tracking.pose_training.localizer_inference import (
     LocalizerFrame,
     localizer_detections_to_dataframe,
 )
-from tests.helpers import clip_facts
+from tests.helpers import clip_facts, point_predictions
 
 _N_KEYPOINTS = 3
 _N_ROWS = 4
@@ -136,11 +137,8 @@ from its real builder, given two frames without a detection.
 """
 
 
-def _publish(
-    tmp_path: Path, kind: str, predictions: pd.DataFrame
-) -> tuple[BridgeCounts, pd.DataFrame]:
-    """Run *predictions* through *kind*'s bridge, and read the published table back."""
-    ds = _dataset(tmp_path, kind)
+def _bridge_into(ds: Dataset, kind: str, predictions: pd.DataFrame) -> BridgeCounts:
+    """Run *predictions* through *kind*'s bridge into entry ``vid1`` of *ds*."""
     seq_dir = ds.get_root(kind) / "run" / "vid1"
     seq_dir.mkdir(parents=True, exist_ok=True)
     video = ds.get_root("media_raw") / "vid1.mp4"
@@ -150,7 +148,7 @@ def _publish(
     model.write_bytes(b"w")
 
     variant = f"{kind}.9.9-aaaaaaaaaa"
-    written = _bridge_df_to_tracks(
+    return _bridge_df_to_tracks(
         ds,
         predictions,
         "",
@@ -165,6 +163,14 @@ def _publish(
         axis=EntryAxis(),
         frames_read=None,
     )
+
+
+def _publish(
+    tmp_path: Path, kind: str, predictions: pd.DataFrame
+) -> tuple[BridgeCounts, pd.DataFrame]:
+    """Run *predictions* through *kind*'s bridge, and read the published table back."""
+    ds = _dataset(tmp_path, kind)
+    written = _bridge_into(ds, kind, predictions)
 
     rows = read_tracks_index(ds)
     assert len(rows) == 1
@@ -248,16 +254,64 @@ def test_the_pose_body_centre_is_the_mean_of_the_keypoints(tmp_path: Path) -> No
 def test_a_point_producers_position_is_renamed_not_duplicated(
     tmp_path: Path, kind: str
 ) -> None:
-    """These two already reported the body centre; only its name was wrong.
+    """These two already reported the body centre and the detection number.
 
-    Renamed rather than copied, because one position under two names in one
-    table invites a reader to take the one the schema does not define.
+    Only the names were wrong. Renamed rather than copied, because one value
+    under two names in one table invites a reader to take the one the schema
+    does not define.
     """
     table = _bridge(tmp_path, kind)
 
-    assert not {"x", "y"} & set(table.columns)
+    assert not {"x", "y", "detection_id"} & set(table.columns)
     assert table["X"].tolist() == [1.0, 2.0, 3.0, 4.0]
     assert table["Y"].tolist() == [5.0, 6.0, 7.0, 8.0]
+    assert table["id"].tolist() == [0] * _N_ROWS
+
+
+def _two_localizer_detections_in_frame_0() -> pd.DataFrame:
+    """Return the localizer's table of two detections in frame 0 and one in frame 1."""
+    left: LocalizerDetection = {"x": 1.0, "y": 2.0, "confidence": 0.9, "class_id": 0}
+    right: LocalizerDetection = {"x": 3.0, "y": 2.0, "confidence": 0.8, "class_id": 0}
+    return localizer_detections_to_dataframe(
+        [LocalizerFrame(0, (left, right)), LocalizerFrame(1, (left,))]
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "predictions"),
+    [
+        ("infer-points", point_predictions),
+        ("infer-localizer", _two_localizer_detections_in_frame_0),
+    ],
+)
+def test_each_frames_detections_are_numbered_in_id(
+    tmp_path: Path, kind: str, predictions: Callable[[], pd.DataFrame]
+) -> None:
+    """Two detections in one frame publish as ``id`` 0 and 1, not as one individual.
+
+    The number restarts in each frame and names no animal across frames.
+    """
+    written, table = _publish(tmp_path, kind, predictions())
+
+    assert table["frame"].tolist() == [0, 0, 1]
+    assert table["id"].tolist() == [0, 1, 0]
+    assert written.n_ids == 2
+
+
+def test_a_table_without_an_id_is_refused_and_not_published(tmp_path: Path) -> None:
+    """A producer that reports no detection number fails its entry.
+
+    The bridge does not supply one. Every row at one ``id`` would make every
+    detection one individual.
+    """
+    ds = _dataset(tmp_path, "infer-points")
+
+    with pytest.raises(TrackSchemaError, match="'id'"):
+        _ = _bridge_into(
+            ds, "infer-points", point_predictions().drop(columns="detection_id")
+        )
+
+    assert list(ds.get_root("tracks").rglob("*.parquet")) == []
 
 
 def test_the_localizer_table_has_the_same_types_with_and_without_a_row() -> None:
@@ -308,9 +362,9 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
 ) -> None:
     """Pin every argument of the tracks row and every cell of the table.
 
-    The frame lacks ``id``, whose fallback runs, and ``time``, which is each
-    frame's time at the 30 fps of *timing*. It has two keypoints, and the body
-    center is derived from them.
+    The frame carries ``id`` after ``frame``, as the pose runner writes it, and
+    lacks ``time``, which is each frame's time at the 30 fps of *timing*. It has
+    two keypoints, and the body center is derived from them.
     """
     kind = "infer-pose"
     ds = _dataset(tmp_path, kind)
@@ -334,7 +388,7 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
 
     _ = _bridge_df_to_tracks(
         ds,
-        pd.DataFrame({"frame": [0, 1, 2], **keypoints}),
+        pd.DataFrame({"frame": [0, 1, 2], "id": [0, 0, 0], **keypoints}),
         "g",
         "s",
         tracks_variant=variant,
@@ -374,10 +428,10 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
         pd.DataFrame(
             {
                 "frame": [0, 1, 2],
+                "id": [0, 0, 0],
                 **keypoints,
                 "group": ["g"] * 3,
                 "sequence": ["s"] * 3,
-                "id": [0, 0, 0],
                 "time": [0.0, 1 / 30, 2 / 30],
                 "X": [3.0, 4.0, 5.0],
                 "Y": [12.0, 22.0, 32.0],
@@ -393,8 +447,6 @@ def test_a_table_with_no_position_at_all_is_refused(tmp_path: Path) -> None:
     validation must report the real shortfall rather than an invented column --
     and now raises rather than printing under a line that says ``completed``.
     """
-    from mosaic.core.schema import TrackSchemaError
-
     ds = _dataset(tmp_path, "infer-pose")
     seq_dir = ds.get_root("infer-pose") / "run" / "vid1"
     seq_dir.mkdir(parents=True, exist_ok=True)
@@ -407,7 +459,13 @@ def test_a_table_with_no_position_at_all_is_refused(tmp_path: Path) -> None:
     with pytest.raises(TrackSchemaError, match="X"):
         _ = _bridge_df_to_tracks(
             ds,
-            pd.DataFrame({"frame": range(_N_ROWS), "confidence": [0.9] * _N_ROWS}),
+            pd.DataFrame(
+                {
+                    "frame": range(_N_ROWS),
+                    "id": [0] * _N_ROWS,
+                    "confidence": [0.9] * _N_ROWS,
+                }
+            ),
             "",
             "vid1",
             tracks_variant="infer-pose.9.9-aaaaaaaaaa",

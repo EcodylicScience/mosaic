@@ -58,6 +58,7 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
     POINT_COLUMNS,
     pose_columns,
 )
+from mosaic.tracking.ops.infer import standard_inference_columns
 from mosaic.tracking.pose_training.localizer_inference import (
     LocalizerDetection,
     LocalizerFrame,
@@ -629,14 +630,8 @@ def test_every_deeplabcut_and_lightning_pose_column_is_classified(
 
 
 def _bridged(table: pd.DataFrame) -> pd.DataFrame:
-    """Return *table* with the columns that the inference bridge adds to it."""
-    named = table.rename(columns={"x": "X", "y": "Y"})
-    named["group"] = "g"
-    named["sequence"] = "s"
-    named["time"] = column_array(named, "frame").astype(np.float64)
-    if "id" not in column_names(named):
-        named["id"] = 0
-    return named
+    """Return *table* with the columns that the inference bridge names."""
+    return standard_inference_columns(table, "g", "s", clip_facts())
 
 
 def test_every_pose_inference_column_is_classified() -> None:

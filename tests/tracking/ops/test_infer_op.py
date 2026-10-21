@@ -92,7 +92,7 @@ def test_infer_points_runs_and_bridges(
     from mosaic.core.pipeline.tracks_index import read_tracks_index
     from mosaic.tracking.ops.infer import infer_run_root
 
-    assert run_id.startswith("infer-points.0.4-"), run_id
+    assert run_id.startswith("infer-points.0.5-"), run_id
     run_root = infer_run_root(ds, "infer-points", run_id)
     for sequence in ("vid1", "vid2"):
         # Published by the runner at the path the request named, and read back

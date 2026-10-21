@@ -374,7 +374,7 @@ Sample representative video frames as PNGs for annotation.
 
 #### `infer-localizer`
 
-Version `0.3` &middot; `mosaic.tracking.ops.infer.InferLocalizerOp`
+Version `0.4` &middot; `mosaic.tracking.ops.infer.InferLocalizerOp`
 
 Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 
@@ -398,7 +398,7 @@ Run a trained heatmap localizer over scoped videos, bridging into ``tracks/``.
 
 #### `infer-points`
 
-Version `0.4` &middot; `mosaic.tracking.ops.infer.InferPointsOp`
+Version `0.5` &middot; `mosaic.tracking.ops.infer.InferPointsOp`
 
 Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 

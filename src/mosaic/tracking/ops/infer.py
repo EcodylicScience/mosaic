@@ -401,6 +401,47 @@ def _name_the_body_centre(df: pd.DataFrame) -> None:
         df["Y"] = df.pop("y").astype(float)
 
 
+def _name_the_detection(df: pd.DataFrame) -> None:
+    """Give *df* the ``id`` that numbers the detections of each frame.
+
+    Modifies *df* in place; it is already the bridge's private copy.
+
+    A point model (POLO) and the localizer number each frame's detections from 0
+    under ``detection_id``, the name that ``POINT_COLUMNS`` gives that number on
+    the wire and in the predictions parquet. ``mosaic_v1`` calls it ``id``, and a
+    pose model's runner already writes it under that name. In every inference
+    table the number tells the detections of one frame apart and names no animal
+    across frames.
+
+    Renamed rather than copied, for the reason :func:`_name_the_body_centre`
+    gives for ``x``/``y``. Does nothing when ``id`` is already present.
+    """
+    if "id" not in df.columns and "detection_id" in df.columns:
+        df["id"] = df.pop("detection_id")
+
+
+def standard_inference_columns(
+    df: pd.DataFrame, group: str, sequence: str, timing: MediaFacts
+) -> pd.DataFrame:
+    """Return a copy of *df* with the columns that ``mosaic_v1`` names.
+
+    Adds the entry's ``group`` and ``sequence`` and each frame's ``time`` at the
+    rate of *timing*, and names ``id`` and ``X``/``Y`` from the columns that the
+    producer reported. A table whose producer reported no ``id`` keeps none, and
+    the strict validation of :func:`_bridge_df_to_tracks` refuses it.
+
+    Raises:
+        ValueError: If *timing* reports a frame rate that is not positive.
+    """
+    named = df.copy()
+    named["group"] = group
+    named["sequence"] = sequence
+    _name_the_detection(named)
+    named["time"] = concatenated_timeline((timing,)).times(column_array(named, "frame"))
+    _name_the_body_centre(named)
+    return named
+
+
 def _bridge_df_to_tracks(
     ds: Dataset,
     df: pd.DataFrame,
@@ -419,9 +460,10 @@ def _bridge_df_to_tracks(
 ) -> BridgeCounts:
     """Publish an inference DataFrame as a standardized ``tracks/`` parquet.
 
-    Names the columns that the schema requires, then publishes through the bridge
-    that every tracker shares. ``tracks_variant`` names the directory as well as the
-    row, and two models (or two parameter sets) never write to one path.
+    Names the columns that the schema requires (:func:`standard_inference_columns`),
+    then publishes through the bridge that every tracker shares. ``tracks_variant``
+    names the directory as well as the row, and two models (or two parameter sets)
+    never write to one path.
 
     No runner reports a time, so ``time`` is each frame's time in seconds on a
     single clip at the rate of *timing*. The shared bridge then retimes the table
@@ -467,14 +509,11 @@ def _bridge_df_to_tracks(
 
     Raises:
         ValueError: If *timing* reports a frame rate that is not positive.
+        TrackSchemaError: If the table lacks a column that its schema requires,
+            such as an ``id`` that its producer did not report. Nothing is
+            published.
     """
-    df = df.copy()
-    df["group"] = group
-    df["sequence"] = sequence
-    if "id" not in df.columns:
-        df["id"] = 0
-    df["time"] = concatenated_timeline((timing,)).times(column_array(df, "frame"))
-    _name_the_body_centre(df)
+    df = standard_inference_columns(df, group, sequence, timing)
     return publish_tracks_table(
         ds,
         df,
@@ -492,8 +531,8 @@ def _bridge_df_to_tracks(
         # Strict here alone. Every *tracker* write path validates leniently,
         # because a missing required column is merely an incomplete table, and
         # whether that should still be true is a separate question with a wider
-        # blast radius. This bridge derives the one column all three producers
-        # were missing, so it can assert its own work: a report printed under a
+        # blast radius. This bridge derives the columns that its producers do not
+        # write, so it can assert its own work: a report printed under a
         # "completed" line is how the absence survived in the first place.
         strict=True,
     )
@@ -1123,7 +1162,12 @@ class InferPointsOp(Op[PointInferParams]):
     # segment and not a hash term, so a variant directory now holds one table
     # shape rather than a mix of the two.
     # 0.4 for the reason `infer-pose` gives above: `time` and `frame` changed.
-    version = "0.4"
+    # 0.5 because `id` changed meaning. It was 0 on every row, which made every
+    # detection one individual, and it now numbers the detections of each frame
+    # from 0, as `infer-pose`'s does. The tables no longer carry `detection_id`.
+    # New runs mint new identifiers, and tables written before carry `id` 0 and
+    # should be re-run.
+    version = "0.5"
     scope_takes = "any"
     scope_dependent = False
     model_reference = _POINTS_MODEL
@@ -1232,7 +1276,8 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
     # were already in source pixels. 0.2 is the body-centre column, which it was
     # missing exactly as they were.
     # 0.3 for the reason `infer-pose` gives above: `time` and `frame` changed.
-    version = "0.3"
+    # 0.4 for the reason `infer-points` gives above: `id` changed.
+    version = "0.4"
     scope_takes = "any"
     scope_dependent = False
     model_reference = _LOCALIZER_MODEL

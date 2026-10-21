@@ -98,8 +98,9 @@ mosaic track trex -m dataset.yaml --set detect_model=<run_id>
 A path to a weights file works too, if the weights came from somewhere else.
 
 The difference is identity. Inference detects animals frame by frame; a tracker links
-those detections across frames into individuals. If you need to know which animal is
-which, you want the tracker.
+those detections across frames into individuals. An inference table's `id` numbers the
+detections of each frame from 0, and one `id` in two frames need not be one animal. If
+you need to know which animal is which, you want the tracker.
 
 ## 5. Train one model from several datasets
 

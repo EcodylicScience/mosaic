@@ -161,7 +161,6 @@ INVARIANT_BASES: Final[frozenset[str]] = frozenset(
         "source_track_id",
         "det_conf",
         "det_cls",
-        "detection_id",
         "confidence",
         "class_id",
         # The scale TRex applied, which a crop does not change.

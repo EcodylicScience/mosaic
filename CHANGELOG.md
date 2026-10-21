@@ -10,6 +10,24 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**`infer-points` and `infer-localizer` number the detections of each frame in `id`.**
+Both wrote each detection's number within its frame as `detection_id` and wrote no `id`,
+and the inference bridge set `id` 0 on every row. Every detection of a table was then
+one individual: `nearest-neighbor` reported `nn_id` 0, the detection's own id, and
+`trajectory-smooth` smoothed all detections as one track. The bridge now renames
+`detection_id` to `id`, the name that `infer-pose`'s runner already writes.
+
+- `infer-points` (0.4 to 0.5) and `infer-localizer` (0.3 to 0.4) move their run ids and
+  tracks variants. A table written under the older versions has `id` 0 on every row.
+  Re-run it.
+- The tracks table no longer contains `detection_id`. The predictions parquet beside
+  each entry keeps it.
+- The bridge no longer supplies an `id`. A table without one is refused as a failed
+  entry, and nothing is published for it.
+- The `id` of every `infer-*` op numbers the detections of one frame and names no
+  animal across frames. A feature that follows `id` across frames needs a tracker's
+  table.
+
 **The classifiers share their output, standardizer, fold and bundle code.** `xgboost` and
 `lightning-action` each assembled their `prob_` columns and `predicted_label`, applied
 the decision threshold, standardized, dealt cross-validation folds and wrote their bundle
