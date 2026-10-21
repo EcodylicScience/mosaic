@@ -297,7 +297,9 @@ def test_the_inference_bridge_points_back_at_its_predictions(tmp_path: Path) -> 
     model.parent.mkdir(parents=True, exist_ok=True)
     model.write_bytes(b"w")
 
-    frame = pd.DataFrame({"frame": range(5), "poseX0": [1.0] * 5, "poseY0": [2.0] * 5})
+    frame = pd.DataFrame(
+        {"frame": range(5), "id": [0] * 5, "poseX0": [1.0] * 5, "poseY0": [2.0] * 5}
+    )
     written = _bridge_df_to_tracks(
         ds,
         frame,
@@ -351,7 +353,9 @@ def test_a_second_producer_adds_a_row_rather_than_replacing_the_first(
 
     seq_dir = ds.get_root("infer-points") / "run" / "vid1"
     seq_dir.mkdir(parents=True, exist_ok=True)
-    frame = pd.DataFrame({"frame": range(5), "poseX0": [1.0] * 5, "poseY0": [2.0] * 5})
+    frame = pd.DataFrame(
+        {"frame": range(5), "id": [0] * 5, "poseX0": [1.0] * 5, "poseY0": [2.0] * 5}
+    )
     _ = _bridge_df_to_tracks(
         ds,
         frame,
