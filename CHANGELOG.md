@@ -34,8 +34,14 @@ failure refuses that entry alone. No run id moves.
   withholds the command when those labels are every entry left.
 - It answers for `trex`, `sleap`, `litpose`, `ultralytics`, `infer-pose`,
   `infer-points`, `infer-localizer`, `extract-frames` and `preprocess`, and raises
-  `ValueError` for any other kind. A tracker, an `infer-*` op and `preprocess` are
-  answered for the camera that their run reads, and `extract-frames` for every camera.
+  `ValueError` for any other kind. A tracker and an `infer-*` op are answered for each
+  camera that their run reads, one per entry key. Their run keys each camera of a
+  nameless entry by its first file's stem, in any scope. `preprocess` is answered for
+  the one camera of each entry that it writes, and `extract-frames` for every camera.
+- The plan does not probe a file, and a run's probe can still refuse an entry that the
+  plan passes. An `entry-files` runner refuses a store without an export when a probe
+  measures one of its chunks at another frame count than the store's index gives. SLEAP
+  refuses a file that its decode probe does not decode.
 - A missing join is an `export-joined` run, with `reencode` set for clips in two stream
   profiles. A missing store export is an `export-store` run, which exports every camera
   of the entry. An export that its run would refuse is the entry's refusal instead: a
@@ -92,9 +98,9 @@ failure refuses that entry alone. No run id moves.
 - New API: `plan_prerequisites`, `PrerequisitePlan`, `PrerequisiteRun`, `EntryRefusal`,
   `PrerequisiteKind`, `RefusalCause` and `indexed_entries` in `mosaic.tracking`, from
   the module `mosaic.tracking.prerequisites`; `Dataset.routes_derivatives`;
-  `resolve_entry_media`, `consumed_cameras`, `ResolvedEntryMedia` and `ConsumedMedia` in
-  `mosaic.core.pipeline.consumed_camera`; `preprocess_entry_failures` in
-  `mosaic.core.pipeline.preprocess`; `joined_run_id`, `join_codec` and
+  `resolve_entry_media`, `consumed_cameras`, `first_cameras`, `ResolvedEntryMedia` and
+  `ConsumedMedia` in `mosaic.core.pipeline.consumed_camera`; `preprocess_entry_failures`
+  in `mosaic.core.pipeline.preprocess`; `joined_run_id`, `join_codec` and
   `join_frame_total` in `mosaic.core.pipeline.joined_export`; `entry_stores`,
   `unnamed_stores` and `export_codec` in `mosaic.core.pipeline.store_export`; the module
   `mosaic.core.pipeline.run_commands`, with `mosaic_run_command`; `codecs_never_read`,

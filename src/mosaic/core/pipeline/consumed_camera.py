@@ -1,10 +1,10 @@
-"""Resolve each entry's cameras, and choose the one that a per-entry consumer reads.
+"""Resolve each entry's cameras, and choose those that a per-entry consumer reads.
 
 ``Dataset.resolve_media_scope`` yields one entry per ``(group, sequence, camera)``,
 while a tracker, an ``infer-*`` op and the ``tracks/`` layer they publish into all
 address an entry by ``(group, sequence)`` alone. The reducer is in ``core``
 because ``core`` may not import ``tracking``. Every consumer that must agree with a
-tracker about the camera that it reads therefore calls this one implementation.
+tracker about the cameras that it reads therefore calls this one implementation.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ __all__ = [
     "ConsumedMedia",
     "ResolvedEntryMedia",
     "consumed_cameras",
+    "first_cameras",
     "one_camera_per_entry",
     "resolve_entry_media",
 ]
@@ -34,7 +35,7 @@ type ResolvedEntryMedia = list[ResolvedScopeEntry] | FileNotFoundError | MediaPr
 """An entry's cameras, or the error that explains why it has none."""
 
 type ConsumedMedia = ResolvedScopeEntry | FileNotFoundError | MediaProbeError
-"""An entry's consumed camera, or the error that explains its absence."""
+"""An entry's first consumed camera, or the error that explains its absence."""
 
 
 def one_camera_per_entry(
@@ -151,14 +152,16 @@ def consumed_cameras(
     resolved: Mapping[Entry, ResolvedEntryMedia],
     *,
     report_skipped: bool,
-) -> dict[Entry, ConsumedMedia]:
-    """Return the camera that a per-entry consumer reads of each resolved entry.
+) -> dict[Entry, ResolvedEntryMedia]:
+    """Return the cameras that a per-entry consumer reads of each resolved entry.
 
     The cameras of every resolved entry reduce together through
-    :func:`one_camera_per_entry`, in the order of one read of the media index, as
-    a tracker reduces its scope. Two entries with one entry key share one output
-    path. Each camera of a nameless entry is labeled by its first file's stem.
-    Such a label can equal the key of another entry.
+    :func:`one_camera_per_entry`, as a tracker reduces its scope, with the
+    entries sorted by their keys in *resolved*. Two entries with one entry key
+    share one output path. A named entry keeps at most one camera. Each camera
+    of a nameless entry is labeled by its first file's stem, and is kept unless
+    an earlier camera has the same entry key. Such a label can equal the key of
+    another entry.
 
     Args:
         kind: The consumer's op kind, prefixing each line printed.
@@ -168,15 +171,18 @@ def consumed_cameras(
             line once.
 
     Returns:
-        Per entry of *resolved*, in its order, the first camera, or the error
-        that resolving the entry raised. An entry whose first camera is dropped
-        fails with a ``FileNotFoundError`` naming the entry of the kept camera.
+        Per entry of *resolved*, in its order, the cameras kept, or the error
+        that resolving the entry raised. An entry with no camera kept fails with
+        a ``FileNotFoundError`` naming the entry of the camera kept under its
+        first camera's key.
     """
     cameras = {
         entry: media for entry, media in resolved.items() if isinstance(media, list)
     }
-    # Each entry is keyed as indexed. Sorted, the entries are in the order of the
-    # read that a tracker reduces.
+    # A scoped entry is keyed as indexed. Sorted, the scoped entries are in the
+    # order of a tracker's read of the media index. An unscoped entry is keyed
+    # by its label. Sorting by label can move a nameless entry's camera out of
+    # that order.
     read = [(camera, entry) for entry in sorted(cameras) for camera in cameras[entry]]
     kept = {
         make_entry_key(media.group, media.sequence): media
@@ -189,22 +195,42 @@ def consumed_cameras(
         key = make_entry_key(camera.group, camera.sequence)
         if kept[key] is camera:
             owners[key] = entry
-    consumed: dict[Entry, ConsumedMedia] = {}
+    consumed: dict[Entry, ResolvedEntryMedia] = {}
     for entry, media in resolved.items():
         if not isinstance(media, list):
             consumed[entry] = media
             continue
-        first = media[0]
-        key = make_entry_key(first.group, first.sequence)
-        if kept[key] is first:
-            consumed[entry] = first
-        else:
-            message = (
-                f"{entry!r} shares the output name {key} with {owners[key]!r}, "
-                "which is indexed first"
-            )
-            consumed[entry] = FileNotFoundError(message)
+        read_here = [
+            camera
+            for camera in media
+            if kept[make_entry_key(camera.group, camera.sequence)] is camera
+        ]
+        if read_here:
+            consumed[entry] = read_here
+            continue
+        key = make_entry_key(media[0].group, media[0].sequence)
+        message = (
+            f"{entry!r} shares the output name {key} with {owners[key]!r}, "
+            "which is indexed first"
+        )
+        consumed[entry] = FileNotFoundError(message)
     return consumed
+
+
+def first_cameras(
+    consumed: Mapping[Entry, ResolvedEntryMedia],
+) -> dict[Entry, ConsumedMedia]:
+    """Return the first camera of each entry of *consumed*, or its error.
+
+    ``preprocess`` writes one file per entry, from this camera.
+
+    Args:
+        consumed: What :func:`consumed_cameras` returned.
+    """
+    return {
+        entry: media[0] if isinstance(media, list) else media
+        for entry, media in consumed.items()
+    }
 
 
 def _cameras_by_entry(

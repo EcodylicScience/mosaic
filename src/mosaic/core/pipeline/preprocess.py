@@ -54,6 +54,7 @@ from mosaic.core.pipeline.composition import compositions_disagree
 from mosaic.core.pipeline.consumed_camera import (
     ConsumedMedia,
     consumed_cameras,
+    first_cameras,
     resolve_entry_media,
 )
 from mosaic.core.pipeline.entry_claim import (
@@ -529,10 +530,11 @@ class _EntryPlan:
 def _consumed_media(
     ds: Dataset, entries: Sequence[Entry], *, report_skipped: bool
 ) -> dict[Entry, ConsumedMedia]:
-    """Return the media of each entry's consumed camera, the one that a tracker reads.
+    """Return the media of each entry's consumed camera, the first that a tracker reads.
 
-    Each entry resolves through :func:`resolve_entry_media`, and the cameras of
-    every resolved entry reduce together through :func:`consumed_cameras`.
+    Each entry resolves through :func:`resolve_entry_media`, the cameras of
+    every resolved entry reduce together through :func:`consumed_cameras`, and
+    :func:`first_cameras` takes the first camera kept of each entry.
 
     Args:
         ds: The dataset.
@@ -542,15 +544,17 @@ def _consumed_media(
             line once.
 
     Returns:
-        Per entry, the media of its first camera, or the ``FileNotFoundError``
-        or ``MediaProbeError`` raised by resolving it. An entry whose first
-        camera is dropped fails with a ``FileNotFoundError`` naming the entry of
-        the kept camera.
+        Per entry, the media of its first camera kept, or the
+        ``FileNotFoundError`` or ``MediaProbeError`` raised by resolving it. An
+        entry with no camera kept fails with a ``FileNotFoundError`` naming the
+        entry of the camera kept under its first camera's key.
     """
-    return consumed_cameras(
-        PREPROCESS_KIND,
-        resolve_entry_media(ds, entries),
-        report_skipped=report_skipped,
+    return first_cameras(
+        consumed_cameras(
+            PREPROCESS_KIND,
+            resolve_entry_media(ds, entries),
+            report_skipped=report_skipped,
+        )
     )
 
 

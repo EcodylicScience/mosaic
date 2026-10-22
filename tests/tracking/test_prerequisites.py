@@ -237,7 +237,20 @@ def test_a_several_camera_entry_is_refused_a_join(tmp_path: Path) -> None:
     plan = plan_prerequisites(ds, "trex")
 
     assert _refused(plan) == [("", "sess", "a", "multi_camera_join")]
+    assert "Read the camera through a media variant instead." in _reason(plan)
     assert (plan.runs, plan.entries) == ((), ())
+
+
+_NAMELESS_SCOPES = pytest.mark.parametrize(
+    ("entries", "labels"),
+    [(None, ("a-c0", "b-c0")), ([("", "")], ("", ""))],
+    ids=["unscoped", "scoped"],
+)
+"""A nameless entry of cameras ``a`` and ``b``, and the sequence of each in a plan.
+
+An unscoped plan names each camera by its label. A plan scoped by the entry's
+indexed key names both cameras by the key.
+"""
 
 
 _JOINING_OPS = pytest.mark.parametrize(
@@ -286,16 +299,19 @@ def test_the_join_of_a_nameless_entry_is_scoped_by_its_indexed_key(
 
 
 @_JOINING_OPS
+@_NAMELESS_SCOPES
 def test_every_camera_of_a_several_camera_nameless_entry_is_refused_a_join(
     tmp_path: Path,
     kind: str,
     params: Mapping[str, object] | None,
     rates: tuple[float, float],
+    entries: list[Entry] | None,
+    labels: tuple[str, str],
 ) -> None:
-    """An unscoped plan labels each camera by its first file's stem.
+    """A run labels each camera of a nameless entry by its first file's stem.
 
-    Each label then holds one camera, and the run that joins the indexed key
-    resolves both cameras under it.
+    Each label then names one camera, which the op reads in any scope. The run
+    that joins the indexed key resolves both cameras under it.
     """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(
@@ -306,13 +322,33 @@ def test_every_camera_of_a_several_camera_nameless_entry_is_refused_a_join(
         ],
     )
 
-    plan = plan_prerequisites(ds, kind, params)
+    plan = plan_prerequisites(ds, kind, params, entries=entries)
 
     assert _refused(plan) == [
-        ("", "a-c0", "a", "multi_camera_join"),
-        ("", "b-c0", "b", "multi_camera_join"),
+        ("", labels[0], "a", "multi_camera_join"),
+        ("", labels[1], "b", "multi_camera_join"),
     ]
     assert (plan.runs, plan.entries) == ((), ())
+
+
+@_NAMELESS_SCOPES
+def test_a_tool_reads_each_camera_of_a_nameless_entry_in_any_scope(
+    tmp_path: Path, entries: list[Entry] | None, labels: tuple[str, str]
+) -> None:
+    """``infer-pose`` reads camera ``b``, whose clips cannot be one video."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            *entry_clips("", camera="a"),
+            *entry_clips("", camera="b", widths=(640, 1280)),
+        ],
+    )
+
+    plan = plan_prerequisites(ds, "infer-pose", entries=entries)
+
+    assert _refused(plan) == [("", labels[1], "b", "unjoinable")]
+    assert plan.runs == ()
 
 
 def test_clips_that_report_no_frame_counts_are_refused_a_join(tmp_path: Path) -> None:
@@ -483,6 +519,7 @@ def test_every_camera_of_a_several_camera_entry_is_refused_a_join(
         ("", "sess", "a", "multi_camera_join"),
         ("", "sess", "b", "multi_camera_join"),
     ]
+    assert not any("media variant" in refusal.reason for refusal in plan.refusals)
     assert (plan.runs, plan.entries) == ((), ())
 
 

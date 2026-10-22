@@ -30,6 +30,7 @@ from mosaic.core.params import Params
 from mosaic.core.pipeline.consumed_camera import (
     ResolvedEntryMedia,
     consumed_cameras,
+    first_cameras,
     resolve_entry_media,
 )
 from mosaic.core.pipeline.joined_export import (
@@ -233,9 +234,12 @@ def plan_prerequisites(
 ) -> PrerequisitePlan:
     """Return the runs that *kind* needs before it reads *entries*, and the refusals.
 
-    A tracker, an ``infer-*`` op or ``preprocess`` is answered for the camera
-    that it reads of each entry, the cameras of every entry reducing together as
-    its run reduces them. ``extract-frames`` is answered for every camera.
+    A tracker or an ``infer-*`` op is answered for each camera that its run
+    reads, the cameras of every entry reducing together to one per entry key as
+    its run reduces them. The run labels each camera of a nameless entry by the
+    camera's first file's stem, and reads each. ``preprocess`` is answered for
+    the one camera of each entry that it writes, and ``extract-frames`` for
+    every camera.
 
     An op that reads a media variant needs one ``preprocess`` run of the
     variant's recorded recipe, over each entry whose file of the variant is
@@ -267,6 +271,12 @@ def plan_prerequisites(
     the entry's refusal, as is an entry whose media does not resolve. One run is
     planned per op and entry, and one per variant. The plan is the same whatever
     the order of *entries*.
+
+    The plan does not probe a file, and a run's probe can still refuse an entry
+    that the plan passes. An ``entry-files`` runner refuses a store without an
+    export when a probe measures one of its chunks at another frame count than
+    the store's index gives. SLEAP refuses a file that its decode probe does not
+    decode, such as AV1 where the OpenCV of its environment does not link dav1d.
 
     Args:
         ds: The dataset, which the plan reads and leaves unchanged.
@@ -501,17 +511,20 @@ def _cameras_read(
 ) -> dict[Entry, ResolvedEntryMedia]:
     """Return the cameras that *kind* reads of each entry, or why it reads none.
 
-    ``extract-frames`` reads every camera. Any other op reads one camera per
-    entry, reduced over every entry as its run reduces them.
+    ``extract-frames`` reads every camera. Any other op reads the cameras that
+    its run keeps of every entry, one per entry key, and ``preprocess`` reads
+    the first camera that it keeps of each entry.
     """
     if kind == _EXTRACT_FRAMES:
         return dict(resolved)
     consumed = consumed_cameras(kind, resolved, report_skipped=False)
+    if kind != PREPROCESS_KIND:
+        return consumed
     return {
         entry: media
         if isinstance(media, (FileNotFoundError, MediaProbeError))
         else [media]
-        for entry, media in consumed.items()
+        for entry, media in first_cameras(consumed).items()
     }
 
 
@@ -586,10 +599,15 @@ def _join_run(kind: str, read: _CameraRead) -> PrerequisiteRun | EntryRefusal:
     entry, camera = read.entry, read.camera
     label = _label(kind, entry)
     if read.several_cameras:
+        # The op of a tracking root takes `media`, and `extract-frames` does not.
+        remedy = (
+            " Read the camera through a media variant instead."
+            if kind in TRACKING_ROOTS
+            else ""
+        )
         reason = (
             f"{label} camera {camera.camera} is read as the join of its clips, "
-            f"and export-joined joins the clips of an entry of one camera. Read "
-            f"the camera through a media variant instead."
+            f"and export-joined joins the clips of an entry of one camera.{remedy}"
         )
         return _refusal(entry, camera, "multi_camera_join", reason)
     facts = camera.resolved.facts
