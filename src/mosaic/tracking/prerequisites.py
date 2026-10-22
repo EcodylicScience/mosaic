@@ -85,6 +85,7 @@ __all__ = [
     "PrerequisitePlan",
     "PrerequisiteRun",
     "RefusalCause",
+    "indexed_entries",
     "plan_prerequisites",
 ]
 
@@ -424,6 +425,41 @@ def _camera_reads(
     return reads
 
 
+def indexed_entries(
+    ds: Dataset, entries: Iterable[Entry]
+) -> tuple[tuple[Entry, ...], tuple[Entry, ...]]:
+    """Return *entries* as a run's scope names them, and the labels that it cannot name.
+
+    An unscoped plan names an entry by its label, and labels each camera of a
+    nameless entry by its first file's stem. A run's scope names the entry by
+    its indexed key instead, and covers every camera under that key. A nameless
+    entry's key is named when *entries* contains the label of each of its
+    cameras. Otherwise the scope cannot name a camera's label that is no indexed
+    key. Every other entry is named as given.
+
+    Args:
+        ds: The dataset.
+        entries: The entries, such as the :attr:`PrerequisitePlan.entries` of an
+            unscoped plan.
+
+    Returns:
+        The entries that ``mosaic run --entries`` resolves, and the labels of
+        *entries* that it cannot name, each sorted.
+    """
+    given = set(entries)
+    ungrouped, nameless = _nameless_cameras(ds)
+    labels = {
+        entry: {(camera.group, camera.sequence) for camera in media}
+        for entry, media in nameless.items()
+    }
+    labeled = {label for named in labels.values() for label in named}
+    keys = {entry for entry, named in labels.items() if named <= given}
+    covered = {label for key in keys for label in labels[key]}
+    as_given = {entry for entry in given if entry not in labeled or entry in ungrouped}
+    unnamed = given - covered - as_given
+    return tuple(sorted(keys | as_given)), tuple(sorted(unnamed))
+
+
 def _nameless_keys(ds: Dataset) -> dict[tuple[Path, ...], tuple[Entry, int]]:
     """Return each nameless entry's key and camera count, keyed by its cameras' clips.
 
@@ -432,18 +468,31 @@ def _nameless_keys(ds: Dataset) -> dict[tuple[Path, ...], tuple[Entry, int]]:
     its indexed key instead, and resolves every camera under that key. The
     clips identify the camera even where its label equals another entry's key.
     """
+    return {
+        tuple(camera.resolved.paths): (entry, len(media))
+        for entry, media in _nameless_cameras(ds)[1].items()
+        for camera in media
+    }
+
+
+def _nameless_cameras(
+    ds: Dataset,
+) -> tuple[set[Entry], dict[Entry, list[ResolvedScopeEntry]]]:
+    """Return the entries indexed in the empty group, and each nameless one's cameras.
+
+    A nameless entry whose media does not resolve is left out of the cameras.
+    """
     try:
         indexed = ds.resolve_scope(Scope(groups=[""])).entries
     except FileNotFoundError:
-        return {}
+        return set(), {}
     nameless = sorted(entry for entry in indexed if is_nameless_entry(*entry))
     if not nameless:
-        return {}
-    return {
-        tuple(camera.resolved.paths): (entry, len(media))
+        return indexed, {}
+    return indexed, {
+        entry: media
         for entry, media in resolve_entry_media(ds, nameless).items()
         if isinstance(media, list)
-        for camera in media
     }
 
 

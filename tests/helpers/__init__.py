@@ -43,8 +43,8 @@ What lives where:
   command, checks of whether a process stopped writing to it or exited, the line
   children of a test, and a cancel fired once a condition is true.
 - ``media`` -- media files, media-index rows, transcode derivatives.
-- ``variants`` -- media variant files and their index rows, and a count of the
-  index reads a variant's consumers make.
+- ``variants`` -- media variant files, their index rows and recorded recipes, and a
+  count of the index reads a variant's consumers make.
 - ``identity`` -- the digest a feature run is named by, from its parameters.
 - ``ops`` -- the smallest params dict that validates for each registered op.
 - ``runlog`` -- an attempt's recorded run-log events.
@@ -147,6 +147,7 @@ from tests.helpers.media import (
     clean_facts_cells,
     clip_facts,
     dot_image,
+    entry_clips,
     export_entry_store,
     index_media_sequence,
     index_session,
@@ -330,6 +331,7 @@ from tests.helpers.variants import (
     add_media_variant,
     count_index_reads,
     finish_media_variant,
+    record_variant_recipe,
 )
 
 __all__ = [
@@ -451,6 +453,7 @@ __all__ = [
     "dot_image",
     "export_entry_store",
     "dotted_values",
+    "entry_clips",
     "entry_error_lines",
     "exited_pid",
     "finish_media_variant",
@@ -504,6 +507,7 @@ __all__ = [
     "read_frame_code",
     "read_golden",
     "read_string_golden",
+    "record_variant_recipe",
     "regenerate_command",
     "register_trained_model",
     "require_ffmpeg",

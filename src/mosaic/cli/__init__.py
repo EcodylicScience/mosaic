@@ -28,6 +28,7 @@ from mosaic.cli.sources import sources_app
 from mosaic.cli.tags import notes_app, tags_app
 from mosaic.cli.pipeline import pipeline_app
 from mosaic.cli.preview import preview_command
+from mosaic.cli.prerequisites import prerequisites_command
 from mosaic.cli.prune_joined import prune_joined_command
 from mosaic.cli.prune_media import prune_media_command
 from mosaic.cli.reconcile import reconcile_command
@@ -53,6 +54,7 @@ app = typer.Typer(
 
 # Compute + observe (the critical path that unblocks the Layer-2 executor).
 _ = app.command(name="run")(run_command)
+_ = app.command(name="prerequisites")(prerequisites_command)
 _ = app.command(name="status")(status_command)
 app.add_typer(runs_app, name="runs")
 _ = app.command(name="cancel")(cancel_command)

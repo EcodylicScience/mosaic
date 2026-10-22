@@ -435,6 +435,38 @@ class MediaClip:
     codec: str = "h264"
 
 
+def entry_clips(
+    sequence: str = "sess",
+    *,
+    camera: str = "",
+    rates: tuple[float, float] = (30.0, 30.0),
+    uids: tuple[str, str] = ("uid-0", "uid-1"),
+    widths: tuple[int, int] = (640, 640),
+    codecs: tuple[str, str] = ("h264", "h264"),
+    frame_count: int = 100,
+) -> list[MediaClip]:
+    """Two clips of one camera of *sequence*, each identified by its uid and camera.
+
+    An empty uid leaves its clip without a content identity.
+    """
+    return [
+        MediaClip(
+            sequence=sequence,
+            camera=camera,
+            filename=f"{sequence}{camera}-c{order}.mp4",
+            video_order=order,
+            video_uuid=f"{sequence}{camera}-{uid}" if uid else "",
+            fps=rate,
+            width=width,
+            codec=codec,
+            frame_count=frame_count,
+        )
+        for order, (rate, uid, width, codec) in enumerate(
+            zip(rates, uids, widths, codecs, strict=True)
+        )
+    ]
+
+
 def write_media_index(
     dataset: Dataset,
     rows: Sequence[str | MediaClip],

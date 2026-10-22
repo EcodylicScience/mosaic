@@ -44,6 +44,54 @@ GroupOption = Annotated[
     ),
 ]
 
+RunKindOption = Annotated[
+    str | None,
+    typer.Option("--kind", help="The op kind, e.g. 'infer-pose'."),
+]
+
+RunParamsOption = Annotated[
+    str | None,
+    typer.Option("--params", help="Params as inline JSON, @file.json, or @- (stdin)."),
+]
+
+RunGroupsOption = Annotated[
+    list[str] | None, typer.Option("--groups", help="Scope to these groups.")
+]
+
+RunSequencesOption = Annotated[
+    list[str] | None, typer.Option("--sequences", help="Scope to these sequences.")
+]
+
+RunEntriesOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--entries",
+        help="Scope to group:sequence pairs (repeatable). A bare token is a "
+        "sequence in the empty group.",
+    ),
+]
+
+RunScopeOption = Annotated[
+    str | None,
+    typer.Option(
+        "--scope",
+        help="Scope as JSON: an inline object, @path.json, or @- for "
+        "stdin. Excludes --entries / --groups / --sequences. --params and "
+        "--scope cannot both read stdin.",
+    ),
+]
+
+RUN_SCOPE_FLAGS_REMEDY = (
+    "--entries group:sequence (repeatable), or --groups / --sequences, which "
+    "combine as a cross product, or --scope with the selector as JSON. Omit "
+    "them all to cover everything."
+)
+"""How to name a scope with the ``mosaic run`` flags, appended to a library refusal.
+
+``check_scope_takes`` answers in ``Scope(...)`` for the library, the planner and
+mosaic-api alike. A person at a terminal types these flags instead.
+"""
+
 StepScopeOption = Annotated[
     list[str] | None,
     typer.Option(
@@ -289,6 +337,121 @@ def parse_entries(entries: list[str] | None) -> list[tuple[str, str]]:
     ways of naming one entry on one command line disagreed.
     """
     return parse_entry_tokens(entries)
+
+
+def refuse_scope_in_params(params: dict[str, object]) -> None:
+    """Raise unless *params* names settings alone.
+
+    A feature's or an op's model validates ``--params``. A scope belongs to the
+    attempt and arrives through the scope flags.
+
+    Args:
+        params: The ``--params`` mapping as the caller wrote it.
+
+    Raises:
+        ValueError: A key names a selector field instead of a setting.
+    """
+    from mosaic.core.scope import scope_in_params_refusal
+
+    refusal = scope_in_params_refusal(params, prefix="--")
+    if refusal:
+        raise ValueError(refusal)
+
+
+def command_line_params(params: str | None) -> dict[str, object] | None:
+    """Return the ``--params`` object, or fail when it is not one or names a scope.
+
+    Args:
+        params: The ``--params`` value: inline JSON, ``@file.json`` or ``@-``.
+
+    Returns:
+        The mapping, or ``None`` when *params* is ``None``.
+    """
+    from pydantic import TypeAdapter, ValidationError
+
+    value = load_json_arg(params)
+    if value is None:
+        return None
+    try:
+        mapping = TypeAdapter(dict[str, object]).validate_python(value)
+    except ValidationError:
+        fail("--params must be a JSON object.")
+    try:
+        refuse_scope_in_params(mapping)
+    except ValueError as exc:
+        fail(str(exc))
+    return mapping
+
+
+def refuse_scope_named_twice(
+    entries: list[str] | None,
+    groups: list[str] | None,
+    sequences: list[str] | None,
+    scope_json: str | None,
+) -> None:
+    """Fail when ``--scope`` is given beside another scope flag.
+
+    The other flags are ``--entries``, ``--groups`` and ``--sequences``, and
+    presence decides. ``--scope '{}'`` beside ``--entries`` names a selector
+    twice whatever either of them contains.
+    """
+    if scope_json is not None and (
+        entries is not None or groups is not None or sequences is not None
+    ):
+        fail(
+            "--scope names the whole selector as JSON and cannot be combined "
+            "with --entries / --groups / --sequences. Give --scope alone, or "
+            "give the flags alone."
+        )
+
+
+def command_line_scope(
+    entries: list[str] | None,
+    groups: list[str] | None,
+    sequences: list[str] | None,
+    scope_json: str | None,
+) -> Scope:
+    """Return the selector that the scope flags name, or fail with a message.
+
+    ``--groups`` and ``--sequences`` combine as a cross product, and a group
+    named with no sequence means every sequence in it, which only an index can
+    answer. The caller resolves the selector: a feature against its inputs, an
+    op against the media index. ``--scope`` names the whole model as JSON, for a
+    caller that formats one instead of typing flags. Both sources meet one
+    validation, and a bad selector reads the same however it arrived. A
+    selector that addresses cameras is refused after it is built.
+
+    Args:
+        entries: The ``--entries`` tokens.
+        groups: The ``--groups`` names.
+        sequences: The ``--sequences`` names.
+        scope_json: The ``--scope`` value: inline JSON, ``@file.json`` or ``@-``.
+
+    Returns:
+        The selector. It is unset when every flag is absent.
+    """
+    from pydantic import ValidationError
+
+    from mosaic.core.scope import Scope, camera_grain_refusal
+    from mosaic.core.strict_model import terse
+
+    try:
+        if scope_json is not None:
+            scope_value = load_json_arg(scope_json)
+            if not isinstance(scope_value, dict):
+                fail("--scope must be a JSON object.")
+            scope = Scope.model_validate(scope_value)
+        else:
+            scope = Scope(
+                entries=parse_entries(entries) or None,
+                groups=groups or None,
+                sequences=sequences or None,
+            )
+    except ValidationError as exc:
+        fail(f"Invalid scope: {terse(exc)}")
+    if refusal := camera_grain_refusal(scope):
+        fail(refusal)
+    return scope
 
 
 def entries_scope(

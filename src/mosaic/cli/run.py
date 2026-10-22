@@ -29,9 +29,18 @@ from pydantic import ValidationError
 from mosaic.cli._context import attempt_facts, load_dataset
 from mosaic.cli._features import build_feature
 from mosaic.cli._io import (
+    RUN_SCOPE_FLAGS_REMEDY,
     MinFreeMemoryOption,
     ParallelModeOption,
+    RunEntriesOption,
+    RunGroupsOption,
+    RunKindOption,
+    RunParamsOption,
+    RunScopeOption,
+    RunSequencesOption,
     WorkersOption,
+    command_line_params,
+    command_line_scope,
     parallel_settings,
     emit_json,
     exit_refused,
@@ -39,43 +48,13 @@ from mosaic.cli._io import (
     fail_classified,
     load_json_arg,
     log,
-    parse_entries,
+    refuse_scope_named_twice,
     stdout_to_stderr,
     with_command_line_scope,
 )
 from mosaic.cli._render import render_kv
-from mosaic.core.scope import Scope, camera_grain_refusal, scope_in_params_refusal
 from mosaic.core.strict_model import terse
 from mosaic.runlog import attempt_outcome
-
-
-SCOPE_FLAGS_REMEDY = (
-    "--entries group:sequence (repeatable), or --groups / --sequences, which "
-    "combine as a cross product, or --scope with the selector as JSON. Omit "
-    "them all to cover everything."
-)
-"""How to name a scope on this command, appended to a refusal the library wrote.
-
-``check_scope_takes`` answers in ``Scope(...)`` for the library, the planner and
-mosaic-api alike. This is the one caller whose reader types flags.
-"""
-
-
-def refuse_scope_in_params(params: dict[str, object]) -> None:
-    """Raise unless *params* names settings alone.
-
-    A feature's or an op's model validates ``--params``. A scope belongs to the
-    attempt and arrives through the flags both arms declare.
-
-    Args:
-        params: The ``--params`` mapping as the caller wrote it.
-
-    Raises:
-        ValueError: A key names a selector field instead of a setting.
-    """
-    refusal = scope_in_params_refusal(params, prefix="--")
-    if refusal:
-        raise ValueError(refusal)
 
 
 def run_command(
@@ -89,12 +68,7 @@ def run_command(
         str | None,
         typer.Option("--feature", help="Feature slug to run, e.g. 'speed-angvel'."),
     ] = None,
-    kind: Annotated[
-        str | None,
-        typer.Option(
-            "--kind", help="Op kind to run, e.g. 'infer-pose' or 'transcode'."
-        ),
-    ] = None,
+    kind: RunKindOption = None,
     graph_request: Annotated[
         str | None,
         typer.Option(
@@ -109,12 +83,7 @@ def run_command(
         str | None,
         typer.Option("--step", help="Which step of --graph-request to run."),
     ] = None,
-    params: Annotated[
-        str | None,
-        typer.Option(
-            "--params", help="Params as inline JSON, @file.json, or @- (stdin)."
-        ),
-    ] = None,
+    params: RunParamsOption = None,
     inputs: Annotated[
         str | None,
         typer.Option(
@@ -122,29 +91,10 @@ def run_command(
             help='Feature inputs as JSON (default ["tracks"]). Feature runs only.',
         ),
     ] = None,
-    groups: Annotated[
-        list[str] | None, typer.Option("--groups", help="Scope to these groups.")
-    ] = None,
-    sequences: Annotated[
-        list[str] | None, typer.Option("--sequences", help="Scope to these sequences.")
-    ] = None,
-    entries: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--entries",
-            help="Scope to group:sequence pairs (repeatable). A bare token is a "
-            "sequence in the empty group.",
-        ),
-    ] = None,
-    scope_json: Annotated[
-        str | None,
-        typer.Option(
-            "--scope",
-            help="Scope as JSON: an inline object, @path.json, or @- for "
-            "stdin. Excludes --entries / --groups / --sequences. --params and "
-            "--scope cannot both read stdin.",
-        ),
-    ] = None,
+    groups: RunGroupsOption = None,
+    sequences: RunSequencesOption = None,
+    entries: RunEntriesOption = None,
+    scope_json: RunScopeOption = None,
     tracks_run_id: Annotated[
         str | None,
         typer.Option(
@@ -204,16 +154,7 @@ def run_command(
     named = [feature is not None, kind is not None, graph_request is not None]
     if sum(named) != 1:
         fail("Provide exactly one of --feature, --kind or --graph-request.")
-    # Presence decides both refusals below. ``--scope '{}'`` beside ``--entries``
-    # names a selector twice whatever either of them holds.
-    if scope_json is not None and (
-        entries is not None or groups is not None or sequences is not None
-    ):
-        fail(
-            "--scope names the whole selector as JSON and cannot be combined "
-            "with --entries / --groups / --sequences. Give --scope alone, or "
-            "give the flags alone."
-        )
+    refuse_scope_named_twice(entries, groups, sequences, scope_json)
     if (graph_request is not None) != (step is not None):
         fail("--graph-request and --step are used together, or not at all.")
     parallel = parallel_settings(workers, parallel_mode, min_free_memory_fraction)
@@ -250,46 +191,9 @@ def run_command(
 
     ds = load_dataset(manifest)
 
-    params_value = load_json_arg(params)
-    params_dict: dict[str, object] | None = None
-    if params_value is not None:
-        if not isinstance(params_value, dict):
-            fail("--params must be a JSON object.")
-        params_dict = cast("dict[str, object]", params_value)
-        try:
-            refuse_scope_in_params(params_dict)
-        except ValueError as exc:
-            fail(str(exc))
-
-    # --groups and --sequences are a cross product, and a group named with no
-    # sequence means every sequence in it, which only an index can answer. The
-    # selector is built here for both arms; a feature resolves it against its
-    # inputs and run_op enumerates it against the media index. Checked here so
-    # an --entries named beside either of the other two becomes a message
-    # rather than a traceback.
-    #
-    # --scope carries the whole model as JSON, for a caller that formats one
-    # rather than typing it. Both sources land in one value and meet one
-    # refusal. A bad selector reads the same however it arrived.
-    try:
-        if scope_json is not None:
-            scope_value = load_json_arg(scope_json)
-            if not isinstance(scope_value, dict):
-                fail("--scope must be a JSON object.")
-            scope = Scope.model_validate(scope_value)
-        else:
-            scope = Scope(
-                entries=parse_entries(entries) or None,
-                groups=groups or None,
-                sequences=sequences or None,
-            )
-    except ValidationError as exc:
-        fail(f"Invalid scope: {terse(exc)}")
-
-    # After the construction because it reads the parsed model, and reached by
-    # the --kind arm and the --feature arm alike.
-    if refusal := camera_grain_refusal(scope):
-        fail(refusal)
+    params_dict = command_line_params(params)
+    # The --feature arm and the --kind arm read one selector.
+    scope = command_line_scope(entries, groups, sequences, scope_json)
 
     exec_id = execution_id or new_execution_id()
     token = CancelToken()
@@ -422,7 +326,7 @@ def run_command(
         exit_refused(exec_id, refusal, step_id=step or "", as_json=as_json)
     except ScopeRefused as refusal:
         # The checker owns the sentence; this command owns the flags that answer it.
-        message = with_command_line_scope(str(refusal), SCOPE_FLAGS_REMEDY)
+        message = with_command_line_scope(str(refusal), RUN_SCOPE_FLAGS_REMEDY)
         fail_classified(refusal, as_json=as_json, message=message, step=step or "")
     except ClassifiedError as error:
         # Before the arms below, whose bases a classified error may also have,

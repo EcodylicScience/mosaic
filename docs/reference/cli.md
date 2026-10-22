@@ -18,6 +18,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 **Commands**:
 
 * `run`: Run a feature (--feature), an op (--kind),...
+* `prerequisites`: Print the runs that an op needs before it...
 * `status`: Show the status of one run attempt by...
 * `cancel`: Request cancellation of a running attempt...
 * `release`: Release the run roots claimed by an...
@@ -64,7 +65,7 @@ $ mosaic run [OPTIONS]
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--feature <str>`: Feature slug to run, e.g. 'speed-angvel'.
-* `--kind <str>`: Op kind to run, e.g. 'infer-pose' or 'transcode'.
+* `--kind <str>`: The op kind, e.g. 'infer-pose'.
 * `--graph-request <str>`: Run one step of this submitted pipeline request. The request is read from the dataset that --manifest names.
 * `--step <str>`: Which step of --graph-request to run.
 * `--params <str>`: Params as inline JSON, @file.json, or @- (stdin).
@@ -82,6 +83,28 @@ $ mosaic run [OPTIONS]
 * `--workers <int range>`: Compute this many entries of a parallelizable feature at once. The default computes them in turn. More workers use more memory.  [1<=x<=32]
 * `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
 * `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the host's memory that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
+* `--json`: Emit one JSON object on stdout; logs go to stderr.
+* `--help`: Show this message and exit.
+
+## `mosaic prerequisites`
+
+Print the runs that an op needs before it reads its entries, and run none.
+
+**Usage**:
+
+```console
+$ mosaic prerequisites [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--kind <str>`: The op kind, e.g. 'infer-pose'.  [required]
+* `--params <str>`: Params as inline JSON, @file.json, or @- (stdin).
+* `--groups <str>`: Scope to these groups.
+* `--sequences <str>`: Scope to these sequences.
+* `--entries <str>`: Scope to group:sequence pairs (repeatable). A bare token is a sequence in the empty group.
+* `--scope <str>`: Scope as JSON: an inline object, @path.json, or @- for stdin. Excludes --entries / --groups / --sequences. --params and --scope cannot both read stdin.
 * `--json`: Emit one JSON object on stdout; logs go to stderr.
 * `--help`: Show this message and exit.
 

@@ -32,6 +32,7 @@ from mosaic.tracking.prerequisites import (
     PrerequisitePlan,
     PrerequisiteRun,
     RefusalCause,
+    indexed_entries,
     plan_prerequisites,
 )
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
@@ -39,9 +40,11 @@ from tests.helpers import (
     MediaClip,
     add_media_variant,
     assert_tree_unchanged,
+    entry_clips,
     export_entry_store,
     make_dataset,
     point_at_a_store,
+    record_variant_recipe,
     store_dataset,
     stub_join,
     tree_snapshot,
@@ -70,35 +73,6 @@ _GRAYSCALE_AT_20 = PreprocessParams.model_validate(
 """A variant other than :data:`_GRAYSCALE`."""
 
 
-def _clips(
-    sequence: str = "sess",
-    *,
-    camera: str = "",
-    rates: tuple[float, float] = (30.0, 30.0),
-    uids: tuple[str, str] = ("uid-0", "uid-1"),
-    widths: tuple[int, int] = (640, 640),
-    codecs: tuple[str, str] = ("h264", "h264"),
-    frame_count: int = 100,
-) -> list[MediaClip]:
-    """Two clips of one camera of *sequence*, each identified by its uid and camera."""
-    return [
-        MediaClip(
-            sequence=sequence,
-            camera=camera,
-            filename=f"{sequence}{camera}-c{order}.mp4",
-            video_order=order,
-            video_uuid=f"{sequence}{camera}-{uid}" if uid else "",
-            fps=rate,
-            width=width,
-            codec=codec,
-            frame_count=frame_count,
-        )
-        for order, (rate, uid, width, codec) in enumerate(
-            zip(rates, uids, widths, codecs, strict=True)
-        )
-    ]
-
-
 def _join_run(entry: Entry = _ENTRY, *, reencode: bool = False) -> PrerequisiteRun:
     params = JoinedExportParams(reencode=reencode)
     return PrerequisiteRun("export-joined", params, (entry,), joined_run_id(params), ())
@@ -117,15 +91,6 @@ def _preprocess_run(
 ) -> PrerequisiteRun:
     run_id = preprocess_identity(recipe).run_id
     return PrerequisiteRun("preprocess", recipe, entries, run_id, after)
-
-
-def _record(ds: Dataset, recipe: PreprocessParams) -> str:
-    """Save *recipe* where its variant's runs save it, and return the variant."""
-    variant = preprocess_identity(recipe).run_id
-    path = media_variant_recipe_path(ds, variant)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(recipe.model_dump_json(indent=2))
-    return variant
 
 
 def _refused(plan: PrerequisitePlan) -> list[tuple[str, str, str, RefusalCause]]:
@@ -160,7 +125,7 @@ def test_several_clips_need_a_join_only_for_a_tool_that_opens_one_file(
     tmp_path: Path, kind: str, joined: bool
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips())
+    write_media_index(ds, entry_clips())
 
     plan = plan_prerequisites(ds, kind)
 
@@ -174,7 +139,7 @@ def test_several_clips_need_a_join_only_for_a_tool_that_opens_one_file(
 
 def test_a_join_of_clips_in_two_codecs_is_planned_with_reencode(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips(codecs=("h264", "av1")))
+    write_media_index(ds, entry_clips(codecs=("h264", "av1")))
 
     assert plan_prerequisites(ds, "trex").runs == (_join_run(reencode=True),)
     assert plan_prerequisites(ds, "ultralytics").runs == ()
@@ -184,7 +149,7 @@ def test_clips_at_two_rates_need_a_join_for_the_localizer_alone(
     tmp_path: Path,
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips(rates=(30.0, 31.0)))
+    write_media_index(ds, entry_clips(rates=(30.0, 31.0)))
 
     assert plan_prerequisites(ds, "infer-localizer").runs == (_join_run(),)
     assert plan_prerequisites(ds, "trex").runs == (_join_run(),)
@@ -199,7 +164,7 @@ def test_clips_of_two_sizes_are_unjoinable_for_every_tool(
     tmp_path: Path, kind: str
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips(widths=(640, 1280)))
+    write_media_index(ds, entry_clips(widths=(640, 1280)))
 
     plan = plan_prerequisites(ds, kind)
 
@@ -222,7 +187,7 @@ def test_clips_without_an_identity_are_refused_by_a_tracker(
 ) -> None:
     """A tracker's reuse gate cannot name them. An inference op reads them as they are."""
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips(uids=("uid-0", "")))
+    write_media_index(ds, entry_clips(uids=("uid-0", "")))
 
     plan = plan_prerequisites(ds, kind)
 
@@ -237,7 +202,7 @@ def test_clips_without_an_identity_are_refused_by_a_tracker(
 
 def test_several_current_joins_are_the_users_to_choose_between(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips())
+    write_media_index(ds, entry_clips())
     root = ds.get_root("media") / JOINED_KIND_DIRECTORY
     root.mkdir(parents=True)
     uid = joined_source_uid(ds.resolve_media(*_ENTRY).facts)
@@ -253,7 +218,7 @@ def test_several_current_joins_are_the_users_to_choose_between(tmp_path: Path) -
 
 def test_a_superseded_join_is_built_again(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips())
+    write_media_index(ds, entry_clips())
     root = ds.get_root("media") / JOINED_KIND_DIRECTORY
     root.mkdir(parents=True)
     uid = joined_source_uid(ds.resolve_media(*_ENTRY).facts)
@@ -267,7 +232,7 @@ def test_a_superseded_join_is_built_again(tmp_path: Path) -> None:
 def test_a_several_camera_entry_is_refused_a_join(tmp_path: Path) -> None:
     """``export-joined`` joins an entry of one camera. A tracker reads the first."""
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, [*_clips(camera="a"), *_clips(camera="b")])
+    write_media_index(ds, [*entry_clips(camera="a"), *entry_clips(camera="b")])
 
     plan = plan_prerequisites(ds, "trex")
 
@@ -334,7 +299,11 @@ def test_every_camera_of_a_several_camera_nameless_entry_is_refused_a_join(
     """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(
-        ds, [*_clips("", camera="a", rates=rates), *_clips("", camera="b", rates=rates)]
+        ds,
+        [
+            *entry_clips("", camera="a", rates=rates),
+            *entry_clips("", camera="b", rates=rates),
+        ],
     )
 
     plan = plan_prerequisites(ds, kind, params)
@@ -348,7 +317,7 @@ def test_every_camera_of_a_several_camera_nameless_entry_is_refused_a_join(
 
 def test_clips_that_report_no_frame_counts_are_refused_a_join(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips(frame_count=0))
+    write_media_index(ds, entry_clips(frame_count=0))
 
     plan = plan_prerequisites(ds, "trex")
 
@@ -474,7 +443,9 @@ def test_mixed_rate_clips_are_joined_before_frames_are_extracted(
     tmp_path: Path,
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, [*_clips("mixed", rates=(30.0, 31.0)), *_clips("even")])
+    write_media_index(
+        ds, [*entry_clips("mixed", rates=(30.0, 31.0)), *entry_clips("even")]
+    )
 
     plan = plan_prerequisites(ds, "extract-frames", _EXTRACT)
 
@@ -487,7 +458,7 @@ def test_mixed_rate_clips_that_cannot_be_one_video_are_refused_for_extract_frame
     tmp_path: Path,
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips(rates=(30.0, 31.0), widths=(640, 1280)))
+    write_media_index(ds, entry_clips(rates=(30.0, 31.0), widths=(640, 1280)))
 
     plan = plan_prerequisites(ds, "extract-frames", _EXTRACT)
 
@@ -502,7 +473,8 @@ def test_every_camera_of_a_several_camera_entry_is_refused_a_join(
     ds = make_dataset(tmp_path / "ds")
     mixed = (30.0, 31.0)
     write_media_index(
-        ds, [*_clips(camera="a", rates=mixed), *_clips(camera="b", rates=mixed)]
+        ds,
+        [*entry_clips(camera="a", rates=mixed), *entry_clips(camera="b", rates=mixed)],
     )
 
     plan = plan_prerequisites(ds, "extract-frames", _EXTRACT)
@@ -517,7 +489,9 @@ def test_every_camera_of_a_several_camera_entry_is_refused_a_join(
 def test_listed_frames_narrow_the_entries_of_extract_frames(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path / "ds")
     mixed = (30.0, 31.0)
-    write_media_index(ds, [*_clips("a", rates=mixed), *_clips("b", rates=mixed)])
+    write_media_index(
+        ds, [*entry_clips("a", rates=mixed), *entry_clips("b", rates=mixed)]
+    )
     listed = {"method": "list", "frames": [{"sequence": "a", "indices": [0]}]}
 
     plan = plan_prerequisites(ds, "extract-frames", listed)
@@ -532,7 +506,7 @@ def test_extract_frames_params_that_do_not_validate_are_refused(
     tmp_path: Path,
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips())
+    write_media_index(ds, entry_clips())
 
     with pytest.raises(ValidationError, match="n_frames"):
         _ = plan_prerequisites(ds, "extract-frames")
@@ -545,7 +519,7 @@ def test_an_entry_awaiting_its_analysis_transcode_is_refused_alone(
     tmp_path: Path,
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, [*_clips("a"), MediaClip(sequence="b", codec="mpeg4")])
+    write_media_index(ds, [*entry_clips("a"), MediaClip(sequence="b", codec="mpeg4")])
 
     plan = plan_prerequisites(ds, "trex")
 
@@ -559,7 +533,9 @@ def test_a_store_whose_metadata_does_not_read_is_refused_alone(
     tmp_path: Path, kind: str
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, [*_clips("a"), MediaClip(sequence="b", filename="b.mp4")])
+    write_media_index(
+        ds, [*entry_clips("a"), MediaClip(sequence="b", filename="b.mp4")]
+    )
     store = point_at_a_store(ds, "b", ds.get_root("media_raw") / "b.store")
     _ = (store / "metadata.yaml").write_text(
         "__store: {class: DirectoryImgStore, format: npy, imgshape: [48]}\n"
@@ -591,7 +567,7 @@ def test_an_entry_whose_stored_facts_do_not_read_is_refused_alone(
 
 def test_an_entry_without_media_is_refused_alone(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips())
+    write_media_index(ds, entry_clips())
 
     plan = plan_prerequisites(ds, "trex", entries=[("", "gone"), _ENTRY])
 
@@ -638,7 +614,7 @@ def test_av1_clips_are_read_through_an_h264_variant_by_lightning_pose(
 ) -> None:
     """``preprocess`` reads the clips one at a time, and no join is planned."""
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips(codecs=("av1", "av1")))
+    write_media_index(ds, entry_clips(codecs=("av1", "av1")))
 
     plan = plan_prerequisites(ds, "litpose")
 
@@ -658,7 +634,7 @@ def test_no_variant_is_planned_for_a_codec_that_the_tool_may_read(
     """SLEAP's decoder is tested in its environment, and a plan runs no test."""
     monkeypatch.setenv("MOSAIC_ALLOW_TOOL_CODECS", allowed)
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips(codecs=(codec, codec)))
+    write_media_index(ds, entry_clips(codecs=(codec, codec)))
 
     plan = plan_prerequisites(ds, kind)
 
@@ -704,7 +680,7 @@ def test_av1_clips_of_two_sizes_are_unjoinable_for_lightning_pose(
 ) -> None:
     """Neither the tool nor ``preprocess`` reads them as one source."""
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips(codecs=("av1", "av1"), widths=(640, 1280)))
+    write_media_index(ds, entry_clips(codecs=("av1", "av1"), widths=(640, 1280)))
 
     plan = plan_prerequisites(ds, "litpose")
 
@@ -719,7 +695,11 @@ def test_the_codec_variant_refuses_clips_of_two_sizes_beside_a_readable_entry(
     ds = make_dataset(tmp_path / "ds")
     av1 = ("av1", "av1")
     write_media_index(
-        ds, [*_clips("a", codecs=av1), *_clips("b", codecs=av1, widths=(640, 1280))]
+        ds,
+        [
+            *entry_clips("a", codecs=av1),
+            *entry_clips("b", codecs=av1, widths=(640, 1280)),
+        ],
     )
 
     plan = plan_prerequisites(ds, "litpose")
@@ -736,7 +716,7 @@ def test_an_h264_entry_reads_the_codec_variant_beside_an_av1_entry(
 ) -> None:
     """``media`` names one variant for the whole run, which every entry reads."""
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, [*_clips("a", codecs=("av1", "av1")), *_clips("h")])
+    write_media_index(ds, [*entry_clips("a", codecs=("av1", "av1")), *entry_clips("h")])
 
     plan = plan_prerequisites(ds, "litpose")
 
@@ -806,7 +786,7 @@ def test_a_variant_that_lacks_an_entry_is_planned_from_its_recorded_recipe(
             MediaClip(sequence="lacking", filename="c.mp4", frame_count=12),
         ],
     )
-    variant = _record(ds, _GRAYSCALE)
+    variant = record_variant_recipe(ds, _GRAYSCALE)
     for sequence in ("current", "drifted"):
         _ = add_media_variant(ds, variant, sequence)
 
@@ -869,7 +849,7 @@ def test_an_av1_variant_is_refused_to_lightning_pose(
     write_media_index(ds, [MediaClip(frame_count=12)])
     variant = preprocess_identity(_GRAYSCALE).run_id
     if source == "recipe":
-        _ = _record(ds, _GRAYSCALE)
+        _ = record_variant_recipe(ds, _GRAYSCALE)
     else:
         _ = add_media_variant(ds, variant, "sess")
 
@@ -891,13 +871,13 @@ def test_a_chained_variant_is_planned_after_the_upstream_that_it_reads(
     """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, [MediaClip(frame_count=20)])
-    upstream = _record(ds, _GRAYSCALE)
+    upstream = record_variant_recipe(ds, _GRAYSCALE)
     if drifted:
         _ = add_media_variant(ds, upstream, "sess")
     chained = PreprocessParams.model_validate(
         {"steps": [{"step": "decimate", "every": 2}], "media": upstream}
     )
-    variant = _record(ds, chained)
+    variant = record_variant_recipe(ds, chained)
     before = tree_snapshot(ds.base_dir)
 
     plan = plan_prerequisites(ds, "trex", {"media": variant})
@@ -969,7 +949,11 @@ def test_entries_narrow_the_plan(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path / "ds")
     write_media_index(
         ds,
-        [*_clips("a"), *_clips("b"), MediaClip(sequence="c", filename="c.mp4")],
+        [
+            *entry_clips("a"),
+            *entry_clips("b"),
+            MediaClip(sequence="c", filename="c.mp4"),
+        ],
     )
 
     assert plan_prerequisites(ds, "trex").runs == (
@@ -985,7 +969,10 @@ def test_runs_are_ordered_by_kind_then_by_entry(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path / "ds")
     write_media_index(
         ds,
-        [MediaClip(sequence="a", filename="a.mp4", video_uuid="uid-a"), *_clips("b")],
+        [
+            MediaClip(sequence="a", filename="a.mp4", video_uuid="uid-a"),
+            *entry_clips("b"),
+        ],
     )
     _ = point_at_a_store(ds, "a", ds.get_root("media_raw") / "a.store")
 
@@ -999,9 +986,9 @@ def test_the_plan_is_the_same_for_entries_in_any_order(tmp_path: Path) -> None:
     write_media_index(
         ds,
         [
-            *_clips("a"),
-            *_clips("b", widths=(640, 1280)),
-            *_clips("c", codecs=("h264", "av1")),
+            *entry_clips("a"),
+            *entry_clips("b", widths=(640, 1280)),
+            *entry_clips("c", codecs=("h264", "av1")),
             MediaClip(sequence="d", filename="d.mp4"),
         ],
     )
@@ -1015,6 +1002,58 @@ def test_the_plan_is_the_same_for_entries_in_any_order(tmp_path: Path) -> None:
         ("", "b", "", "unjoinable"),
         ("", "e", "", "no_media"),
     ]
+
+
+# --- the entries that a run's scope names ---------------------------------------
+
+
+def test_the_label_of_a_nameless_entry_names_its_indexed_key(tmp_path: Path) -> None:
+    """An unscoped plan labels the entry by its first file's stem, which no scope names."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, [*entry_clips("", camera="a"), *entry_clips("sess")])
+
+    entries = plan_prerequisites(ds, "trex").entries
+
+    assert entries == (("", "a-c0"), ("", "sess"))
+    assert indexed_entries(ds, entries) == ((("", ""), ("", "sess")), ())
+
+
+def test_a_nameless_entry_is_named_when_each_camera_is(tmp_path: Path) -> None:
+    """A run's scope covers every camera of the key, a refused camera too.
+
+    The label of one camera of two is returned among the labels that a scope cannot
+    name.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    one = MediaClip(sequence="one", filename="one.mp4")
+    write_media_index(
+        ds, [*entry_clips("", camera="a"), *entry_clips("", camera="b"), one]
+    )
+
+    assert indexed_entries(ds, [("", "a-c0"), ("", "one")]) == (
+        (("", "one"),),
+        (("", "a-c0"),),
+    )
+    assert indexed_entries(ds, [("", "b-c0"), ("", "a-c0")]) == ((("", ""),), ())
+
+
+def test_a_label_that_is_an_indexed_key_names_both_entries(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(sequence="", filename="rec.mp4"),
+            MediaClip(sequence="rec", filename="rec-take.mp4"),
+        ],
+    )
+
+    assert indexed_entries(ds, [("", "rec")]) == ((("", ""), ("", "rec")), ())
+
+
+def test_entries_without_a_media_index_are_named_as_given(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+
+    assert indexed_entries(ds, [("g", "b"), ("", "a")]) == ((("", "a"), ("g", "b")), ())
 
 
 @pytest.mark.parametrize("kind", ["trex-convert", "export-joined", "speed"])
@@ -1040,7 +1079,7 @@ def test_the_media_variant_of_the_params_is_the_one_read(
     tmp_path: Path, params: Mapping[str, object] | UltralyticsParams
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, _clips())
+    write_media_index(ds, entry_clips())
 
     plan = plan_prerequisites(ds, "ultralytics", params)
 

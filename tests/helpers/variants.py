@@ -1,4 +1,4 @@
-"""Write media variant files and their index rows, as the ``preprocess`` op does.
+"""Write media variant files, index rows and recipes, as the ``preprocess`` op does.
 
 A consumer of a variant's row reads its path, its placement and its compositions, and
 does not read its pixels. The file here is a placeholder. The row is built by the
@@ -24,6 +24,7 @@ from mosaic.core.entry import Entry
 from mosaic.core.media.facts_columns import store_facts
 from mosaic.core.media.preprocess import Placement
 from mosaic.core.pipeline import preprocess_index, sequence_index
+from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.preprocess_index import (
     MediaVariantRow,
     media_variant_index,
@@ -33,6 +34,7 @@ from mosaic.core.pipeline.preprocess_index import (
 from mosaic.core.pipeline.preprocess_layout import (
     media_variant_index_path,
     media_variant_path,
+    media_variant_recipe_path,
 )
 
 _SIZE = (64, 48)
@@ -117,6 +119,15 @@ def add_media_variant(
 def finish_media_variant(ds: Dataset, run_id: str) -> None:
     """Record that variant *run_id* finished, as the op does when its run ends."""
     media_variant_index(media_variant_index_path(ds)).mark_finished(run_id)
+
+
+def record_variant_recipe(ds: Dataset, recipe: PreprocessParams) -> str:
+    """Save *recipe* where its variant's runs save it, and return the variant."""
+    variant = preprocess_identity(recipe).run_id
+    path = media_variant_recipe_path(ds, variant)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_text(recipe.model_dump_json(indent=2))
+    return variant
 
 
 @dataclass

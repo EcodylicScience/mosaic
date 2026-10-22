@@ -52,6 +52,7 @@ if TYPE_CHECKING:
         PrerequisitePlan as PrerequisitePlan,
         PrerequisiteRun as PrerequisiteRun,
         RefusalCause as RefusalCause,
+        indexed_entries as indexed_entries,
         plan_prerequisites as plan_prerequisites,
     )
     from mosaic.tracking.registration import register_ops as register_ops
@@ -89,6 +90,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "PrerequisitePlan": "mosaic.tracking.prerequisites",
     "PrerequisiteRun": "mosaic.tracking.prerequisites",
     "RefusalCause": "mosaic.tracking.prerequisites",
+    "indexed_entries": "mosaic.tracking.prerequisites",
     "plan_prerequisites": "mosaic.tracking.prerequisites",
     "register_ops": "mosaic.tracking.registration",
     "list_sleap_runs": "mosaic.tracking.sleap",
@@ -120,6 +122,7 @@ __all__ = [
     "PrerequisitePlan",
     "PrerequisiteRun",
     "RefusalCause",
+    "indexed_entries",
     "plan_prerequisites",
     "resolve_model",
     "resolve_model_set",
