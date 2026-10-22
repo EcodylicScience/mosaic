@@ -10,6 +10,103 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**`mosaic prerequisites` prints the runs that an op needs before it reads its entries.**
+A user chained `export-joined`, `export-store` and H.264 `preprocess` runs by hand, from
+the command that each refused run printed. `plan_prerequisites(ds, kind, params=None, *,
+entries=None)` in `mosaic.tracking` puts each entry through the checks of the op's run,
+from the media index, the stores' metadata, the media variants' rows and recipes, and
+file headers. It does not decode a frame or write a file. It returns a
+`PrerequisitePlan` with the runs to make first, in dependency order, the op's `media`,
+a refusal per unreadable entry, and the op's scope once the runs finish. One entry's
+failure refuses that entry alone. No run id moves.
+
+- The verb takes the `--kind`, `--params` and scope flags of `mosaic run` and opens the
+  dataset read-only. It prints each run with its run id and its `mosaic run` command,
+  each refused entry with its cause and reason, and the op's command with `media` set.
+  It does not run them. `--json` prints one object with `kind`, `media`, `runs` (each
+  with `kind`, `run_id`, `params`, `entries`, `after` and `command`), `refusals`,
+  `entries`, `command`, `no_command` and `omitted`. `after` lists positions in `runs`,
+  counted from 0.
+- The op's command is withheld when every entry is refused, the scope is empty, or the
+  media index is absent or empty, and `no_command` gives the cause. A run's scope names
+  every camera of an entry. An unscoped plan that refuses one camera of a nameless entry
+  therefore lists the labels of its other cameras under `omitted`, and the verb
+  withholds the command when those labels are every entry left.
+- It answers for `trex`, `sleap`, `litpose`, `ultralytics`, `infer-pose`,
+  `infer-points`, `infer-localizer`, `extract-frames` and `preprocess`, and raises
+  `ValueError` for any other kind. A tracker, an `infer-*` op and `preprocess` are
+  answered for the camera that their run reads, and `extract-frames` for every camera.
+- A missing join is an `export-joined` run, with `reencode` set for clips in two stream
+  profiles. A missing store export is an `export-store` run, which exports every camera
+  of the entry. An export that its run would refuse is the entry's refusal instead: a
+  join of one camera of an entry with several (`multi_camera_join`), clips without frame
+  counts or a store without a `video_uuid` (`needs_media_reprobe`), and a store export
+  on a dataset without a `media_raw` root (`no_media_raw`).
+- A tool handed a codec in its decoder's `never_reads`, less the codecs that
+  `MOSAIC_ALLOW_TOOL_CODECS` names, reads the step-less H.264 variant
+  `{"steps": [], "codec": "h264"}` when that variant fits at least one entry in the
+  codec. `media` then names the variant for every entry, and an entry that it does not
+  fit is refused. When it fits none, each entry in the codec is refused. Today that
+  codec is AV1 under `litpose`.
+- An op that names a variant in `media` needs a `preprocess` run of the variant's
+  recorded recipe over each entry whose file is missing or out of date, after the run of
+  a chained variant's upstream. A variant without a recipe that makes it is refused with
+  `no_variant_recipe`, and a variant in a codec of the tool's `never_reads` with
+  `undecodable_codec`.
+- For `extract-frames`, the plan refuses clips that cannot be read as one video. Its run
+  fails such clips only in the worker, and the run's check before the work is
+  unchanged.
+- `required_media_ops`, `MediaRequirement`, `MediaRequirementCause` and `MediaOpKind`
+  are removed from `mosaic.tracking.common.tool_input`. mosaic-api imports the first two
+  in `inferences/prerequisites.py` and its tests, and its contract test reads all four.
+  A `MediaRequirement`'s `op` and `reencode` are a `PrerequisiteRun`'s `kind` and
+  `params.reencode`. The causes `no_join` and `superseded_join` are a planned
+  `export-joined` run, and `store_export` a planned `export-store` run.
+  `several_joins`, `unidentified_clips` and `unjoinable` remain refusal causes. The
+  `MediaProbeError` that the old function raised for the whole call is the entry's
+  refusal, `needs_analysis_transcode` or `unresolved_media`. Without a media index the
+  old function raised `FileNotFoundError` for the whole call, and it left out an entry
+  of `entries` that is not indexed. Each entry of `entries` without indexed media is
+  now a `no_media` refusal. An unscoped plan without a media index is empty.
+  `missing_joins` is unchanged.
+- `export_run_id` in `mosaic.core.pipeline.store_export` takes `StoreExportParams`,
+  where it took their recipe hash. The run id is unchanged.
+- `SCOPE_FLAGS_REMEDY` and `refuse_scope_in_params` move from `mosaic.cli.run` to
+  `mosaic.cli._io`, and the first is renamed `RUN_SCOPE_FLAGS_REMEDY`, since
+  `mosaic.cli.pipeline` declares another `SCOPE_FLAGS_REMEDY`.
+- `mosaic_run_command` builds the `mosaic run` command that four refusals print: the
+  join of clips, the export of a store, the media variant of an entry whose stores
+  cannot be joined, and the run of a media variant that lacks an entry's current file.
+  The first three quote an entry with `shlex.quote`, only where a shell needs it:
+  `--entries ":sess"` is now `--entries :sess`, and `--entries "day 1:t"` is now
+  `--entries 'day 1:t'`. Their params and the fourth command read as before.
+- `preprocess` fails the later of two entries that share an entry key, in the order of
+  the media index, with a message naming the entry that it writes. Like a tracker, it
+  checks every camera of the scoped entries for a shared key. A camera of a nameless
+  entry is keyed by its first file's stem. Both a nameless entry and an entry indexed
+  under the key of the nameless entry's first camera were encoded into one file, and
+  the later encode replaced the earlier. An entry indexed under the key of another
+  camera of the nameless entry was encoded, and is now refused. Of two named entries,
+  such as `(a, b__c)` and `(a__b, c)`, the later failed with
+  `no media is indexed for it`.
+- New API: `plan_prerequisites`, `PrerequisitePlan`, `PrerequisiteRun`, `EntryRefusal`,
+  `PrerequisiteKind`, `RefusalCause` and `indexed_entries` in `mosaic.tracking`, from
+  the module `mosaic.tracking.prerequisites`; `Dataset.routes_derivatives`;
+  `resolve_entry_media`, `consumed_cameras`, `ResolvedEntryMedia` and `ConsumedMedia` in
+  `mosaic.core.pipeline.consumed_camera`; `preprocess_entry_failures` in
+  `mosaic.core.pipeline.preprocess`; `joined_run_id`, `join_codec` and
+  `join_frame_total` in `mosaic.core.pipeline.joined_export`; `entry_stores`,
+  `unnamed_stores` and `export_codec` in `mosaic.core.pipeline.store_export`; the module
+  `mosaic.core.pipeline.run_commands`, with `mosaic_run_command`; `codecs_never_read`,
+  `handed_codecs` and `refuse_unreadable_entry` in `mosaic.tracking.common.tool_input`;
+  `listed_frames` and `listed_entries` in
+  `mosaic.tracking.frame_extraction.dataset_runs`; the module
+  `mosaic.cli.prerequisites`, with `prerequisites_command` and `NoCommandCause`; and
+  `refuse_scope_named_twice`, `command_line_params`, `command_line_scope`,
+  `RunKindOption`, `RunParamsOption`, `RunGroupsOption`, `RunSequencesOption`,
+  `RunEntriesOption` and `RunScopeOption` in `mosaic.cli._io`.
+  `refuse_unreadable_entry` and `listed_entries` were private.
+
 **`keypoint-kinematics` measures the speed and acceleration of every keypoint.**
 `speed-angvel` measures the body center alone. The new feature fits a Savitzky-Golay
 derivative to each keypoint of each individual and writes `speed__<kp>` and

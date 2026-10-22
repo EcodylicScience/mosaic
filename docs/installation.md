@@ -299,9 +299,9 @@ which way a run went, so opt in deliberately.
 Both tools read an entry's files themselves: the clips of a split recording, and the
 chunk files of an imgstore whose chunks are video. Neither needs `export-joined` or
 `export-store` for those. A store whose chunks hold images, raw arrays, or Bayer or YUV
-data needs `mosaic run --kind export-store` first, as it does for TRex, SLEAP and
-Lightning Pose, and the error message names the command. `infer-localizer` reads a store
-directly and needs no export.
+data needs an `export-store` run first, as it does for TRex, SLEAP and Lightning Pose.
+`mosaic prerequisites` prints its command before the run, and the run's error message
+names it. `infer-localizer` reads a store directly, without an export.
 
 ### keypoint-MoSeq
 

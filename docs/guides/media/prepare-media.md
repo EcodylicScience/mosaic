@@ -66,16 +66,40 @@ What a tool needs before it reads such an entry depends on how it reads:
 | Ultralytics tracking, `infer-pose`, `infer-points` | Nothing | Nothing when its chunks are video, otherwise `export-store` |
 | `infer-localizer` | `export-joined` only for clips at different frame rates | Nothing |
 
-```bash
-mosaic run -m dataset.yaml --kind export-joined --entries day1:trial01
-mosaic run -m dataset.yaml --kind export-store --entries day1:trial01
-```
-
 TRex, SLEAP and Lightning Pose open one video file, so mosaic writes the clips' join or
 the store's video first. Ultralytics and the two inference ops read the entry's files
 one after another, so nothing is copied. A store whose chunks hold images, raw arrays,
-or Bayer or YUV data is still read through its export. A run that needs a file it does
-not have stops before it starts and names the command that makes it.
+or Bayer or YUV data is still read through its export.
+
+[`mosaic prerequisites`](../../reference/cli.md#mosaic-prerequisites) takes the
+`--kind`, `--params` and scope flags of a `mosaic run` command and prints the runs to
+make first:
+
+```bash
+mosaic prerequisites -m dataset.yaml --kind trex
+```
+
+```text
+kind: trex
+media: the entry media
+runs: 1
+  1. export-joined export-joined-67dcc35d06
+     mosaic run -m /data/ds/dataset.yaml --kind export-joined --entries day1:trial01 --params '{"reencode":false}'
+refusals: 0
+command:
+  mosaic run -m /data/ds/dataset.yaml --kind trex
+```
+
+Run the commands under `runs` in order, then the one under `command`. The verb does not
+run them and leaves the dataset unchanged. An entry that cannot be made readable, such
+as clips of two frame sizes, is listed under `refusals` with its cause and remedy, and
+the op's command then names only the entries that the op can read. `--json` prints the
+same as one object. A run that needs a file it does not have stops before it starts and
+names the command that makes it.
+
+For `mosaic track <kind>`, pass `--kind <kind>` and give its `--set` settings as one
+`--params` object, such as `--params '{"media": "<run_id>"}'`. Of a tracker's settings,
+`mosaic prerequisites` reads only `media`.
 
 ## Extract frames to annotate
 
@@ -127,10 +151,12 @@ recording is refused before anything is written.
 
 A recording split into clips at different rates (30, 29.95 and 31 fps, say) cannot be
 read as one timeline from its clips. Frame extraction reads it from its joined video
-instead, under every method, and refuses the recording until one exists:
+instead, under every method, and refuses the recording until one exists. Given the
+flags of the extraction, `mosaic prerequisites` prints the join to run first:
 
 ```bash
-mosaic run -m dataset.yaml --kind export-joined --entries day1:trial01
+mosaic prerequisites -m dataset.yaml --kind extract-frames \
+    --params '{"n_frames": 20, "method": "kmeans"}'
 ```
 
 ## Calibrate for physical units

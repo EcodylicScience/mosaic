@@ -258,14 +258,22 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 - Tracker settings are `--set key=value`, and `mosaic tracking describe <kind> --json`
   lists them.
 - TRex, SLEAP and Lightning Pose read one file. A multi-clip entry or an imgstore
-  needs `--kind export-joined` or `--kind export-store` first, and a run that needs one
-  stops and names the command. After an upgrade changes the join recipe, re-join and
-  then run `mosaic prune-joined --apply`.
+  needs an `export-joined` or `export-store` run first. Before a tracker, an `infer-*`
+  op, `extract-frames` or `preprocess`, run `mosaic prerequisites` with the `--kind`,
+  `--params` and scope flags of its `mosaic run` command. For `mosaic track <kind>`,
+  pass `--kind <kind>` and give its `--set` settings as one `--params` object, such as
+  `--params '{"media": "<run_id>"}'`. Of a tracker's settings, the verb reads only
+  `media`. It prints the runs that the op needs, in order, each with its command, then
+  each refused entry with its cause, and then the command of the op. It does not run
+  them, and `--json` prints the same as one object. A run that lacks a join or an
+  export stops and names the command. After an upgrade changes the join recipe,
+  re-join and then run `mosaic prune-joined --apply`.
 - A media variant (a cropped, trimmed or re-encoded copy, from the `preprocess` op) is
   tracked by passing its run id as `media` (`--set media=<run_id>`). Its tracks are
   published in the source video's pixels and frames. Do not add crop offsets. A frame
   window cannot be combined with `media`.
 - Lightning Pose cannot decode AV1. Give it a variant made with `"codec": "h264"`.
+  `mosaic prerequisites --kind litpose` plans that variant and names it in `media`.
 - Frame extraction is `mosaic run --kind extract-frames`, or the function
   `mosaic.tracking.extract_frames(ds, ...)`, which is not a `Dataset` method.
 - Annotation revisions (`labels_raw/keypoints/<set>/rev<N>/`) are immutable. A changed

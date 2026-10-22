@@ -98,8 +98,9 @@ hashed, codec refusal, source-space publication) are in the root `CLAUDE.md`.
 
 - `TrackingRoot.reads` declares `one-file`, `entry-files` or `in-process`, and decides
   what must exist before a run: a join, a store export, or neither.
-  `required_media_ops` (`common/tool_input.py`) answers that per entry from the same
-  checks, without a probe.
+  `plan_prerequisites` (`prerequisites.py`) answers that per entry from the same
+  checks (`refuse_unreadable_entry` in `common/tool_input.py`), without a probe. It
+  plans the run that each entry lacks: a join, a store export or a media variant.
 - The Ultralytics runner (`entry-files`) decodes frames itself and reads the entry's
   files in order on one frame axis (`entry_runner_sources`). Nothing is joined for it.
   A store whose chunks hold the frames (`readable_chunks`) is read chunk by chunk, and
