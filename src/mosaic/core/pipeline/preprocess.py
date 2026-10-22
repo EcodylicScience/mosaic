@@ -40,7 +40,7 @@ from mosaic_media.transcode import TranscodeError
 from pydantic import Field, TypeAdapter, model_validator
 
 from mosaic.core.entry import CameraEntry, Entry
-from mosaic.core.helpers import is_nameless_entry, make_entry_key
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.json_value import JsonValue
 from mosaic.core.media.preprocess.crop import MIN_CROP_SIDE
 from mosaic.core.media.preprocess.geometry import FrameMap, Placement
@@ -51,7 +51,10 @@ from mosaic.core.media.video_io import FFmpegVideoWriter, open_frame_reader
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
 from mosaic.core.pipeline._utils import ResolvedScope, atomic_write
 from mosaic.core.pipeline.composition import compositions_disagree
-from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
+from mosaic.core.pipeline.consumed_camera import (
+    one_camera_per_entry,
+    resolve_entry_media,
+)
 from mosaic.core.pipeline.entry_claim import (
     open_entry,
     release_entry,
@@ -62,6 +65,7 @@ from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, op_run_id
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.preprocess_index import (
+    MediaVariantDriftedError,
     media_variant_index,
     build_media_variant_row,
     media_variant_rows,
@@ -95,6 +99,7 @@ __all__ = [
     "VariantCodec",
     "VariantWriter",
     "open_variant_writer",
+    "preprocess_entry_failures",
     "preprocess_identity",
     "preprocess_identity_payload",
     "resolved_quality",
@@ -529,11 +534,11 @@ def _consumed_media(
 ) -> dict[Entry, _ConsumedMedia]:
     """Return the media of each entry's consumed camera, the one that a tracker reads.
 
-    One read of the media index resolves every entry. An entry whose media needs
-    a transcode that has not run fails alone. Without a media index every entry
-    fails with the one error that the read raised. An entry with neither group
-    nor sequence resolves under its first file's stem, a name that the scope's
-    read cannot key back to the entry. Each such entry is read separately.
+    Each entry resolves through :func:`resolve_entry_media`. The cameras of every
+    resolved entry then reduce together, in the order of one read of the media
+    index, as a tracker reduces its scope. Two entries with one entry key share
+    one output path. Each camera of a nameless entry is labeled by its first
+    file's stem. Such a label can equal the key of another entry.
 
     Args:
         ds: The dataset.
@@ -543,47 +548,99 @@ def _consumed_media(
             line once.
 
     Returns:
-        Per entry, its media, or the ``FileNotFoundError`` or
-        ``MediaProbeError`` that resolving it raised.
+        Per entry, the media of its first camera, or the ``FileNotFoundError``
+        or ``MediaProbeError`` raised by resolving it. An entry whose first
+        camera is dropped fails with a ``FileNotFoundError`` naming the entry of
+        the kept camera.
     """
-    failed: dict[Entry, MediaProbeError] = {}
-
-    def consumed_cameras(scoped: Sequence[Entry]) -> list[ResolvedScopeEntry]:
-        return one_camera_per_entry(
+    resolved = resolve_entry_media(ds, entries)
+    cameras = {
+        entry: media for entry, media in resolved.items() if isinstance(media, list)
+    }
+    # Each entry is keyed as indexed. Sorted, the entries are in the order of the
+    # read that a tracker reduces.
+    read = [(camera, entry) for entry in sorted(cameras) for camera in cameras[entry]]
+    kept = {
+        make_entry_key(media.group, media.sequence): media
+        for media in one_camera_per_entry(
             PREPROCESS_KIND,
-            ds.resolve_media_scope(scoped, errors=failed),
+            [camera for camera, _ in read],
             report_skipped=report_skipped,
         )
-
-    nameless = [
-        (group, sequence)
-        for group, sequence in entries
-        if is_nameless_entry(group, sequence)
-    ]
-    try:
-        kept = {
-            (media.group, media.sequence): media
-            for media in consumed_cameras(
-                [entry for entry in entries if entry not in nameless]
-            )
-        }
-        for entry in nameless:
-            cameras = consumed_cameras([entry])
-            if cameras:
-                kept[entry] = cameras[0]
-    except FileNotFoundError as exc:
-        return {entry: exc for entry in entries}
+    }
+    owners: dict[str, Entry] = {}
+    for camera, entry in read:
+        key = make_entry_key(camera.group, camera.sequence)
+        if kept[key] is camera:
+            owners[key] = entry
     consumed: dict[Entry, _ConsumedMedia] = {}
-    for entry in entries:
-        media = kept.get(entry)
-        if media is not None:
+    for entry, media in resolved.items():
+        if not isinstance(media, list):
             consumed[entry] = media
-        elif entry in failed:
-            consumed[entry] = failed[entry]
+            continue
+        first = media[0]
+        key = make_entry_key(first.group, first.sequence)
+        if kept[key] is first:
+            consumed[entry] = first
         else:
-            message = f"{make_entry_key(*entry)}: no media is indexed for it"
+            message = (
+                f"{entry!r} shares the output name {key} with {owners[key]!r}, "
+                "which is indexed first"
+            )
             consumed[entry] = FileNotFoundError(message)
     return consumed
+
+
+@dataclass(frozen=True, slots=True)
+class _ScopeReads:
+    """The reads that a scope's entries are checked against, each made once.
+
+    Attributes:
+        consumed: Each entry's consumed media, or the error that explains its
+            absence.
+        compositions: The current media composition of each entry whose media
+            resolves.
+        upstream: The variant that ``media`` names, read for every entry, or
+            ``None`` when the recipe reads the entry media.
+    """
+
+    consumed: Mapping[Entry, _ConsumedMedia]
+    compositions: Mapping[Entry, str]
+    upstream: VariantLookup | None
+
+
+def _read_scope(
+    ds: Dataset,
+    params: PreprocessParams,
+    entries: Sequence[Entry],
+    *,
+    report_skipped: bool,
+) -> _ScopeReads:
+    """Read the media index, the compositions and the upstream variant's rows once.
+
+    Args:
+        ds: The dataset.
+        params: The recipe, whose ``media`` names the upstream variant.
+        entries: The entries in scope.
+        report_skipped: Print a line for each camera dropped beside the one read.
+    """
+    consumed = _consumed_media(ds, entries, report_skipped=report_skipped)
+    resolved = [
+        (media.group, media.sequence)
+        for media in consumed.values()
+        if not isinstance(media, (FileNotFoundError, MediaProbeError))
+    ]
+    compositions = media_compositions_for(ds, resolved)
+    upstream = (
+        VariantLookup(
+            run_id=params.media,
+            rows=media_variant_rows(ds, params.media),
+            compositions=compositions,
+        )
+        if params.media
+        else None
+    )
+    return _ScopeReads(consumed, compositions, upstream)
 
 
 def _entry_media(key: str, media: ResolvedScopeEntry) -> tuple[_EntryMedia, Placement]:
@@ -660,22 +717,15 @@ def _place(
 
 
 def _plan_entry(
-    ds: Dataset,
-    params: PreprocessParams,
-    media: _ConsumedMedia,
-    compositions: Mapping[Entry, str],
-    upstream: VariantLookup | None,
+    ds: Dataset, params: PreprocessParams, entry: Entry, reads: _ScopeReads
 ) -> _EntryPlan:
     """Check one entry against the recipe without reading a frame.
 
     Args:
         ds: The dataset.
         params: The recipe.
-        media: The entry's consumed media, or the error that explains its
-            absence.
-        compositions: The current media composition of each entry in scope.
-        upstream: The variant that ``params.media`` names, read for every entry
-            in scope, or ``None`` when the recipe reads the entry media.
+        entry: The entry, one of those that *reads* were made for.
+        reads: The scope's consumed media, compositions and upstream variant.
 
     Raises:
         PreprocessRefused: If the recipe does not fit the entry.
@@ -684,13 +734,14 @@ def _plan_entry(
         MediaProbeError: If the entry's media cannot be read as one source.
         MediaVariantDriftedError: If the upstream variant is out of date.
     """
+    media = reads.consumed[entry]
     if isinstance(media, (FileNotFoundError, MediaProbeError)):
         raise media
     key = make_entry_key(media.group, media.sequence)
-    composition = compositions.get((media.group, media.sequence), "")
+    composition = reads.compositions.get((media.group, media.sequence), "")
     source: _EntryMedia | VariantSource
-    if upstream is not None:
-        source = upstream.resolve(ds, media)
+    if reads.upstream is not None:
+        source = reads.upstream.resolve(ds, media)
         start = source.placement
     else:
         source, start = _entry_media(key, media)
@@ -710,6 +761,45 @@ def _plan_entry(
         final=final,
         composition=composition,
     )
+
+
+def preprocess_entry_failures(
+    ds: Dataset, params: PreprocessParams, entries: Sequence[Entry]
+) -> dict[Entry, Exception]:
+    """Return the error that a run of *params* meets for each entry it cannot write.
+
+    Each entry is checked as a run checks it before decoding any, from one read
+    of each index for the scope. The check reads no frame, writes nothing and
+    raises none of the errors it returns. A run raises ``PreprocessRefused`` for
+    the whole run and fails the entry on any other error.
+
+    Args:
+        ds: The dataset.
+        params: The recipe.
+        entries: The entries to check.
+
+    Returns:
+        Per failing entry, in the order given, a ``FileNotFoundError`` when it
+        lacks media or a camera of an entry indexed before it has the same entry
+        key, a ``MediaProbeError`` when its media cannot be read as one source,
+        a ``PreprocessRefused`` when the recipe does not fit it, or a
+        ``MediaVariantMissingError`` or ``MediaVariantDriftedError`` when the
+        upstream variant lacks its file or is out of date. An entry that passes
+        is absent.
+    """
+    reads = _read_scope(ds, params, entries, report_skipped=False)
+    failures: dict[Entry, Exception] = {}
+    for entry in entries:
+        try:
+            _ = _plan_entry(ds, params, entry, reads)
+        except (
+            FileNotFoundError,
+            MediaProbeError,
+            PreprocessRefused,
+            MediaVariantDriftedError,
+        ) as exc:
+            failures[entry] = exc
+    return failures
 
 
 def _clip_frames(
@@ -1014,34 +1104,13 @@ class PreprocessOp(Op[PreprocessParams]):
             _require_libx264()
 
         # Every entry is resolved and checked before any is decoded. A recipe that
-        # does not fit one entry is refused before a file is written. The media
-        # index, the compositions and the upstream variant's rows are each read
-        # once for the whole scope.
-        consumed = _consumed_media(ds, entries, report_skipped=True)
-        resolved = [
-            (media.group, media.sequence)
-            for media in consumed.values()
-            if not isinstance(media, (FileNotFoundError, MediaProbeError))
-        ]
-        compositions = media_compositions_for(ds, resolved)
-        upstream = (
-            VariantLookup(
-                run_id=params.media,
-                rows=media_variant_rows(ds, params.media),
-                compositions=compositions,
-            )
-            if params.media
-            else None
-        )
+        # does not fit one entry is refused before a file is written.
+        reads = _read_scope(ds, params, entries, report_skipped=True)
         plans: list[_EntryPlan] = []
         failed = 0
         for group, sequence in entries:
             try:
-                plans.append(
-                    _plan_entry(
-                        ds, params, consumed[(group, sequence)], compositions, upstream
-                    )
-                )
+                plans.append(_plan_entry(ds, params, (group, sequence), reads))
             except PreprocessRefused:
                 raise
             except Exception as exc:

@@ -1,4 +1,4 @@
-"""Choose the camera of an entry that a per-entry consumer reads.
+"""Resolve each entry's cameras, and choose the one that a per-entry consumer reads.
 
 ``Dataset.resolve_media_scope`` yields one entry per ``(group, sequence, camera)``,
 while a tracker, an ``infer-*`` op and the ``tracks/`` layer they publish into all
@@ -12,14 +12,17 @@ from __future__ import annotations
 import sys
 from typing import TYPE_CHECKING
 
-from mosaic.core.helpers import make_entry_key
+from mosaic.core.helpers import is_nameless_entry, make_entry_key
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
-    from mosaic.core.dataset import ResolvedScopeEntry
+    from mosaic_media import MediaProbeError
 
-__all__ = ["one_camera_per_entry"]
+    from mosaic.core.dataset import Dataset, ResolvedScopeEntry
+    from mosaic.core.entry import Entry
+
+__all__ = ["one_camera_per_entry", "resolve_entry_media"]
 
 
 def one_camera_per_entry(
@@ -74,3 +77,70 @@ def one_camera_per_entry(
         claimed.add(key)
         kept.append(entry)
     return kept
+
+
+def resolve_entry_media(
+    ds: Dataset, entries: Sequence[Entry] | None
+) -> dict[Entry, list[ResolvedScopeEntry] | FileNotFoundError | MediaProbeError]:
+    """Return each entry's cameras, or the error that explains why it has none.
+
+    One read of the media index resolves the entries. An entry whose media needs
+    a transcode that has not run fails alone.
+
+    Args:
+        ds: The dataset.
+        entries: The entries, each keyed in the result in the order given.
+            Without a media index each fails with the one error that the read
+            raised. An entry with neither group nor sequence resolves under its
+            first file's stem, a name that the scope's read cannot key back to
+            the entry. Each such entry is read separately.
+            ``None`` resolves every indexed entry, as an unscoped run reads them,
+            and keys each by the label that ``Dataset.resolve_media_scope`` gives
+            it, in sorted order. An entry that fails to resolve is keyed as
+            indexed, which differs from its label only for a nameless entry.
+            Without a media index the result is empty.
+
+    Returns:
+        Per entry, its cameras in ``(group, sequence, camera)`` order, or the
+        ``FileNotFoundError`` or ``MediaProbeError`` that resolving it raised.
+    """
+    failed: dict[Entry, MediaProbeError] = {}
+    if entries is None:
+        try:
+            scope = ds.resolve_media_scope(None, errors=failed)
+        except FileNotFoundError:
+            return {}
+        everything = {**_cameras_by_entry(scope), **failed}
+        return {entry: everything[entry] for entry in sorted(everything)}
+    nameless = [entry for entry in entries if is_nameless_entry(*entry)]
+    named = [entry for entry in entries if not is_nameless_entry(*entry)]
+    try:
+        cameras = _cameras_by_entry(ds.resolve_media_scope(named, errors=failed))
+        for entry in nameless:
+            alone = ds.resolve_media_scope([entry], errors=failed)
+            if alone:
+                cameras[entry] = alone
+    except FileNotFoundError as exc:
+        return {entry: exc for entry in entries}
+    resolved: dict[
+        Entry, list[ResolvedScopeEntry] | FileNotFoundError | MediaProbeError
+    ] = {}
+    for entry in entries:
+        if entry in cameras:
+            resolved[entry] = cameras[entry]
+        elif entry in failed:
+            resolved[entry] = failed[entry]
+        else:
+            message = f"{make_entry_key(*entry)}: no media is indexed for it"
+            resolved[entry] = FileNotFoundError(message)
+    return resolved
+
+
+def _cameras_by_entry(
+    scope: Iterable[ResolvedScopeEntry],
+) -> dict[Entry, list[ResolvedScopeEntry]]:
+    """Group a resolved scope's cameras under their ``(group, sequence)`` label."""
+    cameras: dict[Entry, list[ResolvedScopeEntry]] = {}
+    for media in scope:
+        cameras.setdefault((media.group, media.sequence), []).append(media)
+    return cameras

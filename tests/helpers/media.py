@@ -219,15 +219,16 @@ def write_painted_entry(
     paint: Callable[[int], npt.NDArray[np.uint8]],
     *,
     size: tuple[int, int] = (64, 48),
+    group: str = "",
 ) -> list[Path]:
     """Write and index *sequence*'s clips, each ``(frames, fps)``, in order.
 
     Frame ``i`` of the entry, counted across all its clips, is ``paint(i)``. The clips
     continue one another, and a decoded frame identifies its entry frame. The clips are
-    ``clip0.mp4``, ``clip1.mp4``, ... under ``media_raw/<sequence>/``, returned in
-    order.
+    ``clip0.mp4``, ``clip1.mp4``, ... under ``media_raw/<group>/<sequence>/``,
+    returned in order. An empty *group* is no directory level.
     """
-    directory = dataset.get_root("media_raw") / sequence
+    directory = dataset.get_root("media_raw") / group / sequence
     paths: list[Path] = []
     offset = 0
     for position, (frames, fps) in enumerate(clips):
@@ -239,7 +240,7 @@ def write_painted_entry(
         write_h264_mp4(path, frames=frames, fps=fps, size=size, paint=paint_clip)
         paths.append(path)
         offset += frames
-    index_media_sequence(dataset, sequence, [path.name for path in paths])
+    index_media_sequence(dataset, sequence, [path.name for path in paths], group=group)
     return paths
 
 
@@ -340,9 +341,12 @@ def add_media_sequence(
 
 
 def index_media_sequence(
-    dataset: Dataset, sequence: str, videos: Sequence[str]
+    dataset: Dataset, sequence: str, videos: Sequence[str], *, group: str = ""
 ) -> None:
-    """Index the *videos* already written under ``media_raw/<sequence>/``, in order.
+    """Index the *videos* already written under ``media_raw/<group>/<sequence>/``.
+
+    The videos are indexed in the order given, and an empty *group* is no
+    directory level.
 
     It is the indexing half of :func:`add_media_sequence`, for a test that writes
     its own clips: at another rate, with painted frames, or replaced after a first
@@ -350,12 +354,12 @@ def index_media_sequence(
     """
     from mosaic.core.pipeline.media_index import MediaIndexScope
 
-    directory = dataset.get_root("media_raw") / sequence
+    directory = dataset.get_root("media_raw") / group / sequence
     _ = dataset.write_media_index(
         [
             MediaIndexScope(
                 directory=directory,
-                group="",
+                group=group,
                 sequence=sequence,
                 order_by_name={name: i for i, name in enumerate(videos)},
             )

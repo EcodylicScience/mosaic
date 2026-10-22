@@ -18,13 +18,15 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 import pytest
-from mosaic_media import probe_media
+from mosaic_media import MediaProbeError, probe_media
 from mosaic_media.hwaccel import encoder_available
 from mosaic_media.transcode import TranscodeError
 from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import Entry
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.media.preprocess import FrameMap, Placement
 from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline import preprocess
@@ -40,6 +42,7 @@ from mosaic.core.pipeline.preprocess import (
     PreprocessParams,
     PreprocessRefused,
     VariantWriter,
+    preprocess_entry_failures,
     preprocess_identity,
 )
 from mosaic.core.pipeline.preprocess_index import (
@@ -67,12 +70,15 @@ from mosaic.runlog import reduce_run_log, run_log_path
 from tests.helpers import (
     IndexReads,
     MediaClip,
+    add_media_variant,
+    assert_tree_unchanged,
     count_index_reads,
     entry_error_lines,
     index_media_sequence,
     make_dataset,
     paint_frame_code,
     read_frame_code,
+    tree_snapshot,
     write_h264_mp4,
     write_media_index,
     write_painted_entry,
@@ -1097,6 +1103,231 @@ def test_a_run_reads_each_index_once_for_its_scope(
     _ = _run(ds, [_GRAYSCALE], sequences, media=upstream)
 
     assert reads == IndexReads(media_scopes=1, variant_indexes=2, compositions=1)
+
+
+# --- the per-entry check ---------------------------------------------------
+
+
+_UPSTREAM = "preprocess.0.1-aaaaaaaaaa"
+"""A variant whose rows a test writes without encoding, 64x48 and 12 frames."""
+
+
+def _stub_entries(ds: Dataset, frames: dict[str, int]) -> None:
+    """Index one 64x48 stub clip per sequence, with its frame count."""
+    write_media_index(
+        ds,
+        [
+            MediaClip(
+                filename=f"{sequence}.mp4",
+                sequence=sequence,
+                width=64,
+                height=48,
+                frame_count=count,
+            )
+            for sequence, count in frames.items()
+        ],
+    )
+
+
+def test_the_per_entry_check_leaves_out_every_entry_that_passes(
+    three_entry_dataset: Dataset,
+) -> None:
+    failures = preprocess_entry_failures(
+        three_entry_dataset,
+        _params([_crop(0, 0, 32, 24)]),
+        [("A", "one"), ("A", "two"), ("B", "one")],
+    )
+
+    assert failures == {}
+
+
+@pytest.mark.parametrize("case", sorted(_REFUSALS))
+def test_the_per_entry_check_returns_a_refusal_for_its_entry_alone(
+    tmp_path: Path, case: str
+) -> None:
+    clip, steps, named = _REFUSALS[case]
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds, [MediaClip(filename="a.mp4", group="A", sequence="one"), clip]
+    )
+
+    failures = preprocess_entry_failures(
+        ds, _params(steps), [("A", "one"), ("B", "one")]
+    )
+
+    assert list(failures) == [("B", "one")]
+    refused = failures[("B", "one")]
+    assert isinstance(refused, PreprocessRefused)
+    assert named in str(refused)
+
+
+def test_the_per_entry_check_returns_why_an_entry_cannot_be_read(
+    tmp_path: Path,
+) -> None:
+    """The entries await a transcode, differ in frame size, and lack media.
+
+    They are given out of sorted order, and fail in the order given.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(filename="a.mp4", sequence="a", rotation=90),
+            MediaClip(filename="b0.mp4", sequence="b", width=64, height=48),
+            MediaClip(
+                filename="b1.mp4", sequence="b", video_order=1, width=32, height=48
+            ),
+            MediaClip(filename="c.mp4", sequence="c"),
+        ],
+    )
+
+    failures = preprocess_entry_failures(
+        ds, _params([_GRAYSCALE]), [("", "d"), ("", "b"), ("", "c"), ("", "a")]
+    )
+
+    assert list(failures) == [("", "d"), ("", "b"), ("", "a")]
+    assert isinstance(failures[("", "a")], MediaProbeError)
+    mismatched = failures[("", "b")]
+    assert isinstance(mismatched, MediaProbeError)
+    assert "must decode to one frame size" in str(mismatched)
+    missing = failures[("", "d")]
+    assert isinstance(missing, FileNotFoundError)
+    assert "no media is indexed" in str(missing)
+
+
+def test_the_per_entry_check_returns_a_missing_or_drifted_upstream(
+    tmp_path: Path,
+) -> None:
+    """The upstream lacks ``u``, and ``t`` now has more frames than its file maps."""
+    ds = make_dataset(tmp_path / "ds")
+    _ = add_media_variant(ds, _UPSTREAM, "s")
+    _ = add_media_variant(ds, _UPSTREAM, "t")
+    _stub_entries(ds, {"s": 12, "t": 20, "u": 12})
+
+    failures = preprocess_entry_failures(
+        ds, _params([_GRAYSCALE], media=_UPSTREAM), [("", "s"), ("", "t"), ("", "u")]
+    )
+
+    assert list(failures) == [("", "t"), ("", "u")]
+    assert isinstance(failures[("", "t")], MediaVariantDriftedError)
+    assert isinstance(failures[("", "u")], MediaVariantMissingError)
+
+
+def test_the_per_entry_check_reads_each_index_once_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    sequences = ("s", "t", "u")
+    for sequence in sequences:
+        _ = add_media_variant(ds, _UPSTREAM, sequence)
+    _stub_entries(ds, dict.fromkeys(sequences, 12))
+    before = tree_snapshot(ds.base_dir)
+    reads = count_index_reads(monkeypatch)
+
+    failures = preprocess_entry_failures(
+        ds,
+        _params([_GRAYSCALE], media=_UPSTREAM),
+        [("", sequence) for sequence in sequences],
+    )
+
+    assert failures == {}
+    assert reads == IndexReads(media_scopes=1, variant_indexes=1, compositions=1)
+    assert_tree_unchanged(ds.base_dir, before)
+
+
+def test_the_per_entry_check_does_not_report_a_skipped_camera(
+    two_camera_dataset: Dataset, capsys: pytest.CaptureFixture[str]
+) -> None:
+    failures = preprocess_entry_failures(
+        two_camera_dataset, _params([_GRAYSCALE]), [("A", "one")]
+    )
+
+    assert failures == {}
+    assert capsys.readouterr().err == ""
+
+
+_SHARED_NAMES: dict[str, tuple[list[MediaClip], Entry, Entry]] = {
+    "a group and sequence split at another separator": (
+        [
+            MediaClip(filename="first.mp4", group="a", sequence="b__c"),
+            MediaClip(filename="later.mp4", group="a__b", sequence="c"),
+        ],
+        ("a", "b__c"),
+        ("a__b", "c"),
+    ),
+    "a nameless entry labeled by its file's stem": (
+        [
+            MediaClip(filename="b.mp4", sequence=""),
+            MediaClip(filename="other.mp4", sequence="b"),
+        ],
+        ("", ""),
+        ("", "b"),
+    ),
+    "the second camera of a nameless entry labeled by its file's stem": (
+        [
+            MediaClip(filename="a.mp4", sequence="", camera="c0"),
+            MediaClip(filename="b.mp4", sequence="", camera="c1"),
+            MediaClip(filename="other.mp4", sequence="b"),
+        ],
+        ("", ""),
+        ("", "b"),
+    ),
+}
+"""Clips of two entries with one key, then the entry indexed first and the later."""
+
+
+@pytest.mark.parametrize("case", sorted(_SHARED_NAMES))
+def test_the_later_of_two_entries_with_one_entry_key_fails(
+    tmp_path: Path, case: str
+) -> None:
+    """The entries are given in reverse, and the one indexed first is kept."""
+    clips, first, later = _SHARED_NAMES[case]
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, clips)
+
+    failures = preprocess_entry_failures(ds, _params([_GRAYSCALE]), [later, first])
+
+    assert list(failures) == [later]
+    shared = failures[later]
+    assert isinstance(shared, FileNotFoundError)
+    assert str(shared) == (
+        f"{later!r} shares the output name {make_entry_key(*later)} with "
+        f"{first!r}, which is indexed first"
+    )
+
+
+@pytest.mark.media
+def test_a_run_encodes_only_the_first_of_two_entries_with_one_entry_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``(a, b__c)`` and ``(a__b, c)`` both publish ``a__b__c``.
+
+    The variant holds the first entry's frames. The later entry fails, and the run
+    reports its camera once.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    _ = write_painted_entry(ds, "b__c", [(6, 30.0)], paint_frame_code, group="a")
+    _ = write_painted_entry(
+        ds,
+        "c",
+        [(6, 30.0)],
+        lambda frame: paint_frame_code(100 + frame),
+        group="a__b",
+    )
+
+    run_id = run_op(
+        ds,
+        _KIND,
+        {"steps": [_GRAYSCALE]},
+        scope=Scope(entries=[("a__b", "c"), ("a", "b__c")]),
+        execution_id="shared",
+    )
+
+    assert _codes(media_variant_path(ds, run_id, "a", "b__c", "")) == list(range(6))
+    assert list(media_variant_rows(ds, run_id)) == [("a", "b__c", "")]
+    (line,) = entry_error_lines(ds, "shared")
+    assert "('a__b', 'c') shares the output name a__b__c with ('a', 'b__c')" in line
+    assert capsys.readouterr().err.count("skipping it") == 1
 
 
 # --- H.264 ------------------------------------------------------------------
