@@ -20,6 +20,8 @@ from mosaic_media import probe_media
 from mosaic_media.transcode import TranscodeError
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.media.facts_columns import media_row_uuid, row_mapping
+from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline.ops import OpIdentity, ScopeRefused, run_op
 from mosaic.core.pipeline.stream_copy import coded_frame_count
@@ -30,6 +32,8 @@ from mosaic.core.pipeline.store_export import (
     StoreExportOp,
     StoreExportParams,
     copyable_chunks,
+    entry_stores,
+    export_codec,
     export_recipe_hash,
     export_run_id,
 )
@@ -368,6 +372,67 @@ def test_a_camera_the_entry_does_not_have_is_named_as_such(
 
     with pytest.raises(TranscodeError, match="no imgstore is recorded under camera"):
         _export(ds, group, sequence, camera="CAMZ")
+
+
+def test_an_entrys_stores_are_listed_by_camera_without_a_refusal(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """A planner reads every store of an entry, and a camera set narrows them.
+
+    A camera the entry lacks lists nothing, where an export refuses it.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, make_imgstore, cameras=["CAMA", "CAMB"]
+    )
+
+    stores = entry_stores(ds, group, sequence)
+
+    assert sorted(str(row_mapping(row)["camera"]) for _, _, row in stores) == [
+        "CAMA",
+        "CAMB",
+    ]
+    assert all(is_imgstore(store) for _, store, _ in stores)
+    assert all(media_row_uuid(row_mapping(row)) for _, _, row in stores)
+    ((_, _, only),) = entry_stores(ds, group, sequence, frozenset({"CAMB"}))
+    assert row_mapping(only)["camera"] == "CAMB"
+    assert entry_stores(ds, group, sequence, frozenset({"CAMZ"})) == []
+
+
+def test_an_entry_of_plain_video_lists_no_store(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    write_cfr_mp4: Callable[..., None],
+) -> None:
+    ds = make_media_dataset((tmp_path / "dataset").resolve())
+    source = ds.get_root("media_raw") / "plain" / "clip.mp4"
+    write_cfr_mp4(source)
+    ds.index_media([source.parent])
+    row = _originals(ds).iloc[0]
+
+    assert entry_stores(ds, str(row["group"]), str(row["sequence"])) == []
+
+
+@pytest.mark.parametrize(("chunks", "codec"), [("video", "h264"), ("raw", "av1")])
+def test_the_export_codec_is_the_codec_an_export_is_written_in(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+    chunks: str,
+    codec: str,
+) -> None:
+    """Named before the export exists, as the codec that the export is written in.
+
+    A copy keeps the chunks' codec, and an encode is AV1.
+    """
+    make_store = video_store_maker([5, 5, 2]) if chunks == "video" else make_imgstore
+    ds, group, sequence = _store_dataset(tmp_path, make_media_dataset, make_store)
+    ((_, store, _),) = entry_stores(ds, group, sequence)
+
+    assert export_codec(store) == codec
+    _export(ds, group, sequence)
+    assert probe_media(_exports(ds)[0]).codec_name == codec
 
 
 def test_each_camera_of_a_recording_exports_separately(

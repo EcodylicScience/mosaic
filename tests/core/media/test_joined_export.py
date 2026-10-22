@@ -39,11 +39,14 @@ from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.joined_export import (
     CURRENT_JOINED_PARAMS,
     JoinedExportMissingError,
+    JoinedExportOp,
     JoinedExportParams,
     current_joined_recipes,
+    join_codec,
     join_needs_reencode,
     joined_export_path,
     joined_recipe_hash,
+    joined_run_id,
     joined_source_uid,
     parse_joined_name,
     write_joined_export,
@@ -307,25 +310,12 @@ def test_the_majority_profile_is_normalised_to_not_from(tmp_path: Path) -> None:
 
 
 _H264 = ("h264", "yuv420p")
+_AV1 = ("av1", "yuv420p")
 
 
-@pytest.mark.parametrize(
-    ("profiles", "expected"),
-    [
-        pytest.param([], False, id="no-clips"),
-        pytest.param([_H264], False, id="one-clip"),
-        pytest.param([_H264] * 3, False, id="uniform"),
-        pytest.param([_H264, ("av1", "yuv420p"), _H264], True, id="codec-differs"),
-        pytest.param(
-            [_H264, _H264, ("h264", "yuv422p")], True, id="pixel-format-differs"
-        ),
-    ],
-)
-def test_a_join_needs_reencoding_exactly_when_the_stream_profiles_differ(
-    profiles: list[tuple[str, str]], expected: bool
-) -> None:
-    """The predicate a caller consults before queueing the op, without media."""
-    clips = [
+def _clips_in(profiles: list[tuple[str, str]]) -> list[MediaFacts]:
+    """Clips in the given ``(codec, pixel format)`` profiles, built and not encoded."""
+    return [
         dataclasses.replace(
             store_facts(
                 width=64,
@@ -342,7 +332,61 @@ def test_a_join_needs_reencoding_exactly_when_the_stream_profiles_differ(
         for codec, pixel_format in profiles
     ]
 
-    assert join_needs_reencode(clips) is expected
+
+@pytest.mark.parametrize(
+    ("profiles", "expected"),
+    [
+        pytest.param([], False, id="no-clips"),
+        pytest.param([_H264], False, id="one-clip"),
+        pytest.param([_H264] * 3, False, id="uniform"),
+        pytest.param([_H264, _AV1, _H264], True, id="codec-differs"),
+        pytest.param(
+            [_H264, _H264, ("h264", "yuv422p")], True, id="pixel-format-differs"
+        ),
+    ],
+)
+def test_a_join_needs_reencoding_exactly_when_the_stream_profiles_differ(
+    profiles: list[tuple[str, str]], expected: bool
+) -> None:
+    """The predicate a caller consults before queueing the op, without media."""
+    assert join_needs_reencode(_clips_in(profiles)) is expected
+
+
+@pytest.mark.parametrize(
+    ("profiles", "expected"),
+    [
+        pytest.param([_AV1], "av1", id="one-clip"),
+        pytest.param([_H264] * 16 + [_AV1], "h264", id="one-odd-clip"),
+        pytest.param([_AV1, _H264], "av1", id="a-tie-goes-to-the-earliest"),
+        pytest.param(
+            [_H264, ("h264", "yuv422p"), ("h264", "yuv444p"), _AV1, _AV1],
+            "av1",
+            id="the-profile-and-not-the-codec-most-clips-share",
+        ),
+    ],
+)
+def test_a_join_keeps_the_codec_of_the_profile_most_clips_share(
+    profiles: list[tuple[str, str]], expected: str
+) -> None:
+    """A planner names the codec of a join before it is built.
+
+    The clips outside the majority profile are re-made in it, so three H.264
+    clips in three pixel formats join as the AV1 of the two that agree.
+    """
+    assert join_codec(_clips_in(profiles)) == expected
+
+
+@pytest.mark.parametrize("params", CURRENT_JOINED_PARAMS)
+def test_a_join_run_is_named_by_its_recipe_alone(
+    ds: Dataset, params: JoinedExportParams
+) -> None:
+    """A planner names a join's run from its params, as the op names it."""
+    scope = ds.resolve_scope(Scope(entries=[("", "sess")]))
+
+    assert joined_run_id(params) == f"export-joined-{joined_recipe_hash(params)}"
+    assert JoinedExportOp().plan_identity(ds, params, scope).run_id == joined_run_id(
+        params
+    )
 
 
 def test_a_codec_mosaic_declares_no_encoder_for_is_refused_by_name(

@@ -691,6 +691,24 @@ def store_dataset(
     return ds
 
 
+def export_entry_store(dataset: Dataset, group: str, sequence: str) -> Path:
+    """Run ``export-store`` over an entry of one store, and return its export."""
+    from mosaic.core.pipeline.ops import run_op
+    from mosaic.core.pipeline.store_export import StoreExportParams
+    from mosaic.core.pipeline.transcode import TRANSCODE_KIND_DIRECTORY
+    from mosaic.core.scope import Scope
+
+    _ = run_op(
+        dataset,
+        "export-store",
+        StoreExportParams(),
+        scope=Scope(entries=[(group, sequence)]),
+    )
+    exports = dataset.get_root("media") / TRANSCODE_KIND_DIRECTORY
+    (export,) = sorted(exports.glob("*.mp4"))
+    return export
+
+
 def point_at_a_store(
     dataset: Dataset, sequence: str, store: Path, *, video_order: int | None = None
 ) -> Path:
@@ -708,7 +726,8 @@ def point_at_a_store(
         "__store: {class: DirectoryImgStore, format: npy, imgshape: [48, 64, 3]}\n"
     )
     index_path = dataset.get_root(dataset.resolve_media_root()) / "index.csv"
-    table = pd.read_csv(index_path)
+    # Empty cells read as "". An empty *sequence* then matches a nameless entry's rows.
+    table = pd.read_csv(index_path, keep_default_na=False)
     is_entry = table["sequence"] == sequence
     if video_order is not None:
         is_entry &= table["video_order"] == video_order

@@ -40,7 +40,7 @@ from mosaic.core.pipeline.joined_export import (
     joined_source_uid,
 )
 from mosaic.core.pipeline.ops import run_op
-from mosaic.core.pipeline.store_export import StoreExportParams, readable_chunks
+from mosaic.core.pipeline.store_export import readable_chunks
 from mosaic.core.pipeline.transcode import TRANSCODE_KIND_DIRECTORY
 from mosaic.core.scope import Scope
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
@@ -65,6 +65,7 @@ from tests.helpers import (
     FakeUltralytics,
     MakeStore,
     MediaClip,
+    export_entry_store,
     index_media_sequence,
     install_fake_pose_inference,
     install_fake_ultralytics,
@@ -391,18 +392,6 @@ def _store_entry(
     return ds, entry.group, entry.sequence, entry.resolved.paths[0]
 
 
-def _export_store(ds: Dataset, group: str, sequence: str) -> Path:
-    """Run ``export-store`` over the entry, and return the export it wrote."""
-    _ = run_op(
-        ds,
-        "export-store",
-        StoreExportParams(),
-        scope=Scope(entries=[(group, sequence)]),
-    )
-    (export,) = sorted((ds.get_root("media") / TRANSCODE_KIND_DIRECTORY).glob("*.mp4"))
-    return export
-
-
 def _nothing_copied(ds: Dataset) -> bool:
     """Whether no join and no store export were written."""
     media = ds.get_root("media")
@@ -532,7 +521,7 @@ def test_a_store_whose_chunks_are_not_video_is_read_through_its_export(
         _ = ultralytics_runs.run_ultralytics(ds, params)
     assert fake.tracked == []
 
-    export = _export_store(ds, group, sequence)
+    export = export_entry_store(ds, group, sequence)
     _ = ultralytics_runs.run_ultralytics(ds, params)
 
     assert fake.tracked == [(export,)]
@@ -572,7 +561,7 @@ def test_the_chunks_are_read_while_an_export_exists_and_a_tracked_entry_needs_ne
 ) -> None:
     """An export changes nothing the runner reads, and the reuse gate names neither."""
     ds, group, sequence, store = _store_entry(tmp_path, make_media_dataset)
-    export = _export_store(ds, group, sequence)
+    export = export_entry_store(ds, group, sequence)
     fake, params = _install_ultralytics(tmp_path, monkeypatch)
 
     _ = ultralytics_runs.run_ultralytics(ds, params)
@@ -788,7 +777,7 @@ def test_a_built_export_needs_nothing(
     requires_ffmpeg: None,
 ) -> None:
     ds, group, sequence, _store = _store_entry(tmp_path, make_media_dataset)
-    _ = _export_store(ds, group, sequence)
+    _ = export_entry_store(ds, group, sequence)
 
     assert required_media_ops(ds, kind="trex") == []
 

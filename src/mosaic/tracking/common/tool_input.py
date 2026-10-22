@@ -53,11 +53,16 @@ from mosaic.core.pipeline.joined_export import (
     EntryJoinMissingError,
     MissingJoinCause,
     current_join,
+    join_codec,
     join_needs_reencode,
     join_to_read,
     refuse_unidentified_clips,
 )
-from mosaic.core.pipeline.store_export import EXPORT_TARGET, readable_chunks
+from mosaic.core.pipeline.store_export import (
+    EXPORT_TARGET,
+    export_codec,
+    readable_chunks,
+)
 from mosaic.core.pipeline.subprocess_util import run_supervised
 from mosaic.core.pipeline.toolenv import (
     ToolEnv,
@@ -71,7 +76,6 @@ from mosaic.core.pipeline.tracking_roots import (
     TRACKING_ROOTS,
     ToolCodecError,
     ToolDecoder,
-    TrackingRoot,
     tracking_root,
 )
 from mosaic.core.pipeline.variant_source import preprocess_command
@@ -89,9 +93,12 @@ __all__ = [
     "ProbeVerdict",
     "StoreExportMissingError",
     "ToolFile",
+    "codecs_never_read",
     "entry_runner_sources",
     "entry_tool_input",
+    "handed_codecs",
     "refuse_undecodable_codec",
+    "refuse_unreadable_entry",
     "required_media_ops",
     "resolve_entry_input",
     "resolve_tool_input",
@@ -128,11 +135,8 @@ def _stream_codec(path: Path) -> str:
         return ""
 
 
-def _allowed_codecs(decoder: ToolDecoder) -> frozenset[str]:
-    """What *decoder* may be handed: the baseline, its own extras, and the override.
-
-    The baseline and ``also_reads``, less the codecs the decoder never reads,
-    and then every codec that ``MOSAIC_ALLOW_TOOL_CODECS`` names.
+def _operator_allowed_codecs() -> frozenset[str]:
+    """The codecs that ``MOSAIC_ALLOW_TOOL_CODECS`` names, in lower case.
 
     ``MOSAIC_ALLOW_TOOL_CODECS`` is a comma-separated list of extra codec names.
     It exists because the refusal is an inference about a decoder mosaic does
@@ -143,9 +147,27 @@ def _allowed_codecs(decoder: ToolDecoder) -> frozenset[str]:
     gained the codec.
     """
     extra = os.environ.get(_ALLOW_CODECS_VAR, "")
-    named = {part.strip().lower() for part in extra.split(",") if part.strip()}
+    return frozenset(part.strip().lower() for part in extra.split(",") if part.strip())
+
+
+def _allowed_codecs(decoder: ToolDecoder) -> frozenset[str]:
+    """What *decoder* may be handed: the baseline, its own extras, and the override.
+
+    The baseline and ``also_reads``, less the codecs the decoder never reads,
+    and then every codec that ``MOSAIC_ALLOW_TOOL_CODECS`` names.
+    """
     declared = (SOFTWARE_DECODABLE_CODECS | decoder.also_reads) - decoder.never_reads
-    return declared | named
+    return declared | _operator_allowed_codecs()
+
+
+def codecs_never_read(decoder: ToolDecoder) -> frozenset[str]:
+    """Return the codecs refused without a probe to a tool reading with *decoder*.
+
+    Its ``never_reads``, less the codecs that ``MOSAIC_ALLOW_TOOL_CODECS`` names.
+    :func:`refuse_undecodable_codec` refuses a file in one of them in every
+    environment, so a caller building the tool's input makes it in another codec.
+    """
+    return decoder.never_reads - _operator_allowed_codecs()
 
 
 @dataclass(frozen=True, slots=True)
@@ -354,7 +376,7 @@ def refuse_undecodable_codec(
     if not codec or codec in _allowed_codecs(decoder):
         return
     remedy = f"\n    {decoder.remedy}." if decoder.remedy else ""
-    if codec in decoder.never_reads:
+    if codec in codecs_never_read(decoder):
         finding = (
             f". That reader decodes {codec} in no environment, so it is not tested."
         )
@@ -714,6 +736,71 @@ def _store_files(
     ]
 
 
+def handed_codecs(
+    ds: "Dataset", entry: "ResolvedScopeEntry", *, kind: str
+) -> frozenset[str]:
+    """Return the codecs of the files that *kind*'s tool is handed for *entry*.
+
+    The files are those of :func:`entry_tool_input` and
+    :func:`entry_runner_sources`, without the codec gate, and the answer comes
+    without a probe:
+
+    * an in-process reader is handed no file;
+    * a one-file tool is handed one clip as itself, and several clips as their
+      join, in :func:`~mosaic.core.pipeline.joined_export.join_codec`;
+    * mosaic's runner is handed every clip;
+    * mosaic's runner reads a store whose chunks hold the frames
+      (:func:`~mosaic.core.pipeline.store_export.readable_chunks`) chunk by
+      chunk, in its first chunk's codec, even when the store has an export;
+    * any other store is read through its export: the linked file while it
+      exists, by its header, and otherwise the export that ``export-store`` would
+      write (:func:`~mosaic.core.pipeline.store_export.export_codec`).
+
+    A clip's codec is the one its routed facts record. A store's facts name the
+    imgstore format, so a store is answered from its chunks or its export. A file
+    whose header does not read is left out, as the gate passes it.
+
+    Args:
+        ds: The dataset, read for the media index, the stores' metadata and the
+            ``media`` root.
+        entry: One camera of an entry, resolved.
+        kind: The op whose tool reads the entry.
+
+    Returns:
+        The codecs, empty for an in-process reader.
+
+    Raises:
+        KeyError: If *kind* has no registered tracking root.
+        FileNotFoundError: If the entry is nameless and a store in it is read
+            through its export. The export is looked up by the entry's label,
+            which matches no index row.
+        MediaProbeError: If a store's metadata cannot be read.
+        TranscodeError: If ``ffprobe`` cannot read the header of a store's first
+            chunk, for a store whose export is still to be written.
+    """
+    reads = tracking_root(kind).reads
+    if reads == "in-process":
+        return frozenset()
+    paths, facts = entry.resolved.paths, entry.resolved.facts
+    if reads == "one-file" and len(paths) > 1:
+        return frozenset({join_codec(facts)} - {""})
+    codecs: set[str] = set()
+    for path, clip in zip(paths, facts, strict=True):
+        if not is_imgstore(path):
+            codecs.add(clip.codec_name)
+            continue
+        spans = readable_chunks(path) if reads == "entry-files" else []
+        if spans:
+            codecs.add(_stream_codec(spans[0][0]))
+            continue
+        export = _registered_export(ds, entry.group, entry.sequence, path)
+        if export is not None and export.is_file():
+            codecs.add(_stream_codec(export))
+        else:
+            codecs.add(export_codec(path))
+    return frozenset(codecs - {""})
+
+
 type MediaRequirementCause = MissingJoinCause | Literal["store_export", "unjoinable"]
 """Why a tool cannot read an entry yet. A closed set.
 
@@ -796,11 +883,10 @@ def required_media_ops(
             original needs an analysis transcode and has none, or a store whose
             metadata cannot be read.
     """
-    root = tracking_root(kind)
     required: list[MediaRequirement] = []
     for entry in one_camera_per_entry(kind, ds.resolve_media_scope(entries)):
         try:
-            _refuse_unreadable(ds, entry, kind=kind, root=root)
+            refuse_unreadable_entry(ds, entry, kind=kind)
         except JoinedSourceMismatchError as refusal:
             required.append(_requirement(entry, "unjoinable", None, refusal))
         except EntryJoinMissingError as refusal:
@@ -817,8 +903,8 @@ def required_media_ops(
     return required
 
 
-def _refuse_unreadable(
-    ds: "Dataset", entry: "ResolvedScopeEntry", *, kind: str, root: TrackingRoot
+def refuse_unreadable_entry(
+    ds: "Dataset", entry: "ResolvedScopeEntry", *, kind: str
 ) -> None:
     """Raise as *kind*'s run raises before its tool reads *entry*, without a probe.
 
@@ -828,7 +914,26 @@ def _refuse_unreadable(
     :func:`entry_runner_sources` for mosaic's runner, and
     :func:`~mosaic.core.pipeline.joined_export.join_to_read` for an in-process
     reader.
+
+    Args:
+        ds: The dataset, read for the media index, the stores' metadata and the
+            ``media`` root.
+        entry: One camera of an entry, resolved.
+        kind: The op whose tool reads the entry.
+
+    Raises:
+        KeyError: If *kind* has no registered tracking root.
+        JoinedSourceMismatchError: If the clips cannot be read as one video.
+        EntryJoinMissingError: If the clips need a single current join and have
+            none, with the cause.
+        StoreExportMissingError: If a store that the tool reads through its export
+            has none, or its linked file is gone.
+        FileNotFoundError: If the entry is nameless and a store in it is read
+            through its export. The export is looked up by the entry's label,
+            which matches no index row.
+        MediaProbeError: If a store's metadata cannot be read.
     """
+    root = tracking_root(kind)
     group, sequence = entry.group, entry.sequence
     paths, facts = entry.resolved.paths, entry.resolved.facts
     refuse_unjoinable(

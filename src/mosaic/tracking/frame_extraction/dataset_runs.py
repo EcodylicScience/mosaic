@@ -651,16 +651,26 @@ def _refuse_unjoined(ds: Dataset, media_scope: Sequence[ResolvedScopeEntry]) -> 
     raise JoinedExportMissingError(message)
 
 
-def _listed_entries(
+def listed_entries(
     listed: Mapping[Entry, tuple[int, ...]], scoped: list[Entry] | None
 ) -> tuple[list[Entry], int]:
-    """The entries a ``list`` run extracts, and how many scoped entries it skips.
+    """Return the entries a ``list`` run extracts, and how many scoped entries it skips.
 
     The list chooses the entries and the scope can only narrow them. An unset
     scope covers every listed entry; a scope naming some entries covers those it
     shares with the list, and one sharing none is refused rather than run over
     nothing, because the two were built for different entries. A scope that
     names no entry at all is the empty scope every method treats the same way.
+
+    Args:
+        listed: The listed frame indices, by entry.
+        scoped: The entries the run's scope names, or ``None`` for an unset scope.
+
+    Returns:
+        The entries, sorted, and the count of scoped entries the list lacks.
+
+    Raises:
+        ListedFramesRefused: If the scope names entries and the list shares none.
     """
     if scoped is None:
         return sorted(listed), 0
@@ -767,7 +777,7 @@ def _run_extract_frames(
     skipped = 0
     entries = scope.op_entries
     if listed is not None:
-        entries, skipped = _listed_entries(listed, entries)
+        entries, skipped = listed_entries(listed, entries)
 
     media_scope = ds.resolve_media_scope(entries)
     if listed is not None and entries is not None:

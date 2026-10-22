@@ -34,6 +34,7 @@ from mosaic.core.pipeline.tracking_roots import (
 )
 from mosaic.tracking.common.tool_input import (
     DecodeProbe,
+    codecs_never_read,
     refuse_undecodable_codec,
 )
 from mosaic.tracking.litpose import dataset_runs as litpose_runs
@@ -488,6 +489,23 @@ def test_the_override_hands_lightning_pose_av1_untested(
     )
 
     assert python.calls() == []
+
+
+def test_the_codecs_never_read_are_the_declared_ones_the_override_leaves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller building a tool's input avoids these codecs.
+
+    The override is read as the gate reads it, in any case and spacing.
+    """
+    litpose = TRACKING_ROOTS["litpose"].decoder
+    monkeypatch.delenv("MOSAIC_ALLOW_TOOL_CODECS", raising=False)
+
+    assert codecs_never_read(litpose) == frozenset({"av1"})
+    assert codecs_never_read(TRACKING_ROOTS["sleap"].decoder) == frozenset()
+
+    monkeypatch.setenv("MOSAIC_ALLOW_TOOL_CODECS", "hevc, AV1 ")
+    assert codecs_never_read(litpose) == frozenset()
 
 
 def test_a_lightning_pose_run_refuses_av1_before_its_environment_starts(

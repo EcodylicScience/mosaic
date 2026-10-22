@@ -33,6 +33,7 @@ from mosaic.tracking.frame_extraction.dataset_runs import (
     ListedFramesRefused,
     frames_identity_payload,
     frames_run_id,
+    listed_entries,
 )
 from tests.helpers import (
     add_media_sequence,
@@ -257,6 +258,17 @@ def test_a_scoped_entry_the_list_does_not_name_is_skipped(
     root = _run_root(two_sequences, run_id)
     assert (root / "seq_a").is_dir()
     assert not (root / "seq_c").exists()
+
+
+def test_the_list_chooses_the_entries_and_counts_the_scoped_ones_it_skips() -> None:
+    """A planner narrows a list run's entries as the run narrows them."""
+    listed = {("", "b"): (1,), ("", "a"): (0,)}
+
+    assert listed_entries(listed, None) == ([("", "a"), ("", "b")], 0)
+    assert listed_entries(listed, [("", "b"), ("", "c")]) == ([("", "b")], 1)
+    assert listed_entries(listed, []) == ([], 0)
+    with pytest.raises(ListedFramesRefused, match="lists none of them"):
+        _ = listed_entries(listed, [("", "c")])
 
 
 def test_a_scope_sharing_no_entry_with_the_list_is_refused(

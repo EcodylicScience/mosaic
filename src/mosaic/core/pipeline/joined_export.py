@@ -133,8 +133,10 @@ __all__ = [
     "current_join",
     "current_joined_recipes",
     "entry_source_uid",
+    "join_codec",
     "joined_export_path",
     "joined_recipe_hash",
+    "joined_run_id",
     "joined_source_uid",
     "join_needs_reencode",
     "join_to_read",
@@ -250,6 +252,16 @@ while every field is a flag. A field added to :class:`JoinedExportParams` has to
 be added here as well, or a join made with it is superseded the moment it is
 written; the suite fails on a field this tuple does not cover.
 """
+
+
+def joined_run_id(params: JoinedExportParams) -> str:
+    """Return the run id of a join under *params*, before any clip is read.
+
+    The recipe alone names it. Like a transcode's and an export's, the id
+    addresses no file: the filename carries the recipe and the clip set, so the
+    id names the attempt.
+    """
+    return f"export-joined-{joined_recipe_hash(params)}"
 
 
 def current_joined_recipes() -> frozenset[str]:
@@ -668,6 +680,19 @@ def _outliers(facts: Sequence[MediaFacts]) -> tuple[tuple[str, str], list[int]]:
     return majority, [i for i, p in enumerate(profiles) if p != majority]
 
 
+def join_codec(facts: Sequence[MediaFacts]) -> str:
+    """Return the codec of the join of *facts*: that of the profile most clips share.
+
+    A join keeps that stream profile, and under ``reencode`` re-makes the other
+    clips in it (:func:`write_joined_export`).
+
+    Args:
+        facts: The clips the join is built from, at least one: the routed ones,
+            as ``ds.resolve_media(group, sequence).facts`` returns them.
+    """
+    return _outliers(facts)[0][0]
+
+
 def join_needs_reencode(facts: Sequence[MediaFacts]) -> bool:
     """Whether joining these clips needs ``reencode=True``.
 
@@ -1076,11 +1101,9 @@ class JoinedExportOp(Op[JoinedExportParams]):
     ) -> OpIdentity:
         """What this join will be called, without reading a frame.
 
-        The recipe alone, so nothing is deferred. Like a transcode's and an
-        export's, the value addresses nothing: the filename carries both the
-        recipe and the clip set, so this names the attempt rather than its output.
+        The recipe alone (:func:`joined_run_id`), so nothing is deferred.
         """
-        return OpIdentity(run_id=f"export-joined-{joined_recipe_hash(params)}")
+        return OpIdentity(run_id=joined_run_id(params))
 
     def run(
         self,

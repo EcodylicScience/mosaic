@@ -105,6 +105,9 @@ makes sharing the transcode kind directory and the analysis forward link honest
 rather than a convenient place to put the file.
 """
 
+_ENCODED_EXPORT_CODEC: Final = "av1"
+"""The codec that :func:`write_export` encodes a store in."""
+
 _TICKS: Final = 1000
 """Progress denominator per exported store."""
 
@@ -212,15 +215,49 @@ def _one_entry(scope: ResolvedScope) -> Entry:
     return entries[0]
 
 
+def entry_stores(
+    ds: "Dataset",
+    group: str,
+    sequence: str,
+    cameras: frozenset[str] | None = None,
+) -> list[tuple[int, Path, "pd.Series"]]:
+    """Return an entry's imgstore recordings in index order, with each one's row.
+
+    ``match_media_rows`` rather than ``resolve_media``: this reads the raw cells
+    (``video_uuid``, ``video_order``, ``media_type``) and does not raise on a
+    multi-camera sequence the way ``resolve_media`` does. An export reads the
+    originals, not their derivatives.
+
+    Args:
+        ds: The dataset, read for its originals index.
+        group: The entry's group.
+        sequence: The entry's sequence.
+        cameras: The cameras to keep, or ``None`` for every camera.
+
+    Returns:
+        One ``(video_order, store path, index row)`` per store, empty when the
+        entry records none under *cameras*.
+
+    Raises:
+        FileNotFoundError: If the media index is missing or empty, or no row
+            matches the entry.
+    """
+    stores: list[tuple[int, Path, "pd.Series"]] = []
+    for _, row in ds.match_media_rows(group, sequence).iterrows():
+        cells = row_mapping(row)
+        if str(cells.get("media_type", "")) != "imgstore":
+            continue
+        if cameras is not None and str(cells.get("camera", "")) not in cameras:
+            continue
+        video_order = int(str(cells.get("video_order", "") or 0))
+        stores.append((video_order, ds.resolve_path(str(cells["abs_path"])), row))
+    return stores
+
+
 def _stores_for(
     ds: "Dataset", scope: ResolvedScope
 ) -> list[tuple[int, Path, "pd.Series"]]:
     """The imgstore recordings one export would read, in index order.
-
-    ``match_media_rows`` rather than ``resolve_media``: this reads the raw cells
-    (``video_uuid``, ``video_order``, ``media_type``) and does not raise on a
-    multi-camera sequence the way ``resolve_media`` does. The transcode job
-    needs the originals, not their derivatives.
 
     Every camera of the entry is matched and the selector's cameras filter
     them, rather than one camera being passed down. A selector naming two
@@ -229,19 +266,12 @@ def _stores_for(
     """
     group, sequence = _one_entry(scope)
     cameras = scope.selector.cameras
-    matched = ds.match_media_rows(group, sequence)
-    stores: list[tuple[int, Path, "pd.Series"]] = []
-    held: set[str] = set()
-    for _, row in matched.iterrows():
-        cells = row_mapping(row)
-        if str(cells.get("media_type", "")) != "imgstore":
-            continue
-        held.add(str(cells.get("camera", "")))
-        if cameras and str(cells.get("camera", "")) not in cameras:
-            continue
-        video_order = int(str(cells.get("video_order", "") or 0))
-        stores.append((video_order, ds.resolve_path(str(cells["abs_path"])), row))
+    stores = entry_stores(ds, group, sequence, frozenset(cameras) if cameras else None)
     if not stores:
+        held = {
+            str(row_mapping(row).get("camera", ""))
+            for _, _, row in entry_stores(ds, group, sequence)
+        }
         raise TranscodeError(_nothing_to_export(group, sequence, cameras, held))
     return stores
 
@@ -469,6 +499,19 @@ def readable_chunks(store: Path) -> list[tuple[Path, int]]:
         return native.chunk_spans()
 
 
+def _copied_chunks(store: Path) -> tuple[list[Path], str]:
+    """*store*'s chunk files when an export copies them, and their codec.
+
+    Empty and ``""`` when an export encodes the store instead. The rule is
+    :func:`copyable_chunks`'s.
+    """
+    chunks = [path for path, _ in readable_chunks(store)]
+    codec = stream_codec(chunks[0]) if chunks else ""
+    if codec not in SOFTWARE_DECODABLE_CODECS:
+        return [], ""
+    return chunks, codec
+
+
 def copyable_chunks(store: Path) -> list[Path]:
     """*store*'s chunk files when they can be copied out verbatim, else empty.
 
@@ -483,10 +526,21 @@ def copyable_chunks(store: Path) -> list[Path]:
     codec any libavcodec build decodes. A store written in AV1 has to be
     re-encoded for exactly the reason this op's own output did.
     """
-    chunks = [path for path, _ in readable_chunks(store)]
-    if not chunks or stream_codec(chunks[0]) not in SOFTWARE_DECODABLE_CODECS:
-        return []
-    return chunks
+    return _copied_chunks(store)[0]
+
+
+def export_codec(store: Path) -> str:
+    """Return the codec of *store*'s export, before the export is written.
+
+    An export copies the chunks when :func:`copyable_chunks` lists them, and keeps
+    their codec. Otherwise :func:`write_export` encodes the store in AV1. Reads the
+    store's metadata and chunk indexes, and the first chunk's header.
+
+    Raises:
+        MediaProbeError: If the store's metadata or a chunk index cannot be read.
+        TranscodeError: If ``ffprobe`` cannot read the first chunk's header.
+    """
+    return _copied_chunks(store)[1] or _ENCODED_EXPORT_CODEC
 
 
 def copy_export(
