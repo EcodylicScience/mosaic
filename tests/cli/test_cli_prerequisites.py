@@ -1,8 +1,8 @@
-"""Test ``mosaic prerequisites``. The verb prints the runs that an op needs, and runs none.
+"""Test ``mosaic prerequisites``, which prints the prerequisite runs of an op.
 
-Each printed command is run back through ``mosaic run`` with the op body replaced.
-``mosaic run`` parses the command's flags and builds its scope as a real run does,
-and the scope is then resolved against the dataset.
+The verb does not run them. Each printed command is run back through ``mosaic run``
+with the op body replaced. ``mosaic run`` parses the command's flags and builds its
+scope as a real run does, and the scope is then resolved against the dataset.
 """
 
 from __future__ import annotations
@@ -60,7 +60,10 @@ _PART_REFUSED = [
     *entry_clips("", camera="a", widths=(640, 1280)),
     *entry_clips("", camera="b"),
 ]
-"""A nameless entry whose camera ``a`` is refused, and whose camera ``b`` is read."""
+"""A nameless entry with cameras ``a`` and ``b``.
+
+Camera ``a`` is refused, and camera ``b`` is read.
+"""
 
 _NAMELESS_CAMERA = (
     "a camera of a nameless entry that the plan keeps only in part, and the scope "
@@ -116,7 +119,7 @@ class _Answer(_Wire):
 
 @dataclass(frozen=True)
 class _Received:
-    """Hold what ``mosaic run`` hands an op."""
+    """Records the kind, params and scope that ``mosaic run`` passes to an op."""
 
     kind: str
     params: dict[str, object]

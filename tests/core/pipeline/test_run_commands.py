@@ -69,7 +69,7 @@ def test_a_manifest_path_and_an_entry_with_spaces_are_quoted() -> None:
 
 
 def test_the_module_imports_the_standard_library_only() -> None:
-    """A reader that prints a command loads no third-party package to build it.
+    """A reader that prints a command does not load a third-party package to build it.
 
     The scan reads function bodies and the ``TYPE_CHECKING`` block too, because an
     import deferred into the builder loads its package on the first command built.

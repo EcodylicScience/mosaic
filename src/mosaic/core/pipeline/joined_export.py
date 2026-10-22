@@ -259,9 +259,9 @@ written; the suite fails on a field this tuple does not cover.
 def joined_run_id(params: JoinedExportParams) -> str:
     """Return the run id of a join under *params*, before any clip is read.
 
-    The recipe alone names it. Like a transcode's and an export's, the id
-    addresses no file: the filename carries the recipe and the clip set, so the
-    id names the attempt.
+    The recipe alone names it. Like a transcode's and an export's, the id does
+    not address a file, because the filename contains the recipe and the clip
+    set. The id names the attempt.
     """
     return f"export-joined-{joined_recipe_hash(params)}"
 
@@ -712,7 +712,7 @@ def join_needs_reencode(facts: Sequence[MediaFacts]) -> bool:
 
 
 def join_frame_total(facts: Sequence[MediaFacts]) -> int:
-    """Return the frames that a join of clips with *facts* must hold.
+    """Return the number of frames that a join of clips with *facts* must contain.
 
     The total is the sum of the clips' own frame counts. A total of zero or less
     means the clips report none, and :func:`write_joined_export` refuses to
@@ -1109,7 +1109,8 @@ class JoinedExportOp(Op[JoinedExportParams]):
     ) -> OpIdentity:
         """What this join will be called, without reading a frame.
 
-        The recipe alone (:func:`joined_run_id`), so nothing is deferred.
+        The recipe alone names it (:func:`joined_run_id`), and this method does
+        not raise :class:`~mosaic.core.pipeline.ops.IdentityDeferred`.
         """
         return OpIdentity(run_id=joined_run_id(params))
 

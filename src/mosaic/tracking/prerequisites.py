@@ -1,16 +1,16 @@
 """Plan the runs that an op needs before it reads its entries, and refuse the rest.
 
-:func:`plan_prerequisites` puts each entry through the checks that the op's run
-makes before its tool reads the entry. A check that a run clears is answered with
-that run: ``export-joined`` for clips that are read as their join,
-``export-store`` for an imgstore that is read through its export, and
-``preprocess`` for a media variant that lacks a current file of the entry. A
-check that no run clears is the entry's refusal, with its cause and a reason that
-names the remedy where one exists.
+:func:`plan_prerequisites` puts each entry through the checks that the op's
+run makes before its tool reads the entry. Where a run clears a failed
+check, the plan answers the check with that run: ``export-joined`` when the
+op reads clips as their join, ``export-store`` when it reads an imgstore
+through its export, and ``preprocess`` when a media variant lacks a current
+file of the entry. Any other failed check is the entry's refusal, with its
+cause and a reason naming the remedy where one exists.
 
 The plan reads the media index, the stores' metadata, the media variants' rows
-and recipes, and the files on disk with their headers. It writes no file and
-decodes no frame. One entry's failure refuses that entry alone.
+and recipes, and the files on disk with their headers. It does not write a file
+or decode a frame. One entry's failure refuses that entry alone.
 """
 
 from __future__ import annotations
@@ -107,27 +107,28 @@ type RefusalCause = Literal[
     "no_variant_recipe",
     "undecodable_codec",
 ]
-"""Why no planned run makes an entry readable. A closed set.
+"""Why the planned runs leave an entry unreadable. A closed set.
 
-- ``no_media``: the entry has no indexed media, or another entry with the same
+- ``no_media``: the entry's media is not indexed, or another entry with the same
   entry key is indexed first and takes its output name.
 - ``needs_analysis_transcode``: its media requires an analysis transcode that has
   not run.
 - ``unresolved_media``: its media or a store's metadata cannot be read.
-- ``needs_media_reprobe``: clips report no frame counts, or a store carries no
-  ``video_uuid``. ``reprobe-media --apply`` measures them.
+- ``needs_media_reprobe``: the clips do not report frame counts, or a store lacks
+  a ``video_uuid``. ``reprobe-media --apply`` measures them.
 - ``several_joins``: two current joins of the clips exist, and the user keeps one.
-- ``unidentified_clips``: a clip carries no content identity, so no join of the
-  clips can be addressed.
+- ``unidentified_clips``: a clip lacks a content identity. A join of the clips
+  cannot be addressed without it.
 - ``unjoinable``: the clips cannot be read as one video.
 - ``multi_camera_join``: a camera of an entry of several cameras needs a join, and
   ``export-joined`` joins an entry of one camera.
-- ``no_media_raw``: a store needs an export, and the dataset has no ``media_raw``
-  root to index one in.
+- ``no_media_raw``: a store needs an export, and the dataset does not declare a
+  ``media_raw`` root to index one in.
 - ``preprocess_refused``: the variant's recipe does not fit the entry.
-- ``no_variant_recipe``: the named variant lacks the entry, and no recorded recipe
-  makes it.
-- ``undecodable_codec``: the named variant is in a codec that the tool never reads.
+- ``no_variant_recipe``: the named variant lacks the entry, and its runs do not
+  record a recipe that makes it.
+- ``undecodable_codec``: the named variant is in a codec that the tool cannot
+  decode in any environment.
 """
 
 _EXTRACT_FRAMES: Final = "extract-frames"
@@ -142,9 +143,9 @@ class PrerequisiteRun:
         kind: The op to run.
         params: Its params.
         entries: Its scope, as the ``(group, sequence)`` pairs of the media
-            index. ``mosaic run`` takes no camera scope, so a run covers every
-            camera of an entry. A nameless entry is named here by its indexed
-            key, and elsewhere in an unscoped plan by its label.
+            index. ``mosaic run`` does not take a camera scope. A run therefore
+            covers every camera of an entry. A nameless entry is named here by
+            its indexed key, and elsewhere in an unscoped plan by its label.
         run_id: The run id that the run is planned to record. Export run ids
             name the recipe alone and repeat across entries.
         after: The positions in :attr:`PrerequisitePlan.runs` of the runs that
@@ -160,7 +161,7 @@ class PrerequisiteRun:
 
 @dataclass(frozen=True, slots=True)
 class EntryRefusal:
-    """One entry that the op cannot read, and that no planned run clears.
+    """One entry that the op cannot read once the planned runs finish.
 
     Attributes:
         group: The entry's group.
@@ -189,7 +190,7 @@ class PrerequisitePlan:
         runs: The runs to make first, in dependency order.
         refusals: The entries that the op cannot read, sorted by group,
             sequence, camera and cause.
-        entries: The op's scope once the runs finish, sorted. It holds each
+        entries: The op's scope once the runs finish, sorted. It contains each
             entry without a refusal.
     """
 
@@ -246,17 +247,19 @@ def plan_prerequisites(
     missing or out of date. Each such entry is put through the checks that the
     run makes before it decodes one. A chained variant's run comes after the run
     of its upstream, for the entries whose file of the upstream is missing or
-    out of date. A tool reads the variant that its ``media`` names. An entry
-    that lacks a current file of a variant without a recipe that makes it is
-    refused, and every entry is refused a variant in a codec that the tool
-    never reads. A tool that would be handed a codec that it never reads reads
-    the H.264 variant of the entry media instead,
-    ``PreprocessParams(steps=[], codec="h264")``, when that variant fits at
-    least one such entry. When it fits none, each such entry is refused.
-    ``preprocess`` is put through its own recipe's checks.
+    out of date. A tool reads the variant that its ``media`` names. When the
+    plan cannot find a recipe that makes a variant, each entry without a
+    current file of the variant is refused. A codec that a tool cannot decode
+    in any environment is undecodable to it. Every entry is refused a variant
+    in an undecodable codec. When a tool reading the entry media is handed an
+    undecodable codec for some entries, it reads the H.264 variant of the entry
+    media instead, ``PreprocessParams(steps=[], codec="h264")``, provided the
+    variant fits at least one of those entries. When it fits none, each of
+    those entries is refused. ``preprocess`` is put through the checks of the
+    recipe in its params.
 
-    An op that reads the entry media is put through the checks that its run
-    makes before it reads the entry:
+    An op reading the entry media is put through the checks that its run makes
+    before it reads the entry:
 
     * clips that the op reads as their join, without a current one, need an
       ``export-joined`` run, with ``reencode`` set when the clips differ in
@@ -410,7 +413,7 @@ def _camera_reads(
     *,
     unscoped: bool,
 ) -> list[_CameraRead]:
-    """Return each camera that *kind* reads, and refuse each entry that it reads none of.
+    """Return each camera that *kind* reads, and refuse each entry left without one.
 
     Args:
         ds: The dataset.
@@ -557,7 +560,10 @@ def _read_entry_media(
 def _answer(
     ds: Dataset, kind: str, read: _CameraRead
 ) -> PrerequisiteRun | EntryRefusal | None:
-    """Return the run that lets *kind* read the camera of *read*, its refusal, or ``None``."""
+    """Return the run that lets *kind* read the camera of *read*, or its refusal.
+
+    Returns ``None`` when *kind* reads the camera as it is.
+    """
     entry, camera = read.entry, read.camera
     try:
         if kind == _EXTRACT_FRAMES:
@@ -583,7 +589,7 @@ def _answer(
     except StoreExportMissingError:
         return _store_export_run(ds, kind, read)
     # A nameless entry's store raises a bare FileNotFoundError. Its export is
-    # looked up by the entry's label, which matches no index row.
+    # looked up by the entry's label, which does not match any index row.
     except (FileNotFoundError, MediaProbeError) as refusal:
         return _refusal(entry, camera, "unresolved_media", str(refusal))
     return None
@@ -636,7 +642,7 @@ def _store_export_run(
     if not ds.routes_derivatives():
         reason = (
             f"{label} is read through the export of its imgstore, and this "
-            f"dataset has no media_raw root. Its originals index is "
+            f"dataset does not declare a media_raw root. Its originals index is "
             f"media/index.csv, where an export is not read."
         )
         return _refusal(entry, camera, "no_media_raw", reason)
@@ -646,10 +652,10 @@ def _store_export_run(
         return _refusal(entry, camera, "unresolved_media", str(refusal))
     if unnamed:
         reason = (
-            f"{label} is read through the export of its imgstore, and "
-            f"{', '.join(store.name for store in unnamed)} has no video_uuid in "
-            f"the media index to name an export by. Run 'mosaic reprobe-media "
-            f"--apply' first."
+            f"{label} is read through the export of its imgstore, and the media "
+            f"index does not record a video_uuid for "
+            f"{', '.join(store.name for store in unnamed)} to name an export by. "
+            f"Run 'mosaic reprobe-media --apply' first."
         )
         return _refusal(entry, camera, "needs_media_reprobe", reason)
     params = StoreExportParams()
@@ -673,12 +679,13 @@ def _codec_variant(
 ) -> tuple[str, list[_CameraRead]]:
     """Return the H.264 variant when *kind* reads it, and the reads still to answer.
 
-    *kind* reads the variant when its tool would be handed a codec that it never
-    reads for a camera that the variant's run accepts. ``media`` names one
-    variant for the whole run, so every camera then reads it. When the variant's
-    run accepts none of those cameras, each is refused with the failure of that
-    run. A camera whose handed codec cannot be read is refused too. A refused
-    camera is not answered further.
+    A codec that the tool of *kind* cannot decode in any environment is
+    undecodable. *kind* reads the variant when its tool is handed an undecodable
+    codec for at least one camera that the variant's run accepts. ``media``
+    names one variant for the whole run. Every camera then reads it. When the
+    variant's run accepts none of those cameras, each is refused with the run's
+    failure. A camera whose handed codec cannot be read is refused too. A
+    refused camera is not answered further.
 
     Returns:
         The variant's run id, or ``""`` for the entry media, and the reads that
@@ -724,11 +731,11 @@ def _codec_variant(
 def _read_variant(
     ds: Dataset, kind: str, variant: str, reads: Sequence[_CameraRead], draft: _Draft
 ) -> None:
-    """Plan the runs that write *variant* for each read whose file is not current.
+    """Plan the runs that write *variant* for each read without a current file.
 
-    The tool reads the variant's file, so no join or export applies. The
-    variant's codec is its recipe's, or else that of its current files. A codec
-    that the tool never reads refuses every read.
+    The tool reads the variant's file, without a join or an export. The
+    variant's codec is its recipe's, or else that of its current files. Every
+    read is refused when the tool cannot decode that codec in any environment.
     """
     lookup = VariantLookup.read(
         ds,
@@ -763,7 +770,7 @@ def _read_variant(
 
 
 def _variant_recipe(ds: Dataset, variant: str) -> PreprocessParams | str:
-    """Return the recipe that makes *variant*, or why no recipe does.
+    """Return the recipe that makes *variant*, or why *variant* lacks one.
 
     The recipe is the H.264 recipe when *variant* is its run id, and otherwise
     the one that the variant's runs record. A recorded recipe must still make
@@ -776,7 +783,7 @@ def _variant_recipe(ds: Dataset, variant: str) -> PreprocessParams | str:
     try:
         recorded = path.read_bytes()
     except OSError:
-        return f"it records no readable recipe at {path}"
+        return f"it does not record a readable recipe at {path}"
     try:
         recipe = PreprocessParams.model_validate_json(recorded)
     except ValidationError as error:
@@ -784,7 +791,7 @@ def _variant_recipe(ds: Dataset, variant: str) -> PreprocessParams | str:
     made = preprocess_identity(recipe).run_id
     if made != variant:
         return (
-            f"the recipe that it records at {path} makes {made}, and no longer "
+            f"the recipe that it records at {path} now makes {made} instead of "
             f"{variant}"
         )
     return recipe
@@ -798,19 +805,19 @@ def _variant_run(
     reads: Sequence[_CameraRead],
     draft: _Draft,
 ) -> tuple[list[_CameraRead], tuple[int, ...]]:
-    """Plan the run that writes *variant* for *reads*, after any run that it reads.
+    """Plan the run that writes *variant* for *reads*, after any run of its upstream.
 
     Args:
         ds: The dataset.
         kind: The op that the plan is made for, named in a refusal.
         variant: The variant's run id.
-        recipe: The variant's recipe, or why no recipe makes it.
+        recipe: The variant's recipe, or why the variant lacks one.
         reads: The reads that lack a current file of *variant*.
         draft: The plan that the runs and refusals are added to.
 
     Returns:
         The reads that the run covers, and its position in the plan's runs.
-        Both are empty when no run is planned.
+        Both are empty without a planned run.
     """
     if not reads:
         return [], ()

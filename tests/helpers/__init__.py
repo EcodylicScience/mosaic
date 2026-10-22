@@ -43,8 +43,8 @@ What lives where:
   command, checks of whether a process stopped writing to it or exited, the line
   children of a test, and a cancel fired once a condition is true.
 - ``media`` -- media files, media-index rows, transcode derivatives.
-- ``variants`` -- media variant files, their index rows and recorded recipes, and a
-  count of the index reads a variant's consumers make.
+- ``variants`` contains media variant files, their index rows and recorded
+  recipes, and a count of the index reads that a variant's consumers make.
 - ``identity`` -- the digest a feature run is named by, from its parameters.
 - ``ops`` -- the smallest params dict that validates for each registered op.
 - ``runlog`` -- an attempt's recorded run-log events.

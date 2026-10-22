@@ -88,8 +88,8 @@ RUN_SCOPE_FLAGS_REMEDY = (
 )
 """How to name a scope with the ``mosaic run`` flags, appended to a library refusal.
 
-``check_scope_takes`` answers in ``Scope(...)`` for the library, the planner and
-mosaic-api alike. A person at a terminal types these flags instead.
+``check_scope_takes`` answers in ``Scope(...)`` for the library, the graph
+planner and mosaic-api alike. A person at a terminal types these flags instead.
 """
 
 StepScopeOption = Annotated[

@@ -370,8 +370,8 @@ def test_a_join_keeps_the_codec_of_the_profile_most_clips_share(
 ) -> None:
     """A planner names the codec of a join before it is built.
 
-    The clips outside the majority profile are re-made in it, so three H.264
-    clips in three pixel formats join as the AV1 of the two that agree.
+    The clips outside the majority profile are re-made in it. For example, three
+    H.264 clips in three pixel formats join as the AV1 of the two that agree.
     """
     assert join_codec(_clips_in(profiles)) == expected
 

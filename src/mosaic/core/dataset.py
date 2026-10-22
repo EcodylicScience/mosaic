@@ -5111,7 +5111,7 @@ class Dataset:
     def routes_derivatives(self) -> bool:
         """Return whether media reads route to derivatives under the ``media`` root.
 
-        They do only beside a distinct ``media_raw`` root, which holds the
+        They do only beside a distinct ``media_raw`` root, which contains the
         originals. Without one, ``media/index.csv`` is the originals index, and a
         derivative's row written there is never routed to.
         """

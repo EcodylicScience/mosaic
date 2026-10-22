@@ -477,10 +477,11 @@ def refuse_unjoinable(
 def _variant_remedy(group: str, sequence: str, facts: Sequence[MediaFacts]) -> str:
     """Return how to make a media variant that reads an entry of stores as one file.
 
-    The variant reads each store at its own rate. Preprocess refuses a variant
-    with no step, so the remedy names a trim over every frame of the entry, which
-    keeps them all. The trim's end is the entry's frame count from *facts*, so a
-    store of unknown length is to be measured first.
+    The variant reads each store at its recorded rate. Variants are AV1 by
+    default, and preprocess refuses an AV1 variant with no step. The remedy
+    therefore names a trim over every frame of the entry, which keeps them all.
+    The trim's end is the entry's frame count from *facts*. When a store's length
+    is unknown, the remedy first names a measurement of the stores.
     """
     counts = [int(clip.frame_count) for clip in facts]
     if min(counts) <= 0:

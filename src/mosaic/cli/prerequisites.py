@@ -94,7 +94,7 @@ class _Answer:
     def omitted_reason(self) -> str:
         """Return the sentence that says why the op's command omits entries.
 
-        It is ``""`` when the command omits no entry.
+        It is ``""`` when the command does not omit an entry.
         """
         if not self.omitted:
             return ""
@@ -206,13 +206,12 @@ def _op_scope(
 ) -> tuple[tuple[Entry, ...], tuple[Entry, ...]] | NoCommandCause:
     """Return the entries that the op's command names and omits, or why it is withheld.
 
-    Without scope flags and without a refusal, the command omits the scope flags.
-    It then covers the entries of the plan as an unscoped run reads them.
-    Otherwise it names each entry of the plan by its indexed key. A run's scope
-    names a nameless entry with every camera. The command therefore omits the
-    label of a camera when the plan leaves out another camera of its entry. The
-    command is withheld when it would name no entry, because a command without a
-    scope covers every entry.
+    Without scope flags and without a refusal, the command omits the scope flags. It
+    then covers the entries of the plan as an unscoped run reads them. Otherwise it
+    names each entry of the plan by its indexed key. A run's scope names a nameless
+    entry with every camera. The command therefore omits the label of a camera when
+    the plan leaves out another camera of its entry. It is withheld when it would
+    not name an entry, because a command without a scope covers every entry.
 
     Args:
         ds: The dataset that the plan was made for.

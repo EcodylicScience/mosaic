@@ -90,11 +90,11 @@ failure refuses that entry alone. No run id moves.
   the media index, with a message naming the entry that it writes. Like a tracker, it
   checks every camera of the scoped entries for a shared key. A camera of a nameless
   entry is keyed by its first file's stem. Both a nameless entry and an entry indexed
-  under the key of the nameless entry's first camera were encoded into one file, and
-  the later encode replaced the earlier. An entry indexed under the key of another
-  camera of the nameless entry was encoded, and is now refused. Of two named entries,
-  such as `(a, b__c)` and `(a__b, c)`, the later failed with
-  `no media is indexed for it`.
+  under the key of the nameless entry's first camera were encoded into one file, and the
+  later encode replaced the earlier. An entry indexed under the key of another camera of
+  the nameless entry was encoded, and is now refused. Of two named entries, such as
+  `(a, b__c)` and `(a__b, c)`, the later failed with `no media is indexed for it`. An
+  entry without indexed media now fails with `the media index does not list it`.
 - New API: `plan_prerequisites`, `PrerequisitePlan`, `PrerequisiteRun`, `EntryRefusal`,
   `PrerequisiteKind`, `RefusalCause` and `indexed_entries` in `mosaic.tracking`, from
   the module `mosaic.tracking.prerequisites`; `Dataset.routes_derivatives`;

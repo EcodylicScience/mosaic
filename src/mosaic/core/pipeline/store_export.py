@@ -228,7 +228,7 @@ def entry_stores(
     ``match_media_rows`` rather than ``resolve_media``: this reads the raw cells
     (``video_uuid``, ``video_order``, ``media_type``) and does not raise on a
     multi-camera sequence the way ``resolve_media`` does. An export reads the
-    originals, not their derivatives.
+    originals and does not read their derivatives.
 
     Args:
         ds: The dataset, read for its originals index.
@@ -326,8 +326,8 @@ def _store_uuids(ds: "Dataset", scope: ResolvedScope) -> list[str]:
     unnamed = unnamed_stores(stores)
     if unnamed:
         raise TranscodeError(
-            f"{group}/{sequence}: {unnamed[0]} has no video_uuid in the media "
-            f"index; run 'mosaic reprobe-media --apply' before exporting"
+            f"{group}/{sequence}: the media index does not record a video_uuid "
+            f"for {unnamed[0]}; run 'mosaic reprobe-media --apply' before exporting"
         )
     return [media_row_uuid(row_mapping(row)) for _, _, row in stores]
 
@@ -400,11 +400,11 @@ class StoreExportOp(Op[StoreExportParams]):
         ctx: "JobContext",
     ) -> str:
         group, sequence = _one_entry(scope)
-        # The same refusal TranscodeOp makes, for the same reason: on a dataset
-        # with no media_raw root, the originals index and media/index.csv are one
-        # file, so the back-link would append a derivative row into the originals
-        # index and the forward link would land in the same place -- and
-        # route_derivatives is then False, so nothing would ever read it.
+        # TranscodeOp makes the same refusal, for the same reason. On a dataset with
+        # no media_raw root, the originals index and media/index.csv are one file.
+        # The back-link would append a derivative row to the originals index, and
+        # the forward link would be written to the same file. routes_derivatives()
+        # is then False, and media reads do not route to the export.
         if not ds.routes_derivatives():
             message = (
                 f"{group}/{sequence}: this dataset has no media_raw root, so "

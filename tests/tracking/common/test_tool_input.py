@@ -1,7 +1,7 @@
 """What a tool is handed for an entry, and what stops it before it reads the entry.
 
-A planner asks both before a run. The answers come from the media index, the
-stores' metadata and the files on disk, and nothing is decoded.
+A planner asks both before a run. Answering them does not decode media. The
+answers come from the media index, the stores' metadata and the files on disk.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ def test_clips_are_handed_as_themselves_or_as_their_join(
 ) -> None:
     """A one-file tool opens one clip, or the join of several in the codec most share.
 
-    mosaic's runner opens every clip, and an in-process reader opens no file.
+    mosaic's runner opens every clip, and an in-process reader does not open a file.
     """
     assert handed_codecs(clips, _entry(clips, "sess"), kind=kind) == session
     assert handed_codecs(clips, _entry(clips, "one"), kind=kind) == one
@@ -181,8 +181,8 @@ def test_the_store_of_a_nameless_entry_matches_no_index_row(
 ) -> None:
     """The export of the store is looked up by the entry's label.
 
-    The label matches no index row. The error differs from that of a missing
-    export, which ``export-store`` builds.
+    The label does not match an index row. The error differs from that of a
+    missing export, which ``export-store`` builds.
     """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, [MediaClip(sequence="", filename="rec.mp4")])

@@ -1,9 +1,10 @@
-"""The runs an op needs before it reads each entry, and the entries no run clears.
+"""Test planning the runs that an op needs before it reads each entry.
 
 The plan comes from the media index, the stores' metadata, the media variants'
-rows and recipes, and the files on disk. It decodes no frame and writes no file.
-Each entry is put through the checks of the op's own run, or of the ``preprocess``
-run that writes the media variant it reads.
+rows and recipes, and the files on disk. It does not decode a frame or write a
+file. Each entry is put through the checks of the op's own run or, when the op
+reads a media variant, of the ``preprocess`` run that writes the variant. An
+entry is refused when the planned runs cannot clear a check that it fails.
 """
 
 from __future__ import annotations
@@ -185,7 +186,10 @@ def test_clips_of_two_sizes_are_unjoinable_for_every_tool(
 def test_clips_without_an_identity_are_refused_by_a_tracker(
     tmp_path: Path, kind: str, refused: bool
 ) -> None:
-    """A tracker's reuse gate cannot name them. An inference op reads them as they are."""
+    """A tracker's reuse gate cannot name the clips.
+
+    An inference op reads them as they are.
+    """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, entry_clips(uids=("uid-0", "")))
 
@@ -258,7 +262,10 @@ _JOINING_OPS = pytest.mark.parametrize(
     [("trex", None, (30.0, 30.0)), ("extract-frames", _EXTRACT, (30.0, 31.0))],
     ids=["trex", "extract-frames"],
 )
-"""Two ops that read clips as their join, each with clip rates that it joins."""
+"""Parametrize two ops that read clips as their join.
+
+Each op is given clip rates that it joins.
+"""
 
 
 @_JOINING_OPS
@@ -270,8 +277,8 @@ def test_the_join_of_a_nameless_entry_is_scoped_by_its_indexed_key(
 ) -> None:
     """An unscoped plan names the entry by its first file's stem, which no scope names.
 
-    The op finds a join by the clips that it holds. The join that the run builds
-    under the indexed key is therefore the one that the op reads.
+    Because the op finds a join by its clips, it reads the join
+    that the run builds under the indexed key.
     """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(
@@ -418,6 +425,7 @@ def test_a_store_without_an_identity_is_refused_an_export(tmp_path: Path) -> Non
     plan = plan_prerequisites(ds, "trex")
 
     assert _refused(plan) == [("", "sess", "", "needs_media_reprobe")]
+    assert "does not record a video_uuid" in _reason(plan)
     assert "reprobe-media --apply" in _reason(plan)
     assert (plan.runs, plan.entries) == ((), ())
 
@@ -453,6 +461,7 @@ def test_a_dataset_without_media_raw_cannot_hold_a_store_export(
     plan = plan_prerequisites(ds, "trex")
 
     assert _refused(plan) == [("", "sess", "", "no_media_raw")]
+    assert "does not declare a media_raw root" in _reason(plan)
     assert (plan.runs, plan.entries) == ((), ())
 
 
@@ -460,7 +469,10 @@ def test_a_dataset_without_media_raw_cannot_hold_a_store_export(
 def test_the_store_of_a_nameless_entry_is_refused_as_unresolved(
     tmp_path: Path, kind: str
 ) -> None:
-    """Its export is looked up by the entry's label, which matches no index row."""
+    """Its export is looked up by the entry's label.
+
+    The label does not match an index row.
+    """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, [MediaClip(sequence="", filename="rec.mp4")])
     _ = point_at_a_store(ds, "", ds.get_root("media_raw") / "rec.store")
@@ -626,7 +638,10 @@ def test_without_a_media_index_every_named_entry_is_refused(tmp_path: Path) -> N
 def test_entries_of_one_key_are_reduced_as_a_tracker_reduces_them(
     tmp_path: Path,
 ) -> None:
-    """``(a, b__c)`` and ``(a__b, c)`` write one output, so the first indexed is read."""
+    """``(a, b__c)`` and ``(a__b, c)`` write one output.
+
+    The first indexed entry is therefore read.
+    """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(
         ds,
@@ -649,7 +664,10 @@ def test_entries_of_one_key_are_reduced_as_a_tracker_reduces_them(
 def test_av1_clips_are_read_through_an_h264_variant_by_lightning_pose(
     tmp_path: Path,
 ) -> None:
-    """``preprocess`` reads the clips one at a time, and no join is planned."""
+    """``preprocess`` reads the clips one at a time.
+
+    The plan does not include an ``export-joined`` run.
+    """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, entry_clips(codecs=("av1", "av1")))
 
@@ -668,7 +686,7 @@ def test_av1_clips_are_read_through_an_h264_variant_by_lightning_pose(
 def test_no_variant_is_planned_for_a_codec_that_the_tool_may_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, codec: str, allowed: str
 ) -> None:
-    """SLEAP's decoder is tested in its environment, and a plan runs no test."""
+    """SLEAP's decoder is tested in its environment. A plan does not run that test."""
     monkeypatch.setenv("MOSAIC_ALLOW_TOOL_CODECS", allowed)
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, entry_clips(codecs=(codec, codec)))
@@ -697,8 +715,7 @@ def test_a_store_whose_export_codec_does_not_read_is_refused_for_lightning_pose(
 ) -> None:
     """The export's codec is read from the header of the store's first chunk.
 
-    A chunk file that is gone is no chunk of the store, so the first chunk is
-    overwritten instead.
+    A missing chunk file is not a store chunk. The first chunk is overwritten instead.
     """
     ds = store_dataset(tmp_path, make_media_dataset, video_store_maker([5, 5, 2]))
     (media,) = ds.resolve_media_scope(None)
@@ -765,7 +782,10 @@ def test_an_h264_entry_reads_the_codec_variant_beside_an_av1_entry(
 def test_an_av1_entry_that_the_codec_variant_does_not_fit_is_refused_in_any_scope(
     tmp_path: Path,
 ) -> None:
-    """Lightning Pose reads no AV1, and a variant of an odd frame width is not written."""
+    """Lightning Pose does not read AV1.
+
+    A variant of an odd frame width is not written.
+    """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(
         ds,
@@ -840,10 +860,10 @@ def test_a_variant_that_lacks_an_entry_is_planned_from_its_recorded_recipe(
 @pytest.mark.parametrize(
     ("recorded", "says"),
     [
-        (None, "records no readable recipe"),
+        (None, "does not record a readable recipe"),
         (b'{"steps": 3}', "does not validate"),
         (b'{"steps": [\xff]}', "does not validate"),
-        (_GRAYSCALE_AT_20.model_dump_json().encode(), "no longer"),
+        (_GRAYSCALE_AT_20.model_dump_json().encode(), "now makes"),
     ],
     ids=["absent", "invalid", "not-utf-8", "stale"],
 )
@@ -1045,7 +1065,10 @@ def test_the_plan_is_the_same_for_entries_in_any_order(tmp_path: Path) -> None:
 
 
 def test_the_label_of_a_nameless_entry_names_its_indexed_key(tmp_path: Path) -> None:
-    """An unscoped plan labels the entry by its first file's stem, which no scope names."""
+    """An unscoped plan labels the entry by its first file's stem.
+
+    A run's scope cannot name that label.
+    """
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, [*entry_clips("", camera="a"), *entry_clips("sess")])
 

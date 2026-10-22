@@ -7,12 +7,13 @@ quality the encode resolves to. The identifier is a function of the parameters
 alone, and a variant chained after another names it through ``media``.
 
 :class:`PreprocessOp` writes one variant file per scoped entry. It reads the
-entry media of the camera that a tracker reads, one clip at a time, or the
-upstream variant's file when ``media`` names one. It applies the steps to every
-selected frame and encodes the frames to a partial file, which is counted before
-it is renamed into place. The row written beside the variants records the file's
-placement in its entry's source, the file's probed facts and the composition of
-the entry's media. A consumer reads the row instead of probing the file.
+entry media of the first camera that a tracker reads of the entry, one clip at a
+time, or the upstream variant's file when ``media`` names one. It applies the
+steps to every selected frame and encodes the frames to a partial file, which is
+counted before it is renamed into place. The row written beside the variants
+records the file's placement in its entry's source, the file's probed facts and
+the composition of the entry's media. A consumer reads the row instead of
+probing the file.
 """
 
 from __future__ import annotations
@@ -735,9 +736,9 @@ def preprocess_entry_failures(
 ) -> dict[Entry, Exception]:
     """Return the error that a run of *params* meets for each entry it cannot write.
 
-    Each entry is checked as a run checks it before decoding any, from one read
-    of each index for the scope. The check reads no frame, writes nothing and
-    raises none of the errors it returns. A run raises ``PreprocessRefused`` for
+    Each entry is checked as a run checks it before decoding any, from one read of
+    each index for the scope. The check does not read a frame or write anything, and
+    it returns each error without raising it. A run raises ``PreprocessRefused`` for
     the whole run and fails the entry on any other error.
 
     Args:

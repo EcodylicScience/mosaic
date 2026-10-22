@@ -1192,7 +1192,7 @@ def test_the_per_entry_check_returns_why_an_entry_cannot_be_read(
     assert "must decode to one frame size" in str(mismatched)
     missing = failures[("", "d")]
     assert isinstance(missing, FileNotFoundError)
-    assert "no media is indexed" in str(missing)
+    assert "the media index does not list it" in str(missing)
 
 
 def test_the_per_entry_check_returns_a_missing_or_drifted_upstream(
@@ -1302,8 +1302,8 @@ def test_a_run_encodes_only_the_first_of_two_entries_with_one_entry_key(
 ) -> None:
     """``(a, b__c)`` and ``(a__b, c)`` both publish ``a__b__c``.
 
-    The variant holds the first entry's frames. The later entry fails, and the run
-    reports its camera once.
+    The variant contains the first entry's frames. The later entry fails, and the
+    run reports its camera once.
     """
     ds = make_dataset(tmp_path / "ds")
     _ = write_painted_entry(ds, "b__c", [(6, 30.0)], paint_frame_code, group="a")

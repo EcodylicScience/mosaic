@@ -23,6 +23,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.media.facts_columns import media_row_uuid, row_mapping
 from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.video_io import open_frame_reader
+from mosaic.core.pipeline.media_index import write_media_index_rows
 from mosaic.core.pipeline.ops import OpIdentity, ScopeRefused, run_op
 from mosaic.core.pipeline.stream_copy import coded_frame_count
 from mosaic.core.scope import Scope
@@ -569,6 +570,22 @@ def test_a_plan_refuses_an_entry_with_no_store(
     with pytest.raises(TranscodeError, match="no imgstore rows"):
         _ = StoreExportOp().plan_identity(ds, StoreExportParams(), scope)
     del requires_ffmpeg
+
+
+def test_a_plan_refuses_a_store_without_a_video_uuid(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    make_imgstore: MakeStore,
+) -> None:
+    """An export is named by its store's ``video_uuid``, which a re-probe records."""
+    ds, group, sequence = _store_dataset(tmp_path, make_media_dataset, make_imgstore)
+    originals = _originals(ds)
+    originals["video_uuid"] = ""
+    write_media_index_rows(ds.get_root("media_raw") / "index.csv", originals)
+    scope = ds.resolve_scope(Scope(entries=[(group, sequence)]))
+
+    with pytest.raises(TranscodeError, match="does not record a video_uuid"):
+        _ = StoreExportOp().plan_identity(ds, StoreExportParams(), scope)
 
 
 def test_the_run_identity_carries_the_recipe_verbatim() -> None:

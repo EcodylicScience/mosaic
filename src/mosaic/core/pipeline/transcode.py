@@ -389,12 +389,12 @@ def _refuse_without_media_raw(
     Without this it ran and quietly did harm. On a dataset with no ``media_raw``,
     ``get_root("media")`` and the originals index are the same file, so the
     back-link appended a derivative row *into* the originals index and the
-    forward link went to the same place. ``route_derivatives`` is then False, so
-    nothing ever read what was produced: the encode was wasted and the originals
-    index was left holding rows that only the recipe hash distinguishes from
-    originals. That is also the one dataset shape ``prune-media`` must decline,
-    so refusing here keeps its decline a statement about history rather than
-    about damage still being done.
+    forward link went to the same place. ``ds.routes_derivatives()`` is then
+    False, and media reads did not route to the derivative. The encode was wasted,
+    and the originals index then contained rows that only the recipe hash
+    distinguishes from originals. This is also the one dataset shape that
+    ``prune-media`` must decline. Refusing here therefore keeps its decline a
+    statement about history rather than about damage still being done.
     """
     if ds.routes_derivatives():
         return

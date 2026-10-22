@@ -142,7 +142,7 @@ def resolve_entry_media(
         elif entry in failed:
             resolved[entry] = failed[entry]
         else:
-            message = f"{make_entry_key(*entry)}: no media is indexed for it"
+            message = f"{make_entry_key(*entry)}: the media index does not list it"
             resolved[entry] = FileNotFoundError(message)
     return resolved
 

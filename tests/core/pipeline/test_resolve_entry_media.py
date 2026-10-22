@@ -1,9 +1,9 @@
 """Test resolving every camera of each entry from one read of the media index.
 
-An entry that cannot be resolved fails alone, with the error that explains it. A
-nameless entry is labeled by its first file's stem, which the scope's read cannot key
-back to the entry, so it is resolved by itself. Without an entry list, the whole
-scope is resolved and each entry is keyed by its label.
+An unresolvable entry fails alone, with the error that explains it. A nameless
+entry is labeled by its first file's stem. Because the scope's read cannot key
+that stem back to the entry, each nameless entry is resolved by itself. Without
+an entry list, the whole scope is resolved and each entry is keyed by its label.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ def test_an_entry_without_indexed_media_fails_naming_it(
 
     missing = resolved[("C", "gone")]
     assert isinstance(missing, FileNotFoundError)
-    assert str(missing) == "C__gone: no media is indexed for it"
+    assert str(missing) == "C__gone: the media index does not list it"
     assert _cameras(resolved[("A", "one")]) == [""]
 
 
