@@ -700,17 +700,15 @@ class InferPoseRequest(InferRequestBase):
 
 
 class InferPointsRequest(InferRequestBase):
-    """One entry, run through a POLO point model, in a process of its own.
+    """One entry, run through a POLO point model, in a process of its own."""
 
-    Carries no ``dor``. ``PointInferParams.dor`` reaches no Ultralytics argument
-    on the in-process path either -- it is declared, documented, and never
-    passed -- so sending it would not preserve behavior but change it, under a
-    keyword whose effect on the fork is unverified. It stays a term of the run
-    identifier and nothing else.
-    """
+    dor: float | None
+    """The distance-over-radius threshold of the fork's point suppression, or None
+    for the threshold the checkpoint was trained with."""
 
     radii: dict[int, float] | None
-    """Per-class detection radii, or None for the fork's own defaults."""
+    """Per-class detection radii, or None for the radii the checkpoint was trained
+    with."""
 
 
 class InferResponse(BaseModel):
@@ -882,14 +880,8 @@ class TrainPointsRequest(TrainRequestBase):
     """
 
     dor: float
-    """The Distance of Reference threshold POLO evaluates against.
-
-    Carried, where :class:`InferPointsRequest` deliberately drops the identically
-    named field: on the inference path it reaches no Ultralytics argument at all,
-    so sending it would change what that op computes. Here it is a ``train``
-    keyword the in-process path always passed, so *not* sending it would change
-    what this one computes.
-    """
+    """The distance-over-radius threshold POLO's validator suppresses points at
+    during training."""
 
 
 class TrainResponse(BaseModel):

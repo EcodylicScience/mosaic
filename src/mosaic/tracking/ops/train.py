@@ -599,7 +599,11 @@ _LOC_DESCRIPTION = "The localization loss weight, a POLO train keyword."
 
 _LOC_LOSS_DESCRIPTION = "Which localization loss POLO minimizes."
 
-_DOR_DESCRIPTION = "The Distance of Reference threshold POLO evaluates against."
+_DOR_DESCRIPTION = (
+    "Distance-over-radius threshold of the point suppression POLO's validator "
+    "applies during training. The checkpoint records it, and infer-points "
+    "predicts with it unless the run sets its own."
+)
 
 _BACKEND_DESCRIPTION = (
     "The point-detection backend. polo is the only value the op accepts."

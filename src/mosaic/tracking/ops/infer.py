@@ -296,18 +296,17 @@ class PoseInferParams(_InferParamsBase):
 
 
 _DOR_DESCRIPTION = (
-    "The Distance of Reference threshold POLO evaluated against at training time."
-)
-
-_DOR_UNWIRED = (
-    "reaches no inference argument, though it still enters the run identifier"
+    "Distance-over-radius threshold of POLO's point suppression. A point whose "
+    "distance to a higher-scoring point, divided by its radius, is below it is "
+    "dropped. Unset uses the threshold the checkpoint was trained with, or "
+    "POLO's 0.3 for a checkpoint that records none."
 )
 
 
 class PointInferParams(_InferParamsBase):
     op_kind = "infer-points"
 
-    dor: Annotated[float, Declared(_DOR_DESCRIPTION, unwired=_DOR_UNWIRED)] = 0.8
+    dor: Annotated[float | None, Declared(_DOR_DESCRIPTION)] = None
 
 
 _NUM_CLASSES_DESCRIPTION = (
@@ -1176,6 +1175,10 @@ class InferPointsOp(Op[PointInferParams]):
     # from 0, as `infer-pose`'s does. The tables no longer carry `detection_id`.
     # New runs mint new identifiers, and tables written before carry `id` 0 and
     # should be re-run.
+    # The same 0.5 covers `dor` and the checkpoint's radii, which now reach POLO's
+    # suppression. Runs before it suppressed at POLO's own 0.3 whatever `dor`
+    # their identifier records, and at a radius of one pixel for a checkpoint
+    # whose training dataset config was not on the machine.
     version = "0.5"
     scope_takes = "any"
     scope_dependent = False
@@ -1239,11 +1242,8 @@ class InferPointsOp(Op[PointInferParams]):
                     max_frames=params.max_frames,
                     batch_size=params.batch_size,
                     prefetch=True,
-                    # `params.dor` is deliberately not sent. It reaches no
-                    # Ultralytics argument on the in-process path either, so
-                    # forwarding it would change what this op computes rather than
-                    # move where it computes it. It remains a term of the run
-                    # identifier and nothing else; that it is one is its own defect.
+                    dor=params.dor,
+                    # The runner sends the radii the checkpoint was trained with.
                     radii=None,
                 )
                 outcome = run_point_inference_tool(

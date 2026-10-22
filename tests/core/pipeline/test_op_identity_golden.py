@@ -945,7 +945,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
         "infer-pose", "0.4", "train-pose.0.1-aaaaaaaaaa"
     ),
     "infer-points/run-id-media": _infer_run_id_on_media(
-        "infer-points", "0.4", "train-points.0.1-aaaaaaaaaa"
+        "infer-points", "0.5", "train-points.0.1-aaaaaaaaaa"
     ),
     "infer-localizer/run-id-media": _infer_run_id_on_media(
         "infer-localizer", "0.3", "train-localizer.0.1-aaaaaaaaaa"

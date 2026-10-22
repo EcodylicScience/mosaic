@@ -953,6 +953,54 @@ def run_infer_pose(request: InferPoseRequest) -> InferResponse:
     return InferResponse(n_frames=outcome.n_frames, n_rows=n_rows)
 
 
+class _TrainArguments(BaseModel):
+    """The training argument point inference reads back off a checkpoint."""
+
+    dor: float | None = None
+
+
+class _Checkpoint(BaseModel):
+    """The part of a loaded checkpoint that point inference reads."""
+
+    train_args: _TrainArguments = _TrainArguments()
+
+
+_RADII: Final = TypeAdapter(dict[int, float])
+
+
+def _suppression_kwargs(
+    request: InferPointsRequest, model: object
+) -> dict[str, object]:
+    """The ``dor`` and ``radii`` this run's point suppression applies.
+
+    Each is the request's when it states one, and otherwise what the checkpoint
+    recorded at training: ``train_args.dor``, and the radii POLO's trainer copies
+    from the dataset onto the model it saves. The fork's predictor reads radii
+    from the dataset config the checkpoint names. When that path is absent, as it
+    is for a checkpoint moved off the machine that trained it, the fork looks for
+    them on its inference backend, which does not carry them, and suppresses every
+    class at radius 1. Sending the checkpoint's radii keeps suppression the same
+    on every machine. A checkpoint that records neither leaves the fork its own
+    defaults.
+    """
+    kwargs: dict[str, object] = {}
+    dor = request.dor
+    if dor is None:
+        checkpoint: object = getattr(model, "ckpt", None)
+        if checkpoint:
+            dor = _Checkpoint.model_validate(checkpoint).train_args.dor
+    if dor is not None:
+        kwargs["dor"] = dor
+    radii = request.radii
+    if radii is None:
+        stored: object = getattr(getattr(model, "model", None), "radii", None)
+        if stored:
+            radii = _RADII.validate_python(stored)
+    if radii:
+        kwargs["radii"] = dict(radii)
+    return kwargs
+
+
 def run_infer_points(request: InferPointsRequest) -> InferResponse:
     """Run one entry through a POLO point model and write its raw predictions.
 
@@ -961,9 +1009,7 @@ def run_infer_points(request: InferPointsRequest) -> InferResponse:
     and so cannot travel in one.
     """
     model: _Predictor[PointResult] = _loaded_for(request)
-    kwargs = _infer_kwargs(request)
-    if request.radii is not None:
-        kwargs["radii"] = dict(request.radii)
+    kwargs = {**_infer_kwargs(request), **_suppression_kwargs(request, model)}
     outcome = _infer_frames(request, model, kwargs, point_rows_from_result)
 
     numeric = list(POINT_COLUMNS[:-1])

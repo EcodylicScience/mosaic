@@ -25,13 +25,11 @@ walker no longer matches -- leaves every record xfailing against a set that lost
 the field, and the control fails instead.
 
 ``test_every_unwired_field_is_recorded_by_a_test`` ties the two sets together, so
-a tenth field cannot land with no record. Two of the nine are recorded beside
-their subjects rather than here:
+a ninth field cannot land with no record. One of the eight is recorded beside
+its subject rather than here:
 
 - ``LabelConvertParams.strict_schema`` --
   ``test_labels_index.py::test_the_label_conversion_reads_strict_schema``
-- ``PointInferParams.dor`` --
-  ``test_ultralytics_wire_contract.py::test_the_point_inference_request_carries_dor``
 """
 
 from __future__ import annotations
@@ -414,9 +412,6 @@ _RECORDED_BY: dict[tuple[str, str], str] = {
     ),
     ("behavior/feature_library/track_subsample.py", "drop_nan"): (
         f"{_HERE}::test_the_subsampling_reads_drop_nan"
-    ),
-    ("tracking/ops/infer.py", "dor"): (
-        "test_ultralytics_wire_contract.py::test_the_point_inference_request_carries_dor"
     ),
 }
 

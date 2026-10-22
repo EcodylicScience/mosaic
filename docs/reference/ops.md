@@ -416,7 +416,7 @@ Run a trained POLO point model over scoped videos, bridging into ``tracks/``.
 | `device` | `string` | `"0"` |  | Which accelerator the model runs on, in the tool's own spelling: a GPU index, or 'cpu'. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `batch_size` | `integer` | `8` |  | How many frames the model reads in one forward pass. |
 | `save_images` | `boolean` | `false` |  | Write an annotated image per predicted frame beside the predictions, which is for inspecting a model rather than for any consumer downstream. |
-| `dor` | `number` | `0.8` |  | The Distance of Reference threshold POLO evaluated against at training time. **Unwired:** reaches no inference argument, though it still enters the run identifier. |
+| `dor` | `number` \| `None` | `null` |  | Distance-over-radius threshold of POLO's point suppression. A point whose distance to a higher-scoring point, divided by its radius, is below it is dropped. Unset uses the threshold the checkpoint was trained with, or POLO's 0.3 for a checkpoint that records none. |
 
 #### `infer-pose`
 
@@ -504,7 +504,7 @@ Train a POLO point-detection model, registering the directory it produces.
 | `workers` | `integer` \| `None` | `null` |  | Worker processes loading training data. Throughput only: excluded from the run identity, so changing it never retrains a model. Unset leaves the tool's own default. |
 | `loc` | `number` | `5.0` |  | The localization loss weight, a POLO train keyword. |
 | `loc_loss` | `string` | `"mse"` |  | Which localization loss POLO minimizes. |
-| `dor` | `number` | `0.8` |  | The Distance of Reference threshold POLO evaluates against. |
+| `dor` | `number` | `0.8` |  | Distance-over-radius threshold of the point suppression POLO's validator applies during training. The checkpoint records it, and infer-points predicts with it unless the run sets its own. |
 | `backend` | `string` | `"polo"` |  | The point-detection backend. polo is the only value the op accepts. |
 
 #### `train-pose`

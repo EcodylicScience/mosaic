@@ -21,6 +21,7 @@ import dataclasses
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import ModuleType
+from typing import override
 
 import numpy as np
 import pandas as pd
@@ -212,29 +213,6 @@ def test_mosaic_sends_exactly_the_inference_fields_the_runner_reads(
     assert len(declared) > 15
     assert sent == declared
     assert read == declared
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="PointInferParams.dor is hashed into the run id but never sent",
-)
-def test_the_point_inference_request_carries_dor() -> None:
-    """The record for a parameter that keys a run without reaching it.
-
-    ``PointInferParams.dor`` is a POLO train-time keyword. At inference it
-    reaches no argument on either path, and ``InferPointsRequest`` says so in
-    its own docstring -- yet the field carries no ``HASH_EXCLUDE``, so
-    ``identity_dump`` includes it and changing it re-keys a run that computes
-    the identical result. Either it is sent or it stops keying the run, and
-    which of those is right is the maintainer's call.
-
-    This is the boundary the rest of the file guards, so the record belongs
-    here: a value mosaic holds and never sends is the asymmetry these tests
-    exist to catch. ``strict`` retires the marker automatically -- the day the
-    field is added to the request this xpasses and the suite fails until the
-    marker is deleted.
-    """
-    assert "dor" in InferPointsRequest.model_fields
 
 
 # --- the column contract ---------------------------------------------------
@@ -490,24 +468,55 @@ class _FindsOneOfEach:
         ]
 
 
+class _RecordsItsArguments(_FindsOneOfEach):
+    """Weights that find one of each and keep the keywords of every call."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    @override
+    def predict(self, source: list[np.ndarray], **kwargs: object) -> list[_Found]:
+        self.calls.append(kwargs)
+        return super().predict(source, **kwargs)
+
+
+_TRAINED_RADII: dict[int, float] = {0: 100.0, 1: 40.0}
+
+
+@dataclasses.dataclass
+class _LocateModel:
+    radii: dict[int, float]
+
+
+class _Checkpointed(_RecordsItsArguments):
+    """Recording weights whose checkpoint was trained at ``dor`` 0.3 with radii.
+
+    Shaped as a POLO checkpoint loads: ``train_args`` under ``ckpt``, and the
+    radii the trainer copies from the dataset on the model it saved.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ckpt: dict[str, object] = {"train_args": {"dor": 0.3, "epochs": 200}}
+        self.model = _LocateModel(radii=_TRAINED_RADII)
+
+
 def _gray(_frame: int) -> np.ndarray:
     return np.full((48, 64, 3), 100, np.uint8)
 
 
-@pytest.mark.media
-@pytest.mark.parametrize("kind", ["infer-pose", "infer-points"])
-def test_a_windowed_run_publishes_the_frames_that_the_runner_read(
+def _infer_in_process(
     runner_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     kind: str,
-    requires_ffmpeg: None,
-) -> None:
-    """``start_frame`` 5 and ``frame_step`` 2 publish frames 5, 7, 9 and so on.
+    params: dict[str, object],
+    weights: _FindsOneOfEach,
+) -> Dataset:
+    """Run *kind* with *params* over a twenty-frame clip at 25 fps.
 
-    The runner program runs in this process on a real clip of twenty frames at
-    25 fps, through its own parser, request models, reader and frame loop. Only
-    the probe and the weights are stood in for.
+    The runner program runs in this process, through its own parser, request
+    models, reader and frame loop. Only the probe and *weights* are stood in for.
     """
     ds = make_dataset(tmp_path / "ds")
     _ = write_painted_entry(ds, "sess", [(20, 25.0)], _gray)
@@ -520,7 +529,7 @@ def test_a_windowed_run_publishes_the_frames_that_the_runner_read(
         _ = install_fake_point_probe(monkeypatch)
 
     def loaded_for(_request: object) -> _FindsOneOfEach:
-        return _FindsOneOfEach()
+        return weights
 
     monkeypatch.setattr(runner_module, "_loaded_for", loaded_for)
 
@@ -541,8 +550,29 @@ def test_a_windowed_run_publishes_the_frames_that_the_runner_read(
     _ = run_op(
         ds,
         kind,
-        {"model": str(model), "start_frame": 5, "frame_step": 2},
+        {"model": str(model), **params},
         scope=Scope(entries=[("", "sess")]),
+    )
+    return ds
+
+
+@pytest.mark.media
+@pytest.mark.parametrize("kind", ["infer-pose", "infer-points"])
+def test_a_windowed_run_publishes_the_frames_that_the_runner_read(
+    runner_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kind: str,
+    requires_ffmpeg: None,
+) -> None:
+    """``start_frame`` 5 and ``frame_step`` 2 publish frames 5, 7, 9 and so on."""
+    ds = _infer_in_process(
+        runner_module,
+        monkeypatch,
+        tmp_path,
+        kind,
+        {"start_frame": 5, "frame_step": 2},
+        _FindsOneOfEach(),
     )
 
     (path,) = read_tracks_index(ds)["abs_path"].tolist()
@@ -554,3 +584,40 @@ def test_a_windowed_run_publishes_the_frames_that_the_runner_read(
     # that the schema gives it.
     assert table["id"].tolist() == [0] * len(read)
     assert "detection_id" not in table.columns
+
+
+@pytest.mark.media
+@pytest.mark.parametrize(
+    ("params", "weights", "expected"),
+    [
+        ({"dor": 0.55}, _RecordsItsArguments, {"dor": 0.55}),
+        ({"dor": 0.55}, _Checkpointed, {"dor": 0.55, "radii": _TRAINED_RADII}),
+        ({}, _Checkpointed, {"dor": 0.3, "radii": _TRAINED_RADII}),
+        ({}, _RecordsItsArguments, {}),
+    ],
+    ids=["stated", "stated-over-checkpoint", "checkpoint", "neither"],
+)
+def test_point_suppression_takes_the_stated_dor_or_else_the_checkpoints(
+    runner_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    requires_ffmpeg: None,
+    params: dict[str, object],
+    weights: Callable[[], _RecordsItsArguments],
+    expected: dict[str, object],
+) -> None:
+    """Every ``predict`` call gets the stated ``dor``, else what the checkpoint recorded.
+
+    0.55 is neither the fork's default nor the checkpoint's, so a stated value
+    lost before the call cannot pass by falling back to either. A checkpoint
+    that records neither ``dor`` nor radii leaves both keywords out, and the
+    fork its own defaults.
+    """
+    recorder = weights()
+    _ = _infer_in_process(
+        runner_module, monkeypatch, tmp_path, "infer-points", params, recorder
+    )
+
+    assert recorder.calls
+    for call in recorder.calls:
+        assert {key: call[key] for key in ("dor", "radii") if key in call} == expected

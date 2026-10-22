@@ -375,7 +375,7 @@ def test_an_unset_worker_count_leaves_ultralytics_its_default(
 def test_point_training_carries_the_fork_only_arguments(
     runner_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``dor`` reaches a real keyword here, where on the inference path it reaches none."""
+    """``loc``, ``loc_loss`` and ``dor`` reach the fork's ``train`` keywords."""
     _install_ultralytics(monkeypatch)
     request = runner_module.TrainPointsRequest(
         model="polo26n.yaml",

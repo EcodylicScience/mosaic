@@ -31,6 +31,23 @@ one individual: `nearest-neighbor` reported `nn_id` 0, the detection's own id, a
   animal across frames. A feature that follows `id` across frames needs a tracker's
   table.
 
+**`infer-points` suppresses duplicate points as the model was trained to.** POLO drops
+a lower-scoring point whose distance to a higher-scoring one, divided by its class
+radius, is below `dor`. Two inputs of that step were wrong.
+
+- `PointInferParams.dor` entered the run id and the tracks variant but never reached
+  POLO, which suppressed at its own 0.3. It is now sent. Its default is unset, which
+  predicts at the `dor` the checkpoint was trained with (0.8 for a `train-points` model
+  at its defaults, 0.3 for one trained with POLO's defaults).
+- POLO reads the radii from the dataset config that the checkpoint names, by its path on
+  the training machine. Where that path is absent it suppressed every class at a radius
+  of one pixel, so each animal could keep several points. The runner now sends the radii
+  the checkpoint itself carries. On a bee-feeder clip, a checkpoint trained elsewhere
+  went from 9.4 points per frame to 2.6, for two or three bees.
+
+The change shares the 0.5 of the `id` change above, and tables written under 0.4 or
+earlier should be re-run.
+
 **The classifiers share their output, standardizer, fold and bundle code.** `xgboost` and
 `lightning-action` each assembled their `prob_` columns and `predicted_label`, applied
 the decision threshold, standardized, dealt cross-validation folds and wrote their bundle
