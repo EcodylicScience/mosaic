@@ -5108,6 +5108,15 @@ class Dataset:
         )
         raise MediaProbeError(message)
 
+    def routes_derivatives(self) -> bool:
+        """Return whether media reads route to derivatives under the ``media`` root.
+
+        They do only beside a distinct ``media_raw`` root, which holds the
+        originals. Without one, ``media/index.csv`` is the originals index, and a
+        derivative's row written there is never routed to.
+        """
+        return self.resolve_media_root() == "media_raw"
+
     def media_routing_context(
         self, index_filename: str = "index.csv"
     ) -> tuple[bool, "pd.DataFrame | None"]:
@@ -5115,16 +5124,14 @@ class Dataset:
 
         Returns ``(route_derivatives, derivative_df)``:
 
-        * ``route_derivatives`` is ``True`` only when a distinct ``media_raw``
-          root holds the originals (so the ``media`` root can hold derivatives to
-          route to); a legacy ``media``-only dataset yields ``False``.
+        * ``route_derivatives`` is :meth:`routes_derivatives`.
         * ``derivative_df`` is the ``media`` index (one row per derivative) when
           it exists, else ``None``.
 
         Load once, then pass both to :meth:`route_media_row` for each row, so a
         batch of routings reads each index only once.
         """
-        route_derivatives = self.resolve_media_root() == "media_raw"
+        route_derivatives = self.routes_derivatives()
         derivative_df: pd.DataFrame | None = None
         if route_derivatives:
             derivative_idx = self.get_root("media") / index_filename

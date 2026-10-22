@@ -579,8 +579,8 @@ def test_the_run_identity_carries_the_recipe_verbatim() -> None:
     read out of it -- so what pins the choice is that the digest appears
     whole, not that the value equals any particular string.
     """
-    recipe = export_recipe_hash(StoreExportParams())
-    assert recipe in export_run_id(recipe)
+    params = StoreExportParams()
+    assert export_recipe_hash(params) in export_run_id(params)
 
 
 def test_the_label_names_the_cameras_the_scope_named(

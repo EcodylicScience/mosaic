@@ -44,6 +44,7 @@ from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 from mosaic.runlog import JsonlRunLog, list_runs, run_log_path
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
+from mosaic.tracking import PrerequisitePlan, plan_prerequisites
 from tests.helpers import (
     CONVERT_LABELS_STEP,
     CONVERT_TRACKS_STEP,
@@ -282,6 +283,19 @@ def test_a_media_dry_run_writes_nothing(with_media: ReadDataset) -> None:
     assert_tree_unchanged(with_media.root, before)
 
 
+@pytest.mark.media
+def test_planning_the_prerequisites_of_media_writes_nothing(
+    with_media: ReadDataset,
+) -> None:
+    """The plan of a join reads the media index and the joins on disk."""
+    before = tree_snapshot(with_media.root)
+
+    plan = _plan_prerequisites(with_media)
+
+    assert [run.kind for run in plan.runs] == ["export-joined"]
+    assert_tree_unchanged(with_media.root, before)
+
+
 @pytest.mark.parametrize("verb", CLI_READS_OF_NOTHING)
 def test_a_read_verb_creates_no_root_or_index(
     unpopulated: ReadDataset, verb: str
@@ -355,6 +369,10 @@ def _inventory_wire(fixture: ReadDataset) -> object:
     return listed
 
 
+def _plan_prerequisites(fixture: ReadDataset) -> PrerequisitePlan:
+    return plan_prerequisites(fixture.reopened(), "trex", entries=[("", "seq_a")])
+
+
 def _lossy_entry_errors(fixture: ReadDataset) -> object:
     report = entry_errors_wire(fixture.root, fixture.lossy_execution_id)
     assert report is not None
@@ -386,6 +404,7 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "load_tracks": lambda f: f.reopened().load_tracks("", "seq_a", auto_convert=False),
     "open_dataset": ReadDataset.reopened,
     "plan_pipeline": lambda f: plan_pipeline(f.reopened(), speed_recipe()),
+    "plan_prerequisites": _plan_prerequisites,
     "plan_with_cleanup": lambda f: plan_with_cleanup(
         f.reopened(), speed_recipe(), cleanup=CleanupPolicy(min_age_hours=0)
     ),
@@ -420,6 +439,7 @@ def test_a_library_read_writes_nothing(populated: ReadDataset, read: str) -> Non
         "list_requests",
         "list_runs",
         "open_dataset",
+        "plan_prerequisites",
         "read_runs",
         "read_tracks_index",
     ],

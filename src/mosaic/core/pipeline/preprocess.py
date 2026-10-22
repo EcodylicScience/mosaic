@@ -52,7 +52,8 @@ from mosaic.core.params import HASH_EXCLUDE, Declared, Params
 from mosaic.core.pipeline._utils import ResolvedScope, atomic_write
 from mosaic.core.pipeline.composition import compositions_disagree
 from mosaic.core.pipeline.consumed_camera import (
-    one_camera_per_entry,
+    ConsumedMedia,
+    consumed_cameras,
     resolve_entry_media,
 )
 from mosaic.core.pipeline.entry_claim import (
@@ -525,20 +526,13 @@ class _EntryPlan:
         return (self.group, self.sequence, self.camera)
 
 
-type _ConsumedMedia = ResolvedScopeEntry | FileNotFoundError | MediaProbeError
-"""An entry's consumed media, or the error that explains its absence."""
-
-
 def _consumed_media(
     ds: Dataset, entries: Sequence[Entry], *, report_skipped: bool
-) -> dict[Entry, _ConsumedMedia]:
+) -> dict[Entry, ConsumedMedia]:
     """Return the media of each entry's consumed camera, the one that a tracker reads.
 
-    Each entry resolves through :func:`resolve_entry_media`. The cameras of every
-    resolved entry then reduce together, in the order of one read of the media
-    index, as a tracker reduces its scope. Two entries with one entry key share
-    one output path. Each camera of a nameless entry is labeled by its first
-    file's stem. Such a label can equal the key of another entry.
+    Each entry resolves through :func:`resolve_entry_media`, and the cameras of
+    every resolved entry reduce together through :func:`consumed_cameras`.
 
     Args:
         ds: The dataset.
@@ -553,42 +547,11 @@ def _consumed_media(
         camera is dropped fails with a ``FileNotFoundError`` naming the entry of
         the kept camera.
     """
-    resolved = resolve_entry_media(ds, entries)
-    cameras = {
-        entry: media for entry, media in resolved.items() if isinstance(media, list)
-    }
-    # Each entry is keyed as indexed. Sorted, the entries are in the order of the
-    # read that a tracker reduces.
-    read = [(camera, entry) for entry in sorted(cameras) for camera in cameras[entry]]
-    kept = {
-        make_entry_key(media.group, media.sequence): media
-        for media in one_camera_per_entry(
-            PREPROCESS_KIND,
-            [camera for camera, _ in read],
-            report_skipped=report_skipped,
-        )
-    }
-    owners: dict[str, Entry] = {}
-    for camera, entry in read:
-        key = make_entry_key(camera.group, camera.sequence)
-        if kept[key] is camera:
-            owners[key] = entry
-    consumed: dict[Entry, _ConsumedMedia] = {}
-    for entry, media in resolved.items():
-        if not isinstance(media, list):
-            consumed[entry] = media
-            continue
-        first = media[0]
-        key = make_entry_key(first.group, first.sequence)
-        if kept[key] is first:
-            consumed[entry] = first
-        else:
-            message = (
-                f"{entry!r} shares the output name {key} with {owners[key]!r}, "
-                "which is indexed first"
-            )
-            consumed[entry] = FileNotFoundError(message)
-    return consumed
+    return consumed_cameras(
+        PREPROCESS_KIND,
+        resolve_entry_media(ds, entries),
+        report_skipped=report_skipped,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -604,7 +567,7 @@ class _ScopeReads:
             ``None`` when the recipe reads the entry media.
     """
 
-    consumed: Mapping[Entry, _ConsumedMedia]
+    consumed: Mapping[Entry, ConsumedMedia]
     compositions: Mapping[Entry, str]
     upstream: VariantLookup | None
 

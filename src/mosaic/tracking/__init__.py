@@ -46,6 +46,14 @@ if TYPE_CHECKING:
     from mosaic.tracking.ops.delete_model import (
         delete_trained_model as delete_trained_model,
     )
+    from mosaic.tracking.prerequisites import (
+        EntryRefusal as EntryRefusal,
+        PrerequisiteKind as PrerequisiteKind,
+        PrerequisitePlan as PrerequisitePlan,
+        PrerequisiteRun as PrerequisiteRun,
+        RefusalCause as RefusalCause,
+        plan_prerequisites as plan_prerequisites,
+    )
     from mosaic.tracking.registration import register_ops as register_ops
     from mosaic.tracking.sleap import (
         list_sleap_runs as list_sleap_runs,
@@ -76,6 +84,12 @@ _MODULE_OF: Final[dict[str, str]] = {
     "resolve_model": "mosaic.tracking.model_refs",
     "resolve_model_set": "mosaic.tracking.model_refs",
     "delete_trained_model": "mosaic.tracking.ops.delete_model",
+    "EntryRefusal": "mosaic.tracking.prerequisites",
+    "PrerequisiteKind": "mosaic.tracking.prerequisites",
+    "PrerequisitePlan": "mosaic.tracking.prerequisites",
+    "PrerequisiteRun": "mosaic.tracking.prerequisites",
+    "RefusalCause": "mosaic.tracking.prerequisites",
+    "plan_prerequisites": "mosaic.tracking.prerequisites",
     "register_ops": "mosaic.tracking.registration",
     "list_sleap_runs": "mosaic.tracking.sleap",
     "run_sleap": "mosaic.tracking.sleap",
@@ -101,6 +115,12 @@ __all__ = [
     "dataset_inventory",
     "delete_trained_model",
     "register_inventory_contributors",
+    "EntryRefusal",
+    "PrerequisiteKind",
+    "PrerequisitePlan",
+    "PrerequisiteRun",
+    "RefusalCause",
+    "plan_prerequisites",
     "resolve_model",
     "resolve_model_set",
     "extract_frames",

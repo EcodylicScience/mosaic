@@ -15,14 +15,26 @@ from typing import TYPE_CHECKING
 from mosaic.core.helpers import is_nameless_entry, make_entry_key
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from mosaic_media import MediaProbeError
 
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
     from mosaic.core.entry import Entry
 
-__all__ = ["one_camera_per_entry", "resolve_entry_media"]
+__all__ = [
+    "ConsumedMedia",
+    "ResolvedEntryMedia",
+    "consumed_cameras",
+    "one_camera_per_entry",
+    "resolve_entry_media",
+]
+
+type ResolvedEntryMedia = list[ResolvedScopeEntry] | FileNotFoundError | MediaProbeError
+"""An entry's cameras, or the error that explains why it has none."""
+
+type ConsumedMedia = ResolvedScopeEntry | FileNotFoundError | MediaProbeError
+"""An entry's consumed camera, or the error that explains its absence."""
 
 
 def one_camera_per_entry(
@@ -81,7 +93,7 @@ def one_camera_per_entry(
 
 def resolve_entry_media(
     ds: Dataset, entries: Sequence[Entry] | None
-) -> dict[Entry, list[ResolvedScopeEntry] | FileNotFoundError | MediaProbeError]:
+) -> dict[Entry, ResolvedEntryMedia]:
     """Return each entry's cameras, or the error that explains why it has none.
 
     One read of the media index resolves the entries. An entry whose media needs
@@ -122,9 +134,7 @@ def resolve_entry_media(
                 cameras[entry] = alone
     except FileNotFoundError as exc:
         return {entry: exc for entry in entries}
-    resolved: dict[
-        Entry, list[ResolvedScopeEntry] | FileNotFoundError | MediaProbeError
-    ] = {}
+    resolved: dict[Entry, ResolvedEntryMedia] = {}
     for entry in entries:
         if entry in cameras:
             resolved[entry] = cameras[entry]
@@ -134,6 +144,67 @@ def resolve_entry_media(
             message = f"{make_entry_key(*entry)}: no media is indexed for it"
             resolved[entry] = FileNotFoundError(message)
     return resolved
+
+
+def consumed_cameras(
+    kind: str,
+    resolved: Mapping[Entry, ResolvedEntryMedia],
+    *,
+    report_skipped: bool,
+) -> dict[Entry, ConsumedMedia]:
+    """Return the camera that a per-entry consumer reads of each resolved entry.
+
+    The cameras of every resolved entry reduce together through
+    :func:`one_camera_per_entry`, in the order of one read of the media index, as
+    a tracker reduces its scope. Two entries with one entry key share one output
+    path. Each camera of a nameless entry is labeled by its first file's stem.
+    Such a label can equal the key of another entry.
+
+    Args:
+        kind: The consumer's op kind, prefixing each line printed.
+        resolved: What :func:`resolve_entry_media` returned.
+        report_skipped: Print a line for each camera dropped beside the one read.
+            A check made before a run passes ``False``, and a run prints each
+            line once.
+
+    Returns:
+        Per entry of *resolved*, in its order, the first camera, or the error
+        that resolving the entry raised. An entry whose first camera is dropped
+        fails with a ``FileNotFoundError`` naming the entry of the kept camera.
+    """
+    cameras = {
+        entry: media for entry, media in resolved.items() if isinstance(media, list)
+    }
+    # Each entry is keyed as indexed. Sorted, the entries are in the order of the
+    # read that a tracker reduces.
+    read = [(camera, entry) for entry in sorted(cameras) for camera in cameras[entry]]
+    kept = {
+        make_entry_key(media.group, media.sequence): media
+        for media in one_camera_per_entry(
+            kind, [camera for camera, _ in read], report_skipped=report_skipped
+        )
+    }
+    owners: dict[str, Entry] = {}
+    for camera, entry in read:
+        key = make_entry_key(camera.group, camera.sequence)
+        if kept[key] is camera:
+            owners[key] = entry
+    consumed: dict[Entry, ConsumedMedia] = {}
+    for entry, media in resolved.items():
+        if not isinstance(media, list):
+            consumed[entry] = media
+            continue
+        first = media[0]
+        key = make_entry_key(first.group, first.sequence)
+        if kept[key] is first:
+            consumed[entry] = first
+        else:
+            message = (
+                f"{entry!r} shares the output name {key} with {owners[key]!r}, "
+                "which is indexed first"
+            )
+            consumed[entry] = FileNotFoundError(message)
+    return consumed
 
 
 def _cameras_by_entry(

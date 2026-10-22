@@ -21,9 +21,6 @@ Two boundaries, one per way a tool reads (``TrackingRoot.reads``):
   it. The runner decodes each file with mosaic-media's reader in the tool's
   environment, so no Ultralytics code opens a path.
 
-:func:`required_media_ops` answers, before a run, what a tool still needs for each
-entry and why, by putting the entry through the run's own checks.
-
 :func:`refuse_undecodable_codec` checks the codec of each file handed over. A tool
 that declares a decode probe is tested in its environment by a
 :class:`DecodeProbe`, which runs the probe program there and remembers for the
@@ -36,25 +33,20 @@ import os
 import subprocess
 import sys
 import textwrap
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final
 
 from mosaic_media import SOFTWARE_DECODABLE_CODECS, MediaFacts, MediaProbeError
 from mosaic_media.probe.ffprobe import read_header
 
-from mosaic.core.entry import Entry
 from mosaic.core.media.facts_columns import derivative_path_for_target, row_mapping
 from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.read_target import verified_read_facts
-from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
 from mosaic.core.pipeline.joined_export import (
-    EntryJoinMissingError,
-    MissingJoinCause,
     current_join,
     join_codec,
-    join_needs_reencode,
     join_to_read,
     refuse_unidentified_clips,
 )
@@ -79,7 +71,7 @@ from mosaic.core.pipeline.tracking_roots import (
     tracking_root,
 )
 from mosaic.core.pipeline.variant_source import preprocess_command
-from mosaic.tracking.common.scope import JoinedSourceMismatchError, refuse_unjoinable
+from mosaic.tracking.common.scope import refuse_unjoinable
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
@@ -87,9 +79,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DecodeProbe",
-    "MediaOpKind",
-    "MediaRequirement",
-    "MediaRequirementCause",
     "ProbeVerdict",
     "StoreExportMissingError",
     "ToolFile",
@@ -99,14 +88,10 @@ __all__ = [
     "handed_codecs",
     "refuse_undecodable_codec",
     "refuse_unreadable_entry",
-    "required_media_ops",
     "resolve_entry_input",
     "resolve_tool_input",
     "resolve_tool_inputs",
 ]
-
-MediaOpKind = Literal["export-store", "export-joined"]
-"""The media ops that build a file a tool reads in place of an entry's own."""
 
 _ALLOW_CODECS_VAR: Final = "MOSAIC_ALLOW_TOOL_CODECS"
 _DECODE_PROBE_TIMEOUT_SECONDS: Final = 300.0
@@ -801,108 +786,6 @@ def handed_codecs(
     return frozenset(codecs - {""})
 
 
-type MediaRequirementCause = MissingJoinCause | Literal["store_export", "unjoinable"]
-"""Why a tool cannot read an entry yet. A closed set.
-
-The four join causes are those of
-:data:`~mosaic.core.pipeline.joined_export.MissingJoinCause`. The other two:
-
-- ``store_export``: a store that the tool reads only through its export, which
-  has none, or whose linked file is gone. ``export-store`` builds it.
-- ``unjoinable``: the entry's clips cannot be read as one video at all. They
-  differ in frame size, one reports no frame rate, or they include a store beside
-  other clips. No op joins them, and the reason names the remedy.
-"""
-
-
-@dataclass(frozen=True, slots=True)
-class MediaRequirement:
-    """What one entry needs before a tool can read it.
-
-    Attributes:
-        group: The entry's group.
-        sequence: The entry's sequence.
-        camera: The camera that the tool reads.
-        cause: Why, as a member of a closed set that a caller can branch on.
-        op: The media op that meets the requirement, or ``None`` where none does:
-            for ``several_joins`` the user deletes all but one join, for
-            ``unidentified_clips`` the clips are re-probed before they are joined,
-            and ``unjoinable`` clips are rearranged or read through a media
-            variant.
-        reencode: Whether the ``export-joined`` run needs ``reencode`` set, by
-            :func:`~mosaic.core.pipeline.joined_export.join_needs_reencode`.
-            ``False`` for any other op.
-        reason: The refusal that the run raises, naming the remedy.
-    """
-
-    group: str
-    sequence: str
-    camera: str
-    cause: MediaRequirementCause
-    op: MediaOpKind | None
-    reencode: bool
-    reason: str
-
-
-def required_media_ops(
-    ds: "Dataset", *, kind: str, entries: Iterable[Entry] | None = None
-) -> list[MediaRequirement]:
-    """Return what each entry needs before *kind*'s tool can read it, in scope order.
-
-    Each entry is put through the checks that *kind*'s run makes before its tool
-    reads the entry media, in the order the run makes them, and is reported with
-    the first check that refuses it, as that refusal. An entry that passes every
-    check is absent. How *kind*'s tool reads (``TrackingRoot.reads``) decides the
-    checks:
-
-    * a one-file tool needs the export of a store and the join of several clips;
-    * mosaic's runner needs the export of a store whose chunk files are not the
-      frames mosaic reads, and no join;
-    * an in-process reader needs a join only for clips that differ in frame rate.
-
-    Every tool refuses clips that cannot be read as one video. A tracker also
-    refuses several clips of which one carries no content identity, because its
-    reuse gate cannot name them.
-
-    The answer is for the entry media. A run that reads a media variant reads the
-    variant's file and needs none of it. Nothing is probed: the answer comes from
-    the media index, the stores' metadata and the files on disk. So a store whose
-    chunks a probe finds disagreeing with the store's index, which the run then
-    reads through its export, is found by the run.
-
-    Args:
-        ds: The dataset.
-        kind: The op whose tool reads the media.
-        entries: The entries to answer for, or ``None`` for every indexed entry.
-
-    Returns:
-        One requirement per entry that *kind* cannot read yet, in scope order.
-
-    Raises:
-        MediaProbeError: As the run's own resolution raises it: an entry whose
-            original needs an analysis transcode and has none, or a store whose
-            metadata cannot be read.
-    """
-    required: list[MediaRequirement] = []
-    for entry in one_camera_per_entry(kind, ds.resolve_media_scope(entries)):
-        try:
-            refuse_unreadable_entry(ds, entry, kind=kind)
-        except JoinedSourceMismatchError as refusal:
-            required.append(_requirement(entry, "unjoinable", None, refusal))
-        except EntryJoinMissingError as refusal:
-            op: MediaOpKind | None = (
-                "export-joined"
-                if refusal.cause in ("no_join", "superseded_join")
-                else None
-            )
-            required.append(_requirement(entry, refusal.cause, op, refusal))
-        except StoreExportMissingError as refusal:
-            required.append(
-                _requirement(entry, "store_export", "export-store", refusal)
-            )
-    return required
-
-
 def refuse_unreadable_entry(
     ds: "Dataset", entry: "ResolvedScopeEntry", *, kind: str
 ) -> None:
@@ -955,25 +838,6 @@ def refuse_unreadable_entry(
             if is_imgstore(store) and not readable_chunks(store):
                 why = _unreadable_chunks_why(kind)
                 _ = _store_export(ds, group, sequence, store, kind=kind, why=why)
-
-
-def _requirement(
-    entry: "ResolvedScopeEntry",
-    cause: MediaRequirementCause,
-    op: MediaOpKind | None,
-    refusal: Exception,
-) -> MediaRequirement:
-    """Return *entry*'s requirement, from the refusal that names it."""
-    reencode = op == "export-joined" and join_needs_reencode(entry.resolved.facts)
-    return MediaRequirement(
-        group=entry.group,
-        sequence=entry.sequence,
-        camera=entry.camera,
-        cause=cause,
-        op=op,
-        reencode=reencode,
-        reason=str(refusal),
-    )
 
 
 def _registered_export(

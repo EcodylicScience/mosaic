@@ -82,6 +82,8 @@ from mosaic.core.pipeline.stream_copy import (
 from mosaic.media_probe_config import media_thresholds
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from mosaic.core.dataset import Dataset
     from mosaic.core.pipeline.job import JobContext
 
@@ -178,8 +180,8 @@ def _store_frame_count(store: Path) -> int:
         return int(native.frame_count)
 
 
-def export_run_id(recipe_hash: str) -> str:
-    """Ledger key: the recipe, namespaced.
+def export_run_id(params: StoreExportParams) -> str:
+    """Ledger key: the recipe of *params*, namespaced.
 
     Mirrors :func:`mosaic.core.pipeline.transcode.transcode_run_id`, and is not
     re-digested for the same reason: ``export_recipe_hash`` already returns a
@@ -189,7 +191,7 @@ def export_run_id(recipe_hash: str) -> str:
     ``runs.target`` column :meth:`StoreExportOp.target` writes, which names
     the entry and the cameras for exactly that reason.
     """
-    return f"export-store-{recipe_hash}"
+    return f"export-store-{export_recipe_hash(params)}"
 
 
 def _one_entry(scope: ResolvedScope) -> Entry:
@@ -300,6 +302,18 @@ def _nothing_to_export(
     )
 
 
+def unnamed_stores(stores: Iterable[tuple[int, Path, pd.Series]]) -> list[Path]:
+    """Return each of *stores* whose media-index row records no ``video_uuid``.
+
+    An export is named by its store's ``video_uuid``. ``export-store`` refuses
+    a store without one.
+
+    Args:
+        stores: What :func:`entry_stores` returned.
+    """
+    return [store for _, store, row in stores if not media_row_uuid(row_mapping(row))]
+
+
 def _store_uuids(ds: "Dataset", scope: ResolvedScope) -> list[str]:
     """Each store's identity, read from the index rather than probed.
 
@@ -308,16 +322,14 @@ def _store_uuids(ds: "Dataset", scope: ResolvedScope) -> list[str]:
     opening a store.
     """
     group, sequence = _one_entry(scope)
-    uuids: list[str] = []
-    for _, store, row in _stores_for(ds, scope):
-        source_uuid = media_row_uuid(row_mapping(row))
-        if not source_uuid:
-            raise TranscodeError(
-                f"{group}/{sequence}: {store} has no video_uuid in the media "
-                f"index; run 'mosaic reprobe-media --apply' before exporting"
-            )
-        uuids.append(source_uuid)
-    return uuids
+    stores = _stores_for(ds, scope)
+    unnamed = unnamed_stores(stores)
+    if unnamed:
+        raise TranscodeError(
+            f"{group}/{sequence}: {unnamed[0]} has no video_uuid in the media "
+            f"index; run 'mosaic reprobe-media --apply' before exporting"
+        )
+    return [media_row_uuid(row_mapping(row)) for _, _, row in stores]
 
 
 @register_op
@@ -377,7 +389,7 @@ class StoreExportOp(Op[StoreExportParams]):
         refused.
         """
         _ = _store_uuids(ds, scope)
-        return OpIdentity(run_id=export_run_id(export_recipe_hash(params)))
+        return OpIdentity(run_id=export_run_id(params))
 
     def run(
         self,
@@ -393,7 +405,7 @@ class StoreExportOp(Op[StoreExportParams]):
         # file, so the back-link would append a derivative row into the originals
         # index and the forward link would land in the same place -- and
         # route_derivatives is then False, so nothing would ever read it.
-        if ds.resolve_media_root() != "media_raw":
+        if not ds.routes_derivatives():
             message = (
                 f"{group}/{sequence}: this dataset has no media_raw root, so "
                 f"media/index.csv is its originals index; an export written "

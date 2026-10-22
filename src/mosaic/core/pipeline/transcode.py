@@ -396,7 +396,7 @@ def _refuse_without_media_raw(
     so refusing here keeps its decline a statement about history rather than
     about damage still being done.
     """
-    if ds.resolve_media_root() == "media_raw":
+    if ds.routes_derivatives():
         return
     named = ", ".join(f"{group}/{sequence}" for group, sequence in entries)
     raise TranscodeError(

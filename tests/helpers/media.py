@@ -376,22 +376,24 @@ def clean_facts_cells(
     fps: float = 30.0,
     frame_count: int = 100,
     rotation: int = 0,
+    codec: str = "h264",
 ) -> dict[str, object]:
-    """A complete, verdict-clean set of media-facts cells for one index row.
+    """A complete set of media-facts cells for one index row, with their verdict.
 
     The tracker marker suites all need a media row a tracker will actually run
     against: probed dimensions, a container and pixel format that derive to a
     clean verdict, and -- when *video_uuid* is given -- the content identity that
     lets a marker tell a video replaced in place from one merely renamed.
-    *width*, *height*, *fps*, *frame_count* and *rotation* describe the clip
-    itself, defaulting to a fixed 640x480, 30 fps, 100-frame, upright shape.
+    *width*, *height*, *fps*, *frame_count*, *rotation* and *codec* describe the
+    clip itself, defaulting to a fixed 640x480, 30 fps, 100-frame, upright H.264
+    shape. The verdict is derived from the facts, and an H.264 clip's is clean.
     """
     facts: MediaFacts = store_facts(
         width=width,
         height=height,
         fps=fps,
         frame_count=frame_count,
-        codec="h264",
+        codec=codec,
         duration=frame_count / fps if fps else 0.0,
         video_uuid=video_uuid,
         identity_scheme="video/1" if video_uuid else "",
@@ -413,9 +415,9 @@ class MediaClip:
     *sequence* and *filename* are the two values a row cannot do without.
     Every other field defaults to one uncalibrated clip: no group, no camera,
     first in its sequence's order, no recorded content identity, and the fixed
-    dimensions ``clean_facts_cells`` assumes. A caller building several clips
-    of one sequence, a multi-camera sequence, or facts that vary from row to
-    row supplies the differing fields. A plain filename-keyed lookup cannot
+    dimensions and codec ``clean_facts_cells`` assumes. A caller building several
+    clips of one sequence, a multi-camera sequence, or facts that vary from row
+    to row supplies the differing fields. A plain filename-keyed lookup cannot
     express two rows sharing one sequence name.
     """
 
@@ -430,6 +432,7 @@ class MediaClip:
     height: int = 480
     rotation: int = 0
     frame_count: int = 100
+    codec: str = "h264"
 
 
 def write_media_index(
@@ -476,7 +479,7 @@ def write_media_index(
                 "width": clip.width,
                 "height": clip.height,
                 "fps": clip.fps,
-                "codec": "h264",
+                "codec": clip.codec,
                 "media_type": "video",
                 "video_order": clip.video_order,
                 **clean_facts_cells(
@@ -486,6 +489,7 @@ def write_media_index(
                     fps=clip.fps,
                     frame_count=clip.frame_count,
                     rotation=clip.rotation,
+                    codec=clip.codec,
                 ),
             }
         )

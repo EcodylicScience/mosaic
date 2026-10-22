@@ -651,6 +651,13 @@ def _refuse_unjoined(ds: Dataset, media_scope: Sequence[ResolvedScopeEntry]) -> 
     raise JoinedExportMissingError(message)
 
 
+def listed_frames(params: ExtractFramesParams) -> dict[Entry, tuple[int, ...]] | None:
+    """Return each listed entry's frame indices, or ``None`` when none are listed."""
+    if params.frames is None:
+        return None
+    return {item.entry: item.indices for item in params.frames}
+
+
 def listed_entries(
     listed: Mapping[Entry, tuple[int, ...]], scoped: list[Entry] | None
 ) -> tuple[list[Entry], int]:
@@ -771,9 +778,7 @@ def _run_extract_frames(
     ctx.set_run_id(run_id)
     run_root = frames_run_root(ds, p.method, run_id)
 
-    listed = (
-        None if p.frames is None else {item.entry: item.indices for item in p.frames}
-    )
+    listed = listed_frames(p)
     skipped = 0
     entries = scope.op_entries
     if listed is not None:

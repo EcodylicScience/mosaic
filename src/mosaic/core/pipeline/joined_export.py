@@ -134,6 +134,7 @@ __all__ = [
     "current_joined_recipes",
     "entry_source_uid",
     "join_codec",
+    "join_frame_total",
     "joined_export_path",
     "joined_recipe_hash",
     "joined_run_id",
@@ -713,6 +714,16 @@ def join_needs_reencode(facts: Sequence[MediaFacts]) -> bool:
     return len(facts) > 1 and bool(_outliers(facts)[1])
 
 
+def join_frame_total(facts: Sequence[MediaFacts]) -> int:
+    """Return the frames that a join of clips with *facts* must hold.
+
+    The total is the sum of the clips' own frame counts. A total of zero or less
+    means the clips report none, and :func:`write_joined_export` refuses to
+    join them.
+    """
+    return sum(int(clip.frame_count) for clip in facts)
+
+
 def _joined_frame_rate(facts: list[MediaFacts], dest: Path) -> float:
     """The rate the joined file's uniform timeline is built on.
 
@@ -839,7 +850,7 @@ def write_joined_export(
             exactly the sum of the clips' own counts.
     """
     _refuse_mismatched_geometry(paths, facts)
-    expected = sum(int(clip.frame_count) for clip in facts)
+    expected = join_frame_total(facts)
     if expected <= 0:
         message = (
             f"{dest.name}: the clips report no frame counts, so a join of them "
