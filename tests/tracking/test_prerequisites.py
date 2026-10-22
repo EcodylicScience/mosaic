@@ -230,7 +230,7 @@ def test_clips_without_an_identity_are_refused_by_a_tracker(
     if refused:
         assert _refused(plan) == [("", "sess", "", "unidentified_clips")]
         assert "reprobe-media --apply" in _reason(plan)
-        assert '--kind export-joined --entries ":sess"' in _reason(plan)
+        assert "--kind export-joined --entries :sess" in _reason(plan)
     else:
         assert plan.refusals == ()
 

@@ -50,6 +50,7 @@ from mosaic.core.pipeline.joined_export import (
     join_to_read,
     refuse_unidentified_clips,
 )
+from mosaic.core.pipeline.run_commands import mosaic_run_command
 from mosaic.core.pipeline.store_export import (
     EXPORT_TARGET,
     export_codec,
@@ -533,11 +534,10 @@ def _store_export(
     """
     export = _registered_export(ds, group, sequence, store)
     if export is None:
+        command = mosaic_run_command("export-store", [(group, sequence)])
         message = (
             f"[{kind}] ({group}, {sequence}) is an imgstore recording, {why}. "
-            f"Export it first:\n"
-            f"    mosaic run -m <manifest> --kind export-store "
-            f'--entries "{group}:{sequence}"'
+            f"Export it first:\n    {command}"
         )
         raise StoreExportMissingError(message)
     if not export.is_file():

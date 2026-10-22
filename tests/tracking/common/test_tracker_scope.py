@@ -208,7 +208,7 @@ class TestRefusals:
         assert f"[{kind}]" in message
         assert "export-joined does not join stores" in message
         assert (
-            '--kind preprocess --entries ":sess" --params '
+            "--kind preprocess --entries :sess --params "
             """'{"steps":[{"step":"trim","start":0,"stop":100}]}'"""
         ) in message
 

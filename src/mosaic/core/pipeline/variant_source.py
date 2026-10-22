@@ -19,7 +19,6 @@ entry's variant here, and apply one rule for a missing or drifted variant.
 
 from __future__ import annotations
 
-import shlex
 from collections.abc import Iterable, Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
@@ -41,6 +40,7 @@ from mosaic.core.pipeline.preprocess_index import (
     media_variant_rows,
 )
 from mosaic.core.pipeline.preprocess_layout import media_variant_recipe_path
+from mosaic.core.pipeline.run_commands import mosaic_run_command
 from mosaic.core.pipeline.sequence_index import media_compositions_for
 
 if TYPE_CHECKING:
@@ -149,16 +149,14 @@ def preprocess_command(ds: Dataset, run_id: str, entries: Iterable[Entry]) -> st
     without a recorded recipe is named instead, with a second line that asks for
     the recipe.
     """
-    selected = " ".join(
-        f"--entries {shlex.quote(f'{group}:{sequence}')}"
-        for group, sequence in sorted(set(entries))
-    )
-    command = f"    mosaic run -m <manifest> --kind preprocess {selected} --params"
     recipe = media_variant_recipe_path(ds, run_id).absolute()
     if recipe.is_file():
-        return f"{command} {shlex.quote(f'@{recipe}')}"
+        return f"    {mosaic_run_command('preprocess', entries, params=f'@{recipe}')}"
+    command = mosaic_run_command(
+        "preprocess", entries, params=f"<the parameters of {run_id}>"
+    )
     return (
-        f"{command} '<the parameters of {run_id}>'\n"
+        f"    {command}\n"
         f"    {run_id} does not record a recipe at {recipe}. Give the parameters "
         f"that made it."
     )

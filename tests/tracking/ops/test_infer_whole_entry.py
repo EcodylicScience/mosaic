@@ -267,7 +267,7 @@ class TestEntriesWithNoFileBuilt:
         message = str(refused.value)
         assert message.startswith("[infer-localizer] 2 entries cannot be read yet")
         for sequence in ("a", "b"):
-            assert f'--kind export-joined --entries ":{sequence}"' in message
+            assert f"--kind export-joined --entries :{sequence}" in message
         assert handed == []
 
     def test_every_missing_store_export_is_named_as_one(
@@ -287,7 +287,7 @@ class TestEntriesWithNoFileBuilt:
 
         message = str(refused.value)
         for sequence in ("s", "t"):
-            assert f'--kind export-store --entries ":{sequence}"' in message
+            assert f"--kind export-store --entries :{sequence}" in message
         assert fake.videos == [] and fake.probed == []
 
     def test_two_current_joins_are_named_beside_a_missing_one(
@@ -312,7 +312,7 @@ class TestEntriesWithNoFileBuilt:
         message = str(refused.value)
         assert message.startswith("[infer-localizer] 2 entries cannot be read yet")
         assert "Each is named below with what to do" in message
-        assert '--kind export-joined --entries ":a"' in message
+        assert "--kind export-joined --entries :a" in message
         assert "2 current joins" in message and "delete the rest" in message
         assert handed == []
 
@@ -329,7 +329,7 @@ class TestEntriesWithNoFileBuilt:
             _ = run_op(ds, "infer-pose", {"model": str(model)})
 
         message = str(refused.value)
-        assert '--kind export-store --entries ":s"' in message
+        assert "--kind export-store --entries :s" in message
         assert "export-joined" not in message
         assert fake.videos == [] and fake.probed == []
 

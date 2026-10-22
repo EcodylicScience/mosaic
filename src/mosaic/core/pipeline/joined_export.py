@@ -109,6 +109,7 @@ from mosaic.core.params import Declared
 from mosaic.core.pipeline._utils import ResolvedScope, hash_params
 from mosaic.core.params import Params
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
+from mosaic.core.pipeline.run_commands import mosaic_run_command
 from mosaic.core.pipeline.stream_copy import (
     coded_frame_count,
     first_packet_dts,
@@ -398,13 +399,9 @@ def _join_command(group: str, sequence: str, facts: Sequence[MediaFacts]) -> str
     It sets ``reencode`` when :func:`join_needs_reencode` says the clips need it,
     so the command works as shown.
     """
-    reencode = (
-        """ --params '{"reencode": true}'""" if join_needs_reencode(facts) else ""
-    )
-    return (
-        f"    mosaic run -m <manifest> --kind export-joined "
-        f'--entries "{group}:{sequence}"{reencode}'
-    )
+    params = '{"reencode": true}' if join_needs_reencode(facts) else ""
+    command = mosaic_run_command("export-joined", [(group, sequence)], params=params)
+    return f"    {command}"
 
 
 def refuse_unidentified_clips(

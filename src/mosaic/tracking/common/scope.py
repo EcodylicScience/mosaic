@@ -63,6 +63,7 @@ from mosaic.core.pipeline.preprocess_index import (
     MediaVariantDriftedError,
     MediaVariantMissingError,
 )
+from mosaic.core.pipeline.run_commands import mosaic_run_command
 from mosaic.core.pipeline.variant_source import VariantLookup, VariantSource
 
 if TYPE_CHECKING:
@@ -494,10 +495,9 @@ def _variant_remedy(group: str, sequence: str, facts: Sequence[MediaFacts]) -> s
         {"steps": [{"step": "trim", "start": 0, "stop": total}]},
         separators=(",", ":"),
     )
+    command = mosaic_run_command("preprocess", [(group, sequence)], params=steps)
     return (
         f"Make a media variant of the entry, which reads each store at its own "
         f"rate, and name it with the 'media' parameter. A trim over all {total} "
-        f"frames keeps every frame:\n"
-        f"    mosaic run -m <manifest> --kind preprocess "
-        f"--entries \"{group}:{sequence}\" --params '{steps}'"
+        f"frames keeps every frame:\n    {command}"
     )

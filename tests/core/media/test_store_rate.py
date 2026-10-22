@@ -141,7 +141,7 @@ def test_stores_at_two_rates_are_refused_as_unjoinable(tmp_path: Path) -> None:
     message = str(refused.value)
     assert "s1.store was recorded at 31 fps" in message
     assert "Stores cannot be joined" in message
-    assert '--kind preprocess --entries ":sess"' in message
+    assert "--kind preprocess --entries :sess" in message
 
 
 def test_a_consumer_reading_stores_itself_takes_them_at_one_rate(
@@ -169,7 +169,7 @@ def test_a_consumer_handing_over_a_path_refuses_stores_at_one_rate(
     message = str(refused.value)
     assert "export-joined does not join stores" in message
     trim = """--params '{"steps":[{"step":"trim","start":0,"stop":100}]}'"""
-    assert f'--entries "g:s" {trim}' in message
+    assert f"--entries g:s {trim}" in message
 
 
 def test_the_remedy_for_stores_of_unmeasured_length_says_to_measure_them(

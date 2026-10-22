@@ -129,7 +129,7 @@ class TestJoinToRead:
         message = str(excinfo.value)
         assert message.startswith("[extract-frames] (, sess)")
         assert "differ in frame rate" in message
-        assert '--kind export-joined --entries ":sess"' in message
+        assert "--kind export-joined --entries :sess" in message
         assert _REENCODE not in message
 
     def test_a_missing_join_of_clips_in_two_profiles_is_built_by_reencoding(
@@ -139,7 +139,7 @@ class TestJoinToRead:
         entry = _entry(tmp_path, MIXED_PROFILES)
         with pytest.raises(JoinedExportMissingError) as excinfo:
             _ = join_to_read(ds, entry, asker="extract-frames")
-        assert f'--entries ":sess" {_REENCODE}' in str(excinfo.value)
+        assert f"--entries :sess {_REENCODE}" in str(excinfo.value)
 
 
 class TestMissingJoins:
