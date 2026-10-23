@@ -11,7 +11,6 @@ of rates and lengths pins that they agree.
 from __future__ import annotations
 
 import json
-import shlex
 from collections.abc import Callable
 from pathlib import Path
 
@@ -30,7 +29,15 @@ from mosaic.tracking.common.scope import (
     build_work_items,
     refuse_unjoinable,
 )
-from tests.helpers import clip_facts
+from tests.helpers import (
+    MediaClip,
+    clip_facts,
+    make_dataset,
+    point_at_a_store,
+    printed_command_words,
+    printed_scope_files,
+    write_media_index,
+)
 
 
 class TestTheRule:
@@ -112,6 +119,7 @@ def test_the_reader_and_the_early_check_agree(
 ) -> None:
     """At every length, including an hour at 30 fps."""
     stores = _stores(tmp_path, 2)
+    ds = make_dataset(tmp_path / "ds")
     rates = (30.0, second)
     _read_as(monkeypatch, {store: (rate, frames) for store, rate in zip(stores, rates)})
     facts = [clip_facts(fps=rate, frame_count=frames) for rate in rates]
@@ -121,7 +129,7 @@ def test_the_reader_and_the_early_check_agree(
 
     def check() -> None:
         refuse_unjoinable(
-            "infer-localizer", "", "sess", stores, facts, hands_over_path=False
+            ds, "infer-localizer", "", "sess", stores, facts, hands_over_path=False
         )
 
     assert _accepted(read) is one_rate
@@ -131,11 +139,12 @@ def test_the_reader_and_the_early_check_agree(
 def test_stores_at_two_rates_are_refused_as_unjoinable(tmp_path: Path) -> None:
     """The refusal says stores cannot be joined and names the preprocess remedy."""
     stores = _stores(tmp_path, 2)
+    ds = make_dataset(tmp_path / "ds")
     facts = [clip_facts(fps=30.0), clip_facts(fps=31.0)]
 
     with pytest.raises(JoinedSourceMismatchError) as refused:
         refuse_unjoinable(
-            "infer-localizer", "", "sess", stores, facts, hands_over_path=False
+            ds, "infer-localizer", "", "sess", stores, facts, hands_over_path=False
         )
 
     message = str(refused.value)
@@ -149,10 +158,11 @@ def test_a_consumer_reading_stores_itself_takes_them_at_one_rate(
 ) -> None:
     """The localizer reads stores in its own process, as one reader."""
     stores = _stores(tmp_path, 2)
+    ds = make_dataset(tmp_path / "ds")
     facts = [clip_facts(fps=30.0), clip_facts(fps=30.0)]
 
     refuse_unjoinable(
-        "infer-localizer", "", "sess", stores, facts, hands_over_path=False
+        ds, "infer-localizer", "", "sess", stores, facts, hands_over_path=False
     )
 
 
@@ -161,10 +171,13 @@ def test_a_consumer_handing_over_a_path_refuses_stores_at_one_rate(
 ) -> None:
     """Its tool is handed one file, and no file joins stores."""
     stores = _stores(tmp_path, 2)
+    ds = make_dataset(tmp_path / "ds")
     facts = [clip_facts(fps=30.0, frame_count=40), clip_facts(fps=30.0, frame_count=60)]
 
     with pytest.raises(JoinedSourceMismatchError) as refused:
-        refuse_unjoinable("infer-pose", "g", "s", stores, facts, hands_over_path=True)
+        refuse_unjoinable(
+            ds, "infer-pose", "g", "s", stores, facts, hands_over_path=True
+        )
 
     message = str(refused.value)
     assert "export-joined does not join stores" in message
@@ -172,14 +185,42 @@ def test_a_consumer_handing_over_a_path_refuses_stores_at_one_rate(
     assert f"--entries g:s {trim}" in message
 
 
+def test_the_variant_command_of_a_nameless_entry_names_its_indexed_key(
+    tmp_path: Path,
+) -> None:
+    """A scope labels the entry ``s0``, by its first store's stem.
+
+    A scope does not resolve that label.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(sequence="", filename=f"c{order}.mp4", video_order=order)
+            for order in range(2)
+        ],
+    )
+    for order in range(2):
+        store = ds.get_root("media_raw") / f"s{order}.store"
+        _ = point_at_a_store(ds, "", store, video_order=order)
+    (entry,) = ds.resolve_media_scope(None)
+
+    with pytest.raises(JoinedSourceMismatchError) as refused:
+        _ = build_work_items(ds, [entry], kind="trex")
+
+    assert (entry.group, entry.sequence) == ("", "s0")
+    assert printed_scope_files(ds, str(refused.value)) == entry.resolved.paths
+
+
 def test_the_remedy_for_stores_of_unmeasured_length_says_to_measure_them(
     tmp_path: Path,
 ) -> None:
     stores = _stores(tmp_path, 2)
+    ds = make_dataset(tmp_path / "ds")
     facts = [clip_facts(fps=30.0, frame_count=0), clip_facts(fps=30.0, frame_count=60)]
 
     with pytest.raises(JoinedSourceMismatchError, match="reprobe-media --apply"):
-        refuse_unjoinable("trex", "", "s", stores, facts, hands_over_path=True)
+        refuse_unjoinable(ds, "trex", "", "s", stores, facts, hands_over_path=True)
 
 
 @pytest.mark.parametrize("fmt", ["npy"])
@@ -222,12 +263,7 @@ def test_the_variant_the_refusal_names_is_made_and_read(
 
     with pytest.raises(JoinedSourceMismatchError) as refused:
         _ = build_work_items(ds, ds.resolve_media_scope(None), kind="sleap")
-    (command,) = [
-        line.strip()
-        for line in str(refused.value).splitlines()
-        if line.strip().startswith("mosaic run")
-    ]
-    argv = shlex.split(command.replace("<manifest>", str(ds.manifest_path)))[1:]
+    argv = printed_command_words(str(refused.value), manifest=ds.manifest_path)[1:]
 
     result = CliRunner().invoke(app, [*argv, "--json"])
 

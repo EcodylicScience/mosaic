@@ -465,7 +465,7 @@ def run_ultralytics(
                 item.video_paths,
                 item.source_facts,
                 kind=ULTRALYTICS_KIND,
-                variant=item.media,
+                variant=item.variant,
             )
             result = run_ultralytics_tool(
                 TrackRequest(

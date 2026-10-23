@@ -17,7 +17,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.dataset import Dataset, ResolvedScopeEntry, new_dataset_manifest
+from mosaic.core.entry import Entry
 from mosaic.core.scope import Scope
 from mosaic.core.media.facts_columns import store_facts
 from mosaic.core.pipeline.joined_export import JoinedExportMissingError
@@ -25,8 +26,15 @@ from mosaic.tracking.common.scope import (
     JoinedSourceMismatchError,
     TrackerWorkItem,
     build_work_items,
+    run_entries,
 )
-from tests.helpers import MediaClip, clip_facts, point_at_a_store, write_media_index
+from tests.helpers import (
+    MediaClip,
+    clip_facts,
+    count_index_reads,
+    point_at_a_store,
+    write_media_index,
+)
 
 TREX = "trex"
 SLEAP = "sleap"
@@ -245,6 +253,60 @@ class TestCameras:
         assert len(items) == 1
         assert items[0].n_sources == 1
         assert "shares one output directory" in capsys.readouterr().err
+
+
+# A nameless entry beside two named entries.
+NAMELESS_AND_NAMED = [
+    MediaClip(sequence="", filename="rec.mp4"),
+    MediaClip(sequence="s", filename="s.mp4"),
+    MediaClip(sequence="t", filename="t.mp4"),
+]
+
+
+def _labeled(
+    scope: list[ResolvedScopeEntry],
+) -> list[tuple[Entry, ResolvedScopeEntry]]:
+    """Pair each camera of *scope* with its label, as a run pairs it."""
+    return [((camera.group, camera.sequence), camera) for camera in scope]
+
+
+class TestRunEntries:
+    def test_a_nameless_entry_is_named_by_its_indexed_key(self, tmp_path: Path) -> None:
+        """A scope labels the nameless entry ``rec``, by its file's stem."""
+        ds = _dataset(tmp_path, NAMELESS_AND_NAMED)
+        scope = ds.resolve_media_scope(None)
+
+        assert [(entry.group, entry.sequence) for entry in scope] == [
+            ("", "rec"),
+            ("", "s"),
+            ("", "t"),
+        ]
+        assert run_entries(ds, _labeled(scope)) == [("", ""), ("", "s"), ("", "t")]
+
+    def test_a_camera_whose_file_is_unlisted_keeps_the_entry_that_names_it(
+        self, tmp_path: Path
+    ) -> None:
+        ds = _dataset(tmp_path, NAMELESS_AND_NAMED)
+        (camera, *_) = ds.resolve_media_scope(None)
+        moved = dataclasses.replace(
+            camera,
+            resolved=dataclasses.replace(
+                camera.resolved, paths=[tmp_path / "unlisted.mp4"]
+            ),
+        )
+
+        assert run_entries(ds, [(("", "named"), moved)]) == [("", "named")]
+
+    def test_every_entry_is_looked_up_in_one_read_of_the_index(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ds = _dataset(tmp_path, NAMELESS_AND_NAMED)
+        scope = ds.resolve_media_scope(None)
+        reads = count_index_reads(monkeypatch)
+
+        _ = run_entries(ds, _labeled(scope))
+
+        assert reads.media_rows == 1
 
 
 class TestTheItemInvariant:

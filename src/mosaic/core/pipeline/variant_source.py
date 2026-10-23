@@ -127,12 +127,15 @@ def unreadable_variant_refusal(
         media: The media variant that the run names.
         run_id: The run's identifier.
         lost: The keys of every entry that the run attempted and lost.
-        unresolved: The entries whose file of *media* could not be read, by key.
+        unresolved: The key of each entry whose file of *media* could not be read,
+            mapped to the ``(group, sequence)`` that the media index records the
+            entry under (:meth:`~mosaic.core.dataset.Dataset.indexed_entries_of`).
+            The command's scope names these pairs.
     """
     if not lost or not set(lost) <= set(unresolved):
         return None
-    entries = sorted(unresolved[key] for key in lost)
-    keys = ", ".join(make_entry_key(group, sequence) for group, sequence in entries)
+    entries = [unresolved[key] for key in lost]
+    keys = ", ".join(sorted(lost))
     return (
         f"[{kind}] run_id={run_id} did not produce tracks, because every entry "
         f"that it attempted lacks a readable file of the media variant {media}: "
@@ -199,7 +202,8 @@ class VariantLookup:
         unknown composition, which is not drift.
 
         Args:
-            ds: The dataset.
+            ds: The dataset, whose media index names the entry in a refusal's
+                command by its indexed key.
             entry: The entry and camera, with the media it resolves to now.
 
         Returns:
@@ -219,7 +223,8 @@ class VariantLookup:
         where = f"{key} (camera {camera})" if camera else key
 
         def command() -> str:
-            return preprocess_command(ds, run_id, [(group, sequence)])
+            named = ds.indexed_entry(entry.resolved.paths[0], (group, sequence))
+            return preprocess_command(ds, run_id, [named])
 
         row = self.rows.get((group, sequence, camera))
         if row is None:

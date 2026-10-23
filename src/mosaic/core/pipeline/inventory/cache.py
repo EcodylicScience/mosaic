@@ -34,11 +34,11 @@ from typing import TYPE_CHECKING
 
 from mosaic.core.pipeline.dataset_indexes import iter_dataset_indexes
 from mosaic.core.pipeline.identity_scheme import FEATURE_IDENTITY_SCHEME
+from mosaic.core.pipeline.index_stamp import IndexStamp
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
 from mosaic.core.pipeline.tracks_identity import TRACKS_IDENTITY_SCHEME
 from mosaic.core.scope import Scope
 
-from ._read import IndexStamp
 from .contributors import registered_inventory_kinds
 from .model import ArtifactKind, DatasetInventory
 from .scan import inventory

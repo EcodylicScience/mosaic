@@ -230,8 +230,7 @@ def run_tracker(
                 minted.run_id,
                 lost=lost,
                 unresolved={
-                    failure.key: (failure.group, failure.sequence)
-                    for failure in work_items.failures
+                    failure.key: failure.run_entry for failure in work_items.failures
                 },
             )
             raise AllEntriesFailed(

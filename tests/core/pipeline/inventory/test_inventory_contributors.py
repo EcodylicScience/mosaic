@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline.inventory._read import IndexReader, IndexStamp
+from mosaic.core.pipeline.inventory._read import IndexReader
 from mosaic.core.pipeline.inventory.contributors import (
     inventory_contributor,
     register_inventory_contributor,
@@ -87,14 +87,6 @@ def test_reading_stamps_what_it_touched(tmp_path: Path) -> None:
     stamp = reader.stamps()[index.resolve()]
     assert stamp.exists
     assert stamp.size == len("run_id\nabc\n")
-
-
-def test_an_absent_file_still_stamps(tmp_path: Path) -> None:
-    """Its appearing later is a change, and recording nothing hides that."""
-    stamp = IndexStamp.of(tmp_path / "never-written.csv")
-
-    assert not stamp.exists
-    assert stamp.size == 0
 
 
 # --- the registry -------------------------------------------------------------

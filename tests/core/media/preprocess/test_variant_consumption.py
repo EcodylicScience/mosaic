@@ -66,6 +66,7 @@ from tests.helpers import (
     FakeSleap,
     FakeTrex,
     FakeUltralytics,
+    MediaClip,
     count_index_reads,
     entry_error_lines,
     install_fake_litpose,
@@ -77,9 +78,11 @@ from tests.helpers import (
     install_fake_ultralytics,
     make_dataset,
     pose_predictions,
+    printed_scope_files,
     scope_over,
     set_tracks_cell,
     write_litpose_model,
+    write_media_index,
     write_painted_entry,
     write_sleap_model,
 )
@@ -699,6 +702,31 @@ def test_an_inference_run_whose_readable_entries_are_held_names_the_variant(
     assert "every entry that it attempted lacks a readable file" in message
     assert "--kind preprocess --entries :t --params" in message
     assert len(fake.videos) == ran
+
+
+@pytest.mark.parametrize("kind", ["ultralytics", "infer-points"])
+def test_a_run_without_a_readable_variant_names_a_nameless_entry_by_its_key(
+    tmp_path: Path, model: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """The run labels the entry ``rec``, by its file's stem.
+
+    The refusal lists the label. Its command names the indexed key, because a scope
+    does not resolve the label.
+    """
+    _ = install_fake_ultralytics(monkeypatch)
+    _ = install_fake_point_inference(monkeypatch)
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, [MediaClip(sequence="", filename="rec.mp4")])
+    missing = "preprocess.0.1-0123456789"
+    model_key = "model_path" if kind == "ultralytics" else "model"
+
+    with pytest.raises(AllEntriesFailed) as refused:
+        _ = run_op(ds, kind, {model_key: str(model), "media": missing})
+
+    message = str(refused.value)
+    assert f"variant {missing}: rec." in message
+    (entry,) = ds.resolve_media_scope(None)
+    assert printed_scope_files(ds, message) == entry.resolved.paths
 
 
 def test_an_inference_run_reports_the_entries_it_holds(

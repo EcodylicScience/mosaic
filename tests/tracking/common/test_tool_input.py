@@ -14,17 +14,26 @@ from mosaic_media import MediaProbeError
 
 from mosaic.core.dataset import Dataset, ResolvedScopeEntry
 from mosaic.core.pipeline.joined_export import EntryJoinMissingError
+from mosaic.core.pipeline.preprocess_layout import media_variant_path
+from mosaic.core.pipeline.tracking_roots import ToolCodecError
+from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import (
     StoreExportMissingError,
     handed_codecs,
     refuse_unreadable_entry,
+    resolve_tool_inputs,
 )
 from tests.helpers import (
     MediaClip,
+    add_media_variant,
+    add_transcode_derivative,
+    count_index_reads,
     export_entry_store,
     index_media_sequence,
     make_dataset,
+    nameless_store_dataset,
     point_at_a_store,
+    printed_scope_files,
     store_dataset,
     stub_join,
     video_store_maker,
@@ -174,21 +183,79 @@ def test_an_entry_is_refused_as_the_run_of_its_tool_refuses_it(tmp_path: Path) -
     refuse_unreadable_entry(ds, entry, kind="trex")
 
 
-@pytest.mark.parametrize("kind", ["trex", "ultralytics"])
-@pytest.mark.parametrize("query", [handed_codecs, refuse_unreadable_entry])
-def test_the_store_of_a_nameless_entry_matches_no_index_row(
-    tmp_path: Path, kind: str, query: Callable[..., object]
-) -> None:
-    """The export of the store is looked up by the entry's label.
+def _nameless_store(tmp_path: Path) -> tuple[Dataset, ResolvedScopeEntry]:
+    """Return a :func:`nameless_store_dataset` and its entry, as a scope labels it."""
+    ds = nameless_store_dataset(tmp_path / "ds")
+    (entry,) = ds.resolve_media_scope(None)
+    assert (entry.group, entry.sequence) == ("", "rec")
+    return ds, entry
 
-    The label does not match an index row. The error differs from that of a
-    missing export, which ``export-store`` builds.
+
+@pytest.mark.parametrize("kind", ["trex", "ultralytics"])
+def test_the_store_of_a_nameless_entry_is_handed_as_the_export_it_would_get(
+    tmp_path: Path, kind: str
+) -> None:
+    """The store's row is found by the store's file, whatever the entry's label."""
+    ds, entry = _nameless_store(tmp_path)
+
+    assert handed_codecs(ds, entry, kind=kind) == {"av1"}
+
+
+@pytest.mark.parametrize("kind", ["trex", "ultralytics"])
+def test_the_export_command_of_a_nameless_entry_names_its_indexed_key(
+    tmp_path: Path, kind: str
+) -> None:
+    ds, entry = _nameless_store(tmp_path)
+
+    with pytest.raises(StoreExportMissingError) as refused:
+        refuse_unreadable_entry(ds, entry, kind=kind)
+
+    assert printed_scope_files(ds, str(refused.value)) == entry.resolved.paths
+
+
+def test_the_export_refusal_reads_the_media_index_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store's row gives the export that it links and the entry's indexed key."""
+    ds, entry = _nameless_store(tmp_path)
+    reads = count_index_reads(monkeypatch)
+
+    with pytest.raises(StoreExportMissingError):
+        refuse_unreadable_entry(ds, entry, kind="trex")
+
+    assert reads.media_rows == 1
+
+
+def test_a_tool_reads_the_store_of_a_nameless_entry_through_its_export(
+    tmp_path: Path,
+) -> None:
+    ds, entry = _nameless_store(tmp_path)
+    export = add_transcode_derivative(ds, "", target="analysis")
+    (item,) = build_work_items(ds, [entry], kind="trex").items
+
+    refuse_unreadable_entry(ds, entry, kind="ultralytics")
+    assert resolve_tool_inputs(ds, item, kind="trex") == (export,)
+
+
+def test_a_codec_refusal_names_a_nameless_entry_by_its_indexed_key(
+    tmp_path: Path, write_cfr_mp4: WriteVideo
+) -> None:
+    """Lightning Pose does not decode AV1 in any environment, and the variant is AV1.
+
+    The refusal names the run that makes the variant again in another codec.
     """
     ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, [MediaClip(sequence="", filename="rec.mp4")])
-    _ = point_at_a_store(ds, "", ds.get_root("media_raw") / "rec.store")
-    (entry,) = ds.resolve_media_scope(None)
+    write_media_index(ds, [MediaClip(sequence="", filename="rec.mp4", frame_count=12)])
+    variant = "preprocess.0.1-0123456789"
+    file = media_variant_path(ds, variant, "", "rec", "")
+    _ = add_media_variant(ds, variant, "rec")
+    file.unlink()
+    write_cfr_mp4(file)
+    scope = ds.resolve_media_scope(None)
+    (item,) = build_work_items(ds, scope, kind="litpose", media=variant).items
 
-    with pytest.raises(FileNotFoundError, match="No media file found") as raised:
-        _ = query(ds, entry, kind=kind)
-    assert not isinstance(raised.value, StoreExportMissingError)
+    with pytest.raises(ToolCodecError) as refused:
+        _ = resolve_tool_inputs(ds, item, kind="litpose")
+
+    (entry,) = scope
+    assert printed_scope_files(ds, str(refused.value)) == entry.resolved.paths

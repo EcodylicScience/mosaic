@@ -86,7 +86,7 @@ from mosaic.tracking.common.detection_params import (
     MaxDetections,
 )
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
-from mosaic.tracking.common.scope import refuse_unjoinable
+from mosaic.tracking.common.scope import refuse_unjoinable, run_entries
 from mosaic.tracking.common.tool_input import (
     StoreExportMissingError,
     entry_runner_sources,
@@ -105,7 +105,6 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
-    from mosaic.core.entry import Entry
     from mosaic.core.pipeline._utils import ResolvedScope
 
 
@@ -701,9 +700,8 @@ def _inference_entry(
     """
     in_process = tracking_root(kind).reads == "in-process"
     group, sequence, resolved = entry.group, entry.sequence, entry.resolved
-    media = variants.run_id if variants is not None else ""
-    if variants is not None:
-        variant = variants.resolve(ds, entry)
+    variant = variants.resolve(ds, entry) if variants is not None else None
+    if variant is not None:
         paths, stored = (variant.path,), (variant.facts,)
         consumed_media = variant.consumed_media
         axis = EntryAxis.of_variant(variant.mapping())
@@ -711,6 +709,7 @@ def _inference_entry(
         # Before a join is looked up, so that clips no join can hold are named
         # for what is wrong with them rather than reported as unjoined.
         refuse_unjoinable(
+            ds,
             kind,
             group,
             sequence,
@@ -725,7 +724,7 @@ def _inference_entry(
     targets: tuple[Path, ...]
     facts: tuple[MediaFacts, ...]
     if in_process:
-        joined = join_to_read(ds, entry, asker=kind) if variants is None else None
+        joined = join_to_read(ds, entry, asker=kind) if variant is None else None
         targets = (joined,) if joined is not None else paths
         # The gate, run here rather than inside the reader, as it is for the ops
         # whose runner reads the files. A join is not the file the index
@@ -740,7 +739,7 @@ def _inference_entry(
         # the gate. A required-but-unlinked entry already raised in
         # resolve_media_scope, before any defective original was opened.
         files = entry_runner_sources(
-            ds, group, sequence, paths, stored, kind=kind, variant=media
+            ds, group, sequence, paths, stored, kind=kind, variant=variant
         )
         targets = tuple(file.path for file in files)
         facts = tuple(file.facts for file in files)
@@ -840,7 +839,7 @@ def _run_inference_op(
     work: list[_InferenceEntry] = []
     # Entries whose variant could not be read, by key. Each is recorded as
     # failed here, and counts as attempted and lost below.
-    unresolved: dict[str, Entry] = {}
+    unread: dict[str, ResolvedScopeEntry] = {}
     # Entries whose join or store export cannot be read. They fail the run
     # together, before any model runs.
     unbuilt: list[JoinedExportMissingError | StoreExportMissingError] = []
@@ -866,10 +865,15 @@ def _run_inference_op(
         except (MediaVariantMissingError, MediaVariantDriftedError) as exc:
             key = make_entry_key(entry.group, entry.sequence)
             ctx.entry_failed(key, exc)
-            unresolved[key] = (entry.group, entry.sequence)
+            unread[key] = entry
         except (JoinedExportMissingError, StoreExportMissingError) as exc:
             unbuilt.append(exc)
     _refuse_unbuilt(kind, unbuilt)
+    # A refusal's command names each unread entry by its indexed key.
+    named = run_entries(
+        ds, [((entry.group, entry.sequence), entry) for entry in unread.values()]
+    )
+    unresolved = dict(zip(unread, named, strict=True))
 
     # When every entry is lost before a model runs, the variant that the run
     # names is unreadable for all of them. The run then raises before it probes

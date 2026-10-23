@@ -11,7 +11,6 @@ any entry is decoded.
 from __future__ import annotations
 
 import json
-import shlex
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -77,6 +76,7 @@ from tests.helpers import (
     index_media_sequence,
     make_dataset,
     paint_frame_code,
+    printed_command_words,
     read_frame_code,
     tree_snapshot,
     write_h264_mp4,
@@ -648,9 +648,7 @@ def test_the_printed_rewrite_command_runs_the_recorded_recipe(tmp_path: Path) ->
     (entry,) = ds.resolve_media_scope(None)
     with pytest.raises(MediaVariantMissingError) as missing:
         _ = VariantLookup.read(ds, run_id, [("", "s")]).resolve(ds, entry)
-    (line,) = [text for text in str(missing.value).splitlines() if "mosaic run" in text]
-    manifest = str(ds.manifest_path)
-    argv = [manifest if word == "<manifest>" else word for word in shlex.split(line)]
+    argv = printed_command_words(str(missing.value), manifest=ds.manifest_path)
     assert argv[:2] == ["mosaic", "run"]
 
     result = CliRunner().invoke(app, argv[1:])

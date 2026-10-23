@@ -13,7 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.pipeline.preprocess_index import MediaVariantDriftedError
+from mosaic.core.pipeline.preprocess_index import (
+    MediaVariantDriftedError,
+    MediaVariantMissingError,
+)
 from mosaic.core.pipeline.preprocess_layout import media_variant_recipe_path
 from mosaic.core.pipeline.variant_source import (
     VariantLookup,
@@ -29,6 +32,7 @@ from tests.helpers import (
     add_media_variant,
     count_index_reads,
     make_dataset,
+    printed_scope_files,
     write_media_index,
 )
 
@@ -56,6 +60,24 @@ def test_a_placement_that_no_longer_fits_the_entry_is_drift_naming_a_rewrite(
     message = str(drifted.value)
     assert "rewrites a variant whose placement no longer fits" in message
     assert "overwrite" not in message
+
+
+def test_the_rewrite_command_of_a_nameless_entry_names_its_indexed_key(
+    tmp_path: Path,
+) -> None:
+    """A scope labels the entry ``rec``, by its file's stem.
+
+    A scope does not resolve that label.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, [MediaClip(sequence="", filename="rec.mp4")])
+    (entry,) = ds.resolve_media_scope(None)
+
+    with pytest.raises(MediaVariantMissingError) as missing:
+        _ = VariantLookup.read(ds, _VARIANT, [("", "rec")]).resolve(ds, entry)
+
+    assert (entry.group, entry.sequence) == ("", "rec")
+    assert printed_scope_files(ds, str(missing.value)) == entry.resolved.paths
 
 
 def test_the_rewrite_command_names_the_recorded_recipe(tmp_path: Path) -> None:
@@ -153,3 +175,27 @@ def test_work_items_read_each_index_once_for_their_scope(
     assert [item.sequence for item in built.items] == list(sequences)
     assert built.failures == ()
     assert reads == IndexReads(media_scopes=0, variant_indexes=1, compositions=1)
+
+
+def test_entries_that_the_variant_lacks_are_named_in_one_read_of_the_media_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal of each entry names the entry by its indexed key."""
+    ds = make_dataset(tmp_path / "ds")
+    sequences = ("s", "t", "u")
+    write_media_index(
+        ds,
+        [
+            MediaClip(sequence=sequence, filename=f"{sequence}.mp4")
+            for sequence in sequences
+        ],
+    )
+    scope = ds.resolve_media_scope(None)
+    reads = count_index_reads(monkeypatch)
+
+    built = build_work_items(ds, scope, kind="sleap", media=_VARIANT)
+
+    assert [failure.run_entry for failure in built.failures] == [
+        ("", sequence) for sequence in sequences
+    ]
+    assert reads.media_rows == 1

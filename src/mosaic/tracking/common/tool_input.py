@@ -33,7 +33,7 @@ import os
 import subprocess
 import sys
 import textwrap
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -41,7 +41,10 @@ from typing import TYPE_CHECKING, Final
 from mosaic_media import SOFTWARE_DECODABLE_CODECS, MediaFacts, MediaProbeError
 from mosaic_media.probe.ffprobe import read_header
 
-from mosaic.core.media.facts_columns import derivative_path_for_target, row_mapping
+from mosaic.core.media.facts_columns import (
+    derivative_path_for_target,
+    media_row_entry,
+)
 from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.read_target import verified_read_facts
 from mosaic.core.pipeline.joined_export import (
@@ -71,7 +74,7 @@ from mosaic.core.pipeline.tracking_roots import (
     ToolDecoder,
     tracking_root,
 )
-from mosaic.core.pipeline.variant_source import preprocess_command
+from mosaic.core.pipeline.variant_source import VariantSource, preprocess_command
 from mosaic.tracking.common.scope import refuse_unjoinable
 
 if TYPE_CHECKING:
@@ -306,7 +309,7 @@ def refuse_undecodable_codec(
     kind: str,
     group: str,
     sequence: str,
-    variant: str = "",
+    variant: VariantSource | None = None,
     decode_probe: DecodeProbe | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> None:
@@ -340,14 +343,16 @@ def refuse_undecodable_codec(
     lists only the baseline.
 
     Args:
-        ds: The dataset, read for the recipe of *variant*.
+        ds: The dataset, read for the recipe of *variant* and the indexed key of
+            its entry.
         path: The file that the tool opens.
         kind: The tool's op kind, which selects its declaration.
         group: The entry's group, named in a refusal.
         sequence: The entry's sequence, named in a refusal.
-        variant: The run id of the media variant that *path* is the file of, or
-            empty. A refusal of a variant also names making the variant again in
-            H.264 from the recipe that *ds* recorded for it.
+        variant: The media variant that *path* is the file of, or ``None``. A
+            refusal of a variant also names making the variant again in H.264
+            from the recipe that *ds* recorded for it, over the indexed key of
+            the entry.
         decode_probe: The probe of the tool's environment, created by the run
             from the placement that it resolved. ``None`` for a caller without
             one.
@@ -403,13 +408,7 @@ def refuse_undecodable_codec(
             )
         setting = "To skip the test, set"
     remake = (
-        f"\n    Or make the media variant in a codec that {kind} reads. Run the "
-        f'recipe of {variant} with "codec" set to "h264" in a copy of it, and name '
-        f"the variant that it writes in media. The recipe of {variant} is run "
-        f"with:\n"
-        f"{preprocess_command(ds, variant, [(group, sequence)])}"
-        if variant
-        else ""
+        "" if variant is None else _remake_remedy(ds, kind, group, sequence, variant)
     )
     message = (
         f"[{kind}] ({group}, {sequence}) resolves to {path.name}, which is "
@@ -417,6 +416,24 @@ def refuse_undecodable_codec(
         f"    {setting} {_ALLOW_CODECS_VAR}={codec}."
     )
     raise ToolCodecError(message)
+
+
+def _remake_remedy(
+    ds: "Dataset", kind: str, group: str, sequence: str, variant: VariantSource
+) -> str:
+    """Return how to make *variant* again in a codec that *kind* reads.
+
+    The command names the entry by the indexed key of the entry media that the
+    variant was made from.
+    """
+    entry = ds.indexed_entry(variant.entry_paths[0], (group, sequence))
+    run_id = variant.run_id
+    return (
+        f"\n    Or make the media variant in a codec that {kind} reads. Run the "
+        f'recipe of {run_id} with "codec" set to "h264" in a copy of it, and name '
+        f"the variant that it writes in media. The recipe of {run_id} is run "
+        f"with:\n{preprocess_command(ds, run_id, [entry])}"
+    )
 
 
 def resolve_tool_inputs(
@@ -481,7 +498,7 @@ def resolve_tool_inputs(
         kind=kind,
         group=item.group,
         sequence=item.sequence,
-        variant=item.media,
+        variant=item.variant,
         decode_probe=decode_probe,
         cancel_check=cancel_check,
     )
@@ -532,10 +549,15 @@ def _store_export(
     """Return the export registered for *store*, or raise naming the command.
 
     *why* says why *kind* needs the export, after "is an imgstore recording,".
+    The store's row (:meth:`~mosaic.core.dataset.Dataset.media_rows_of`) gives
+    the export. The command names the entry by the row's key, which a run's scope
+    resolves.
     """
-    export = _registered_export(ds, group, sequence, store)
+    row = ds.media_rows_of([store]).get(store)
+    export = _linked_export(ds, row)
     if export is None:
-        command = mosaic_run_command("export-store", [(group, sequence)])
+        entry = (group, sequence) if row is None else media_row_entry(row)
+        command = mosaic_run_command("export-store", [entry])
         message = (
             f"[{kind}] ({group}, {sequence}) is an imgstore recording, {why}. "
             f"Export it first:\n    {command}"
@@ -596,7 +618,7 @@ def entry_tool_input(
         f"{kind} is handed one video file, and a tool that joins clips itself "
         f"loses frames at every boundary, so mosaic joins them first."
     )
-    return current_join(ds, group, sequence, facts, asker=kind, why=why)
+    return current_join(ds, group, sequence, sources, facts, asker=kind, why=why)
 
 
 @dataclass(frozen=True, slots=True)
@@ -621,7 +643,7 @@ def entry_runner_sources(
     facts: Sequence[MediaFacts],
     *,
     kind: str,
-    variant: str = "",
+    variant: VariantSource | None = None,
 ) -> tuple[ToolFile, ...]:
     """Return the files that mosaic's runner reads for an entry, in order.
 
@@ -651,8 +673,8 @@ def entry_runner_sources(
         facts: The stored facts of *sources*, parallel to them, or empty to
             probe every file.
         kind: The op whose runner reads the files, named in a refusal.
-        variant: The run id of the media variant that *sources* is the file of,
-            or empty. A codec refusal of a variant names how to remake it.
+        variant: The media variant that *sources* is the file of, or ``None``. A
+            codec refusal of a variant names how to remake it.
 
     Raises:
         StoreExportMissingError: If a store's chunks cannot be read directly and
@@ -757,9 +779,6 @@ def handed_codecs(
 
     Raises:
         KeyError: If a tracking root is not registered for *kind*.
-        FileNotFoundError: If the entry is nameless and a store in it is read
-            through its export. The export is looked up by the entry's label,
-            which does not match any index row.
         MediaProbeError: If a store's metadata cannot be read.
         TranscodeError: If ``ffprobe`` cannot read the header of a store's first
             chunk, for a store whose export is still to be written.
@@ -779,7 +798,7 @@ def handed_codecs(
         if spans:
             codecs.add(_stream_codec(spans[0][0]))
             continue
-        export = _registered_export(ds, entry.group, entry.sequence, path)
+        export = _linked_export(ds, ds.media_rows_of([path]).get(path))
         if export is not None and export.is_file():
             codecs.add(_stream_codec(export))
         else:
@@ -812,15 +831,13 @@ def refuse_unreadable_entry(
             none, with the cause.
         StoreExportMissingError: If a store that the tool reads through its export
             has none, or its linked file is gone.
-        FileNotFoundError: If the entry is nameless and a store in it is read
-            through its export. The export is looked up by the entry's label,
-            which does not match any index row.
         MediaProbeError: If a store's metadata cannot be read.
     """
     root = tracking_root(kind)
     group, sequence = entry.group, entry.sequence
     paths, facts = entry.resolved.paths, entry.resolved.facts
     refuse_unjoinable(
+        ds,
         kind,
         group,
         sequence,
@@ -829,7 +846,7 @@ def refuse_unreadable_entry(
         hands_over_path=root.reads != "in-process",
     )
     if root.retention == "tracker":
-        refuse_unidentified_clips(group, sequence, facts, asker=kind)
+        refuse_unidentified_clips(ds, group, sequence, paths, facts, asker=kind)
     if root.reads == "in-process":
         _ = join_to_read(ds, entry, asker=kind)
     elif root.reads == "one-file":
@@ -841,17 +858,13 @@ def refuse_unreadable_entry(
                 _ = _store_export(ds, group, sequence, store, kind=kind, why=why)
 
 
-def _registered_export(
-    ds: "Dataset", group: str, sequence: str, source: Path
-) -> Path | None:
-    """The export linked from *source*'s own store row, or ``None`` if unlinked."""
-    matched = ds.match_media_rows(group, sequence)
-    media_root = ds.get_root("media")
-    for _, row in matched.iterrows():
-        # Through row_mapping rather than indexing the Series: a Series subscript
-        # is untyped, and the path is compared, not merely printed.
-        cells = row_mapping(row)
-        if ds.resolve_path(str(cells["abs_path"])) != source:
-            continue
-        return derivative_path_for_target(cells, EXPORT_TARGET, media_root)
-    return None
+def _linked_export(ds: "Dataset", row: Mapping[str, object] | None) -> Path | None:
+    """Return the export that a store's *row* links, or ``None`` when it links none.
+
+    *row* is found by the store's file
+    (:meth:`~mosaic.core.dataset.Dataset.media_rows_of`), whatever name a caller
+    gives the entry. It is ``None`` when the index does not list the store.
+    """
+    if row is None:
+        return None
+    return derivative_path_for_target(row, EXPORT_TARGET, ds.get_root("media"))

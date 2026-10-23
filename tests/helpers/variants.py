@@ -19,7 +19,7 @@ import pandas as pd
 import pytest
 from mosaic_media import MediaFacts, MediaProbeError
 
-from mosaic.core.dataset import Dataset, ResolvedScopeEntry
+from mosaic.core.dataset import Dataset, MediaRows, ResolvedScopeEntry
 from mosaic.core.entry import Entry
 from mosaic.core.media.facts_columns import store_facts
 from mosaic.core.media.preprocess import Placement
@@ -137,11 +137,16 @@ class IndexReads:
     Attributes:
         media_scopes: Resolutions of a media scope, each a read of the
             originals index.
+        media_rows: Reads of the originals index for the rows of files
+            (``Dataset.read_media_rows``). A lookup of files' rows
+            (``Dataset.media_rows_of``) reads the index when it changed since the
+            dataset's last read.
         variant_indexes: Reads of the media variant index.
         compositions: Reads of the recorded media compositions.
     """
 
     media_scopes: int = 0
+    media_rows: int = 0
     variant_indexes: int = 0
     compositions: int = 0
 
@@ -150,6 +155,7 @@ def count_index_reads(monkeypatch: pytest.MonkeyPatch) -> IndexReads:
     """Count every read of the three indexes from now on, and return the counts."""
     reads = IndexReads()
     resolve_media_scope = Dataset.resolve_media_scope
+    read_media_rows = Dataset.read_media_rows
     read_variants = preprocess_index.read_media_variant_index
     read_compositions = sequence_index.read_entry_compositions
 
@@ -163,6 +169,10 @@ def count_index_reads(monkeypatch: pytest.MonkeyPatch) -> IndexReads:
         reads.media_scopes += 1
         return resolve_media_scope(ds, entries, index_filename, errors=errors)
 
+    def rows(ds: Dataset, index_filename: str = "index.csv") -> MediaRows:
+        reads.media_rows += 1
+        return read_media_rows(ds, index_filename)
+
     def variants(ds: Dataset) -> pd.DataFrame:
         reads.variant_indexes += 1
         return read_variants(ds)
@@ -174,6 +184,7 @@ def count_index_reads(monkeypatch: pytest.MonkeyPatch) -> IndexReads:
         return read_compositions(ds, entries)
 
     monkeypatch.setattr(Dataset, "resolve_media_scope", scope)
+    monkeypatch.setattr(Dataset, "read_media_rows", rows)
     monkeypatch.setattr(preprocess_index, "read_media_variant_index", variants)
     monkeypatch.setattr(sequence_index, "read_entry_compositions", compositions)
     return reads

@@ -393,19 +393,34 @@ class EntryJoinMissingError(JoinedExportMissingError):
         self.cause: MissingJoinCause = cause
 
 
-def _join_command(group: str, sequence: str, facts: Sequence[MediaFacts]) -> str:
+def _join_command(
+    ds: "Dataset",
+    group: str,
+    sequence: str,
+    paths: Sequence[Path],
+    facts: Sequence[MediaFacts],
+) -> str:
     """The indented command that builds the current join of an entry's clips.
 
-    It sets ``reencode`` when :func:`join_needs_reencode` says the clips need it,
-    so the command works as shown.
+    It names the entry by its first clip's indexed key
+    (:meth:`~mosaic.core.dataset.Dataset.indexed_entry`), which a run's scope
+    resolves. It sets ``reencode`` when :func:`join_needs_reencode` says the clips
+    need it. The command then works as shown.
     """
+    entry = ds.indexed_entry(paths[0], (group, sequence))
     params = '{"reencode": true}' if join_needs_reencode(facts) else ""
-    command = mosaic_run_command("export-joined", [(group, sequence)], params=params)
+    command = mosaic_run_command("export-joined", [entry], params=params)
     return f"    {command}"
 
 
 def refuse_unidentified_clips(
-    group: str, sequence: str, facts: Sequence[MediaFacts], *, asker: str
+    ds: "Dataset",
+    group: str,
+    sequence: str,
+    paths: Sequence[Path],
+    facts: Sequence[MediaFacts],
+    *,
+    asker: str,
 ) -> None:
     """Raise when several clips include one that carries no content identity.
 
@@ -415,9 +430,11 @@ def refuse_unidentified_clips(
     as itself and passes.
 
     Args:
-        group: The entry's group, for the refusal and the commands it names.
+        ds: The dataset, whose media index names the entry in the command.
+        group: The entry's group, for the refusal.
         sequence: The entry's sequence, likewise.
-        facts: The clips' facts, in order.
+        paths: The clips, in order.
+        facts: The clips' facts, parallel to *paths*.
         asker: The op asking, which prefixes the refusal.
 
     Raises:
@@ -430,7 +447,7 @@ def refuse_unidentified_clips(
         f"[{asker}] ({group}, {sequence}) has {len(facts)} clips and at least "
         f"one carries no content identity, so the join of them cannot be "
         f"addressed. Run 'mosaic reprobe-media --apply' to mint one for every "
-        f"clip, then:\n{_join_command(group, sequence, facts)}"
+        f"clip, then:\n{_join_command(ds, group, sequence, paths, facts)}"
     )
     raise EntryJoinMissingError(message, cause="unidentified_clips")
 
@@ -439,6 +456,7 @@ def current_join(
     ds: "Dataset",
     group: str,
     sequence: str,
+    paths: Sequence[Path],
     facts: Sequence[MediaFacts],
     *,
     asker: str,
@@ -477,11 +495,13 @@ def current_join(
     says these clips need it, so the first remedy shown is one that works.
 
     Args:
-        ds: The dataset whose ``media`` root holds the joins.
-        group: The entry's group, for the refusal and the command it names.
+        ds: The dataset. Its ``media`` root contains the joins, and its media
+            index names the entry in a refusal's command.
+        group: The entry's group, for the refusal.
         sequence: The entry's sequence, likewise.
-        facts: The clips' facts, in order: the routed ones, as
-            ``ds.resolve_media(group, sequence).facts`` returns them.
+        paths: The clips, in order: the routed ones, as
+            ``ds.resolve_media(group, sequence).paths`` returns them.
+        facts: The clips' facts, parallel to *paths*.
         asker: The op asking, which prefixes every refusal.
         why: Why *asker* needs one file rather than the clips, stated where no
             join exists at all.
@@ -493,10 +513,9 @@ def current_join(
         EntryJoinMissingError: If the clip set cannot be addressed, has two
             current joins, has only superseded ones, or has none.
     """
-    refuse_unidentified_clips(group, sequence, facts, asker=asker)
+    refuse_unidentified_clips(ds, group, sequence, paths, facts, asker=asker)
     source_uid = joined_source_uid(facts)
     n_sources = len(facts)
-    where = _join_command(group, sequence, facts)
     current, superseded = joins_of(ds.get_root("media"), source_uid)
     if len(current) > 1:
         listed = "\n".join(f"      {p.name}" for p in current)
@@ -511,6 +530,7 @@ def current_join(
         raise EntryJoinMissingError(message, cause="several_joins")
     if current:
         return current[0]
+    where = _join_command(ds, group, sequence, paths, facts)
     if superseded:
         listed = "\n".join(f"      {p.name}" for p in superseded)
         message = (
@@ -582,7 +602,13 @@ def join_to_read(
     if not needs_join(paths, facts):
         return None
     return current_join(
-        ds, entry.group, entry.sequence, facts, asker=asker, why=_MIXED_RATE_WHY
+        ds,
+        entry.group,
+        entry.sequence,
+        paths,
+        facts,
+        asker=asker,
+        why=_MIXED_RATE_WHY,
     )
 
 

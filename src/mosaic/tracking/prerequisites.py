@@ -15,6 +15,7 @@ or decode a frame. One entry's failure refuses that entry alone.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final, Literal
@@ -66,7 +67,11 @@ from mosaic.core.pipeline.store_export import (
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS, tracking_root
 from mosaic.core.pipeline.variant_source import VariantLookup
 from mosaic.core.scope import Scope
-from mosaic.tracking.common.scope import JoinedSourceMismatchError, refuse_unjoinable
+from mosaic.tracking.common.scope import (
+    JoinedSourceMismatchError,
+    refuse_unjoinable,
+    run_entries,
+)
 from mosaic.tracking.common.tool_input import (
     StoreExportMissingError,
     codecs_never_read,
@@ -76,8 +81,6 @@ from mosaic.tracking.common.tool_input import (
 from mosaic.tracking.registration import register_ops
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
 
 __all__ = [
@@ -329,7 +332,7 @@ def plan_prerequisites(
 
     resolved = resolve_entry_media(ds, scope)
     draft = _Draft()
-    reads = _camera_reads(ds, kind, resolved, draft, unscoped=scope is None)
+    reads = _camera_reads(ds, kind, resolved, draft)
     if recipe is not None:
         _ = _fit(ds, kind, recipe, reads, draft)
     elif kind == _EXTRACT_FRAMES:
@@ -410,31 +413,42 @@ def _camera_reads(
     kind: str,
     resolved: Mapping[Entry, ResolvedEntryMedia],
     draft: _Draft,
-    *,
-    unscoped: bool,
 ) -> list[_CameraRead]:
     """Return each camera that *kind* reads, and refuse each entry left without one.
+
+    A read's run entry is the entry that a run's scope names for its camera
+    (:func:`~mosaic.tracking.common.scope.run_entries`). An unscoped plan labels
+    each camera of a nameless entry by its first file's stem, and a run's scope
+    names the entry's indexed key, which covers every camera resolved under it.
 
     Args:
         ds: The dataset.
         kind: The op that reads the cameras.
         resolved: Each entry's cameras, or why it has none.
         draft: The plan that each refusal is added to.
-        unscoped: Whether *resolved* names every indexed entry by its label.
     """
-    nameless_keys = _nameless_keys(ds) if unscoped else {}
+    cameras = [
+        (entry, camera)
+        for entry, media in resolved.items()
+        if isinstance(media, list)
+        for camera in media
+    ]
+    run_entry_of = {
+        camera.resolved.paths[0]: run_entry
+        for (_, camera), run_entry in zip(
+            cameras, run_entries(ds, cameras), strict=True
+        )
+    }
+    camera_counts = Counter(run_entry_of.values())
     reads: list[_CameraRead] = []
     for entry, read in _cameras_read(kind, resolved).items():
         if not isinstance(read, list):
             draft.refusals.append(_unresolved(entry, read))
             continue
-        cameras = resolved[entry]
-        indexed = (entry, len(cameras) if isinstance(cameras, list) else 0)
         for camera in read:
-            run_entry, camera_count = nameless_keys.get(
-                tuple(camera.resolved.paths), indexed
-            )
-            reads.append(_CameraRead(entry, camera, run_entry, camera_count > 1))
+            run_entry = run_entry_of[camera.resolved.paths[0]]
+            several = camera_counts[run_entry] > 1
+            reads.append(_CameraRead(entry, camera, run_entry, several))
     return reads
 
 
@@ -471,21 +485,6 @@ def indexed_entries(
     as_given = {entry for entry in given if entry not in labeled or entry in ungrouped}
     unnamed = given - covered - as_given
     return tuple(sorted(keys | as_given)), tuple(sorted(unnamed))
-
-
-def _nameless_keys(ds: Dataset) -> dict[tuple[Path, ...], tuple[Entry, int]]:
-    """Return each nameless entry's key and camera count, keyed by its cameras' clips.
-
-    An unscoped plan names an entry by its label, and labels each camera of a
-    nameless entry by its first file's stem. A run's scope names the entry by
-    its indexed key instead, and resolves every camera under that key. The
-    clips identify the camera even where its label equals another entry's key.
-    """
-    return {
-        tuple(camera.resolved.paths): (entry, len(media))
-        for entry, media in _nameless_cameras(ds)[1].items()
-        for camera in media
-    }
 
 
 def _nameless_cameras(
@@ -531,7 +530,7 @@ def _cameras_read(
     }
 
 
-def _run_entries(reads: Iterable[_CameraRead]) -> list[Entry]:
+def _scoped_entries(reads: Iterable[_CameraRead]) -> list[Entry]:
     """Return the entries that a run over *reads* is scoped by, sorted."""
     return sorted({read.run_entry for read in reads})
 
@@ -568,6 +567,7 @@ def _answer(
     try:
         if kind == _EXTRACT_FRAMES:
             refuse_unjoinable(
+                ds,
                 kind,
                 camera.group,
                 camera.sequence,
@@ -588,9 +588,7 @@ def _answer(
                 return _refusal(entry, camera, cause, str(refusal))
     except StoreExportMissingError:
         return _store_export_run(ds, kind, read)
-    # A nameless entry's store raises a bare FileNotFoundError. Its export is
-    # looked up by the entry's label, which does not match any index row.
-    except (FileNotFoundError, MediaProbeError) as refusal:
+    except MediaProbeError as refusal:
         return _refusal(entry, camera, "unresolved_media", str(refusal))
     return None
 
@@ -699,7 +697,7 @@ def _codec_variant(
     for read in reads:
         try:
             codecs = handed_codecs(ds, read.camera, kind=kind)
-        except (FileNotFoundError, MediaProbeError, TranscodeError) as error:
+        except (MediaProbeError, TranscodeError) as error:
             refusal = _refusal(read.entry, read.camera, "unresolved_media", str(error))
             draft.refusals.append(refusal)
             continue
@@ -711,7 +709,7 @@ def _codec_variant(
         return "", readable
     recipe = _codec_recipe()
     failures = preprocess_entry_failures(
-        ds, recipe, _run_entries(read for read, _ in unread)
+        ds, recipe, _scoped_entries(read for read, _ in unread)
     )
     if any(read.run_entry not in failures for read, _ in unread):
         return preprocess_identity(recipe).run_id, [
@@ -836,7 +834,7 @@ def _variant_run(
     if not covered:
         return [], ()
     run = PrerequisiteRun(
-        "preprocess", recipe, tuple(_run_entries(covered)), variant, after
+        "preprocess", recipe, tuple(_scoped_entries(covered)), variant, after
     )
     draft.runs.append(run)
     return covered, (len(draft.runs) - 1,)
@@ -860,7 +858,7 @@ def _fit(
         The reads that a run of *recipe* covers, and the position of the
         upstream's run in the plan's runs, empty when none is planned.
     """
-    failures = preprocess_entry_failures(ds, recipe, _run_entries(reads))
+    failures = preprocess_entry_failures(ds, recipe, _scoped_entries(reads))
     covered: list[_CameraRead] = []
     upstream: list[_CameraRead] = []
     for read in reads:

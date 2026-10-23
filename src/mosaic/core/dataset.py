@@ -48,7 +48,9 @@ from .media.facts_columns import (
     MEDIA_INDEX_COLUMNS as MEDIA_INDEX_COLUMNS,  # re-exported for API/tests
     AnalysisDerivativeMissingError,
     ProbeMetadata,
+    derivative_column_for_target,
     derivative_path_for_target,
+    media_row_entry,
     media_row_uuid,
     read_link_cell,
     row_facts_or_none,
@@ -124,6 +126,7 @@ from .pipeline._utils import (
     now_iso as _now_iso,
 )
 from .pipeline.scan_claim import ScanClaim
+from .pipeline.index_stamp import IndexStamp
 from .pipeline.media_index import (
     MEDIA_NUMERIC_COLUMNS,
     MediaIndexScope,
@@ -795,6 +798,36 @@ class LabelConversionOutcome:
     skipped: int
 
 
+@dataclass(frozen=True, slots=True)
+class MediaRows:
+    """An originals media index, with the position of each listed file's row.
+
+    Attributes:
+        frame: The index as :meth:`Dataset.read_media_rows` read it.
+        positions: The position in :attr:`frame` of each listed file's row, by
+            the file's resolved path.
+    """
+
+    frame: pd.DataFrame
+    positions: Mapping[Path, int]
+
+    def rows_of(self, paths: Iterable[Path]) -> dict[Path, dict[str, object]]:
+        """Return the row of each of *paths* that the index lists.
+
+        Each row is a new ``{column: cell}`` mapping. A path that the index does
+        not list is left out.
+        """
+        return {
+            path: row_mapping(self.frame.iloc[self.positions[path]])
+            for path in set(paths)
+            if path in self.positions
+        }
+
+
+type _MediaRowsKey = tuple[IndexStamp, Path, tuple[tuple[Path, Path], ...]]
+"""The originals index, the media root and the path map that rows were read under."""
+
+
 class LibraryMismatchError(ValueError):
     """A library link resolves to a dataset other than the one it was made to.
 
@@ -879,6 +912,7 @@ class Dataset:
         self._linked: (
             tuple[tuple[LibraryLink, ...], tuple[LinkedLibrary, ...]] | None
         ) = None
+        self._media_rows: dict[str, tuple[_MediaRowsKey, MediaRows]] = {}
 
     def __repr__(self) -> str:
         return f"Dataset(manifest_path={self.manifest_path!r}, name={self.name!r})"
@@ -5040,6 +5074,101 @@ class Dataset:
                 f"No media file found matching sequence '{sequence}'."
             )
         return matched
+
+    def media_rows_of(
+        self, paths: Iterable[Path], index_filename: str = "index.csv"
+    ) -> dict[Path, dict[str, object]]:
+        """Return the originals-index row of each of *paths* that the index lists.
+
+        The rows are :meth:`read_media_rows`'s. The dataset keeps its last read
+        of each index, and reads the index again when the index's
+        :class:`~mosaic.core.pipeline.index_stamp.IndexStamp`, the media root or
+        the path map changed. Looking up the entries one at a time therefore
+        reads the index once.
+
+        Args:
+            paths: The files to look up.
+            index_filename: The originals index to read.
+
+        Returns:
+            The row of each listed path, as a ``{column: cell}`` mapping. A path
+            that the index does not list is left out, and so is every path when
+            the index does not exist.
+        """
+        wanted = set(paths)
+        if not wanted:
+            return {}
+        index = self.get_root(self.resolve_media_root()) / index_filename
+        # The stamp precedes the read. A write during the read then leaves the
+        # stamp stale, and the next lookup reads the index again.
+        stamp = IndexStamp.of(index)
+        if not stamp.exists:
+            return {}
+        key = (stamp, self.get_root("media"), tuple(self._path_map))
+        last = self._media_rows.get(index_filename)
+        if last is not None and last[0] == key:
+            return last[1].rows_of(wanted)
+        try:
+            rows = self.read_media_rows(index_filename)
+        except FileNotFoundError:
+            return {}
+        self._media_rows[index_filename] = (key, rows)
+        return rows.rows_of(wanted)
+
+    def read_media_rows(self, index_filename: str = "index.csv") -> MediaRows:
+        """Read the originals index, and find the row of each file that it lists.
+
+        A row lists its file and its analysis derivative. A read opens the
+        derivative of a row that requires an analysis transcode. A path is
+        therefore found as :meth:`resolve_media_scope` returns it, however the
+        caller names its entry. Several rows can list one file. The first row
+        that records it as ``abs_path`` answers for it, and otherwise the first
+        row linking it. Resolving each ``abs_path`` cell (:meth:`resolve_path`)
+        costs a stat or a path resolution.
+
+        Args:
+            index_filename: The originals index to read.
+
+        Raises:
+            FileNotFoundError: If the index does not exist.
+        """
+        df = self._load_media_index(index_filename)
+        media_root = self.get_root("media")
+        column = derivative_column_for_target("analysis")
+        own: dict[Path, int] = {}
+        derived: dict[Path, int] = {}
+        for position, (stored, link) in enumerate(
+            zip(df["abs_path"], df[column], strict=True)
+        ):
+            _ = own.setdefault(self.resolve_path(str(stored)), position)
+            derivative = derivative_path_for_target(
+                {column: link}, "analysis", media_root
+            )
+            if derivative is not None:
+                _ = derived.setdefault(derivative, position)
+        return MediaRows(frame=df, positions={**derived, **own})
+
+    def indexed_entries_of(self, paths: Iterable[Path]) -> dict[Path, Entry]:
+        """Return the indexed ``(group, sequence)`` of each of *paths* that a row lists.
+
+        The pair is the entry's key in the media index, which a run's scope names.
+        A media scope labels a nameless entry
+        (:func:`~mosaic.core.helpers.is_nameless_entry`) by its first file's stem
+        instead, and a scope does not resolve that label. Each path is looked up by
+        :meth:`media_rows_of`, and a path that the index does not list is left out.
+        """
+        return {
+            path: media_row_entry(row)
+            for path, row in self.media_rows_of(paths).items()
+        }
+
+    def indexed_entry(self, path: Path, named: Entry) -> Entry:
+        """Return the indexed key of *path*'s entry, or *named* when unlisted.
+
+        The key is :meth:`indexed_entries_of`'s. *named* is the entry as the caller
+        names it.
+        """
+        return self.indexed_entries_of([path]).get(path, named)
 
     def _derivative_facts(
         self,

@@ -16,40 +16,14 @@ by-product of reading rather than by a second walk over the same files.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
+from mosaic.core.pipeline.index_stamp import IndexStamp
 
-__all__ = ["IndexReader", "IndexStamp"]
 
-
-@dataclass(frozen=True, slots=True)
-class IndexStamp:
-    """What an index file looked like when it was read.
-
-    ``(mtime_ns, size)`` rather than a digest: an index only ever grows by
-    appends, so size alone catches almost every change and neither costs a read.
-    A stamp for a file that was absent is still a stamp -- its appearing is a
-    change, and recording nothing would make that invisible.
-    """
-
-    path: Path
-    exists: bool
-    mtime_ns: int = 0
-    size: int = 0
-
-    @classmethod
-    def of(cls, path: Path) -> IndexStamp:
-        """Stat *path* now. An absent file stamps as absent rather than raising."""
-        try:
-            status = path.stat()
-        except OSError:
-            return cls(path=path, exists=False)
-        return cls(
-            path=path, exists=True, mtime_ns=status.st_mtime_ns, size=status.st_size
-        )
+__all__ = ["IndexReader"]
 
 
 class IndexReader:

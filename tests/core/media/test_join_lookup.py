@@ -29,7 +29,13 @@ from mosaic.core.pipeline.joined_export import (
     missing_joins,
     needs_join,
 )
-from tests.helpers import clip_facts, make_dataset
+from tests.helpers import (
+    MediaClip,
+    clip_facts,
+    make_dataset,
+    printed_scope_files,
+    write_media_index,
+)
 
 # Long enough that 30 beside 31 fps drifts past the half-frame allowance
 # `rate_uniform` grants; ten frames each would read as uniform.
@@ -216,5 +222,44 @@ def test_a_missing_join_names_its_cause(
 
 def test_a_clip_set_without_identity_cannot_be_addressed(ds: Dataset) -> None:
     clips = (_clip(30.0, ""), _clip(31.0, "u-b"))
+    paths = [Path(f"clip{order}.mp4") for order in range(len(clips))]
     with pytest.raises(JoinedExportMissingError, match="content identity"):
-        _ = current_join(ds, "", "sess", clips, asker="extract-frames", why="unused.")
+        _ = current_join(
+            ds, "", "sess", paths, clips, asker="extract-frames", why="unused."
+        )
+
+
+@pytest.mark.parametrize(
+    ("uids", "superseded"),
+    [(("u-a", "u-b"), False), (("u-a", "u-b"), True), (("", "u-b"), False)],
+    ids=["none", "superseded", "unidentified"],
+)
+def test_the_join_command_of_a_nameless_entry_names_its_indexed_key(
+    ds: Dataset, uids: tuple[str, str], superseded: bool
+) -> None:
+    """A scope labels the camera ``rec-c0``, by its first file's stem.
+
+    A scope does not resolve that label.
+    """
+    write_media_index(
+        ds,
+        [
+            MediaClip(
+                sequence="",
+                filename=f"rec-c{order}.mp4",
+                video_order=order,
+                video_uuid=uid,
+                fps=fps,
+            )
+            for order, (uid, fps) in enumerate(zip(uids, (30.0, 31.0), strict=True))
+        ],
+    )
+    (entry,) = ds.resolve_media_scope(None)
+    if superseded:
+        _ = _place_join(ds, tuple(entry.resolved.facts), "0123456789")
+
+    with pytest.raises(EntryJoinMissingError) as refused:
+        _ = join_to_read(ds, entry, asker="extract-frames")
+
+    assert (entry.group, entry.sequence) == ("", "rec-c0")
+    assert printed_scope_files(ds, str(refused.value)) == entry.resolved.paths

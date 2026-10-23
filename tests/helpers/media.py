@@ -8,6 +8,7 @@ produces -- so a test built on one measures a shape that cannot occur.
 from __future__ import annotations
 
 import dataclasses
+import shlex
 import subprocess
 import hashlib
 from collections.abc import Callable, Mapping, Sequence
@@ -25,6 +26,7 @@ from mosaic_media import CHROME_149, DEFAULT_THRESHOLDS, MediaFacts, derive
 from mosaic_media.transcode import Target
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import parse_entry_tokens
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline.composition import MediaMember, media_composition
 from mosaic.core.pipeline.joined_export import (
@@ -32,6 +34,7 @@ from mosaic.core.pipeline.joined_export import (
     joined_export_path,
     joined_recipe_hash,
 )
+from mosaic.core.scope import Scope
 from tests.helpers.datasets import make_dataset
 from tests.helpers.environment import require_ffmpeg
 
@@ -771,6 +774,54 @@ def point_at_a_store(
     table.loc[is_entry, "media_type"] = "imgstore"
     table.to_csv(index_path, index=False)
     return store
+
+
+def nameless_store_dataset(base: Path) -> Dataset:
+    """Return a saved dataset at *base* whose one entry is nameless and a store.
+
+    The entry's group and sequence are empty. Its store, ``rec.store``, is an
+    image-directory store without an export (:func:`point_at_a_store`). A scope
+    labels the entry ``rec``, by its file's stem, and does not resolve that label.
+    The store's row records 12 frames, the frame count of a file that
+    :func:`~tests.helpers.variants.add_media_variant` writes.
+    """
+    dataset = make_dataset(base)
+    write_media_index(
+        dataset,
+        [
+            MediaClip(
+                sequence="", filename="rec.mp4", video_uuid="uid-rec", frame_count=12
+            )
+        ],
+    )
+    _ = point_at_a_store(dataset, "", dataset.get_root("media_raw") / "rec.store")
+    return dataset
+
+
+def printed_command_words(message: str, *, manifest: Path | None = None) -> list[str]:
+    """Return the words of the one ``mosaic run`` line of *message*, split by a shell.
+
+    With *manifest*, the ``<manifest>`` placeholder word is replaced by its path.
+    """
+    (line,) = [line for line in message.splitlines() if "mosaic run" in line]
+    words = shlex.split(line)
+    if manifest is None:
+        return words
+    return [str(manifest) if word == "<manifest>" else word for word in words]
+
+
+def printed_scope_files(dataset: Dataset, message: str) -> list[Path]:
+    """Return the files of the entries that the ``mosaic run`` line of *message* names.
+
+    The line's ``--entries`` tokens are parsed as ``mosaic run`` parses them, and
+    resolved by :meth:`Dataset.resolve_scope` and then to their media. The list is
+    empty when the tokens do not name an indexed entry.
+    """
+    words = printed_command_words(message)
+    tokens = [words[at + 1] for at, word in enumerate(words) if word == "--entries"]
+    scope = dataset.resolve_scope(Scope(entries=parse_entry_tokens(tokens)))
+    media = dataset.resolve_media_scope(sorted(scope.entries))
+    return [path for camera in media for path in camera.resolved.paths]
 
 
 def add_transcode_derivative(

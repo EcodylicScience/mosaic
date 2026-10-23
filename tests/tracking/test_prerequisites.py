@@ -40,10 +40,13 @@ from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 from tests.helpers import (
     MediaClip,
     add_media_variant,
+    add_transcode_derivative,
     assert_tree_unchanged,
+    count_index_reads,
     entry_clips,
     export_entry_store,
     make_dataset,
+    nameless_store_dataset,
     point_at_a_store,
     record_variant_recipe,
     store_dataset,
@@ -465,23 +468,50 @@ def test_a_dataset_without_media_raw_cannot_hold_a_store_export(
     assert (plan.runs, plan.entries) == ((), ())
 
 
-@pytest.mark.parametrize("kind", ["trex", "ultralytics", "litpose"])
-def test_the_store_of_a_nameless_entry_is_refused_as_unresolved(
-    tmp_path: Path, kind: str
+@pytest.mark.parametrize("kind", ["trex", "ultralytics"])
+@pytest.mark.parametrize(
+    ("entries", "label"),
+    [(None, ("", "rec")), ([("", "")], ("", ""))],
+    ids=["unscoped", "scoped"],
+)
+def test_the_store_of_a_nameless_entry_is_exported_under_its_indexed_key(
+    tmp_path: Path, kind: str, entries: list[Entry] | None, label: Entry
 ) -> None:
-    """Its export is looked up by the entry's label.
+    """An unscoped plan labels the entry by its file's stem, which a scope cannot name.
 
-    The label does not match an index row.
+    The tool finds the export by the store's file.
     """
-    ds = make_dataset(tmp_path / "ds")
-    write_media_index(ds, [MediaClip(sequence="", filename="rec.mp4")])
-    _ = point_at_a_store(ds, "", ds.get_root("media_raw") / "rec.store")
+    ds = nameless_store_dataset(tmp_path / "ds")
 
-    plan = plan_prerequisites(ds, kind)
+    plan = plan_prerequisites(ds, kind, entries=entries)
 
-    assert _refused(plan) == [("", "rec", "", "unresolved_media")]
-    assert "No media file found" in _reason(plan)
-    assert (plan.runs, plan.entries) == ((), ())
+    assert plan.runs == (_store_run(("", "")),)
+    assert (plan.refusals, plan.entries) == ((), (label,))
+    _ = add_transcode_derivative(ds, "", target="analysis")
+    assert plan_prerequisites(ds, kind, entries=entries).runs == ()
+
+
+@pytest.mark.parametrize(
+    ("entries", "label"),
+    [(None, ("", "rec")), ([("", "")], ("", ""))],
+    ids=["unscoped", "scoped"],
+)
+def test_the_store_of_a_nameless_entry_is_read_through_its_variant_by_lightning_pose(
+    tmp_path: Path, entries: list[Entry] | None, label: Entry
+) -> None:
+    """An export of the store is AV1, which Lightning Pose does not read.
+
+    The plan looks the store's row up by its file.
+    """
+    ds = nameless_store_dataset(tmp_path / "ds")
+
+    plan = plan_prerequisites(ds, "litpose", entries=entries)
+
+    assert plan.media == _CODEC_VARIANT
+    assert plan.runs == (_preprocess_run((("", ""),)),)
+    assert (plan.refusals, plan.entries) == ((), (label,))
+    _ = add_media_variant(ds, _CODEC_VARIANT, "rec")
+    assert plan_prerequisites(ds, "litpose", entries=entries).runs == ()
 
 
 # --- extract-frames -----------------------------------------------------------
@@ -1059,6 +1089,47 @@ def test_the_plan_is_the_same_for_entries_in_any_order(tmp_path: Path) -> None:
         ("", "b", "", "unjoinable"),
         ("", "e", "", "no_media"),
     ]
+
+
+_SEQUENCES = ("a", "b", "c")
+
+
+def test_entries_without_a_join_are_named_in_one_read_of_the_media_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal of each entry's read names the entry by its indexed key."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds, [clip for sequence in _SEQUENCES for clip in entry_clips(sequence)]
+    )
+    reads = count_index_reads(monkeypatch)
+
+    plan = plan_prerequisites(ds, "trex")
+
+    assert plan.runs == tuple(_join_run(("", sequence)) for sequence in _SEQUENCES)
+    assert reads.media_rows == 1
+
+
+def test_entries_without_the_variant_are_named_in_one_read_of_the_media_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal of each entry's read names the entry by its indexed key."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(sequence=sequence, filename=f"{sequence}.mp4")
+            for sequence in _SEQUENCES
+        ],
+    )
+    variant = record_variant_recipe(ds, _GRAYSCALE)
+    reads = count_index_reads(monkeypatch)
+
+    plan = plan_prerequisites(ds, "sleap", {"media": variant})
+
+    entries = tuple(("", sequence) for sequence in _SEQUENCES)
+    assert plan.runs == (_preprocess_run(entries, _GRAYSCALE),)
+    assert reads.media_rows == 1
 
 
 # --- the entries that a run's scope names ---------------------------------------

@@ -651,3 +651,176 @@ def test_a_nameless_entry_is_listed_under_the_name_its_scope_reports(
 
     assert [(entry.group, entry.sequence) for entry in scope] == [("", "first")]
     assert ds.media_entries() == {("", "first")}
+
+
+# --- the row of a file --------------------------------------------------------
+
+
+def test_a_file_is_found_under_its_indexed_key_whatever_its_label(
+    tmp_path: Path,
+) -> None:
+    """A scope labels each camera of a nameless entry by its first file's stem.
+
+    The label of camera ``c1`` is also the key of entry ``("", "b")``.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(sequence="", filename="a.mp4", camera="c0"),
+            MediaClip(sequence="", filename="b.mp4", camera="c1"),
+            MediaClip(sequence="b", filename="other.mp4"),
+        ],
+    )
+    files = [
+        path
+        for camera in ds.resolve_media_scope(None)
+        for path in camera.resolved.paths
+    ]
+
+    found = ds.indexed_entries_of([*files, tmp_path / "unlisted.mp4"])
+
+    assert {path.name: entry for path, entry in found.items()} == {
+        "a.mp4": ("", ""),
+        "b.mp4": ("", ""),
+        "other.mp4": ("", "b"),
+    }
+
+
+def test_a_routed_file_is_found_as_the_row_that_it_is_derived_from(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    original = tmp_path / "media_raw" / "needs.mp4"
+    write_mpeg4_mp4(original, frames=6)
+    derivative = tmp_path / "media" / "needs.analysis.mp4"
+    write_mpeg4_mp4(derivative, frames=6)
+    _write_index(
+        tmp_path / "media_raw" / "index.csv",
+        [
+            _row(
+                group="g1",
+                sequence="needs",
+                abs_path=original,
+                analysis_transcode="required",
+                analysis_derivative_path=derivative.name,
+            )
+        ],
+    )
+    _write_index(
+        tmp_path / "media" / "index.csv",
+        [_row(group="g1", sequence="needs", abs_path=derivative)],
+    )
+    (camera,) = ds.resolve_media_scope(None)
+    (routed,) = camera.resolved.paths
+
+    rows = ds.media_rows_of([routed])
+
+    assert routed.name == derivative.name
+    assert [str(row["abs_path"]) for row in rows.values()] == [str(original)]
+    assert ds.indexed_entries_of([routed]) == {routed: ("g1", "needs")}
+
+
+def test_no_file_is_found_without_a_media_index(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+
+    assert ds.media_rows_of([tmp_path / "clip.mp4"]) == {}
+
+
+def test_a_lookup_resolves_no_cell_of_an_index_read_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolving a cell costs a stat or a path resolution."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds, [MediaClip(sequence=name, filename=f"{name}.mp4") for name in "abc"]
+    )
+    first, second, _ = (
+        camera.resolved.paths[0] for camera in ds.resolve_media_scope(None)
+    )
+    resolved: list[str] = []
+    resolve_path = Dataset.resolve_path
+
+    def record(
+        dataset: Dataset, stored: str | Path, anchor: Path | None = None
+    ) -> Path:
+        resolved.append(Path(stored).name)
+        return resolve_path(dataset, stored, anchor)
+
+    monkeypatch.setattr(Dataset, "resolve_path", record)
+    assert ds.indexed_entries_of([first]) == {first: ("", "a")}
+    resolved.clear()
+
+    assert ds.indexed_entries_of([second]) == {second: ("", "b")}
+    assert resolved == []
+
+
+def test_a_lookup_reads_the_rows_of_a_rewritten_index(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, [MediaClip(sequence="s", filename="s.mp4")])
+    (camera,) = ds.resolve_media_scope(None)
+    (path,) = camera.resolved.paths
+    assert ds.indexed_entries_of([path]) == {path: ("", "s")}
+
+    write_media_index(ds, [MediaClip(group="g", sequence="s", filename="s.mp4")])
+
+    assert ds.indexed_entries_of([path]) == {path: ("g", "s")}
+
+
+def test_a_lookup_resolves_the_cells_again_under_a_new_path_map(
+    tmp_path: Path,
+) -> None:
+    """The cell names the file under a prefix that does not exist on this machine."""
+    ds = make_dataset(tmp_path / "ds", roots=_ROOTS)
+    clip = ds.get_root("media_raw") / "moved.mp4"
+    write_mpeg4_mp4(clip, frames=6)
+    elsewhere = tmp_path / "elsewhere"
+    row = _row(group="g", sequence="moved", abs_path=clip)
+    row["abs_path"] = str(elsewhere / clip.name)
+    _write_index(ds.get_root("media_raw") / "index.csv", [row])
+    assert ds.indexed_entries_of([clip]) == {}
+
+    ds.remap_roots({str(elsewhere): str(ds.get_root("media_raw"))})
+
+    assert ds.indexed_entries_of([clip]) == {clip: ("g", "moved")}
+
+
+def test_a_lookup_finds_a_derivative_under_a_new_media_root(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds", roots=_ROOTS)
+    original = ds.get_root("media_raw") / "needs.mp4"
+    write_mpeg4_mp4(original, frames=6)
+    _write_index(
+        ds.get_root("media_raw") / "index.csv",
+        [
+            _row(
+                group="g1",
+                sequence="needs",
+                abs_path=original,
+                analysis_transcode="required",
+                analysis_derivative_path="needs.analysis.mp4",
+            )
+        ],
+    )
+    derivative = ds.get_root("media") / "needs.analysis.mp4"
+    assert ds.indexed_entries_of([derivative]) == {derivative: ("g1", "needs")}
+
+    ds.set_root("media", "derived")
+    moved = ds.get_root("media") / "needs.analysis.mp4"
+
+    assert ds.indexed_entries_of([moved]) == {moved: ("g1", "needs")}
+
+
+def test_a_path_cell_is_read_without_its_surrounding_whitespace(
+    tmp_path: Path,
+) -> None:
+    """The cell names the file that the scope resolves the entry to."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, [MediaClip(sequence="", filename="rec.mp4")])
+    index = ds.get_root(ds.resolve_media_root()) / "index.csv"
+    table = pd.read_csv(index, dtype=str, keep_default_na=False)
+    table["abs_path"] = [f"{cell} " for cell in table["abs_path"]]
+    table.to_csv(index, index=False)
+    (camera,) = ds.resolve_media_scope(None)
+    (path,) = camera.resolved.paths
+
+    assert ds.indexed_entries_of([path]) == {path: ("", "")}

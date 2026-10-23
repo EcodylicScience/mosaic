@@ -86,6 +86,26 @@ failure refuses that entry alone. No run id moves.
   The first three quote an entry with `shlex.quote`, only where a shell needs it:
   `--entries ":sess"` is now `--entries :sess`, and `--entries "day 1:t"` is now
   `--entries 'day 1:t'`. Their params and the fourth command read as before.
+- A run finds the export of a nameless entry's store. It looked the store's index row up
+  by the entry's label, the stem of its first file. The index records the entry under an
+  empty key, and the lookup raised `FileNotFoundError`. The run now finds the row by the
+  store's file (`Dataset.media_rows_of`). A dataset reads the index for such lookups
+  again only when the index, the media root or the path map changes. A plan refused
+  such an entry with `unresolved_media`. It now plans an `export-store` run scoped by
+  `("", "")` until the export is built. For `litpose`, which does not read the export's
+  AV1, it plans the `preprocess` run of the H.264 variant, scoped the same way.
+- A refusal's command names a nameless entry by its indexed key, `--entries :`, which
+  `mosaic run` resolves. It named the entry's label, which `mosaic run` does not
+  resolve. The refusals are those of a missing join, a missing store export, unjoinable
+  stores, a missing or out-of-date variant file, and a variant in a codec that the tool
+  does not decode.
+- `refuse_unjoinable` takes the dataset first. `refuse_unidentified_clips` takes the
+  dataset first and the clips' paths before their facts, and `current_join` takes the
+  paths before the facts. The `variant` of `refuse_undecodable_codec` and
+  `entry_runner_sources` is the variant's `VariantSource`. It was the variant's run id.
+  `UnresolvedEntry` gains `run_entry`, the entry's indexed key.
+  `unreadable_variant_refusal` reads the entries of `unresolved` as indexed keys, and
+  lists the keys in `lost`.
 - `preprocess` fails the later of two entries that share an entry key, in the order of
   the media index, with a message naming the entry that it writes. Like a tracker, it
   checks every camera of the scoped entries for a shared key. A camera of a nameless
@@ -97,10 +117,15 @@ failure refuses that entry alone. No run id moves.
   entry without indexed media now fails with `the media index does not list it`.
 - New API: `plan_prerequisites`, `PrerequisitePlan`, `PrerequisiteRun`, `EntryRefusal`,
   `PrerequisiteKind`, `RefusalCause` and `indexed_entries` in `mosaic.tracking`, from
-  the module `mosaic.tracking.prerequisites`; `Dataset.routes_derivatives`;
-  `resolve_entry_media`, `consumed_cameras`, `first_cameras`, `ResolvedEntryMedia` and
-  `ConsumedMedia` in `mosaic.core.pipeline.consumed_camera`; `preprocess_entry_failures`
-  in `mosaic.core.pipeline.preprocess`; `joined_run_id`, `join_codec` and
+  the module `mosaic.tracking.prerequisites`; `Dataset.routes_derivatives`,
+  `Dataset.media_rows_of`, `Dataset.read_media_rows`, `Dataset.indexed_entries_of`,
+  `Dataset.indexed_entry` and `MediaRows` in `mosaic.core.dataset`; the module
+  `mosaic.core.pipeline.index_stamp`, with `IndexStamp`, which moves there from the
+  inventory; `media_row_entry` in `mosaic.core.media.facts_columns`; `run_entries` in
+  `mosaic.tracking.common.scope`; `resolve_entry_media`, `consumed_cameras`,
+  `first_cameras`, `ResolvedEntryMedia` and `ConsumedMedia` in
+  `mosaic.core.pipeline.consumed_camera`; `preprocess_entry_failures` in
+  `mosaic.core.pipeline.preprocess`; `joined_run_id`, `join_codec` and
   `join_frame_total` in `mosaic.core.pipeline.joined_export`; `entry_stores`,
   `unnamed_stores` and `export_codec` in `mosaic.core.pipeline.store_export`; the module
   `mosaic.core.pipeline.run_commands`, with `mosaic_run_command`; `codecs_never_read`,

@@ -20,6 +20,8 @@ from mosaic_media.transcode import Target
 if TYPE_CHECKING:
     import pandas as pd
 
+    from mosaic.core.entry import Entry
+
 FLAT_FACTS_COLUMNS: list[str] = [
     "frame_count",
     "analysis_transcode",
@@ -186,6 +188,15 @@ def media_row_uuid(row: Mapping[str, object]) -> str:
     only rows without one are imgstores, which never hold a derivative link.
     """
     return read_link_cell(row, "video_uuid")
+
+
+def media_row_entry(row: Mapping[str, object]) -> Entry:
+    """Return a row's ``(group, sequence)``, its entry's key in the media index.
+
+    A run's scope names an entry by this key. A media scope labels a nameless
+    entry by its first file's stem instead.
+    """
+    return (str(row["group"]), str(row["sequence"]))
 
 
 def media_row_path_key(row: Mapping[str, object]) -> tuple[str, str]:

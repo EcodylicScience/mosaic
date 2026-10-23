@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from mosaic_media import MediaFacts
 
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
+    from mosaic.core.entry import Entry
 
 __all__ = [
     "JoinedSourceMismatchError",
@@ -78,6 +79,7 @@ __all__ = [
     "WorkItems",
     "build_work_items",
     "refuse_unjoinable",
+    "run_entries",
 ]
 
 
@@ -260,11 +262,15 @@ class UnresolvedEntry:
     Attributes:
         group: The entry's group.
         sequence: The entry's sequence.
+        run_entry: The entry as a run's scope names it, by its indexed key. It
+            differs from *group* and *sequence* for a nameless entry, which a
+            scope labels by its first file's stem.
         error: The error that resolving the variant raised.
     """
 
     group: str
     sequence: str
+    run_entry: Entry
     error: MediaVariantMissingError | MediaVariantDriftedError
 
     @property
@@ -301,7 +307,8 @@ def build_work_items(
 
     Args:
         ds: The dataset, read for its default frame rate when an entry's media
-            index carries none.
+            index records none, and for the indexed key that a refusal's command
+            names.
         scope: What ``Dataset.resolve_media_scope`` returned.
         kind: The tracker's kind. It prefixes warnings and refusals, so a
             message names the tool the user invoked rather than the shared
@@ -327,7 +334,9 @@ def build_work_items(
         ds.meta_float("fps_default", 30.0) if fps_default is None else fps_default
     )
     items: list[TrackerWorkItem] = []
-    failures: list[UnresolvedEntry] = []
+    lost: list[
+        tuple[ResolvedScopeEntry, MediaVariantMissingError | MediaVariantDriftedError]
+    ] = []
 
     # Reduced first. An entry that is dropped is then not also warned about for
     # video count, a warning that would describe work this tracker will not do.
@@ -344,16 +353,14 @@ def build_work_items(
             try:
                 variant = variants.resolve(ds, entry)
             except (MediaVariantMissingError, MediaVariantDriftedError) as exc:
-                failures.append(
-                    UnresolvedEntry(group=group, sequence=sequence, error=exc)
-                )
+                lost.append((entry, exc))
                 continue
             items.append(_variant_item(entry, key, variant))
             continue
         paths = list(resolved.paths)
         facts = list(resolved.facts)
-        refuse_unjoinable(kind, group, sequence, paths, facts, hands_over_path=True)
-        refuse_unidentified_clips(group, sequence, facts, asker=kind)
+        refuse_unjoinable(ds, kind, group, sequence, paths, facts, hands_over_path=True)
+        refuse_unidentified_clips(ds, group, sequence, paths, facts, asker=kind)
 
         items.append(
             TrackerWorkItem(
@@ -367,7 +374,31 @@ def build_work_items(
             )
         )
 
-    return WorkItems(items=tuple(items), failures=tuple(failures), media=media)
+    named = run_entries(
+        ds, [((entry.group, entry.sequence), entry) for entry, _ in lost]
+    )
+    failures = tuple(
+        UnresolvedEntry(
+            group=entry.group, sequence=entry.sequence, run_entry=run_entry, error=exc
+        )
+        for (entry, exc), run_entry in zip(lost, named, strict=True)
+    )
+    return WorkItems(items=tuple(items), failures=failures, media=media)
+
+
+def run_entries(
+    ds: Dataset, cameras: Sequence[tuple[Entry, ResolvedScopeEntry]]
+) -> list[Entry]:
+    """Return the entry that a run's scope names for each of *cameras*, in order.
+
+    It is the indexed key of the camera's first file
+    (:meth:`~mosaic.core.dataset.Dataset.indexed_entries_of`). A media scope
+    labels a nameless entry by its first file's stem, and a run's scope does not
+    resolve that label. The entry paired with a camera names it when the media
+    index does not list the file.
+    """
+    keys = ds.indexed_entries_of(camera.resolved.paths[0] for _, camera in cameras)
+    return [keys.get(camera.resolved.paths[0], named) for named, camera in cameras]
 
 
 def _variant_item(
@@ -391,6 +422,7 @@ def _variant_item(
 
 
 def refuse_unjoinable(
+    ds: Dataset,
     kind: str,
     group: str,
     sequence: str,
@@ -413,7 +445,8 @@ def refuse_unjoinable(
     only at one rate, by the rule the store reader applies
     (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`).
     Either refusal says how to make a media variant that contains the entry as
-    one file.
+    one file, with a command that names the entry by its first clip's indexed
+    key (:meth:`~mosaic.core.dataset.Dataset.indexed_entry`).
 
     Raises:
         JoinedSourceMismatchError: If the clips lack one set of facts each,
@@ -460,7 +493,7 @@ def refuse_unjoinable(
             f"[{kind}] {entry} cannot be read as one video: {kind} reads a store "
             f"only as an entry's one clip, and export-joined does not join stores, "
             f"so nothing holds {', '.join(stores)} with the entry's other clips. "
-            f"{_variant_remedy(group, sequence, facts)}"
+            f"{_variant_remedy(ds, group, sequence, paths, facts)}"
         )
     other = store_rate_mismatch([clip.fps for clip in facts])
     if other is not None:
@@ -470,18 +503,25 @@ def refuse_unjoinable(
             f"{paths[0].name} at {facts[0].fps:g}. Stores cannot be joined, so no "
             f"reader places their frames on one axis. Re-record the stores at one "
             f"rate, or read them through a media variant. "
-            f"{_variant_remedy(group, sequence, facts)}"
+            f"{_variant_remedy(ds, group, sequence, paths, facts)}"
         )
 
 
-def _variant_remedy(group: str, sequence: str, facts: Sequence[MediaFacts]) -> str:
+def _variant_remedy(
+    ds: Dataset,
+    group: str,
+    sequence: str,
+    paths: Sequence[Path],
+    facts: Sequence[MediaFacts],
+) -> str:
     """Return how to make a media variant that reads an entry of stores as one file.
 
     The variant reads each store at its recorded rate. Variants are AV1 by
     default, and preprocess refuses an AV1 variant with no step. The remedy
     therefore names a trim over every frame of the entry, which keeps them all.
     The trim's end is the entry's frame count from *facts*. When a store's length
-    is unknown, the remedy first names a measurement of the stores.
+    is unknown, the remedy first names a measurement of the stores. The command
+    names the entry by the indexed key of its first file in *paths*.
     """
     counts = [int(clip.frame_count) for clip in facts]
     if min(counts) <= 0:
@@ -496,7 +536,8 @@ def _variant_remedy(group: str, sequence: str, facts: Sequence[MediaFacts]) -> s
         {"steps": [{"step": "trim", "start": 0, "stop": total}]},
         separators=(",", ":"),
     )
-    command = mosaic_run_command("preprocess", [(group, sequence)], params=steps)
+    entry = ds.indexed_entry(paths[0], (group, sequence))
+    command = mosaic_run_command("preprocess", [entry], params=steps)
     return (
         f"Make a media variant of the entry, which reads each store at its own "
         f"rate, and name it with the 'media' parameter. A trim over all {total} "
