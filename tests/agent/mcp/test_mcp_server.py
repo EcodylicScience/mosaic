@@ -303,6 +303,7 @@ def test_the_instructions_and_prompts_fit_and_name_only_shared_tools() -> None:
             spec.CONFIRMATION_DECLINED,
             spec.CONFIRMATION_REQUIRED,
             spec.CONFIRMATION_UNANSWERED,
+            spec.CONFIRMATION_UNAVAILABLE,
             spec.RESULT_TOO_LARGE,
         }
         | NAMED_OUTSIDE_THE_TOOLS

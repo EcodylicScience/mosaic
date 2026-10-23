@@ -65,6 +65,7 @@ __all__ = [
     "CONFIRMATION_REQUIRED",
     "CONFIRMATION_TAG",
     "CONFIRMATION_UNANSWERED",
+    "CONFIRMATION_UNAVAILABLE",
     "CONFIRM_FIELD",
     "DATASET_MANAGED",
     "DEFAULT_PAGE_SIZE",
@@ -139,6 +140,7 @@ __all__ = [
     "confirmation_required",
     "confirmation_tag",
     "confirmation_unanswered",
+    "confirmation_unavailable",
     "dataset_managed",
     "invalid_cursor",
     "read_confirmation_tag",
@@ -237,6 +239,14 @@ CONFIRMATION_UNANSWERED: Final = "confirmation_unanswered"
 
 A client that cannot show the question, such as one run without a person,
 cancels it, and the call does not run.
+"""
+
+CONFIRMATION_UNAVAILABLE: Final = "confirmation_unavailable"
+"""The ``reason`` of a call that needs a confirmation this client cannot ask for.
+
+A server that does not take ``confirm`` from a model, such as one served over
+HTTP without ``--allow-model-confirm``, refuses the call when its client cannot
+ask the user.
 """
 
 CONFIRMATION_TAG: Final = "mosaic-confirm"
@@ -1408,7 +1418,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "ask the user asks. Otherwise the call is refused with reason "
             "confirmation_required: ask the user, then call again with confirm "
             "true. Do not set confirm without the user's agreement. After "
-            "confirmation_unanswered or confirmation_declined, stop and report."
+            "confirmation_unanswered, confirmation_declined or "
+            "confirmation_unavailable, stop and report."
         ),
         input_model=SubmitPipelineInput,
         output=SubmittedPipeline,
@@ -1458,8 +1469,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "its unstarted steps are recorded cancelled. When a running step "
             "loses its work, a client that can ask the user asks. Otherwise the "
             "call is refused with reason confirmation_required: ask the user, "
-            "then call again with confirm true. After confirmation_unanswered or "
-            "confirmation_declined, stop and report."
+            "then call again with confirm true. After confirmation_unanswered, "
+            "confirmation_declined or confirmation_unavailable, stop and report."
         ),
         input_model=CancelRequestInput,
         output=RequestCancel,
@@ -1789,6 +1800,41 @@ def confirmation_required(
         reason=CONFIRMATION_REQUIRED,
         message=message,
         detail={"tool": name, "conditions": conditions, "findings": listed},
+    )
+
+
+def confirmation_unavailable(refusal: ErrorEnvelope) -> ErrorEnvelope:
+    """Refuse a call that needs a confirmation that its client cannot ask for.
+
+    Args:
+        refusal: The call's :func:`confirmation_required` refusal, whose
+            detail names the tool, the conditions and their findings.
+
+    Returns:
+        An ``invalid`` envelope with reason :data:`CONFIRMATION_UNAVAILABLE` and
+        the refusal's detail.
+    """
+    detail = refusal.detail or {}
+    tool = detail.get("tool")
+    findings = detail.get("findings")
+    sentences = (
+        "; ".join(
+            str(finding.get("message"))
+            for finding in findings
+            if isinstance(finding, dict)
+        )
+        if isinstance(findings, list)
+        else ""
+    )
+    message = (
+        f"{tool} needs the user's confirmation ({sentences}), and this client "
+        "cannot ask the user, so this server does not accept confirm from the "
+        "model. Stop and report the conditions to the user. The work can run "
+        "from a client that asks the user (MCP elicitation), from the mosaic CLI, "
+        "or here once the operator serves with --allow-model-confirm."
+    )
+    return ErrorEnvelope(
+        kind="invalid", reason=CONFIRMATION_UNAVAILABLE, message=message, detail=detail
     )
 
 

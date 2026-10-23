@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import typer
 
@@ -32,6 +32,9 @@ from mosaic.agent import (
 )
 from mosaic.cli._io import emit_json, fail
 from mosaic.user_paths import user_path
+
+if TYPE_CHECKING:
+    from mosaic.agent.mcp.config import CleanupClass, ServerConfig
 
 agent_app = typer.Typer(
     name="agent",
@@ -228,6 +231,61 @@ def serve_command(
             ),
         ),
     ] = None,
+    http: Annotated[
+        str | None,
+        typer.Option(
+            "--http",
+            metavar="HOST:PORT",
+            help=(
+                "Serve one user over streamable HTTP at http://HOST:PORT/mcp "
+                "instead of stdio, for a trusted network such as a tailnet. "
+                "Needs --token-file. Write an IPv6 host in brackets."
+            ),
+        ),
+    ] = None,
+    token_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--token-file",
+            help=(
+                "With --http: a file of mode 0600 holding the bearer token that "
+                "every request must send as 'Authorization: Bearer <token>'."
+            ),
+        ),
+    ] = None,
+    allowed_hosts: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allowed-host",
+            help=(
+                "With --http: a host name clients reach the server by, such as "
+                "its tailnet name. Requests naming another host are refused. "
+                "Repeatable. Without it, a non-loopback address checks no host."
+            ),
+        ),
+    ] = None,
+    tls_cert: Annotated[
+        Path | None,
+        typer.Option(
+            "--tls-cert",
+            help="With --http and --tls-key: serve HTTPS with this certificate.",
+        ),
+    ] = None,
+    tls_key: Annotated[
+        Path | None,
+        typer.Option("--tls-key", help="The private key of --tls-cert."),
+    ] = None,
+    allow_model_confirm: Annotated[
+        bool,
+        typer.Option(
+            "--allow-model-confirm",
+            help=(
+                "With --http: accept confirm true from a client that cannot ask "
+                "the user, so its model confirms costly work itself. Without it "
+                "such a call is refused."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Serve mosaic's MCP tools, resources and prompts to one client over stdio.
 
@@ -235,6 +293,11 @@ def serve_command(
     and output, so the command writes its own messages to standard error. It
     needs the `mcp` extra. `mosaic agent install --mcp` registers it for Claude
     Code.
+
+    With --http it serves one user over streamable HTTP instead, behind a bearer
+    token, for a client on another machine of a trusted network. It does not
+    encrypt unless given --tls-cert and --tls-key; put it on a tailnet or behind a
+    reverse proxy that does.
     """
     from mosaic.agent.mcp.config import (
         CLEANUP_FEATURE_RUNS,
@@ -259,18 +322,105 @@ def serve_command(
     manifests = served_manifests([user_path(path) for path in datasets or []], settings)
     if not manifests:
         fail("No dataset to serve. Name one with --dataset or in a --config file.")
+    granted: frozenset[CleanupClass] = frozenset(
+        [
+            *([CLEANUP_FEATURE_RUNS] if allow_cleanup else []),
+            *settings.allow_cleanup,
+        ]
+    )
+    if http is not None:
+        _serve_http(
+            manifests,
+            http,
+            token_file=token_file,
+            allowed_hosts=allowed_hosts or [],
+            tls_cert=tls_cert,
+            tls_key=tls_key,
+            allow_model_confirm=allow_model_confirm,
+            allow_managed=allow_managed_writes or settings.allow_managed_writes,
+            allow_cleanup=granted,
+            settings=settings,
+        )
+        return
+    http_only = [
+        flag
+        for flag, given in (
+            ("--token-file", token_file is not None),
+            ("--allowed-host", bool(allowed_hosts)),
+            ("--tls-cert", tls_cert is not None),
+            ("--tls-key", tls_key is not None),
+            ("--allow-model-confirm", allow_model_confirm),
+        )
+        if given
+    ]
+    if http_only:
+        fail(f"{', '.join(http_only)} applies with --http only.")
     from mosaic.agent.mcp.server import serve
 
     try:
         serve(
             manifests,
             allow_managed=allow_managed_writes or settings.allow_managed_writes,
-            allow_cleanup=frozenset(
-                [
-                    *([CLEANUP_FEATURE_RUNS] if allow_cleanup else []),
-                    *settings.allow_cleanup,
-                ]
-            ),
+            allow_cleanup=granted,
+            cleanup_policy=settings.cleanup,
+            parallel_limits=settings.parallel_limits,
+        )
+    except MissingOptionalDependency as exc:
+        fail(str(exc))
+
+
+def _serve_http(
+    manifests: list[Path],
+    http: str,
+    *,
+    token_file: Path | None,
+    allowed_hosts: list[str],
+    tls_cert: Path | None,
+    tls_key: Path | None,
+    allow_model_confirm: bool,
+    allow_managed: bool,
+    allow_cleanup: frozenset[CleanupClass],
+    settings: ServerConfig,
+) -> None:
+    """Check the HTTP options and serve, or exit with what is wrong."""
+    from mosaic.agent.mcp.http_auth import (
+        TokenFileInvalid,
+        parse_http_address,
+        read_token_file,
+    )
+    from mosaic.optional_dependency import MissingOptionalDependency
+
+    try:
+        address = parse_http_address(http)
+    except ValueError as exc:
+        fail(f"--http {exc}")
+    if token_file is None:
+        fail(
+            "--http needs --token-file: a file of mode 0600 holding the token "
+            "that every request must send."
+        )
+    if (tls_cert is None) != (tls_key is None):
+        fail("--tls-cert and --tls-key go together.")
+    for flag, given in (("--tls-cert", tls_cert), ("--tls-key", tls_key)):
+        if given is not None and not user_path(given).is_file():
+            fail(f"{flag} {given} is not a file.")
+    try:
+        token = read_token_file(user_path(token_file))
+    except TokenFileInvalid as exc:
+        fail(str(exc))
+    from mosaic.agent.mcp.server import serve_http
+
+    try:
+        serve_http(
+            manifests,
+            address=address,
+            token=token,
+            allowed_hosts=allowed_hosts,
+            tls_cert=None if tls_cert is None else user_path(tls_cert),
+            tls_key=None if tls_key is None else user_path(tls_key),
+            allow_model_confirm=allow_model_confirm,
+            allow_managed=allow_managed,
+            allow_cleanup=allow_cleanup,
             cleanup_policy=settings.cleanup,
             parallel_limits=settings.parallel_limits,
         )

@@ -195,6 +195,27 @@ no keypoints or `center_mode` was `xy`. A `trex_v1` table with keypoints, and ev
   instead of the first row of the entry.
 - No run id or tracks variant moves. `tracks_schemas` is never hashed.
 
+**`mosaic agent serve --http` serves the MCP tools to one user over the network.** A
+client on a laptop, such as one whose sandbox allows no SSH, could not reach data and GPUs
+on a server, because the server spoke stdio only.
+
+- `--http HOST:PORT` serves streamable HTTP at `/mcp`, with stateful sessions. It needs
+  `--token-file`, a mode-0600 file holding a bearer token of at least 32 characters, on
+  any address, loopback included. `--allowed-host` names the hosts clients use, which the
+  DNS rebinding check accepts; `--tls-cert` and `--tls-key` serve HTTPS. The other new
+  options apply with `--http` only.
+- A client that supports elicitation is asked to confirm during the call, as over
+  stdio. A client that cannot is refused with the new reason `confirmation_unavailable`
+  where it would have needed `confirm: true` from its model, unless the server runs with
+  `--allow-model-confirm`. Over stdio nothing changes.
+- The request state of a confirmation is keyed with a secret of the server process, and
+  an answer is read only from a client that can be asked, so a client cannot write the
+  user's answer itself. A question asked before a server restart is asked again.
+- On a loopback address the DNS rebinding check accepts the address itself and the
+  loopback names. The bearer scheme is read in any case.
+- `mosaic.agent.mcp.server.serve_http` is the function behind it, and
+  `bind_server(..., model_confirm=False)` the binding it uses.
+
 **A recipe writes a repeated step once, is patched in place and is named by digest.** The
 CalMS21 Task 3 recipe had 71 steps, an agent sent all 24 KB of it on every call, and agents
 wrote scripts to generate recipes, because seeds, behaviors and folds multiply steps. No run

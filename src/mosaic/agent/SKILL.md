@@ -469,7 +469,9 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - This guide is also the `mosaic://guide` resource. Read it once.
 - Set `confirm` only after the user agrees in the conversation to the conditions
   that the refusal lists.
-- After `confirmation_unanswered` or `confirmation_declined`, the call did not run.
+- After `confirmation_unanswered`, `confirmation_declined` or
+  `confirmation_unavailable` (a server over HTTP that does not take `confirm` from you),
+  the call did not run.
   Stop and report the plan and the conditions. Do not call it again, or run the same
   work through the `mosaic` CLI, unless the user asks. An operator who runs you
   unattended may approve conditions in advance with a hook

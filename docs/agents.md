@@ -274,7 +274,10 @@ for a whole-dataset plan names the groups it covers and their roles.
 A client that supports MCP elicitation shows you a form listing the conditions, and
 only your answer confirms. With any other client, the tool refuses with reason
 `confirmation_required`, the agent asks you in the conversation, and it repeats the
-call with `confirm` set once you agree. Your answer confirms only the conditions the
+call with `confirm` set once you agree. A server serving over HTTP does not take that
+`confirm` unless it was started with `--allow-model-confirm`: it refuses with
+`confirmation_unavailable` instead ([Serving another machine](#serving-another-machine-over-http)).
+Your answer confirms only the conditions the
 form named. A call that meets another condition by the time it runs, such as a request
 of the same recipe started since, shows the form again. The form has two other
 outcomes:
@@ -522,6 +525,48 @@ variant its events and class names, `describe_dataset`
 returns the manifest's notes and tags, and the other tools return entry names, params,
 paths and error messages. Serve only datasets whose values may leave your machine, or
 use a client with a local model.
+
+### Serving another machine over HTTP
+
+When the data and the GPUs are on a server and the MCP client runs on your laptop, the
+server can listen on HTTP instead of stdio. It serves one user, you, on a network you
+trust, such as a tailnet:
+
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(32))' > ~/.mosaic-mcp-token
+chmod 600 ~/.mosaic-mcp-token
+mosaic agent serve --config ~/mosaic-mcp.yaml \
+    --http 100.101.102.103:8765 --token-file ~/.mosaic-mcp-token \
+    --allowed-host gpu-box.tail1234.ts.net
+```
+
+The client connects to `http://gpu-box.tail1234.ts.net:8765/mcp` with the header
+`Authorization: Bearer <token>`. A request without the token, or with another, gets
+401.
+
+- **The token is required**, even on `127.0.0.1`: the other users of a shared machine
+  reach its loopback address too. The token file must be mode 0600 and hold one word of
+  at least 32 characters.
+- **Name the host clients use** with `--allowed-host` (repeatable). A request naming
+  another host is refused, which stops a web page from reaching the server through DNS
+  rebinding. On a loopback address the loopback names are checked without it; on any
+  other address the check is off without it, and the server warns.
+- **The traffic is not encrypted** unless you pass `--tls-cert` and `--tls-key`. A
+  tailnet encrypts it already; otherwise put the server behind a reverse proxy that
+  terminates TLS.
+- **Confirmations need a client that asks you.** A client that supports MCP
+  elicitation shows you the confirmation form during the call, as over stdio. A client
+  that cannot is refused with `confirmation_unavailable` for anything that needs a
+  confirmation, because only its model could set `confirm`. Start the server with
+  `--allow-model-confirm` to accept that `confirm` anyway, on your own judgement. The
+  `mosaic agent confirm-hook` is a Claude Code hook and answers only Claude Code's
+  forms.
+- A submitted request runs in a background process on the server, so it keeps running
+  when the client disconnects or the network drops. Reconnect and read it with
+  `get_request_status`.
+
+`mosaic agent install --mcp` registers the stdio server only. Register the URL in your
+client by hand.
 
 ### Shared deployments
 

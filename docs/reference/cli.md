@@ -1423,6 +1423,11 @@ and output, so the command writes its own messages to standard error. It
 needs the `mcp` extra. `mosaic agent install --mcp` registers it for Claude
 Code.
 
+With --http it serves one user over streamable HTTP instead, behind a bearer
+token, for a client on another machine of a trusted network. It does not
+encrypt unless given --tls-cert and --tls-key; put it on a tailnet or behind a
+reverse proxy that does.
+
 **Usage**:
 
 ```console
@@ -1435,6 +1440,12 @@ $ mosaic agent serve [OPTIONS]
 * `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, and the parallelism limits `max_workers`, `allow_process_mode` and `min_free_memory_fraction`. Its relative paths are read from its directory.
 * `--allow-managed-writes`: Let submit_pipeline and cancel_request change a dataset whose manifest names a managing service.
 * `--allow-cleanup <str>`: Let submit_pipeline remove superseded feature runs with cleanup 'superseded', and with retire the runs that a retired recipe wrote, after the user confirms. Repeatable; the one class is feature-runs. The policy is the config file's cleanup.
+* `--http HOST:PORT`: Serve one user over streamable HTTP at http://HOST:PORT/mcp instead of stdio, for a trusted network such as a tailnet. Needs --token-file. Write an IPv6 host in brackets.
+* `--token-file <path>`: With --http: a file of mode 0600 holding the bearer token that every request must send as 'Authorization: Bearer <token>'.
+* `--allowed-host <str>`: With --http: a host name clients reach the server by, such as its tailnet name. Requests naming another host are refused. Repeatable. Without it, a non-loopback address checks no host.
+* `--tls-cert <path>`: With --http and --tls-key: serve HTTPS with this certificate.
+* `--tls-key <path>`: The private key of --tls-cert.
+* `--allow-model-confirm`: With --http: accept confirm true from a client that cannot ask the user, so its model confirms costly work itself. Without it such a call is refused.
 * `--help`: Show this message and exit.
 
 ### `mosaic agent confirm-hook`

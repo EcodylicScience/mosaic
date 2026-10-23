@@ -95,6 +95,21 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   the call again without `confirm` first and asks again when it meets another
   (`test_mcp_server.py`).
 
+## HTTP
+
+- `serve_http` (`server.py`, `mosaic agent serve --http`) serves the same tools over
+  streamable HTTP, stateful, so a client that declares elicitation is asked during the
+  call. It needs a bearer token from a 0600 file (`http_auth.py`), checked by
+  `BearerGuard` in constant time before the SDK sees the request, even on loopback,
+  because other users of a shared host reach it. It imports `uvicorn` inside the
+  function. Over HTTP `bind_server(model_confirm=False)` drops a model's `confirm` and
+  refuses a call that needs one from a client that cannot elicit
+  (`confirmation_unavailable`), unless the operator passes `--allow-model-confirm`
+  (`tests/agent/mcp/test_mcp_http.py`).
+- A network listener puts the server under AGPL section 13: a user who interacts
+  with a modified server over the network is offered its source. Keep the version the
+  server reports at initialization accurate.
+
 ## Standard output
 
 Standard output is reserved for JSON-RPC. `serve` enters the SDK's `stdio_server`
