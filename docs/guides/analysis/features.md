@@ -41,7 +41,9 @@ parameter, generated from the registry. Grouped by the question they answer:
 **Individual.** `speed-angvel` (speed and angular velocity),
 `heading` (body orientation from keypoints, under a method you name),
 `keypoint-kinematics` (smoothed speed and acceleration of every keypoint, and distances
-between keypoints), `trajectory-smooth`, `body-scale`, `scale-to-cm`, `track-subsample`.
+between keypoints), `trajectory-smooth`, `body-scale`, `body-length` (length along a
+chain of keypoints, or one a tracker measured), `scale-to-cm`, `scale-to-bl` (lengths in
+body lengths, for comparing animals of different sizes), `track-subsample`.
 
 **Whatever came in.** `temporal-stack` (gives a frame its context window) and the
 global fitters below key their output the way their input was keyed, so they sit at
@@ -54,7 +56,10 @@ whichever level you feed them.
 **Neighbors and social forces.** `nearest-neighbor` and its `nn-delta-response` /
 `nn-delta-bins` chain, and `attention-target`. These describe an individual's
 relationship to the others around it, so their rows are keyed per individual, not per
-pair.
+pair. `neighbor-delta-response` writes the same response against every neighbor, one
+row per focal and neighbor, and `nn-delta-bins` maps either: where neighbors sit
+(`occupancy`), and how the focal turns and speeds against them, within a
+`start_time`/`end_time` window. Its `time_shuffle` gives the chance-level map.
 
 **The group as a whole.** `collective-motion-metrics` (polarization and rotation
 order parameters, and the discrete states they imply), `local-order-metrics`,

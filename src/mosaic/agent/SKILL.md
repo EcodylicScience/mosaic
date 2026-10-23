@@ -189,7 +189,8 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 
 - Every spatial column is in **video pixels**, and `X`/`Y` are the **body center**, for
   every tracker. For centimeters, record the scale with `ds.set_media_calibration(...)`
-  and run the `scale-to-cm` feature. Do not rescale a tracks table yourself. The overlay
+  and run the `scale-to-cm` feature. For body lengths, run `body-length` and then
+  `scale-to-bl` referencing it. Do not rescale a tracks table yourself. The overlay
   and the crop features refuse a table recorded in centimeters (`trex_v1`,
   `mosaic_cm_v1`). `mosaic upgrade-tracks` converts a `trex_v1` table to pixels.
 - Velocity, speed and heading angle come from features. The `mosaic_v1` schema refuses

@@ -146,6 +146,19 @@ def scalable_columns(columns: list[str]) -> list[str]:
     return out
 
 
+LENGTH_COLUMNS: Requirement = AnyOf(
+    (
+        ParamColumn("columns"),
+        *(Column(name) for name in sorted(_LENGTH_NAMES)),
+        *(Prefix(prefix) for prefix in _LENGTH_PREFIXES),
+    )
+)
+"""One column to scale: one that ``columns`` names, or one length column.
+
+Shared with ``scale-to-bl``, which scales the same columns by another unit.
+"""
+
+
 @final
 @register_feature
 class ScaleToCm:
@@ -193,13 +206,7 @@ class ScaleToCm:
             When(Column(name), (ParamIs("cm_per_pixel", negated=True),))
             for name in (C.group_col, C.seq_col)
         ),
-        AnyOf(
-            (
-                ParamColumn("columns"),
-                *(Column(name) for name in sorted(_LENGTH_NAMES)),
-                *(Prefix(prefix) for prefix in _LENGTH_PREFIXES),
-            )
-        ),
+        LENGTH_COLUMNS,
     )
     # ``derive`` writes ``<column><suffix>`` per scaled column beside the
     # identity columns. ``convert`` returns its input with the scaled columns

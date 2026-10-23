@@ -90,6 +90,7 @@ class Case:
 # below is what stops one being forgotten.
 _TRACKS_DEFAULT_FEATURES = (
     "approach-avoidance",
+    "body-length",
     "body-scale",
     "collective-motion-metrics",
     "egocentric-crop",
@@ -103,6 +104,7 @@ _TRACKS_DEFAULT_FEATURES = (
     "movement-filter-interpolate",
     "movement-smooth",
     "nearest-neighbor",
+    "neighbor-delta-response",
     "nn-delta-bins",
     "nn-delta-response",
     "orientation-rel",
@@ -144,6 +146,11 @@ CASES: tuple[Case, ...] = (
         for slug in _TRACKS_DEFAULT_FEATURES
     ),
     # --- params participate in identity ---
+    Case(
+        case_id="scale-to-bl/length",
+        feature="scale-to-bl",
+        params={"length": 12.0},
+    ),
     Case(
         case_id="speed-angvel/params-smooth",
         feature="speed-angvel",

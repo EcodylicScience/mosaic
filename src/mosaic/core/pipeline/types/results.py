@@ -110,6 +110,23 @@ class BodyScaleResult(Result[str]):
         )
 
 
+class BodyLengthResult(Result[str]):
+    """Result for a body-length-family feature.
+
+    Accepts any feature name (default ``"body-length"``) so that auto-derived
+    names or upstream variants can be referenced.  Use ``from_result()`` to
+    copy feature+run_id from an existing run.
+    """
+
+    feature: str = "body-length"
+
+    def from_result(self, result: Result[str]) -> Self:
+        """Return a copy with feature and run_id set from another Result."""
+        return self.model_copy(
+            update={"feature": result.feature, "run_id": result.run_id}
+        )
+
+
 class TracksColumn(StrictModel):
     """Reference to a column in the tracks data.
 

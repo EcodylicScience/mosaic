@@ -113,6 +113,7 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     },
     "pair-posedistance-pca": {"pose": {"pose_n": 3}},
     "probability-ensemble": {"default_class": 0},
+    "scale-to-bl": {"length": 10.0},
     "scale-to-cm": {"cm_per_pixel": 0.1},
     "sequence-classifier": {
         "templates": {"step": "extract-labeled-templates"},
@@ -140,6 +141,7 @@ and its declaration does not require it.
 
 ``scale-to-cm`` reads its scale from the media index when ``cm_per_pixel`` is
 unset, and the media index of :func:`_entry_dataset` records none.
+``scale-to-bl`` needs a length, stated or read from a ``body-length`` run.
 
 ``egocentric-crop`` writes its crop keypoints, its one conditional output, under
 ``transform_keypoints``. ``interaction-crop-pipeline`` writes a color crop
@@ -161,13 +163,16 @@ their one writer.
 
 SOURCES: dict[str, tuple[str, ...]] = {
     "attention-target": ("pair-facing",),
+    "nn-delta-bins": ("nn-delta-response",),
     "pair-wavelet": ("pair-posedistance-pca",),
     "probability-ensemble": ("xgboost",),
 }
 """Inputs a feature reads in place of the tracks or :data:`MEASUREMENTS`.
 
 A feature reading pair rows cannot also read the tracks, whose rows are about
-individuals.
+individuals. ``nn-delta-bins`` reads the responses of ``nn-delta-response``,
+whose rows are individuals, as the category column of ``id-tag-columns`` is;
+``neighbor-delta-response`` writes the same responses as pair rows.
 """
 
 MEASUREMENTS = "speed-angvel"
