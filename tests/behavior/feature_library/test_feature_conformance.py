@@ -17,6 +17,7 @@ import inspect
 import textwrap
 
 import pytest
+from pydantic import BaseModel
 
 from mosaic.behavior.feature_library.registry import FEATURES
 
@@ -65,6 +66,104 @@ def test_every_global_and_media_feature_declares_costly_fit(cls: type) -> None:
         f"hours, False otherwise."
     )
     assert isinstance(vars(cls)["costly_fit"], bool)
+
+
+def _sets_on_instance(cls: type, attribute: str) -> bool:
+    """Whether the class's own ``__init__`` assigns ``self.<attribute>``."""
+    init = vars(cls).get("__init__")
+    if init is None:
+        return False
+    tree = ast.parse(textwrap.dedent(inspect.getsource(init)))
+    return any(
+        isinstance(node, ast.Attribute)
+        and node.attr == attribute
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+        and isinstance(node.ctx, ast.Store)
+        for node in ast.walk(tree)
+    )
+
+
+def _learns_or_depends_on_scope(cls: type) -> bool:
+    """Whether a feature is a global fitter or names its run by its scope.
+
+    The class default or an instance assignment in ``__init__`` counts for
+    ``scope_dependent``, because a feature may declare it only per instance.
+    """
+    return (
+        getattr(cls, "category", "") == "global"
+        or getattr(cls, "scope_dependent", False) is True
+        or _sets_on_instance(cls, "scope_dependent")
+    )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_every_global_or_scope_dependent_feature_declares_fits(cls: type) -> None:
+    """Whether a feature learns from its inputs is not implied by its scope.
+
+    ``scope_dependent`` is not "fits": ``xgboost`` and the ``global-*`` fitters
+    learn and name their run without the entries in scope, and ``evaluate-labels``
+    names its run by them and learns nothing. A guard that keeps a held-out group
+    out of a fit reads ``fits``, so a feature copied from a neighbour that
+    declared nothing would be read as learning nothing, the wrong direction for
+    a fitter.
+    """
+    if not _learns_or_depends_on_scope(cls):
+        pytest.skip("neither a global feature nor scope-dependent")
+    assert hasattr(cls, "fits"), (
+        f"{cls.__name__} is global or scope-dependent and declares no 'fits'. "
+        f"Declare it: True when it learns something from its inputs, False when "
+        f"it only scores or applies them."
+    )
+    declared: object = getattr(cls, "fits")  # noqa: B009
+    assert isinstance(declared, bool)
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_a_feature_that_clears_scope_dependent_per_instance_clears_fits(
+    cls: type,
+) -> None:
+    """A run given a model or fixed weights fits nothing, and says so on the instance.
+
+    The class declares the fitting answer, which the catalog reads. The instance
+    narrows ``scope_dependent`` when the params make the run apply instead of
+    fit, and ``fits`` must narrow beside it or a planner reading the instance
+    would take an apply step for a fit.
+    """
+    if not _sets_on_instance(cls, "scope_dependent"):
+        pytest.skip("scope_dependent is not set per instance")
+    assert getattr(cls, "fits", False) is True, (
+        f"{cls.__name__} sets 'scope_dependent' per instance but declares "
+        f"fits = True on the class no differently from a fit."
+    )
+    assert _sets_on_instance(cls, "fits"), (
+        f"{cls.__name__} narrows 'scope_dependent' in __init__ and does not "
+        f"narrow 'fits' beside it."
+    )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_a_fitting_feature_given_a_model_param_narrows_fits_per_instance(
+    cls: type,
+) -> None:
+    """A run told which model to apply fits nothing, whatever its identity covers.
+
+    ``arhmm``, ``kpms``, ``vame`` and the identity models keep ``scope_dependent``
+    as it is, so the check above skips them. The held-out guard reads ``fits`` off
+    the instance, and an apply step left declaring ``True`` would be refused over
+    the test group. A scope-free fitter is not the guard's concern.
+    """
+    params: object = getattr(cls, "Params", None)
+    if not (isinstance(params, type) and issubclass(params, BaseModel)):
+        pytest.skip("no Params model")
+    fits: object = getattr(cls, "fits", False)
+    named: object = getattr(cls, "scope_dependent", False)
+    if "model" not in params.model_fields or fits is not True or named is not True:
+        pytest.skip("takes no model, does not fit, or a scope-free fitter")
+    assert _sets_on_instance(cls, "fits"), (
+        f"{cls.__name__} fits and takes a 'model' param to apply, and does not "
+        f"narrow 'fits' in __init__ for a run given one."
+    )
 
 
 def _reads_row_zero_of(node: ast.AST, frame_name: str) -> list[str]:

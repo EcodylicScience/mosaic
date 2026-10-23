@@ -131,6 +131,63 @@ it to entries.
 A request without step scopes is written as before, and older mosaic reads it. A
 request with them is read by this version and later.
 
+### Score on held-out data
+
+A held-out score needs the test data to have taken no part in any fit. Mark the groups
+once, then run the recipe as a train/test split:
+
+```bash
+mosaic splits set -m dataset.yaml train day1 day2
+mosaic splits set -m dataset.yaml test day3
+mosaic pipeline plan -m dataset.yaml --recipe @recipe.json \
+    --step-scope 'templates={"groups": ["train"]}' \
+    --step-scope 'evaluate={"groups": ["test"]}'
+```
+
+- A step that fits on the entries it covers is refused over a `test` or `sealed` group,
+  at the step scope or, with none, at the request's scope. The problem names the groups
+  and the step to scope. A step that applies what another fitted is not refused.
+  `describe_step_types`, or `mosaic pipeline catalog`, shows which steps fit.
+- `--assume-added GROUP` (`assume_added` for an MCP client) asks a plan what would
+  happen if a group joined the dataset. Its cautions list the steps that would fit
+  again and those that would only re-score. It reads the recipe and changes nothing.
+- A plan over the whole dataset names the groups it covers with their roles. It does not
+  refuse them: only the fitting steps do.
+
+To score data kept outside the dataset, such as a test file you hold back until the end,
+let `mosaic pipeline score` add it to a copy:
+
+```bash
+mosaic pipeline score -m dataset.yaml --recipe @recipe.json \
+    --heldout /data/test.npz --answers answers.json --out scoring/ \
+    --step-scope 'templates={"groups": ["train"]}' \
+    --perspective 0 --dry-run
+```
+
+`answers.json` names the steps to score, `{"models": {"xgboost": ["classify"]}}`; a name
+with several steps, such as seeds, is reported as their mean and spread. The command
+copies the dataset to `--out`, adds the file as a tracks and a labels source of the
+copy, converts it with the recipe's own convert steps, and plans the recipe again. It
+then compares the run id of every step of the recipe before and after. If one moved,
+that step would fit again on data it must not see, and the command exits 1 listing them
+under `RUN IDS CHANGED`, having run nothing. Otherwise it appends an `evaluate-labels`
+step for each answer, runs the recipe, and writes `test_scores.json` and `test_scores.txt`
+to `--out`.
+
+- Give `--step-scope` as the recipe ran. A fit left unscoped covers the new group, so its
+  run id moves and the command stops.
+- `--dry-run` stops after the comparison and prints the plan fingerprint. Pass it back as
+  `--expect-plan` to run only if nothing changed meanwhile. `--expect-md5` checks the
+  test file's checksum first, which refuses a partial copy.
+- The dataset is opened read-only and never written, so the scores never reach it.
+  Without `--reuse`, `--out` must not exist. With it, the plan recorded before the data
+  joined is the one compared.
+- `--heldout` may name a group already in the dataset that has the role `test` or
+  `sealed`, which adds nothing to the copy.
+- Keep a sealed file out of every source of the dataset and out of an agent's reach. A
+  scan finds a file inside a source, and the file is then in the dataset, where an agent
+  can read its labels.
+
 ### `overwrite` is refused
 
 A step's `params` may not carry `overwrite`. Validation rejects it on presence,

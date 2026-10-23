@@ -75,6 +75,7 @@ __all__ = [
     "MAX_PAGE_SIZE",
     "MAX_PREVIEW_ROWS",
     "MAX_RESULT_CHARS",
+    "MAX_ASSUMED_GROUPS",
     "MAX_RETIRED_RECIPES",
     "MAX_SCHEMA_BYTES",
     "MAX_STEP_TYPE_DETAIL_CHARS",
@@ -200,6 +201,9 @@ recipe saves dozens.
 MAX_RETIRED_RECIPES: Final = 8
 """The most recipes one call retires."""
 
+MAX_ASSUMED_GROUPS: Final = 16
+"""The most groups one ``plan_recipe`` call assumes added."""
+
 LISTING_MISSING_SAMPLE: Final = 5
 """The missing keys that a ``get_inventory`` listing names per artifact."""
 
@@ -299,6 +303,7 @@ type ConfirmationCondition = Literal[
     "bind",
     "open_duplicate",
     "cleanup",
+    "score_sealed",
     "hard_cancel",
 ]
 """A condition under which a tool refuses until the user confirms the call."""
@@ -320,6 +325,10 @@ CONFIRMATION_CONDITIONS: Final[Mapping[ConfirmationCondition, str]] = {
         "the submission deletes superseded runs of its steps' storage after its "
         "steps finish, and with retire the runs that retired recipes wrote in any "
         "storage"
+    ),
+    "score_sealed": (
+        "a step scores predictions against labels over a group the dataset's "
+        "splits seal, which spends the one look a sealed group allows"
     ),
     "hard_cancel": (
         "a running step loses its work when cancelled. A keypoint-MoSeq or VAME "
@@ -624,6 +633,20 @@ RetireDigests = Annotated[
 """The recipes a plan or a submission retires, by digest."""
 
 
+AssumeAdded = Annotated[
+    list[str],
+    Field(
+        max_length=MAX_ASSUMED_GROUPS,
+        description=(
+            "Groups to assume join the dataset. The cautions then name the steps "
+            "that would refit, and those that would only re-score, as the same "
+            "request covers them. Changes nothing else."
+        ),
+    ),
+]
+"""Groups a plan is asked to assume added, which only adds cautions."""
+
+
 class PlanRecipeInput(ToolInput):
     """The arguments of ``plan_recipe``."""
 
@@ -637,6 +660,7 @@ class PlanRecipeInput(ToolInput):
         + " The fingerprint then covers the removable runs.",
     )
     retire: RetireDigests = Field(default_factory=list)
+    assume_added: AssumeAdded = Field(default_factory=list)
     limit: PageSize | None = Field(
         default=None,
         description=(
@@ -1321,6 +1345,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "bind",
             "open_duplicate",
             "cleanup",
+            "score_sealed",
         ),
         always_load=True,
     ),

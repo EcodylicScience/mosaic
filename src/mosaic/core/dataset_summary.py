@@ -14,8 +14,10 @@ import math
 from collections import Counter
 from typing import TYPE_CHECKING, Final
 
+from pydantic import Field
+
 from mosaic.core.json_value import JsonValue
-from mosaic.core.manifest import DatasetTag, LibraryLink
+from mosaic.core.manifest import DatasetTag, LibraryLink, SplitRole
 from mosaic.core.pipeline.inventory import (
     ArtifactKind,
     DatasetInventory,
@@ -112,6 +114,8 @@ class DatasetSummary(StrictModel):
         tags: The typed dataset tags, in display order.
         libraries: The linked library datasets, in lookup order.
         continuous_groups: The groups whose sequences divide one recording.
+        splits: The role of each named group in a held-out protocol, ``train``,
+            ``test`` or ``sealed``. Empty when the manifest declares none.
         managed_by: The manifest's top-level ``managed_by`` value, verbatim.
         api_managed: Whether ``managed_by`` names a managing service.
         counts: Sequences, videos and artifacts.
@@ -134,6 +138,7 @@ class DatasetSummary(StrictModel):
     continuous_groups: tuple[str, ...]
     managed_by: JsonValue
     api_managed: bool
+    splits: dict[str, SplitRole] = Field(default_factory=dict)
     counts: DatasetCounts
     track_schemas: tuple[TrackSchemaCount, ...]
     frame_rates: tuple[FrameRateCount, ...]
@@ -172,6 +177,7 @@ def dataset_summary(
         tags=manifest.ordered_tags(),
         libraries=manifest.libraries,
         continuous_groups=manifest.continuous_groups,
+        splits=dict(sorted(manifest.splits.items())),
         managed_by=manifest.managed_by,
         api_managed=manifest.is_managed,
         counts=DatasetCounts(

@@ -106,6 +106,7 @@ from .manifest import (
     ScanSource,
     ScanSources,
     SourceKind,
+    SplitRole,
     default_roots,
     empty_root_template,
     legacy_tracking_roots,
@@ -1158,6 +1159,56 @@ class Dataset:
         _check_manifest(self.manifest)
         if save:
             self.save()
+
+    @property
+    def splits(self) -> dict[str, SplitRole]:
+        """The role of each named group in a held-out protocol, as a copy.
+
+        See :mod:`mosaic.core.splits` for reading one group's role.
+        """
+        return dict(self.manifest.splits)
+
+    def set_splits(self, role: SplitRole, groups: Iterable[str]) -> None:
+        """Give each of *groups* the role *role*, replacing any role it had.
+
+        The manifest is re-read and written under the index lock, so two
+        operators changing roles at once both land.
+
+        Raises:
+            ValueError: If *role* is not ``train``, ``test`` or ``sealed``, or a
+                group name is empty. The manifest is left as it was.
+        """
+        named = [str(group) for group in groups]
+
+        def assign(manifest: DatasetManifest) -> None:
+            merged: dict[str, SplitRole] = {
+                **manifest.splits,
+                **dict.fromkeys(named, role),
+            }
+            _check_manifest(manifest.model_copy(update={"splits": merged}))
+            manifest.splits = merged
+
+        self.mutate_manifest(assign)
+
+    def remove_splits(self, groups: Iterable[str]) -> list[str]:
+        """Drop the role of each of *groups*. Returns the groups that had one.
+
+        Takes the same lock as :meth:`set_splits`. A group with no role is
+        skipped rather than refused, so removing twice is the same as once.
+        """
+        named = [str(group) for group in groups]
+        removed: list[str] = []
+
+        def drop(manifest: DatasetManifest) -> None:
+            removed.clear()
+            kept = dict(manifest.splits)
+            for group in named:
+                if kept.pop(group, None) is not None:
+                    removed.append(group)
+            manifest.splits = kept
+
+        self.mutate_manifest(drop)
+        return removed
 
     def define_tag(self, tag: DatasetTag, *, save: bool = True) -> None:
         """Declare *tag*, replacing any existing one of the same name.

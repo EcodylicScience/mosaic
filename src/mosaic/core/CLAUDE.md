@@ -58,6 +58,11 @@ in the root guide.
   (`test_the_empty_group_cannot_be_continuous`). A continuous group's media resolves as
   one timeline (`Dataset._match_continuous_group_rows`), and `overlap_frames` checks the
   declaration against recorded frame extents (`core/pipeline/manifest.py`).
+- `splits` maps a named group to `train`, `test` or `sealed`. It is a top-level key
+  and moved no `MANIFEST_VERSION`, so older code preserves it without enforcing it.
+  Read it through `core/splits.py` (`role_of`, `groups_with_role`, `held_out_groups`)
+  and write it only through `Dataset.set_splits` and `remove_splits`
+  (`tests/core/test_splits.py`).
 
 ## Scans
 

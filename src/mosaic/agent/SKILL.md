@@ -155,6 +155,10 @@ A dataset is a directory with `dataset.yaml` and named roots
   `mosaic libraries`, or the matching `Dataset` methods. A top-level key added by hand
   survives. A newer `manifest_version` raises `ManifestVersionError`. Upgrade mosaic
   then, and leave the version as it is.
+- `splits` in `dataset.yaml` gives a group the role `train`, `test` or `sealed`. Read it
+  with `describe_dataset` or `mosaic splits list`. Only the user sets it, with `mosaic
+  splits`. Never write it, even when it blocks a plan, because it is the record of
+  which data no fit may see.
 - Derived and temporary folders cost only time to delete. Reclaim space with `mosaic
   sweep-tracking`, `prune-media` and `prune-joined`. `mosaic reindex` drops index rows
   whose files are gone. All four are dry runs until given `--apply`. For superseded
@@ -313,6 +317,24 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   group onto a `pair-posedistance-pca` basis fitted on the training groups, add a second
   step of that feature with `"model": {"step": "<fit step>", "pattern":
   "model.joblib"}` and the fit's other params.
+- When the dataset gives groups roles (`splits`), the plan refuses a step that fits on
+  the entries it covers, such as `extract-templates`, `extract-labeled-templates`,
+  `fit-label-map`, `arhmm`, `kpms`, `vame` or the identity models (`fits` in
+  `describe_step_types`), when they include a `test` or `sealed` group. Scope it to the
+  `train` groups, and apply what it fitted to the others through the params reference
+  as above. A scope-free fitter such as `xgboost` is held to the same rule by its
+  templates step. A plan over the whole dataset names the groups it covers and their
+  roles in its cautions: narrow it before you submit.
+- A `sealed` group is scored once, by the user, and its labels stay outside the dataset.
+  Data added after your fits is scored with `mosaic pipeline score --manifest <manifest>
+  --recipe <recipe> --heldout <file> --answers <answers.json> --out <dir>`, which works
+  on a copy of the dataset and exits 1 with `RUN IDS CHANGED` when adding the data would
+  fit a step of your recipe again. Propose it, and run it only when the user asks. Give
+  `--step-scope` as you ran the recipe. To find out beforehand, call `plan_recipe` with
+  `assume_added: [group]`: its cautions name the steps that would refit and the steps
+  that would only re-score. A `test` group that is already in the dataset is scored
+  with an `evaluate-labels` step narrowed to it, once. An `evaluate-labels` step that
+  reads a sealed group asks the user to confirm (`score_sealed`).
 
 ## Reading results with labels
 

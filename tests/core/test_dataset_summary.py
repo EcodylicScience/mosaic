@@ -11,6 +11,7 @@ from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_summary import (
     SUMMARY_KINDS,
     DatasetCounts,
+    DatasetSummary,
     FrameRateCount,
     TrackSchemaCount,
     dataset_summary,
@@ -128,6 +129,8 @@ def test_the_manifest_fields_are_echoed(tmp_path: Path) -> None:
     ds.set_notes("pilot sessions")
     ds.define_tag(DatasetTag(name="cohort", type="text", value="spring"))
     ds.set_continuous_groups(["night"])
+    ds.set_splits("test", ["held"])
+    ds.set_splits("train", ["a"])
 
     summary = dataset_summary(open_dataset(ds.manifest_path, ensure_roots=False))
 
@@ -137,6 +140,7 @@ def test_the_manifest_fields_are_echoed(tmp_path: Path) -> None:
     assert summary.notes == "pilot sessions"
     assert [tag.name for tag in summary.tags] == ["cohort"]
     assert summary.continuous_groups == ("night",)
+    assert summary.splits == {"a": "train", "held": "test"}
     assert summary.managed_by is None
     assert not summary.api_managed
     assert summary.counts.sequences == 0
@@ -152,6 +156,35 @@ def test_a_managing_service_is_read_from_the_preserved_key(tmp_path: Path) -> No
 
     assert summary.managed_by == "mosaic-api"
     assert summary.api_managed
+
+
+def test_a_summary_without_splits_still_validates() -> None:
+    """The field is additive with a default, so an older document still reads."""
+    old: dict[str, object] = {
+        "manifest": "m",
+        "name": "n",
+        "uuid": None,
+        "manifest_version": 3,
+        "version": "0.1",
+        "created_at": None,
+        "notes": "",
+        "tags": [],
+        "libraries": [],
+        "continuous_groups": [],
+        "managed_by": None,
+        "api_managed": False,
+        "counts": {
+            "sequences": 0,
+            "videos": 0,
+            "tracks_variants": None,
+            "feature_runs": None,
+            "models": None,
+        },
+        "track_schemas": [],
+        "frame_rates": [],
+        "inventory_errors": [],
+    }
+    assert DatasetSummary.model_validate(old).splits == {}
 
 
 def test_the_version_on_disk_is_reported_before_migration(tmp_path: Path) -> None:

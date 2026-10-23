@@ -76,6 +76,10 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   widens the same deletion to the runs of retired recipes in any storage. It needs
   `cleanup`, applies to one call, and shares the flag and the condition, so its
   finding names the retired recipes.
+- The agent tools never write `splits`, the manifest roles (`train`, `test`, `sealed`)
+  that mark a group held out. An agent that could set a role could unseal what it
+  protects, so only the operator's `mosaic splits` verbs write them. The tools read
+  them (`tests/meta/test_agent_never_writes_splits.py`).
 - Parallelism limits (`max_workers`, `allow_process_mode`, `min_free_memory_fraction`)
   are the operator's. `submit_pipeline` takes `workers` and `parallel_mode` within them
   and `ParallelLimits.settings_for` refuses a request over a limit

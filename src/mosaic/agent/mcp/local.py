@@ -89,6 +89,7 @@ if TYPE_CHECKING:
         DeclarationCatalog,
         DetachedDriver,
         Plan,
+        PlannedStep,
         PlanWire,
         Recipe,
         RecordedErrorWire,
@@ -130,6 +131,9 @@ POLL_AFTER_SECONDS: Final = POLL_AFTER_MIN_SECONDS
 
 POLL_AFTER_TRAINING_SECONDS: Final = 60
 """How long a client waits before polling a request that trains on a GPU."""
+
+_EVALUATE_LABELS: Final = "evaluate-labels"
+"""The one feature that scores a model's output against labels."""
 
 type DriverStarter = Callable[[Dataset, Request, ParallelSettings], DetachedDriver]
 """What starts the process driving a submitted request, given its parallelism."""
@@ -624,6 +628,7 @@ class LocalBackend:
 
     def _plan_recipe(self, args: PlanRecipeInput) -> PlanPage:
         from mosaic.core.pipeline.graph import (
+            assume_added_cautions,
             plan_wire,
             plan_with_cleanup,
             requests_matching,
@@ -676,6 +681,9 @@ class LocalBackend:
             retirable=retirable,
             retirable_omitted=retirable_omitted,
             parallel=self._parallel_limits,
+            extra_cautions=assume_added_cautions(
+                recipe, plan, args.assume_added, scope=scope
+            ),
         )
         return _plan_page(wire, args.limit, args.cursor)
 
@@ -1289,6 +1297,7 @@ def _submission_findings(
                         f"step {planned.step_id!r} runs {planned.runs}",
                     )
                 )
+    findings.extend(_sealed_scoring_findings(plan))
     if args.allow_partial:
         findings.append(
             ConfirmationFinding("allow_partial", "the submission sets allow_partial")
@@ -1334,6 +1343,51 @@ def _submission_findings(
                 f"request(s) {', '.join(duplicates)} of this recipe have not ended",
             )
         )
+    return findings
+
+
+def _reads_labels(planned: PlannedStep) -> bool:
+    """Does *planned* score a model's output against labels?
+
+    That is ``evaluate-labels`` and nothing else. A step that merely has a labels
+    param is not one: ``id-tag-columns`` copies labels into tag columns, and a
+    classifier that applies a model reads none. A fitting step that reads labels
+    is the held-out guard's, which refuses it over any held-out group.
+    """
+    return planned.kind == "feature" and planned.runs == _EVALUATE_LABELS
+
+
+def _sealed_scoring_findings(plan: Plan) -> list[ConfirmationFinding]:
+    """Return a ``score_sealed`` finding for each step scoring a sealed group.
+
+    A step reads labels (:func:`_reads_labels`) and its target holds an entry of
+    a group the manifest's ``splits`` give the role ``sealed``. A ``test`` group
+    does not count: scoring it is the protocol. The planner can only see labels
+    that the dataset registered, so this fires only when the sealed group's
+    labels are in the manifest. With the sealed labels kept outside it, as a
+    protocol that holds them back intends, the condition never fires and the
+    seal is the operator's to keep. It is defensive.
+    """
+    from mosaic.core.pipeline.graph.plan import step_target
+    from mosaic.core.splits import groups_with_role
+
+    sealed = set(groups_with_role(plan.splits, "sealed"))
+    if not sealed:
+        return []
+    findings: list[ConfirmationFinding] = []
+    for planned in plan.steps:
+        if not _reads_labels(planned):
+            continue
+        reached = sorted({group for group, _ in step_target(planned, plan)} & sealed)
+        if reached:
+            groups = ", ".join(repr(group) for group in reached)
+            findings.append(
+                ConfirmationFinding(
+                    "score_sealed",
+                    f"step {planned.step_id!r} scores against labels over the "
+                    f"sealed group(s) {groups}",
+                )
+            )
     return findings
 
 

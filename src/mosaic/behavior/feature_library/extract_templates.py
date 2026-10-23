@@ -114,6 +114,7 @@ class ExtractTemplates:
 
     category = "global"
     costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
+    fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     name = "extract-templates"
     # 0.3: ``nn_id`` and ``attention_target_id``, track ids, are no longer
     # template columns (``BOOKKEEPING_COLS``).

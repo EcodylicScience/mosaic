@@ -287,7 +287,7 @@ def confirm_hook_command(
             help=(
                 "A confirmation condition to accept, such as gpu_lane, "
                 "training_op, tracking_op, allow_partial, bind, open_duplicate, "
-                "cleanup or hard_cancel. Repeatable."
+                "cleanup, score_sealed or hard_cancel. Repeatable."
             ),
         ),
     ] = None,

@@ -156,6 +156,7 @@ class GlobalIdentityEmbedding:
 
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
+    fits = True  # learns from its inputs; __init__ clears it for a run given a model
     # The backbone runs on the best device under `device="auto"`, CUDA first.
     resource_class = "gpu"
     name: str = "global-identity-embedding"
@@ -237,6 +238,9 @@ class GlobalIdentityEmbedding:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        # A run given a model applies it and learns nothing, so a held-out group may
+        # be in its scope. ``scope_dependent`` stays as it is, which keeps the run id.
+        self.fits = self.params.model is None
 
         self._network: object | None = None
         self._history: dict[str, list[float]] | None = None

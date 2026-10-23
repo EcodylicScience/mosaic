@@ -336,6 +336,11 @@ class StepTypeDetail(CatalogIndexEntry):
             on a lane.
         scope_dependent: Whether its output depends on which entries it is
             run over, as a fit across a scope does.
+        fits: Whether a run of it learns something from its inputs. Not the
+            same as ``scope_dependent``: a fitter that names its run without
+            the entries in scope fits, and a scoring step depends on scope and
+            learns nothing. A step type whose runs differ by params reads
+            ``True`` here and its run may fit nothing.
         params: One row per params field.
         params_schema: Its params model as JSON Schema without titles or class
             docstrings, given only when asked for. ``None`` otherwise.
@@ -344,6 +349,7 @@ class StepTypeDetail(CatalogIndexEntry):
     consumes: tuple[str, ...]
     resource_class: str
     scope_dependent: bool
+    fits: bool = False
     params: tuple[ParamRow, ...] = ()
     params_schema: dict[str, JsonValue] | None = None
 

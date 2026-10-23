@@ -234,6 +234,17 @@ class Declaration:
     ``global`` and ``media`` feature declares. A superseded-run cleanup keeps
     every run of such a feature (:mod:`~.cleanup`). ``False`` for an op.
     """
+    fits: bool = False
+    """Whether a run of this feature learns something from its inputs.
+
+    Read off the feature's optional ``fits`` class attribute. It is not
+    ``scope_dependent``: ``xgboost`` and the ``global-*`` fitters learn but name
+    their run without the entries in scope, and ``evaluate-labels`` is
+    scope-dependent and learns nothing. A feature whose instances differ
+    (``sequence-classifier`` given a ``model``, ``probability-ensemble`` with
+    fixed weights) declares the fitting answer on the class, and its instance
+    narrows it. ``False`` for an op and for a feature that declares nothing.
+    """
     unavailable: str | None = None
     """What this installation lacks to run the step, ``None`` when it lacks nothing.
 

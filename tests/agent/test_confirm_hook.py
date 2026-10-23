@@ -140,3 +140,30 @@ def test_importing_the_hook_loads_neither_an_sdk_nor_the_analysis_stack() -> Non
     )
 
     assert loaded == []
+
+
+def test_a_sealed_scoring_is_declined_unless_it_is_approved_by_name() -> None:
+    """A hook approving every other condition still declines the sealed look."""
+    given = _hook_input(
+        message="mosaic asks you to confirm submit_pipeline: a. Proceed?\n\n"
+        + confirmation_tag("submit_pipeline", ["gpu_lane", "score_sealed"])
+    )
+    others: list[ConfirmationCondition] = [
+        "gpu_lane",
+        "training_op",
+        "tracking_op",
+        "allow_partial",
+        "bind",
+        "open_duplicate",
+        "cleanup",
+        "hard_cancel",
+    ]
+
+    declined = answer_elicitation(given, others, otherwise="decline")
+    accepted = answer_elicitation(given, [*others, "score_sealed"], otherwise="decline")
+
+    assert declined == {
+        "hookSpecificOutput": {"hookEventName": "Elicitation", "action": "decline"}
+    }
+    assert accepted is not None
+    assert accepted["hookSpecificOutput"]["action"] == "accept"  # type: ignore[index]

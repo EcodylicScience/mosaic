@@ -401,6 +401,28 @@ class TestConfirmHook:
         assert json.loads(declined.stdout)["hookSpecificOutput"]["action"] == "decline"
         assert asked.stdout == ""
 
+    def test_a_sealed_scoring_needs_its_own_approval(self) -> None:
+        sealed = {
+            **CONFIRMATION,
+            "message": (
+                "mosaic asks you to confirm submit_pipeline: step 'score' scores "
+                "against labels over the sealed group(s) 'held'. Proceed?\n\n"
+                "[mosaic-confirm tool=submit_pipeline conditions=score_sealed]"
+            ),
+        }
+        stdin = json.dumps(sealed)
+
+        declined = runner.invoke(
+            app, ["agent", "confirm-hook", "--approve", "gpu_lane"], input=stdin
+        )
+        accepted = runner.invoke(
+            app, ["agent", "confirm-hook", "--approve", "score_sealed"], input=stdin
+        )
+
+        assert declined.exit_code == accepted.exit_code == 0
+        assert json.loads(declined.stdout)["hookSpecificOutput"]["action"] == "decline"
+        assert json.loads(accepted.stdout)["hookSpecificOutput"]["action"] == "accept"
+
     @pytest.mark.parametrize("stdin", ["", "not json", "[1, 2]"])
     def test_malformed_stdin_prints_nothing(self, stdin: str) -> None:
         result = runner.invoke(

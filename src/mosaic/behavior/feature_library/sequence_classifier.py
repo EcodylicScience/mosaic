@@ -329,6 +329,7 @@ class SequenceClassifier(FitReporting):
     # A fit reads its own stream, so its scope is its training set. A run given a
     # ``model`` fits nothing, and ``__init__`` clears this for it.
     scope_dependent = True
+    fits = True  # learns a network, and ``__init__`` clears this the same way
     accepts_overlap = False  # reads each series as its own sequence
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (TORCH,)
@@ -495,6 +496,7 @@ class SequenceClassifier(FitReporting):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self.scope_dependent = self.params.model is None
+        self.fits = self.params.model is None
         self._reset()
 
     def _reset(self) -> None:

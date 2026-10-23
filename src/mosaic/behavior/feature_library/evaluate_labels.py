@@ -165,6 +165,7 @@ class EvaluateLabels:
     version = "0.2"
     parallelizable = False
     scope_dependent = True
+    fits = False  # it scores a model's output and learns nothing from it
     accepts_overlap = False
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"

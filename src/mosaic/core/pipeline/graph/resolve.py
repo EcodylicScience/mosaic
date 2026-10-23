@@ -488,6 +488,7 @@ def _feature_declaration(cls: type) -> Declaration:
         provides=provides,
         param_defaults=_param_defaults(cls, contract_fields(requires, provides)),
         costly_fit=getattr(cls, "costly_fit", False) is True,
+        fits=getattr(cls, "fits", False) is True,
         unavailable=unmet(_prerequisites_of(cls)),
     )
 
@@ -753,6 +754,7 @@ def step_type_detail(
         consumes=tuple(label for label, holds in labels if holds),
         resource_class=declared.resource_class,
         scope_dependent=scope_dependent,
+        fits=declared.fits,
         params=() if schema is None else param_rows(schema, entry.reference_fields),
         params_schema=(
             compact_params_schema(schema)

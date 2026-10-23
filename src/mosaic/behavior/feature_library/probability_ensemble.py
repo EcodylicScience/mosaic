@@ -253,6 +253,7 @@ class ProbabilityEnsembleFeature:
     # ``weights="fit"`` reads its stream, so its scope is its training set.
     # Every other mode fits nothing, and ``__init__`` clears this for them.
     scope_dependent = True
+    fits = True  # learns its weights in fit mode, and ``__init__`` clears this too
     accepts_overlap = False  # computes within a row
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
@@ -320,6 +321,7 @@ class ProbabilityEnsembleFeature:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self.scope_dependent = self.params.weights == "fit"
+        self.fits = self.params.weights == "fit"
         self._members = len(inputs.root)
         if (
             isinstance(self.params.weights, list)

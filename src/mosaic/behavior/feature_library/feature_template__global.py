@@ -71,6 +71,7 @@ class MyGlobalFeature:
     # True when a refit is costly (a GPU, hours): a superseded-run cleanup then
     # keeps every run of it. Every global and media feature declares it.
     costly_fit = False
+    fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     name = "my-global-feature"
     version = "0.1"
     parallelizable = False

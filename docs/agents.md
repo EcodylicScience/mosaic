@@ -245,14 +245,40 @@ Restart it after installing an extra or building a tool's environment.
 - the submission removes superseded runs of its steps' storage after its steps finish
   (`cleanup`). The question names how many runs, their size and their storages, and the
   retired recipes that wrote some of them. A hook that approves `cleanup` approves a
-  retirement too.
+  retirement too;
+- a step scores predictions against labels over a group that the dataset's
+  [`splits`](dataset.md#hold-groups-out-of-training) seal (`score_sealed`). A sealed
+  group allows one look, and this spends it. It only fires when the sealed group's labels
+  are registered in the dataset. Keeping them outside the dataset until
+  `mosaic pipeline score` adds them to a copy is the stronger protection.
 
 `cancel_request` asks to confirm when a running step loses its work (`hard_cancel`): a
 keypoint-MoSeq or VAME fit stops at once, and training loses the epoch in progress.
 
 A plan over the whole dataset, or a step asked for more than 100 entries, does not
 ask. `plan_recipe` reports each as a caution, and the agent shows you the cautions
-with the plan before it submits.
+with the plan before it submits. When the dataset gives its groups roles, the caution
+for a whole-dataset plan names the groups it covers and their roles.
+
+### Held-out groups
+
+A dataset can mark groups as held out with [`splits`](dataset.md#hold-groups-out-of-training).
+The agent reads them and never writes them: its tools cannot give a group a role or take
+one away, so you set them with `mosaic splits`. With roles set:
+
+- `plan_recipe` refuses a step that fits on the entries it covers when they include a
+  `test` or `sealed` group, and `submit_pipeline` refuses the same recipe. The problem
+  names the step, the groups and how to scope it. A step that applies a fitted model to
+  a test group is not refused.
+- `plan_recipe` takes `assume_added`, a list of groups, and notes in its cautions which
+  steps would fit again and which would only re-score if those groups joined the
+  dataset. It reads the recipe and changes nothing.
+- `submit_pipeline` asks you to confirm a step that scores a sealed group
+  (`score_sealed`).
+
+To score data the agent has never seen, keep it outside the dataset and run
+`mosaic pipeline score` yourself, on a copy of the dataset
+([the protocol](guides/pipelines/chain-steps.md#score-on-held-out-data)).
 
 A client that supports MCP elicitation shows you a form listing the conditions, and
 only your answer confirms. With any other client, the tool refuses with reason
@@ -345,7 +371,8 @@ The server does not expose them as tools. When one is needed, the agent proposes
 - `reindex` and `release`;
 - `mosaic cancel --assume-exited`, which records as cancelled an attempt that no
   machine can check, on your word that its process has exited;
-- any change to the manifest: `init`, `sources`, `tags`, `notes`, `libraries`;
+- any change to the manifest: `init`, `sources`, `tags`, `notes`, `libraries`, `splits`;
+- `mosaic pipeline score`, which adds held-out data to a copy of the dataset;
 - `extract-frames`, whose frames annotation tools refer to by path;
 - accepting the keypoint-MoSeq license (`MOSAIC_KPMS_LICENSE_ACCEPTED`).
 

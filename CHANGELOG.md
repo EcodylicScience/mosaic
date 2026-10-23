@@ -256,6 +256,36 @@ apply, so passing them changes no prediction in either locked environment.
   (`tracking/common/detection_params.py`). Its identifiers do not move, and its `iou`
   description no longer mentions the tracker.
 
+**A dataset can name its held-out groups, and a plan refuses to fit on them.** An agent
+run on CalMS21 could widen a fitting step over the test group and score a model that had
+seen it, and nothing said so. The manifest gains `splits`, and the planner and a new
+verb act on it. No run id, version or parameter moves, and the manifest version stays 3.
+
+- `splits` maps a named group to `train`, `test` or `sealed`. It is a top-level key, so
+  an older mosaic keeps it through a save and does not enforce it. `mosaic splits
+  list|set|remove` and `Dataset.set_splits` and `remove_splits` write it, and
+  `mosaic describe` and the dataset summary report it. No agent tool writes it.
+- Every `global` or `scope_dependent` feature declares `fits`, whether it learns from
+  its inputs. `describe_step_types` and `mosaic pipeline catalog` report it. It is not
+  hashed. `evaluate-labels` is `scope_dependent` and declares `fits = False`.
+- `plan_pipeline` refuses a step that is `scope_dependent` and `fits` when its target
+  holds a `test` or `sealed` group, with or without a step scope. `submit_pipeline`
+  refuses the same recipe. A step that applies a fitted model is not refused. A plan
+  over the whole dataset names the groups it covers with their roles, and a plan that
+  waits on a conversion cautions each unscoped fit, which is refused when it runs.
+- `plan_recipe` and `mosaic pipeline plan` take `assume_added` (`--assume-added`), and
+  note in the plan's cautions which steps would fit again and which would only re-score
+  if those groups joined the dataset.
+- `mosaic pipeline score` scores a finished recipe on held-out data on a copy of the
+  dataset. It compares the run id of every step before and after the data joins, exits 1
+  with `RUN IDS CHANGED` when one that fits moved, and otherwise runs the recipe with one
+  `evaluate-labels` step per answer and writes `test_scores.json` and `test_scores.txt`.
+  The dataset is opened read-only.
+- `submit_pipeline` asks for confirmation (`score_sealed`) when an `evaluate-labels`
+  step reads a sealed group. Its hook declines it by default. It fires only when the
+  sealed group's labels are in the dataset, so it backs up, and does not replace,
+  keeping them outside it.
+
 **The classifiers share their output, standardizer, fold and bundle code.** `xgboost` and
 `lightning-action` each assembled their `prob_` columns and `predicted_label`, applied
 the decision threshold, standardized, dealt cross-validation folds and wrote their bundle

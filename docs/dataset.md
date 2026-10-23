@@ -293,6 +293,41 @@ mosaic makes no continuous group by itself. Build one in three steps:
 
 A feature run with `overlap_frames` then reads across the boundaries.
 
+## Hold groups out of training
+
+Give a group a role when some of the data must never train a model, so that a score on
+it means something. A role is one of:
+
+- `train`: what a model may learn from.
+- `test`: held out. A fitted model may be applied to it and it may be scored, and no
+  step may fit on it.
+- `sealed`: held out, and scored only by you, once. Keep its labels outside the dataset
+  until then.
+
+```bash
+mosaic splits set -m dataset.yaml train day1 day2
+mosaic splits set -m dataset.yaml test day3
+mosaic splits list -m dataset.yaml
+mosaic splits remove -m dataset.yaml day3
+```
+
+The roles are saved as `splits:` in `dataset.yaml`, and `mosaic describe` shows them.
+`ds.set_splits("test", ["day3"])` and `ds.remove_splits(["day3"])` do the same in
+Python. A group names one role, setting it again replaces the first, and the empty
+group cannot have one.
+
+Mosaic checks a role when it plans a recipe. A step that fits on the entries it covers,
+such as `extract-labeled-templates`, is refused when they include a `test` or `sealed`
+group: scope it to the `train` groups with a step scope, and apply what it fitted to the
+other groups
+([how](guides/pipelines/chain-steps.md#score-on-held-out-data)). A group with no role is
+never refused.
+
+`splits` is a top-level key that moved no `manifest_version`, so an older mosaic opens the
+dataset, keeps the key through a save, and does not enforce it. Do not rely on a role
+with a version that predates it. An agent's tools read the roles and cannot write them
+([why](agents.md#held-out-groups)).
+
 ## Link a model library
 
 A trained model is named by its run id. To use one that was trained in another

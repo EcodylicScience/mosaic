@@ -57,6 +57,10 @@ def _render(summary: DatasetSummary) -> None:
             "manifest_version": summary.manifest_version,
             "managed_by": summary.managed_by if summary.api_managed else "none",
             "continuous_groups": ", ".join(summary.continuous_groups) or "none",
+            "splits": ", ".join(
+                f"{group}={role}" for group, role in summary.splits.items()
+            )
+            or "none",
             "sequences": counts.sequences,
             "videos": counts.videos,
             "tracks_variants": _shown(counts.tracks_variants),

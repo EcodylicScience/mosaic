@@ -49,6 +49,19 @@ own environments.
   protocol (`test_every_global_and_media_feature_declares_costly_fit`). `True` when a
   refit costs a GPU or hours. The superseded-run cleanup keeps every run of such a
   feature, and the catalog's `Declaration.costly_fit` carries it.
+- **Every `global` or `scope_dependent` feature declares `fits`**, a bool outside the
+  protocol (`test_every_global_or_scope_dependent_feature_declares_fits`). `True` when
+  the feature learns something from its inputs, whether its scope names its run
+  (`extract-labeled-templates`, `arhmm`) or not (`xgboost`, the `global-*` fitters).
+  `evaluate-labels` depends on scope and learns nothing, so it declares `False`. A feature
+  that fits only without a `model` or with `weights="fit"` declares `True` on the class and
+  narrows `self.fits` in `__init__`, beside `self.scope_dependent` when that narrows too
+  (`test_a_feature_that_clears_scope_dependent_per_instance_clears_fits`). A
+  `scope_dependent` fitter with a `model` param narrows `fits` and leaves
+  `scope_dependent` alone when its run id must not change (`arhmm`, `kpms`, `vame`, the
+  identity models; `test_a_fitting_feature_given_a_model_param_narrows_fits_per_instance`),
+  or the held-out guard refuses the apply step over the test group. The catalog's
+  `Declaration.fits` and `StepTypeDetail.fits` carry the class value. It is not hashed.
 - **A rendered artifact is `media`.** `overlay`, `egocentric-crop` and
   `interaction-crop-pipeline` live in `visualization_library/` and use the feature
   protocol and its caching. Their videos and crops are addressed by run id. mosaic has

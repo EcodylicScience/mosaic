@@ -43,3 +43,17 @@ def test_the_plain_output_lists_the_fields_counts_and_schemas(
     assert "tracks_variants: 1" in result.stdout
     assert "managed_by: none" in result.stdout
     assert "name\ttables\nmosaic_v1\t2" in result.stdout
+
+
+def test_the_plain_output_lists_the_roles_of_the_groups(dataset: Dataset) -> None:
+    dataset.set_splits("train", ["a"])
+    dataset.set_splits("sealed", ["b"])
+
+    result = invoke_ok(["describe", "--manifest", str(dataset.base_dir)])
+    as_json = invoke_ok(["describe", "--manifest", str(dataset.base_dir), "--json"])
+
+    assert "splits: a=train, b=sealed" in result.stdout
+    assert DatasetSummary.model_validate_json(as_json.stdout).splits == {
+        "a": "train",
+        "b": "sealed",
+    }

@@ -159,6 +159,7 @@ class GlobalKMeansClustering:
 
     category = "global"
     costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
+    fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     name: str = "global-kmeans"
     version: str = "0.4"
     parallelizable = False

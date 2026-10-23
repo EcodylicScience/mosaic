@@ -152,6 +152,67 @@ def speed_heading_recipe(name: str = "old") -> Recipe:
     )
 
 
+def classifier_recipe(*classifiers: str) -> Recipe:
+    """CalMS21 conversions, pair features, labeled templates and one classifier per id.
+
+    The ``labeled`` step fits on the entries it covers, so a train/test split
+    scopes it to the training groups. Each classifier is an ``xgboost`` fitted
+    from those templates, scope-free, with its own seed, so it is the step a
+    held-out score is read from.
+
+    Args:
+        classifiers: The ids of the classifier steps, one per seed.
+
+    Returns:
+        The parsed recipe.
+    """
+    steps: list[dict[str, JsonValue]] = [
+        CONVERT_TRACKS_STEP,
+        CONVERT_LABELS_STEP,
+        {
+            "id": "heading",
+            "type": "feature",
+            "feature": "heading",
+            "inputs": ["tracks"],
+            "tracks": {"step": "tracks"},
+            "params": {"method": "two_point", "front_idx": 0, "rear_idx": 3},
+        },
+        {
+            "id": "pairs",
+            "type": "feature",
+            "feature": "pair-position",
+            "inputs": ["tracks", {"step": "heading"}],
+            "tracks": {"step": "tracks"},
+        },
+        {
+            "id": "labeled",
+            "type": "feature",
+            "feature": "extract-labeled-templates",
+            "inputs": [{"step": "pairs"}],
+            "params": {"labels": {"step": "labels"}, "n_total": 200},
+        },
+    ]
+    for seed, step in enumerate(classifiers, start=1):
+        steps.append(
+            {
+                "id": step,
+                "type": "feature",
+                "feature": "xgboost",
+                "inputs": [{"step": "pairs"}],
+                "params": {
+                    "templates": {"step": "labeled"},
+                    "default_class": 0,
+                    "n_estimators": 5,
+                    "n_jobs": 1,
+                    "random_state": seed,
+                },
+            }
+        )
+    return Recipe.model_validate(
+        {"schema_version": 1, "name": "classified", "steps": steps}
+    )
+
+
 def run_speed(dataset: Dataset, step_size: int) -> str:
     """Run ``speed-angvel`` at *step_size* outside any request, and return its run id.
 

@@ -67,6 +67,7 @@ __all__ = [
     "MANIFEST_MARKER_KEYS",
     "MANIFEST_VERSION",
     "NOTES_MAX_CHARS",
+    "SPLIT_ROLES",
     "TAGS_MAX_COUNT",
     "TAG_DESCRIPTION_MAX_LENGTH",
     "TAG_NAME_MAX_LENGTH",
@@ -85,6 +86,7 @@ __all__ = [
     "SequenceMatchMode",
     "SourceKind",
     "SourceMode",
+    "SplitRole",
     "TracksScanSource",
     "backfill_roots",
     "default_roots",
@@ -115,9 +117,23 @@ version at or below this one and migrates it in memory; a *higher* one raises
 
 3 added ``series`` to a labels source. Sources forbid unknown keys, so older
 code met one with a schema error naming a field, which sends a reader looking
-for a typo. The bump makes it the version error it is. ``libraries`` needed no
-bump: it is a top-level key, and unknown top-level keys are preserved.
+for a typo. The bump makes it the version error it is. ``libraries`` and
+``splits`` needed no bump: each is a top-level key, and unknown top-level keys
+are preserved. Code older than ``splits`` carries the key through a save without
+enforcing it.
 """
+
+SplitRole = Literal["train", "test", "sealed"]
+"""The role of a group in a held-out protocol.
+
+``train`` is what a model may learn from. ``test`` is held out: it may be scored
+and a fitted model may be applied to it, but no fit may include it. ``sealed`` is
+held out and scored only by an operator's own gesture. See
+:attr:`DatasetManifest.splits`.
+"""
+
+SPLIT_ROLES: Final[tuple[SplitRole, ...]] = ("train", "test", "sealed")
+"""Every :data:`SplitRole`, in the order they are documented."""
 
 MANIFEST_FILENAMES: Final = ("dataset.yaml", "dataset.yml", "dataset.json")
 """Names probed, in order, when a dataset *directory* is handed to a reader."""
@@ -943,6 +959,10 @@ class DatasetManifest(BaseModel):
         continuous_groups: Groups whose sequences are time divisions of one
             recording rather than independent trials. See
             :meth:`is_continuous_group`.
+        splits: The role of each named group in a held-out protocol, ``train``,
+            ``test`` or ``sealed``. A group absent here has no role. The roles
+            are an operator's declaration; mosaic reads them and does not
+            enforce them against older code. See :mod:`mosaic.core.splits`.
         libraries: Other datasets a model reference may resolve through. See
             :class:`LibraryLink`.
         meta: Structured per-subsystem metadata, written by converters.
@@ -968,6 +988,7 @@ class DatasetManifest(BaseModel):
     notes: str = ""
     tags: tuple[DatasetTag, ...] = ()
     continuous_groups: tuple[str, ...] = ()
+    splits: dict[str, SplitRole] = Field(default_factory=dict)
     libraries: tuple[LibraryLink, ...] = ()
     meta: dict[str, JsonValue] = Field(default_factory=dict)
 
@@ -1052,6 +1073,26 @@ class DatasetManifest(BaseModel):
                 msg = f"continuous_groups lists {name!r} more than once"
                 raise ValueError(msg)
             seen.add(name)
+        return value
+
+    @field_validator("splits")
+    @classmethod
+    def _split_groups_are_named(
+        cls, value: dict[str, SplitRole]
+    ) -> dict[str, SplitRole]:
+        """A role is given to a named group.
+
+        The role of a group is a closed set, which the type enforces. The empty
+        group is refused because ``group`` is an optional namespace: an empty
+        name is the absence of a group, and a role on it would silently cover
+        every sequence recorded without one.
+        """
+        if "" in value:
+            msg = (
+                "splits names the empty group. A role belongs to a named "
+                "group; the empty group is the absence of one."
+            )
+            raise ValueError(msg)
         return value
 
     @field_validator("libraries")
@@ -1274,6 +1315,9 @@ def manifest_header() -> str:
 #          group, and their media resolves as one shared timeline. This is what
 #          `overlap_frames` reads across; mosaic verifies it against the
 #          recorded frame ranges and refuses where the two disagree.
+# splits   The role of each named group in a held-out protocol: `train`,
+#          `test` or `sealed`. Written by an operator (`mosaic splits set`);
+#          the agent tools never write it. A group not listed has no role.
 # libraries
 #          Other datasets a trained model may be resolved from, by run id. A
 #          link may point OUTSIDE the dataset, like a source; nothing is ever
@@ -1394,6 +1438,8 @@ def manifest_payload(manifest: DatasetManifest) -> dict[str, JsonValue]:
         payload["tags"] = [_tag_payload(tag) for tag in manifest.ordered_tags()]
     if manifest.continuous_groups:
         payload["continuous_groups"] = list(manifest.continuous_groups)
+    if manifest.splits:
+        payload["splits"] = dict(sorted(manifest.splits.items()))
     if manifest.libraries:
         payload["libraries"] = [_library_payload(link) for link in manifest.libraries]
     if manifest.meta:

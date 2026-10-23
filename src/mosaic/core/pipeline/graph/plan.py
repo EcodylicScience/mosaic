@@ -80,6 +80,7 @@ from ..preprocess_layout import PREPROCESS_KIND
 from ..resolve import resolve_references
 from ..run import resolve_feature_identity
 from .digest import recipe_digest
+from .heldout import held_out_fit_problem
 from .lanes import lane_for
 from .model import (
     TRACKS_INPUT,
@@ -120,6 +121,7 @@ if TYPE_CHECKING:
     from mosaic_media import MediaProbeError
 
     from mosaic.core.dataset import Dataset
+    from mosaic.core.manifest import SplitRole
     from mosaic.core.params import Params
 
     from ..inventory.model import DatasetInventory
@@ -315,6 +317,11 @@ class PlannedStep:
         reason: Why this step is not simply running, or ``None``.
         parallelizable: Whether a feature step can compute several entries at once.
             ``False`` for an op.
+        scope_dependent: Whether the step's identity covers its set of entries,
+            read off the built feature. ``False`` for an op.
+        fits: Whether the step learns from the entries it covers, read off the
+            built feature beside ``scope_dependent`` and ``False`` for an op. The
+            held-out guard and :func:`~.heldout.refit_set` read the two together.
     """
 
     step_id: str
@@ -339,6 +346,8 @@ class PlannedStep:
     finished: bool = False
     reason: Reason | None = None
     parallelizable: bool = False
+    scope_dependent: bool = False
+    fits: bool = False
 
     @property
     def is_complete(self) -> bool:
@@ -366,6 +375,14 @@ class Plan:
         step_scopes: The scopes narrowing single steps, keyed by step id. A
             step's target is ``scope`` narrowed by its own, and its coverage
             is measured against that (:func:`step_target`).
+        splits: The role of each group the dataset's manifest names, which the
+            held-out guard and the whole-dataset caution read. Empty for a
+            dataset with no roles. Not part of the wire or the fingerprint.
+        deferred_by: The conversion step whose entries the plan waits on, set
+            when the dataset holds no tracks yet and the graph converts some. The
+            plan's scope is empty then, and the held-out guard sees no group
+            (:func:`~.heldout.deferred_fit_cautions` says so). ``None``
+            otherwise. Not part of the wire or the fingerprint.
         cleanup: The superseded runs of the plan's feature storages, and the
             runs of the recipes it retires, each removable or kept with its
             reason, when the plan was asked for them
@@ -382,6 +399,10 @@ class Plan:
         default_factory=lambda: cast("dict[str, Scope]", {})
     )
     cleanup: CleanupPlan | None = None
+    splits: Mapping[str, SplitRole] = field(
+        default_factory=lambda: cast("dict[str, SplitRole]", {})
+    )
+    deferred_by: str | None = None
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
@@ -523,6 +544,8 @@ class _Resolution:
     Carried out of resolution rather than asked again later, because answering it
     means building the feature, and the resolution has one in hand.
     """
+    fits: bool = False
+    """Whether this step learns from the entries it covers, read beside the above."""
 
 
 def plan_pipeline(
@@ -625,14 +648,16 @@ def plan_pipeline(
     steps: list[PlannedStep] = []
     findings = _Findings()
     fps = ds.meta_float("fps_default")
+    splits = ds.splits
     for step in topological_order(recipe):
+        step_entries = _step_target(step.id, target, narrowed)
         step_plan = _plan_step(
             ds,
             recipe,
             step,
             catalog=catalog,
             inv=inv,
-            target=_step_target(step.id, target, narrowed),
+            target=step_entries,
             bind=bind,
             resolved=resolved,
             planned=planned,
@@ -641,6 +666,18 @@ def plan_pipeline(
         )
         if isinstance(step, FeatureStepSpec):
             findings.problems.extend(_feature_problems(recipe, step, fps, resolved))
+            # A step bound to a run is not executed, so it fits nothing. The
+            # guard does not wait on a step scope: a whole-dataset request with
+            # none is the case it exists for.
+            leak = (
+                None
+                if step.id in bind
+                else held_out_fit_problem(
+                    step_plan, step_entries, splits, narrowed=step.id in narrowed
+                )
+            )
+            if leak is not None:
+                findings.problems.append(leak)
             if TRACKS_INPUT in step.inputs and (
                 step.tracks is None or step_plan.spec.tracks_run_id
             ):
@@ -683,6 +720,8 @@ def plan_pipeline(
         dataset_uuid=ds.uuid or "",
         covers_dataset=intended.selector.is_unset,
         step_scopes=narrowed,
+        splits=splits,
+        deferred_by=deferred_by,
     )
     if refuse and plan.problems:
         raise RecipeRefused(plan)
@@ -745,7 +784,11 @@ def _plan_step(
         resolution = _resolve_feature_step(
             ds, recipe, step, target=target, bind=bind, resolved=resolved
         )
-        base = resolution.step
+        base = replace(
+            resolution.step,
+            scope_dependent=resolution.scope_dependent,
+            fits=resolution.fits,
+        )
         if (
             deferred_by is not None
             and resolution.scope_dependent
@@ -1045,6 +1088,9 @@ def _resolve_feature_step(
     # hashed it as None would predict one identifier and execute another.
     _ = resolve_references(ds, feature)
     scope_dependent = bool(getattr(feature, "scope_dependent", False))
+    # Read off the instance as ``scope_dependent`` is: several features narrow
+    # both in ``__init__``, as a model they are given is applied and not fitted.
+    fits = bool(getattr(feature, "fits", False))
 
     fps = ds.meta_float("fps_default")
     unconvertible = _time_filter_problems(step, fps)
@@ -1052,6 +1098,7 @@ def _resolve_feature_step(
         return _Resolution(
             step=_unresolved_feature(step, spec, unconvertible),
             scope_dependent=scope_dependent,
+            fits=fits,
         )
 
     frame_start, frame_end = resolve_frame_range(
@@ -1091,6 +1138,7 @@ def _resolve_feature_step(
             parallelizable=feature_parallelizable(step.feature),
         ),
         scope_dependent=scope_dependent,
+        fits=fits,
     )
 
 

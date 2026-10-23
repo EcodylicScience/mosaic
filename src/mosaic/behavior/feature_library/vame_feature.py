@@ -557,6 +557,7 @@ class VameFeature:
 
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
+    fits = True  # learns from its inputs; __init__ clears it for a run given a model
     # VAME trains a recurrent network, and is built for a GPU.
     resource_class = "gpu"
     name = "vame"
@@ -764,6 +765,9 @@ class VameFeature:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        # A run given a model applies it and learns nothing, so a held-out group may
+        # be in its scope. ``scope_dependent`` stays as it is, which keeps the run id.
+        self.fits = self.params.model is None
         self.progress_callback: ProgressCallback | None = None
         self.cancel_token: CancelToken | None = None
         self._runner = RunnerProcess(

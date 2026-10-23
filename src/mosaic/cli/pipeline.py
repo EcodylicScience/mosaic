@@ -1,6 +1,6 @@
 """``mosaic pipeline``: read a graph, say what it would do, and do it.
 
-Eight verbs, and the split between them is the split the library makes.
+Nine verbs, and the split between them is the split the library makes.
 ``catalog`` lists the step types a recipe may run. ``validate`` asks only about
 the document and opens no dataset.
 ``plan`` and ``show`` resolve it against a dataset and write nothing. ``run``
@@ -15,6 +15,10 @@ prints the command each step is run by, so a graph can be driven by anything tha
 starts processes in order -- a shell loop, a job array, a scheduler. ``status``
 then says how far that submission got, reading only the attempts' own logs.
 ``list`` reports a page of the dataset's submissions the same way.
+
+``score`` is the verb of a held-out protocol (``pipeline_score.py``). It copies
+the study, adds held-out data to the copy, refuses when that would move the run
+id of any step, and otherwise runs the recipe and its evaluations there.
 
 ``--recipe`` takes the same ``@file.json`` / inline-JSON argument every other
 JSON option on this CLI takes, so a recipe can be piped in with ``@-``.
@@ -63,6 +67,7 @@ if TYPE_CHECKING:
         CleanupStatusWire,
         Plan,
         PlannedStep,
+        Problem,
         Recipe,
         Request,
         RequestStatusWire,
@@ -133,6 +138,19 @@ RetireOption = Annotated[
             "digest, which 'pipeline plan --cleanup superseded' lists). It "
             "applies to this plan or submission only: give it to the plan and "
             "again to the submission."
+        ),
+    ),
+]
+
+AssumeAddedOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--assume-added",
+        metavar="GROUP",
+        help=(
+            "Assume this group joins the dataset (repeatable) and note which "
+            "steps of the plan would refit and which would only re-score, as "
+            "the same scope covers it. It changes nothing else."
         ),
     ),
 ]
@@ -273,6 +291,7 @@ def plan_command(
     keep_newest: KeepNewestOption = 1,
     min_age_hours: MinAgeOption = 24.0,
     retire: RetireOption = None,
+    assume_added: AssumeAddedOption = None,
     as_json: JsonOption = False,
 ) -> None:
     """Resolve a recipe against a dataset: identities, coverage, what is left.
@@ -285,11 +304,13 @@ def plan_command(
     ``--cleanup superseded`` also reports the superseded runs of the recipe's
     feature storages, and the fingerprint then covers the ones removable. It
     also lists the saved recipes whose requests wrote runs, and ``--retire
-    <digest>`` judges the runs of one of them too, in any storage. It writes
-    nothing.
+    <digest>`` judges the runs of one of them too, in any storage.
+    ``--assume-added GROUP`` notes which steps would refit, and which would
+    only re-score, if that group joined the dataset. It writes nothing.
     """
     from mosaic.core.pipeline.graph import (
         RecipeRefused,
+        assume_added_cautions,
         plan_wire,
         plan_with_cleanup,
         requests_matching,
@@ -338,6 +359,9 @@ def plan_command(
         open_requests=unended,
         retirable=retirable,
         retirable_omitted=omitted,
+        extra_cautions=assume_added_cautions(
+            parsed, plan, assume_added or (), scope=scope
+        ),
         as_json=as_json,
     )
 
@@ -1095,12 +1119,14 @@ def _emit_plan(
     open_requests: "tuple[RequestSummaryWire, ...]" = (),
     retirable: "tuple[RetirableRecipeWire, ...]" = (),
     retirable_omitted: int = 0,
+    extra_cautions: "tuple[Problem, ...]" = (),
     as_json: bool,
 ) -> None:
     """Render a plan as its fingerprint and a table, or as the JSON an API serves.
 
-    Each of the plan's cautions and of *open_requests* is noted below the table,
-    followed by the *retirable* recipes of a plan asked for a cleanup.
+    Each of the plan's cautions, those *extra_cautions* add and of *open_requests*
+    is noted below the table, followed by the *retirable* recipes of a plan asked
+    for a cleanup.
     """
     from mosaic.core.pipeline.graph import plan_wire
 
@@ -1109,6 +1135,7 @@ def _emit_plan(
         open_requests=open_requests,
         retirable=retirable,
         retirable_omitted=retirable_omitted,
+        extra_cautions=extra_cautions,
     )
     if as_json:
         emit_json(wire.model_dump(mode="json"))
@@ -1260,3 +1287,9 @@ _ = pipeline_app.command(name="submit")(submit_command)
 _ = pipeline_app.command(name="run")(run_command)
 _ = pipeline_app.command(name="status")(status_command)
 _ = pipeline_app.command(name="list")(list_command)
+
+# pipeline_score reads this module's option aliases and helpers, so it is imported
+# once they exist. Importing the package runs this module first in every case.
+from mosaic.cli.pipeline_score import score_command  # noqa: E402
+
+_ = pipeline_app.command(name="score")(score_command)

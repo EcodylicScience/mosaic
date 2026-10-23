@@ -25,6 +25,7 @@ from mosaic.cli.libraries import libraries_app
 from mosaic.cli.models import models_app
 from mosaic.cli.scan import scan_command
 from mosaic.cli.sources import sources_app
+from mosaic.cli.splits import splits_app
 from mosaic.cli.tags import notes_app, tags_app
 from mosaic.cli.pipeline import pipeline_app
 from mosaic.cli.preview import preview_command
@@ -79,6 +80,7 @@ app.add_typer(sources_app, name="sources")
 _ = app.command(name="scan")(scan_command)
 app.add_typer(notes_app, name="notes")
 app.add_typer(tags_app, name="tags")
+app.add_typer(splits_app, name="splits")
 app.add_typer(libraries_app, name="libraries")
 _ = app.command(name="reindex")(reindex_command)
 _ = app.command(name="reconcile")(reconcile_command)

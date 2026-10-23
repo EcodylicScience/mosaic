@@ -217,6 +217,7 @@ class XgboostFeature(FitReporting):
 
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
+    fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     name = "xgboost"
     # 0.2: ``nn_id`` and ``attention_target_id``, track ids, are no longer
     # fitted, from templates written before ``extract-labeled-templates``

@@ -26,6 +26,7 @@
   "manifest_version": 3,
   "name": "populated",
   "notes": "",
+  "splits": {},
   "tags": [],
   "track_schemas": [
     {

@@ -123,6 +123,26 @@ def test_the_declaration_carries_costly_fit(name: str, costly: bool) -> None:
     assert served.declaration.costly_fit is costly
 
 
+@pytest.mark.parametrize(
+    ("name", "fits"),
+    [
+        ("extract-labeled-templates", True),
+        ("xgboost", True),
+        ("global-scaler", True),
+        ("sequence-classifier", True),
+        ("evaluate-labels", False),
+        ("speed-angvel", False),
+        ("tracks", False),
+    ],
+)
+def test_the_declaration_carries_fits(name: str, fits: bool) -> None:
+    entry = describe_step_type(name)
+    served = CatalogEntry.model_validate_json(entry.model_dump_json())
+
+    assert entry.declaration.fits is fits
+    assert served.declaration.fits is fits
+
+
 @pytest.mark.parametrize("name", ["no-such-step", *sorted(EXCLUDED_KINDS)])
 def test_a_name_outside_the_catalog_is_not_found(name: str) -> None:
     with pytest.raises(StepTypeNotFound) as raised:

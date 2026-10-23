@@ -140,7 +140,7 @@ def _arguments(name: str, **extra: object) -> dict[str, object]:
     return {**base, **extra}
 
 
-def test_submission_asks_only_for_gpu_training_tracking_partial_bind_duplicate_and_cleanup() -> (
+def test_submission_asks_only_for_gpu_training_tracking_partial_bind_duplicate_cleanup_and_sealed_scoring() -> (
     None
 ):
     submit = tool_spec("submit_pipeline")
@@ -156,6 +156,7 @@ def test_submission_asks_only_for_gpu_training_tracking_partial_bind_duplicate_a
         "bind",
         "open_duplicate",
         "cleanup",
+        "score_sealed",
     )
     assert cancel.confirm_when == ("hard_cancel",)
 

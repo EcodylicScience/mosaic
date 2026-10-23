@@ -324,6 +324,7 @@ class LightningActionFeature:
     # A fit reads its own stream, so its scope is its training set. A run given a
     # ``model`` fits nothing, and ``__init__`` clears this for it.
     scope_dependent = True
+    fits = True  # learns a network, and ``__init__`` clears this the same way
     accepts_overlap = False  # reads each series as its own sequence
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (LIGHTNING_ACTION,)
@@ -421,6 +422,7 @@ class LightningActionFeature:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self.scope_dependent = self.params.model is None
+        self.fits = self.params.model is None
 
         self._feature_columns: list[str] | None = None
         self._feature_mean: npt.NDArray[np.float64] | None = None

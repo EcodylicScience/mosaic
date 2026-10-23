@@ -109,6 +109,26 @@ regardless is recorded, and it answers
 that question alone — a moved version or a disagreeing tracks variant is not a
 question about how much, and no flag unlocks them.
 
+## A held-out group is not fitted on
+
+A score on data that a fit has seen is not a held-out score, and a scope-dependent fit
+makes it easy to arrive there without noticing: widen a step from the training groups
+to the whole dataset and its identity changes, so it fits again, this time on the test
+groups too. The dataset can name its held-out groups ([`splits`](../dataset.md#hold-groups-out-of-training)),
+and the plan then refuses a step that is both scope-dependent and a fit (`fits` in the
+step catalog) over a `test` or `sealed` group. A step that is scope-dependent and learns
+nothing, such as `evaluate-labels`, may cover them. So may a step that applies a fitted
+model, because the model is named by the step that fitted it and not by the entries it
+is applied to.
+
+Data that arrives after the fits is the same question asked later. Adding a group
+changes the entries of every scope-dependent step that covers it, so each one's
+identity moves and the recipe is not the one that was fitted. `assume_added` on a plan
+asks that before the data exists, and `mosaic pipeline score` checks it by comparing
+the run id of every step of the recipe before and after the data joins. Both name the
+steps that would fit again. A step whose scope is narrowed to the training groups does
+not move, which is why the protocol scopes every fit.
+
 ## A refusal names its reason
 
 A refusal is a failure that names its reason, which tells it apart from a crash.

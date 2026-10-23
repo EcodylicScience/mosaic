@@ -30,6 +30,8 @@ from mosaic.core.manifest import (
     backfill_roots,
     default_roots,
     legacy_tracking_roots,
+    manifest_header,
+    manifest_payload,
     manifest_text,
     migrate_to_current,
     new_manifest,
@@ -660,3 +662,53 @@ class TestContinuousGroups:
     def test_a_group_is_not_declared_twice(self) -> None:
         with pytest.raises(ValidationError, match="more than once"):
             _ = DatasetManifest(continuous_groups=("g", "g"))
+
+
+class TestSplits:
+    """The role each group has in a held-out protocol."""
+
+    def test_absent_means_no_group_has_a_role(self, tmp_path: Path) -> None:
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text(
+            f"manifest_version: {MANIFEST_VERSION}\nname: d\n", encoding="utf-8"
+        )
+        manifest = read_manifest(path)
+        assert manifest.splits == {}
+        assert "splits" not in manifest_payload(manifest)
+
+    def test_it_survives_a_round_trip_in_a_stable_order(self, tmp_path: Path) -> None:
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text(
+            f"manifest_version: {MANIFEST_VERSION}\nname: d\n", encoding="utf-8"
+        )
+        manifest = read_manifest(path).model_copy(
+            update={"splits": {"zeta": "test", "alpha": "train", "mid": "sealed"}}
+        )
+        write_manifest(path, manifest)
+        assert read_manifest(path).splits == manifest.splits
+        written = manifest_payload(manifest)["splits"]
+        assert isinstance(written, dict)
+        assert list(written) == ["alpha", "mid", "zeta"]
+
+    def test_the_manifest_header_documents_it(self) -> None:
+        assert "splits" in manifest_header()
+
+    def test_a_role_outside_the_closed_set_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="splits"):
+            _ = DatasetManifest.model_validate({"splits": {"g": "validation"}})
+
+    def test_the_empty_group_has_no_role(self) -> None:
+        with pytest.raises(ValidationError, match="empty group"):
+            _ = DatasetManifest(splits={"": "test"})
+
+    def test_adding_it_did_not_move_the_manifest_version(self, tmp_path: Path) -> None:
+        """A top-level key, so an older file reads unchanged and older code keeps it."""
+        assert DatasetManifest().manifest_version == MANIFEST_VERSION
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text(
+            f"manifest_version: {MANIFEST_VERSION}\nname: d\nsplits:\n  g: test\n",
+            encoding="utf-8",
+        )
+        manifest = read_manifest(path)
+        assert manifest.migrated_from is None
+        assert manifest.splits == {"g": "test"}

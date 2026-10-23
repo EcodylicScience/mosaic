@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import replace
 from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
-from mosaic.agent.mcp.local import LocalBackend
+from mosaic.agent.mcp.local import LocalBackend, _reads_labels  # pyright: ignore[reportPrivateUsage]
 from mosaic.agent.mcp.spec import (
     MAX_RESULT_CHARS,
     PLAN_RETIRABLE_SAMPLE,
@@ -50,9 +51,12 @@ from mosaic.core.pipeline.parallelism import (
 )
 from mosaic.runlog import JsonlRunLog, new_execution_id, run_log_path
 from tests.helpers import (
+    CONVERT_LABELS_STEP,
+    CONVERT_TRACKS_STEP,
     SPEED_RECIPE,
     RecordingStarter,
     add_tracks_variant,
+    calms21_dataset,
     make_dataset,
     named_recipe,
     run_id_of,
@@ -115,6 +119,7 @@ def _submit(
         dataset=_uuid(dataset),
         recipe=recipe,
         entries=entries,
+        step_entries=arguments.get("step_entries"),
     )
     answered = call_tool(
         backend,
@@ -200,6 +205,186 @@ def test_each_condition_refuses_until_confirmed(
 
     assert isinstance(confirmed, SubmittedPipeline), confirmed
     assert starter.started == [confirmed.request_id]
+
+
+def _scoring_recipe() -> dict[str, JsonValue]:
+    """Labeled templates, a classifier fitted on them, and a score of its output."""
+    return {
+        "schema_version": 1,
+        "name": "scoring",
+        "steps": [
+            CONVERT_TRACKS_STEP,
+            CONVERT_LABELS_STEP,
+            {
+                "id": "heading",
+                "type": "feature",
+                "feature": "heading",
+                "inputs": ["tracks"],
+                "tracks": {"step": "tracks"},
+                "params": {"method": "two_point", "front_idx": 0, "rear_idx": 3},
+            },
+            {
+                "id": "pairs",
+                "type": "feature",
+                "feature": "pair-position",
+                "inputs": ["tracks", {"step": "heading"}],
+                "tracks": {"step": "tracks"},
+            },
+            {
+                "id": "labeled",
+                "type": "feature",
+                "feature": "extract-labeled-templates",
+                "inputs": [{"step": "pairs"}],
+                "params": {"labels": {"step": "labels"}, "n_total": 300},
+            },
+            {
+                "id": "classifier",
+                "type": "feature",
+                "feature": "xgboost",
+                "inputs": [{"step": "pairs"}],
+                "params": {"templates": {"step": "labeled"}, "default_class": 0},
+            },
+            {
+                "id": "evaluate",
+                "type": "feature",
+                "feature": "evaluate-labels",
+                "inputs": [{"step": "classifier"}],
+                "params": {
+                    "labels": {"step": "labels"},
+                    "perspective": 0,
+                    "average_over": [0, 1, 2],
+                },
+            },
+        ],
+    }
+
+
+@pytest.fixture
+def split_backend(
+    tmp_path: Path, starter: RecordingStarter
+) -> tuple[LocalBackend, Dataset]:
+    """A dataset with a train, a test and a sealed group, and labels for each."""
+    ds = calms21_dataset(
+        tmp_path / "split",
+        {
+            "train": {"a": {f"s{i}": 240 for i in range(1, 4)}},
+            "test": {"a": {"t1": 240}},
+            "sealed": {"a": {"z1": 240}},
+        },
+        seed=11,
+        n_classes=3,
+    )
+    _ = ds.convert_all_tracks()
+    ds.set_splits("train", ["train"])
+    ds.set_splits("test", ["test"])
+    ds.set_splits("sealed", ["sealed"])
+    return LocalBackend([ds.manifest_path], warm=False, start_driver=starter), ds
+
+
+def _scored(
+    backend: LocalBackend, dataset: Dataset, group: str, **arguments: object
+) -> SubmittedPipeline | ErrorEnvelope:
+    """Submit the scoring recipe with its fit on train and its score on *group*."""
+    return _submit(
+        backend,
+        dataset,
+        _scoring_recipe(),
+        step_entries={
+            "labeled": {"groups": ["train"]},
+            "evaluate": {"groups": [group]},
+        },
+        **arguments,
+    )
+
+
+def test_scoring_a_sealed_group_refuses_until_confirmed(
+    split_backend: tuple[LocalBackend, Dataset], starter: RecordingStarter
+) -> None:
+    backend, dataset = split_backend
+
+    refused = _scored(backend, dataset, "sealed")
+
+    assert _conditions(refused) == {"score_sealed"}
+    assert isinstance(refused, ErrorEnvelope)
+    assert refused.detail is not None
+    assert (
+        "step 'evaluate' scores against labels over the sealed group(s) 'sealed'"
+        in (json.dumps(refused.detail))
+    )
+    assert (starter.started, _requests(dataset)) == ([], [])
+
+    confirmed = _scored(backend, dataset, "sealed", confirm=True)
+
+    assert isinstance(confirmed, SubmittedPipeline), confirmed
+    assert starter.started == [confirmed.request_id]
+
+
+def test_scoring_a_test_group_asks_nothing(
+    split_backend: tuple[LocalBackend, Dataset], starter: RecordingStarter
+) -> None:
+    backend, dataset = split_backend
+
+    submitted = _scored(backend, dataset, "test")
+
+    assert isinstance(submitted, SubmittedPipeline), submitted
+    assert starter.started == [submitted.request_id]
+
+
+def test_a_sealed_group_is_not_asked_about_when_the_dataset_has_no_roles(
+    split_backend: tuple[LocalBackend, Dataset],
+) -> None:
+    backend, dataset = split_backend
+    _ = dataset.remove_splits(["train", "test", "sealed"])
+
+    submitted = _scored(backend, dataset, "sealed")
+
+    assert isinstance(submitted, SubmittedPipeline), submitted
+
+
+def test_a_sealed_group_in_a_step_that_reads_no_labels_asks_nothing(
+    split_backend: tuple[LocalBackend, Dataset],
+) -> None:
+    backend, dataset = split_backend
+    recipe = _scoring_recipe()
+    steps = recipe["steps"]
+    assert isinstance(steps, list)
+
+    submitted = _submit(
+        backend,
+        dataset,
+        {**recipe, "steps": steps[:-1]},
+        step_entries={"labeled": {"groups": ["train"]}},
+    )
+
+    assert isinstance(submitted, SubmittedPipeline), submitted
+
+
+@pytest.mark.parametrize(
+    ("feature", "scores"),
+    [
+        ("evaluate-labels", True),
+        ("id-tag-columns", False),
+        ("sequence-classifier", False),
+        ("lightning-action", False),
+        ("probability-ensemble", False),
+    ],
+)
+def test_only_the_evaluation_step_scores_against_labels(
+    split_backend: tuple[LocalBackend, Dataset], feature: str, scores: bool
+) -> None:
+    _, dataset = split_backend
+    speed = {
+        "id": "speed",
+        "type": "feature",
+        "feature": "speed-angvel",
+        "inputs": ["tracks"],
+    }
+    recipe = Recipe.model_validate(
+        {"schema_version": 1, "name": "one", "steps": [speed]}
+    )
+    planned = graph.plan_pipeline(dataset, recipe).step("speed")
+
+    assert _reads_labels(replace(planned, runs=feature)) is scores
 
 
 def test_training_asks_to_confirm_and_is_polled_less_often(
