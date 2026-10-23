@@ -62,6 +62,7 @@ from .index_lock import index_lock
 from .inventory.params import RunParams, read_run_params
 from .loading import (
     CROSS_JOIN_FEATURES,
+    stacks_inputs,
     build_nn_lookup,
     labels_for_rows,
     nn_pair_mask,
@@ -403,6 +404,34 @@ def _make_filter_factory(
         return filters
 
     return factory
+
+
+def fit_input_stream(
+    feature: Feature,
+    manifest: Manifest,
+    filter_factory: FilterFactory | None,
+    cross_join: bool,
+) -> InputStream:
+    """The frames ``feature.fit`` reads: the ones its ``apply`` reads, checked alike.
+
+    A fit reads the frames that apply reads, and an entry lacking a declared
+    column fails the fit with the message apply's check gives. ``run_feature`` and
+    ``mosaic pipeline verify`` (:mod:`~mosaic.core.pipeline.verify`) build the
+    stream here, so a verification fits on what the run fitted on.
+    """
+
+    def input_factory() -> Iterator[tuple[str, pd.DataFrame]]:
+        for entry_key, frame in iter_manifest(
+            manifest, filter_factory=filter_factory, cross_join=cross_join
+        ):
+            check_input_columns(
+                feature,
+                frame.columns,
+                numeric=frame.select_dtypes(include="number").columns,
+            )
+            yield entry_key, frame
+
+    return InputStream(input_factory, n_entries=len(manifest))
 
 
 # --- Main entry point ---
@@ -1353,7 +1382,11 @@ def _run_feature_impl(
         resolved = ResolvedScope(selector=selector)
     else:
         manifest, resolved = build_manifest(
-            ds, feature.inputs, selector, tracks_run_id=tracks_run_id
+            ds,
+            feature.inputs,
+            selector,
+            tracks_run_id=tracks_run_id,
+            stack=stacks_inputs(feature),
         )
 
     # Overlap is refused up front, over the whole manifest, rather than as the
@@ -1492,21 +1525,8 @@ def _run_feature_impl(
     if not state_ready:
         ctx.check_cancel()
 
-        def input_factory() -> Iterator[tuple[str, pd.DataFrame]]:
-            # A fit reads the frames that apply reads, and an entry lacking a
-            # declared column fails the fit with the message apply's check gives.
-            for entry_key, frame in iter_manifest(
-                manifest, filter_factory=filter_factory, cross_join=cross_join
-            ):
-                check_input_columns(
-                    feature,
-                    frame.columns,
-                    numeric=frame.select_dtypes(include="number").columns,
-                )
-                yield entry_key, frame
-
         ctx.phase("fit", f"{len(manifest)} entries")
-        feature.fit(InputStream(input_factory, n_entries=len(manifest)))
+        feature.fit(fit_input_stream(feature, manifest, filter_factory, cross_join))
         feature.save_state(run_root)
         # Item 5.3, and the placement is the item. Written here rather than
         # beside params.json because only this branch means a fit actually ran:

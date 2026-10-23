@@ -222,6 +222,12 @@ training and test groups from the start would score the test groups for every se
 you try. Keep one classifier step: two steps with the same parameters and different
 scopes are one run, and can fit at the same time.
 
+A fit that does not hash its scope also does not notice that a training entry changed. If
+you convert a training entry again, the model stays the run it was, and only that entry's
+output is computed again with it. To fit again on the new data, change a parameter, such
+as `cv_seed`. `--overwrite` does not do it: it recomputes the entries' output and loads
+the stored model.
+
 The out-of-fold probabilities are inputs a second stage can train on. Stack the
 `prob_*` columns with `temporal-stack`, draw templates from the stacked table, and fit a
 second `xgboost` with the same `cv_seed`. Its folds are the first stage's. Name the
@@ -314,13 +320,15 @@ What differs from `xgboost`:
   The sample `labeled` drew is not read, so `n_per_class` shapes nothing here. `weight_classes`
   (on by default) weights the loss by class frequency in its place. The step may read other
   inputs than `labeled` did.
-- **The classifier's scope is part of its run id.** `xgboost` fits from its templates and
-  reuses its model on any entry. `lightning-action` fits from the entries in its own
-  scope, so the same step over other entries is another run, and fits again. The step
-  refuses a scope that leaves out a training entry that has labels. To predict more
-  entries with a model you have fitted, name it in a second step with `"model": {"step":
-  "classifier"}` and no `templates` or `labels`. `fit_scope.json` lists every entry of the
-  step's scope, test group included, though only the entries of the train split trained.
+- **The classifier's scope is not part of its run id.** The `templates` run names the
+  training entries, so `lightning-action`, like `xgboost`, keeps its run id when you widen
+  the scope: the stored fit is applied to the new entries and nothing is fitted again.
+  The first request must hold every training entry that has labels, and the step refuses
+  a scope that leaves one out. To predict with a model fitted elsewhere, name it in a
+  second step with `"model": {"step": "classifier"}` and no `templates` or `labels`.
+  `fit_scope.json` lists the entries of the templates run, which are the ones that
+  trained. A fit does not move when you convert a training entry again: that entry's
+  output is computed again with the stored model. To fit again, change a parameter.
 - **A run of consecutive labeled frames is the unit of training.** A frame no label covers
   ends a run, and so does a gap in the frame numbers. The network reads windows of
   `sequence_length` frames from the first frame of a run, so a run shorter than that does
@@ -393,12 +401,14 @@ mosaic pipeline run -m dataset.yaml --recipe @network.json \
   --step-scope 'evaluate={"groups": ["test"]}'
 ```
 
-- **The second command fits again.** The classifier fits from the entries of its own
-  scope, so its scope is part of its run id, and the wider step is a new run. Expect about
-  the same time again, about 5 minutes per seed with five folds on a GPU (an estimate).
-  `xgboost` fits from its templates and keeps its run id, as the cross-validation section
-  above shows. Splitting fitting from applying into two steps, which is planned for every
-  classifier, removes the refit.
+- **The second command fits nothing again.** The `templates` run names the training
+  entries, so the classifier's scope is not part of its run id, and the wider step is the
+  same run, as it is for `xgboost` in the cross-validation section above. Only the test
+  groups are computed, with the final model, and the training entries keep their
+  out-of-fold output. Ask the first request over a scope that holds the training entries,
+  and the step refuses one that does not. A fitted-weight `probability-ensemble` behaves
+  the same way, because its members' fold table names the entries its weights were chosen
+  on.
 - **The templates name the training entries, and the frames come from the step's
   inputs.** As with `lightning-action`, the sample that `labeled` drew is not read, an
   entry it held out never trains, and the step refuses a scope that leaves out a training
@@ -532,7 +542,9 @@ mosaic pipeline run -m dataset.yaml --recipe @blend.json \
   --step-scope 'evaluate={"groups": ["test"]}'
 ```
 
-The second request fits every network again, for the reason given above.
+The second request fits nothing again: no step of the blend hashes its scope, so each is
+the run of the first request and only the test groups are computed. The networks' folds
+name the entries that the blend's weights were chosen on.
 
 - A member of a fitted blend may be any classifier run that writes `cv_folds.parquet`,
   `xgboost` included: add `{"step": "classifier"}` to the blend's `inputs` beside the
@@ -548,7 +560,15 @@ The second request fits every network again, for the reason given above.
   above, and blend the averages. Six members at the default step of 0.05 would be
   well over the limit.
 - `weights` as a list or `uniform` needs no labels and no folds, and the run does not
-  depend on its scope.
+  depend on its scope. Members may then differ in whether they were cross-validated, such
+  as a network fitted with `cv_folds` and one applied from a stored model. The blend is
+  averaged all the same, and writes no fold table, because it is not out of fold wherever
+  its members differ.
+- To score runs that cover different entries as one, give `evaluate-labels` all of them
+  as `inputs`, such as a cross-validated run over the training groups and an applied one
+  over the test groups. It reports their union, with the pooled counts of a single run
+  over all of them. An entry that two inputs hold is refused, because it would count
+  twice, and the plan refuses it first.
 
 ## Read the predictions
 

@@ -701,3 +701,162 @@ def test_the_fit_scope_of_an_evaluation_names_the_map_it_applied(
     assert (own.entries, own.via) == ((("test", "s3"),), ())
     assert _report_of(run_root("score")).label_map_source == "fit-label-map"
     assert _report_of(run_root("purity")).label_map_source == "scored_rows"
+
+
+# --- several inputs stack --------------------------------------------------------
+
+
+def _stack_recipe() -> Recipe:
+    """Two speed runs, one per group, scored as a stack and as one run over both.
+
+    ``step_size`` only adds a ``speed_step`` column, so the two upstream runs
+    hold the ``speed`` that ``whole`` holds, under identities of their own.
+    """
+    from mosaic.core.pipeline.graph import Recipe
+    from tests.helpers import CONVERT_LABELS_STEP, CONVERT_TRACKS_STEP
+
+    def speed(step: str, **params: object) -> dict[str, object]:
+        return {
+            "id": step,
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": ["tracks"],
+            "tracks": {"step": "tracks"},
+            "params": params,
+        }
+
+    def score(step: str, *sources: str) -> dict[str, object]:
+        return {
+            "id": step,
+            "type": "feature",
+            "feature": "evaluate-labels",
+            "inputs": [{"step": source} for source in sources],
+            "params": {"labels": {"step": "labels"}, "prediction_column": "speed"},
+        }
+
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "stack",
+            "steps": [
+                CONVERT_TRACKS_STEP,
+                CONVERT_LABELS_STEP,
+                speed("train_speed", step_size=1),
+                speed("test_speed", step_size=2),
+                speed("whole"),
+                score("stacked", "train_speed", "test_speed"),
+                score("single", "whole"),
+            ],
+        }
+    )
+
+
+def _stack_dataset(base: Path):
+    from tests.helpers import calms21_dataset
+
+    return calms21_dataset(
+        base,
+        {
+            "train": {"a": {"s1": 40, "s2": 40}},
+            "test": {"a": {"s3": 40, "s4": 40}},
+        },
+        seed=4,
+        n_classes=3,
+    )
+
+
+def test_several_inputs_over_disjoint_entries_score_as_one_stack(
+    tmp_path: Path,
+) -> None:
+    """One step over a run per group reports what a run over all the entries reports."""
+    from mosaic.core.pipeline.graph import plan_pipeline, run_pipeline
+
+    ds = _stack_dataset(tmp_path / "ds")
+    recipe = _stack_recipe()
+    scopes = {
+        "train_speed": Scope(groups=["train"]),
+        "test_speed": Scope(groups=["test"]),
+    }
+
+    _ = run_pipeline(ds, recipe, step_scopes=scopes)
+
+    plan = plan_pipeline(ds, recipe, step_scopes=scopes)
+    features = ds.get_root("features")
+
+    def run_root(step: str) -> Path:
+        planned = plan.step(step)
+        return features / planned.storage_name / str(planned.run_id)
+
+    stacked, single = _report_of(run_root("stacked")), _report_of(run_root("single"))
+    assert stacked.n_entries == single.n_entries == 4
+    assert stacked == single
+    outputs = pd.concat(
+        [
+            pd.read_parquet(path)
+            for path in sorted(run_root("stacked").glob("*__*.parquet"))
+        ]
+    )
+    assert sorted(zip(outputs["group"], outputs["sequence"], strict=True)) == [
+        ("test", "s3"),
+        ("test", "s4"),
+        ("train", "s1"),
+        ("train", "s2"),
+    ]
+    pooled = pool_entry_counts(outputs)
+    assert pooled["macro_f1"] == stacked.macro_f1
+    assert pooled["accuracy"] == stacked.accuracy
+
+
+def test_an_entry_asked_of_two_inputs_is_refused_by_the_plan_and_the_stack_is_never_scored(
+    tmp_path: Path,
+) -> None:
+    from mosaic.core.pipeline.graph import plan_pipeline, run_pipeline
+    from mosaic.core.pipeline.graph.step_preflight import RecipeRefusedAtStep
+
+    ds = _stack_dataset(tmp_path / "ds")
+    scopes = {
+        "train_speed": Scope(groups=["train", "test"]),
+        "test_speed": Scope(groups=["test"]),
+    }
+
+    with pytest.raises(RecipeRefusedAtStep, match="more than one"):
+        _ = run_pipeline(ds, _stack_recipe(), step_scopes=scopes)
+
+    plan = plan_pipeline(ds, _stack_recipe(), step_scopes=scopes, refuse=False)
+
+    [problem] = [p for p in plan.problems if p.step == "stacked"]
+    assert problem.where == "inputs"
+    assert "('test', 's3')" in problem.message
+    assert "disjoint" in problem.message
+    stacked = plan.step("stacked")
+    assert not (
+        ds.get_root("features") / stacked.storage_name / str(stacked.run_id)
+    ).exists()
+
+
+def test_a_stack_is_planned_over_the_union_of_its_inputs_and_no_more(
+    tmp_path: Path,
+) -> None:
+    from mosaic.core.pipeline.graph import plan_pipeline
+
+    ds = _stack_dataset(tmp_path / "ds")
+    _ = ds.convert_all_tracks()
+    recipe = _stack_recipe()
+    union = {
+        "train_speed": Scope(groups=["train"]),
+        "test_speed": Scope(groups=["test"]),
+    }
+    short = {
+        "train_speed": Scope(groups=["train"]),
+        "test_speed": Scope(entries=[("test", "s3")]),
+    }
+
+    covered = plan_pipeline(ds, recipe, step_scopes=union, refuse=False)
+    uncovered = plan_pipeline(ds, recipe, step_scopes=short, refuse=False)
+
+    assert covered.problems == ()
+    assert covered.step("stacked").stacked_parents == ("train_speed", "test_speed")
+    assert covered.step("single").stacked_parents == ()
+    problems = [p for p in uncovered.problems if p.step == "stacked"]
+    assert [p.where for p in problems] == ["inputs"]
+    assert "('test', 's4')" in problems[0].message

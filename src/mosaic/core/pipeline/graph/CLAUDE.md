@@ -107,7 +107,9 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   scope or a bound step, or selecting nothing, and a reader planned over entries its
   `inputs` or `tracks` parent is not. A params reference and `after` carry no entry
   rule, so `refuse_shortfall` asks such a parent (`PlannedStep.status_parents`) only
-  to be complete.
+  to be complete. A step that stacks its inputs (`ConsumerDecl.stacks_inputs`) is asked
+  for the union of its `inputs` parents (`PlannedStep.stacked_parents`), because each
+  entry comes from one of them (`test_a_stack_is_planned_over_the_union_of_its_inputs_and_no_more`).
 - `plan_pipeline` refuses a step that is `scope_dependent` and `fits`, both read off the
   built feature, when its target holds a group the manifest's `splits` gives the role
   `test` or `sealed` (`held_out_fit_problem`, `heldout.py`). It does so with no step

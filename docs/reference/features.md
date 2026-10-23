@@ -747,7 +747,7 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `ArHmmModelArtifact` \| `None` | `null` |  | A pre-fitted model artifact to load, skipping the fit. Unset, the model is fit from scratch. |
+| `model` | `ArHmmModelArtifact` \| `None` | `null` |  | The arhmm_model.joblib of an arhmm run to apply, such as a fit step scoped to the training groups. Unset, the model is fit from scratch on the entries in scope. Set, nothing is fitted, the entries in scope leave the run id, and a model that cannot be found is refused. |
 | `pca_dim` | `integer` \| `None` | `null` |  | How many components PCA reduces the feature dimensionality to before fitting. Unset, no PCA is applied. Ignored when it is not smaller than the number of input feature columns. |
 | `n_states` | `integer` | `50` | >= `2` | The maximum number of HMM states. Pruned down after fitting when prune_threshold is greater than zero. |
 | `n_lags` | `integer` | `1` | >= `1` | How many preceding steps enter as autoregressive regressors. A step is one row of the sequence being fit, which is a video frame unless downsample_rate has subsampled it. |
@@ -983,7 +983,7 @@ Train a DINOv2 + temporal identity model from individual sequences.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `DinoV2TemporalIdentityArtifact` \| `None` | `null` |  | A pre-fitted DinoV2TemporalIdentityArtifact to load, skipping the fit. Unset, the model fits from the crops named by identities or group_as_identity. |
+| `model` | `DinoV2TemporalIdentityArtifact` \| `None` | `null` |  | A pre-fitted DinoV2TemporalIdentityArtifact to load, such as a fit step scoped to the training groups. Unset, the model fits from the crops named by identities or group_as_identity over the entries in scope. Set, nothing is fitted, the entries in scope leave the run id, and a model that cannot be found is refused. |
 | `identities` | `object` \| `None` | `null` |  | An explicit mapping of identity name to the sequences containing that individual alone. Takes precedence over group_as_identity. |
 | `group_as_identity` | `boolean` | `false` |  | Treat each sequence's group name as its identity, instead of listing sequences explicitly under identities. Ignored when identities is set. |
 | `backbone` | `string` | `"dinov2_vits14"` |  | The DINOv2 model name loaded from the facebookresearch/dinov2 torch hub repository. |
@@ -1029,7 +1029,7 @@ Train an identity model from frozen backbone embeddings + k-NN.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `EmbeddingIdentityArtifact` \| `None` | `null` |  | A pre-fitted EmbeddingIdentityArtifact to load, skipping the fit. Unset, the model fits from the crops named by identities or group_as_identity. |
+| `model` | `EmbeddingIdentityArtifact` \| `None` | `null` |  | A pre-fitted EmbeddingIdentityArtifact to load, such as a fit step scoped to the training groups. Unset, the model fits from the crops named by identities or group_as_identity over the entries in scope. Set, nothing is fitted, the entries in scope leave the run id, and a model that cannot be found is refused. |
 | `identities` | `object` \| `None` | `null` |  | An explicit mapping of identity name to the sequences containing that individual alone. Takes precedence over group_as_identity. |
 | `group_as_identity` | `boolean` | `false` |  | Treat each sequence's group name as its identity, instead of listing sequences explicitly under identities. Ignored when identities is set. |
 | `model_name` | `string` | `"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"` |  | A bare timm architecture tag or a Hugging Face hub id naming the frozen embedding backbone. Mosaic ships no weights, and whatever this names downloads at run time under its own license. |
@@ -1068,7 +1068,7 @@ Train a visual identity model from individual animal sequences.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `ClassifierIdentityArtifact` \| `None` | `null` |  | Unset, the fit runs over the input scope. Set to a pre-fitted ClassifierIdentityArtifact, the fit is skipped and the referenced training run enters this run's identity beside its scope. |
+| `model` | `ClassifierIdentityArtifact` \| `None` | `null` |  | Unset, the fit runs over the input scope. Set to a pre-fitted ClassifierIdentityArtifact, such as a fit step scoped to the training groups, nothing is fitted, the referenced training run enters this run's identity and the entries in scope do not, and a model that cannot be found is refused. |
 | `identities` | `object` \| `None` | `null` |  | The mapping from an identity name to the group/sequence entries that contain that individual alone. Takes priority over group_as_identity when both are given. |
 | `group_as_identity` | `boolean` | `false` |  | Derive one identity per group name from the input entries, used only when identities is unset. Fitting raises when neither is given. |
 | `model_name` | `string` | `"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"` |  | A bare timm architecture tag or a Hugging Face hub id naming the backbone. Mosaic ships no weights, and whatever is named here is downloaded at run time under its own license. |
@@ -1391,7 +1391,7 @@ Fits keypoint-MoSeq to keypoint tracks and applies it, in a runner process.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `KpmsModelArtifact` \| `None` | `null` |  | A pre-fitted model to load. Unset, the feature fits a new model. |
+| `model` | `KpmsModelArtifact` \| `None` | `null` |  | The model of a kpms run to apply, such as a fit step scoped to the training groups. Unset, the feature fits a new model on the entries in scope. Set, nothing is fitted, the entries in scope leave the run id, and a model that cannot be found is refused. |
 | `kpms_python` | `string` \| `None` | `null` |  | Path to a Python interpreter with keypoint-moseq installed. Unset, resolution reads MOSAIC_KPMS_CONDA_ENV, then MOSAIC_KPMS_PYTHON, then the in-repository environment under feature_library/external/.venv. |
 | `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
 | `anterior_bodyparts` | list of `string` | _required_ | min items `1` | Bodypart names marking the front of the body, used to initialize heading for egocentric alignment. |
@@ -1445,13 +1445,13 @@ Fits keypoint-MoSeq to keypoint tracks and applies it, in a runner process.
 
 ### `lightning-action`
 
-Version `0.5` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
+Version `0.6` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
 
 Supervised temporal action segmentation via lightning-action.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The extract-labeled-templates run whose train entries the model fits on. Only its template_provenance.parquet is read: the model trains on the frame runs of those entries, not on the sampled templates. An entry the run lists as test, or does not list, never trains. Mutually exclusive with model. |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The extract-labeled-templates run whose train entries the model fits on. Only its template_provenance.parquet is read: the model trains on the frame runs of those entries, not on the sampled templates. An entry the run lists as test, or does not list, never trains. The run names the training set, so the step's scope is not part of its identity: a wider scope applies the fit it has and does not fit again. Mutually exclusive with model. |
 | `model` | `LightningActionModelArtifact` \| `None` | _constructed_ |  | Pre-fitted model to load instead of training. Mutually exclusive with templates. |
 | `labels` | `GroundTruthLabelsSource` \| `None` | `null` |  | The per-frame ground-truth labels that the frames of the training entries are aligned to, resolved from labels/<kind>/index.csv. A frame no label covers is left out of training. Required with templates. |
 | `head` | `"temporalmlp"` \| `"rnn"` \| `"dtcn"` | `"dtcn"` |  | Temporal encoder architecture: dtcn (dilated temporal convolution), rnn (LSTM/GRU), or temporalmlp. |
@@ -1535,7 +1535,7 @@ Supervised temporal action segmentation via lightning-action.
 
 ### `probability-ensemble`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.probability_ensemble.ProbabilityEnsembleFeature`
+Version `0.2` &middot; `mosaic.behavior.feature_library.probability_ensemble.ProbabilityEnsembleFeature`
 
 Average or blend the class probabilities of several classifier runs.
 
@@ -1585,13 +1585,13 @@ Average or blend the class probabilities of several classifier runs.
 
 ### `sequence-classifier`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.sequence_classifier.SequenceClassifier`
+Version `0.2` &middot; `mosaic.behavior.feature_library.sequence_classifier.SequenceClassifier`
 
 Neural sequence classifier: a registered head on runs of consecutive frames.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The extract-labeled-templates run whose train entries the model fits on. Only its template_provenance.parquet is read: the model trains on the frame runs of those entries, not on the sampled templates. An entry the run lists as test, or does not list, never trains. Mutually exclusive with model. |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The extract-labeled-templates run whose train entries the model fits on. Only its template_provenance.parquet is read: the model trains on the frame runs of those entries, not on the sampled templates. An entry the run lists as test, or does not list, never trains. The run names the training set, so the step's scope is not part of its identity: a wider scope applies the fit it has and does not fit again. Mutually exclusive with model. |
 | `model` | `SequenceClassifierModelArtifact` \| `None` | _constructed_ |  | A pre-fitted SequenceClassifierModelArtifact to load instead of training. Mutually exclusive with templates. |
 | `labels` | `GroundTruthLabelsSource` \| `None` | `null` |  | The per-frame ground-truth labels that the frames of the training entries are aligned to, resolved from labels/<kind>/index.csv. A frame no label covers is left out of training. Required with templates. |
 | `columns` | list of `string` \| `None` | `null` |  | The payload columns the network reads, in this order. Unset, every numeric payload column of the inputs. A narrow set usually beats a wide one: 37 columns beat 562 to 999 on CalMS21. |
@@ -1691,7 +1691,7 @@ Fits VAME to keypoint tracks, and embeds each frame in its latent space.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `VameModelArtifact` \| `None` | `null` |  | A fitted VAME model to apply. Unset, the feature fits a new model. With a model set, the settings that build and preprocess the sessions must equal the model's. |
+| `model` | `VameModelArtifact` \| `None` | `null` |  | A fitted VAME model to apply, such as a fit step scoped to the training groups. Unset, the feature fits a new model on the entries in scope. With a model set, nothing is fitted, the entries in scope leave the run id, and the settings that build and preprocess the sessions must equal the model's. |
 | `vame_python` | `string` \| `None` | `null` |  | Path to a Python interpreter with VAME installed. Unset, resolution reads MOSAIC_VAME_CONDA_ENV, then MOSAIC_VAME_PYTHON, then the in-repository environment under feature_library/external/vame-env/.venv. |
 | `device` | `"auto"` \| `"cpu"` \| `"cuda"` \| `"mps"` | `"auto"` |  | Where VAME trains and embeds. The value auto selects CUDA, then MPS, then the CPU, as VAME does. The run identifier leaves the device out. One recipe therefore runs under one name on any machine. Training on different devices gives different models, and only training on the CPU is bit-reproducible. The model bundle and the run log record the device that ran. |
 | `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |

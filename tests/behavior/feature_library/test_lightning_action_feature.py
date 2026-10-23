@@ -29,12 +29,13 @@ import numpy.typing as npt
 import pandas as pd
 import pytest
 
+from mosaic.behavior.feature_library.classifier_common import FIT_SCOPE_REMEDY
 from mosaic.behavior.feature_library.lightning_action_feature import (
     LightningActionFeature,
     LightningActionModelArtifact,
     LightningActionModelBundle,
 )
-from mosaic.core.pipeline.types import Result
+from mosaic.core.pipeline.types import InputStream, Result
 from tests.helpers import (
     LA_CLASS_NAMES,
     LA_CLASSES,
@@ -386,8 +387,10 @@ def test_a_train_entry_outside_the_steps_scope_is_refused(tmp_path: Path) -> Non
 
     with pytest.raises(
         ValueError, match=r"1 train entries .* not in this step's scope"
-    ):
+    ) as refused:
         _fit(study, narrower)
+
+    assert FIT_SCOPE_REMEDY in str(refused.value)
 
 
 def test_a_templates_run_without_provenance_is_refused(tmp_path: Path) -> None:
@@ -788,7 +791,7 @@ def test_templates_come_with_labels_and_a_model_with_none() -> None:
         )
 
 
-def test_a_fit_is_scope_dependent_and_a_run_given_a_model_is_not() -> None:
+def test_no_run_hashes_the_scope_and_only_a_fit_fits() -> None:
     inputs = LightningActionFeature.Inputs((Result(feature="temporal-stack"),))
 
     fit = LightningActionFeature(inputs, params=_fit_params())
@@ -797,8 +800,23 @@ def test_a_fit_is_scope_dependent_and_a_run_given_a_model_is_not() -> None:
         params={"model": {"feature": "lightning-action"}, "default_class": 0},
     )
 
-    assert fit.scope_dependent is True
+    assert LightningActionFeature.fit_set_pinned_by == "templates"
+    assert fit.scope_dependent is False
     assert apply_only.scope_dependent is False
+    assert fit.fits is True
+    assert apply_only.fits is False
+
+
+def test_a_model_that_did_not_resolve_is_not_replaced_by_a_fit(tmp_path: Path) -> None:
+    inputs = LightningActionFeature.Inputs((Result(feature="temporal-stack"),))
+    feature = LightningActionFeature(
+        inputs,
+        params={"model": {"feature": "lightning-action"}, "default_class": 0},
+    )
+
+    assert feature.load_state(tmp_path, {}, {}) is False
+    with pytest.raises(RuntimeError, match="did not resolve to a stored model"):
+        feature.fit(InputStream(lambda: iter(()), n_entries=0))
 
 
 def test_the_step_is_offered_to_a_gpu_worker_and_trains_there_by_default() -> None:

@@ -27,6 +27,7 @@ import pytest
 from mosaic.behavior.feature_library.lightning_action_feature import (
     LightningActionFeature,
 )
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import Recipe, run_pipeline
 from mosaic.core.pipeline.types import Result
 from mosaic.core.scope import Scope
@@ -198,12 +199,13 @@ def test_the_package_builds_the_optimizer_that_the_params_name(
     assert group["weight_decay"] == pytest.approx(_WEIGHT_DECAY)
 
 
-def test_the_scoped_chain_runs_with_the_real_package(
-    in_process_loaders: None, tmp_path: Path
-) -> None:
-    train, both = Scope(groups=["train"]), Scope(groups=["train", "test"])
+TRAIN_GROUP, BOTH_GROUPS = Scope(groups=["train"]), Scope(groups=["train", "test"])
+
+
+def _dataset_and_recipe(base: Path) -> tuple[Dataset, Recipe]:
+    """Six training entries and two test entries, and the chain that fits on them."""
     ds = calms21_dataset(
-        tmp_path / "ds",
+        base,
         {
             # Eighteen windows of the training entries. The package validates on a
             # tenth of its windows, and warns when it has fewer than ten.
@@ -265,11 +267,18 @@ def test_the_scoped_chain_runs_with_the_real_package(
             ],
         }
     )
+    return ds, recipe
+
+
+def test_the_scoped_chain_runs_with_the_real_package(
+    in_process_loaders: None, tmp_path: Path
+) -> None:
+    ds, recipe = _dataset_and_recipe(tmp_path / "ds")
 
     run = run_pipeline(
         ds,
         recipe,
-        step_scopes={"labeled": train, "classifier": both},
+        step_scopes={"labeled": TRAIN_GROUP, "classifier": BOTH_GROUPS},
     )
 
     assert {outcome.state for outcome in run.outcomes} == {"ran"}
@@ -282,3 +291,29 @@ def test_the_scoped_chain_runs_with_the_real_package(
         table = pd.read_parquet(path)
         assert not table.filter(like="prob_").isna().any(axis=None)
         assert set(table["perspective"]) == {0, 1}
+
+
+def test_widening_the_scope_applies_the_trained_model_and_trains_nothing_again(
+    in_process_loaders: None, tmp_path: Path
+) -> None:
+    ds, recipe = _dataset_and_recipe(tmp_path / "ds")
+    narrow = run_pipeline(
+        ds, recipe, step_scopes={"labeled": TRAIN_GROUP, "classifier": TRAIN_GROUP}
+    )
+    [run_id] = [str(o.run_id) for o in narrow.outcomes if o.step_id == "classifier"]
+    [root] = ds.get_root("features").glob(f"lightning-action__*/{run_id}")
+    model = (root / "lightning_action_model.joblib").read_bytes()
+    before = {path.name: pd.read_parquet(path) for path in root.glob("*.parquet")}
+    assert len(before) == 6
+
+    wide = run_pipeline(
+        ds, recipe, step_scopes={"labeled": TRAIN_GROUP, "classifier": BOTH_GROUPS}
+    )
+
+    [again] = [str(o.run_id) for o in wide.outcomes if o.step_id == "classifier"]
+    assert again == run_id
+    assert (root / "lightning_action_model.joblib").read_bytes() == model
+    after = {path.name: pd.read_parquet(path) for path in root.glob("*.parquet")}
+    assert len(after) == 8
+    for name, table in before.items():
+        pd.testing.assert_frame_equal(after[name], table)

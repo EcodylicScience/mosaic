@@ -24,6 +24,14 @@ scored rows themselves, whose accuracy is the clustering's purity and which no
 row is held out of. The report's ``label_map_source`` says which, and the
 cluster by class counts are ``cluster_confusion.parquet``.
 
+**Several inputs are one stack.** Give the step several classifier runs over
+disjoint entries, such as one run per fold, and it scores their union: each
+entry is read from the one input that holds it, and the same prediction column
+is scored throughout, so the report equals scoring the concatenated rows. An
+entry that two inputs both hold is refused, because it would count twice. Other
+steps join several inputs column-wise instead, and this one declares
+``stacks_inputs``.
+
 The labels come from the run's dependency lookup, so a ``labels`` reference to a
 ``convert-labels`` step scores against the variant that step wrote.
 """
@@ -154,7 +162,8 @@ class EvaluateLabels:
     and F1, and the clustering scores in clusters mode) and
     ``confusion.parquet`` over every entry it scored, ``cluster_confusion.parquet``
     in clusters mode, and one row per entry with its score and its per-class
-    counts.
+    counts. Several inputs stack: their entries are unioned, and an entry held by
+    more than one input is refused.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.evaluate_labels.EvaluateLabels.Params`.
@@ -166,6 +175,7 @@ class EvaluateLabels:
     parallelizable = False
     scope_dependent = True
     fits = False  # it scores a model's output and learns nothing from it
+    stacks_inputs = True  # several inputs are runs over disjoint entries
     accepts_overlap = False
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"

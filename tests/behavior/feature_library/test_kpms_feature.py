@@ -8,6 +8,7 @@ command in a journal, which the tests read. The license is accepted in-process.
 
 from __future__ import annotations
 
+import hashlib
 import sys
 import time
 from collections.abc import Iterator
@@ -29,6 +30,7 @@ from mosaic.core.pipeline.job import CancelToken, Cancelled
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.types import InputStream
+from mosaic.core.scope import Scope
 from tests.helpers import (
     KPMS_PROTOCOL,
     SOURCE_ROOT,
@@ -266,6 +268,50 @@ def test_a_model_is_applied_by_a_run_that_does_not_fit(
     _, pid = fake.journal.starts()
     assert fake.journal.commands(pid) == ["load_model", *["apply"] * 4]
     assert fake.journal.details("load_model", "path") == [str(model)]
+
+
+def test_an_apply_over_a_wider_scope_is_the_same_run_of_the_same_model(
+    fake: _FakeKpms, dataset: Dataset
+) -> None:
+    """The entries in scope are where a model is applied, not what the run is."""
+    fitted = run_feature(dataset, fake.feature(), scope=Scope(entries=[("", "s1")]))
+    model = result_run_root(dataset, fitted) / "kpms_model.joblib"
+    digest = hashlib.sha256(model.read_bytes()).hexdigest()
+    reference = model_reference(fitted)
+
+    narrow = run_feature(
+        dataset, fake.feature(model=reference), scope=Scope(entries=[("", "s1")])
+    )
+    wide = run_feature(dataset, fake.feature(model=reference))
+
+    assert wide.run_id == narrow.run_id
+    assert wide.run_id != fitted.run_id
+    assert sorted(result_outputs(dataset, wide)) == sorted(_SEQUENCES)
+    assert hashlib.sha256(model.read_bytes()).hexdigest() == digest
+    assert set(fake.journal.details("load_model", "path")) == {str(model)}
+    fits = [fake.journal.commands(pid).count("fit") for pid in fake.journal.starts()]
+    assert sum(fits) == 1, "only the first run fits"
+
+
+def test_a_fit_over_a_wider_scope_is_another_run(
+    fake: _FakeKpms, dataset: Dataset
+) -> None:
+    """Without a model the entries in scope are the training set."""
+    narrow = run_feature(dataset, fake.feature(), scope=Scope(entries=[("", "s1")]))
+    wide = run_feature(dataset, fake.feature())
+
+    assert wide.run_id != narrow.run_id
+
+
+def test_a_model_that_does_not_resolve_is_refused_and_not_refitted(
+    fake: _FakeKpms, dataset: Dataset
+) -> None:
+    feature = fake.feature(model={"feature": "kpms", "run_id": "0.1-0000000000"})
+
+    with pytest.raises(FileNotFoundError, match="0.1-0000000000"):
+        _ = run_feature(dataset, feature)
+
+    assert fake.journal.starts() == []
 
 
 def test_a_runner_that_crashes_after_the_fit_is_replaced_with_the_saved_model(

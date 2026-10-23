@@ -74,6 +74,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.optional_dependency import OptionalModule, Prerequisite
 
 from .classifier_common import (
+    FIT_SCOPE_REMEDY,
     DEFAULT_CLASS_DESCRIPTION,
     DecisionThreshold,
     RunningMoments,
@@ -196,7 +197,9 @@ _TEMPLATES_DESCRIPTION = (
     "The extract-labeled-templates run whose train entries the model fits on. "
     "Only its template_provenance.parquet is read: the model trains on the "
     "frame runs of those entries, not on the sampled templates. An entry the "
-    "run lists as test, or does not list, never trains. Mutually exclusive "
+    "run lists as test, or does not list, never trains. The run names the "
+    "training set, so the step's scope is not part of its identity: a wider "
+    "scope applies the fit it has and does not fit again. Mutually exclusive "
     "with model."
 )
 
@@ -286,9 +289,12 @@ class LightningActionFeature:
     (``id1``, ``id2``, ``perspective``) when it has no ``id``. Training uses the
     runs of consecutive labeled frames of each series, in frame order, of the
     entries that the ``templates`` run assigned to ``train``. ``fit`` streams the
-    step's inputs and aligns each series to ``labels``, so the step's scope is
-    its training set, and a model applied to further entries is named through
-    ``model`` by a second step. Frames are standardized by statistics computed
+    step's inputs and aligns each series to ``labels``, and skips the entries
+    that ``templates`` did not assign to train. The ``templates`` run names the
+    training set, so the run id does not cover the step's scope: a wider scope
+    applies the stored model to the new entries and trains nothing again. The
+    first run has to be asked for over a scope that holds the train entries. A
+    model fitted elsewhere is applied through ``model``. Frames are standardized by statistics computed
     once over the training frames and stored with the model, so ``apply``
     reads a frame as ``fit`` did. ``apply`` predicts each series as a sequence of
     its own and returns a row for every input row, in the input's order.
@@ -319,12 +325,16 @@ class LightningActionFeature:
     # model, where the package standardized each file by its own. The optimizer
     # block sits where the package reads it, so ``optimizer``,
     # ``learning_rate`` and ``weight_decay`` take effect.
-    version = "0.5"
+    # 0.6: the run id no longer covers the step's scope. The ``templates`` run
+    # names the training set, so a wider scope applies the fit it has.
+    version = "0.6"
     parallelizable = True
-    # A fit reads its own stream, so its scope is its training set. A run given a
-    # ``model`` fits nothing, and ``__init__`` clears this for it.
-    scope_dependent = True
-    fits = True  # learns a network, and ``__init__`` clears this the same way
+    # The fit streams the step's inputs but trains only on the entries that
+    # ``templates`` assigned to train, and skips the others before touching state.
+    scope_dependent = False
+    fit_set_pinned_by: ClassVar[str] = "templates"
+    # A run given a ``model`` fits nothing, and ``__init__`` clears this for it.
+    fits = True  # learns a network
     accepts_overlap = False  # reads each series as its own sequence
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (LIGHTNING_ACTION,)
@@ -421,7 +431,6 @@ class LightningActionFeature:
         _ = LIGHTNING_ACTION.load()
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self.scope_dependent = self.params.model is None
         self.fits = self.params.model is None
 
         self._feature_columns: list[str] | None = None
@@ -494,7 +503,13 @@ class LightningActionFeature:
 
         model_class = _package_model_class()
         if self._train_entries is None:
-            msg = "[lightning-action] No templates loaded, so check load_state."
+            msg = (
+                f"[lightning-action] model {self.params.model.run_id!r} did not "
+                "resolve to a stored model, so there is nothing to apply and the "
+                "step does not fit in its place. Check the model reference"
+                if self.params.model is not None
+                else "[lightning-action] No templates loaded, so check load_state."
+            )
             raise RuntimeError(msg)
 
         p = self.params
@@ -727,7 +742,7 @@ class LightningActionFeature:
             self._label_files,
             seen,
             consequence="The model would train on fewer entries than its templates name.",
-            remedy="Add them to the scope, or apply a model fitted elsewhere through `model`",
+            remedy=FIT_SCOPE_REMEDY,
         )
         if unlabeled_entries or too_short or past_last_window:
             print(

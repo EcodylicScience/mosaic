@@ -50,6 +50,7 @@ from mosaic.core.pipeline.graph import (
     validation_report,
 )
 from mosaic.core.pipeline.graph.columns import (
+    merged_input,
     need_status,
     output_columns,
     provided_wire,
@@ -869,3 +870,23 @@ def test_the_cli_prints_cautions_beside_a_valid_verdict() -> None:
     assert result.exit_code == 0, result.output
     assert "This recipe is valid." in result.stdout
     assert result.stderr.count("caution:") == len(DELTA_STEPS)
+
+
+def test_stacked_inputs_guarantee_only_what_each_input_guarantees() -> None:
+    """A stack renames nothing: a column is sure when every input has it."""
+    sure = frozenset({"frame", "predicted_label"})
+    first = ColumnSet(guaranteed=sure, possible=sure | {"extra"})
+    second = ColumnSet(guaranteed=sure | {"other"}, possible=sure | {"other"})
+
+    stacked = merged_input([first, second], stack=True)
+    joined = merged_input([first, second])
+
+    assert stacked.guaranteed == {"frame", "predicted_label"}
+    assert stacked.possible == {"frame", "predicted_label", "extra", "other"}
+    assert "predicted_label__1" in joined.guaranteed
+    assert "predicted_label__1" not in stacked.possible
+
+
+def test_one_stacked_input_merges_as_itself() -> None:
+    only = ColumnSet(guaranteed=frozenset({"frame", "speed"}))
+    assert merged_input([only], stack=True) == merged_input([only])

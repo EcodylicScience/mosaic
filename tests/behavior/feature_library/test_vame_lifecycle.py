@@ -10,6 +10,7 @@ command in a journal, which the tests read.
 
 from __future__ import annotations
 
+import hashlib
 import pickle
 import sys
 import time
@@ -519,6 +520,37 @@ def test_a_model_is_applied_by_a_run_that_does_not_fit(
     bundle = result_run_root(dataset, fitted) / VAME_MODEL_FILE
     assert fake.journal.details("load_model", "path")[-1] == str(bundle)
     assert not (result_run_root(dataset, applied) / VAME_MODEL_FILE).exists()
+
+
+def test_an_apply_over_a_wider_scope_is_the_same_run_of_the_same_model(
+    fake: _FakeVame, dataset: Dataset
+) -> None:
+    """The entries in scope are where a model is applied, not what the run is."""
+    fitted = run_feature(dataset, fake.feature(), scope=Scope(entries=[("", "s1")]))
+    bundle = result_run_root(dataset, fitted) / VAME_MODEL_FILE
+    digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
+    reference = model_reference(fitted)
+
+    narrow = run_feature(
+        dataset, fake.feature(model=reference), scope=Scope(entries=[("", "s1")])
+    )
+    wide = run_feature(dataset, fake.feature(model=reference))
+
+    assert wide.run_id == narrow.run_id
+    assert wide.run_id != fitted.run_id
+    assert sorted(result_outputs(dataset, wide)) == sorted(_SEQUENCES)
+    assert hashlib.sha256(bundle.read_bytes()).hexdigest() == digest
+    assert not (result_run_root(dataset, wide) / VAME_MODEL_FILE).exists()
+
+
+def test_a_fit_over_a_wider_scope_is_another_run(
+    fake: _FakeVame, dataset: Dataset
+) -> None:
+    """Without a model the entries in scope are the training set."""
+    narrow = run_feature(dataset, fake.feature(), scope=Scope(entries=[("", "s1")]))
+    wide = run_feature(dataset, fake.feature())
+
+    assert wide.run_id != narrow.run_id
 
 
 def test_a_model_is_refused_with_session_settings_other_than_its_own(

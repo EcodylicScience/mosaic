@@ -20,7 +20,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from mosaic.cli import app
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_discovery import discover_datasets
 from mosaic.core.dataset_summary import dataset_summary
@@ -228,6 +230,12 @@ CLI_READS: dict[str, CliArguments] = {
     ],
     "pipeline status": lambda f: ["pipeline", "status", "--request", f.request_id],
     "prerequisites": lambda _: ["prerequisites", "--kind", "trex"],
+    "pipeline verify": lambda f: [
+        "pipeline",
+        "verify",
+        "--recipe",
+        f"@{f.recipe_path}",
+    ],
     "preview": lambda _: ["preview", f"tracks-variant/{VARIANT}", "--entry", "seq_a"],
     "prune-joined --dry-run": lambda _: ["prune-joined"],
     "prune-media --dry-run": lambda _: ["prune-media"],
@@ -270,10 +278,19 @@ CLI_READS_OF_NOTHING = (
 """The verbs of ``CLI_READS`` that succeed on a dataset holding nothing."""
 
 
+CLI_READS_THAT_EXIT_ONE_WHEN_THERE_IS_NOTHING = frozenset({"pipeline verify"})
+"""Verbs whose fixture recipe holds nothing to compare, so they report it with exit 1."""
+
+
 def _invoke_read(fixture: ReadDataset, verb: str) -> None:
     arguments = CLI_READS[verb](fixture)
     manifest = str(fixture.dataset.manifest_path)
-    result = invoke_ok([*arguments, "--manifest", manifest, "--json"])
+    command = [*arguments, "--manifest", manifest, "--json"]
+    if verb in CLI_READS_THAT_EXIT_ONE_WHEN_THERE_IS_NOTHING:
+        result = CliRunner().invoke(app, command)
+        assert result.exit_code == 1, result.stderr
+    else:
+        result = invoke_ok(command)
     json.loads(result.stdout)
 
 
@@ -549,3 +566,35 @@ def test_a_scoring_dry_run_of_a_file_leaves_the_study_as_it_found_it(
     assert_tree_unchanged(dataset.base_dir, before)
     assert (out / "scoring" / "state.json").exists()
     assert json.loads(result.stdout)["heldout_scope"] == {"groups": ["test"]}
+
+
+def test_verifying_a_fitted_recipe_writes_nothing_under_the_dataset(
+    tmp_path: Path,
+) -> None:
+    """The fit is repeated in a scratch directory, and the stored run is only read."""
+    dataset = calms21_dataset(
+        tmp_path / "ds", {"train": {"a": {"s1": 90, "s2": 90}}}, seed=3, n_classes=2
+    )
+    recipe = classifier_recipe("clf")
+    _ = run_pipeline(dataset, recipe)
+    recipe_file = tmp_path / "verifying.recipe.json"
+    recipe_file.write_text(recipe.model_dump_json(), encoding="utf-8")
+    _strip_to_content(dataset.base_dir)
+    before = tree_snapshot(dataset.base_dir)
+
+    result = invoke_ok(
+        [
+            "pipeline",
+            "verify",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--recipe",
+            f"@{recipe_file}",
+            "--json",
+        ]
+    )
+
+    assert_tree_unchanged(dataset.base_dir, before)
+    report = json.loads(result.stdout)
+    assert report["ok"] is True
+    assert report["verified"] == 2

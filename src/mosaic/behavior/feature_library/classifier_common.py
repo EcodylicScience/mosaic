@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.progress import ProgressCallback
 
 __all__ = [
+    "FIT_SCOPE_REMEDY",
     "CV_SEED_DESCRIPTION",
     "DECISION_THRESHOLD_DESCRIPTION",
     "DEFAULT_CLASS_DESCRIPTION",
@@ -59,6 +60,13 @@ log = logging.getLogger(__name__)
 
 
 # --- Parameters ---
+
+FIT_SCOPE_REMEDY: Final = (
+    "The step's first run must be asked for over a scope that holds the training "
+    "entries, because it fits on them. Once it has fitted, a wider scope applies "
+    "the stored fit to the new entries and fits nothing again. To apply a fit "
+    "from elsewhere, name it through `model`."
+)
 
 DECISION_THRESHOLD_DESCRIPTION: Final = (
     "Unset, the predicted class is the class with the highest probability. "

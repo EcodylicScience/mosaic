@@ -256,6 +256,43 @@ apply, so passing them changes no prediction in either locked environment.
   (`tracking/common/detection_params.py`). Its identifiers do not move, and its `iou`
   description no longer mentions the tracker.
 
+**A fit is scope-free where the training entries are fixed, evaluations pool, and
+`mosaic pipeline verify` checks a result.** Widening a classifier from the training
+groups to train plus test fitted it again, about five minutes per seed, although the
+templates run had already named what it trains on. Run ids move, as below.
+
+- `sequence-classifier` moves from 0.1 to 0.2, `lightning-action` from 0.5 to 0.6, and
+  `probability-ensemble` from 0.1 to 0.2. Their run ids no longer hash the request scope
+  (`probability-ensemble` only with `weights: fit`), so a wider request is the same run:
+  it applies the stored fit to the new entries and fits nothing again. A run stored under
+  an older version is not found by the new one (the version segment moved), and fits
+  again. The first request must hold the training entries and is refused otherwise.
+  A fit does not move when a training entry is converted again: that entry's output is
+  computed again with the stored model, and a parameter is what fits again. `--overwrite`
+  recomputes entries and loads the stored fit. The entries below say what held through
+  the earlier versions.
+- `probability-ensemble` with `uniform` or listed weights no longer reads its members'
+  `cv_folds.parquet`, so members of which some were cross-validated and some applied
+  from a stored model are averaged, and the blend then writes no fold table. `weights:
+  fit` still refuses them. A `model` that did not resolve is now named in the refusal of
+  `sequence-classifier` and `lightning-action`, where it read "No templates loaded".
+- `arhmm`, `kpms`, `vame`, `global-identity-model`, `global-identity-embedding` and
+  `global-identity-dinov2-temporal` hash no scope when given a `model`, which applies it
+  to each entry alone. Their versions did not move, because a fit's run id is unchanged,
+  but the id of a run given a `model` is new, so such a run stored before is applied
+  again under the new id. The fit that produced the model is untouched. A `model` that
+  does not resolve to a stored file is refused, where `arhmm` fitted a new model in its
+  place and stored it under the missing model's id. `extract-templates`,
+  `extract-labeled-templates`, `fit-label-map` and `pair-posedistance-pca` without a
+  `model` still hash their scope: scope each to the training groups once.
+- `evaluate-labels` takes several inputs over disjoint entries and scores them as one
+  stack, with the pooled counts of a single run over all of them. The plan refuses inputs
+  asked for the same entry, where the run refused it only after its inputs had run.
+- `mosaic pipeline verify` fits each fitting step of a finished recipe again in a scratch
+  directory and compares it with the stored run, then scores again on the new
+  predictions. It exits 1 on a difference, and when nothing was compared. A network is
+  held to `--atol` and every other feature to equality. The dataset is opened read-only.
+
 **A dataset can name its held-out groups, and a plan refuses to fit on them.** An agent
 run on CalMS21 could widen a fitting step over the test group and score a model that had
 seen it, and nothing said so. The manifest gains `splits`, and the planner and a new
@@ -320,10 +357,9 @@ fixed windows). The step is new, so no run id moves.
   frames' statistics, stored with the model.
 - `cv_folds` and `cv_seed` deal the folds as `xgboost` does, so two classifiers on one
   templates run share them, and fit one network without each fold. `cv_folds.parquet`
-  counts labeled frames where `xgboost`'s counts sampled template rows. The fit reads its
-  stream, so widening the scope from the training groups to train plus test is a new run
-  that fits again. Splitting fitting from applying, planned for every classifier, removes
-  the refit.
+  counts labeled frames where `xgboost`'s counts sampled template rows. Through 0.1 the fit
+  read its stream, so widening the scope from the training groups to train plus test
+  was a new run that fitted again. 0.2 does not hash the scope (see above).
 - `device` (`cpu` or `cuda`, default `cuda`) is part of the run id, because a GPU and a CPU
   need not give one model. `apply_device` and `n_threads` are not, and a fitted network
   applies on a CPU. A CPU fit repeats at one thread count. The torch version, the CUDA
@@ -345,8 +381,8 @@ classifier would, `prob_<class>` and `predicted_label`. It is new, so no run id 
   blend over `score_classes`, from the members' out-of-fold probabilities against `labels`.
   It takes the first maximum in the grid's order, refuses a grid of more than 20,000
   weight vectors, and refuses a member without a `cv_folds.parquet`, so an in-sample
-  probability never chooses a weight. Only `fit` reads its stream, so only a `fit` run holds
-  its scope in its run id. The report is `ensemble_report.json`.
+  probability never chooses a weight. Only `fit` reads its stream. Through 0.1 a `fit` run held its scope in its run
+  id; 0.2 does not. The report is `ensemble_report.json`.
 - When every input writes `cv_folds.parquet` and the tables agree on `group`, `sequence`
   and `fold`, the step writes that table of its own, because an average of out-of-fold
   probabilities is still out-of-fold. It refuses inputs of which some have a table and some
@@ -370,8 +406,8 @@ sat under `training`, so every fit used the package's weight decay of 0.1.
   segment, with the runs that read one through `inputs` or fit their `model` from one. A
   0.4 model is refused with a message to fit again, because it stored no
   statistics.
-- The step fits from its own inputs, so its scope is part of its run id, and a step over
-  other entries is another run that fits again. It trains on the runs of consecutive
+- The step fits from its own inputs and, through 0.5, its scope was part of its run
+  id (0.6 hashes none, see above). It trains on the runs of consecutive
   labeled frames of the entries that its `templates` run assigned to `train`, aligned to
   the new `labels` param, which `templates` now requires. A run with a `model` takes no
   `labels` and stays scope-free. The drawn sample is no longer read, only the entries it

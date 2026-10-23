@@ -126,7 +126,7 @@ if TYPE_CHECKING:
 
     from ..inventory.model import DatasetInventory
     from .cleanup import CleanupPlan
-    from .compatibility import DeclarationCatalog
+    from .compatibility import Declaration, DeclarationCatalog
 
 __all__ = [
     "COMPLETE_STATUSES",
@@ -294,6 +294,10 @@ class PlannedStep:
             named only through a params reference, such as templates or a
             label map, which answer for what they were fitted on, and those
             named only by ``after``. A step scope sets no entry rule on them.
+        stacked_parents: The parents a step that stacks its inputs reads through
+            ``inputs``, set only when there are several. Together they answer
+            for the step's entries, each entry from one of them, so the entry
+            rules ask the union of their coverage and not each one's.
         run_id: What the run will be called, or ``None`` when neither it nor
             something above it can say yet.
         storage_name: Where a feature step's outputs live.
@@ -331,6 +335,7 @@ class PlannedStep:
     lane: str = ""
     parents: tuple[str, ...] = ()
     status_parents: tuple[str, ...] = ()
+    stacked_parents: tuple[str, ...] = ()
     run_id: str | None = None
     storage_name: str = ""
     tracks_variant: str = ""
@@ -807,6 +812,7 @@ def _plan_step(
         base,
         parents=parents,
         status_parents=_status_parents(step, parents),
+        stacked_parents=_stacked_parents(step, declared),
         lane=lane_for(declared),
         spec=replace(
             base.spec,
@@ -948,9 +954,20 @@ def _step_scope_problems(
 
 
 def _input_coverage_problems(
-    step: Step, target: frozenset[Entry], planned: Mapping[str, PlannedStep]
+    step: Step,
+    target: frozenset[Entry],
+    planned: Mapping[str, PlannedStep],
 ) -> list[Problem]:
-    """A problem at each data input of *step* planned over fewer entries than it."""
+    """A problem at each data input of *step* planned over fewer entries than it.
+
+    A step that stacks its inputs reads each entry from one of them, so its
+    entries must lie within the **union** of what its inputs are asked for, and
+    a problem is reported once at ``inputs``. They must also be asked for
+    disjoint entries within the step's own, because the run refuses an entry
+    two of them hold. The planner sees what each is asked for, not what a
+    scope-free run already holds from an earlier request, so that case is
+    still refused only when the step runs.
+    """
     if not isinstance(step, FeatureStepSpec):
         return []
     reads: list[tuple[str, str]] = [
@@ -961,6 +978,41 @@ def _input_coverage_problems(
     if step.tracks is not None:
         reads.append((step.tracks.step, "tracks"))
     found: list[Problem] = []
+    stacked = planned[step.id].stacked_parents
+    if stacked:
+        covered = frozenset(
+            entry
+            for parent in stacked
+            if parent in planned
+            for entry in planned[parent].coverage.target
+        )
+        outside = sorted(target - covered)
+        if outside:
+            sample = ", ".join(str(entry) for entry in outside[:MISSING_SAMPLE])
+            named = " and ".join(repr(parent) for parent in stacked)
+            message = (
+                f"{len(outside)} entries of {step.id!r} are outside what any of "
+                f"{named} is asked for: {sample}. Narrow {step.id!r} to entries "
+                "its inputs cover, or widen one of them"
+            )
+            found.append(Problem(step.id, "inputs", message))
+        held: dict[Entry, list[str]] = {}
+        for parent in stacked:
+            if parent in planned:
+                for entry in planned[parent].coverage.target & target:
+                    held.setdefault(entry, []).append(parent)
+        twice = sorted(entry for entry, parents in held.items() if len(parents) > 1)
+        if twice:
+            sample = ", ".join(str(entry) for entry in twice[:MISSING_SAMPLE])
+            named = " and ".join(repr(parent) for parent in stacked)
+            message = (
+                f"{len(twice)} entries of {step.id!r} are asked of more than one "
+                f"of {named}: {sample}. Inputs that stack must hold disjoint "
+                "entries, because scoring an entry twice would count it twice. "
+                f"Narrow {step.id!r} or give each input its own entries"
+            )
+            found.append(Problem(step.id, "inputs", message))
+        reads = [(parent, where) for parent, where in reads if parent not in stacked]
     for parent, where in reads:
         above = planned.get(parent)
         if above is None:
@@ -1044,6 +1096,16 @@ def _status_parents(step: Step, parents: tuple[str, ...]) -> tuple[str, ...]:
         if step.tracks is not None:
             reads.add(step.tracks.step)
     return tuple(parent for parent in parents if parent not in reads)
+
+
+def _stacked_parents(step: Step, declared: Declaration) -> tuple[str, ...]:
+    """The steps a stacking *step* reads through ``inputs``, when it reads several."""
+    if not isinstance(step, FeatureStepSpec) or not declared.consumes.stacks_inputs:
+        return ()
+    found = tuple(
+        dict.fromkeys(item.step for item in step.inputs if isinstance(item, StepRef))
+    )
+    return found if len(found) > 1 else ()
 
 
 def _data_parents(step: Step) -> tuple[str, ...]:

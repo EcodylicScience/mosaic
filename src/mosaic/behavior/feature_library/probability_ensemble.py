@@ -20,13 +20,20 @@ model that did not see it. This step writes the same fold table when every
 member has one and the tables agree on ``group``, ``sequence`` and ``fold``,
 because an average of out-of-fold probabilities is still out-of-fold, and a
 further ensemble finds the table where it finds a classifier's. It writes none
-when no member has one, and refuses members of which some do and some do not,
-or whose folds differ. The count columns of a member's table are not compared:
+when no member has one. The count columns of a member's table are not compared:
 ``xgboost`` counts sampled template rows and ``sequence-classifier`` counts
 labeled frames.
 
-``weights="fit"`` refuses a member without a fold table, so that an in-sample
-probability never chooses a weight.
+``uniform`` and listed weights fit nothing and need no fold table, so members of
+which some have one and some do not, or whose folds differ, are averaged all the
+same, and the step writes no fold table for them. ``weights="fit"`` refuses
+such members, and a member without a fold table, so that an in-sample probability
+never chooses a weight.
+
+**Scope.** The fitted weights come from the members' fold entries, so the run
+id does not cover the step's scope: the step fits once, and a wider scope applies
+the stored weights to the new entries. The first run of ``weights="fit"`` has to
+be asked for over a scope that holds the fold entries.
 
 **Column names.** An input merge keeps the first input's ``prob_<class>`` and
 numbers the same column of input *i* ``prob_<class>__<i>``
@@ -73,6 +80,7 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.strict_model import StrictModel
 
 from .classifier_common import (
+    FIT_SCOPE_REMEDY,
     DEFAULT_CLASS_DESCRIPTION,
     DecisionThreshold,
     assemble_prediction,
@@ -248,12 +256,17 @@ class ProbabilityEnsembleFeature:
     category = "global"
     costly_fit = False  # a fit scores a grid of weights and reads no model
     name = "probability-ensemble"
-    version = "0.1"
+    # 0.2: the run id no longer covers the step's scope. The members' fold table
+    # names the entries the weights are chosen on, so a wider scope applies the
+    # weights it has. Fixed weights no longer check the members' fold tables.
+    version = "0.2"
     parallelizable = True
-    # ``weights="fit"`` reads its stream, so its scope is its training set.
+    # ``weights="fit"`` streams its inputs but scores only the entries of the
+    # members' ``cv_folds.parquet``, and skips the others before touching state.
+    scope_dependent = False
+    fit_set_pinned_by: ClassVar[str] = "inputs"
     # Every other mode fits nothing, and ``__init__`` clears this for them.
-    scope_dependent = True
-    fits = True  # learns its weights in fit mode, and ``__init__`` clears this too
+    fits = True  # learns its weights in fit mode
     accepts_overlap = False  # computes within a row
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
@@ -320,7 +333,6 @@ class ProbabilityEnsembleFeature:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self.scope_dependent = self.params.weights == "fit"
         self.fits = self.params.weights == "fit"
         self._members = len(inputs.root)
         if (
@@ -416,30 +428,47 @@ class ProbabilityEnsembleFeature:
     ) -> pd.DataFrame | None:
         """Return the fold table that every member shares, ``None`` when none has one.
 
+        Only ``weights="fit"`` needs the table, so only it is refused members that
+        cannot give one. Fixed weights fit nothing: members of which some have a
+        table and some do not, or whose folds differ, give ``None`` and no table is
+        written for the blend, because it is not out of fold wherever they differ.
+
         Raises:
-            ValueError: Some members have a table and some do not, or the tables
-                disagree on the fold of an entry.
+            ValueError: ``weights="fit"`` and an input resolved no output, some
+                members have a table and some do not, or the tables disagree on
+                the fold of an entry.
         """
+        fitting = self.params.weights == "fit"
         tables: list[pd.DataFrame | None] = []
+        unresolved: list[str] = []
         for position in range(self._members):
             lookup = dependency_lookups.get(f"_input_{position}", {})
-            path = (
-                None
-                if not lookup
-                else next(iter(lookup.values())).parent / "cv_folds.parquet"
-            )
+            if not lookup:
+                unresolved.append(str(position))
+                tables.append(None)
+                continue
+            path = next(iter(lookup.values())).parent / "cv_folds.parquet"
             tables.append(
                 pd.read_parquet(path)[_FOLD_COLUMNS].sort_values(
                     _FOLD_COLUMNS[:2], ignore_index=True
                 )
-                if path is not None and path.exists()
+                if path.exists()
                 else None
             )
+        if unresolved and fitting:
+            msg = (
+                f"[{self.name}] inputs {', '.join(unresolved)} resolved no output "
+                "entry, so their cv_folds.parquet cannot be read. Run the members "
+                "first"
+            )
+            raise ValueError(msg)
         present = [table for table in tables if table is not None]
         if not present:
             return None
         without = [str(i) for i, table in enumerate(tables) if table is None]
         if without:
+            if not fitting:
+                return None
             msg = (
                 f"[{self.name}] inputs {', '.join(without)} write no cv_folds.parquet "
                 "and the others do. Average runs that were all fitted with cv_folds, "
@@ -449,6 +478,8 @@ class ProbabilityEnsembleFeature:
         first = present[0]
         for position, table in enumerate(present[1:], start=1):
             if not table.equals(first):
+                if not fitting:
+                    return None
                 msg = (
                     f"[{self.name}] input {position} deals its cross-validation "
                     "folds differently from input 0, so no entry is out of fold "
@@ -517,7 +548,7 @@ class ProbabilityEnsembleFeature:
                 "The weights would be chosen on fewer entries than the members "
                 "were fitted on."
             ),
-            remedy="Add them to the scope",
+            remedy=FIT_SCOPE_REMEDY,
         )
         if classes is None or not probability_blocks:
             msg = (

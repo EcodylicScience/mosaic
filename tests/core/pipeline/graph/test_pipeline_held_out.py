@@ -231,7 +231,8 @@ def test_applying_a_fitted_arhmm_to_the_test_group_passes(roled: Dataset) -> Non
     assert plan.problems == ()
     assert plan.step("fit").fits
     assert not plan.step("apply").fits
-    assert plan.step("apply").scope_dependent
+    # It applies the fit, so the entries it covers are not part of its identity.
+    assert not plan.step("apply").scope_dependent
     assert _problems(unscoped) == [("fit", "scope")]
 
 

@@ -132,6 +132,30 @@ _PCA_MODEL_REF: dict[str, object] = {
     "pattern": "model.joblib",
 }
 
+_APPLY_MODELS: dict[str, tuple[str, list[object]]] = {
+    "arhmm": ("arhmm/from-pair-wavelet", [{"feature": "pair-wavelet"}]),
+    "vame": ("vame", ["tracks"]),
+    "global-identity-model": (
+        "global-identity-model/from-egocentric-crop",
+        [{"feature": "egocentric-crop"}],
+    ),
+    "global-identity-embedding": (
+        "global-identity-embedding/from-egocentric-crop",
+        [{"feature": "egocentric-crop"}],
+    ),
+    "global-identity-dinov2-temporal": (
+        "global-identity-dinov2-temporal/from-egocentric-crop",
+        [{"feature": "egocentric-crop"}],
+    ),
+}
+"""The scope-dependent fitters that can apply a ``model``, by slug.
+
+The value is the prefix of the fitter's own cases, and its inputs.
+
+Each is a pair of cases below. The fit the model came from is the identity of the
+apply, so the two scopes of a pair must agree where the scopes of a fit differ.
+"""
+
 _VAME_REFERENCES: dict[str, object] = {
     "centered_reference_keypoint": 0,
     "orientation_reference_keypoint": 1,
@@ -383,6 +407,24 @@ CASES: tuple[Case, ...] = (
         inputs=[{"feature": "egocentric-crop"}],
         scope=(("", "seq_a"), ("", "seq_b")),
     ),
+    # --- the same fitters applying a model: the scope is where it is applied ---
+    *(
+        Case(
+            case_id=f"{prefix}/model-{label}",
+            feature=slug,
+            inputs=inputs,
+            params={
+                **(_VAME_REFERENCES if slug == "vame" else {}),
+                "model": {"feature": slug, "run_id": "0.1-0123456789"},
+            },
+            scope=scope,
+        )
+        for slug, (prefix, inputs) in _APPLY_MODELS.items()
+        for label, scope in (
+            ("scope-a", (("", "seq_a"),)),
+            ("scope-ab", (("", "seq_a"), ("", "seq_b"))),
+        )
+    ),
     # --- params-level global fitters: the templates ref is the training set ---
     Case(
         case_id="global-scaler/templates",
@@ -405,6 +447,18 @@ CASES: tuple[Case, ...] = (
     Case(
         case_id="sequence-classifier/templates",
         feature="sequence-classifier",
+        inputs=[{"feature": "global-scaler"}],
+        params={
+            "templates": _TEMPLATES_REF,
+            "labels": {"kind": "behavior"},
+            "default_class": 0,
+        },
+        scope=(("train", "s1"), ("train", "s2")),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
+        case_id="lightning-action/templates",
+        feature="lightning-action",
         inputs=[{"feature": "global-scaler"}],
         params={
             "templates": _TEMPLATES_REF,
@@ -681,6 +735,20 @@ def test_a_pca_applying_a_model_has_one_run_for_every_scope() -> None:
     assert one is not None
     assert one == both
     assert one != golden.get("pair-posedistance-pca/scope-a")
+
+
+@pytest.mark.parametrize("slug", sorted(_APPLY_MODELS))
+def test_a_fitter_applying_a_model_has_one_run_for_every_scope(slug: str) -> None:
+    """The model it applies is the identity, and the entries it covers are not."""
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    golden = read_string_golden(GOLDEN)
+    prefix, _ = _APPLY_MODELS[slug]
+    one = golden.get(f"{prefix}/model-scope-a")
+    both = golden.get(f"{prefix}/model-scope-ab")
+    assert one is not None
+    assert one == both
+    assert one != golden.get(f"{prefix}/scope-a")
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.case_id)

@@ -438,7 +438,7 @@ def _keeps_track_frame(provides: Provides | None) -> bool | None:
 
 def _feature_declaration(cls: type) -> Declaration:
     """Read one feature class as a producer and a consumer."""
-    from mosaic.core.pipeline.loading import CROSS_JOIN_FEATURES
+    from mosaic.core.pipeline.loading import CROSS_JOIN_FEATURES, stacks_inputs
 
     slug = str(getattr(cls, "name", cls.__name__))
     inputs_cls: type | None = getattr(cls, "Inputs", None)
@@ -477,6 +477,7 @@ def _feature_declaration(cls: type) -> Declaration:
             requires_track_shape=bool(getattr(inputs_cls, "_track_input", False)),
             takes_no_inputs=require == "empty",
             cross_joins=slug in CROSS_JOIN_FEATURES,
+            stacks_inputs=stacks_inputs(cls),
             reads_media="media_raw" in roots,
         ),
         emits=emits,

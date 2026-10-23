@@ -246,21 +246,74 @@ def test_a_step_given_the_fitted_model_predicts_new_entries_without_training_aga
     assert package.trainings == 1
 
 
-def test_widening_the_scope_of_the_fitting_step_is_a_new_run_that_trains_again(
+def test_widening_the_scope_of_the_fitting_step_is_the_same_run_and_trains_once(
     tmp_path: Path, package: LightningActionRecorder
 ) -> None:
-    """A fit reads its own stream, so its scope is part of its identity."""
+    """The templates run names the training set, so the scope is not in the run id."""
     ds = dataset(tmp_path / "ds")
     narrow = run_pipeline(
         ds,
         recipe(test_fraction=0.0),
         step_scopes={"labeled": TRAIN, "classifier": TRAIN, "evaluate": TRAIN},
     )
+    assert package.trainings == 1
+    narrow_outputs = _outputs(ds, _run_ids(narrow)["classifier"])
+    assert sorted(narrow_outputs) == sorted(f"train/{n}" for n in TRAIN_FRAMES)
+
     wide = run_pipeline(
         ds,
         recipe(test_fraction=0.0),
         step_scopes={"labeled": TRAIN, "classifier": BOTH, "evaluate": TEST},
     )
 
-    assert _run_ids(narrow)["classifier"] != _run_ids(wide)["classifier"]
+    assert _run_ids(narrow)["classifier"] == _run_ids(wide)["classifier"]
+    assert package.trainings == 1
+    wide_outputs = _outputs(ds, _run_ids(wide)["classifier"])
+    assert sorted(wide_outputs) == sorted(
+        [f"train/{n}" for n in TRAIN_FRAMES] + [f"test/{n}" for n in TEST_FRAMES]
+    )
+    # The entries that were there are the ones the first request wrote.
+    for entry, table in narrow_outputs.items():
+        pd.testing.assert_frame_equal(wide_outputs[entry], table)
+
+
+def test_a_first_fit_asked_over_the_wider_scope_is_the_fit_of_the_narrow_scope(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    """The scope-free identity holds only if a test entry cannot move the fit."""
+    narrow_ds, wide_ds = dataset(tmp_path / "narrow"), dataset(tmp_path / "wide")
+    narrow = run_pipeline(
+        narrow_ds,
+        recipe(test_fraction=0.0),
+        step_scopes={"labeled": TRAIN, "classifier": TRAIN, "evaluate": TRAIN},
+    )
+    trained = _trained_lengths(package)
+    wide = run_pipeline(
+        wide_ds,
+        recipe(test_fraction=0.0),
+        step_scopes={"labeled": TRAIN, "classifier": BOTH, "evaluate": TEST},
+    )
+
+    assert _run_ids(narrow)["classifier"] == _run_ids(wide)["classifier"]
     assert package.trainings == 2
+    # The recorder keeps the files of the latest training, by name.
+    assert _trained_lengths(package) == trained
+    old = _outputs(narrow_ds, _run_ids(narrow)["classifier"])
+    new = _outputs(wide_ds, _run_ids(wide)["classifier"])
+    for entry, table in old.items():
+        pd.testing.assert_frame_equal(new[entry], table)
+
+
+def test_the_first_request_over_a_scope_without_the_train_entries_is_refused(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    ds = dataset(tmp_path / "ds")
+
+    with pytest.raises(Exception, match="first run must be asked for over a scope"):
+        _ = run_pipeline(
+            ds,
+            recipe(test_fraction=0.0),
+            step_scopes={"labeled": TRAIN, "classifier": TEST, "evaluate": TEST},
+        )
+
+    assert package.trainings == 0

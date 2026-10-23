@@ -26,6 +26,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as functional
 
+from mosaic.behavior.feature_library.classifier_common import FIT_SCOPE_REMEDY
 from mosaic.behavior.feature_library import sequence_classifier as module
 from mosaic.behavior.feature_library.sequence_classifier import (
     SequenceClassifier,
@@ -681,8 +682,10 @@ def test_a_train_entry_outside_the_steps_scope_is_refused(tmp_path: Path) -> Non
 
     with pytest.raises(
         ValueError, match=r"1 train entries .* not in this step's scope"
-    ):
+    ) as refused:
         feature.fit(_stream(narrower))
+
+    assert FIT_SCOPE_REMEDY in str(refused.value)
 
 
 def test_the_columns_a_network_reads_are_the_ones_named(tmp_path: Path) -> None:

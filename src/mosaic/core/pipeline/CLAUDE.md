@@ -116,6 +116,14 @@ pipeline graph are in `graph/CLAUDE.md`.
   raises `MultiInputAlignmentError` from it. Individual-level against pair-level
   output with no shared identity column is refused. `CROSS_JOIN_FEATURES` is the
   closed escape (`tests/core/pipeline/test_multi_input_alignment.py`).
+- Inputs otherwise cover the entries they all hold. A feature that declares
+  `stacks_inputs = True` (`stacks_inputs` in `loading.py`, `evaluate-labels`) reads its
+  inputs as runs over disjoint entries: `build_manifest(stack=True)` unions them, takes
+  each entry from the one input that holds it, and raises `StackedEntryOverlap` for an
+  entry two hold (`tests/core/pipeline/test_input_manifest.py`). The planner refuses
+  inputs asked for the same entry first (`_input_coverage_problems`,
+  `tests/behavior/feature_library/test_evaluate_labels.py`). It sees what each input is
+  asked for, not what a scope-free run already holds, so the manifest keeps its check.
 - Trackers, `infer-*` and `preprocess` claim each entry through `open_entry`
   (`entry_claim.py`) with an exclusive create, and release and refresh check
   ownership (`tests/core/pipeline/test_run_markers.py`). One-shot ops claim their
@@ -144,6 +152,23 @@ pipeline graph are in `graph/CLAUDE.md`.
   row group up to a million rows. A file that would take more than `BLOCK_BYTES` is read
   a block of columns at a time, and the memory check counts the largest block
   (`tests/core/pipeline/test_run_matrix.py`).
+
+## Verification
+
+- `verify_plan` (`verify.py`, behind `mosaic pipeline verify`) fits each complete fitting
+  step again into a scratch directory and compares it with the stored run. It never
+  offers a stored bundle to `load_state`, which would answer that the state is cached
+  and skip the fit, and it writes nothing under the dataset
+  (`tests/core/pipeline/test_verify_plan.py`, `tests/cli/test_cli_read_only.py`).
+- A report that compared nothing is not `ok`. `ok` needs one verified step and no step
+  without a complete run. Values of different kinds are a mismatch, and a value the
+  walker cannot read or reach is named in the detail and never counted as compared
+  (`_Found.compared`, `unchecked`, `mismatch`).
+- The fit's frames come from `fit_input_stream` (`run.py`), the one stream `run_feature`
+  fits on. A change to what a fit reads changes both.
+- A feature is held to equality unless it has an `n_threads` param or a `device` other
+  than `cpu`. A new network feature declares one of them, or its verification fails on
+  a machine with another thread count.
 
 ## Media variants
 

@@ -338,13 +338,15 @@ class _Walk:
 
     def merged_columns(self, step: FeatureStepSpec) -> ColumnSet:
         """The columns of *step*'s merged input, read with the tracks of *step*."""
+        declared = self.catalog.get(step.feature)
         return merged_input(
             [
                 self.tracks_of(step.id)
                 if isinstance(item, str)
                 else self.input_columns(item)
                 for item in step.inputs
-            ]
+            ],
+            stack=declared is not None and declared.consumes.stacks_inputs,
         )
 
     def level_behind(self, step_id: str) -> EntityLevel:
@@ -1417,7 +1419,9 @@ def _insert_refusal(
     values = walk.values.get(child.id)
     if values is None:
         values = {**declared.param_defaults, **child.params}
-    merged_now, merged_then = merged_input(now), merged_input(then)
+    stack = declared.consumes.stacks_inputs
+    merged_now = merged_input(now, stack=stack)
+    merged_then = merged_input(then, stack=stack)
     lost = [
         need.label
         for need in needs_of(declared.requires or (), values)
@@ -1487,7 +1491,8 @@ def input_candidates(
         # stand in, and a value of the wrong shape resolves as unknown.
         values = {**declared.param_defaults, **target.params}
     current = [walk.input_columns(item) for item in target.inputs]
-    merged_now = merged_input(current)
+    stack = declared.consumes.stacks_inputs
+    merged_now = merged_input(current, stack=stack)
     still: list[tuple[NamedColumns, UnmetStatus]] = []
     for need in needs_of(declared.requires or (), values):
         status = need_status(need, merged_now)
@@ -1527,7 +1532,7 @@ def input_candidates(
     candidates: dict[str, InputCandidate] = {}
     for key, verdict in join_verdicts(declared.consumes, offered, existing).items():
         item, columns = supplied[key]
-        grown = merged_input([*current, columns])
+        grown = merged_input([*current, columns], stack=stack)
         allowed, reason = verdict.allowed, verdict.reason
         run = None if key == TRACKS_INPUT else walk.run_of(StepRef(step=key))
         same = None if run is None else reading.get(run)

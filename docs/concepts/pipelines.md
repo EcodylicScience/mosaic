@@ -99,6 +99,18 @@ answer the scheme exists to prevent. A step with no scope dependence gets the
 remainder, as it should. `pair-posedistance-pca` is the first when it fits and the
 second when it is given a `model`, which applies a basis fitted by another step.
 
+Which entries a fit learns from can be named elsewhere than in its scope. The
+classifiers `xgboost`, `sequence-classifier` and `lightning-action` train on the entries
+of their `templates` run, and a `probability-ensemble` with `weights: fit` chooses its
+weights on the entries of its members' fold table. Their identity holds no scope, so
+widening one to the test groups is the same run: the stored fit is applied to the new
+entries and nothing fits again. For the two networks and the blend, the first request
+has to cover the training entries, and is refused otherwise. The same holds for `arhmm`, `kpms`, `vame`, the identity
+models and `pair-posedistance-pca` when given a `model`. The template steps,
+`fit-label-map` and any of these without a `model` are still asked for the whole of
+their scope, so scope them to the training groups once and apply what they fitted from
+a second step.
+
 That asymmetry is also why a coverage shortfall is **refused** rather than proceeded
 through, and refused only for a scope-dependent step. A scope-free step over 89 of 90
 entries writes 89 correct outputs under the identifier they belong to, and the

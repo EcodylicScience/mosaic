@@ -57,11 +57,25 @@ own environments.
   that fits only without a `model` or with `weights="fit"` declares `True` on the class and
   narrows `self.fits` in `__init__`, beside `self.scope_dependent` when that narrows too
   (`test_a_feature_that_clears_scope_dependent_per_instance_clears_fits`). A
-  `scope_dependent` fitter with a `model` param narrows `fits` and leaves
-  `scope_dependent` alone when its run id must not change (`arhmm`, `kpms`, `vame`, the
-  identity models; `test_a_fitting_feature_given_a_model_param_narrows_fits_per_instance`),
-  or the held-out guard refuses the apply step over the test group. The catalog's
+  `scope_dependent` fitter with a `model` param narrows `fits` and `scope_dependent`
+  together (`arhmm`, `kpms`, `vame`, the identity models;
+  `test_a_fitting_feature_given_a_model_param_narrows_fits_per_instance`). The class
+  keeps `scope_dependent = True`, which describes the fit. An apply step then hashes the
+  model and no scope, so the test groups join its scope without a second run, and
+  without `fits` cleared the held-out guard would refuse it. Such a feature's
+  `load_state` raises `FileNotFoundError` for a `model` that did not resolve
+  (`named_model_file` in `feature_library/named_model.py`), because a step that fitted
+  in its place would store a fit of this scope under the missing model's id. The catalog's
   `Declaration.fits` and `StepTypeDetail.fits` carry the class value. It is not hashed.
+- **A fitter that streams its inputs hashes its scope, unless it pins its fit set.**
+  `fit()` that reads its stream is `scope_dependent = True`
+  (`test_stream_fitting_features_declare_scope_dependent`). `sequence-classifier`,
+  `lightning-action` and `probability-ensemble` instead declare `scope_dependent = False`
+  and `fit_set_pinned_by`, the `Params` field or `"inputs"` that names the training
+  entries outside the request scope (`templates`; the members' `cv_folds.parquet`). Their
+  fit skips every other entry before it touches state, so a wider scope is the same run
+  that applies the stored fit to the new entries. The first run must be asked for over a
+  scope that holds the training entries, and `refuse_entries_outside_scope` says so.
 - **A rendered artifact is `media`.** `overlay`, `egocentric-crop` and
   `interaction-crop-pipeline` live in `visualization_library/` and use the feature
   protocol and its caching. Their videos and crops are addressed by run id. mosaic has

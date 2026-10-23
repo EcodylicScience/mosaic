@@ -16,6 +16,7 @@ import inspect
 import subprocess
 import sys
 import textwrap
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -85,23 +86,91 @@ def _fit_reads_its_stream(cls: type) -> bool | None:
     )
 
 
+def _fit_set_violations(classes: Iterable[type]) -> list[str]:
+    """Name the features whose stream-reading ``fit`` has no sound identity.
+
+    A feature whose ``fit`` reads its stream either hashes the scope (the scope is
+    its training set), or declares ``fit_set_pinned_by``: the name of the ``Params``
+    field, or ``"inputs"``, that fixes the training set outside the request scope.
+    A feature that fixes its training set that way must not also hash the scope.
+    """
+    violations: list[str] = []
+    for cls in classes:
+        label = str(getattr(cls, "name", cls.__name__))
+        pinned_by = getattr(cls, "fit_set_pinned_by", None)
+        scope_dependent = getattr(cls, "scope_dependent", False) is True
+        if pinned_by is not None:
+            params = getattr(cls, "Params", None)
+            fields = getattr(params, "model_fields", {})
+            if scope_dependent:
+                violations.append(f"{label}: pins its fit set and hashes the scope")
+            elif pinned_by != "inputs" and pinned_by not in fields:
+                violations.append(
+                    f"{label}: fit_set_pinned_by {pinned_by!r} is no param"
+                )
+            continue
+        if _fit_reads_its_stream(cls) is True and not scope_dependent:
+            violations.append(f"{label}: reads its stream and declares neither")
+    return violations
+
+
 def test_stream_fitting_features_declare_scope_dependent() -> None:
     """P2f: if ``fit()`` consumes its stream, the scope is the training set.
 
     A feature that fits from the ambient ``InputStream`` and does not declare
     ``scope_dependent`` gets one identifier for every training set, so a run over
-    a wider scope silently reuses a model fitted on the narrower one.
+    a wider scope silently reuses a model fitted on the narrower one. The one
+    exemption is a feature whose training set is fixed by something its identity
+    already hashes: it declares ``fit_set_pinned_by``, naming that param.
     """
-    violations: list[str] = []
-    for cls in FEATURES.values():
-        if _fit_reads_its_stream(cls) is not True:
-            continue
-        if getattr(cls, "scope_dependent", False) is not True:
-            violations.append(str(getattr(cls, "name", cls.__name__)))
+    violations = _fit_set_violations(FEATURES.values())
     assert not violations, (
-        f"features fit from their input stream but do not declare "
-        f"scope_dependent = True: {sorted(violations)}"
+        "features fit from their input stream and neither declare "
+        f"scope_dependent = True nor fit_set_pinned_by: {sorted(violations)}"
     )
+
+
+def test_a_pinned_fit_set_is_the_only_exemption_from_scope_dependent() -> None:
+    """The check refuses an undeclared stream fitter and a bad marker."""
+
+    class _Params:
+        model_fields = {"templates": None}
+
+    class _Undeclared:
+        name = "undeclared"
+        scope_dependent = False
+
+        def fit(self, inputs: object) -> None:
+            _ = inputs
+
+    class _Pinned(_Undeclared):
+        name = "pinned"
+        Params = _Params
+        fit_set_pinned_by = "templates"
+
+    class _PinnedByNothing(_Pinned):
+        name = "pinned-by-nothing"
+        fit_set_pinned_by = "scope"
+
+    class _PinnedAndHashing(_Pinned):
+        name = "pinned-and-hashing"
+        scope_dependent = True
+
+    assert _fit_set_violations([_Pinned]) == []
+    assert len(_fit_set_violations([_Undeclared])) == 1
+    assert len(_fit_set_violations([_PinnedByNothing])) == 1
+    assert len(_fit_set_violations([_PinnedAndHashing])) == 1
+
+
+def test_only_stream_fitters_with_a_pinned_fit_set_are_scope_free_fitters() -> None:
+    """A feature that declares ``fit_set_pinned_by`` also declares ``fits``."""
+    unfit = [
+        name
+        for name, cls in FEATURES.items()
+        if getattr(cls, "fit_set_pinned_by", None) is not None
+        and getattr(cls, "fits", False) is not True
+    ]
+    assert not unfit, f"pinned fit set without fits = True: {sorted(unfit)}"
 
 
 def test_every_feature_declares_scope_dependent() -> None:

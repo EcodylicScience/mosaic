@@ -226,6 +226,75 @@ def test_pinning_a_model_moves_the_identifier(case: ArtifactCase) -> None:
     assert plain != pinned
 
 
+def pinned_to(case: ArtifactCase, run_id: str) -> dict[str, object]:
+    """The params of an apply step whose ``model`` names the run *run_id*."""
+    return {"model": {**model_ref(case), "run_id": run_id}}
+
+
+@pytest.mark.parametrize("case", ARTIFACT_CASES, ids=lambda c: c.slug)
+def test_an_apply_of_a_model_declares_neither_a_scope_nor_a_fit(
+    case: ArtifactCase,
+) -> None:
+    """The class describes a fit; a step given a model applies and fits nothing."""
+    feature = build_feature(case.slug, CROP_INPUTS, pinned_to(case, "0.1-aaaa"))
+
+    assert feature.scope_dependent is False
+    assert vars(feature)["fits"] is False
+
+
+@pytest.mark.parametrize("case", ARTIFACT_CASES, ids=lambda c: c.slug)
+def test_an_apply_over_a_wider_scope_keeps_one_run_id(case: ArtifactCase) -> None:
+    """New sequences reach the stored network without making a second run."""
+    feature = build_feature(case.slug, CROP_INPUTS, pinned_to(case, "0.1-aaaa"))
+    narrow, _ = compute_run_id(
+        feature, None, None, ResolvedScope(entries={("", "seq_a")})
+    )
+    wide, _ = compute_run_id(
+        feature,
+        None,
+        None,
+        ResolvedScope(entries={("", "seq_a"), ("", "seq_b"), ("", "seq_c")}),
+    )
+    assert narrow == wide
+
+
+@pytest.mark.parametrize("case", ARTIFACT_CASES, ids=lambda c: c.slug)
+def test_an_apply_of_another_model_is_another_run(case: ArtifactCase) -> None:
+    """The model is what the run is, so a different model moves the id."""
+    scope = ResolvedScope(entries={("", "seq_a")})
+    first, _ = compute_run_id(
+        build_feature(case.slug, CROP_INPUTS, pinned_to(case, "0.1-aaaa")),
+        None,
+        None,
+        scope,
+    )
+    second, _ = compute_run_id(
+        build_feature(case.slug, CROP_INPUTS, pinned_to(case, "0.1-bbbb")),
+        None,
+        None,
+        scope,
+    )
+    assert first != second
+
+
+@pytest.mark.parametrize("case", ARTIFACT_CASES, ids=lambda c: c.slug)
+def test_an_apply_over_a_wider_scope_adopts_the_one_stored_network(
+    case: ArtifactCase, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two scopes of one run id load the same checkpoint, and fit nothing."""
+    patch_network(case, monkeypatch)
+    trained = tmp_path / "trained"
+    bundle_path = write_bundle(trained, case, f"{case.weights_stem}.pth")
+    feature = build_feature(case.slug, CROP_INPUTS, pinned_to(case, "0.1-aaaa"))
+
+    assert feature.load_state(tmp_path / "run", {"model": bundle_path}, {}) is True
+    assert feature.load_state(tmp_path / "run", {"model": bundle_path}, {}) is True
+
+    expected = trained / f"{case.weights_stem}.pth"
+    assert RecordingNetwork.loaded == [expected, expected]
+    assert not list((tmp_path / "run").glob("*")), "an apply writes no model"
+
+
 # --- The sidecar indirection ----------------------------------------------
 
 
@@ -285,15 +354,31 @@ def test_load_state_ignores_this_runs_weights_name(
 
 
 @pytest.mark.parametrize("case", ARTIFACT_CASES, ids=lambda c: c.slug)
-def test_load_state_falls_through_when_the_artifact_did_not_resolve(
+def test_load_state_refuses_a_model_that_did_not_resolve(
     case: ArtifactCase, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An unresolved reference must fit, not crash on a missing dict key."""
+    """A named model that is not there stops the run rather than fitting a network.
+
+    The run id of a step given a model names the model and no scope, so a network
+    fitted in its place would be stored under an id that names the missing one.
+    """
     patch_network(case, monkeypatch)
     feature = build_feature(case.slug, CROP_INPUTS, {"model": model_ref(case)})
 
-    assert feature.load_state(tmp_path / "empty-run", {}, {}) is False
+    with pytest.raises(FileNotFoundError, match="holds no"):
+        _ = feature.load_state(tmp_path / "empty-run", {}, {})
     assert RecordingNetwork.loaded == []
+
+
+@pytest.mark.parametrize("case", ARTIFACT_CASES, ids=lambda c: c.slug)
+def test_a_run_without_a_model_still_fits_when_nothing_is_cached(
+    case: ArtifactCase, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a run that names a model is refused; the fit has nothing to find."""
+    patch_network(case, monkeypatch)
+    feature = build_feature(case.slug, CROP_INPUTS, None)
+
+    assert feature.load_state(tmp_path / "empty-run", {}, {}) is False
 
 
 @pytest.mark.parametrize("case", ARTIFACT_CASES, ids=lambda c: c.slug)

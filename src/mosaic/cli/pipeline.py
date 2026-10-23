@@ -1,6 +1,6 @@
 """``mosaic pipeline``: read a graph, say what it would do, and do it.
 
-Nine verbs, and the split between them is the split the library makes.
+Ten verbs, and the split between them is the split the library makes.
 ``catalog`` lists the step types a recipe may run. ``validate`` asks only about
 the document and opens no dataset.
 ``plan`` and ``show`` resolve it against a dataset and write nothing. ``run``
@@ -15,6 +15,10 @@ prints the command each step is run by, so a graph can be driven by anything tha
 starts processes in order -- a shell loop, a job array, a scheduler. ``status``
 then says how far that submission got, reading only the attempts' own logs.
 ``list`` reports a page of the dataset's submissions the same way.
+
+``verify`` fits the fitting steps of a finished recipe again in a scratch directory
+and compares them with the stored runs (``core/pipeline/verify.py``). It writes
+nothing under the dataset.
 
 ``score`` is the verb of a held-out protocol (``pipeline_score.py``). It copies
 the study, adds held-out data to the copy, refuses when that would move the run
@@ -74,6 +78,7 @@ if TYPE_CHECKING:
         RequestSummaryWire,
         RetirableRecipeWire,
     )
+    from mosaic.core.pipeline.verify import VerifyReport
 
 pipeline_app = typer.Typer(
     name="pipeline",
@@ -364,6 +369,174 @@ def plan_command(
         ),
         as_json=as_json,
     )
+
+
+AtolOption = Annotated[
+    float,
+    typer.Option(
+        "--atol",
+        min=0,
+        help=(
+            "How far a tolerant feature's new fit may sit from the stored one, "
+            "per value. Only a feature that trains a network is tolerant (it has "
+            "an n_threads param, or a device other than cpu). Every other "
+            "feature must match exactly."
+        ),
+    ),
+]
+ScratchOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--scratch",
+        help=(
+            "Where the new fits go, outside the dataset. It must be absent or "
+            "empty, and is kept afterwards. Without it a temporary directory is "
+            "used and removed."
+        ),
+    ),
+]
+VerifyThreadsOption = Annotated[
+    int,
+    typer.Option(
+        "--n-threads",
+        min=1,
+        help=(
+            "The thread count a feature with an n_threads param is fitted with. "
+            "It is outside the run id."
+        ),
+    ),
+]
+
+
+def verify_command(
+    recipe: RecipeOption,
+    manifest: ManifestOption,
+    entry: EntriesOption = None,
+    group: GroupOption = None,
+    step_scope: StepScopeOption = None,
+    atol: AtolOption = 1e-5,
+    scratch: ScratchOption = None,
+    n_threads: VerifyThreadsOption = 1,
+    as_json: JsonOption = False,
+) -> None:
+    """Fit a finished recipe's fitting steps again and compare them with the stored runs.
+
+    Plans the recipe as 'pipeline plan' does (same --entry, --group and
+    --step-scope). Each step whose feature fits and whose run is complete is
+    fitted again into a scratch directory, never into the dataset, and then:
+    its stored per-entry outputs are compared with the same entries applied
+    from the new fit (largest absolute difference, and for prob_* columns the
+    share of rows keeping their most probable class), and so are the files the
+    fit saves. Each evaluation step (evaluate-labels) is scored again, on the
+    predictions of the new fit where its input was just verified, and its
+    metrics.json is compared with the stored one. Exits 0 when everything is
+    within tolerance and 1 otherwise, with --json giving every difference. It
+    also exits 1 when no step was compared (a recipe never run, or a
+    --step-scope the run did not use).
+
+    The tolerance is a decision, not a default to loosen. Most features are
+    deterministic and must match exactly. A feature that trains a network
+    (sequence-classifier, lightning-action) matches exactly on CPU at the same
+    thread count, with n_threads fixed at 1 here unless --n-threads says
+    otherwise. Across thread counts on Linux its probabilities move (mean
+    about 7e-3, about 99% of rows keep their argmax), and across a GPU and a
+    CPU they move more. A tolerant feature is held to --atol (1e-5) and an
+    evaluation of its predictions inherits it. To verify a run that was fitted
+    at another thread count or on a GPU, raise --atol and read the argmax
+    agreement. The dataset is opened read-only and nothing is written under it.
+    """
+    from mosaic.core.pipeline.graph import RecipeRefused, plan_pipeline
+    from mosaic.core.pipeline.verify import ScratchRefused, verify_plan
+
+    ds = load_dataset(manifest, read_only=True)
+    parsed = _recipe(recipe, as_json=as_json)
+    scope = entries_scope(entry, group)
+    step_scopes = parse_step_scopes(step_scope)
+    try:
+        with stdout_to_stderr():
+            plan = plan_pipeline(
+                ds, parsed, scope=scope, step_scopes=step_scopes, refuse=True
+            )
+    except RecipeRefused as refusal:
+        if as_json:
+            from mosaic.core.pipeline.graph import plan_wire
+
+            emit_json(plan_wire(refusal.plan).model_dump(mode="json"))
+            raise typer.Exit(code=1) from refusal
+        fail(str(refusal))
+    except ClassifiedError as error:
+        _fail_unrunnable(error, as_json=as_json)
+    try:
+        with stdout_to_stderr():
+            report = verify_plan(
+                ds, plan, atol=atol, n_threads=n_threads, scratch=scratch
+            )
+    except ScratchRefused as refusal:
+        fail(str(refusal))
+    if as_json:
+        emit_json(report.model_dump(mode="json"))
+    else:
+        _emit_verify(report)
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
+def _emit_verify(report: "VerifyReport") -> None:
+    """Render a verification as a table with the differences listed below it."""
+
+    def number(value: float | None, pattern: str = "{:.3g}") -> str:
+        return "-" if value is None else pattern.format(value)
+
+    rows = [
+        {
+            "step": step.step,
+            "runs": step.runs,
+            "role": step.role,
+            "status": step.status,
+            "tolerance": f"{step.tolerance:g}",
+            "max_abs_diff": number(step.max_abs_diff),
+            "argmax": number(step.argmax_agreement, "{:.4f}"),
+            "entries": step.entries_checked,
+            "note": step.reason,
+        }
+        for step in report.steps
+    ]
+    render_table(
+        rows,
+        [
+            "step",
+            "runs",
+            "role",
+            "status",
+            "tolerance",
+            "max_abs_diff",
+            "argmax",
+            "entries",
+            "note",
+        ],
+    )
+    for step in report.steps:
+        for entry in step.entries:
+            if entry.status == "differs":
+                typer.echo(
+                    f"{step.step}: {entry.group}/{entry.sequence} differs "
+                    f"(max {number(entry.max_abs_diff)}) {entry.detail}".rstrip(),
+                    err=True,
+                )
+        for state in step.state:
+            if state.status == "differs":
+                typer.echo(
+                    f"{step.step}: {state.file} differs "
+                    f"(max {number(state.max_abs_diff)}) {state.detail}".rstrip(),
+                    err=True,
+                )
+    if report.verified == 0:
+        outcome = "nothing was compared, so nothing is verified."
+    elif report.ok:
+        outcome = "all within tolerance."
+    else:
+        outcome = "differences found."
+    typer.echo(f"verified {report.verified} step(s): {outcome}", err=not report.ok)
 
 
 def show_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
@@ -1282,6 +1455,7 @@ def _reason_cell(planned: "PlannedStep") -> str:
 _ = pipeline_app.command(name="catalog")(catalog_command)
 _ = pipeline_app.command(name="validate")(validate_command)
 _ = pipeline_app.command(name="plan")(plan_command)
+_ = pipeline_app.command(name="verify")(verify_command)
 _ = pipeline_app.command(name="show")(show_command)
 _ = pipeline_app.command(name="submit")(submit_command)
 _ = pipeline_app.command(name="run")(run_command)

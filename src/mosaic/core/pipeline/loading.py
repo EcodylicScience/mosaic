@@ -41,6 +41,22 @@ _ALIGN_COLS = ALIGN_COLS
 CROSS_JOIN_FEATURES: frozenset[str] = frozenset({"interaction-crop-pipeline"})
 
 
+def stacks_inputs(feature: object) -> bool:
+    """Whether a feature (or feature class) reads several inputs as one stack.
+
+    The other reading of a multi-input step. A merge joins the inputs
+    column-wise on the entries they all hold. A **stack** unions their entries:
+    each entry is read from the one input that holds it, and the inputs are
+    alike runs over disjoint parts of the data, such as one classifier run per
+    fold. A feature declares it with the optional class attribute
+    ``stacks_inputs = True``, which :func:`~mosaic.core.pipeline.manifest.build_manifest`
+    and the recipe planner both read. Unlike :data:`CROSS_JOIN_FEATURES` it is
+    open: it changes which entries a step sees, not how rows are joined, and a
+    feature outside the registry can declare it.
+    """
+    return getattr(feature, "stacks_inputs", False) is True
+
+
 class MultiInputAlignmentError(ValueError):
     """Two inputs cannot be aligned without inventing or dropping rows."""
 

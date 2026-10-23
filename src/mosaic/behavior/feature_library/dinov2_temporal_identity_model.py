@@ -55,6 +55,7 @@ from ._identity_model_descriptions import (
     LEARNING_RATE_DESCRIPTION,
     WEIGHTS_NAME_DESCRIPTION,
 )
+from .named_model import named_model_file
 from .registry import register_feature
 
 TemporalHead = Literal["gru", "perceiver", "pool"]
@@ -96,9 +97,11 @@ class DinoV2TemporalIdentityArtifact(JoblibArtifact[DinoV2TemporalIdentityBundle
 # --- Feature class ---
 
 _MODEL_DESCRIPTION = (
-    "A pre-fitted DinoV2TemporalIdentityArtifact to load, skipping the "
-    "fit. Unset, the model fits from the crops named by identities or "
-    "group_as_identity."
+    "A pre-fitted DinoV2TemporalIdentityArtifact to load, such as a fit "
+    "step scoped to the training groups. Unset, the model fits from the "
+    "crops named by identities or group_as_identity over the entries in "
+    "scope. Set, nothing is fitted, the entries in scope leave the run id, "
+    "and a model that cannot be found is refused."
 )
 
 _BACKBONE_DESCRIPTION = (
@@ -179,7 +182,9 @@ class GlobalIdentityDinoV2Temporal:
 
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
-    fits = True  # learns from its inputs; __init__ clears it for a run given a model
+    # Learns from its inputs. ``__init__`` clears this and ``scope_dependent`` for a
+    # run given a model, which applies it.
+    fits = True
     # The backbone runs on the best device under `device="auto"`, CUDA first.
     resource_class = "gpu"
     name: str = "global-identity-dinov2-temporal"
@@ -190,7 +195,8 @@ class GlobalIdentityDinoV2Temporal:
     # training set and belongs in the identifier (P2f). An inference run pins
     # ``model`` instead and carries its training set by reference, so fit and
     # apply are two runs with two identifiers rather than one that silently
-    # reuses a network fitted on a narrower scope.
+    # reuses a network fitted on a narrower scope. ``__init__`` clears this for
+    # that run: it hashes the model and no scope, and passes its input through.
     scope_dependent = True
     accepts_overlap = False  # cuts clips within an entry, never across a boundary
     consumed_roots: tuple[str, ...] = ()
@@ -280,8 +286,9 @@ class GlobalIdentityDinoV2Temporal:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        # A run given a model applies it and learns nothing, so a held-out group may
-        # be in its scope. ``scope_dependent`` stays as it is, which keeps the run id.
+        # A run given a model applies it and learns nothing: a held-out group may be
+        # in its scope, and the scope is not part of what the run is.
+        self.scope_dependent = self.params.model is None
         self.fits = self.params.model is None
 
         self._network: object | None = None
@@ -319,8 +326,10 @@ class GlobalIdentityDinoV2Temporal:
         # Branch 2: a pre-fitted model pinned in params. The checkpoint name
         # comes from the bundle, never from self.params -- an inference run's
         # weights_name need not match the training run's.
-        if self.params.model is not None and "model" in artifact_paths:
-            bundle_path = artifact_paths["model"]
+        # A model that was named and is not there is refused: fitting in its place
+        # would store a network of this scope under an id that names the missing one.
+        if self.params.model is not None:
+            bundle_path = named_model_file(self.name, self.params.model, artifact_paths)
             bundle = self.params.model.from_path(bundle_path)
             self._network = DinoV2TemporalNetwork.from_checkpoint(
                 bundle_path.parent / bundle["weights"]

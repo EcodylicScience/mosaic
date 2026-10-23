@@ -1006,6 +1006,7 @@ $ mosaic pipeline [OPTIONS] COMMAND [ARGS]...
 * `catalog`: List the step types a recipe may run, or...
 * `validate`: Check a recipe against the registries.
 * `plan`: Resolve a recipe against a dataset:...
+* `verify`: Fit a finished recipe's fitting steps...
 * `show`: Print a recipe's steps and the references...
 * `submit`: Record a submission of a recipe, and print...
 * `run`: Run every step of a recipe here, in order,...
@@ -1087,6 +1088,53 @@ $ mosaic pipeline plan [OPTIONS]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
 * `--retire <str>`: With --cleanup superseded, also judge the runs that this saved recipe's requests wrote, in any storage (repeatable; a recipe digest, which 'pipeline plan --cleanup superseded' lists). It applies to this plan or submission only: give it to the plan and again to the submission.
 * `--assume-added GROUP`: Assume this group joins the dataset (repeatable) and note which steps of the plan would refit and which would only re-score, as the same scope covers it. It changes nothing else.
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
+### `mosaic pipeline verify`
+
+Fit a finished recipe's fitting steps again and compare them with the stored runs.
+
+Plans the recipe as 'pipeline plan' does (same --entry, --group and
+--step-scope). Each step whose feature fits and whose run is complete is
+fitted again into a scratch directory, never into the dataset, and then:
+its stored per-entry outputs are compared with the same entries applied
+from the new fit (largest absolute difference, and for prob_* columns the
+share of rows keeping their most probable class), and so are the files the
+fit saves. Each evaluation step (evaluate-labels) is scored again, on the
+predictions of the new fit where its input was just verified, and its
+metrics.json is compared with the stored one. Exits 0 when everything is
+within tolerance and 1 otherwise, with --json giving every difference. It
+also exits 1 when no step was compared (a recipe never run, or a
+--step-scope the run did not use).
+
+The tolerance is a decision, not a default to loosen. Most features are
+deterministic and must match exactly. A feature that trains a network
+(sequence-classifier, lightning-action) matches exactly on CPU at the same
+thread count, with n_threads fixed at 1 here unless --n-threads says
+otherwise. Across thread counts on Linux its probabilities move (mean
+about 7e-3, about 99% of rows keep their argmax), and across a GPU and a
+CPU they move more. A tolerant feature is held to --atol (1e-5) and an
+evaluation of its predictions inherits it. To verify a run that was fitted
+at another thread count or on a GPU, raise --atol and read the argmax
+agreement. The dataset is opened read-only and nothing is written under it.
+
+**Usage**:
+
+```console
+$ mosaic pipeline verify [OPTIONS]
+```
+
+**Options**:
+
+* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
+* `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable).
+* `--atol <float range>`: How far a tolerant feature's new fit may sit from the stored one, per value. Only a feature that trains a network is tolerant (it has an n_threads param, or a device other than cpu). Every other feature must match exactly.  [default: 1e-05; x>=0]
+* `--scratch <path>`: Where the new fits go, outside the dataset. It must be absent or empty, and is kept afterwards. Without it a temporary directory is used and removed.
+* `--n-threads <int range>`: The thread count a feature with an n_threads param is fitted with. It is outside the run id.  [default: 1; x>=1]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 

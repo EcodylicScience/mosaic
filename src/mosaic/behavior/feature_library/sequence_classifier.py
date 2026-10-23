@@ -13,12 +13,16 @@ frames are not consecutive, and the network never convolves or recurs across the
 the runs of consecutive frames of their series that ``labels`` covers. A batch is a
 set of random crops of whole runs, and the drawn templates are not read. Frames are
 standardized by the mean and standard deviation of the training frames, which the
-model stores. The fit reads the step's inputs, so its scope is its training set.
-A model applied to other entries is named through ``model`` by a second step.
+model stores. The ``templates`` run names the training set, so the run id does not
+cover the step's scope: the step fits once, on the train entries it names, and a
+wider scope applies the stored model to the new entries and fits nothing again. The
+first run has to be asked for over a scope that holds the train entries. A model
+fitted elsewhere is applied through ``model``.
 
 **Cross-validation.** With ``cv_folds`` the training entries are dealt into folds as
 ``xgboost`` deals them, one model is fitted without each fold, and an entry of a fold
-is scored by the model that did not see it. ``cv_folds.parquet`` lists the folds.
+is scored by the model that did not see it, and an entry outside the training set by
+the model fitted on all of it. ``cv_folds.parquet`` lists the folds.
 
 **Determinism.** The same params and inputs fit the same model on a CPU at one
 thread count. A GPU repeats on the same machine with the settings below, and is
@@ -83,6 +87,7 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.optional_dependency import OptionalModule, Prerequisite
 
 from .classifier_common import (
+    FIT_SCOPE_REMEDY,
     DEFAULT_CLASS_DESCRIPTION,
     CvSeed,
     DecisionThreshold,
@@ -199,7 +204,9 @@ _TEMPLATES_DESCRIPTION = (
     "The extract-labeled-templates run whose train entries the model fits on. "
     "Only its template_provenance.parquet is read: the model trains on the "
     "frame runs of those entries, not on the sampled templates. An entry the "
-    "run lists as test, or does not list, never trains. Mutually exclusive "
+    "run lists as test, or does not list, never trains. The run names the "
+    "training set, so the step's scope is not part of its identity: a wider "
+    "scope applies the fit it has and does not fit again. Mutually exclusive "
     "with model."
 )
 
@@ -324,12 +331,16 @@ class SequenceClassifier(FitReporting):
     costly_fit = True  # a superseded-run cleanup keeps its runs
     resource_class = "gpu"
     name = "sequence-classifier"
-    version = "0.1"
+    # 0.2: the run id no longer covers the step's scope. The ``templates`` run names
+    # the training set, so a wider scope applies the fit it has.
+    version = "0.2"
     parallelizable = False  # one loaded network per instance, and a pass is a series
-    # A fit reads its own stream, so its scope is its training set. A run given a
-    # ``model`` fits nothing, and ``__init__`` clears this for it.
-    scope_dependent = True
-    fits = True  # learns a network, and ``__init__`` clears this the same way
+    # The fit streams the step's inputs but trains only on the entries that
+    # ``templates`` assigned to train, and skips the others before touching state.
+    scope_dependent = False
+    fit_set_pinned_by: ClassVar[str] = "templates"
+    # A run given a ``model`` fits nothing, and ``__init__`` clears this for it.
+    fits = True  # learns a network
     accepts_overlap = False  # reads each series as its own sequence
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (TORCH,)
@@ -495,7 +506,6 @@ class SequenceClassifier(FitReporting):
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self.scope_dependent = self.params.model is None
         self.fits = self.params.model is None
         self._reset()
 
@@ -567,7 +577,13 @@ class SequenceClassifier(FitReporting):
 
     def fit(self, inputs: InputStream) -> None:
         if self._train_entries is None:
-            msg = f"[{self.name}] No templates loaded, so check load_state."
+            msg = (
+                f"[{self.name}] model {self.params.model.run_id!r} did not resolve "
+                "to a stored model, so there is nothing to apply and the step "
+                "does not fit in its place. Check the model reference"
+                if self.params.model is not None
+                else f"[{self.name}] No templates loaded, so check load_state."
+            )
             raise RuntimeError(msg)
         torch = TORCH.load()
         p = self.params
@@ -752,7 +768,7 @@ class SequenceClassifier(FitReporting):
             self._label_files,
             seen,
             consequence="The model would train on fewer entries than its templates name.",
-            remedy="Add them to the scope, or apply a model fitted elsewhere through `model`",
+            remedy=FIT_SCOPE_REMEDY,
         )
         if unlabeled_entries or too_short:
             log.warning(

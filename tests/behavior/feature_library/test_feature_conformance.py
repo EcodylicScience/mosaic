@@ -148,21 +148,49 @@ def test_a_fitting_feature_given_a_model_param_narrows_fits_per_instance(
 ) -> None:
     """A run told which model to apply fits nothing, whatever its identity covers.
 
-    ``arhmm``, ``kpms``, ``vame`` and the identity models keep ``scope_dependent``
-    as it is, so the check above skips them. The held-out guard reads ``fits`` off
-    the instance, and an apply step left declaring ``True`` would be refused over
-    the test group. A scope-free fitter is not the guard's concern.
+    The held-out guard reads ``fits`` off the instance, and an apply step left
+    declaring ``True`` would be refused over the test group. A fitter that hashes
+    its scope narrows ``scope_dependent`` beside it (``arhmm``, ``kpms``, ``vame``,
+    the identity models), which the check above also covers. A scope-free fitter is
+    not the guard's concern, except one
+    that declares ``fit_set_pinned_by``: ``sequence-classifier`` and
+    ``lightning-action`` hash no scope and still narrow ``fits`` for a given
+    ``model``, which the planner and the catalog read.
     """
     params: object = getattr(cls, "Params", None)
     if not (isinstance(params, type) and issubclass(params, BaseModel)):
         pytest.skip("no Params model")
     fits: object = getattr(cls, "fits", False)
     named: object = getattr(cls, "scope_dependent", False)
-    if "model" not in params.model_fields or fits is not True or named is not True:
+    pinned = getattr(cls, "fit_set_pinned_by", None) is not None
+    if "model" not in params.model_fields or fits is not True or not (named or pinned):
         pytest.skip("takes no model, does not fit, or a scope-free fitter")
     assert _sets_on_instance(cls, "fits"), (
         f"{cls.__name__} fits and takes a 'model' param to apply, and does not "
         f"narrow 'fits' in __init__ for a run given one."
+    )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_a_scope_free_fitter_declares_fits_and_narrows_it_per_instance(
+    cls: type,
+) -> None:
+    """A fit set pinned outside the scope leaves the identity scope-free and ``fits`` set.
+
+    The class says ``fits = True`` for the catalog, and the instance clears it for
+    a run that applies a stored model or fixed weights. Nothing sets
+    ``scope_dependent`` on the instance: the identity does not depend on the params.
+    """
+    if getattr(cls, "fit_set_pinned_by", None) is None:
+        pytest.skip("does not pin its fit set outside the scope")
+    assert getattr(cls, "scope_dependent", None) is False
+    assert not _sets_on_instance(cls, "scope_dependent"), (
+        f"{cls.__name__} pins its fit set and sets 'scope_dependent' per instance."
+    )
+    assert getattr(cls, "fits", False) is True
+    assert _sets_on_instance(cls, "fits"), (
+        f"{cls.__name__} pins its fit set and does not narrow 'fits' in __init__ "
+        "for a run that fits nothing."
     )
 
 

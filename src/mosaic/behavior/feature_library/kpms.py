@@ -86,6 +86,7 @@ from .external.kpms_protocol import (
     check_latent_dim,
 )
 from .helpers import entry_identity, label_individuals
+from .named_model import named_model_file
 from .registry import register_feature
 from .runner_client import RunnerInterpreter, RunnerProcess
 
@@ -289,7 +290,12 @@ def kpms_keypoint_arrays(rows: pd.DataFrame, pose: PoseConfig) -> KeypointArrays
     return arrays
 
 
-_MODEL_DESCRIPTION = "A pre-fitted model to load. Unset, the feature fits a new model."
+_MODEL_DESCRIPTION = (
+    "The model of a kpms run to apply, such as a fit step scoped to the training "
+    "groups. Unset, the feature fits a new model on the entries in scope. Set, "
+    "nothing is fitted, the entries in scope leave the run id, and a model that "
+    "cannot be found is refused."
+)
 
 _KPMS_PYTHON_DESCRIPTION = (
     "Path to a Python interpreter with keypoint-moseq installed. Unset, "
@@ -436,12 +442,16 @@ class KpmsFeature:
 
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
-    fits = True  # learns from its inputs; __init__ clears it for a run given a model
+    # Learns from its inputs. ``__init__`` clears this and ``scope_dependent`` for a
+    # run given a model, which applies it.
+    fits = True
     # keypoint-MoSeq fits in JAX, and is built for a GPU; on CPU a fit takes days.
     resource_class = "gpu"
     name = "kpms"
     version = "0.1"
     parallelizable = False
+    # The entries in scope are the training set, so a fit hashes them. A run given
+    # a ``model`` applies it to each entry alone and hashes none.
     scope_dependent = True
     accepts_overlap = (
         False  # decodes a whole sequence at once, so context is not a window
@@ -533,8 +543,9 @@ class KpmsFeature:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        # A run given a model applies it and learns nothing, so a held-out group may
-        # be in its scope. ``scope_dependent`` stays as it is, which keeps the run id.
+        # A run given a model applies it and learns nothing: a held-out group may be
+        # in its scope, and the scope is not part of what the run is.
+        self.scope_dependent = self.params.model is None
         self.fits = self.params.model is None
         self.cancel_token: CancelToken | None = None
         self._runner = RunnerProcess(
@@ -633,12 +644,14 @@ class KpmsFeature:
         self._model = None
         self._unsaved = None
 
-        # The cached model of this run root, else a pre-fitted model.
+        # The cached model of this run root, else a pre-fitted model. A model that
+        # was named and is not there is refused, because fitting in its place would
+        # store a model of this scope under an id that names the missing one.
         cached_path = run_root / KPMS_MODEL_FILE
         if cached_path.exists():
             model = cached_path
-        elif self.params.model is not None and "model" in artifact_paths:
-            model = artifact_paths["model"]
+        elif self.params.model is not None:
+            model = named_model_file(self.name, self.params.model, artifact_paths)
         else:
             return False
         # A run that applies a model is refused here, once, before any entry

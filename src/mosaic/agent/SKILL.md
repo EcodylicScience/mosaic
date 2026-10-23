@@ -213,8 +213,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 ## Running features
 
 - A run is named `<version>-<10 hex>`, a hash of its parameters, inputs and frame range.
-  The same call again computes nothing. `--overwrite` (`overwrite=True`) recomputes. To
-  change a result, change its parameters. Editing output files breaks the cache.
+  The same call again computes nothing. `--overwrite` (`overwrite=True`) recomputes each
+  entry's output but loads a stored fit and never fits again. To change a result,
+  including a model, change a parameter. Editing output files breaks the cache. To check
+  that a stored result is the one its recipe produces, see `mosaic pipeline verify`
+  below.
 - A tracks variant, op run or model is named `<kind>.<version>-<10 hex>`, such as
   `convert-trex_npz.0.3-6bb5efbf05`. That string is what `tracks_run_id=`, `media=`,
   `model=` and `data=` take.
@@ -237,8 +240,10 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   as its own sequence, and writes `id1`, `id2`, `perspective`, `group` and `sequence`
   beside its states, so `fit-label-map` can score them (`prediction_column: syllable`).
   `lightning-action` trains and predicts on each `(id1, id2, perspective)` as a
-  sequence of its own, from the entries of its `templates` run's train split, so its
-  scope is part of its run id. A second step with `model` predicts further entries.
+  sequence of its own, from the entries of its `templates` run's train split. Its scope
+  is not part of its run id: the `templates` run names the training set, so a wider
+  request is the same run, which applies the stored fit to the new entries. The first
+  request must hold the training entries and is refused otherwise.
   `sequence-classifier` (`[deep-learning]`, GPU worker) is the same kind of step with a
   registered network as `head` (`tcn`, `gru` or `mlp`, options in `head_config`). It takes
   `cv_folds` and `cv_seed` as `xgboost` does, with the same folds. A head registered in
@@ -247,7 +252,8 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   classifier runs: `weights` is `uniform`, a list, or `fit`, which chooses them on the
   members' out-of-fold probabilities and refuses a member fitted without `cv_folds`. It
   writes the members' fold table when they all have the same one, so an average of
-  cross-validated runs can be a member of a blend.
+  cross-validated runs can be a member of a blend. A list or `uniform` weights fit nothing,
+  so those members need no fold table, and mixed members are averaged without one.
 - A label of `-1` means unlabeled: no annotation covers the row. Templates leave it
   out and scoring drops and counts it. Never read it as a class. A pair row takes the
   label of its own direction, so a CalMS21 label marks only the resident-focal row.
@@ -299,6 +305,19 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `coverage_shortfall` is answered with `--allow-partial` (`allow_partial=True`), and
   only once the user accepts results over fewer entries. Details:
   https://ecodylicscience.github.io/mosaic/concepts/pipelines/.
+- A step given a fitted `model` (`arhmm`, `kpms`, `vame`, the identity models,
+  `lightning-action`) applies it to each entry alone, so its scope is not in its run id
+  and a wider request is the same run. `evaluate-labels` takes several inputs over
+  disjoint entries and scores them as one, and the plan refuses inputs asked for the
+  same entry. `extract-templates`, `extract-labeled-templates`, `fit-label-map` and a
+  `pair-posedistance-pca` without a `model` still hash the entries they cover, so scope
+  them to the training groups once.
+- `mosaic pipeline verify --manifest <manifest> --recipe <recipe>` (with the
+  `--step-scope` you ran) fits each fitting step of a finished recipe again in a scratch
+  directory and compares it with the stored run. It exits 1 on a difference and when it
+  compared nothing, and it writes nothing to the dataset. Features that train a network
+  match exactly on CPU at one thread count and otherwise within `--atol`. Propose it to
+  the user to check a result reproduces, and run it only when they ask.
 - `mosaic inventory` reports what exists, with coverage and a status such as
   `partial` or `complete-but-drifted`. `mosaic runs` and `mosaic status` report
   attempts. A feature run is measured over the entries it was asked for, and
@@ -357,15 +376,22 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `evaluate-labels` to the training groups: that score is the pooled out-of-fold one.
   For the final score widen the same `xgboost` step to the test groups, which is the
   same run, and keep the labeled templates on the training groups. Widening a
-  `sequence-classifier` or `lightning-action` step is not the same run: they fit from the
-  step's own inputs, so the wider step fits again, about 5 minutes per seed with five
-  folds on a GPU (an estimate). Splitting fitting from applying, planned for every
-  classifier, removes the refit. The score is not nested, and a fold is whole sequences
+  `sequence-classifier`, `lightning-action` or fitted-weight `probability-ensemble` step
+  is the same run too: their `templates` run (or the members' folds) names the training
+  set, so the wider request fits nothing again and computes only the new entries. Ask
+  the first request over a scope that holds the training entries. A fit does not move
+  when a training entry is converted again; only that entry's output is recomputed with
+  the stored model, so refit on purpose by changing a parameter. `fit_scope.json` lists
+  the entries of the templates run, not of the request. The score is not nested, and a
+  fold is whole sequences
   (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
 - Each output row of `evaluate-labels` carries `tp_<class>`, `fp_<class>` and
   `fn_<class>`. `mosaic.core.evaluation` pools them (`pool_entry_counts`), bootstraps
   over sequences from them (`bootstrap_sequences`, with a required `random_state`),
   and combines the reports of separate runs (`pool_reports`, `aggregate_reports`).
+  In a recipe, give one `evaluate-labels` step several inputs over disjoint entries,
+  such as a cross-validated run over the training groups and an applied one over the
+  test groups, and it reports their union with the pooled counts of one run.
 - In Python, `load_values(ds, [ResultColumn(...), GroundTruthLabelsSource()])` gives
   each row its label, and `labels_run_id=` picks a labels variant when the dataset
   holds two.

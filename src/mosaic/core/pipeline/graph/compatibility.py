@@ -161,6 +161,11 @@ class ConsumerDecl:
             refusal, and closed rather than a per-feature flag.
         reads_media: Whether it opens video, which is what makes an ordering-only
             edge from a media writer worth declaring.
+        stacks_inputs: Whether several inputs are runs over disjoint entries that
+            it reads as one stack (``evaluate-labels`` over one classifier run per
+            fold), in place of joining them column-wise. The inputs must then be
+            alike, at one entity level, and the merged columns are the ones every
+            input has.
     """
 
     name: str
@@ -171,6 +176,7 @@ class ConsumerDecl:
     takes_no_inputs: bool = False
     cross_joins: bool = False
     reads_media: bool = False
+    stacks_inputs: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,6 +404,8 @@ def can_join(producers: Sequence[ProducerDecl], consumer: ConsumerDecl) -> Verdi
             return single
     if len(producers) < 2:
         return _ALLOWED
+    if consumer.stacks_inputs:
+        return _stack_verdict(producers, consumer)
     if consumer.cross_joins:
         return _ALLOWED
     verdict = alignment_verdict([columns_for_level(p.level) for p in producers])
@@ -405,6 +413,27 @@ def can_join(producers: Sequence[ProducerDecl], consumer: ConsumerDecl) -> Verdi
         return _ALLOWED
     named = ", ".join(f"{p.name} ({p.level})" for p in producers)
     return Verdict(False, f"{consumer.name} cannot align {named}: {verdict.reason}")
+
+
+def _stack_verdict(
+    producers: Sequence[ProducerDecl], consumer: ConsumerDecl
+) -> Verdict:
+    """May *producers* be stacked by *consumer*?
+
+    A stack unions the entries of its inputs, so the rows must be of one kind:
+    inputs at different concrete entity levels would stack an individual-level
+    table beneath a pair-level one. No join happens, so shared identity columns
+    are not asked for.
+    """
+    levels = {p.level for p in producers}
+    if len(levels) <= 1:
+        return _ALLOWED
+    named = ", ".join(f"{p.name} ({p.level})" for p in producers)
+    return Verdict(
+        False,
+        f"{consumer.name} stacks its inputs, and {named} are at different entity "
+        "levels, so their rows are not alike",
+    )
 
 
 def possible_connections(
