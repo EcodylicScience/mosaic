@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.helpers import SOURCE_ROOT, imports_of
+from tests.helpers import SOURCE_ROOT, imports_of, inside_a_virtualenv
 
 LIBRARY_PACKAGES = ("core", "behavior", "tracking")
 """The packages under ``src/mosaic`` that may not import ``mosaic.agent``."""
@@ -39,9 +39,15 @@ def _names_agent(module: str, name: str | None) -> bool:
 
 @pytest.mark.parametrize("package", LIBRARY_PACKAGES)
 def test_no_library_module_imports_the_agent_package(package: str) -> None:
+    """An environment built for an external tool inside the package is skipped.
+
+    It holds installed third-party source, some of which does not parse under
+    the warnings-as-errors configuration of the suite.
+    """
     offenders = [
         f"{path.relative_to(SOURCE_ROOT)}:{imported.line}"
         for path in sorted((SOURCE_ROOT / package).rglob("*.py"))
+        if not inside_a_virtualenv(path, SOURCE_ROOT)
         for imported in imports_of(path, scope="anywhere", relative=True)
         if _names_agent(_absolute(imported.module, path), imported.name)
     ]
