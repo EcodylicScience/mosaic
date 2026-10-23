@@ -44,8 +44,13 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   `mosaic features describe` and `mosaic pipeline catalog <name>` print it. Each step
   type's detail stays under `MAX_STEP_TYPE_DETAIL_CHARS`, which a test measures over
   the catalog, so a new feature or op with a large params model must fit it.
-- `submit_pipeline` and `cancel_request` are the only tools that change a dataset, and
-  both declare `confirm_when`. No tool takes `overwrite` (`test_tool_spec.py`).
+- `submit_pipeline` and `cancel_request` are the only tools that change a dataset's
+  data, and both declare `confirm_when`. `patch_recipe` writes only a content-addressed
+  recipe file through `save_recipe`, is idempotent, asks nothing and is refused on a
+  managed dataset. No tool takes `overwrite` (`test_tool_spec.py`).
+- A recipe argument is a document or a saved recipe named `{"digest": ...}` or
+  `{"saved": ...}` (`graph/saved.py`). `LocalBackend._recipe` resolves both, so a tool
+  that takes a recipe takes a `dataset` for the reference.
 - The confirmation conditions are the ones `test_tool_spec.py` pins. A whole-dataset
   or large plan is a `PlanWire.cautions` entry, not a condition. In `_binding.py` an
   elicitation's `cancel` is `confirmation_unanswered` and a decline or an unticked

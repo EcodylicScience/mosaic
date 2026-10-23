@@ -53,13 +53,14 @@ from .spec import (
     FailureDiagnosis,
     GetInventoryInput,
     GetRequestStatusInput,
-    GroupSelector,
     ListActivityInput,
     ListDatasetsInput,
     ListSequencesInput,
+    PatchRecipeInput,
     PlanRecipeInput,
     PreviewOutputInput,
     RunSummary,
+    ScopeSelector,
     SequencePage,
     SequenceRow,
     SubmitPipelineInput,
@@ -104,7 +105,7 @@ if TYPE_CHECKING:
     from mosaic.runlog import AttemptOutcome, RunLogSnapshot
 
     from .config import CleanupClass
-    from .outputs import PlanPage, StepSuggestions, StepTypes
+    from .outputs import PatchedRecipe, PlanPage, StepSuggestions, StepTypes
 
 __all__ = [
     "POLL_AFTER_MIN_SECONDS",
@@ -320,6 +321,10 @@ class LocalBackend:
     def suggest_steps(self, args: SuggestStepsInput) -> ToolResult[StepSuggestions]:
         """Answer ``suggest_steps``."""
         return answer(lambda: self._suggest_steps(args))
+
+    def patch_recipe(self, args: PatchRecipeInput) -> ToolResult[PatchedRecipe]:
+        """Answer ``patch_recipe``."""
+        return answer(lambda: self._patch_recipe(args))
 
     def plan_recipe(self, args: PlanRecipeInput) -> ToolResult[PlanPage]:
         """Answer ``plan_recipe``."""
@@ -563,9 +568,17 @@ class LocalBackend:
             raise ToolFailure(error_envelope(error)) from error
 
     def _validate_recipe(self, args: ValidateRecipeInput) -> ValidationReport:
-        from mosaic.core.pipeline.graph import validation_report
+        from mosaic.core.pipeline.graph import (
+            canonical_recipe,
+            recipe_reference,
+            validation_report,
+        )
 
-        return validation_report(args.recipe, self._declarations())
+        if recipe_reference(args.recipe) is None:
+            # Sent whole, it is reported and not refused when it does not parse.
+            return validation_report(args.recipe, self._declarations())
+        recipe = self._recipe(args.recipe, args.dataset)
+        return validation_report(canonical_recipe(recipe), self._declarations())
 
     def _suggest_steps(self, args: SuggestStepsInput) -> StepSuggestions:
         from mosaic.core.pipeline.graph import (
@@ -576,7 +589,7 @@ class LocalBackend:
 
         from .outputs import StepSuggestions
 
-        recipe = _recipe(args.recipe)
+        recipe = self._recipe(args.recipe, args.dataset)
         catalog = self._declarations()
         if args.mode == "input":
             if args.step is None:
@@ -624,6 +637,59 @@ class LocalBackend:
             refused=len(candidates) - len(steps),
         )
 
+    def _patch_recipe(self, args: PatchRecipeInput) -> PatchedRecipe:
+        from mosaic.core.pipeline.graph import (
+            canonical_recipe,
+            patch_recipe,
+            save_recipe,
+            validation_report,
+        )
+
+        from .outputs import PatchedRecipe
+
+        held = self._dataset(args.dataset)
+        dataset = self._changeable(held, "patch_recipe")
+        patched = patch_recipe(self._recipe(args.base, args.dataset), args.ops)
+        _ = save_recipe(dataset.base_dir, patched)
+        report = validation_report(canonical_recipe(patched), self._declarations())
+        return PatchedRecipe(
+            **report.model_dump(),
+            name=patched.name,
+            steps_total=len(patched.steps),
+        )
+
+    def _recipe(self, document: object, dataset: str | None) -> Recipe:
+        """Parse *document*, or read the saved recipe it names in *dataset*.
+
+        Raises:
+            ToolFailure: It names a saved recipe and no dataset is given.
+            RecipeInvalid: It does not parse.
+            RecipeNotSaved: The dataset has no saved recipe it names.
+            RecipeNameAmbiguous: It names several saved recipes by name.
+        """
+        from mosaic.core.pipeline.graph import (
+            read_recipe,
+            recipe_reference,
+            resolve_saved_recipe,
+        )
+
+        reference = recipe_reference(document)
+        if reference is None:
+            return read_recipe(document)
+        if dataset is None:
+            raise ToolFailure(
+                ErrorEnvelope(
+                    kind="invalid",
+                    reason="dataset_required",
+                    message=(
+                        "a recipe named by digest or saved name is read from a "
+                        "dataset: pass its dataset"
+                    ),
+                    detail={"field": "dataset"},
+                )
+            )
+        return resolve_saved_recipe(self._dataset(dataset).dataset.base_dir, reference)
+
     # ------------------------------------------------------------- planning
 
     def _plan_recipe(self, args: PlanRecipeInput) -> PlanPage:
@@ -639,7 +705,7 @@ class LocalBackend:
         from mosaic.core.scope import Scope
 
         held = self._dataset(args.dataset)
-        recipe = _recipe(args.recipe)
+        recipe = self._recipe(args.recipe, args.dataset)
         catalog = self._declarations()
         scope = _scope(args.entries)
         # Opened again, as ``_describe_dataset`` does, so that the manifest fields
@@ -713,7 +779,7 @@ class LocalBackend:
             )
         except ParallelRefused as refused:
             raise ToolFailure(error_envelope(refused)) from refused
-        recipe = _recipe(args.recipe)
+        recipe = self._recipe(args.recipe, args.dataset)
         catalog = self._declarations()
         narrowing = _scope(args.entries) or Scope()
         step_scopes = _step_scopes(args.step_entries)
@@ -1211,37 +1277,44 @@ def _cursor_key(cursor: str) -> tuple[str, ...]:
     return tuple(parts)
 
 
-def _scope(entries: list[tuple[str, str]] | GroupSelector | None) -> Scope | None:
-    """Return the scope naming *entries* or groups, ``None`` for the whole dataset."""
+def _scope(entries: list[tuple[str, str]] | ScopeSelector | None) -> Scope | None:
+    """Return the scope naming *entries*, ``None`` for the whole dataset.
+
+    A bare list names entries, and a selector is the library's scope.
+    """
     from mosaic.core.scope import Scope
 
     if entries is None:
         return None
-    if isinstance(entries, GroupSelector):
-        return Scope(groups=list(entries.groups))
+    if isinstance(entries, ScopeSelector):
+        return Scope(
+            entries=None if entries.entries is None else list(entries.entries),
+            groups=entries.groups,
+            sequences=entries.sequences,
+        )
     return Scope(entries=list(entries))
 
 
 def _entry_scope(
-    dataset: Dataset, entries: list[tuple[str, str]] | GroupSelector | None
+    dataset: Dataset, entries: list[tuple[str, str]] | ScopeSelector | None
 ) -> Scope | None:
-    """Return the scope naming *entries*, a groups selector enumerated to entries.
+    """Return the scope naming *entries*, a groups or sequences selector enumerated.
 
     The inventory narrows a tracks or labels variant by named entries alone,
-    so a groups selector is resolved against the dataset's entries first, and
-    every kind of artifact is narrowed alike.
+    so a selector is resolved against the dataset's entries first, and every
+    kind of artifact is narrowed alike.
     """
     from mosaic.core.pipeline.inventory.scan import narrow_target, reportable_universe
     from mosaic.core.scope import Scope
 
     scope = _scope(entries)
-    if scope is None or scope.groups is None:
+    if scope is None or scope.entries is not None:
         return scope
     return Scope(entries=sorted(narrow_target(reportable_universe(dataset), scope)))
 
 
 def _step_scopes(
-    step_entries: dict[str, list[tuple[str, str]] | GroupSelector] | None,
+    step_entries: dict[str, list[tuple[str, str]] | ScopeSelector] | None,
 ) -> dict[str, Scope]:
     """Return the scope narrowing each step that *step_entries* names."""
     found: dict[str, Scope] = {}
@@ -1250,13 +1323,6 @@ def _step_scopes(
         if narrowed is not None:
             found[step_id] = narrowed
     return found
-
-
-def _recipe(document: object) -> Recipe:
-    """Parse a recipe document, reporting a malformed one as its problems."""
-    from mosaic.core.pipeline.graph import read_recipe
-
-    return read_recipe(document)
 
 
 def _submission_findings(

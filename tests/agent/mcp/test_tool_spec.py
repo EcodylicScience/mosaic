@@ -19,7 +19,7 @@ from mosaic.agent.mcp.spec import (
     TOOLS,
     DatasetList,
     DatasetListItem,
-    GroupSelector,
+    ScopeSelector,
     ListDatasetsInput,
     PlanRecipeInput,
     SubmitPipelineInput,
@@ -92,14 +92,26 @@ def test_no_tool_reaches_beyond_the_datasets_it_serves() -> None:
     assert not any(spec.annotations.open_world for spec in TOOLS)
 
 
-def test_only_submission_and_cancel_change_a_dataset_and_both_ask_to_confirm() -> None:
+def test_submission_and_cancel_change_a_dataset_and_both_ask_to_confirm() -> None:
     changing = {spec.name for spec in TOOLS if not spec.annotations.read_only}
     confirming = {spec.name for spec in TOOLS if spec.needs_confirmation}
 
-    assert changing == confirming == {"submit_pipeline", "cancel_request"}
+    assert confirming == {"submit_pipeline", "cancel_request"}
+    # patch_recipe saves a recipe file and changes no data, so it asks nothing.
+    assert changing == confirming | {"patch_recipe"}
     cancel = tool_spec("cancel_request")
     assert cancel is not None
     assert cancel.annotations.destructive
+
+
+def test_patching_saves_a_recipe_and_neither_destroys_nor_asks() -> None:
+    patch = tool_spec("patch_recipe")
+
+    assert patch is not None
+    assert not patch.annotations.read_only
+    assert not patch.annotations.destructive
+    assert patch.annotations.idempotent
+    assert not patch.needs_confirmation
 
 
 def test_submission_is_destructive() -> None:
@@ -396,9 +408,9 @@ def test_entries_accept_a_groups_selector() -> None:
         }
     )
 
-    assert planned.entries == GroupSelector(groups=["train", "test"])
+    assert planned.entries == ScopeSelector(groups=["train", "test"])
     assert planned.step_entries == {
-        "fit": GroupSelector(groups=["train"]),
+        "fit": ScopeSelector(groups=["train"]),
         "score": [("test", "s3")],
     }
     with pytest.raises(ValueError, match="groups"):

@@ -146,6 +146,7 @@ that does not read, is left out and reported on the server's standard error.
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, found by words, and the ones named with their params as a table |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
+| `patch_recipe` | A recipe changed by edits (add, remove or replace a step, set a param) and saved in the dataset, so the other tools take its digest instead of the document |
 | `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. `assume_added` names groups to treat as added, and the cautions then say which steps would fit again. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from. The parallelism a submission may ask for, with the host's processors and memory |
 | `submit_pipeline` | Submits a planned recipe and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards, and with `retire` the runs that retired recipes wrote. Takes `workers` and `parallel_mode` within your limits |
 | `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts. Each step's workers and peak memory. `get_request_status` can wait for a step to end |
@@ -153,7 +154,8 @@ that does not read, is left out and reported on the server's standard error.
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
 | `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class |
 
-Only `submit_pipeline` and `cancel_request` change a dataset. A submission must name the
+Only `submit_pipeline` and `cancel_request` change a dataset's data. `patch_recipe` saves
+a recipe file under `.mosaic/pipelines/` and runs nothing. A submission must name the
 fingerprint of a plan made against the dataset as it is now. The agent therefore plans
 against the current dataset before it submits. Ask it to show you the plan. A submitted
 request runs in a background process that outlives the server and the client. Follow it
@@ -183,10 +185,18 @@ the recipe again. The server offers no tool for this
 ([When a process is gone](guides/pipelines/run-and-see-what-ran.md#when-a-process-is-gone)).
 
 `plan_recipe`, `submit_pipeline` and `get_inventory` take `entries` as a list of
-`[group, sequence]` pairs or as `{"groups": [...]}`. `plan_recipe` and
+`[group, sequence]` pairs or as the scope `--step-scope` takes: `{"entries": [...]}`, or
+`{"groups": [...], "sequences": [...]}` with either left out. `plan_recipe` and
 `submit_pipeline` also take `step_entries`, which narrows single steps by step id: a
 classifier fitted on the training groups and scored on the test groups is one request
-([Step scopes](guides/pipelines/chain-steps.md#narrow-one-step-step-scopes)).
+([Step scopes](guides/pipelines/chain-steps.md#narrow-one-step-step-scopes)). A step
+scope is intersected with `entries`, so leave `entries` unset when steps are scoped to
+different groups.
+
+A long recipe is sent once. The agent writes a step repeated over seeds or classes once,
+with `repeat` ([Repeat a step](guides/pipelines/chain-steps.md#repeat-a-step)), saves the
+recipe with `patch_recipe`, and from then on passes `{"digest": "<digest>"}` (or
+`{"saved": "<name>"}`) as the recipe and changes it with `patch_recipe` edits.
 Conversion is a recipe step too: `convert-tracks` and `convert-labels` convert the raw
 files a scan recorded. Declaring sources and scanning stay with you, so the agent
 proposes `mosaic sources add` and `mosaic scan` when a dataset has nothing scanned.

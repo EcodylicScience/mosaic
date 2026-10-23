@@ -1008,8 +1008,10 @@ def _step_scope_problems(
             continue
         if not planned[step_id].coverage.target and deferred is None:
             message = (
-                "selects no entry of what the submission covers. Name entries "
-                "or groups the dataset holds"
+                "selects no entry of what the submission covers. A step scope "
+                "is intersected with the request's scope, so the request must "
+                "cover every step's scope: leave its scope unset to cover the "
+                "whole dataset, and name entries or groups the dataset holds"
             )
             found.append(Problem(step_id, where, message))
     for step in recipe.steps:

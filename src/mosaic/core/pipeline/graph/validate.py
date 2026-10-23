@@ -90,6 +90,7 @@ from .compatibility import (
     resolve_emits,
 )
 from .digest import recipe_digest
+from .expand import RepeatInvalid, expand_repeats
 from .model import (
     TRACKS_INPUT,
     FeatureStepSpec,
@@ -1015,15 +1016,23 @@ def read_recipe(document: object) -> Recipe:
     The one parse every reader shares. A structural fault reads the same from
     the CLI, from an API and from an editor. A pydantic error inside
     ``steps[i]`` is reported at that step's id when the document gives it one.
+    The ``repeat`` items are expanded first (``expand.py``), so ``i`` counts
+    the expanded steps and a fault in a repeated step names the step it became.
+    A ``repeat`` that cannot be expanded names the step that declared it.
 
     Raises:
         RecipeInvalid: Carrying one problem per structural fault.
     """
     try:
-        return Recipe.model_validate(document)
+        expanded = expand_repeats(document)
+    except RepeatInvalid as exc:
+        problem = Problem(exc.step, exc.where, exc.message)
+        raise RecipeInvalid((problem,)) from exc
+    try:
+        return Recipe.model_validate(expanded)
     except ValidationError as exc:
         problems = tuple(
-            _structural_problem(document, err["loc"], err["type"], err["msg"])
+            _structural_problem(expanded, err["loc"], err["type"], err["msg"])
             for err in exc.errors()
         )
         raise RecipeInvalid(problems) from exc

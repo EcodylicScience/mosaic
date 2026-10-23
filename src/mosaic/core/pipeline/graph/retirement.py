@@ -42,6 +42,7 @@ from ..error_kind import ClassifiedError, ErrorKind
 from ..markers import parse_instant
 from .digest import DIGEST_LENGTH, recipe_digest
 from .rollup import request_rollup
+from .saved import find_saved_recipe
 from .status import (
     RETIRABLE_REQUEST_IDS,
     RetirableRecipeWire,
@@ -52,7 +53,6 @@ from .store import (
     current_digest,
     load_recipe,
     load_request,
-    pipelines_root,
     recipe_path,
     request_ids,
     requests_matching,
@@ -64,7 +64,7 @@ if TYPE_CHECKING:
 
     from mosaic.core.json_value import JsonValue
 
-    from .model import Recipe, Request
+    from .model import Request
     from .rollup import RequestRollup
 
 __all__ = [
@@ -253,35 +253,9 @@ def _saved_digest(base_dir: Path | str, digest: str) -> str:
             raise RetireUnknownRecipe(
                 digest, f"its saved recipe does not read: {error}"
             ) from error
-    if _saved_recipe(base_dir, digest) is None:
+    if find_saved_recipe(base_dir, digest) is None:
         raise RetireUnknownRecipe(digest, "this dataset has no saved recipe with it")
     return digest
-
-
-def _saved_recipe(base_dir: Path | str, digest: str) -> Recipe | None:
-    """The saved recipe that *digest* names in either canonical form, or ``None``.
-
-    A recipe saved by an earlier mosaic stays in the file named for the form it
-    was saved in, and nothing saves it again under its current digest. So a
-    digest with no file of its own is looked for among the recipes that read.
-    """
-    path = recipe_path(base_dir, digest)
-    try:
-        if path.is_file():
-            return load_recipe(path)
-    except (OSError, ValueError):
-        return None
-    root = pipelines_root(base_dir)
-    for candidate in sorted(root.glob("*.json")) if root.is_dir() else ():
-        if not _DIGEST.fullmatch(candidate.stem):
-            continue
-        try:
-            recipe = load_recipe(candidate)
-        except (OSError, ValueError):
-            continue
-        if recipe_digest(recipe) == digest:
-            return recipe
-    return None
 
 
 def retired_digest_of(
@@ -457,5 +431,5 @@ def _recipe_name(base_dir: Path | str, digest: str) -> str:
 
     ``""`` when no saved recipe that reads has the digest.
     """
-    recipe = _saved_recipe(base_dir, digest)
+    recipe = find_saved_recipe(base_dir, digest)
     return recipe.name[:NAME_LIMIT] if recipe is not None else ""

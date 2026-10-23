@@ -102,6 +102,53 @@ artifacts — `template_provenance.parquet`, say, rather than `templates.parquet
 from it — transcode before trex is the standard example: the tracker reads the
 derivative from the media index, not from the transcode step's return value.
 
+### Repeat a step
+
+A step tried with several seeds, or fitted once per behavior, is written once with
+`repeat`, a mapping of names to lists of values:
+
+```json
+{
+  "schema_version": 1,
+  "name": "three seeds",
+  "steps": [
+    {"id": "speed", "type": "feature", "feature": "speed-angvel"},
+    {
+      "id": "templates_s{seed}",
+      "type": "feature",
+      "feature": "extract-templates",
+      "repeat": {"seed": [1, 2, 3]},
+      "inputs": [{"step": "speed"}],
+      "params": {"n_templates": 2000, "random_state": "{seed}"}
+    },
+    {
+      "id": "clusters_s{seed}",
+      "type": "feature",
+      "feature": "global-kmeans",
+      "repeat": {"seed": [1, 2, 3]},
+      "inputs": [{"step": "speed"}],
+      "params": {"templates": {"step": "templates_s{seed}"}, "k": 25}
+    }
+  ]
+}
+```
+
+This recipe has seven steps: `speed`, `templates_s1` to `templates_s3` and
+`clusters_s1` to `clusters_s3`.
+
+- `{seed}` is replaced in every string of the step. A string that is `"{seed}"` alone
+  takes the value with its type, so `random_state` is the number 1, not `"1"`.
+- A step's id names each of its names, so every copy has an id of its own.
+- Several names expand to every combination, the first name varying slowest:
+  `"repeat": {"behavior": ["attack", "mount"], "seed": [1, 2]}` is four steps.
+- An item of `inputs` repeats the same way. An ensemble reads every seed with one input,
+  `{"step": "clf_s{seed}", "repeat": {"seed": [1, 2, 3]}}`, and inside a repeated step
+  it sees that step's values. `repeat` is read on a step and an input only.
+
+The recipe is expanded when it is read. Its digest, its saved copy and every run id are
+those of the steps written out in full, so writing a step out by hand later changes
+nothing. A problem is reported at the expanded step's id, such as `templates_s2`.
+
 ### Narrow one step: step scopes
 
 A request covers a set of entries, and a step scope narrows one step to part of it.
@@ -114,9 +161,9 @@ mosaic pipeline run -m dataset.yaml --recipe @recipe.json \
     --step-scope 'evaluate={"groups": ["test"]}'
 ```
 
-SCOPE is a JSON selector, `{"groups": [...]}` or `{"entries": [[group, sequence],
-...]}`, or `@file.json`. `plan`, `submit` and `run` take it, and so does an MCP client
-as `step_entries`. `--group` narrows the whole request to groups, as `--entry` narrows
+SCOPE is a JSON selector, `{"groups": [...]}`, `{"sequences": [...]}` (both together
+cover their cross product) or `{"entries": [[group, sequence], ...]}`, or `@file.json`.
+`plan`, `submit` and `run` take it, and so does an MCP client as `step_entries`. `--group` narrows the whole request to groups, as `--entry` narrows
 it to entries.
 
 - A step scope is intersected with the request's entries, and a step whose identity

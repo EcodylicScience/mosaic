@@ -42,6 +42,15 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   defaulted field added to a recipe model moves every digest; old requests load through
   that rule. Do not delete a `pipelines/<digest>.json` that a request names
   (`test_pipeline_recipe.py`, `test_pipeline_step.py`).
+- A `repeat` item (`expand.py`) is expanded by `Recipe`'s `before` validator, so every
+  reader gets the expanded steps and the canonical form, the digest and the saved file
+  hold no `repeat`. `read_recipe` expands first and places a structural fault at the
+  expanded step's id, and a `repeat` fault at the declared step. `schema_version` did
+  not move (`test_recipe_repeat.py`).
+- `pipelines/<digest>.json` is written by `submit_request` and by the MCP's
+  `patch_recipe`. `patch_recipe` (`patch.py`) edits the canonical expanded document, and
+  `resolve_saved_recipe` (`saved.py`) reads a recipe named by digest, in either canonical
+  form, or by a `name` one saved recipe has (`test_recipe_patch.py`).
 - A cross-step reference is written at the site it substitutes. Do not add a stored
   `edges` array. `edges()` in `topo.py` derives one, and `after` is the one explicit list,
   for ordering only (`test_edges_are_derived_from_the_bodies_with_their_sites`). No
@@ -267,8 +276,8 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   are ULIDs, newest first, and read only the page that they return
   (`test_pipeline_request_listing.py`, `tests/core/test_runlog_readers.py`).
 - `__init__.py` binds every public name on access, and `status.py`, `store.py`,
-  `claims.py`, `entry_errors.py`, `driver_lease.py`, `liveness.py` and `retirement.py`
-  import nothing that loads pandas, cv2, av or the feature library
+  `claims.py`, `entry_errors.py`, `driver_lease.py`, `liveness.py`, `retirement.py`,
+  `saved.py`, `expand.py` and `patch.py` (which `agent/mcp/spec.py` imports) import nothing that loads pandas, cv2, av or the feature library
   (`tests/meta/test_status_imports.py`). The editor wires in `wire.py` import the op
   registry and the inventory, which do.
 

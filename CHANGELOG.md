@@ -195,6 +195,40 @@ no keypoints or `center_mode` was `xy`. A `trex_v1` table with keypoints, and ev
   instead of the first row of the entry.
 - No run id or tracks variant moves. `tracks_schemas` is never hashed.
 
+**A recipe writes a repeated step once, is patched in place and is named by digest.** The
+CalMS21 Task 3 recipe had 71 steps, an agent sent all 24 KB of it on every call, and agents
+wrote scripts to generate recipes, because seeds, behaviors and folds multiply steps. No run
+id or recipe digest moves.
+
+- A step, or an item of a step's `inputs`, may carry `repeat`, a mapping of names to lists
+  of values, such as `{"id": "xgb_s{seed}", "repeat": {"seed": [1, 2, 3]}, ...}`. It stands
+  for one copy per value (the cartesian product for several names), with `{seed}` replaced
+  in its strings; a string that is `"{seed}"` alone takes the value with its type. A step's
+  id names each of its names and stays text. `repeat` is read nowhere else, so a param of
+  that name is left as written, and a recipe expands to at most 10,000 steps and inputs. A recipe is expanded when it is parsed, so the saved file,
+  the digest and every run id are those of the steps written out, and `schema_version`
+  stays 1: an older mosaic reads a saved recipe. A fault inside a repeated step is
+  reported at the expanded step's id, and a `repeat` that cannot expand at the step that
+  declared it.
+- New MCP tool `patch_recipe` (the fifteenth) applies `add_step`, `remove_step`,
+  `set_param` (a dotted path into `params`; without `value` the param is removed) and
+  `replace_step` edits to a recipe, saves the result in the dataset under its digest, and
+  returns the digest, the expanded step count and the validation report. It saves a
+  recipe that parses even when it has problems, changes no data and asks no confirmation.
+  A recipe that a step still reads cannot be removed. Step scopes stay on the request, so
+  no edit sets one.
+- `validate_recipe`, `suggest_steps`, `plan_recipe` and `submit_pipeline` take a saved
+  recipe as `{"digest": "<digest>"}` or `{"saved": "<name>"}` in place of the document,
+  and the first two take an optional `dataset` for it. A name that several saved recipes
+  share, as versions of one recipe do, is refused with their digests (`not_found`
+  `recipe_not_saved`, `invalid` `recipe_name_ambiguous`).
+- `entries` and `step_entries` take the scope that `--step-scope` takes,
+  `{"entries": [...]}` or `{"groups": [...], "sequences": [...]}`, beside the bare list of
+  pairs. A step scope that selects nothing now says that the request's `entries` must
+  cover it. `mosaic.agent.mcp.spec.GroupSelector` is now `ScopeSelector`.
+- The graph package exports `expand_repeats`, `patch_recipe` with its edit models, and
+  `resolve_saved_recipe` with `recipe_reference` and `find_saved_recipe`.
+
 **Block cross-validation, `tune-threshold` and a declared temporal reach.** A dataset with
 one training sequence had no cross-validated score, and a decision threshold was chosen by
 hand.

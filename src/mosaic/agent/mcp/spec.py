@@ -45,6 +45,7 @@ from mosaic.core.pipeline.graph import (
     strip_schema_keywords,
 )
 from mosaic.core.pipeline.graph.digest import DIGEST_LENGTH
+from mosaic.core.pipeline.graph.patch import PatchOp
 from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelMode
 from mosaic.core.strict_model import StrictModel
 from mosaic.runlog import AttemptLiveness, AttemptOutcome
@@ -55,7 +56,7 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.inventory import InventoryWire
     from mosaic.core.pipeline.preview import ArtifactPreview
 
-    from .outputs import PlanPage, StepSuggestions, StepTypes
+    from .outputs import PatchedRecipe, PlanPage, StepSuggestions, StepTypes
 
 __all__ = [
     "CLEANUP_NOT_ALLOWED",
@@ -73,6 +74,7 @@ __all__ = [
     "LISTING_MISSING_SAMPLE",
     "MAX_DESCRIBED_STEP_TYPES",
     "MAX_PAGE_SIZE",
+    "MAX_PATCH_OPS",
     "MAX_PREVIEW_ROWS",
     "MAX_RESULT_CHARS",
     "MAX_ASSUMED_GROUPS",
@@ -107,14 +109,15 @@ __all__ = [
     "FailureDiagnosis",
     "GetInventoryInput",
     "GetRequestStatusInput",
-    "GroupSelector",
     "ListActivityInput",
     "ListDatasetsInput",
     "ListSequencesInput",
     "ModelRef",
+    "PatchRecipeInput",
     "PlanRecipeInput",
     "PreviewOutputInput",
     "RunSummary",
+    "ScopeSelector",
     "SequencePage",
     "SequenceRow",
     "SubmitPipelineInput",
@@ -201,6 +204,9 @@ recipe saves dozens.
 MAX_RETIRED_RECIPES: Final = 8
 """The most recipes one call retires."""
 
+MAX_PATCH_OPS: Final = 64
+"""The most edits one ``patch_recipe`` call applies."""
+
 MAX_ASSUMED_GROUPS: Final = 16
 """The most groups one ``plan_recipe`` call assumes added."""
 
@@ -279,6 +285,7 @@ type ToolName = Literal[
     "describe_step_types",
     "validate_recipe",
     "suggest_steps",
+    "patch_recipe",
     "plan_recipe",
     "submit_pipeline",
     "get_request_status",
@@ -406,7 +413,11 @@ RecipeDocument = Annotated[
         description=(
             "The recipe as a JSON object: schema_version, name and steps. A step "
             "is {id, type: 'feature', feature, inputs, params} or {id, type: 'op', "
-            "kind, params}. An input is 'tracks' or {step: <id>}."
+            "kind, params}. An input is 'tracks' or {step: <id>}. A step or an "
+            "input with repeat, as {id: 'xgb_s{seed}', repeat: {seed: [1, 2]}}, "
+            "stands for one copy per value with {seed} replaced; '{seed}' alone "
+            "takes the value. Or name a recipe the dataset saved (patch_recipe "
+            "and submit_pipeline save one): {digest: <digest>} or {saved: <name>}."
         ),
         examples=[RECIPE_EXAMPLE],
     ),
@@ -414,32 +425,56 @@ RecipeDocument = Annotated[
 """A recipe document, parsed by the backend so that a malformed one is reported."""
 
 
-class GroupSelector(StrictModel):
-    """Every entry of the named groups, as a selector."""
+class ScopeSelector(StrictModel):
+    """Entries named as ``mosaic.core.scope.Scope`` and ``--step-scope`` name them.
 
-    groups: list[str] = Field(min_length=1, description="The groups to cover.")
+    ``entries`` alone, or ``groups`` and ``sequences``, which cover their cross
+    product.
+    """
 
+    entries: list[tuple[str, str]] | None = None
+    groups: list[str] | None = Field(default=None, min_length=1)
+    sequences: list[str] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _names_entries(self) -> Self:
+        if self.entries is None and self.groups is None and self.sequences is None:
+            msg = "a scope names entries, groups or sequences"
+            raise ValueError(msg)
+        if self.entries is not None and (
+            self.groups is not None or self.sequences is not None
+        ):
+            msg = "a scope names entries, or groups and sequences, not both"
+            raise ValueError(msg)
+        return self
+
+
+_SCOPE_FORMS: Final = (
+    "[[group, sequence], ...], or {entries: [[group, sequence], ...]}, or "
+    "{groups: [...], sequences: [...]} with either left out (their cross product)"
+)
 
 Entries = Annotated[
-    list[tuple[str, str]] | GroupSelector | None,
+    list[tuple[str, str]] | ScopeSelector | None,
     Field(
         description=(
-            "The [group, sequence] entries to cover, {groups: [...]} for every "
-            "entry of those groups, or null for every entry of the dataset."
+            f"The entries to cover: {_SCOPE_FORMS}. Null covers every entry of "
+            "the dataset, and is what a request with steps scoped to different "
+            "groups takes, since a step covers only what entries also covers."
         )
     ),
 ]
 """The entries a plan or a submission covers."""
 
 StepEntries = Annotated[
-    dict[str, list[tuple[str, str]] | GroupSelector] | None,
+    dict[str, list[tuple[str, str]] | ScopeSelector] | None,
     Field(
         description=(
-            "Narrow single steps, keyed by step id, each to [group, sequence] "
-            "entries or {groups: [...]} within entries: a fit on the training "
-            "groups and its scoring on the test groups in one request. A step "
-            "reading another through inputs or tracks must narrow to a subset "
-            "of it."
+            f"Narrow single steps, keyed by step id, each as {_SCOPE_FORMS}: a "
+            "fit on the training groups and its scoring on the test groups in "
+            "one request. Each is intersected with entries, so leave entries "
+            "null to cover them all. A step reading another through inputs or "
+            "tracks must narrow to a subset of it."
         )
     ),
 ]
@@ -584,16 +619,24 @@ class DescribeStepTypesInput(ToolInput):
         return "fields" if self.names is not None else "summary"
 
 
+_REFERENCE_DATASET: Final = (
+    "The dataset holding a recipe named by digest or saved name. Not needed for a "
+    "recipe sent whole."
+)
+
+
 class ValidateRecipeInput(ToolInput):
     """The arguments of ``validate_recipe``."""
 
     recipe: RecipeDocument
+    dataset: str | None = Field(default=None, description=_REFERENCE_DATASET)
 
 
 class SuggestStepsInput(ToolInput):
     """The arguments of ``suggest_steps``."""
 
     recipe: RecipeDocument
+    dataset: str | None = Field(default=None, description=_REFERENCE_DATASET)
     mode: SuggestMode = Field(
         description=(
             "'attach': step types to add below step. 'insert': step types to "
@@ -645,6 +688,23 @@ AssumeAdded = Annotated[
     ),
 ]
 """Groups a plan is asked to assume added, which only adds cautions."""
+
+
+class PatchRecipeInput(ToolInput):
+    """The arguments of ``patch_recipe``."""
+
+    dataset: DatasetId
+    base: RecipeDocument
+    ops: list[PatchOp] = Field(
+        default_factory=list,
+        max_length=MAX_PATCH_OPS,
+        description=(
+            "The edits, applied in order to the expanded base: add_step "
+            "{document}, remove_step {step}, set_param {step, path, value} (a "
+            "dotted path into params; without value the param is removed) and "
+            "replace_step {step, document}. No edits saves the base as it is."
+        ),
+    )
 
 
 class PlanRecipeInput(ToolInput):
@@ -1299,6 +1359,25 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         narrowing=("step", "mode"),
     ),
     ToolSpec(
+        name="patch_recipe",
+        title="Patch a recipe",
+        description=(
+            "Change a recipe by edits and save the result in the dataset, so "
+            "that the other recipe tools take it as {digest: <digest>} instead "
+            "of the whole document. Returns its digest, its number of steps "
+            "after repeat is expanded, and its validation report. A recipe that "
+            "parses is saved even when it has problems, so it can be patched "
+            "again. Saving changes no data and runs nothing."
+        ),
+        input_model=PatchRecipeInput,
+        output=ModelRef("mosaic.agent.mcp.outputs", "PatchedRecipe"),
+        # It writes one content-addressed file, which the same call writes again
+        # with the same bytes.
+        annotations=ToolAnnotations(
+            read_only=False, destructive=False, idempotent=True
+        ),
+    ),
+    ToolSpec(
         name="plan_recipe",
         title="Plan a recipe",
         description=(
@@ -1486,6 +1565,10 @@ class ToolBackend(Protocol):
         """Answer ``suggest_steps``."""
         ...
 
+    def patch_recipe(self, args: PatchRecipeInput) -> ToolResult[PatchedRecipe]:
+        """Answer ``patch_recipe``."""
+        ...
+
     def plan_recipe(self, args: PlanRecipeInput) -> ToolResult[PlanPage]:
         """Answer ``plan_recipe``."""
         ...
@@ -1601,6 +1684,8 @@ def _dispatch(backend: ToolBackend, request: ToolInput) -> BaseModel:
             return backend.validate_recipe(request)
         case SuggestStepsInput():
             return backend.suggest_steps(request)
+        case PatchRecipeInput():
+            return backend.patch_recipe(request)
         case PlanRecipeInput():
             return backend.plan_recipe(request)
         case SubmitPipelineInput():

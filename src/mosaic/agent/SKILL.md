@@ -440,9 +440,18 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   25) and then `cursor`, the previous page's `next_cursor`, until `next_cursor` is
   empty, and show the user every page. Every page carries the whole plan's fingerprint;
   `problems`, `cautions` and the other plan-level blocks are on the first page only.
-- `entries` takes `[group, sequence]` pairs or `{"groups": [...]}`, and
-  `step_entries` narrows single steps by step id. Pass the same ones to
+- `entries` takes `[group, sequence]` pairs, `{"entries": [...]}` or
+  `{"groups": [...], "sequences": [...]}`, and `step_entries` narrows single steps by
+  step id in the same forms. A step scope is intersected with `entries`, so leave
+  `entries` unset when steps are scoped to different groups. Pass the same ones to
   `plan_recipe` and `submit_pipeline`, or the fingerprint will not match.
+- Write a step repeated over seeds, behaviors or folds once with `repeat`:
+  `{"id": "xgb_s{seed}", "repeat": {"seed": [1, 2, 3]}, ..., "params": {"random_state":
+  "{seed}"}}` is three steps, and `{"step": "xgb_s{seed}", "repeat": {"seed": [1, 2, 3]}}`
+  in `inputs` is three inputs. Save a long recipe with `patch_recipe` (no `ops`), then pass
+  `{"digest": "<digest>"}` as `recipe` to `validate_recipe` (with `dataset`),
+  `plan_recipe` and `submit_pipeline`, and change it with `patch_recipe` ops
+  (`add_step`, `remove_step`, `set_param`, `replace_step`), each returning a new digest.
 - To reclaim the runs of an earlier recipe that wrote to storages this one no longer
   names, call `plan_recipe` with `cleanup: "superseded"` and read `retirable`: name,
   digest, request ids and run count; `retirable` lists the eight newest, and
