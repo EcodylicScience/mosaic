@@ -342,6 +342,31 @@ def test_the_op_command_omits_the_cameras_of_a_nameless_entry_kept_in_part(
     assert _scope_of(ds, _run_back(answer.command, monkeypatch)) == [("", "one")]
 
 
+def test_a_camera_that_the_variant_run_does_not_write_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The variant's run over ``--entries :`` writes camera ``a`` of the entry."""
+    av1 = ("av1", "av1")
+    ds = _dataset(
+        tmp_path,
+        [
+            *entry_clips("", camera="a", codecs=av1),
+            *entry_clips("", camera="b", codecs=av1),
+        ],
+    )
+
+    answer = _answer(ds, "--kind", "litpose")
+
+    assert [(r.sequence, r.camera, r.cause) for r in answer.refusals] == [
+        ("b-c0", "b", "multi_camera_variant")
+    ]
+    (run,) = answer.runs
+    made = _run_back(run.command, monkeypatch)
+    assert (made.kind, _scope_of(ds, made)) == ("preprocess", [("", "")])
+    assert answer.no_command is not None
+    assert answer.no_command.cause == "nameless_cameras"
+
+
 # --- a withheld op command ------------------------------------------------------
 
 

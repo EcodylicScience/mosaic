@@ -105,6 +105,7 @@ type RefusalCause = Literal[
     "unidentified_clips",
     "unjoinable",
     "multi_camera_join",
+    "multi_camera_variant",
     "no_media_raw",
     "preprocess_refused",
     "no_variant_recipe",
@@ -125,6 +126,8 @@ type RefusalCause = Literal[
 - ``unjoinable``: the clips cannot be read as one video.
 - ``multi_camera_join``: a camera of an entry of several cameras needs a join, and
   ``export-joined`` joins an entry of one camera.
+- ``multi_camera_variant``: a camera of a nameless entry lacks a current file of
+  the media variant, and a run of the variant writes another camera of the entry.
 - ``no_media_raw``: a store needs an export, and the dataset does not declare a
   ``media_raw`` root to index one in.
 - ``preprocess_refused``: the variant's recipe does not fit the entry.
@@ -136,6 +139,12 @@ type RefusalCause = Literal[
 
 _EXTRACT_FRAMES: Final = "extract-frames"
 """The op outside the tracking roots that a plan answers for over every camera."""
+
+_ONE_CAMERA_REMEDY: Final = (
+    "Index the entry's media under a sequence name. A tool then reads one camera "
+    "of the entry."
+)
+"""The remedy for a nameless entry's camera that the planned runs leave unreadable."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,23 +252,26 @@ def plan_prerequisites(
     its run reduces them. The run labels each camera of a nameless entry by the
     camera's first file's stem, and reads each. ``preprocess`` is answered for
     the one camera of each entry that it writes, and ``extract-frames`` for
-    every camera.
+    every camera. An unscoped plan answers ``preprocess`` for every camera of a
+    nameless entry, each under its label. The run writes one of them.
 
     An op that reads a media variant needs one ``preprocess`` run of the
     variant's recorded recipe, over each entry whose file of the variant is
     missing or out of date. Each such entry is put through the checks that the
-    run makes before it decodes one. A chained variant's run comes after the run
-    of its upstream, for the entries whose file of the upstream is missing or
-    out of date. A tool reads the variant that its ``media`` names. When the
-    plan cannot find a recipe that makes a variant, each entry without a
-    current file of the variant is refused. A codec that a tool cannot decode
-    in any environment is undecodable to it. Every entry is refused a variant
-    in an undecodable codec. When a tool reading the entry media is handed an
-    undecodable codec for some entries, it reads the H.264 variant of the entry
-    media instead, ``PreprocessParams(steps=[], codec="h264")``, provided the
-    variant fits at least one of those entries. When it fits none, each of
-    those entries is refused. ``preprocess`` is put through the checks of the
-    recipe in its params.
+    run makes before it decodes one. The run writes one camera of each entry.
+    Each other camera of a nameless entry without a current file of the variant
+    is refused. A chained variant's run comes after the run of its upstream, for
+    the entries whose file of the upstream is missing or out of date. A tool
+    reads the variant that its ``media`` names. When the plan cannot find a
+    recipe that makes a variant, each entry without a current file of the
+    variant is refused. A codec that a tool cannot decode in any environment is
+    undecodable to it. Every entry is refused a variant in an undecodable codec.
+    When a tool reading the entry media is handed an undecodable codec for some
+    cameras, it reads the H.264 variant of the entry media instead,
+    ``PreprocessParams(steps=[], codec="h264")``, provided the variant's run
+    writes at least one of those cameras and fits its entry, or one of them has
+    a current file of the variant. Otherwise each of those cameras is refused.
+    ``preprocess`` is put through the checks of the recipe in its params.
 
     An op reading the entry media is put through the checks that its run makes
     before it reads the entry:
@@ -604,11 +616,14 @@ def _join_run(kind: str, read: _CameraRead) -> PrerequisiteRun | EntryRefusal:
     label = _label(kind, entry)
     if read.several_cameras:
         # The op of a tracking root takes `media`, and `extract-frames` does not.
-        remedy = (
-            " Read the camera through a media variant instead."
-            if kind in TRACKING_ROOTS
-            else ""
-        )
+        # A run of a media variant writes one camera of a nameless entry.
+        remedy = ""
+        if kind in TRACKING_ROOTS:
+            remedy = (
+                f" {_ONE_CAMERA_REMEDY} Read that camera through a media variant."
+                if is_nameless_entry(*read.run_entry)
+                else " Read the camera through a media variant instead."
+            )
         reason = (
             f"{label} camera {camera.camera} is read as the join of its clips, "
             f"and export-joined joins the clips of an entry of one camera.{remedy}"
@@ -679,11 +694,15 @@ def _codec_variant(
 
     A codec that the tool of *kind* cannot decode in any environment is
     undecodable. *kind* reads the variant when its tool is handed an undecodable
-    codec for at least one camera that the variant's run accepts. ``media``
-    names one variant for the whole run. Every camera then reads it. When the
-    variant's run accepts none of those cameras, each is refused with the run's
-    failure. A camera whose handed codec cannot be read is refused too. A
-    refused camera is not answered further.
+    codec for at least one camera that qualifies. A camera qualifies when the
+    variant's run writes and accepts it, or when it has a current file of the
+    variant. The variant's files are looked up only when its run writes and
+    accepts none of those cameras. ``media`` names one variant for the whole
+    run. Every camera then reads it. When none of those cameras qualifies, a
+    camera that the run does not write is refused with
+    ``multi_camera_variant``, and the rest with the run's failure. A camera
+    whose handed codec cannot be read is refused too. A refused camera is not
+    answered further.
 
     Returns:
         The variant's run id, or ``""`` for the entry media, and the reads that
@@ -708,19 +727,25 @@ def _codec_variant(
     if not unread:
         return "", readable
     recipe = _codec_recipe()
-    failures = preprocess_entry_failures(
-        ds, recipe, _scoped_entries(read for read, _ in unread)
+    variant = preprocess_identity(recipe).run_id
+    unread_reads = [read for read, _ in unread]
+    failures = preprocess_entry_failures(ds, recipe, _scoped_entries(unread_reads))
+    written = _written_cameras(ds, unread_reads)
+    run_writes = any(
+        read.run_entry not in failures and _other_camera_written(written, read) is None
+        for read in unread_reads
     )
-    if any(read.run_entry not in failures for read, _ in unread):
-        return preprocess_identity(recipe).run_id, [
-            *readable,
-            *(read for read, _ in unread),
-        ]
+    if run_writes or len(_lacking_reads(ds, variant, unread_reads)[0]) < len(unread):
+        return variant, [*readable, *unread_reads]
     for read, codecs in unread:
+        handed = ", ".join(sorted(codecs))
+        other = _other_camera_written(written, read)
+        if other is not None:
+            draft.refusals.append(_unwritten(kind, variant, read, other, handed))
+            continue
         context = (
-            f"{_label(kind, read.entry)} is handed {', '.join(sorted(codecs))}, "
-            f"which {kind} never reads, and the H.264 variant of its media cannot "
-            f"be written. "
+            f"{_label(kind, read.entry)} is handed {handed}, which {kind} never "
+            f"reads, and the H.264 variant of its media cannot be written. "
         )
         draft.refusals.append(_unfit(read, failures[read.run_entry], context))
     return "", readable
@@ -734,6 +759,45 @@ def _read_variant(
     The tool reads the variant's file, without a join or an export. The
     variant's codec is its recipe's, or else that of its current files. Every
     read is refused when the tool cannot decode that codec in any environment.
+    Otherwise a read without a current file is refused when the variant's run
+    does not write its camera (:func:`_written_cameras`).
+    """
+    lacking, codecs = _lacking_reads(ds, variant, reads)
+    recipe = _variant_recipe(ds, variant)
+    if isinstance(recipe, PreprocessParams):
+        codecs = {recipe.codec}
+    decoder = tracking_root(kind).decoder
+    undecodable = ", ".join(sorted(codecs & codecs_never_read(decoder)))
+    if not undecodable:
+        written = _written_cameras(ds, lacking)
+        covered: list[_CameraRead] = []
+        for read in lacking:
+            other = _other_camera_written(written, read)
+            if other is None:
+                covered.append(read)
+            else:
+                draft.refusals.append(_unwritten(kind, variant, read, other))
+        _ = _variant_run(ds, kind, variant, recipe, covered, draft)
+        return
+    remedy = f" {decoder.remedy}." if decoder.remedy else ""
+    for read in reads:
+        reason = (
+            f"{_label(kind, read.entry)} reads the media variant {variant}, which "
+            f"is {undecodable}. {kind} decodes with {decoder.stack}. That reader "
+            f"decodes {undecodable} in no environment.{remedy}"
+        )
+        draft.refusals.append(
+            _refusal(read.entry, read.camera, "undecodable_codec", reason)
+        )
+
+
+def _lacking_reads(
+    ds: Dataset, variant: str, reads: Sequence[_CameraRead]
+) -> tuple[list[_CameraRead], set[str]]:
+    """Look up the file of *variant* for each read's camera, in one read of its index.
+
+    Returns:
+        The reads without a current file, and the codecs of the current files.
     """
     lookup = VariantLookup.read(
         ds,
@@ -747,24 +811,75 @@ def _read_variant(
             codecs.add(lookup.resolve(ds, read.camera).facts.codec_name)
         except (MediaVariantMissingError, MediaVariantDriftedError):
             lacking.append(read)
-    recipe = _variant_recipe(ds, variant)
-    if isinstance(recipe, PreprocessParams):
-        codecs = {recipe.codec}
-    decoder = tracking_root(kind).decoder
-    undecodable = ", ".join(sorted(codecs & codecs_never_read(decoder)))
-    if not undecodable:
-        _ = _variant_run(ds, kind, variant, recipe, lacking, draft)
-        return
-    remedy = f" {decoder.remedy}." if decoder.remedy else ""
-    for read in reads:
-        reason = (
-            f"{_label(kind, read.entry)} reads the media variant {variant}, which "
-            f"is {undecodable}. {kind} decodes with {decoder.stack}. That reader "
-            f"decodes {undecodable} in no environment.{remedy}"
-        )
-        draft.refusals.append(
-            _refusal(read.entry, read.camera, "undecodable_codec", reason)
-        )
+    return lacking, codecs
+
+
+def _written_cameras(
+    ds: Dataset, reads: Iterable[_CameraRead]
+) -> dict[Entry, ResolvedScopeEntry]:
+    """Return the camera that a run of a variant writes of each entry of *reads*.
+
+    A run of a variant writes one camera of each entry in its scope
+    (:func:`~mosaic.core.pipeline.consumed_camera.first_cameras`). The result
+    is keyed by run entry, and contains each run entry of several cameras whose
+    media resolves. An op reads every camera of a nameless entry, which the run
+    covers in part.
+    """
+    several = _scoped_entries(read for read in reads if read.several_cameras)
+    if not several:
+        return {}
+    return {
+        entry: media[0]
+        for entry, media in _cameras_read(
+            PREPROCESS_KIND, resolve_entry_media(ds, several)
+        ).items()
+        if isinstance(media, list)
+    }
+
+
+def _other_camera_written(
+    written: Mapping[Entry, ResolvedScopeEntry], read: _CameraRead
+) -> ResolvedScopeEntry | None:
+    """Return the camera that a variant's run writes in place of the read's camera.
+
+    Returns ``None`` when the run writes the read's camera, or when *written*
+    lacks the read's run entry.
+
+    Args:
+        written: What :func:`_written_cameras` returned.
+        read: The read.
+    """
+    camera = written.get(read.run_entry)
+    if camera is None or camera.resolved.paths[0] == read.camera.resolved.paths[0]:
+        return None
+    return camera
+
+
+def _unwritten(
+    kind: str,
+    variant: str,
+    read: _CameraRead,
+    written: ResolvedScopeEntry,
+    handed: str = "",
+) -> EntryRefusal:
+    """Return the refusal of *read*, whose camera a run of *variant* does not write.
+
+    Args:
+        kind: The op that reads the camera.
+        variant: The variant's run id.
+        read: The read refused.
+        written: The camera of the entry that the run writes.
+        handed: The codecs that the tool is handed for the camera and does not
+            read, or ``""`` when the op names *variant* in ``media``.
+    """
+    because = f", because {kind} does not read {handed}" if handed else ""
+    reason = (
+        f"{_label(kind, read.entry)} camera {read.camera.camera} needs a file of "
+        f"the media variant {variant}{because}. {kind} reads every camera of a "
+        f"nameless entry, and a run of the variant writes camera {written.camera} "
+        f"of the entry alone. {_ONE_CAMERA_REMEDY}"
+    )
+    return _refusal(read.entry, read.camera, "multi_camera_variant", reason)
 
 
 def _variant_recipe(ds: Dataset, variant: str) -> PreprocessParams | str:

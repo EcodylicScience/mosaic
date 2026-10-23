@@ -38,6 +38,8 @@ failure refuses that entry alone. No run id moves.
   camera that their run reads, one per entry key. Their run keys each camera of a
   nameless entry by its first file's stem, in any scope. `preprocess` is answered for
   the one camera of each entry that it writes, and `extract-frames` for every camera.
+  An unscoped plan answers `preprocess` for every camera of a nameless entry, each
+  under its label. The run writes one of them.
 - The plan does not probe a file, and a run's probe can still refuse an entry that the
   plan passes. An `entry-files` runner refuses a store without an export when a probe
   measures one of its chunks at another frame count than the store's index gives. SLEAP
@@ -50,15 +52,20 @@ failure refuses that entry alone. No run id moves.
   on a dataset without a `media_raw` root (`no_media_raw`).
 - A tool handed a codec in its decoder's `never_reads`, less the codecs that
   `MOSAIC_ALLOW_TOOL_CODECS` names, reads the step-less H.264 variant
-  `{"steps": [], "codec": "h264"}` when that variant fits at least one entry in the
-  codec. `media` then names the variant for every entry, and an entry that it does not
-  fit is refused. When it fits none, each entry in the codec is refused. Today that
-  codec is AV1 under `litpose`.
+  `{"steps": [], "codec": "h264"}` when the variant's run writes at least one camera in
+  the codec and fits its entry, or a camera in the codec has a current file of the
+  variant. `media` then names the variant for every entry, and an entry that it does
+  not fit is refused. Otherwise each camera in the codec is refused. Today that codec
+  is AV1 under `litpose`.
 - An op that names a variant in `media` needs a `preprocess` run of the variant's
   recorded recipe over each entry whose file is missing or out of date, after the run of
   a chained variant's upstream. A variant without a recipe that makes it is refused with
   `no_variant_recipe`, and a variant in a codec of the tool's `never_reads` with
-  `undecodable_codec`.
+  `undecodable_codec`. The run writes one camera of each entry, and a tool reads every
+  camera of a nameless entry. Each other camera of a nameless entry without a current
+  file of the variant is refused with `multi_camera_variant`. Its reason says to index
+  the entry's media under a sequence name, as does the reason of `multi_camera_join` for
+  a camera of a nameless entry under a tracker or an `infer-*` op.
 - For `extract-frames`, the plan refuses clips that cannot be read as one video. Its run
   fails such clips only in the worker, and the run's check before the work is
   unchanged.

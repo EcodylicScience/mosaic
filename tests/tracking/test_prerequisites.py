@@ -76,6 +76,11 @@ _GRAYSCALE_AT_20 = PreprocessParams.model_validate(
 )
 """A variant other than :data:`_GRAYSCALE`."""
 
+_GRAYSCALE_IN_H264 = PreprocessParams.model_validate(
+    {"steps": [{"step": "grayscale"}], "codec": "h264"}
+)
+"""A variant with a step in H.264, which Lightning Pose reads."""
+
 
 def _join_run(entry: Entry = _ENTRY, *, reencode: bool = False) -> PrerequisiteRun:
     params = JoinedExportParams(reencode=reencode)
@@ -338,6 +343,13 @@ def test_every_camera_of_a_several_camera_nameless_entry_is_refused_a_join(
         ("", labels[0], "a", "multi_camera_join"),
         ("", labels[1], "b", "multi_camera_join"),
     ]
+    ending = (
+        "A tool then reads one camera of the entry. Read that camera through a "
+        "media variant."
+        if kind == "trex"
+        else "export-joined joins the clips of an entry of one camera."
+    )
+    assert all(refusal.reason.endswith(ending) for refusal in plan.refusals)
     assert (plan.runs, plan.entries) == ((), ())
 
 
@@ -989,6 +1001,170 @@ def test_frames_of_an_odd_size_are_refused_a_variant(tmp_path: Path) -> None:
     assert (plan.runs, plan.entries) == ((), ())
 
 
+@pytest.mark.parametrize(
+    ("codec", "recipe", "named"),
+    [("av1", _CODEC_RECIPE, False), ("h264", _GRAYSCALE_IN_H264, True)],
+    ids=["codec-variant", "named-variant"],
+)
+@_NAMELESS_SCOPES
+def test_a_variant_run_writes_one_camera_of_a_nameless_entry(
+    tmp_path: Path,
+    codec: str,
+    recipe: PreprocessParams,
+    named: bool,
+    entries: list[Entry] | None,
+    labels: tuple[str, str],
+) -> None:
+    """Lightning Pose reads both cameras, and the variant's run writes camera ``a``.
+
+    Camera ``b`` needs nothing once it has a current file of the variant. Each
+    camera has the 12 frames of the file that ``add_media_variant`` writes.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    codecs = (codec, codec)
+    write_media_index(
+        ds,
+        [
+            clip
+            for camera in ("a", "b")
+            for clip in entry_clips("", camera=camera, codecs=codecs, frame_count=6)
+        ],
+    )
+    variant = preprocess_identity(recipe).run_id
+    params = {"media": record_variant_recipe(ds, recipe)} if named else None
+
+    plan = plan_prerequisites(ds, "litpose", params, entries=entries)
+
+    run = _preprocess_run((("", ""),), recipe)
+    assert (plan.media, plan.runs) == (variant, (run,))
+    assert _refused(plan) == [("", labels[1], "b", "multi_camera_variant")]
+    assert "under a sequence name" in _reason(plan)
+    assert plan.entries == ((("", labels[0]),) if entries is None else ())
+    _ = add_media_variant(ds, variant, "b-c0", camera="b")
+    current = plan_prerequisites(ds, "litpose", params, entries=entries)
+    assert (current.runs, current.refusals) == ((run,), ())
+
+
+def test_a_camera_that_a_variant_run_does_not_write_is_refused_once(
+    tmp_path: Path,
+) -> None:
+    """The run's check reads camera ``a``, whose frames are of an odd size."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            clip
+            for camera in ("a", "b")
+            for clip in entry_clips("", camera=camera, widths=(641, 641))
+        ],
+    )
+
+    plan = plan_prerequisites(ds, "trex", {"media": _CODEC_VARIANT})
+
+    assert _refused(plan) == [
+        ("", "a-c0", "a", "preprocess_refused"),
+        ("", "b-c0", "b", "multi_camera_variant"),
+    ]
+    assert (plan.runs, plan.entries) == ((), ())
+
+
+@pytest.mark.parametrize(
+    ("entries", "label"),
+    [(None, "b-c0"), ([("", ""), ("", "other")], "")],
+    ids=["unscoped", "scoped"],
+)
+def test_a_camera_that_the_codec_variant_does_not_write_leaves_the_entry_media_read(
+    tmp_path: Path, entries: list[Entry] | None, label: str
+) -> None:
+    """Lightning Pose is handed AV1 for camera ``b`` alone.
+
+    The variant's run of the nameless entry writes camera ``a``. Every other
+    camera reads the entry media.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(sequence="", camera="a", filename="a-c0.mp4"),
+            MediaClip(sequence="", camera="b", filename="b-c0.mp4", codec="av1"),
+            MediaClip(sequence="other", filename="other.mp4"),
+        ],
+    )
+
+    plan = plan_prerequisites(ds, "litpose", entries=entries)
+
+    assert (plan.media, plan.runs) == ("", ())
+    assert _refused(plan) == [("", label, "b", "multi_camera_variant")]
+    assert "because litpose does not read av1" in _reason(plan)
+    assert "under a sequence name" in _reason(plan)
+    read = (("", "a-c0"), ("", "other")) if entries is None else (("", "other"),)
+    assert plan.entries == read
+
+
+@_NAMELESS_SCOPES
+def test_a_camera_with_a_file_of_the_codec_variant_switches_every_camera_to_it(
+    tmp_path: Path, entries: list[Entry] | None, labels: tuple[str, str]
+) -> None:
+    """Lightning Pose is handed AV1 for camera ``b``, which has a current file.
+
+    The variant's run writes camera ``a``. Read from the entry media, the clips of
+    camera ``a`` need a join, which ``export-joined`` refuses for an entry of two
+    cameras.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            *entry_clips("", camera="a", frame_count=6),
+            *entry_clips("", camera="b", codecs=("av1", "av1"), frame_count=6),
+        ],
+    )
+    _ = add_media_variant(ds, _CODEC_VARIANT, "b-c0", camera="b")
+
+    plan = plan_prerequisites(ds, "litpose", entries=entries)
+
+    run = _preprocess_run((("", ""),))
+    assert (plan.media, plan.runs, plan.refusals) == (_CODEC_VARIANT, (run,), ())
+    assert plan.entries == tuple(sorted({("", label) for label in labels}))
+
+
+def test_an_entry_with_a_file_of_the_codec_variant_reads_it_without_a_run(
+    tmp_path: Path,
+) -> None:
+    """Lightning Pose reads the current file. The variant's run refuses the odd width.
+
+    The entry has the 12 frames of the file that ``add_media_variant`` writes.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    clip = MediaClip(
+        sequence="b", filename="b.mp4", codec="av1", width=641, frame_count=12
+    )
+    write_media_index(ds, [clip])
+    _ = add_media_variant(ds, _CODEC_VARIANT, "b")
+
+    plan = plan_prerequisites(ds, "litpose")
+
+    assert (plan.media, plan.runs, plan.refusals) == (_CODEC_VARIANT, (), ())
+    assert plan.entries == (("", "b"),)
+
+
+def test_a_variant_run_writes_the_one_camera_read_of_a_named_entry(
+    tmp_path: Path,
+) -> None:
+    """A tool reads the first camera of a named entry, which the variant's run writes."""
+    ds = make_dataset(tmp_path / "ds")
+    av1 = ("av1", "av1")
+    write_media_index(
+        ds,
+        [*entry_clips(camera="a", codecs=av1), *entry_clips(camera="b", codecs=av1)],
+    )
+
+    plan = plan_prerequisites(ds, "litpose")
+
+    assert (plan.media, plan.runs) == (_CODEC_VARIANT, (_preprocess_run(),))
+    assert (plan.refusals, plan.entries) == ((), (_ENTRY,))
+
+
 # --- preprocess ---------------------------------------------------------------
 
 
@@ -1009,6 +1185,20 @@ def test_preprocess_needs_nothing_for_an_entry_that_its_recipe_fits(
     assert (plan.media, plan.runs) == ("", ())
     assert _refused(plan) == [("", "odd", "", "preprocess_refused")]
     assert plan.entries == (("", "even"),)
+
+
+@_NAMELESS_SCOPES
+def test_preprocess_answers_a_nameless_entry_by_its_key_or_by_each_camera_label(
+    tmp_path: Path, entries: list[Entry] | None, labels: tuple[str, str]
+) -> None:
+    """The run writes camera ``a``. An unscoped plan answers camera ``b`` too."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, [*entry_clips("", camera="a"), *entry_clips("", camera="b")])
+
+    plan = plan_prerequisites(ds, "preprocess", _CODEC_RECIPE, entries=entries)
+
+    assert (plan.runs, plan.refusals) == ((), ())
+    assert plan.entries == tuple(sorted({("", label) for label in labels}))
 
 
 def test_preprocess_over_a_variant_plans_the_variant_first(tmp_path: Path) -> None:
